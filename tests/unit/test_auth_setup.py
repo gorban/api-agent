@@ -64,6 +64,8 @@ def test_account_add_edit_remove_only_one_at_a_time(tmp_path):
             assert profile(app)['roles'] == {'LLM User': [account('LLM User', 'Team [A]')]}
             assert set(saved(app.session.dotenv_path)['roles']['LLM User'][0]) == {'vault', 'user'}
             await pilot.press('e')
+            assert screen.query_one('#auth-vault', Input).value == 'Team [A]'
+            assert screen.query_one('#auth-user', Input).value == 'LLM User'
             screen.query_one('#auth-user', Input).value = 'Second'
             await pilot.click('#auth-save')
             await pilot.pause()
@@ -79,7 +81,7 @@ def test_account_add_edit_remove_only_one_at_a_time(tmp_path):
             await pilot.press('r')
             await pilot.pause()
             assert profile(app)['roles']['LLM User'] == []
-            assert not screen.check_action('edit_entry', ())
+            assert screen.check_action('edit_entry', ())
             assert not screen.check_action('remove_entry', ())
             assert {binding.key for binding in screen.BINDINGS}.isdisjoint({'x', 't'})
     asyncio.run(scenario())
@@ -299,7 +301,7 @@ def test_readonly_workflow_title_and_form_labels(tmp_path):
             lines = str(guide.content).splitlines()
             assert len(lines) == 9
             assert lines[2].endswith('(a) Add account')
-            assert lines[3].endswith('Enter vault')
+            assert lines[3].endswith('Enter vault name')
             assert lines[4].endswith('Enter login/item name')
             assert lines[7].endswith('(e) Edit password manager')
             await pilot.resize_terminal(100, 40)
@@ -366,4 +368,89 @@ def test_wide_tables_reserve_horizontal_scrollbar_space(tmp_path):
             await pilot.pause()
             assert viewport.max_scroll_y == 0
             assert manager.region.bottom <= viewport.region.bottom
+    asyncio.run(scenario())
+
+
+def test_edit_blank_role_creates_account_and_edit_uses_last_saved_values(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(110, 45)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert screen.check_action('edit_entry', ())
+            assert screen.check_action('add_entry', ())
+            await pilot.press('e')
+            assert screen.editing == ('LLM User', None)
+            assert screen.query_one('#auth-vault', Input).value == ''
+            screen.query_one('#auth-vault', Input).value = 'Saved vault'
+            screen.query_one('#auth-user', Input).value = 'Saved login'
+            screen.save_entry()
+            await pilot.pause()
+            await pilot.press('e')
+            assert screen.query_one('#auth-vault', Input).value == 'Saved vault'
+            assert screen.query_one('#auth-user', Input).value == 'Saved login'
+            screen.query_one('#auth-user', Input).value = 'Edited login'
+            screen.save_entry()
+            await pilot.pause()
+            assert profile(app)['roles']['LLM User'] == [account('Edited login', 'Saved vault')]
+            await pilot.press('a')
+            assert screen.editing == ('LLM User', None)
+            assert screen.query_one('#auth-vault', Input).value == ''
+            await pilot.press('escape')
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('down,up', [('down', 'up'), ('j', 'k')])
+def test_row_navigation_crosses_tables_only_at_boundary(tmp_path, down, up):
+    async def scenario():
+        app = WizardApp(tmp_path, external=True, roles=('LLM User', 'Partner'))
+        DotenvEditor(app.session.dotenv_path).update({'UNATTENDED_AUTH': json.dumps({
+            'roles': {'LLM User': [account('first'), account('second')]}})})
+        async with app.run_test(size=(110, 45)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            users = screen.query_one('#auth-table', DataTable)
+            manager = screen.query_one('#auth-manager-table', DataTable)
+            assert app.focused is users and users.cursor_row == 0
+            await pilot.press(up)
+            assert app.focused is users and users.cursor_row == 0
+            await pilot.press(down)
+            assert app.focused is users and users.cursor_row == 1
+            await pilot.press(down)
+            assert app.focused is users and users.cursor_row == 2
+            assert app.session.dotenv_path == app.context.pack_root / '.env'
+            await pilot.press(down)
+            assert app.focused is manager and manager.cursor_row == 0
+            assert not screen.check_action('add_entry', ())
+            assert screen.check_action('edit_entry', ())
+            assert app.session.dotenv_path == app.context.base_root / '.env'
+            await pilot.press(down)
+            assert app.focused is manager
+            await pilot.press(up)
+            assert app.focused is users and users.cursor_row == 2
+            assert screen.check_action('add_entry', ()) and screen.check_action('edit_entry', ())
+            assert app.session.dotenv_path == app.context.pack_root / '.env'
+    asyncio.run(scenario())
+
+
+def test_tab_has_only_tables_without_form_and_manager_stays_last(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(110, 45)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            users = screen.query_one('#auth-table', DataTable)
+            manager = screen.query_one('#auth-manager-table', DataTable)
+            assert screen.focus_chain == [users, manager]
+            await pilot.press('shift+tab')
+            assert app.focused is manager
+            await pilot.press('tab')
+            assert app.focused is users
+            await pilot.press('e')
+            await pilot.pause()
+            assert screen.focus_chain[0] is users
+            assert screen.focus_chain[-1] is manager
+            assert screen.query_one('#auth-content') not in screen.focus_chain
+            await pilot.press('escape')
+            assert app.focused is users
     asyncio.run(scenario())
