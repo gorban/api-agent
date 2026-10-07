@@ -429,3 +429,19 @@ def test_source_descriptors_are_closed_on_success_and_failure(tmp_path, monkeypa
         with pytest.raises(StorageError):
             storage.persist(source, manifest)
     assert not opened
+
+
+@pytest.mark.parametrize('endpoint,local', [(None, False), ('https://s3.example', False),
+    ('http://127.0.0.1:4566/', True), ('http://localhost:4566/path', False),
+    ('http://localhost:4566?x=y', False), ('http://localhost:4566#fragment', False),
+    ('http://user@localhost:4566', False), ('http://:password@localhost:4566', False)])
+def test_only_managed_localstack_endpoint_uses_synthetic_credentials(monkeypatch, endpoint, local):
+    calls = []
+    monkeypatch.setitem(sys.modules, 'boto3', SimpleNamespace(client=lambda *a, **kw: calls.append(kw)))
+    monkeypatch.setitem(sys.modules, 'botocore.config', SimpleNamespace(Config=lambda **kw: kw))
+    RunStorage('bucket', endpoint_url=endpoint)._client()
+    if local:
+        assert calls[0]['aws_access_key_id'] == 'test'
+        assert calls[0]['aws_secret_access_key'] == 'test'
+    else:
+        assert 'aws_access_key_id' not in calls[0] and 'aws_secret_access_key' not in calls[0]

@@ -3,6 +3,7 @@
 ## Checklist
 
 - [x] Establish the in-process Django ASGI composition in `src/api_agent/api/`: selected-pack Runtime, lifespan-driven health/startup/readiness, exact public routes, explicit 501 deferred handlers, method/OPTIONS handling and exact Host validation. Deterministic units cover these contracts without opening listeners or initiating authentication.
+- [x] Add reusable `runtime/operation.py`, `runtime/listener.py` and `testing/owned.py` owners for fresh config, optional dependency preparation, public HTTPS material, scoped Compose acquisition, one-worker API readiness and synchronous shutdown. Controlled bind-failure, interruption and cleanup tests pass. Launcher/TUI consumers remain in the next item.
 - [ ] Wire that composition to both launchers with owned Uvicorn/HTTPS listeners, parsed configuration, readiness and synchronous shutdown; record actual server integrations only after reporting/privacy gates. Replace authentication/LLM-listing/chat stubs as their corresponding tasks are implemented.
 
 - [ ] Complete [LangFuse and OTEL tracing](implementation_plan_k.md), [content scrubbing](implementation_plan_j.md), and [retained-container cleanup](implementation_plan_l.md) before the first live Ok integration/E2E run.
