@@ -69,7 +69,7 @@ Keeper TOTP (raw output):
 
 - [ ] Keep selection of needed credential roles synchronized through `UNATTENDED_USER_INDEX` only. Preserve paired array ordering; never independently pick a secondary index. Incomplete requested pairings retain attended fallback; validate a selected shared index against every array consumed by the operation, including single-entry arrays, and fail invalid pairings rather than silently using another account. Test selection explicitly persists one shared index for complete enabled-role pairs; attended Start overrides its use for that invocation.
 
-- [x] Declare `UNATTENDED_USER_INDEX` only in a resource pack that registers a secondary user (the resource pack declares it in its configuration). Shared/demo config does not declare it, and shared help must not show it unless the selected pack supplies the field. Generic account selection consumes the pack-supplied shared index when present; This completed initial pack-only declaration is superseded by the shared/persisted picker task below; retain it until that migration is implemented.
+- [ ] Complete the contributed-index contract: providers or packs may declare optional UNATTENDED_USER_INDEX, including LLM-only multiple accounts. Bare core/demo does not declare it; active help/schema includes it only when contributed. The earlier secondary-pack-only restriction is superseded by [provider architecture](provider_architecture.md).
 
 ## B2 helper validation
 
@@ -97,4 +97,4 @@ Deletion is one selected account or the shared manager at a time; there is no du
 - [x] Follow the requested reorder destination for effective saved arrays, including adjacent identical account descriptors; preserve descriptor occurrence when ENV/CLI leaves the effective array unchanged. Verify both directions and subsequent removal.
 - [x] Escape accepted Unicode line separators in generated single-line dotenv values, including U+0085, U+2028 and U+2029. Preserve ordinary readable Unicode, legacy literal backslashes and unrelated assignments through shared/source-only reload and later edits.
 
-- [ ] Move the shared index declaration into shared api-agent configuration when implementing the pair picker, so standalone LLM-user arrays can also persist a choice. Preserve no default and exclusion from startup acknowledgement; remove the duplicate pack-owned declaration at that point. Eligibility changes are specified in [provider-first execution](implementation_plan_a4.md).
+- [ ] Wire the pair picker to the active provider/pack-contributed index with no default and exclusion from startup acknowledgement. Explicit test-picker selection may save it to .env; attended Start overrides it for that invocation. Generic ambiguity choices may remain session-only. Validate only roles consumed by the selected operation; do not require a secondary role for an LLM-only test.
