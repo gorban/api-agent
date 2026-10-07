@@ -165,11 +165,9 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self.call_after_refresh(self._fit_tables)
 
     def _workflow_text(self):
-        steps = [(None, 'Select a role'), ('a', 'Add account'), (None, 'Enter vault name'),
+        steps = [('s', 'Choose .env target'), (None, 'Select a role'), ('a', 'Add account'), (None, 'Enter vault name'),
                  (None, 'Enter login/item name'), ('Enter', 'Save'),
                  (None, 'Repeat for more accounts'), ('e', 'Edit password manager'), ('c', 'Close setup')]
-        if len(self._target_paths()) > 1:
-            steps.insert(0, ('s', 'Choose .env target'))
         style = f"bold {self.app.get_css_variables()['footer-key-foreground']}"
         numbered = []
         for index, (key, label) in enumerate(steps, 1):
@@ -255,7 +253,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         if self.app.screen is not self:
             return False
         if action == 'switch_target':
-            return self.editing is None and len(self._target_paths()) > 1
+            return self.editing is None
         if action == 'add_entry':
             return self.editing is None and not self.load_error and not self._manager_selected()
         if action == 'edit_entry':
@@ -390,8 +388,12 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def action_switch_target(self):
         if not self.check_action('switch_target', ()):
             return
-        self.app.session.switch_target()
-        self.shared_target = self.app.session.dotenv_path
+        paths = self._target_paths()
+        if len(paths) == 1:
+            self.app.session.switch_target(paths[0])
+        else:
+            self.app.session.switch_target()
+            self.shared_target = self.app.session.dotenv_path
         self._refresh_target()
 
     def on_select_changed(self, event):

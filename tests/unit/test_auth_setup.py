@@ -203,11 +203,16 @@ def test_pack_role_scope_and_shared_manager_restore_target(tmp_path, start_in_pa
             await pilot.pause()
             screen = app.screen
             table = screen.query_one('#auth-table', DataTable)
+            workflow = screen.query_one('#auth-workflow', Static).content.plain
             table.move_cursor(row=1)
             await pilot.pause()
+            assert screen.query_one('#auth-workflow', Static).content.plain == workflow
             assert app.session.dotenv_path == pack
             assert str(screen.query_one('#auth-targets', Static).content) == f'Target .env files:\n✓ {pack}'
-            assert not screen.check_action('switch_target', ())
+            assert screen.check_action('switch_target', ())
+            await pilot.press('s')
+            assert app.session.dotenv_path == pack
+            assert screen.shared_target == previous
             await pilot.press('a')
             screen.query_one('#auth-vault', Input).value = 'Pack vault'
             screen.save_entry()
@@ -547,4 +552,27 @@ def test_manager_starts_unselected_and_path_defaults_follow_selection(tmp_path):
             screen.save_entry()
             await pilot.pause()
             assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
+    asyncio.run(scenario())
+
+
+def test_standalone_keeps_target_step_and_single_target_switch_is_noop(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            before = screen.query_one('#auth-workflow', Static).content.plain
+            assert before.startswith('1. (s) Choose .env target')
+            assert screen.check_action('switch_target', ())
+            target = app.session.dotenv_path
+            await pilot.press('s')
+            assert app.session.dotenv_path == target and screen.shared_target == target
+            screen.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.pause()
+            assert screen.query_one('#auth-workflow', Static).content.plain == before
+            await pilot.press('s')
+            assert app.session.dotenv_path == target
+            await pilot.resize_terminal(45, 35)
+            await pilot.pause()
+            assert str(screen.query_one('#auth-workflow', Static).content).splitlines()[0] == '1. (s) Choose .env target'
     asyncio.run(scenario())
