@@ -2,6 +2,9 @@
 
 ## Checklist
 
+- [x] Establish the in-process Django ASGI composition in `src/api_agent/api/`: selected-pack Runtime, lifespan-driven health/startup/readiness, exact public routes, explicit 501 deferred handlers, method/OPTIONS handling and exact Host validation. Deterministic units cover these contracts without opening listeners or initiating authentication.
+- [ ] Wire that composition to both launchers with owned Uvicorn/HTTPS listeners, parsed configuration, readiness and synchronous shutdown; record actual server integrations only after reporting/privacy gates. Replace authentication/LLM-listing/chat stubs as their corresponding tasks are implemented.
+
 - [ ] Complete [LangFuse and OTEL tracing](implementation_plan_k.md), [content scrubbing](implementation_plan_j.md), and [retained-container cleanup](implementation_plan_l.md) before the first live Ok integration/E2E run.
 
 - [ ] Establish [Allure reporting](implementation_plan_d.md) before the first integration or E2E test in this milestone, and persist results from the very first run to retain the implementation's development history. Exclude unit tests from Allure; require deterministic unit tests without live LLM calls and a 100% pass rate for every commit.
