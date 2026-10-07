@@ -115,7 +115,7 @@ COLLECT_ONLY = false
 [fields.UNATTENDED_AUTH]
 type = "jsonobject"
 default = {}
-help = "Compact JSON role-to-credential-entry arrays; selected profiles are validated by authentication setup."
+help = "Compact JSON mapping from provider-declared credential role keys to account arrays. Selected providers and resource packs declare the roles they require. Selected accounts are validated by authentication setup."
 [fields.UNATTENDED_AUTH.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false
