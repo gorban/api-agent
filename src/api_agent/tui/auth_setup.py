@@ -310,6 +310,11 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         if self.shared_target is not None and self.app.screen is self:
             self._refresh_target()
 
+    def on_data_table_row_selected(self, event):
+        if self.app.screen is self:
+            event.data_table.focus()
+            self.action_edit_entry()
+
     def check_action(self, action, parameters):
         if self.app.screen is not self:
             return False
