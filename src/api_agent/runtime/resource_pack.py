@@ -26,6 +26,9 @@ class LaunchContext:
     launcher_root: Path | None = None
     show_pack_bootstrap: bool = False
     credential_role_fields: tuple[str, ...] = ()
+    identity_factory_path: Path | None = None
+    identity_factory_name: str | None = None
+    production_paths: tuple[Path, ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -80,7 +83,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -102,8 +105,17 @@ def load_launch_context(
         raise ResourcePackError("Resource-pack defaults and tests must be TOML tables")
     if set(declared_tests) - {"unit", "integration", "e2e"}:
         raise ResourcePackError("Resource-pack tests contains an unknown test mode")
+    production = data.get("production", [])
+    if not isinstance(production, list):
+        raise ResourcePackError('Resource-pack production must list relative source directories')
+    production_paths = []
+    for entry in production:
+        source = _relative_path(entry, pack, 'production')
+        if not source.is_relative_to(pack.resolve()) or not source.is_dir():
+            raise ResourcePackError('Production source directories must exist inside the resource pack')
+        production_paths.append(source)
     authentication = data.get("authentication", {})
-    if not isinstance(authentication, dict) or set(authentication) - {"credential_role_fields"}:
+    if not isinstance(authentication, dict) or set(authentication) - {"credential_role_fields", "identity"}:
         raise ResourcePackError("Resource-pack authentication contains unknown or invalid fields")
     role_fields = authentication.get("credential_role_fields", [])
     if (not isinstance(role_fields, list)
@@ -111,6 +123,26 @@ def load_launch_context(
                    for name in role_fields)
             or len(set(role_fields)) != len(role_fields)):
         raise ResourcePackError("authentication.credential_role_fields must list unique configuration field names")
+    identity = authentication.get("identity")
+    factory_path = factory_name = None
+    if identity is not None:
+        if (not isinstance(identity, dict) or set(identity) != {"version", "path", "factory"}
+                or type(identity["version"]) is not int or identity["version"] != 1):
+            raise ResourcePackError("authentication.identity must declare version=1, path and factory")
+        path = identity["path"]
+        factory_name = identity["factory"]
+        if (not isinstance(path, str) or not path.strip() or Path(path).is_absolute()
+                or ".." in Path(path).parts or Path(path).suffix != ".py"):
+            raise ResourcePackError("authentication.identity.path must be a pack-relative Python file")
+        factory_path = (pack / path).resolve()
+        if not factory_path.is_relative_to(pack.resolve()) or not factory_path.is_file():
+            raise ResourcePackError("authentication.identity.path must exist inside the resource pack")
+        if (not isinstance(factory_name, str) or not factory_name.isascii()
+                or not factory_name.isidentifier()):
+            raise ResourcePackError("authentication.identity.factory must name a Python identifier")
+        if not any(factory_path.is_relative_to(source) for source in
+                   [owner / 'src', *production_paths]):
+            raise ResourcePackError("authentication.identity.path must be included in production coverage directories")
     tests: dict[str, tuple[Path, ...]] = {}
     for mode, paths in declared_tests.items():
         if not isinstance(paths, list):
@@ -122,4 +154,6 @@ def load_launch_context(
         Path(launcher_root).resolve() if launcher_root is not None else base,
         resource_pack_dir is None and (launcher_root is None or Path(launcher_root).resolve() == base),
         tuple(role_fields),
+        factory_path, factory_name,
+        tuple(dict.fromkeys(production_paths)),
     )

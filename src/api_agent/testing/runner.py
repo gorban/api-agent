@@ -67,7 +67,8 @@ if os.environ.get('API_AGENT_COVERAGE_OUTPUT'):
     from coverage import Coverage
     coverage = Coverage(data_file=os.environ['COVERAGE_FILE'], config_file=False)
     coverage.load()
-    coverage.json_report(morfs=[str(path) for path in Path(os.environ['API_AGENT_COVERAGE_SOURCE']).rglob('*.py')],
+    coverage.json_report(morfs=[str(path) for source in json.loads(os.environ['API_AGENT_COVERAGE_SOURCE'])
+                               for path in Path(source).rglob('*.py')],
                          outfile=os.environ['API_AGENT_COVERAGE_OUTPUT'])
 sys.exit(status)
 '''
@@ -94,6 +95,14 @@ def _stop_execution(process):
     finally:
         if os.name == 'posix':
             send(signal.SIGKILL)
+
+
+def _production_sources(context, root):
+    candidates = [root / 'src']
+    if root == Path(context.owner_root).resolve():
+        candidates.extend(getattr(context, 'production_paths', ()))
+    return tuple(dict.fromkeys(Path(path).resolve() for path in candidates
+                               if Path(path).is_dir() and any(Path(path).rglob('*.py'))))
 
 
 def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True):
@@ -144,16 +153,18 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             coverage = Path(temporary) / 'coverage.json'
             events.touch()
             args = [sys.executable, '-c', _PLUGIN, str(events), '-o', 'addopts=', '--rootdir', str(root)]
-            source = root / 'src'
-            has_code = source.exists() and any(source.rglob('*.py'))
+            sources = _production_sources(context, root)
+            has_code = bool(sources)
             env.pop('API_AGENT_COVERAGE_OUTPUT', None)
+            env.pop('API_AGENT_COVERAGE_SOURCE', None)
             if has_code:
                 config = Path(temporary) / 'coverage.ini'
                 config.write_text('[run]\nbranch = true\n[report]\ninclude_namespace_packages = true\n')
                 env['API_AGENT_COVERAGE_OUTPUT'] = str(coverage)
-                env['API_AGENT_COVERAGE_SOURCE'] = str(source)
+                env['API_AGENT_COVERAGE_SOURCE'] = json.dumps([str(source) for source in sources])
                 args += ['--cov-config=' + str(config)]
-                args += ['--cov=' + str(source), '--cov-branch', '--cov-report=term-missing', '--cov-report=json:' + str(coverage)]
+                args += ['--cov=' + str(source) for source in sources]
+                args += ['--cov-branch', '--cov-report=term-missing', '--cov-report=json:' + str(coverage)]
                 env['COVERAGE_FILE'] = str(Path(temporary) / '.coverage')
             if parallel_jobs:
                 args += ['-n', str(parallel_jobs)]
@@ -245,19 +256,19 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     for repo, root in roots.items():
         if repo in {test.repo for test in tests}:
             continue
-        source = root / 'src'
-        if not source.exists() or not any(source.rglob('*.py')):
+        sources = _production_sources(context, root)
+        if not sources:
             continue
         try:
             from coverage import Coverage
             with tempfile.TemporaryDirectory(prefix='api-agent-unselected-') as temporary:
-                coverage = Coverage(source=[str(source)], branch=True, config_file=False,
+                coverage = Coverage(source=[str(source) for source in sources], branch=True, config_file=False,
                                     data_file=str(Path(temporary) / '.coverage'))
                 coverage.set_option("run:disable_warnings", ["no-data-collected"])
                 coverage.start()
                 coverage.stop()
                 report = Path(temporary) / 'coverage.json'
-                coverage.json_report(morfs=[str(path) for path in source.rglob('*.py')], outfile=str(report))
+                coverage.json_report(morfs=[str(path) for source in sources for path in source.rglob('*.py')], outfile=str(report))
                 data = json.loads(report.read_text())
                 for file, row in sorted(data['files'].items()):
                     summary = row['summary']
