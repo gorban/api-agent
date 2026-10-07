@@ -1072,3 +1072,34 @@ def test_completed_unit_failures_sort_stably_first_and_reset_selection(tmp_path)
                 'fail-first', 'fail-second', 'pass-first', 'pass-second']
             assert table.cursor_row == 0
     asyncio.run(scenario())
+
+
+def test_unit_summary_scroll_and_full_coverage_color(tmp_path):
+    from api_agent.testing.runner import CoverageArea, UnitRunResult
+    from textual.containers import VerticalScroll
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.unit_rows = {str(i): ('FAILED', str(i), '1s') for i in range(12)}
+            app.unit_result = UnitRunResult(1, (), tuple(
+                CoverageArea('base', f'file{i}.py', 0, 1, 0, 0) for i in range(40)), '')
+            app.show_unit_results()
+            await pilot.pause()
+            summary = app.screen.query_one('#unit-summary', VerticalScroll)
+            table = app.screen.query_one(DataTable)
+            assert summary.size.height >= 6
+            assert table.size.height >= 6  # header + horizontal scrollbar + four rows
+            assert summary.max_scroll_y > 0
+            app.unit_result = UnitRunResult(1, (), (CoverageArea('base', 'empty.py', 0, 0, 0, 0),), '')
+            app.show_unit_results()
+            await pilot.pause()
+            content = app.screen.query_one('#body', Static).content
+            assert isinstance(content, Text)
+            coverage_start = content.plain.index('Production coverage: 100%')
+            assert any(span.start == coverage_start and span.style == 'green' for span in content.spans)
+            await pilot.resize_terminal(70, 15)
+            await pilot.pause()
+            assert app.screen.query_one('#unit-summary').size.height >= 6
+            assert app.screen.query_one(DataTable).size.height >= 6
+    asyncio.run(scenario())
