@@ -262,7 +262,7 @@ class ApiAgentApp(App[int]):
         elif kind == "input":
             self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
             self.screen.query_one("#body", Static).update(
-                f"Declared type: {self.schema.fields[self.prompt_name].type}. Enter saves this value to {self.session.dotenv_path}. Use Tab to focus actions; s switches the target outside the value input.")
+                f"Declared type: {self.schema.fields[self.prompt_name].type}. Use Tab to focus actions; s switches the target outside the value input.")
             self.screen.query_one(Input).value = value
         elif kind == "defaults":
             self.show_configuration()
@@ -387,7 +387,7 @@ class ApiAgentApp(App[int]):
         resolved = self.session.result(_review=True).fields.get(self.prompt_name)
         self.prompt_value = display(resolved.value) if resolved else ""
         self.show("input", f"Configure {self.prompt_name}",
-                  f"Declared type: {self.schema.fields[self.prompt_name].type}. Enter saves this value to {self.session.dotenv_path}. Use Tab to focus actions; s switches the target outside the value input.",
+                  f"Declared type: {self.schema.fields[self.prompt_name].type}. Use Tab to focus actions; s switches the target outside the value input.",
                   (("submit", "Save value (Enter)"),))
 
     async def enter_mode(self):
