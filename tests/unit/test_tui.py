@@ -701,3 +701,22 @@ def test_optional_trace_review_does_not_block_mode_or_repeat_explicit_settings(t
             await pilot.pause()
             assert configured.screen.kind == 'menu'
     asyncio.run(scenario())
+
+
+def test_enum_edit_lists_blank_choice_and_spaces_target_section(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'TRACE_MODE': {'type': 'str', 'enum': ['', 'LangFuse', 'OTEL'], 'review_optional': True}})
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press('e')
+            await pilot.pause()
+            hint = app.screen.query_one('#enum-info', Static)
+            assert str(hint.content) == 'Enum (str) — exact values: <blank>, LangFuse, OTEL'
+            value = app.screen.query_one(Input)
+            assert hint.region.y > value.region.bottom
+            assert app.screen.query_one('#dotenv-targets').region.y > hint.region.bottom
+            value.value = 'langfuse'
+            await pilot.press('enter')
+            await pilot.pause()
+            assert 'expected one of <blank>, LangFuse, OTEL' in str(app.screen.query_one('#error', Static).content)
+    asyncio.run(scenario())

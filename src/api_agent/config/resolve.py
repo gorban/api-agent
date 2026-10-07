@@ -30,6 +30,9 @@ class ConfigResult:
             raise ConfigError('\n'.join(self.errors))
         return self
 
+def format_enum_values(values):
+    return ', '.join('<blank>' if value == '' else str(value) for value in values)
+
 def convert_value(declaration, value, *, external, anchors):
     kind = declaration.type
     if external:
@@ -54,7 +57,7 @@ def convert_value(declaration, value, *, external, anchors):
     if kind == 'path' and not value.strip():
         raise ValueError('expected nonempty path')
     if declaration.enum and value not in declaration.enum:
-        raise ValueError('expected one of ' + ', '.join(map(str, declaration.enum)))
+        raise ValueError('expected one of ' + format_enum_values(declaration.enum))
     if declaration.validation == 'nonnegative' and value < 0:
         raise ValueError('expected nonnegative integer')
     if declaration.validation == 'resolution' and not re.fullmatch(r'[1-9]\d*x[1-9]\d*', value):

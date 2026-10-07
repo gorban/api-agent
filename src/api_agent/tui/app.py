@@ -86,6 +86,11 @@ class WorkbenchScreen(Screen):
                 yield DataTable(id="choices", cursor_type="row")
             if self.kind == "input":
                 yield Input(id="config-value")
+                field = app.schema.fields[app.prompt_name]
+                if field.enum:
+                    from api_agent.config.resolve import format_enum_values
+                    yield Static(f"Enum ({field.type}) — exact values: {format_enum_values(field.enum)}",
+                                 id="enum-info", markup=False)
             yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions"):
                 if self.kind == "input" and len(app.session.target_paths) > 1:
@@ -194,7 +199,8 @@ class WorkbenchScreen(Screen):
 class ApiAgentApp(App[int]):
     CSS = """
     Screen { padding: 1 2; }
-    #dotenv-targets { height: auto; margin-bottom: 1; }
+    #dotenv-targets { height: auto; margin-top: 1; margin-bottom: 1; }
+    #enum-info { height: auto; margin-top: 1; margin-bottom: 1; }
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
