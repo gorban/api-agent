@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from api_agent.config import schema_from_dict
 from api_agent.testing import TestIdentity as Identity
 from api_agent.tui.app import ApiAgentApp, E2E_WARNING
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import Button, DataTable, Input, Static
 
 
 def fixture(tmp_path, mode=None, fields=None, collector=None):
@@ -246,4 +246,23 @@ def test_collect_only_validates_newly_active_settings(tmp_path):
             assert app.screen.kind == "error"
             assert app.operation_status == 2
             assert not calls
+    asyncio.run(scenario())
+
+
+def test_default_buttons_have_visible_label_area_at_terminal_sizes(tmp_path):
+    async def scenario():
+        for size in ((80, 24), (100, 35)):
+            app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
+            async with app.run_test(size=size) as pilot:
+                await pilot.pause(0.4)
+                rendered = app.export_screenshot()
+                for key, label in (("save", "Save defaults to .env"),
+                                   ("once", "Use defaults once"),
+                                   ("edit", "Supply individually")):
+                    button = app.screen.query_one("#" + key, Button)
+                    assert str(button.label) == label
+                    assert label in rendered or label.replace(" ", "&#160;") in rendered
+                    assert button.content_region.height >= 1
+                    assert button.content_region.width >= len(label)
+                    assert button.region.bottom <= app.screen.query_one("Footer").region.y
     asyncio.run(scenario())

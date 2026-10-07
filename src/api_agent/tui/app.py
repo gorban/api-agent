@@ -117,8 +117,8 @@ class ApiAgentApp(App[int]):
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
-    #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; }
-    Button { width: 100%; margin: 0 1 1 0; }
+    #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
+    Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
     Button:focus, Input:focus { border: heavy $accent; }
     DataTable { height: 1fr; min-height: 8; margin-bottom: 1; }
     #error { color: $error; height: auto; }
