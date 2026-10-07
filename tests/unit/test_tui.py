@@ -814,3 +814,41 @@ def test_button_directional_navigation_and_edges(tmp_path):
             await pilot.press("h")
             assert app.focused.id == "setup"
     asyncio.run(scenario())
+
+
+def test_main_menu_resets_target_to_active_pack_for_either_launcher(tmp_path):
+    from api_agent.config.session import ConfigSession
+
+    async def scenario(launcher_is_pack):
+        root = tmp_path / str(launcher_is_pack)
+        base, pack = root / "base", root / "pack"
+        base.mkdir(parents=True)
+        pack.mkdir()
+        (base / ".env").write_text('COUNT="4"\n')
+        (pack / ".env").write_text('COUNT="9"\n')
+        app = fixture(root, fields={"COUNT": {"type": "int", "default": 4},
+                                        "OTHER": {"type": "int", "default": 1}})
+        app.context.base_root = base
+        app.context.pack_root = pack
+        app.context.dotenv_path = pack / ".env"
+        app.context.external_pack = True
+        app.context.launcher_root = pack if launcher_is_pack else base
+        app.session = ConfigSession(app.context, app.schema, environ=app.session.environ)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.session.switch_target(base / ".env")
+            app.show_configuration()
+            await pilot.pause()
+            assert app.session.dotenv_path == base / ".env"
+            await pilot.press("c")
+            await pilot.pause()
+            assert app.screen.kind == "menu"
+            assert app.session.dotenv_path == pack / ".env"
+            assert app.session.result().values["COUNT"] == 9
+            assert (base / ".env").read_text() == 'COUNT="4"\n'
+            app.session.switch_target(base / ".env")
+            app.show_menu()
+            await pilot.pause()
+            assert app.session.dotenv_path == pack / ".env"
+    for launcher_is_pack in (False, True):
+        asyncio.run(scenario(launcher_is_pack))

@@ -501,6 +501,8 @@ class ApiAgentApp(App[int]):
             await self.configure_operation()
 
     def show_menu(self):
+        if self.context.external_pack:
+            self.session.switch_target(self.context.pack_root / ".env")
         self.mode = None
         self.show("menu", "Choose an operation", self.container_summary, actions=tuple(("mode-" + key, label) for key, label in MODES))
         self.refresh_container_inventory()
