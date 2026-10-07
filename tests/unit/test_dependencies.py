@@ -23,6 +23,7 @@ def test_prepare_once_reexec_and_preserve_arguments(tmp_path):
     with patch('api_agent.runtime.dependencies.shutil.which', return_value='uv'), patch('api_agent.runtime.dependencies.subprocess.run') as install, patch('api_agent.runtime.dependencies.subprocess.call', return_value=3) as launch:
         assert ensure_environment(context, ['--tui-mode=config-cleanup']) == 3
         assert install.call_count == 1
+        assert '_worktrees_verified=True' in launch.call_args.args[0][2]
         assert launch.call_args.args[0][-1] == '--tui-mode=config-cleanup'
         assert launch.call_args.args[0][-2] == str(base)
         assert '--_launcher-root' in launch.call_args.args[0]

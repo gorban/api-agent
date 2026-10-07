@@ -67,7 +67,7 @@ def resource_pack_main(argv=None, *, launcher_root):
         return 2
 
 
-def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None):
+def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None, _worktrees_verified=False):
     """Validate foundation contracts; later segments provide actual operations."""
     from api_agent.config import (compose_schema, load_declarations, load_shared_schema,
                                       read_dotenv, resolve_config)
@@ -93,8 +93,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  'with the current Python, or use a resource-pack launcher with API_AGENT_DIR.')
             base_root = candidate
         context = load_launch_context(Path(base_root).resolve(), resource_pack_dir, launcher_root)
-        verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout,
-                         resource_pack_name=context.pack_id if context.external_pack else None)
+        if not _worktrees_verified:
+            verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout,
+                             resource_pack_name=context.pack_id if context.external_pack else None)
         shared = load_shared_schema(context.base_root)
         schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
                                 overrides=context.defaults)
