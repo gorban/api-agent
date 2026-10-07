@@ -4,6 +4,7 @@ Local API here means the pack's upstream API; the api-agent chat API remains the
 
 ## Checklist
 
+- [ ] With the first Compose prerequisite added, implement the [ownership-filtered inventory/count and stop-time validation gate](implementation_plan_l.md) before enabling its app/test startup. This applies to every profile and dependency service, regardless of which stack is built first.
 - [ ] Add a shared prerequisite planner and lifecycle manager driven by runtime-parsed config and pack declarations. Resolve enabled Compose fragments/profiles and host processes before starting the selected TUI action. Validate invalid combinations and missing active settings together; do not start containers for disabled features or deterministic unit tests.
 - [ ] Separate independently selectable Compose profiles: `langfuse`, `api`, and `database`. Account for Neo4j and local S3/LocalStack as their own prerequisites. Support combinations rather than one monolithic all-services startup. Packs declare their API/database fragments; reusable stacks live in api-agent.
   - [ ] Support remote upstream API with no local API/database; local API using remote SQL Server; and local API using local seeded SQL Server. Langfuse may be independently enabled with any valid combination. Reject local database mode without local API mode, and do not ask for database connection configuration when using a remote API.
