@@ -14,6 +14,7 @@ class FieldDeclaration:
     override: bool = False
     required: bool = False
     review_optional: bool = False
+    allow_empty: bool = False
     default: Any = UNSET
     enum: tuple = ()
     applies_when: Mapping[str, Any] = field(default_factory=dict)
@@ -45,13 +46,15 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         if set(spec) - allowed or spec.get('type') not in TYPES:
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
-        for flag in ('override', 'required', 'review_optional', 'acknowledge_default', 'pack_only'):
+        for flag in ('override', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
         if spec.get('anchor') not in (None, 'pack_root', 'owner_root', 'base_root'):
             raise ValueError(f'{name}: invalid path anchor')
         if spec['type'] == 'path' and not spec.get('anchor'):
             raise ValueError(f'{name}: path requires an explicit anchor')
+        if spec.get('allow_empty') and spec['type'] != 'path':
+            raise ValueError(f'{name}: allow_empty requires path type')
         if spec.get('validation') not in (None, 'nonnegative', 'positive', 'resolution'):
             raise ValueError(f'{name}: unknown validation rule')
         if spec.get('validation') == 'nonnegative' and spec['type'] != 'int':

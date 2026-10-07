@@ -103,7 +103,9 @@ def test_optional_recording_destinations_are_reviewable_without_becoming_require
             assert 'When unset' in field.help
         # Exercise the real metadata through the TUI without unrelated settings.
         app.schema = replace(app.schema, fields={**app.schema.fields,
-                            **{name: schema.fields[name] for name in names}})
+                            **{name: schema.fields[name] for name in names},
+                            'TOKEN_USAGE_CSV_ENABLED': replace(schema.fields['TOKEN_USAGE_CSV_ENABLED'],
+                                                               acknowledge_default=False)})
         app.session.schema = app.schema
         app.context.anchors['owner_root'] = tmp_path
         async with app.run_test() as pilot:

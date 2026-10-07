@@ -55,6 +55,7 @@ def fake_runner(status='passed', *, deliver=True):
 def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, status, expected):
     context, test, config = fixture(tmp_path)
     config['TOKEN_USAGE_CSV'] = tmp_path / 'external.csv'
+    config['TOKEN_USAGE_CSV_ENABLED'] = True
     storage = Storage()
     instant = datetime(2028, 1, 1, tzinfo=timezone.utc)
     snapshots = iter([QuotaSnapshot(10, 'window', instant + timedelta(hours=1), instant),
@@ -134,6 +135,7 @@ def test_quota_failure_is_unavailable_and_storage_failure_fails_operation(tmp_pa
 def test_bad_optional_csv_keeps_primary_usage_and_records_finalization_failure(tmp_path):
     context, test, config = fixture(tmp_path)
     config['TOKEN_USAGE_CSV'] = tmp_path
+    config['TOKEN_USAGE_CSV_ENABLED'] = True
     storage = Storage()
     result = recorded.run_recorded_integration(context, [test], config, accepted=True,
                          storage=storage, runner=fake_runner())

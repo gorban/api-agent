@@ -11,4 +11,5 @@ build/
 .env
 .env.*
 artifacts/
+/token_usage.csv
 .certs/
