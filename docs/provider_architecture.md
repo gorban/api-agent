@@ -28,7 +28,7 @@ The included GPT provider contributes its own `GPT_AUTH_MODE`, `GPT_API_MODE`, k
 
 ## Selection, configuration and routes
 
-`LLM_PROVIDER`, `API_PROVIDER` and `UI_PROVIDER` select Python-file factories (`path.py:factory`). The loader accepts synchronous factories returning an integer `version = 1`, exposes lifecycle/optional route hooks, and reads adjacent `cfg/config.toml` without importing the factory during schema discovery. Factories are instantiated at awaited runtime startup. The protocol and owner foundation does not complete external adapters or operation consumers.
+`LLM_PROVIDER`, `API_PROVIDER`, `UI_PROVIDER` and `ACCESS_PROVIDER` select Python-file factories (`path.py:factory`). The loader accepts synchronous factories returning an integer `version = 1`, exposes lifecycle/optional route hooks, and reads adjacent `cfg/config.toml` without importing the factory during schema discovery. Factories are instantiated at awaited runtime startup. The protocol and owner foundation does not complete external adapters or operation consumers.
 
 - [ ] Consume the optional `API_PROVIDER` and `UI_PROVIDER` selections and an API-contributed `UPSTREAM_API_PROVIDER` at executable operation boundaries. The selections/loader are available; the included GraphQL provider and actual operation wiring remain tasks. Require each only for an operation using that capability; the initial demo renderer does not need an upstream API.
 - [ ] Resolve relative factory locations against a declared configuration owner root, independent of CWD. Support bundled and external locations and provider-local imports/dependencies without changing global `sys.path`.
@@ -67,7 +67,7 @@ class LLMAuthenticator(Protocol):
 
 Version and validate optional capability contracts. An absent UI hook or explicit async no-op is valid; a present malformed hook errors. Absence/no-op does not claim verified login. `user_index=None` means attended UI use, never unresolved unattended selection. There is no extra scenario or identity-mode argument: the pack chooses its strategy from ordinary mode and account selection.
 
-The role reader accepts declared role, index and credential kind; the LLM reader is already bound to its provider-declared LLM role and accepts index/kind only. Reject undeclared roles, unsupported kinds, ambiguous/out-of-range selections and attempts to switch the bound account. Retrieve passwords only when needed and fresh TOTP at the challenge. Credentials and opaque tokens never enter ordinary logs, traces or report attachments, even with content logging enabled.
+The role reader accepts declared role, index and credential kind; the LLM reader is already bound to its provider-declared LLM role and accepts index/kind only. Reject undeclared roles, unsupported kinds, ambiguous/out-of-range selections and attempts to switch the bound account. Retrieve the actual username separately from its saved item name, passwords only when needed and fresh TOTP at the challenge. Credentials and opaque tokens never enter ordinary logs, traces or report attachments, even with content logging enabled.
 
 ### UI session policy
 

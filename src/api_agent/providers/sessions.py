@@ -1,10 +1,14 @@
 """Process-local credential and browser owners with lazy opaque authentication."""
 import asyncio
 import os
+import inspect
+import math
+from contextlib import asynccontextmanager
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from .contracts import BrowserSession, ContractError, SessionClosedError
+from .control import OperationalError, OperationContext, CleanupPendingError
 
 
 class ScopedRoleCredentials:
@@ -20,14 +24,14 @@ class ScopedRoleCredentials:
             raise ContractError("Undeclared credential role")
         if type(index) is not int or index != self._index:
             raise ContractError("Credential account is outside binding")
-        if kind not in ("password", "totp"):
+        if kind not in ("username", "password", "totp"):
             raise ContractError("Unsupported credential kind")
         try:
             return await self._retrieve(role, index, kind)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, OperationalError, ContractError, SessionClosedError, CleanupPendingError):
             raise
         except Exception:
-            raise ContractError("Credential retrieval failed") from None
+            raise OperationalError("unknown", execution="possibly_executed") from None
 
 
 class ScopedLLMCredentials:
@@ -85,6 +89,8 @@ async def _drain(tasks: Iterable[asyncio.Future], timeout: float,
 
 class _Owner:
     def __init__(self, timeout: float):
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ContractError("Invalid cleanup timeout")
         self._timeout = timeout
         self._pid = os.getpid()
         self._loop = None
@@ -125,16 +131,20 @@ class _Owner:
     async def aclose(self) -> None:
         self._context()
         self._closed = True
-        if self._closing is None or self._closing.done() and self._closing.exception() is not None:
+        if self._closing is None or self._closing.done() and (self._closing.cancelled() or self._closing.exception() is not None):
             self._closing = _spawn(self._dispose())
         try:
             await asyncio.shield(self._closing)
         except asyncio.CancelledError:
             raise
-        except (ContractError, SessionClosedError) as error:
-            raise error from None
+        except (CleanupPendingError, SessionClosedError):
+            raise
+        except ContractError as error:
+            if str(error) == "Final usage failed":
+                raise error from None
+            raise CleanupPendingError((self,), self.aclose) from None
         except Exception:
-            raise ContractError("Owner disposal failed") from None
+            raise CleanupPendingError((self,), self.aclose) from None
 
 
 class InspectionOwner(_Owner):
@@ -176,7 +186,7 @@ class BrowserOwner(_Owner):
             self._check()
             self.session = BrowserSession(browser, context, page)
             return self.session
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, OperationalError, ContractError, SessionClosedError, CleanupPendingError):
             raise
         except Exception:
             raise ContractError("Browser setup failed") from None
@@ -191,9 +201,11 @@ class BrowserOwner(_Owner):
             return session
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             if asyncio.current_task() is not self._preparing:
                 await self.aclose()
+            if isinstance(error, (OperationalError, ContractError, SessionClosedError)):
+                raise error from None
             raise ContractError("Browser setup failed") from None
 
     async def _prepare(self, hook: Any, kwargs: dict) -> BrowserSession:
@@ -203,10 +215,10 @@ class BrowserOwner(_Owner):
                 await hook.authenticate(session=session, **kwargs)
             self._check()
             return session
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, OperationalError, ContractError, SessionClosedError, CleanupPendingError):
             raise
         except Exception:
-            raise ContractError("Browser preparation failed") from None
+            raise OperationalError("unknown", execution="possibly_executed") from None
 
     async def prepare(self, hook: Any, *, tui_mode: str, user_index: int | None,
                       credentials: ScopedRoleCredentials) -> BrowserSession:
@@ -220,9 +232,12 @@ class BrowserOwner(_Owner):
             return session
         except asyncio.CancelledError:
             raise
+        except (OperationalError, ContractError, SessionClosedError):
+            await self.aclose()
+            raise
         except Exception:
             await self.aclose()
-            raise ContractError("Browser preparation failed") from None
+            raise OperationalError("unknown", execution="possibly_executed") from None
 
     async def _dispose(self) -> None:
         await _drain([t for t in (self._starting, self._preparing) if t is not None],
@@ -257,11 +272,19 @@ class LLMSessionOwner(_Owner):
         self._auth = None
         self._initializing = None
         self._calls: dict[asyncio.Task, int] = {}
+        self._streams = set()
         self._finalizing = None
         self._disposal_started = False
 
+    async def _release_rejected_auth(self):
+        try:
+            await self._release()
+        except ContractError:
+            raise CleanupPendingError((self,), self.aclose) from None
+
     async def _initialize(self) -> None:
         try:
+            await self._release_rejected_auth()
             if self._browser is not None:
                 await self._browser.aclose()
                 self._browser = None
@@ -270,43 +293,92 @@ class LLMSessionOwner(_Owner):
             if not browser._headless:
                 raise ContractError("LLM authentication browser must be headless")
             session = await browser.start()
-            self._auth = await self.provider.authenticate(session=session, user_index=self._index,
-                                                         credentials=self._credentials)
+            auth = await self.provider.authenticate(session=session, user_index=self._index,
+                                                    credentials=self._credentials)
+            if not callable(auth) or not callable(getattr(auth, "aclose", None)):
+                if callable(getattr(auth, "aclose", None)):
+                    self._resources.append((auth, "aclose"))
+                raise ContractError("Invalid authentication session")
+            self._auth = auth
             self._check()
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, CleanupPendingError):
             raise
-        except Exception:
+        except Exception as error:
+            await self._release_rejected_auth()
             if not self._closed and self._browser is not None:
                 await self._browser.aclose()
                 self._browser = None
-            raise ContractError("Authentication initialization failed") from None
+            if isinstance(error, (OperationalError, ContractError, SessionClosedError)):
+                raise error from None
+            raise OperationalError("unknown", execution="possibly_executed") from None
 
-    async def call(self, operation: Callable[..., Awaitable[Any]]) -> Any:
+    async def _budget(self, awaitable, context):
+        if context is None:
+            return await awaitable
+        if context.remaining() == 0 and inspect.iscoroutine(awaitable):
+            awaitable.close()
+            raise OperationalError("deadline")
+        work = _spawn(awaitable)
+        self._calls[work] = 1
+        def released(task):
+            self._calls.pop(task, None)
+            self._cancel_requested.discard(task)
+        work.add_done_callback(released)
+        try:
+            return await context.run(work)
+        except (asyncio.CancelledError, OperationalError):
+            if not work.done():
+                self._cancel_requested.add(work)
+            raise
+
+    async def _authenticate(self, context):
+        if getattr(self.provider, "authenticate", None) is not None and self._index is not None:
+            if self._auth is None:
+                if self._initializing is None or self._initializing.done():
+                    self._initializing = _spawn(self._initialize())
+                await self._budget(asyncio.shield(self._initializing), context)
+            self._check()
+            auth = await self._budget(self._auth(), context)
+            self._check()
+            return auth
+        return None
+
+    async def call(self, operation: Callable[..., Awaitable[Any]], *, context: OperationContext | None = None) -> Any:
         self._check()
         task = asyncio.current_task()
         self._calls[task] = self._calls.get(task, 0) + 1
         try:
-            if getattr(self.provider, "authenticate", None) is not None and self._index is not None:
-                if self._auth is None:
-                    if self._initializing is None or self._initializing.done():
-                        self._initializing = _spawn(self._initialize())
-                    await asyncio.shield(self._initializing)
-                self._check()
-                auth = await self._auth()
-                self._check()
-            else:
-                auth = None
+            if context is not None and context.remaining() == 0:
+                raise OperationalError("deadline")
+            auth = await self._authenticate(context)
             self._check()
-            return await operation(auth=auth)
-        except asyncio.CancelledError:
+            return await self._budget(operation(auth=auth), context)
+        except (asyncio.CancelledError, OperationalError, ContractError, SessionClosedError, CleanupPendingError):
             raise
         except Exception:
-            raise ContractError("Authenticated operation failed") from None
+            raise OperationalError("unknown", execution="possibly_executed") from None
         finally:
             self._calls[task] -= 1
             if not self._calls[task]:
                 del self._calls[task]
                 self._cancel_requested.discard(task)
+
+    @asynccontextmanager
+    async def stream(self, operation, *, context: OperationContext | None = None):
+        from .streams import ManagedStream
+        stream = ManagedStream(self, context)
+        self._check()
+        self._streams.add(stream)
+        try:
+            async def open_stream(**kwargs):
+                result = operation(**kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                stream.bind(result)
+            await self.call(open_stream, context=context)
+            yield stream
+        finally:
+            await stream.aclose()
 
     async def _dispose(self) -> None:
         pending = list(self._calls)
@@ -314,6 +386,10 @@ class LLMSessionOwner(_Owner):
             pending.append(self._initializing)
         await _drain(pending, self._timeout, self._cancel_requested,
                      lambda task: task in self._calls or task is self._initializing)
+        for stream in tuple(self._streams):
+            await stream.aclose()
+        if not self._disposal_started:
+            await self._release_rejected_auth()
         failed = False
         if not self._disposal_started and self._finalizer is not None and self._auth is not None:
             if self._finalizing is None:

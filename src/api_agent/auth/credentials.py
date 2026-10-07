@@ -139,6 +139,8 @@ def _run(argv: list[str], timeout: float) -> str:
 
 
 def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeout: float) -> str:
+    if type(kind) is not str or kind not in {"username", "password", "totp"}:
+        raise CredentialError("Unsupported credential kind.")
     if isinstance(source, CredentialSource):
         source = CredentialSource.from_mapping(vars(source))
     else:
@@ -146,32 +148,50 @@ def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeou
     cli = resolve_cli_path(source.cli_path)
     if source.manager == "keeper":
         item = f"{source.vault}/{source.user}"
-        argv = ([cli, "find-password", item] if kind == "password" else
-                [cli, "clipboard-copy", item, "--totp", "--output", "stdout", "-t"])
+        if kind == "password":
+            argv = [cli, "find-password", item]
+        elif kind == "username":
+            argv = [cli, "clipboard-copy", item, "--field", "login", "--output", "stdout"]
+        else:
+            argv = [cli, "clipboard-copy", item, "--totp", "--output", "stdout", "-t"]
     else:
         argv = [cli, "item", "get", source.user, "--vault", source.vault]
-        argv += ["--fields", "password", "--reveal"] if kind == "password" else ["--otp"]
+        if kind == "password":
+            argv += ["--fields", "password", "--reveal"]
+        elif kind == "username":
+            argv += ["--fields", "username"]
+        else:
+            argv += ["--otp"]
     output = _run(argv, timeout)
-    if source.manager == "1password" and kind == "password":
+    if source.manager == "1password" and kind in {"username", "password"}:
         try:
             rows = list(csv.reader(io.StringIO(output), strict=True))
         except csv.Error as exc:
-            raise CredentialError("1Password returned invalid password CSV.") from exc
+            raise CredentialError(f"1Password returned invalid {kind} CSV.") from exc
         if len(rows) != 1 or len(rows[0]) != 1:
-            raise CredentialError("1Password password output must contain exactly one CSV cell.")
+            raise CredentialError(f"1Password {kind} output must contain exactly one CSV cell.")
         output = rows[0][0]
     else:
         # Keeper appends one line terminator to the credential it prints.
         terminator = "\r\n" if os.name == "nt" else "\n"
         if output.endswith(terminator):
             output = output[:-len(terminator)]
-    if not output:
+    if not output or kind == "username" and not output.strip():
         raise CredentialError("Credential CLI returned an empty credential.")
     return output
 
 
 def get_password(source: CredentialSource | Mapping[str, object], *, timeout: float = 15.0) -> str:
     return _retrieve(source, "password", timeout)
+
+
+def get_username(source: CredentialSource | Mapping[str, object], *, timeout: float = 15.0) -> str:
+    """Fetch the login identity, distinct from its stored vault entry label."""
+    try:
+        return _retrieve(source, "username", timeout)
+    except CredentialError:
+        # CLI failures can contain the identity in either output stream.
+        raise CredentialError("Username retrieval failed. Check the configured CLI session and login entry.") from None
 
 
 def get_totp(source: CredentialSource | Mapping[str, object], *, timeout: float = 15.0) -> str:

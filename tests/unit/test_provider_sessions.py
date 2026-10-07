@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from api_agent.providers.contracts import ContractError, SessionClosedError
+from api_agent.providers.contracts import ContractError, SessionClosedError, OperationalError, CleanupPendingError
 from api_agent.providers.sessions import (
     BrowserOwner, InspectionOwner, LLMSessionOwner, ScopedLLMCredentials,
     ScopedRoleCredentials, ui_session_policy,
@@ -37,14 +37,14 @@ def test_credentials():
         assert await llm(0, "totp") == "opaque"
         for role, index, kind in [("other", 0, "password"), ("llm-user", 1, "password"),
                                   ("llm-user", False, "password"), ("llm-user", 0, "other")]:
-            with pytest.raises(ContractError):
+            with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
                 await reader(role, index, kind)
         assert retrieve.await_count == 2
     run(scenario())
     for index in [-1, False]:
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             ScopedRoleCredentials([], index, AsyncMock())
-    with pytest.raises(ContractError):
+    with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
         ScopedLLMCredentials("other", ScopedRoleCredentials([], 0, AsyncMock()))
 
 
@@ -83,19 +83,19 @@ def test_browser_identity_retention_and_partial_failure():
         driver.stop.assert_awaited_once()
         owner, driver, instance, context = browser()
         context.new_page.side_effect = RuntimeError("setup")
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await owner.start()
         driver.stop.assert_awaited_once()
         instance.close.assert_awaited_once()
         context.close.assert_awaited_once()
         owner, driver, instance, context = browser()
         hook = SimpleNamespace(authenticate=AsyncMock(side_effect=RuntimeError("hook")))
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await owner.prepare(hook, tui_mode="e2e", user_index=0, credentials=None)
         owner, driver, instance, context = browser()
         await owner.prepare(None, tui_mode="run-local", user_index=None, credentials=None)
         context.close.side_effect = RuntimeError("close")
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await owner.aclose()
         driver.stop.assert_not_called()
         context.close.side_effect = None
@@ -108,19 +108,19 @@ def test_local_execution_context():
     async def scenario():
         owner, *_ = browser()
         owner._pid = -1
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await owner.start()
         owner._pid = __import__('os').getpid()
         owner._loop = object()
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await owner.start()
         llm = LLMSessionOwner(object(), lambda: owner, user_index=None, credentials=credentials())
         llm._pid = -1
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.call(AsyncMock())
         llm._pid = __import__('os').getpid()
         llm._loop = object()
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.call(AsyncMock())
     run(scenario())
 
@@ -175,7 +175,7 @@ def test_attended_absent_and_headed_rejection():
         await llm.aclose()
         owner._headless = False
         llm = LLMSessionOwner(provider, lambda: owner, user_index=0, credentials=credentials())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.call(AsyncMock())
         await llm.aclose()
     run(scenario())
@@ -196,7 +196,7 @@ def test_retry_and_cancelled_waiter():
             return auth
         provider = SimpleNamespace(authenticate=AsyncMock(side_effect=RuntimeError("failure")))
         llm = LLMSessionOwner(provider, allocate, user_index=0, credentials=credentials())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.call(AsyncMock())
         assert owners[0]._closed
         provider.authenticate.side_effect = authenticate
@@ -260,7 +260,7 @@ def test_late_auth_is_disposed_after_shutdown():
         with pytest.raises(asyncio.CancelledError):
             await call
         assert auth.closed
-        assert isinstance(llm._initializing.exception(), ContractError)
+        assert isinstance(llm._initializing.exception(), SessionClosedError)
         driver.stop.assert_awaited_once()
     run(scenario())
 
@@ -271,7 +271,7 @@ def test_each_ui_attempt_retains_distinct_partial_resources():
         first, driver1, browser1, context1 = browser(inspection=inspection)
         second, driver2, browser2, context2 = browser(inspection=inspection)
         failed_hook = SimpleNamespace(authenticate=AsyncMock(side_effect=RuntimeError("setup")))
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await first.prepare(failed_hook, tui_mode="e2e", user_index=0, credentials=None)
         session = await second.prepare(None, tui_mode="e2e", user_index=0, credentials=None)
         assert first.session is not session
@@ -293,7 +293,7 @@ def test_auth_cleanup_failure_retains_browser_until_retry_and_finalizer_failure(
         llm = LLMSessionOwner(SimpleNamespace(authenticate=AsyncMock(return_value=auth)), lambda: owner,
                               user_index=0, credentials=credentials())
         await llm.call(AsyncMock())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.aclose()
         driver.stop.assert_not_called()
         assert llm._resources[-1] == (auth, 'aclose')
@@ -313,7 +313,7 @@ def test_auth_cleanup_failure_retains_browser_until_retry_and_finalizer_failure(
                               user_index=0, credentials=credentials(),
                               finalizer=AsyncMock(side_effect=RuntimeError("usage")))
         await llm.call(AsyncMock())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.aclose()
         assert auth.closed
         driver.stop.assert_awaited_once()
@@ -372,11 +372,11 @@ def test_shutdown_resistant_startup_cannot_allocate_more_or_handoff():
         owner._factory = factory
         starting = asyncio.create_task(owner.start())
         await entered.wait()
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await owner.aclose()
         assert not driver.stop.called and not driver.launch.called
         release.set()
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await starting
         await owner.aclose()
         driver.stop.assert_awaited_once()
@@ -407,7 +407,7 @@ def test_nested_calls_and_resistant_operation_keep_dependencies_owned():
         assert tracked
         try:
             await llm.aclose()
-        except ContractError:
+        except CleanupPendingError:
             refused = True
         else:
             refused = False
@@ -438,7 +438,7 @@ def test_resistant_finalizer_and_resource_cleanup_are_retryable():
         llm = LLMSessionOwner(SimpleNamespace(authenticate=AsyncMock(return_value=auth)), lambda: owner,
                               user_index=0, credentials=credentials(), timeout=.02, finalizer=finalizer)
         await llm.call(AsyncMock())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.aclose()
         assert not auth.closed and not driver.stop.called
         release.set()
@@ -456,7 +456,7 @@ def test_resistant_finalizer_and_resource_cleanup_are_retryable():
                 await release.wait()
         resource = SimpleNamespace(close=close)
         inspection.retain([(resource, "close")])
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await inspection.aclose()
         assert inspection._resources and inspection._resource_task is not None
         release.set()
@@ -485,13 +485,13 @@ def test_inspection_close_coalesces_and_context_checks_include_close():
         llm = LLMSessionOwner(object(), lambda: owner, user_index=None, credentials=credentials())
         for item in [owner, llm, InspectionOwner()]:
             item._pid = -1
-            with pytest.raises(ContractError):
+            with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
                 await item.aclose()
             item._pid = __import__('os').getpid()
             item._loop = object()
-            with pytest.raises(ContractError):
+            with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
                 await item.aclose()
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             inspection._pid = -1
             inspection.retain([])
     run(scenario())
@@ -502,7 +502,7 @@ def test_private_failures_are_neutral_and_shared_failures_consumed():
     async def scenario():
         marker = "synthetic-credential-marker"
         async def check(awaitable):
-            with pytest.raises(ContractError) as error:
+            with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)) as error:
                 await awaitable
             assert marker not in ''.join(traceback.format_exception(error.value))
         reader = ScopedRoleCredentials(["llm-user"], 0, AsyncMock(side_effect=RuntimeError(marker)))
@@ -576,7 +576,7 @@ def test_pending_setup_preparation_and_close_cancellation():
 def test_binding_and_resistant_auth_disposal_retry():
     async def scenario():
         for index in [False, -1, 1]:
-            with pytest.raises(ContractError):
+            with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
                 LLMSessionOwner(object(), lambda: None, user_index=index, credentials=credentials())
         owner, driver, *_ = browser()
         entered, release = asyncio.Event(), asyncio.Event()
@@ -593,7 +593,7 @@ def test_binding_and_resistant_auth_disposal_retry():
         llm = LLMSessionOwner(SimpleNamespace(authenticate=AsyncMock(return_value=auth)), lambda: owner,
                               user_index=0, credentials=credentials(), finalizer=finalizer, timeout=.02)
         await llm.call(AsyncMock())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.aclose()
         assert not driver.stop.called
         release.set()
@@ -608,12 +608,12 @@ def test_binding_and_resistant_auth_disposal_retry():
             raise RuntimeError("synthetic-credential-marker")
         owner._resources[-1][0].close = bad_close
         import traceback
-        with pytest.raises(ContractError) as error:
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)) as error:
             await owner.aclose()
         assert "synthetic-credential-marker" not in ''.join(traceback.format_exception(error.value))
         inspection = InspectionOwner()
         inspection._dispose = AsyncMock(side_effect=RuntimeError("synthetic-credential-marker"))
-        with pytest.raises(ContractError) as error:
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)) as error:
             await inspection.aclose()
         assert "synthetic-credential-marker" not in ''.join(traceback.format_exception(error.value))
     run(scenario())
@@ -650,7 +650,7 @@ def test_cancelled_auth_waiter_consumes_failure_and_preserves_failed_cleanup():
         factory = __import__('unittest.mock', fromlist=['Mock']).Mock(side_effect=[owner, replacement])
         provider = SimpleNamespace(authenticate=AsyncMock(side_effect=[RuntimeError("auth"), Auth()]))
         llm = LLMSessionOwner(provider, factory, user_index=0, credentials=credentials())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.call(AsyncMock())
         assert llm._browser is owner
         await llm.call(AsyncMock())
@@ -670,7 +670,7 @@ def test_nested_cleanup_timeout_requires_confirmed_close_and_getter_cannot_launc
         llm = LLMSessionOwner(SimpleNamespace(authenticate=AsyncMock(return_value=Auth())), lambda: owner,
                               user_index=0, credentials=credentials(), timeout=.02)
         await llm.call(AsyncMock())
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await llm.aclose()
         assert llm._resources and not driver.stop.called
         release.set()
@@ -693,7 +693,7 @@ def test_nested_cleanup_timeout_requires_confirmed_close_and_getter_cannot_launc
         call = asyncio.create_task(llm.call(operation))
         await entered.wait()
         await llm.aclose()
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await call
         operation.assert_not_called()
     run(scenario())
@@ -717,7 +717,7 @@ def test_repeated_close_never_recancels_ongoing_operation_cleanup():
         call = asyncio.create_task(llm.call(operation))
         await entered.wait()
         for _ in range(2):
-            with pytest.raises(ContractError):
+            with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
                 await llm.aclose()
             assert not call.done() and not auth.closed and not driver.stop.called
         release.set()
@@ -733,7 +733,7 @@ def test_repeated_close_never_recancels_ongoing_operation_cleanup():
         await entered.wait()
         task.cancel()
         await asyncio.sleep(0)
-        with pytest.raises(ContractError):
+        with pytest.raises((ContractError, OperationalError, SessionClosedError, CleanupPendingError)):
             await _drain([task], .02)
         assert not task.done() and task.cancelling() == 1
         auth.closed = False

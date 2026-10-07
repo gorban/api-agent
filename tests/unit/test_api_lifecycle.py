@@ -1,4 +1,5 @@
 """Owner lifecycle failures drain the runtime before reporting ASGI failure."""
+from api_agent.providers.control import CleanupPendingError
 import asyncio
 from types import SimpleNamespace
 
@@ -99,7 +100,7 @@ def test_failed_cleanup_retains_dependency_ownership_until_retry():
     runtime = Runtime('demo', sessions=SimpleNamespace(aclose=bad_close),
                       identity_adapter=SimpleNamespace(aclose=good_close))
     async def scenario():
-        with pytest.raises(RuntimeLifecycleError, match='^runtime_cleanup_failed$'):
+        with pytest.raises(CleanupPendingError):
             await runtime.aclose()
         assert calls == ['failed']
         runtime.sessions.aclose = good_close
@@ -171,9 +172,9 @@ def test_runtime_close_is_shared_bounded_retryable_and_context_local():
         second = asyncio.create_task(runtime.aclose())
         await asyncio.sleep(0)
         assert not second.done()
-        with pytest.raises(RuntimeLifecycleError, match='cleanup_pending'):
+        with pytest.raises(CleanupPendingError):
             await first
-        with pytest.raises(RuntimeLifecycleError):
+        with pytest.raises(CleanupPendingError):
             await second
         release.set()
         await runtime.aclose()
@@ -278,8 +279,9 @@ def test_runtime_adopts_invalid_factory_retained_owner_for_actionable_retry(tmp_
         path = tmp_path / 'provider.py'
         path.write_text('class Adapter:\n    version=2\n    async def aclose(self): raise RuntimeError("private")\ndef create(config, services): return Adapter()\n')
         runtime = Runtime('neutral', factory_plan=[('api', str(path) + ':create', {}, {})])
-        with pytest.raises(RuntimeLifecycleError, match='cleanup_failed'):
+        with pytest.raises(RuntimeLifecycleError, match='runtime_start_failed') as error:
             await runtime.astart()
+        assert isinstance(error.value.cleanup_pending, CleanupPendingError)
         assert len(runtime._retained_owners) == 1
         owner = runtime._retained_owners[0]
         import sys

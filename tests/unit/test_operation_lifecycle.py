@@ -1,3 +1,4 @@
+from api_agent.providers.control import CleanupPendingError
 import asyncio
 from dataclasses import dataclass
 import sys
@@ -256,11 +257,12 @@ def test_cleanup_attempts_all_owners(rig):
             raise RuntimeError('stop failed')
     runner.listener = BrokenListener
     async def scenario():
-        with pytest.raises(RuntimeError, match='stop failed'):
+        with pytest.raises(CleanupPendingError):
             async with runner.open():
                 pass
     asyncio.run(scenario())
-    assert events[-3:] == ['listener-stop', 'runtime-close', 'release:False']
+    assert events[-1:] == ['listener-stop']
+    assert runner.pending_cleanup is not None
 
 
 def test_runtime_and_lease_cleanup_failures(rig):
@@ -280,11 +282,12 @@ def test_runtime_and_lease_cleanup_failures(rig):
     runner.compose_runtime = lambda *args: BrokenRuntime()
     runner.manager = lambda plan, cancelled: BrokenManager()
     async def scenario():
-        with pytest.raises(RuntimeError, match='runtime close failed'):
+        with pytest.raises(CleanupPendingError):
             async with runner.open():
                 pass
     asyncio.run(scenario())
-    assert events[-2:] == ['runtime-close', 'release']
+    assert events[-1:] == ['runtime-close']
+    assert runner.pending_cleanup is not None
 
 
 def test_listener_shutdown_timeout(monkeypatch):
@@ -493,6 +496,8 @@ def test_bind_exit_is_owned_failure_and_drains_every_owner(rig, monkeypatch):
         with pytest.raises(ListenerError, match='listener_start_failed'):
             async with runner.open():
                 pytest.fail('A failed bind must not run the workload')
+        assert runner.pending_cleanup is not None
+        await runner.pending_cleanup.retry()
         assert events[-2:] == ['runtime-close', 'release:False']
     asyncio.run(scenario())
 
@@ -573,3 +578,155 @@ def test_factory_requests_recording_and_tracing_dependencies(monkeypatch, tmp_pa
     assert calls == [{'collect': False, 'groups': ('reports', 'browser', 'tracing')}]
     runner.prepare_dependencies(Config({'TUI_MODE': 'run-local'}))
     assert calls[-1]['groups'] == ('reports', 'browser')
+
+
+def test_body_failure_keeps_pending_retry_handle_and_owned_lease(rig):
+    runner, events, _ = rig
+    async def scenario():
+        fails=True
+        class Listener:
+            async def start(self,*args): pass
+            async def wait_ready(self,*args): pass
+            async def stop(self):
+                events.append('listener-stop')
+                if fails: raise ValueError('private stop failure')
+        runner.listener=Listener
+        primary=ValueError('body')
+        with pytest.raises(ValueError) as error:
+            async with runner.open():
+                raise primary
+        assert error.value is primary
+        assert isinstance(primary.cleanup_pending,CleanupPendingError)
+        assert primary.cleanup_pending is runner.pending_cleanup
+        assert 'runtime-close' not in events and 'release:False' not in events
+        with pytest.raises(CleanupPendingError):
+            async with runner.open(): pytest.fail('pending owner cannot be overwritten')
+        fails=False
+        await asyncio.gather(primary.cleanup_pending.retry(),primary.cleanup_pending.retry())
+        await primary.cleanup_pending.retry()
+        assert events.count('runtime-close')==events.count('release:False')==1
+        assert runner.pending_cleanup is None
+    asyncio.run(scenario())
+
+
+def test_start_failure_before_yield_keeps_pending_runtime_and_lease(rig):
+    runner,events,_=rig
+    async def scenario():
+        fails=True
+        class Runtime:
+            async def astart(self): raise ValueError('start')
+            async def aclose(self):
+                events.append('runtime-close')
+                if fails: raise ValueError('close')
+        runner.compose_runtime=lambda *args: Runtime()
+        with pytest.raises(ValueError,match='start') as error:
+            async with runner.open(): pytest.fail('must not yield')
+        assert isinstance(error.value.cleanup_pending,CleanupPendingError)
+        assert 'release:False' not in events
+        fails=False
+        await error.value.cleanup_pending.retry()
+        assert events.count('release:False')==1
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('body_error,finish_cleanup',[(False,False),(True,False),(True,True)])
+def test_cancellation_during_cleanup_preserves_body_and_retained_owner(rig,body_error,finish_cleanup):
+    runner,events,_=rig
+    async def scenario():
+        entered,finish=asyncio.Event(),asyncio.Event()
+        class Listener:
+            async def start(self,*args): pass
+            async def wait_ready(self,*args): pass
+            async def stop(self):
+                entered.set()
+                await finish.wait()
+        runner.listener=Listener
+        runner.timeout=.02
+        primary=ValueError('body')
+        async def operation():
+            async with runner.open():
+                if body_error: raise primary
+        task=asyncio.create_task(operation())
+        await entered.wait()
+        task.cancel()
+        if finish_cleanup: finish.set()
+        with pytest.raises(ValueError if body_error else asyncio.CancelledError) as error:
+            await task
+        if body_error: assert error.value is primary
+        if not finish_cleanup:
+            assert isinstance(error.value.cleanup_pending,CleanupPendingError)
+            assert runner.pending_cleanup is error.value.cleanup_pending
+            assert 'release:False' not in events
+            finish.set()
+            await error.value.cleanup_pending.retry()
+        assert events.count('release:False')==1
+    asyncio.run(scenario())
+
+
+def test_overlapping_open_rejected_through_preparation_body_and_cleanup(rig):
+    from threading import Event
+    runner,events,_=rig
+    async def scenario():
+        preparing,prepared=Event(),Event()
+        body,leave,closing,closed=asyncio.Event(),asyncio.Event(),asyncio.Event(),asyncio.Event()
+        def dependencies(config):
+            preparing.set()
+            prepared.wait(2)
+        runner.prepare_dependencies=dependencies
+        class Listener:
+            async def start(self,*args): pass
+            async def wait_ready(self,*args): pass
+            async def stop(self):
+                closing.set()
+                await closed.wait()
+                raise ValueError('pending')
+        runner.listener=Listener
+        async def first():
+            async with runner.open():
+                body.set()
+                await leave.wait()
+        task=asyncio.create_task(first())
+        await asyncio.to_thread(preparing.wait,2)
+        async def overlap():
+            with pytest.raises(RuntimeError,match='operation_already_active'):
+                async with runner.open(): pytest.fail('overlap admitted')
+        await overlap()
+        prepared.set()
+        await body.wait()
+        await overlap()
+        leave.set()
+        await closing.wait()
+        await overlap()
+        closed.set()
+        with pytest.raises(CleanupPendingError) as error: await task
+        handle=error.value
+        assert runner.pending_cleanup is handle and not runner._active
+        with pytest.raises(CleanupPendingError) as blocked:
+            async with runner.open(): pytest.fail('pending admitted')
+        assert blocked.value is handle
+        async def confirmed_stop(): pass
+        handle.retry.__self__.listener.stop=confirmed_stop
+        await handle.retry()
+        assert runner.pending_cleanup is None and events.count('release:False')==1
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('stage',['configuration','dependencies'])
+def test_preparation_failure_releases_single_operation_guard(rig,stage):
+    runner,events,config=rig
+    async def scenario():
+        if stage=='configuration':
+            resolve=runner.resolve
+            runner.resolve=lambda: Config({},errors=('invalid',))
+        else:
+            dependencies=runner.prepare_dependencies
+            def failed(config): raise ValueError('invalid')
+            runner.prepare_dependencies=failed
+        with pytest.raises(ValueError):
+            async with runner.open(): pytest.fail('failed preparation yielded')
+        assert not runner._active
+        if stage=='configuration': runner.resolve=resolve
+        else: runner.prepare_dependencies=dependencies
+        async with runner.open(): pass
+        assert events.count('release:False')==1
+    asyncio.run(scenario())

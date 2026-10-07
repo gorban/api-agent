@@ -84,7 +84,7 @@ def test_standalone_has_no_jwt_requirement_and_shutdown_clears_owned_sessions(tm
 
 def test_composition_instantiates_only_selected_adapter(tmp_path):
     context = pack(tmp_path)
-    runtime = compose_runtime(context, {'configured': 'yes'}, callback_origin='https://agent.example:4200')
+    runtime = compose_runtime(context, {'configured': 'yes'}, callback_origin='https://agent.example:4200', required_kinds={'api'})
     async def scenario():
         await runtime.astart()
         assert runtime.pack_id == 'synthetic' and runtime.identity_adapter.version == 1
