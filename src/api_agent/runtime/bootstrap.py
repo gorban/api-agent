@@ -203,6 +203,13 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print(format_unit_summary(execution))
             return execution.exit_code
         if result.values.get('NO_STD_IN'):
+            if mode == 'run-local':
+                from api_agent.auth.extensions import validate_operation
+                try:
+                    validate_operation(context, result.values)
+                except ValueError as error:
+                    print(str(error), file=sys.stderr)
+                    return 3
             print('Requested operation is not implemented yet. No tests or services were started.', file=sys.stderr)
             return 3
         if not sys.stdin.isatty() or not sys.stdout.isatty():
