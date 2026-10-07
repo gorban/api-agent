@@ -1,9 +1,9 @@
 """Interactive editor for unattended credential descriptors."""
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import asdict
+from rich.text import Text
 
 from api_agent.auth.profiles import parse_profiles
 from api_agent.config.editor import DotenvEditor
@@ -22,6 +22,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     DEFAULT_CSS = """
     AuthSetupScreen #auth-identity { height: auto; color: $text-muted; margin-bottom: 1; }
     AuthSetupScreen #auth-heading { height: auto; text-style: bold; margin-bottom: 1; }
+    AuthSetupScreen #auth-storage { text-align: right; margin-bottom: 1; }
     AuthSetupScreen #auth-workflow { margin-bottom: 1; }
     AuthSetupScreen #auth-content { height: 1fr; }
     AuthSetupScreen #auth-content Static { height: auto; }
@@ -43,11 +44,10 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         super().__init__()
         self.roles = tuple(roles)
         self.entries: dict[str, list[dict[str, str]]] = {role: [] for role in self.roles}
-        self.other_roles: dict[str, object] = {}
-        self.selection: tuple[str, int | None] | None = None
         self.editing: tuple[str, int | None] | None = None
         self.changed = False
         self.load_error = ""
+        self.shared_target = None
 
     def compose(self) -> ComposeResult:
         identity = getattr(self.app, "identity_text", None)
@@ -57,14 +57,17 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             yield Static(f"Base: {self.app.context.base_root}\nPack: {self.app.context.pack_root}", id="auth-identity", markup=False)
         yield Static("Setup unattended authentication", id="auth-heading")
         with VerticalScroll(id="auth-content"):
-            yield Static("", id="auth-source", markup=False)
+            yield Static("Only a pointer to your password-manager entry is saved.",
+                         id="auth-storage", markup=False)
+            yield Static("", id="auth-override", markup=False)
             yield Static("Create a Keeper/1Password login with password and optional TOTP.\n"
                          "Enter its exact vault and login/item names here.\n"
                          "Multiple accounts per role; matching indexes pair needed roles.",
                          id="auth-profile-help", markup=False)
             yield Static("", id="auth-workflow", markup=False)
             yield DataTable(id="auth-table", cursor_type="row")
-            yield Static("Select a role or account. Empty role arrays use attended login.", markup=False)
+            yield Static("Select a role or account. Empty role arrays use attended login.",
+                         id="auth-selection-help", markup=False)
             yield Static("", id="auth-form-title", markup=False)
             yield Static("Password manager", classes="auth-form-field")
             yield Select([("Keeper", "keeper"), ("1Password", "1password")], value="keeper", id="auth-manager")
@@ -82,24 +85,38 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         yield ButtonFooter()
 
     def on_mount(self) -> None:
+        self.shared_target = self.app.session.dotenv_path
         self.query_one("#auth-table", DataTable).add_columns("Role", "Index", "Manager", "CLI path", "Vault", "User")
         self._show_form(False)
         self._load()
         self._refresh()
         self.query_one("#auth-table", DataTable).focus()
 
-    def _workflow_text(self) -> str:
-        steps = ["Select a role", "a Add account", "Pick password manager", "Set CLI path", "Enter vault",
-                 "Enter item / user", "Enter to save", "Repeat for more accounts", "c Close setup"]
-        if len(self.app.session.target_paths) > 1:
-            steps.insert(0, "s Choose .env target")
-        numbered = [f"{index}. {step}" for index, step in enumerate(steps, 1)]
+    def _workflow_text(self) -> Text:
+        steps = [(None, "Select a role"), ("a", "Add account"), (None, "Pick password manager"),
+                 (None, "Set CLI path"), (None, "Enter vault"), (None, "Enter item / user"),
+                 ("Enter", "Save account"), (None, "Repeat for more accounts"), ("c", "Close setup")]
+        if len(self._target_paths()) > 1:
+            steps.insert(0, ("s", "Choose .env target"))
+        key_style = f"bold {self.app.get_css_variables()['footer-key-foreground']}"
+        numbered = []
+        for index, (key, label) in enumerate(steps, 1):
+            line = Text(f"{index}. ")
+            if key:
+                line.append("(").append(key, style=key_style).append(") ")
+            line.append(label)
+            numbered.append(line)
         left, right = numbered[:5], numbered[5:]
         column_width = max(map(len, left)) + 4
         if self.size.width - 4 < column_width + max(map(len, right)):
-            return "\n".join(numbered)
-        return "\n".join(f"{line:<{column_width}}{right[index] if index < len(right) else ''}".rstrip()
-                         for index, line in enumerate(left))
+            return Text("\n").join(numbered)
+        rows = []
+        for index, line in enumerate(left):
+            row = line.copy()
+            if index < len(right):
+                row.append(" " * (column_width - len(line))).append_text(right[index])
+            rows.append(row)
+        return Text("\n").join(rows)
 
     def on_resize(self) -> None:
         self.query_one("#auth-workflow", Static).update(self._workflow_text())
@@ -118,34 +135,31 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
                 return
             if not isinstance(value, Mapping):
                 raise ValueError("UNATTENDED_AUTH must be a JSON object of role arrays.")
-            self.other_roles = {role: entries for role, entries in value.items() if role not in self.roles}
             profiles = parse_profiles({role: value[role] for role in self.roles if role in value}, self.roles)
             self.entries = {role: [asdict(source) for source in profiles.for_role(role)] for role in self.roles}
         except (ValueError, TypeError) as exc:
             # Parser diagnostics contain role/index only; never echo malformed input.
             self.load_error = f"Existing UNATTENDED_AUTH is invalid: {exc} Clear it or fix its source before editing."
 
-    def _source_text(self) -> str:
-        field = self.app.session.result(_review=True).fields.get("UNATTENDED_AUTH")
-        source = field.source if field else "absent"
-        message = f"Effective source: {source}. Saved descriptors contain no passwords or codes."
-        if source in {"environment", "environ", "cli"}:
-            message += " This external value overrides saved .env settings until removed from that source."
-        return message
-
     def _refresh(self) -> None:
-        self.query_one("#auth-workflow", Static).update(self._workflow_text())
         table = self.query_one("#auth-table", DataTable)
+        selected = self.editing or self._selected()
         table.clear()
+        selected_row = 0
         for role in self.roles:
             sources = self.entries[role]
             if not sources:
                 table.add_row(*(literal_cell(x) for x in (role, "—", "attended", "", "", "")), key=f"{self.roles.index(role)}:-")
+                if selected and selected[0] == role:
+                    selected_row = table.row_count - 1
             for index, source in enumerate(sources):
                 table.add_row(*(literal_cell(x) for x in (role, str(index), source["manager"], source["cli_path"], source["vault"], source["user"])), key=f"{self.roles.index(role)}:{index}")
-        self.query_one("#auth-source", Static).update(self._source_text())
-        self.query_one("#auth-targets", Static).update(self.app.target_summary())
+                if selected and selected[0] == role and index == min(selected[1] if selected[1] is not None else len(sources) - 1, len(sources) - 1):
+                    selected_row = table.row_count - 1
+        table.move_cursor(row=selected_row)
+        self._refresh_target()
         self.query_one("#auth-error", Static).update(self.load_error)
+        self.query_one("#auth-error", Static).display = bool(self.load_error)
 
     def _selected(self) -> tuple[str, int | None] | None:
         table = self.query_one("#auth-table", DataTable)
@@ -157,12 +171,42 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
 
     def _error(self, message: str) -> None:
         self.query_one("#auth-error", Static).update(message)
+        self.query_one("#auth-error", Static).display = bool(message)
+
+    def _active_role(self) -> str:
+        selected = self.editing or self._selected()
+        return selected[0] if selected else self.roles[0]
+
+    def _target_paths(self):
+        if self._active_role() != "LLM User" and self.app.context.external_pack:
+            return (self.app.context.pack_root / ".env",)
+        return self.app.session.target_paths
+
+    def _refresh_target(self) -> None:
+        paths = self._target_paths()
+        if len(paths) == 1:
+            self.app.session.switch_target(paths[0])
+        elif self.shared_target is not None:
+            self.app.session.switch_target(self.shared_target)
+        field = self.app.session.result(_review=True).fields.get("UNATTENDED_AUTH")
+        source = field.source if field else "absent"
+        override = self.query_one("#auth-override", Static)
+        override.display = source in {"environment", "environ", "cli"}
+        override.update(f"The {source} value overrides saved .env settings until removed from that source." if override.display else "")
+        self.query_one("#auth-targets", Static).update("Target .env files:\n" + "\n".join(
+            f"{'✓' if path == self.app.session.dotenv_path else ' '} {path}" for path in paths))
+        self.query_one("#auth-workflow", Static).update(self._workflow_text())
+        self.refresh_bindings()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id == "auth-table" and self.shared_target is not None:
+            self._refresh_target()
 
     def check_action(self, action, parameters):
         if self.app.screen is not self:
             return False
         if action == "switch_target":
-            return len(self.app.session.target_paths) > 1 and self.editing is None
+            return len(self._target_paths()) > 1 and self.editing is None
         if action == "clear_config":
             return self.editing is None
         if action in {"add_entry", "edit_entry", "remove_entry", "attended_role"}:
@@ -207,13 +251,14 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         if self.editing is not None:
             self.editing = None
             self._show_form(False)
+            self._refresh_target()
             self.query_one("#auth-table", DataTable).focus()
 
-    def _persist(self, entries: dict[str, list[dict[str, str]]]) -> bool:
+    def _persist(self, entries: dict[str, list[dict[str, str]]], role: str) -> bool:
         try:
             parse_profiles(entries, self.roles)
-            encoded = json.dumps({**self.other_roles, **entries}, separators=(",", ":"), ensure_ascii=False)
-            self.app.session.set_value("UNATTENDED_AUTH", encoded, persist=True)
+            self._refresh_target()
+            self.app.session.save_auth_role(role, entries[role])
         except Exception as exc:
             self._error(f"Unable to save credential descriptors: {exc}")
             return False
@@ -236,7 +281,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             entries[role].append(source)
         else:
             entries[role][index] = source
-        if self._persist(entries):
+        if self._persist(entries, role):
             self.action_cancel_form()
 
     def action_remove_entry(self) -> None:
@@ -249,7 +294,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         role, index = selected
         entries = {label: [dict(item) for item in values] for label, values in self.entries.items()}
         entries[role].pop(index)
-        self._persist(entries)
+        self._persist(entries, role)
 
     def action_attended_role(self) -> None:
         if self.editing is not None or self.load_error:
@@ -268,7 +313,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def _set_attended(self, role: str) -> None:
         entries = {label: [dict(item) for item in values] for label, values in self.entries.items()}
         entries[role] = []
-        self._persist(entries)
+        self._persist(entries, role)
 
     def action_clear_config(self) -> None:
         if self.editing is not None:
@@ -288,7 +333,6 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             self._error(f"Unable to clear unattended authentication: {exc}")
             return
         self.entries = {role: [] for role in self.roles}
-        self.other_roles = {}
         self.changed = True
         self.load_error = ""
         self._refresh()
@@ -300,10 +344,11 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self._error(message)
 
     def action_switch_target(self) -> None:
-        if self.editing is not None:
+        if self.editing is not None or len(self._target_paths()) == 1:
             return
         self.app.session.switch_target()
-        self._refresh()
+        self.shared_target = self.app.session.dotenv_path
+        self._refresh_target()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id != "auth-manager" or self.editing is None:
