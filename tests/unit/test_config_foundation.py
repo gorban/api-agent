@@ -374,7 +374,7 @@ def test_e2e_retains_browser_visibility_config_and_provenance(tmp_path,dotenv,en
     pack_schema=resource_pack_schema()
     for schema,app in ((shared,'agent'),(pack_schema,'shell')):
         result=resolve_config(schema,argv=['--tui-mode=e2e',*argv],dotenv=dotenv,
-                              environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic',**environ},
+                              environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic','UI_SOURCE_DIR':str(tmp_path/'ui'),**environ},
                               anchors={'owner_root':tmp_path})
         result.raise_for_errors()
         assert result.values['RUN_UI'] is expected
