@@ -69,15 +69,16 @@ def test_cleanup_context_and_deletion(tmp_path):
             table.move_cursor(row=row)
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == "X"
+            assert table.get_row_at(row)[0] == "✓"
+            assert "Select a row and delete it (with confirmation) from agent .env file." in str(app.screen.query_one("#body", Static).render())
             await pilot.press("d")
             await pilot.pause(0.4)
             assert not app.screen_stack[-2].check_action("switch_target", ())
-            assert not app.screen_stack[-2].check_action("delete_marked", ())
+            assert not app.screen_stack[-2].check_action("delete_assignment", ())
             app.screen.query_one(Input).value = "n"
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == "X"
+            assert table.get_row_at(row)[0] == "✓"
             assert "COUNT=" in (tmp_path / ".env").read_text()
             await pilot.press("d")
             await pilot.pause(0.4)
@@ -898,20 +899,28 @@ def test_cleanup_both_dotenvs_hidden_setting_and_default_review(tmp_path):
             assert not app.screen.query('#dotenv-targets')
             assert not app.screen.check_action('switch_target', ())
             table = app.screen.query_one(DataTable)
+            assert 'from all agent / resource pack .env files.' in str(app.screen.query_one('#body', Static).render())
             assert len(table.columns) == 4
             assert next(iter(table.columns.values())).width == 1
+            count_row = next(i for i in range(table.row_count) if table.get_row_at(i)[1] == 'COUNT')
+            table.move_cursor(row=count_row)
+            await pilot.press('enter')
+            await pilot.pause()
+            assert table.get_row_at(count_row)[0] == '✓'
             for name in ('UI_NX_APP', 'COUNT'):
                 index = next(i for i in range(table.row_count) if table.get_row_at(i)[1] == name)
                 table.move_cursor(row=index)
                 await pilot.pause()
                 assert table.get_row_at(index)[0] == '✓'
-                assert app.screen.check_action('delete_marked', ())
+                assert app.screen.check_action('delete_assignment', ())
                 await pilot.press('d')
                 await pilot.pause()
                 app.screen.query_one(Input).value = 'y'
                 await pilot.press('enter')
                 await pilot.pause()
                 if name == 'UI_NX_APP':
+                    for directory in (base, pack):
+                        assert 'COUNT=' in (directory / '.env').read_text()
                     assert name not in [table.get_row_at(i)[1] for i in range(table.row_count)]
                 else:
                     assert not app.focused_cleanup_present()

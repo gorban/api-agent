@@ -101,8 +101,12 @@ class QuitDialog(ButtonNavigation, ModalScreen):
 
 
 class DeleteDialog(QuitDialog):
+    def __init__(self, name):
+        super().__init__()
+        self.setting_name = name
+
     def compose(self) -> ComposeResult:
-        yield Static("Delete marked .env assignments? Enter literal y to confirm; every other response cancels.")
+        yield Static(f"Delete {self.setting_name} from .env? Enter literal y to confirm; every other response cancels.", markup=False)
         yield Input(id="delete-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="delete-submit")
@@ -128,7 +132,7 @@ class StopContainersDialog(QuitDialog):
 
 class WorkbenchScreen(ButtonNavigation, Screen):
     BINDINGS = [Binding("q", "quit_request", "Quit"), Binding("c", "close_view", "Close / menu"),
-                Binding("d", "delete_marked", "Delete marked .env assignments"),
+                Binding("d", "delete_assignment", "Delete .env assignment"),
                 Binding("s", "switch_target", "Switch target .env"),
                 Binding("a", "accept_default", "Accept default"),
                 Binding("e", "edit_setting", "Edit"),
@@ -210,7 +214,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             return self.kind == "defaults" and self.app.focused_setting() in self.config_saved
         if action == "edit_setting":
             return self.kind == "defaults"
-        if action == "delete_marked":
+        if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
             return (self.kind in {"defaults", "input"}
@@ -239,12 +243,12 @@ class WorkbenchScreen(ButtonNavigation, Screen):
     async def action_close_view(self):
         await self.app.close_view()
 
-    def action_delete_marked(self):
+    def action_delete_assignment(self):
         if self.app.focused_cleanup_present():
-            if not self.app.marked:
-                table = self.query_one(DataTable)
-                self.app.marked.add(str(table.get_row_at(table.cursor_row)[1]))
-            self.app.push_screen(DeleteDialog(), lambda yes: self.app.delete_marked() if yes else None)
+            table = self.query_one(DataTable)
+            name = str(table.get_row_at(table.cursor_row)[1])
+            self.app.push_screen(DeleteDialog(name),
+                                 lambda yes: self.app.delete_assignment(name) if yes else None)
 
     def action_switch_target(self):
         self.app.switch_target()
@@ -310,7 +314,6 @@ class ApiAgentApp(App[int]):
             except WorktreeGateError:
                 self.branches[root] = None
         self.operation_status = 3
-        self.marked = set()
         self.mode = None
         self.review_names = set()
         self.selection = None
@@ -333,7 +336,6 @@ class ApiAgentApp(App[int]):
         kind = self.screen.kind
         value = self.screen.query_one(Input).value if kind == "input" else None
         self.session.switch_target()
-        self.marked.clear()
         if kind == "cleanup":
             self.show_cleanup()
         elif kind == "input":
@@ -628,8 +630,10 @@ class ApiAgentApp(App[int]):
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Continue explicitly confirms the selection.", (("continue", "Continue"),), rows)
 
     def show_cleanup(self):
-        rows = [(row.name, ("X" if row.name in self.marked else "✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
-        self.show("cleanup", "Clear .env configuration", "Enter marks/unmarks .env settings. d confirms deletion from all agent/resource-pack .env files.", rows=rows)
+        rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+        location = "all agent / resource pack .env files" if self.context.external_pack else "agent .env file"
+        self.show("cleanup", "Clear .env configuration",
+                  f"Select a row and delete it (with confirmation) from {location}.", rows=rows)
 
     def focused_cleanup_present(self):
         if self.screen.kind != "cleanup":
@@ -648,17 +652,13 @@ class ApiAgentApp(App[int]):
             self.container_marked.symmetric_difference_update({key})
             table = self.screen.query_one(DataTable)
             table.update_cell(key, next(iter(table.columns)), "✓" if key in self.container_marked else "")
-        elif self.screen.kind == "cleanup":
-            if any(row.name == key and row.present and str(row.source).endswith("/.env") for row in self.session.cleanup_rows()):
-                self.marked.symmetric_difference_update({key})
-                self.refresh_rows()
 
     def refresh_rows(self):
         table = self.screen.query_one(DataTable)
         if self.screen.kind == "tests":
             rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
         else:
-            rows = [(row.name, ("X" if row.name in self.marked else "✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+            rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
         if self.screen.kind == "cleanup":
             cursor = table.cursor_row
             table.clear()
@@ -673,10 +673,9 @@ class ApiAgentApp(App[int]):
                 table.update_cell(key, column, value)
         self.screen.refresh_bindings()
 
-    def delete_marked(self):
+    def delete_assignment(self, name):
         try:
-            self.session.delete_keys(self.marked)
-            self.marked.clear()
+            self.session.delete_keys([name])
             self.operation_status = 0
             self.refresh_rows()
         except Exception as error:
