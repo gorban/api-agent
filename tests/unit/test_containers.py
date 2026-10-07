@@ -115,3 +115,32 @@ def test_container_all_selection_tracks_individuals_and_empty_inventory(tmp_path
             assert 'container-all' not in app.container_marked
     for count in (0, 1, 2):
         asyncio.run(scenario(count))
+
+
+def test_inventory_excludes_hosting_container_by_name_and_abbreviated_id():
+    identity = 'f0742ea87cfe6540535e5790f2e58171409cbbdfba742bf660ea3a1e2fd35892'
+    output = '\n'.join((
+        '{"ID":"f0742ea87cfe","Names":"workbench-host"}',
+        '{"ID":"different","Names":["workbench-host"]}',
+        '{"ID":"abc","Names":"api"}'))
+    runtime = ContainerRuntime('/bin/docker')
+    with patch('api_agent.runtime.containers.session_container_identity', return_value={identity, 'workbench-host'}), patch.object(runtime, '_run', return_value=output):
+        assert [item.name for item in runtime.inventory()] == ['api']
+
+
+def test_stop_rejects_hosting_container_even_without_inventory():
+    identity = 'f0742ea87cfe6540535e5790f2e58171409cbbdfba742bf660ea3a1e2fd35892'
+    runtime = ContainerRuntime('/bin/docker')
+    with patch('api_agent.runtime.containers.session_container_identity', return_value={identity, 'workbench-host'}), patch.object(runtime, '_run') as run:
+        for identifier in (identity, identity[:12], 'workbench-host', '/workbench-host'):
+            with pytest.raises(ContainerError, match='hosting this session'):
+                runtime.stop(['abc', identifier])
+        run.assert_not_called()
+        runtime.stop(['abc'])
+        run.assert_called_once_with(['stop', 'abc'])
+
+
+def test_session_container_metadata_is_parsed_without_shell_execution():
+    from api_agent.runtime.containers import session_container_identity
+    with patch.dict('os.environ', {'CONTAINER_ID': 'workbench-host', 'CONTAINER_NAME': ''}), patch('api_agent.runtime.containers.Path.read_text', return_value='id="abcdef123456"\nname="workbench-host"\nimage="ignored"\n'):
+        assert session_container_identity() == {'workbench-host', 'abcdef123456'}
