@@ -152,6 +152,35 @@ class StopContainersDialog(QuitDialog):
         yield ButtonFooter()
 
 
+class SettingHelpDialog(FocusNavigation, ModalScreen):
+    BINDINGS = [Binding("escape,c", "close", "Close", key_display="Esc / c", priority=True)]
+
+    def __init__(self, name, description):
+        super().__init__()
+        self.setting_name, self.description = name, description
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="setting-help-dialog"):
+            yield Static(Text(self.setting_name, style="bold"), id="setting-help-title")
+            with VerticalScroll(id="setting-help-scroll"):
+                yield Static(self.description, id="setting-help-text", markup=False)
+            yield Button("Close", id="setting-help-close")
+        yield ButtonFooter()
+
+    def on_mount(self):
+        self.set_class(self.size.height < 18, "compact-setting-help")
+        self.query_one("#setting-help-scroll").focus()
+
+    def on_resize(self, event):
+        self.set_class(event.size.height < 18, "compact-setting-help")
+
+    def action_close(self):
+        self.dismiss()
+
+    def on_button_pressed(self, event):
+        self.action_close()
+
+
 class WorkbenchScreen(FocusNavigation, Screen):
     BINDINGS = [Binding("q", "quit_request", "Quit"), Binding("c", "close_view", "Close / menu"),
                 Binding("d", "delete_assignment", "Delete .env assignment"),
@@ -159,6 +188,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 Binding("a", "accept_default", "Accept default"),
                 Binding("e", "edit_setting", "Edit"),
                 Binding("u", "unset_setting", "Unset"),
+                Binding("question_mark", "setting_help", "Setting description", key_display="?"),
                 Binding("b", "back_to_selection", "Back to selection"),
                 Binding("space", "toggle_selection", "Toggle selection", show=False),
                 Binding("escape", "back_to_configuration", "Back to configuration"),
@@ -315,6 +345,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return self.kind == "defaults" and self.app.focused_setting() in self.config_saved
         if action == "edit_setting":
             return self.kind == "defaults"
+        if action == "setting_help":
+            return self.selected_setting_help() is not None
         if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
@@ -385,6 +417,17 @@ class WorkbenchScreen(FocusNavigation, Screen):
     def action_edit_setting(self):
         self.app.edit_setting()
 
+    def selected_setting_help(self):
+        if self.kind not in {"defaults", "cleanup"} or not self.query(DataTable):
+            return None
+        field = self.app.schema.fields.get(self.app.focused_setting())
+        return (field.name, field.help) if field and field.help.strip() else None
+
+    def action_setting_help(self):
+        description = self.selected_setting_help()
+        if description is not None:
+            self.app.push_screen(SettingHelpDialog(*description))
+
     def action_unset_setting(self):
         try:
             name = self.app.focused_setting()
@@ -441,6 +484,14 @@ class ApiAgentApp(App[int]):
     QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
     .confirmation-actions { height: auto; }
     .confirmation-actions Button { width: 1fr; }
+    SettingHelpDialog { align: center middle; background: $background 80%; }
+    #setting-help-dialog { width: 85%; max-width: 100; height: 85%; border: round $accent; padding: 1 2; background: $surface; }
+    #setting-help-title { height: auto; margin-bottom: 1; }
+    #setting-help-scroll { height: 1fr; min-height: 1; margin-bottom: 1; }
+    #setting-help-text { height: auto; }
+    #setting-help-close { width: 16; margin: 0; }
+    .compact-setting-help #setting-help-dialog { height: 100%; padding: 0 2; }
+    .compact-setting-help #setting-help-title, .compact-setting-help #setting-help-scroll { margin-bottom: 0; }
     #tab-select-hint { width: auto; height: 1; }
     Footer { dock: bottom; width: 100%; }
     #menu-bottom-bar { dock: bottom; height: auto; }
