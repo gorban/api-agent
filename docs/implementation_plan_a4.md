@@ -24,3 +24,10 @@ src/api_agent/
 ```
 
 Resource packs select their test authentication adapters; they do not copy the credential retrieval or browser-evidence implementation.
+
+## Playwright application dependency and setup
+
+- [x] Declare Python Playwright in the shared development extra, separate from mandatory runtime dependencies. The local development virtual environments have Playwright 1.63.0 installed; matching Chromium launched headlessly and passed a local DOM smoke assertion. This verifies browser execution, not authentication.
+- [ ] Use the same lazily imported Python Playwright login primitives in test preflight and agent-requested LLM provider authentication. When that optional runtime feature is enabled, its environment/image must include Playwright and the matching browser; otherwise fail with an actionable dependency error or retain the attended public auth challenge. Do not require browser dependencies for unit/help/collection or attended-only operation.
+- [ ] Integrate optional browser dependency readiness with the launch/setup path; download version-matched Chromium explicitly during browser setup, not on every launch or API request. Support headless default and explicit headed auth debugging. Include bounded startup/cancellation and a deterministic missing-package/browser check.
+- [ ] Document application/test browser setup for macOS in README: activate the repo-local .venv, install the shared dev extra, and run `python -m playwright install chromium`. Keep workstation Fedora/Distrobox details out of those README instructions.
