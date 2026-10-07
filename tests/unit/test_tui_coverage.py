@@ -21,6 +21,23 @@ def run(scenario):
     asyncio.run(scenario())
 
 
+def test_schema_assignment_supports_sessionless_and_simple_session_state(tmp_path):
+    from api_agent.config import schema_from_dict
+    app = fixture(tmp_path)
+    initial_session = app.session
+    schema = schema_from_dict({'version': 1, 'fields': {'COUNT': {'type': 'int', 'default': 4}}})
+    del app.session
+    app.schema = schema
+    assert app._initial_schema is schema
+    app.session = SimpleNamespace(schema=None)
+    app.schema = schema
+    assert app.session.schema is schema
+    assert not hasattr(app.session, '_provider_base_schema')
+    app.session = initial_session
+    app.schema = schema
+    assert app.schema is schema and initial_session._provider_base_schema is schema
+
+
 def failure(message):
     def raise_error(*args, **kwargs):
         raise ValueError(message)
