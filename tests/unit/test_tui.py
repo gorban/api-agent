@@ -212,7 +212,7 @@ def test_quit_remains_responsive_during_collection(tmp_path):
         app = fixture(tmp_path, "integration")
         def collect(*args):
             started.set()
-            app.collection_cancel.wait(5)
+            app.collection_cancel.wait(20)
             finished.set()
             return []
         app.collector = collect
@@ -225,13 +225,13 @@ def test_quit_remains_responsive_during_collection(tmp_path):
             app.screen.query_one(Input).value = "y"
             await pilot.press("escape")
             await pilot.pause(0.4)
-            assert app.screen.kind == "defaults"
+            assert app.screen.kind == "collecting"
             await pilot.press("q")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "y"
             await pilot.click("#quit-cancel")
             await pilot.pause(0.4)
-            assert app.screen.kind == "defaults"
+            assert app.screen.kind == "collecting"
             await pilot.press("q")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "y"
@@ -943,7 +943,8 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
         app = fixture(tmp_path, 'config-cleanup', fields={
             'UI_NX_APP': {'type': 'str', 'default': 'agent',
                           'acknowledge_default': False, 'persist_default': False},
-            'COUNT': {'type': 'int', 'default': 4}})
+            'COUNT': {'type': 'int', 'default': 4},
+            'OTHER': {'type': 'int', 'default': 1}})
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
             table = app.screen.query_one(DataTable)
@@ -959,7 +960,7 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
             await pilot.pause()
             assert 'UI_NX_APP' not in rows()
             dotenv.write_text('UI_NX_APP=shell\nCOUNT=7\n')
-            await pilot.press('up')
+            await pilot.press('down')
             await pilot.pause()
             assert rows()['UI_NX_APP'][0:3] == ['✓', 'UI_NX_APP', 'shell']
             assert rows()['UI_NX_APP'][3].endswith('/.env')
