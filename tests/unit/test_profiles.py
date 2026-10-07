@@ -114,3 +114,58 @@ def test_selection_uses_only_complete_shared_pairs():
     one_empty = parse_profiles(canonical({'LLM User': [entry('A')], 'Secondary': []}, READY), ('LLM User', 'Secondary'))
     selection = select_profiles(one_empty, ('LLM User', 'Secondary'))
     assert selection.index is None and selection.attended_roles == ('LLM User', 'Secondary')
+    assert selection.for_role('LLM User') is None
+    with pytest.raises(ValueError, match='not requested'):
+        selection.for_role('Unknown')
+
+
+@pytest.mark.parametrize('payload,message', [
+    ({'password_manager': {'manager': 'keeper'}, 'roles': {}}, 'exactly manager and cli_path'),
+    ({'password_manager': {'manager': 'keeper', 'cli_path': 4}, 'roles': {}}, 'cli_path must be a string'),
+    ({'roles': {}, 'extra': []}, 'only password_manager and roles'),
+    ({'password_manager': READY, 'roles': []}, 'roles must be a JSON object'),
+    ({'LLM User': {}}, 'must contain an array'),
+    ({'LLM User': [{'manager': 'keeper', 'cli_path': 'keeper', 'vault': 'v'}]}, 'requires manager, cli_path, vault and user'),
+])
+def test_invalid_envelopes_and_legacy_descriptors(payload, message):
+    with pytest.raises(ValueError, match=message):
+        normalize_auth(payload)
+
+
+@pytest.mark.parametrize('labels,message', [
+    ('LLM User', 'sequence'),
+    (['LLM User', ''], 'nonempty role labels'),
+    (['LLM User', 'LLM User'], 'duplicate role labels'),
+])
+def test_invalid_enabled_role_labels(labels, message):
+    with pytest.raises(ValueError, match=message):
+        parse_profiles({}, labels)
+
+
+def test_role_lookup_and_selection_options_are_ordered_and_descriptive():
+    profiles = parse_profiles(canonical({'LLM User': [entry('A'), entry('B')],
+                                         'Other': [entry('X'), entry('Y')]}, READY),
+                              ('Other', 'LLM User'))
+    with pytest.raises(ValueError, match='Unknown credential role'):
+        profiles.for_role('Missing')
+    with pytest.raises(SelectionRequired) as exc:
+        select_profiles(profiles, ('LLM User', 'Other'))
+    assert [(option.role, option.index, option.user) for option in exc.value.options] == [
+        ('LLM User', 0, 'A'), ('LLM User', 1, 'B'), ('Other', 0, 'X'), ('Other', 1, 'Y')]
+    with pytest.raises(ValueError, match='duplicate role labels'):
+        select_profiles(profiles, ('Other', 'Other'))
+
+
+def test_credential_source_error_identifies_role_and_position(monkeypatch):
+    from api_agent.auth.credentials import CredentialError
+    from api_agent.auth import profiles as module
+
+    error = CredentialError('unavailable descriptor')
+
+    def fail(_):
+        raise error
+
+    monkeypatch.setattr(module.CredentialSource, 'from_mapping', fail)
+    with pytest.raises(ValueError, match="role 'LLM User' entry 0: unavailable descriptor") as exc:
+        parse_profiles(canonical({'LLM User': [entry('A')]}, READY), ('LLM User',))
+    assert exc.value.__cause__ is error
