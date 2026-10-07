@@ -374,7 +374,7 @@ def test_e2e_retains_browser_visibility_config_and_provenance(tmp_path,dotenv,en
     pack_schema=resource_pack_schema()
     for schema,app in ((shared,'agent'),(pack_schema,'shell')):
         result=resolve_config(schema,argv=['--tui-mode=e2e',*argv],dotenv=dotenv,
-                              environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic','UI_SOURCE_DIR':str(tmp_path/'ui'),**environ},
+                              environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic',**environ},
                               anchors={'owner_root':tmp_path})
         result.raise_for_errors()
         assert result.values['RUN_UI'] is expected
@@ -382,3 +382,29 @@ def test_e2e_retains_browser_visibility_config_and_provenance(tmp_path,dotenv,en
         assert result.fields['RUN_UI'].explicit == (source != 'shared_default')
         assert result.values['UI_NX_APP'] == app
         assert result.values['UI_SOURCE_DIR'] == (tmp_path/'ui').resolve()
+
+
+@pytest.mark.parametrize('option,values', [
+    ('--tui-mode', ('unit', 'integration', 'e2e', 'run-local', 'allure', 'deployment-logs', 'config-cleanup', 'unattended-auth', 'cleanup-containers')),
+    ('--trace-mode', ('', 'LangFuse', 'OTEL')),
+])
+@pytest.mark.parametrize('following', [(), ('--no-std-in',)])
+def test_missing_enum_option_value_lists_declared_choices(option, values, following):
+    from api_agent.config.resolve import format_enum_values
+    schema = load_shared_schema()
+    name = option[2:].replace('-', '_').upper()
+    # The declaration remains the single source of permitted values.
+    assert set(schema.fields[name].enum) == set(values)
+    parsed = parse_options(schema, [option, *following])
+    assert parsed.errors == (f'{name}: option requires a value; expected one of '
+                             + format_enum_values(schema.fields[name].enum),)
+    assert name not in parsed.values
+    assert parsed.values == ({'NO_STD_IN':'True'} if following else {})
+
+
+def test_missing_integer_enum_option_formats_values_and_normalized_alias():
+    schema = schema_from_dict({'version':1, 'fields':{
+        'WORKER_COUNT':{'type':'int','enum':[0,2,8]}}})
+    parsed = parse_options(schema, ['--worker_count'])
+    assert parsed.errors == ('WORKER_COUNT: option requires a value; expected one of 0, 2, 8',)
+    assert parsed.values == {}

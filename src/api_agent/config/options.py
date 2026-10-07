@@ -8,6 +8,7 @@ class ParsedOptions:
     errors: tuple[str, ...]
 
 def parse_options(schema, argv):
+    from .resolve import format_enum_values
     values, positionals, errors = {}, [], []
     seen = set()
     argv = list(argv)
@@ -51,7 +52,8 @@ def parse_options(schema, argv):
                 value = argv[index]
                 index += 1
             else:
-                errors.append(f'{key}: option requires a value')
+                choices = '; expected one of ' + format_enum_values(declaration.enum) if declaration.enum else ''
+                errors.append(f'{key}: option requires a value{choices}')
                 continue
         if not duplicate:
             values[key] = value
