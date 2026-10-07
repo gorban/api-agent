@@ -1,0 +1,106 @@
+# Fresh repository skeleton and resource packs
+
+This skeleton describes generic runtime and resource-pack responsibilities. Implement it using independently authored requirements and public upstream documentation.
+
+The trees describe responsibility ownership and intended paths, not files to create immediately. Add files only as their selected feature is implemented. `.yaml` names illustrate separate declarative documents; choose the actual format in the [declarative formats plan](implementation_plan_b.md). Python implementations and prompts stay together by responsibility and node; runtime prompt order comes from Layout declarations, not filenames.
+
+## Checklist
+
+- [ ] Establish this skeleton early, creating only the files needed for the [initial milestone](implementation_plan_e.md) and its prerequisites. Preserve existing instructions and planning documents; keep legacy deletions unstaged until final cleanup. Do not create empty placeholders for later workflows.
+- [ ] Keep reusable runtime code in api-agent. Keep the included `demo/` directly under its repository root as an independently loadable resource pack. Support independently supplied resource packs selected by `--resource-pack-dir`, with each pack owning its configuration and launch integration.
+- [ ] Give each pack a declarative identity/source manifest, configuration description, and Layout document. Share generic configuration declarations through a common schema rather than duplicating their definitions across packs; keep upstream API authentication requirements inside the selected pack. Parse configuration at runtime for the initial milestone; introduce the general Layout interpreter in the later [Layout work](implementation_plan_b.md).
+- [ ] Include the demo pack in packaging/distribution and resolve its installed location independently of the working directory. Resolve `<resource_pack>` to the selected pack root. Keep pack prompt components under responsibility/node directories, listed explicitly by the ordered Layout prompt links.
+- [ ] Build Neo4j data from the selected pack's knowledge and navigation files using shared ingestion tooling; expose it as a retrieval/navigation tool. Keep checked-in sources separate from database storage and ignored local artifacts. Neo4j is a tool/evidence store, not the LangGraph execution engine.
+  - [ ] Scope imports and queries by stable pack identity and snapshot identity. Track source paths/origins, hashes, freshness, and evidence authority; prevent data from different packs from mixing. Define the rebuild/update lifecycle and test pack isolation before using imported data in a workflow.
+  - [ ] Keep checked-in GraphQL knowledge as navigation hints. Mark MCP-derived schema evidence separately, and use snapshots only while healthy/fresh. Live MCP evidence wins on conflicts or stale/unavailable snapshots. Preserve tool results separately from user prompt content. Add vector retrieval only where it improves navigation.
+- [ ] Preserve generated `navigation/routes.json` relative to each pack root, its JSON contract, and any supplied generated navigation hierarchy. Adapt the importer to this output rather than reorganizing it. Knowledge and prompt files may use the new layout.
+
+## api-agent structure
+
+```text
+api-agent/
+├── AGENTS.md
+├── pyproject.toml
+├── docs/                                  # Existing implementation plans; generated docs separately
+├── src/api_agent/
+│   ├── __main__.py                        # Shared CLI entry point
+│   ├── config/
+│   │   ├── declarations.py                # Typed configuration declarations
+│   │   └── resolve.py                     # Types, precedence, ENV/CLI, missing values
+│   ├── runtime/
+│   │   ├── resource_pack.py                # Discover selected pack and declared sources
+│   │   ├── runner.py                       # Session inputs and execution lifecycle
+│   │   └── layout.py                       # Later: build LangGraph from Layout
+│   ├── providers/
+│   │   ├── llm.py                          # Public LLM provider contract
+│   │   └── load.py                         # Required provider location and config integration
+│   ├── api/
+│   │   └── agent.py                        # LLM discovery, chat and SSE; framework undecided
+│   ├── tui/
+│   │   └── app.py                          # Textual views, configuration and mode selection
+│   ├── workflows/
+│   │   ├── conversation/
+│   │   │   └── respond/
+│   │   │       ├── node.py                 # Initial reusable single-node behavior
+│   │   │       └── prompts/
+│   │   │           └── response_contract.md
+│   │   ├── planning/                       # Later expansion examples
+│   │   │   ├── planner/
+│   │   │   │   ├── node.py
+│   │   │   │   └── prompts/planning.md
+│   │   │   └── plan_verifier/
+│   │   │       ├── node.py
+│   │   │       ├── conditions.py
+│   │   │       └── prompts/verification.md
+│   │   └── graphql/                        # Later expansion examples
+│   │       ├── graphql_executor/
+│   │       │   ├── node.py
+│   │       │   └── prompts/execution.md
+│   │       └── graphql_verifier/
+│   │           ├── node.py
+│   │           ├── conditions.py
+│   │           └── prompts/verification.md
+│   ├── tooling/
+│   │   └── knowledge/
+│   │       ├── ingest.py                    # Pack knowledge/navigation import
+│   │       ├── graph.py                     # Neo4j snapshots, provenance and isolation
+│   │       └── tool.py                      # Retrieval/navigation tool
+│   ├── recording/
+│   │   ├── session.py                       # User turns and provider call events
+│   │   ├── usage.py                         # TOKEN_USAGE_CSV and cost estimates
+│   │   └── quota.py                         # Suite snapshots and reset countdown
+│   └── testing/
+│       ├── runner.py                        # Selection, attempts, confirmation, cancellation
+│       ├── allure.py                        # Integration/E2E labels and artifacts
+│       └── history.py                       # Persistent S3 history; LocalStack locally
+├── demo/                                    # Resource pack root, included in distribution
+│   ├── pack.yaml                            # Illustrative: identity and source declarations
+│   ├── config.yaml                          # Shared config schema + demo declarations
+│   ├── layout.yaml                          # Later executable graph + ordered prompt links
+│   ├── workflows/
+│   │   ├── conversation/
+│   │   │   └── respond/
+│   │   │       └── prompts/say_ok.md
+│   │   └── planning/                        # Later expansion example
+│   │       └── planner/
+│   │           └── prompts/demo_context.md
+│   ├── knowledge/
+│   │   └── getting_started.yaml             # Meaningful demo knowledge sources
+│   └── navigation/
+│       └── routes.json                      # Preserve external generation contract
+├── tests/
+│   ├── unit/                                # Deterministic; coverage; no Allure/retries
+│   ├── integration/                         # Authenticated discovery, then chat/SSE
+│   └── e2e/                                 # Human acceptance required per run
+└── artifacts/                               # Ignored local results/recordings/generated docs
+```
+
+`workflows/<responsibility>/<node>/prompts/` is the navigation convention for generic code/prompts and pack-specific prompt components. Framework services such as authentication or recording have responsibility folders but do not need artificial LangGraph nodes. Tests can mirror these responsibilities within their test category as they grow. Packaging support files are omitted from the tree for readability.
+
+The first implementation slice includes configuration resolution, LLM provider authentication, model discovery/provider wiring, recording/Allure, the API, Textual test controls, and `conversation/respond`, plus the demo pack and generic resource-pack loading. General Layout execution, Neo4j ingestion, and planner/GraphQL examples expand in their own tasks; the skeleton does not make them prerequisites for the token-free model-listing test.
+
+## Resource content contract
+
+Knowledge sources contain stable IDs, titles, aliases/user wording, entity names, keywords, canonical GraphQL path hints, explanatory notes, and instructions to confirm against the live schema. Multiple files are supported. The new importer can accept an appropriate declarative knowledge format without retaining an old application's directory layout or treating those hints as authoritative schema.
+
+Each resource pack documents its navigation data format, stable identifiers, route templates, and optional metadata. Preserve that documented contract during ingestion rather than requiring fields from a particular upstream application. Navigation hints can become graph relationships while the original generated files remain intact.
