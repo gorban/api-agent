@@ -2,7 +2,7 @@
 
 This skeleton describes generic runtime and resource-pack responsibilities. Implement it using independently authored requirements and public upstream documentation.
 
-The trees describe responsibility ownership and intended paths, not files to create immediately. Add files only as their selected feature is implemented. `.yaml` names illustrate separate declarative documents; choose the actual format in the [declarative formats plan](implementation_plan_b.md). Python implementations and prompts stay together by responsibility and node; runtime prompt order comes from Layout declarations, not filenames.
+The trees describe responsibility ownership and intended paths, not files to create immediately. Add files only as their selected feature is implemented. Pack/config `.yaml` names illustrate separate declarative documents; Layout uses restricted Markdown. Choose the remaining formats in the [declarative formats plan](implementation_plan_b.md). Python implementations and prompts stay together by responsibility and node; runtime prompt order comes from Layout declarations, not filenames.
 
 ## Checklist
 
@@ -88,7 +88,7 @@ api-agent/
 ├── demo/                                    # Resource pack root, included in distribution
 │   ├── pack.yaml                            # Illustrative: identity and source declarations
 │   ├── config.yaml                          # Shared config schema + demo declarations
-│   ├── layout.yaml                          # Later executable graph + ordered prompt links
+│   ├── layout.md                          # Later executable graph + ordered prompt links
 │   ├── workflows/
 │   │   ├── rendering/
 │   │   │   └── renderer/
@@ -113,7 +113,7 @@ api-agent/
 
 `workflows/<responsibility>/<node>/prompts/` is the navigation convention for generic code/prompts and pack-specific prompt components. Framework services such as authentication or recording have responsibility folders but do not need artificial LangGraph nodes. Tests can mirror these responsibilities within their test category as they grow. Packaging support files are omitted from the tree for readability.
 
-The first implementation slice includes configuration resolution, LLM provider authentication, model discovery/provider wiring, recording/Allure, the API, Textual test controls, and `rendering/respond`, plus the demo pack and generic resource-pack loading. General Layout execution, Neo4j ingestion, and planner/GraphQL examples expand in their own tasks; the skeleton does not make them prerequisites for the token-free model-listing test.
+The first implementation slice includes configuration resolution, LLM provider authentication, model discovery/provider wiring, recording/Allure, the API, Textual test controls, and `rendering/renderer`, plus the demo pack and generic resource-pack loading. General Layout execution, Neo4j ingestion, and planner/GraphQL examples expand in their own tasks; the skeleton does not make them prerequisites for the token-free model-listing test.
 
 ## Resource content contract
 
@@ -124,3 +124,5 @@ Each resource pack documents its navigation data format, stable identifiers, rou
 Pack descriptions also select test-owner repository identity/root and per-mode test paths. Unit mode always runs api-agent's unit suite plus any selected-pack unit tests, de-duplicating shared paths. Integration/E2E use only the selected pack's declared suites: the default demo points to api-agent tests, while selected resource packs use their own declared tests. The shared TUI/runner consumes that launch context; changing directories does not change which repository a launcher represents. Pack launchers locate the base runtime through the conditional `API_AGENT_DIR` setting documented in the [configuration plan](implementation_plan_b.md).
 
 Extend this skeleton through the [conditional infrastructure/host UI plan](implementation_plan_h.md). Pack manifests declare their own API/database Compose fragments and may supply UI-project defaults.
+
+Use [strict Markdown Layout and prompt fragments](implementation_plan_b1.md) with genuine file-relative links. `<resource_pack>` selects dynamic pack fragments; links inside each fragment remain relative to that fragment for editor/GitHub navigation.
