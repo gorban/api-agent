@@ -199,10 +199,14 @@ def _date(timestamp: float | None) -> str:
 
 def format_report(reports: Sequence[RepositoryReport]) -> str:
     lines = ["The running folders:"]
-    lines.extend(f"  {report.selected_root}" for report in reports)
+    for report in reports:
+        selected = next(checkout for checkout in report.checkouts if checkout.selected)
+        branch = selected.branch.removeprefix('refs/heads/')
+        lines.append(f"  {report.selected_root} ({branch})")
     lines.extend(["", "", "don't match the latest worktrees:"])
     for report in reports:
-        lines.extend(f"  {checkout.root}" for checkout in report.checkouts if checkout.newest and not checkout.bare)
+        lines.extend(f"  {checkout.root} ({checkout.branch.removeprefix('refs/heads/')})"
+                     for checkout in report.checkouts if checkout.newest and not checkout.bare)
     return "\n".join(lines)
 
 

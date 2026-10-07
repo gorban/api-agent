@@ -72,8 +72,8 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(reports[0].stale)
         self.assertFalse(reports[1].stale)
         rendered = gate.format_report(reports)
-        self.assertIn("The running folders:\n  /base\n  /pack", rendered)
-        self.assertIn("don't match the latest worktrees:\n  /base-new\n  /pack", rendered)
+        self.assertIn("The running folders:\n  /base (main)\n  /pack (main)", rendered)
+        self.assertIn("don't match the latest worktrees:\n  /base-new (detached HEAD)\n  /pack (main)", rendered)
         self.assertNotIn(".git", rendered)
 
     def test_common_directory_bind_aliases_have_same_identity(self):
