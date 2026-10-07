@@ -1,5 +1,6 @@
 """Controlled failure boundaries for credential processes and container metadata."""
 import os
+import json
 import queue
 import subprocess
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import pytest
 
 import api_agent.auth.credentials as credentials
 import api_agent.runtime.containers as containers
+from api_agent.runtime.ownership import StackScope
 
 
 def test_credential_start_error_is_user_facing(monkeypatch):
@@ -107,12 +109,17 @@ def test_container_metadata_absent_os_failure_and_bad_quoting(monkeypatch):
         containers.session_container_identity()
 
 
-def test_container_inventory_accepts_name_list_and_rejects_nonobject(monkeypatch):
-    runtime = containers.ContainerRuntime('/safe/docker')
+def test_container_inventory_accepts_scoped_inspect_and_rejects_nonobject(monkeypatch):
+    scope = StackScope('0123456789abcdef')
+    runtime = containers.ContainerRuntime('/safe/docker', scope=scope)
+    labels = {**scope.labels('otel'), 'com.docker.compose.project': scope.project,
+              'com.docker.compose.service': 'jaeger'}
+    record = {'Id': 'abc', 'Name': '/jaeger', 'Config': {'Labels': labels, 'Image': 'trace-image'},
+              'State': {'Running': True, 'Status': 'running'}}
     monkeypatch.setattr(containers, 'session_container_identity', lambda: frozenset())
-    monkeypatch.setattr(runtime, '_run', Mock(return_value='{"ID":"abc","Names":["web","api"]}\n'))
-    assert runtime.inventory()[0].name == 'web, api'
-    monkeypatch.setattr(runtime, '_run', Mock(return_value='[1, 2]\n'))
+    monkeypatch.setattr(runtime, '_run', Mock(side_effect=['abc', json.dumps([record])]))
+    assert runtime.inventory() == (containers.Container('abc', 'jaeger', 'trace-image', 'running'),)
+    monkeypatch.setattr(runtime, '_run', Mock(side_effect=['abc', '[1, 2]']))
     with pytest.raises(containers.ContainerError, match='invalid engine response'):
         runtime.inventory()
 
@@ -127,11 +134,11 @@ def test_process_disappears_while_terminating(monkeypatch):
     assert process.wait.call_count == 2
 
 
-@pytest.mark.parametrize('record', ['{"ID":"abc"}', '{"Names":"api"}'])
+@pytest.mark.parametrize('record', ['[{"Id":"abc"}]', '[{"Name":"api"}]'])
 def test_container_inventory_requires_id_and_name(monkeypatch, record):
-    runtime = containers.ContainerRuntime('/safe/docker')
+    runtime = containers.ContainerRuntime('/safe/docker', scope=StackScope('0123456789abcdef'))
     monkeypatch.setattr(containers, 'session_container_identity', lambda: frozenset())
-    monkeypatch.setattr(runtime, '_run', Mock(return_value=record))
+    monkeypatch.setattr(runtime, '_run', Mock(side_effect=['abc', record]))
     with pytest.raises(containers.ContainerError, match='invalid engine response'):
         runtime.inventory()
 
@@ -139,7 +146,7 @@ def test_container_inventory_requires_id_and_name(monkeypatch, record):
 @pytest.mark.parametrize('identifiers', [[], [''], ['-bad']])
 def test_stop_rejects_empty_or_option_like_identifiers(identifiers):
     with pytest.raises(containers.ContainerError, match='Select valid container IDs'):
-        containers.ContainerRuntime('/safe/docker').stop(identifiers)
+        containers.ContainerRuntime('/safe/docker', scope=StackScope('0123456789abcdef')).stop(identifiers)
 
 
 def test_non_posix_process_finishes_before_termination(monkeypatch):

@@ -458,7 +458,9 @@ class ApiAgentApp(App[int]):
         self.test_run = None
         self.unit_rows = {}
         from api_agent.runtime.containers import ContainerRuntime
-        self.container_runtime = container_runtime or ContainerRuntime()
+        from api_agent.runtime.ownership import StackScope
+        self.container_runtime = container_runtime or ContainerRuntime(
+            scope=StackScope.from_roots(context.base_root, context.pack_root))
         self.containers = ()
         self.container_marked = set()
         self.container_summary = "Running containers: checking…"

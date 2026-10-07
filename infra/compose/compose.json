@@ -1,0 +1,368 @@
+{
+  "services": {
+    "langfuse-web": {
+      "image": "docker.io/langfuse/langfuse:3.163.0",
+      "profiles": [
+        "langfuse"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      },
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        },
+        "clickhouse": {
+          "condition": "service_healthy"
+        },
+        "minio": {
+          "condition": "service_healthy"
+        }
+      },
+      "ports": [
+        "127.0.0.1:3000:3000"
+      ],
+      "environment": {
+        "NEXTAUTH_URL": "http://localhost:3000",
+        "DATABASE_URL": "postgresql://postgres:${SA_POSTGRES_PASSWORD:?controlled local development value required}@postgres:5432/postgres",
+        "SALT": "${SA_SALT:?controlled local development value required}",
+        "ENCRYPTION_KEY": "${SA_ENCRYPTION_KEY:?controlled local development value required}",
+        "TELEMETRY_ENABLED": "false",
+        "CLICKHOUSE_MIGRATION_URL": "clickhouse://clickhouse:9000",
+        "CLICKHOUSE_URL": "http://clickhouse:8123",
+        "CLICKHOUSE_USER": "clickhouse",
+        "CLICKHOUSE_PASSWORD": "${SA_CLICKHOUSE_PASSWORD:?controlled local development value required}",
+        "CLICKHOUSE_CLUSTER_ENABLED": "false",
+        "REDIS_HOST": "redis",
+        "REDIS_PORT": "6379",
+        "REDIS_AUTH": "${SA_REDIS_PASSWORD:?controlled local development value required}",
+        "REDIS_TLS_ENABLED": "false",
+        "LANGFUSE_S3_BATCH_EXPORT_BUCKET": "langfuse",
+        "LANGFUSE_S3_BATCH_EXPORT_REGION": "us-east-1",
+        "LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID": "localdev",
+        "LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY": "${SA_MINIO_PASSWORD:?controlled local development value required}",
+        "LANGFUSE_S3_BATCH_EXPORT_ENDPOINT": "http://minio:9000",
+        "LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE": "true",
+        "LANGFUSE_S3_BATCH_EXPORT_PREFIX": "exports/",
+        "LANGFUSE_S3_BATCH_EXPORT_ENABLED": "false",
+        "NEXTAUTH_SECRET": "${SA_NEXTAUTH_SECRET:?controlled local development value required}",
+        "LANGFUSE_INIT_ORG_ID": "local-${SA_SCOPE:?controlled local development value required}",
+        "LANGFUSE_INIT_ORG_NAME": "API Agent local development",
+        "LANGFUSE_INIT_PROJECT_ID": "api-agent-${SA_SCOPE:?controlled local development value required}",
+        "LANGFUSE_INIT_PROJECT_NAME": "API Agent local development",
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "${SA_LANGFUSE_PUBLIC_KEY:?controlled local development value required}",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "${SA_LANGFUSE_SECRET_KEY:?controlled local development value required}",
+        "LANGFUSE_INIT_USER_EMAIL": "admin@api-agent.invalid",
+        "LANGFUSE_INIT_USER_NAME": "Local development",
+        "LANGFUSE_INIT_USER_PASSWORD": "${SA_USER_PASSWORD:?controlled local development value required}",
+        "LANGFUSE_S3_EVENT_UPLOAD_BUCKET": "langfuse",
+        "LANGFUSE_S3_EVENT_UPLOAD_REGION": "us-east-1",
+        "LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID": "localdev",
+        "LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY": "${SA_MINIO_PASSWORD:?controlled local development value required}",
+        "LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT": "http://minio:9000",
+        "LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE": "true",
+        "LANGFUSE_S3_EVENT_UPLOAD_PREFIX": "events/",
+        "LANGFUSE_S3_MEDIA_UPLOAD_BUCKET": "langfuse",
+        "LANGFUSE_S3_MEDIA_UPLOAD_REGION": "us-east-1",
+        "LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID": "localdev",
+        "LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY": "${SA_MINIO_PASSWORD:?controlled local development value required}",
+        "LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE": "true",
+        "LANGFUSE_S3_MEDIA_UPLOAD_PREFIX": "media/",
+        "LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT": "http://localhost:9090"
+      }
+    },
+    "langfuse-worker": {
+      "image": "docker.io/langfuse/langfuse-worker:3.163.0",
+      "profiles": [
+        "langfuse"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      },
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        },
+        "clickhouse": {
+          "condition": "service_healthy"
+        },
+        "minio": {
+          "condition": "service_healthy"
+        }
+      },
+      "environment": {
+        "NEXTAUTH_URL": "http://localhost:3000",
+        "DATABASE_URL": "postgresql://postgres:${SA_POSTGRES_PASSWORD:?controlled local development value required}@postgres:5432/postgres",
+        "SALT": "${SA_SALT:?controlled local development value required}",
+        "ENCRYPTION_KEY": "${SA_ENCRYPTION_KEY:?controlled local development value required}",
+        "TELEMETRY_ENABLED": "false",
+        "CLICKHOUSE_MIGRATION_URL": "clickhouse://clickhouse:9000",
+        "CLICKHOUSE_URL": "http://clickhouse:8123",
+        "CLICKHOUSE_USER": "clickhouse",
+        "CLICKHOUSE_PASSWORD": "${SA_CLICKHOUSE_PASSWORD:?controlled local development value required}",
+        "CLICKHOUSE_CLUSTER_ENABLED": "false",
+        "REDIS_HOST": "redis",
+        "REDIS_PORT": "6379",
+        "REDIS_AUTH": "${SA_REDIS_PASSWORD:?controlled local development value required}",
+        "REDIS_TLS_ENABLED": "false",
+        "LANGFUSE_S3_BATCH_EXPORT_BUCKET": "langfuse",
+        "LANGFUSE_S3_BATCH_EXPORT_REGION": "us-east-1",
+        "LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID": "localdev",
+        "LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY": "${SA_MINIO_PASSWORD:?controlled local development value required}",
+        "LANGFUSE_S3_BATCH_EXPORT_ENDPOINT": "http://minio:9000",
+        "LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE": "true",
+        "LANGFUSE_S3_BATCH_EXPORT_PREFIX": "exports/",
+        "LANGFUSE_S3_BATCH_EXPORT_ENABLED": "false",
+        "LANGFUSE_S3_EVENT_UPLOAD_BUCKET": "langfuse",
+        "LANGFUSE_S3_EVENT_UPLOAD_REGION": "us-east-1",
+        "LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID": "localdev",
+        "LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY": "${SA_MINIO_PASSWORD:?controlled local development value required}",
+        "LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT": "http://minio:9000",
+        "LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE": "true",
+        "LANGFUSE_S3_EVENT_UPLOAD_PREFIX": "events/",
+        "LANGFUSE_S3_MEDIA_UPLOAD_BUCKET": "langfuse",
+        "LANGFUSE_S3_MEDIA_UPLOAD_REGION": "us-east-1",
+        "LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID": "localdev",
+        "LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY": "${SA_MINIO_PASSWORD:?controlled local development value required}",
+        "LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT": "http://minio:9000",
+        "LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE": "true",
+        "LANGFUSE_S3_MEDIA_UPLOAD_PREFIX": "media/"
+      }
+    },
+    "postgres": {
+      "image": "docker.io/postgres:17.6",
+      "profiles": [
+        "langfuse"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      },
+      "environment": {
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_DB": "postgres",
+        "POSTGRES_PASSWORD": "${SA_POSTGRES_PASSWORD:?controlled local development value required}"
+      },
+      "volumes": [
+        "langfuse-postgres:/var/lib/postgresql/data"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "pg_isready",
+          "-U",
+          "postgres"
+        ],
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 20,
+        "start_period": "10s"
+      }
+    },
+    "clickhouse": {
+      "image": "docker.io/clickhouse/clickhouse-server:25.3.6.56",
+      "profiles": [
+        "langfuse"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      },
+      "user": "101:101",
+      "environment": {
+        "CLICKHOUSE_USER": "clickhouse",
+        "CLICKHOUSE_PASSWORD": "${SA_CLICKHOUSE_PASSWORD:?controlled local development value required}",
+        "CLICKHOUSE_DB": "default"
+      },
+      "volumes": [
+        "langfuse-clickhouse:/var/lib/clickhouse",
+        "langfuse-clickhouse-logs:/var/log/clickhouse-server"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8123/ping"
+        ],
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 20,
+        "start_period": "10s"
+      }
+    },
+    "redis": {
+      "image": "docker.io/redis:7.4.5",
+      "profiles": [
+        "langfuse"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      },
+      "command": [
+        "redis-server",
+        "--requirepass",
+        "${SA_REDIS_PASSWORD:?controlled local development value required}",
+        "--maxmemory-policy",
+        "noeviction"
+      ],
+      "environment": {
+        "REDISCLI_AUTH": "${SA_REDIS_PASSWORD:?controlled local development value required}"
+      },
+      "volumes": [
+        "langfuse-redis:/data"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ],
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 20,
+        "start_period": "10s"
+      }
+    },
+    "minio": {
+      "image": "docker.io/minio/minio:RELEASE.2025-04-22T22-12-26Z",
+      "profiles": [
+        "langfuse"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      },
+      "entrypoint": [
+        "/bin/sh",
+        "-c"
+      ],
+      "command": [
+        "mkdir -p /data/langfuse && minio server --address :9000 --console-address :9001 /data"
+      ],
+      "environment": {
+        "MINIO_ROOT_USER": "localdev",
+        "MINIO_ROOT_PASSWORD": "${SA_MINIO_PASSWORD:?controlled local development value required}"
+      },
+      "ports": [
+        "127.0.0.1:9090:9000",
+        "127.0.0.1:9091:9001"
+      ],
+      "volumes": [
+        "langfuse-minio:/data"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "mc",
+          "ready",
+          "local"
+        ],
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 20,
+        "start_period": "10s"
+      }
+    },
+    "jaeger": {
+      "image": "cr.jaegertracing.io/jaegertracing/jaeger:2.21.0",
+      "profiles": [
+        "otel"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "otel"
+      },
+      "ports": [
+        "127.0.0.1:4318:4318",
+        "127.0.0.1:16686:16686"
+      ]
+    },
+    "localstack": {
+      "image": "docker.io/localstack/localstack:4.14.0",
+      "profiles": [
+        "localstack"
+      ],
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "localstack"
+      },
+      "environment": {
+        "SERVICES": "s3",
+        "PERSISTENCE": "1",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "test",
+        "AWS_SECRET_ACCESS_KEY": "test"
+      },
+      "ports": [
+        "127.0.0.1:4566:4566"
+      ],
+      "volumes": [
+        "localstack-data:/var/lib/localstack"
+      ]
+    }
+  },
+  "volumes": {
+    "langfuse-postgres": {
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      }
+    },
+    "langfuse-clickhouse": {
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      }
+    },
+    "langfuse-clickhouse-logs": {
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      }
+    },
+    "langfuse-redis": {
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      }
+    },
+    "langfuse-minio": {
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "langfuse"
+      }
+    },
+    "localstack-data": {
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "localstack"
+      }
+    }
+  }
+}

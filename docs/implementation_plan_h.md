@@ -4,6 +4,8 @@ Local API here means the pack's upstream API; the api-agent chat API remains the
 
 ## Checklist
 
+- [x] Add separately selectable LangFuse, OTEL/Jaeger and LocalStack definitions in `infra/compose/compose.json`, plus controlled-env planning/config-only validation in `runtime/compose.py`. Every dependency has its own profile membership, ownership labels, a pinned image and appropriate named volumes/loopback publication. Source and installed-wheel assets are supported. No lifecycle startup/readiness/reuse is claimed; the full manager remains below.
+
 - [ ] With the first Compose prerequisite added, implement the [ownership-filtered inventory/count and stop-time validation gate](implementation_plan_l.md) before enabling its app/test startup. This applies to every profile and dependency service, regardless of which stack is built first.
 - [ ] Add a shared prerequisite planner and lifecycle manager driven by runtime-parsed config and pack declarations. Resolve enabled Compose fragments/profiles and host processes before starting the selected TUI action. Validate invalid combinations and missing active settings together; do not start containers for disabled features or deterministic unit tests.
 - [ ] Separate independently selectable Compose profiles: `langfuse`, `api`, and `database`. Account for local S3/LocalStack as its own prerequisite. The initial knowledge graph runs inside the main Python agent process/container through the [graph snapshot task](implementation_plan_g.md), with no additional Compose service. Any later Neo4j server backend requires a separately planned optional profile and lifecycle. Support combinations rather than one monolithic all-services startup. Packs declare their API/database fragments; reusable stacks live in api-agent.
