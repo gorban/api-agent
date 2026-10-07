@@ -11,6 +11,7 @@ from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
                                           reconcile_results_table, styled_summary)
 from api_agent.tui.select import AdvancingSelect
+from api_agent.tui.clipboard import ClipboardError, copy_text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -205,7 +206,18 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 Binding("up,k", "failure_up", "Scroll up", key_display="↑/k"),
                 Binding("down,j", "failure_down", "Scroll down", key_display="↓/j"),
                 Binding("pageup", "failure_page_up", "Page up"),
-                Binding("pagedown", "failure_page_down", "Page down")]
+                Binding("pagedown", "failure_page_down", "Page down"),
+                Binding("ctrl+c", "copy_value", "Copy value", key_display="^c", priority=True)]
+
+    @property
+    def active_bindings(self):
+        bindings = super().active_bindings
+        # Replacing App's Ctrl+C binding retains its earlier insertion position.
+        # Present our contextual copy action after the other screen shortcuts.
+        if "ctrl+c" in bindings and bindings["ctrl+c"].binding.action == "copy_value":
+            copy = bindings.pop("ctrl+c")
+            bindings["ctrl+c"] = copy
+        return bindings
 
     def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
         super().__init__()
@@ -363,6 +375,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return self.kind == "defaults"
         if action == "setting_help":
             return self.selected_setting_help() is not None
+        if action == "copy_value":
+            return self.selected_effective_value() is not None
         if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
@@ -443,6 +457,27 @@ class WorkbenchScreen(FocusNavigation, Screen):
         description = self.selected_setting_help()
         if description is not None:
             self.app.push_screen(SettingHelpDialog(*description))
+
+    def selected_effective_value(self):
+        if self.kind not in {"defaults", "cleanup"} or not self.query(DataTable):
+            return None
+        table = self.query_one(DataTable)
+        if not table.row_count:
+            return None
+        cells = table.get_row_at(table.cursor_row)
+        if not str(cells[-1]) or str(cells[-1]) == "Not provided":
+            return None
+        return str(cells[1 if self.kind == "defaults" else 2])
+
+    async def action_copy_value(self):
+        value = self.selected_effective_value()
+        if value is None:
+            return
+        try:
+            native = await copy_text(self.app, value)
+            self.app.notify("Value copied." if native else "Value sent to terminal clipboard.", timeout=2)
+        except ClipboardError:
+            self.app.notify("Could not copy the value.", severity="error", timeout=2)
 
     def action_unset_setting(self):
         try:
@@ -1124,7 +1159,7 @@ class ApiAgentApp(App[int]):
             # Rebuilding posts another highlight event; unchanged snapshots must
             # not rebuild again. Preserve the focused setting when rows change.
             current = [tuple(table.get_row_at(i)) for i in range(table.row_count)]
-            if current == [cells for _, cells in rows]:
+            if current == [tuple(literal_cell(cell) for cell in cells) for _, cells in rows]:
                 self.screen.refresh_bindings()
                 return
             cursor = table.cursor_row
