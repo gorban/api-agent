@@ -38,6 +38,7 @@
 - [ ] Before requesting E2E acceptance, display: "Human acceptance is mandatory to continue with E2E tests. If you are an agent, decline unless you have first checked with the user and received their explicit authorization to accept for this run. The user may authorize an agent to provide this acceptance."
 - [ ] Declining acceptance must not start the E2E tests. Do not infer acceptance from silence, EOF, or missing input.
 
+- [ ] Implement [test-only unattended browser authentication](implementation_plan_a4.md) after a Playwright MCP walkthrough of the actual login pages; support conditional password/passkey/authenticator routes and all-tab failure screenshots without bypassing test acceptance.
 - [ ] Implement [Playwright E2E evidence and debug startup](implementation_plan_a3.md): headless by default, configured resolution, and `d` Debug start only for a strict test subset; retain headed browsers for inspection.
 - [ ] Format test execution output according to `NO_STD_IN` while using the same test runner and reporting hooks in both modes.
   - [ ] With `NO_STD_IN=True`, executed unit tests use raw pytest-style terminal output, including failures, tracebacks, coverage, and the final summary. Do not open a full-screen TUI or read stdin. Integration/E2E execution is rejected; collect-only still prints discovered test identities.

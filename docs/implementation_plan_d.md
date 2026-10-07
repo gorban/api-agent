@@ -18,3 +18,5 @@
 - [ ] Before the first integration/E2E run, establish [token and suite-wide quota tracking](implementation_plan_f.md). Retain usage CSV artifacts and before/after `pctUsed` snapshots and delta with each run, and include the suite delta in TUI results.
 
 - [ ] Require [Playwright UI evidence](implementation_plan_a3.md) for every E2E run: original `response_text` and `response_html` when present, plus rendered screenshots after maximizing the agent modal and scrolling to the top. Retain both outputs and complete scroll-region evidence where needed, including debug and confirmation attempts, under the correct test/run identity in S3 history.
+
+- [ ] Record [unattended-auth and general Playwright failures](implementation_plan_a4.md) with current-state screenshots of every accessible open tab before response capture/teardown. Include suite-auth setup failures and failures with no agent response, retaining tab/URL/test/attempt identity in Allure and persistent S3 history.

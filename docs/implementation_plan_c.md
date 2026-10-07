@@ -20,3 +20,5 @@
 - [ ] Document blank `.env` presence cells for absent values, checkmarks for present values, and `X` only for pending deletion. Keep unattended JSON out of general config cleanup; document its dedicated `x` clear/confirm action returning to attended authentication.
 
 - [ ] Document Playwright E2E evidence, configurable `E2E_BROWSER_RESOLUTION=1440x900`, and headless default. Explain the `d` subset-only Debug start and optional `E2E_DEBUG`, its silent default, retained headed browsers, and explicit debug-session cleanup.
+
+- [ ] Document test-only unattended browser login, required implementation-time Playwright MCP walkthrough, conditional sign-in methods/password-only completion checks, and all-tab current-state Playwright failure evidence. Normal local-run authentication remains attended.

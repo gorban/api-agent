@@ -35,6 +35,7 @@ api-agent/
 │   │   ├── prerequisites.py                # Conditional service/profile selection
 │   │   └── processes.py                    # Compose + host UI lifecycle
 │   ├── auth/                             # Generic credential retrieval
+│   │   ├── browser_login.py                # Integration/E2E-only conditional browser login
 │   │   ├── credential_sources.py           # Named profiles and retrieval orchestration
 │   │   └── password_managers/
 │   │       ├── keeper.py
@@ -81,6 +82,7 @@ api-agent/
 │   │   └── quota.py                         # Suite snapshots and reset countdown
 │   └── testing/
 │       ├── runner.py                        # Selection, attempts, confirmation, cancellation
+│       ├── browser_evidence.py              # Current-state all-tab Playwright failures
 │       ├── allure.py                        # Integration/E2E labels and artifacts
 │       └── history.py                       # Persistent S3 history; LocalStack locally
 ├── demo/                                    # Resource pack root, included in distribution
