@@ -533,13 +533,15 @@ class ApiAgentApp(App[int]):
         return tuple(roles)
 
     def auth_setup_needed(self):
-        from api_agent.auth.profiles import parse_profiles
+        from api_agent.auth.profiles import normalize_auth, parse_profiles
         profile = self.session.result(_review=True).values.get('UNATTENDED_AUTH')
         try:
             roles = self.credential_roles()
-            if not isinstance(profile, dict) or any(role not in profile for role in roles):
+            canonical = normalize_auth(profile)
+            if any(role not in canonical['roles'] for role in roles):
                 return True
-            parse_profiles({role: profile[role] for role in roles}, roles)
+            parse_profiles({'password_manager': canonical['password_manager'],
+                            'roles': {role: canonical['roles'][role] for role in roles}}, roles)
         except ValueError:
             return True
         # Explicit empty arrays are a completed attended-auth choice.

@@ -4,11 +4,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import Button, Input, Static
+from textual.widgets import Input, Static
 
 from api_agent.config import schema_from_dict
-from api_agent.config.dotenv import read_dotenv
-from api_agent.config.session import ConfigSession
 from api_agent.tui.app import ApiAgentApp
 from api_agent.tui.auth_setup import AuthSetupScreen
 
@@ -39,11 +37,10 @@ def test_direct_wizard_mode_and_return_to_menu(tmp_path):
             assert isinstance(app.screen, AuthSetupScreen)
             assert app.screen.roles == ('LLM User', 'Partner')
             app.screen.action_add_entry()
-            app.screen.query_one('#auth-path', Input).value = '/fake path/keeper'
             app.screen.query_one('#auth-vault', Input).value = 'Example vault'
             app.screen.save_entry()
             await pilot.pause()
-            assert app.session.result(_review=True).values['UNATTENDED_AUTH']['LLM User'][0]['vault'] == 'Example vault'
+            assert app.session.result(_review=True).values['UNATTENDED_AUTH']['roles']['LLM User'][0]['vault'] == 'Example vault'
             assert app.session.saved_path('UNATTENDED_AUTH') == app.context.base_root / '.env'
             await pilot.press('c')
             await pilot.pause()
@@ -72,30 +69,9 @@ def test_startup_suggestion_closes_to_defaults_then_empty_array_skips_it(tmp_pat
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('external', ('environment', 'cli'))
-def test_clear_uses_attended_for_current_run_preserves_other_sources(tmp_path, external):
-    profile = json.dumps({'LLM User': []})
-    app = app_fixture(tmp_path, extra=True,
-                      argv=(f'--unattended-auth={profile}',) if external == 'cli' else (),
-                      environ={'UNATTENDED_AUTH': profile} if external == 'environment' else {})
-    base, pack = app.context.base_root / '.env', app.context.pack_root / '.env'
-    base.write_text(f"UNATTENDED_AUTH='{profile}'\nKEEP=base\n")
-    pack.write_text(f"UNATTENDED_AUTH='{profile}'\nKEEP=pack\n")
-    before_argv, before_environment = app.session.argv, dict(app.session.environ)
-    app.session.clear_auth_config()
-    assert 'UNATTENDED_AUTH' not in read_dotenv(base)
-    assert read_dotenv(pack)['UNATTENDED_AUTH'] == profile
-    assert read_dotenv(base)['KEEP'] == 'base'
-    assert app.session.result(_review=True).values['UNATTENDED_AUTH'] == {}
-    assert app.session.argv == before_argv
-    assert app.session.environ == before_environment
-    # A subsequent launch sees its unchanged higher-precedence configuration.
-    restarted = ConfigSession(app.context, app.schema, before_argv, before_environment)
-    assert restarted.result(_review=True).values['UNATTENDED_AUTH'] == {'LLM User': []}
-
 
 def test_primary_role_only_ignores_unselected_pack_profiles(tmp_path):
-    app = app_fixture(tmp_path, environ={'UNATTENDED_AUTH': '{"LLM User":[],"Other pack":[{"unused":"value"}]}'})
+    app = app_fixture(tmp_path, environ={'UNATTENDED_AUTH': '{"roles":{"LLM User":[],"Other pack":[{"unused":"value"}]}}'})
     assert app.credential_roles() == ('LLM User',)
     assert not app.auth_setup_needed()
     app.context.credential_role_fields = ('UNKNOWN',)
@@ -122,24 +98,22 @@ def test_invalid_direct_wizard_roles_show_actionable_screen(tmp_path):
     asyncio.run(scenario())
 
 
-def test_pack_role_confirmation_displays_brackets_literally(tmp_path):
+def test_pack_role_form_displays_brackets_literally(tmp_path):
     async def scenario():
         label = '[red]Partner[/red]'
         app = app_fixture(tmp_path, extra=True,
                           environ={'TUI_MODE': 'unattended-auth',
                                    'SECONDARY_ROLE': label,
-                                   'UNATTENDED_AUTH': json.dumps({'LLM User': [], label: [
-                                       {'manager': 'keeper', 'cli_path': 'keeper',
-                                        'vault': 'Example', 'user': 'Partner'}]})})
+                                   'UNATTENDED_AUTH': json.dumps({'roles': {'LLM User': [], label: [
+                                       {'vault': 'Example', 'user': 'Partner'}]}})})
         async with app.run_test() as pilot:
             await pilot.pause()
             table = app.screen.query_one('#auth-table')
             table.move_cursor(row=1)
-            app.screen.action_attended_role()
+            await pilot.press('e')
             await pilot.pause()
-            message = app.screen.query_one(Static)
-            assert label in str(message.content)
-            assert label in message.visual.plain
+            title = app.screen.query_one('#auth-form-title', Static)
+            assert label in title.visual.plain
             await pilot.press('escape')
             await pilot.pause()
             assert len(app.screen.entries[label]) == 1

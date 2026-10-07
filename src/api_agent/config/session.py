@@ -1,5 +1,6 @@
 """Editable launch configuration retaining original external provenance."""
 from dataclasses import dataclass, replace
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ from .declarations import ConfigSchema, FieldDeclaration
 from .dotenv import read_dotenv
 from .editor import DotenvEditor, serialize_value
 from .resolve import ConfigError, ResolvedValue, convert_value, resolve_config
-from api_agent.auth.profiles import parse_profiles
+from api_agent.auth.profiles import DEFAULT_PASSWORD_MANAGER, _canonical_shape, normalize_auth, parse_profiles
 
 _CONTROLS = {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH'}
 
@@ -50,6 +51,7 @@ class ConfigSession:
         self.argv = tuple(argv)
         self.environ = dict(os.environ if environ is None else environ)
         self._choices = {}
+        self._auth_manager_reset = False
         launcher = getattr(context, 'launcher_root', None)
         self._dotenv_path = Path(launcher) / '.env' if launcher else Path(context.dotenv_path)
 
@@ -116,7 +118,7 @@ class ConfigSession:
             raise
 
     @staticmethod
-    def _auth_object(path):
+    def _auth_object(path, *, chosen_manager=None):
         raw = read_dotenv(path).get('UNATTENDED_AUTH')
         if raw is None:
             return {}
@@ -124,25 +126,61 @@ class ConfigSession:
             value = json.loads(raw)
         except (TypeError, ValueError):
             raise ConfigError('UNATTENDED_AUTH in .env must be a JSON object of role arrays.') from None
-        if not isinstance(value, dict):
-            raise ConfigError('UNATTENDED_AUTH in .env must be a JSON object of role arrays.')
-        return value
+        try:
+            canonical = normalize_auth(value)
+        except ValueError as exc:
+            if chosen_manager is None or 'different password managers or CLI paths' not in str(exc):
+                raise ConfigError(f'UNATTENDED_AUTH in .env: {exc}') from None
+            # An explicit manager choice resolves mixed legacy entries. Preserve
+            # each account identity while discarding its superseded CLI fields.
+            roles = {}
+            for role, entries in value.items():
+                if not isinstance(entries, list):
+                    raise ConfigError('UNATTENDED_AUTH legacy roles must contain arrays.') from None
+                converted = []
+                for entry in entries:
+                    if (not isinstance(entry, dict) or
+                            set(entry) != {'manager', 'cli_path', 'vault', 'user'} or
+                            any(not isinstance(entry[key], str) or not entry[key].strip()
+                                for key in ('vault', 'user'))):
+                        raise ConfigError('UNATTENDED_AUTH legacy entries require nonempty vault and user descriptors.') from None
+                    converted.append({'vault': entry['vault'], 'user': entry['user']})
+                roles[role] = converted
+            return {'password_manager': chosen_manager, 'roles': roles}
+        if isinstance(value, dict) and _canonical_shape(value):
+            return {key: canonical[key] for key in ('password_manager', 'roles') if key in value}
+        return canonical
 
     def save_auth_role(self, role, entries):
         """Save one role, enforcing pack targets and removing older copies."""
         try:
-            parse_profiles({role: entries}, (role,))
+            parse_profiles({'roles': {role: entries}}, (role,))
         except ValueError as exc:
             raise ConfigError(f'UNATTENDED_AUTH role is invalid: {exc}') from None
         objects = {path: self._auth_object(path) for path in self.target_paths}
+        manager_choice = None
+        for path in self.target_paths:
+            raw = read_dotenv(path).get('UNATTENDED_AUTH')
+            if raw is None:
+                continue
+            value = json.loads(raw)
+            explicit = ('password_manager' in value if _canonical_shape(value)
+                        else any(value.values()))
+            if explicit:
+                choice = normalize_auth(value)['password_manager']
+                if manager_choice is not None and choice != manager_choice:
+                    raise ConfigError('Saved .env profiles use different password managers or CLI paths; choose one shared password manager before editing accounts.')
+                manager_choice = choice
         target = (self.context.pack_root / '.env'
                   if self.context.external_pack and role != 'LLM User'
                   else self.dotenv_path)
-        updated = {path: dict(value) for path, value in objects.items()}
-        updated[target][role] = entries
+        updated = deepcopy(objects)
+        updated[target].setdefault('roles', {})[role] = entries
         for path in updated:
             if path != target:
-                updated[path].pop(role, None)
+                updated[path].setdefault('roles', {}).pop(role, None)
+                if not updated[path]['roles']:
+                    updated[path].pop('roles')
         changed = [path for path in (target, *(path for path in self.target_paths if path != target))
                    if updated[path] != objects[path]
                    or path == target and 'UNATTENDED_AUTH' not in read_dotenv(path)]
@@ -161,28 +199,102 @@ class ConfigSession:
             for path in reversed(changed):
                 self._restore(path, snapshots[path])
             raise
+        if not self._auth_manager_reset:
+            self._choices.pop('UNATTENDED_AUTH', None)
+        return self.result(_review=True)
+
+    def save_auth_manager(self, manager_dict):
+        """Persist the one shared CLI choice at the selected target."""
+        try:
+            manager = normalize_auth({'password_manager': manager_dict})['password_manager']
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from None
+        objects = {path: self._auth_object(path, chosen_manager=manager) for path in self.target_paths}
+        target = self.dotenv_path
+        updated = deepcopy(objects)
+        updated[target]['password_manager'] = manager
+        for path in updated:
+            if path != target:
+                updated[path].pop('password_manager', None)
+        legacy_paths = []
+        for path in self.target_paths:
+            raw = read_dotenv(path).get('UNATTENDED_AUTH')
+            if raw is not None:
+                value = json.loads(raw)
+                if isinstance(value, dict) and value and not _canonical_shape(value):
+                    legacy_paths.append(path)
+        self._write_auth_objects(objects, updated, target, force_paths=legacy_paths)
+        self._auth_manager_reset = False
         self._choices.pop('UNATTENDED_AUTH', None)
         return self.result(_review=True)
 
+    def reset_auth_manager(self):
+        """Remove saved manager choices and use Keeper defaults this invocation."""
+        objects = {path: self._auth_object(path, chosen_manager=DEFAULT_PASSWORD_MANAGER)
+                   for path in self.target_paths}
+        updated = deepcopy(objects)
+        for value in updated.values():
+            value.pop('password_manager', None)
+        self._write_auth_objects(objects, updated, self.dotenv_path)
+        self._auth_manager_reset = True
+        self._choices.pop('UNATTENDED_AUTH', None)
+        return self.result(_review=True)
+
+    def _write_auth_objects(self, objects, updated, target, *, force_paths=()):
+        changed = [path for path in (target, *(path for path in self.target_paths if path != target))
+                   if updated[path] != objects[path] or path in force_paths]
+        for path in changed:
+            if path.is_symlink():
+                raise ValueError(f'Refusing to edit symlink: {path}')
+        snapshots = {path: path.read_bytes() if path.exists() else None for path in changed}
+        try:
+            for path in changed:
+                if updated[path]:
+                    DotenvEditor(path).update({'UNATTENDED_AUTH': json.dumps(updated[path], ensure_ascii=False, separators=(',', ':'))})
+                else:
+                    DotenvEditor(path).delete(['UNATTENDED_AUTH'])
+        except Exception:
+            for path in reversed(changed):
+                self._restore(path, snapshots[path])
+            raise
+
     def result(self, *, _cleanup=False, _review=False):
         dotenv, origins = {}, {}
+        explicit_manager = None
+        auth_error = None
         for path in self.target_paths:
             entries = read_dotenv(path)
-            if 'UNATTENDED_AUTH' in entries and 'UNATTENDED_AUTH' in dotenv:
+            if 'UNATTENDED_AUTH' in entries:
                 try:
-                    earlier = json.loads(dotenv['UNATTENDED_AUTH'])
-                    later = json.loads(entries['UNATTENDED_AUTH'])
-                    if isinstance(earlier, dict) and isinstance(later, dict):
-                        entries['UNATTENDED_AUTH'] = json.dumps({**earlier, **later}, ensure_ascii=False, separators=(',', ':'))
-                except (TypeError, ValueError):
-                    pass  # The ordinary resolver reports malformed effective JSON.
+                    raw_later = json.loads(entries['UNATTENDED_AUTH'])
+                    later = normalize_auth(raw_later)
+                    has_manager = ('password_manager' in raw_later
+                                   if isinstance(raw_later, dict) and _canonical_shape(raw_later)
+                                   else any(raw_later.values()) if isinstance(raw_later, dict) else False)
+                    if has_manager:
+                        choice = later['password_manager']
+                        if explicit_manager is not None and choice != explicit_manager:
+                            auth_error = auth_error or 'manager_conflict'
+                        explicit_manager = choice
+                    if 'UNATTENDED_AUTH' in dotenv:
+                        earlier = normalize_auth(json.loads(dotenv['UNATTENDED_AUTH']))
+                        later = {'password_manager': later['password_manager'] if has_manager else earlier['password_manager'],
+                                 'roles': {**earlier['roles'], **later['roles']}}
+                    entries['UNATTENDED_AUTH'] = json.dumps(later, ensure_ascii=False, separators=(',', ':'))
+                except (TypeError, ValueError) as exc:
+                    kind = ('manager_conflict' if 'different password managers or CLI paths' in str(exc)
+                            else 'invalid_profile')
+                    if auth_error != 'invalid_profile':
+                        auth_error = kind
             dotenv.update(entries)
             origins.update({name: self._source(path) for name in entries})
+        if auth_error:
+            dotenv['UNATTENDED_AUTH'] = json.dumps({'_auth_error': auth_error})
         # Put choices last as CLI options to re-evaluate conditional defaults and
         # applicability using the ordinary resolver, then restore UI provenance.
         argv = list(self.argv)
         boundary = argv.index('--') if '--' in argv else len(argv)
-        argv[boundary:boundary] = [f'--{name}={text}' for name, text in self._choices.items()]
+        choices = dict(self._choices)
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
         # Pack scope remains enforced except in the explicit cleanup inventory.
@@ -192,13 +304,27 @@ class ConfigSession:
                                                  required=(field.required or bool(field.required_when)) if _review else field.required,
                                                  required_when={} if _review else field.required_when)
                                    for name, field in self.schema.fields.items()})
-            if _cleanup and "HELP" in schema.fields:
-                boundary = argv.index("--") if "--" in argv else len(argv)
-                argv.insert(boundary, "--help=False")
+        if self._auth_manager_reset and 'UNATTENDED_AUTH' in schema.fields:
+            unmodified = resolve_config(schema, argv=argv, environ=self.environ,
+                                        dotenv=dotenv, anchors=self.context.anchors,
+                                        interactive=True, pack_launcher=self.context.external_pack)
+            current = unmodified.fields.get('UNATTENDED_AUTH')
+            if current is not None:
+                try:
+                    normalized = normalize_auth(current.value)
+                    normalized['password_manager'] = dict(DEFAULT_PASSWORD_MANAGER)
+                    choices['UNATTENDED_AUTH'] = json.dumps(normalized, ensure_ascii=False, separators=(',', ':'))
+                except ValueError:
+                    pass
+        boundary = argv.index('--') if '--' in argv else len(argv)
+        argv[boundary:boundary] = [f'--{name}={text}' for name, text in choices.items()]
+        if _cleanup and "HELP" in schema.fields:
+            boundary = argv.index('--') if '--' in argv else len(argv)
+            argv.insert(boundary, "--help=False")
         result = resolve_config(schema, argv=argv, environ=self.environ,
                                 dotenv=dotenv, anchors=self.context.anchors,
                                 interactive=True, pack_launcher=self.context.external_pack)
-        fields = {name: replace(value, source='interactive' if name in self._choices
+        fields = {name: replace(value, source='interactive' if name in choices
                                 else origins[name] if value.source == 'dotenv' else value.source)
                   for name, value in result.fields.items()}
         return replace(result, fields=fields)
@@ -263,16 +389,6 @@ class ConfigSession:
             DotenvEditor(path).delete(names)
         for name in names:
             self._choices.pop(name, None)
-        return self.result()
-
-    def clear_auth_config(self):
-        """Clear the selected saved profile and use attended auth for this run."""
-        if 'UNATTENDED_AUTH' in self.dotenv_keys():
-            DotenvEditor(self.dotenv_path).delete(['UNATTENDED_AUTH'])
-        # External ENV/CLI and another saved file remain unchanged. The temporary
-        # override makes this invocation attended even when those still exist.
-        self._choices['UNATTENDED_AUTH'] = '{}'
-        self._choices.pop('UNATTENDED_USER_INDEX', None)
         return self.result()
 
     def cleanup_rows(self):
