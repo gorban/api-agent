@@ -62,7 +62,7 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
             yield Static(self.title, id='auth-form-title', markup=False)
             if self.manager_form:
                 yield Static('Password manager', id='auth-first-label')
-                yield Select([('-', ''), ('Keeper', 'keeper'), ('1Password', '1password')],
+                yield Select([('-', ''), ('1Password', '1password'), ('Keeper', 'keeper')],
                              value=self.values['manager'], allow_blank=False, id='auth-manager')
                 yield Static('CLI executable path', classes='auth-next-field')
                 yield Input(value=self.values['cli_path'], id='auth-path')
@@ -159,7 +159,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             yield Static("* Only a pointer to your password-manager entry is saved.", id="auth-storage", markup=False)
         with VerticalScroll(id="auth-content"):
             yield Static("", id="auth-override", markup=False)
-            yield Static("Create a Keeper/1Password login with password and optional TOTP.\n"
+            yield Static("Create a 1Password/Keeper login with password and optional TOTP.\n"
                          "Enter its exact vault and login/item names here.\n"
                          "Duplicates of each role allowed; pair like users on same index to select them together.", id="auth-profile-help", markup=False)
             yield Static("", id="auth-workflow", markup=False)
