@@ -544,3 +544,88 @@ def test_identity_omits_parentheses_when_git_branch_check_fails(tmp_path):
     with patch('api_agent.runtime.worktrees.checkout_branch', side_effect=WorktreeGateError('cannot check')):
         app = fixture(tmp_path)
     assert app.identity_summary() == f"Base: {tmp_path}\nPack: fixture: {tmp_path}"
+
+
+def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
+    from api_agent.config import load_shared_schema, read_dotenv
+
+    async def scenario():
+        app = fixture(tmp_path)
+        app.session.environ['UI_SOURCE_DIR'] = str(tmp_path / 'ui')
+        app.schema = load_shared_schema()
+        app.session.schema = app.schema
+        app.context.anchors = {name: tmp_path for name in ('owner_root', 'base_root', 'pack_root')}
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert app.mode is None
+            assert app.screen.kind == 'defaults'
+            table = app.screen.query_one(DataTable)
+            rows = {table.get_row_at(i)[0]: table.get_row_at(i) for i in range(table.row_count)}
+            assert rows['TEST_PARALLEL_JOBS'][1] == '8'
+            assert rows['E2E_RERUNS'][1] == '2'
+            assert rows['E2E_BROWSER_RESOLUTION'][1] == '1440x900'
+            assert {'RUN_UI', 'UI_NX_APP', 'RUN_LOG_SOURCE'} <= rows.keys()
+            assert 'UI_SOURCE_DIR' not in rows
+            assert not {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH', 'NO_STD_IN', 'COLLECT_ONLY',
+                        'API_AGENT_DIR', 'E2E_DEBUG', 'AUTH_BROWSER_DEBUG', 'E2E_LOG_INDEX'} & rows.keys()
+            app.session.save_defaults(rows)
+            app.show_configuration()
+            await pilot.pause()
+            assert app.screen.query_one(DataTable).row_count == len(rows)
+            assert read_dotenv(tmp_path / '.env')['TEST_PARALLEL_JOBS'] == '8'
+        relaunched = fixture(tmp_path)
+        relaunched.session.environ['UI_SOURCE_DIR'] = str(tmp_path / 'ui')
+        relaunched.schema = app.schema
+        relaunched.session.schema = app.schema
+        relaunched.context.anchors = app.context.anchors
+        async with relaunched.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert relaunched.screen.kind == 'menu'
+    asyncio.run(scenario())
+
+
+def test_new_inactive_default_and_required_field_review(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={
+            'FUTURE_DEFAULT': {'type': 'int', 'default': 9, 'applies_when': {'TUI_MODE': 'unit'}},
+            'FUTURE_REQUIRED': {'type': 'str', 'required': True, 'applies_when': {'TUI_MODE': 'unit'}},
+        })
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            assert app.screen.query_one(DataTable).get_row_at(0)[:2] == ['FUTURE_DEFAULT', '9']
+            assert app.screen.query_one(DataTable).row_count == 1
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.screen.query_one(Input).value == '9'
+            await pilot.press('escape')
+            await pilot.pause()
+            app.session.save_defaults(['FUTURE_DEFAULT'])
+            app.session.set_value('TUI_MODE', 'unit')
+            app.show_configuration()
+            await pilot.pause()
+            assert app.screen.query_one(DataTable).get_row_at(1)[:2] == ['FUTURE_REQUIRED', 'Required — no default']
+            app.session.set_value('FUTURE_REQUIRED', 'saved', persist=True)
+            app.session.set_value('TUI_MODE', 'integration')
+            app.show_configuration()
+            await pilot.pause()
+            assert app.screen.query_one(DataTable).row_count == 1
+            assert app.screen.query_one(DataTable).get_row_at(0)[0] == 'FUTURE_DEFAULT'
+            app.session.set_value('TUI_MODE', 'unit')
+            app.show_configuration()
+            await pilot.pause()
+            assert app.screen.query_one(DataTable).get_row_at(1)[:2] == ['FUTURE_REQUIRED', 'saved']
+    asyncio.run(scenario())
+
+
+def test_conditional_only_default_with_no_matching_branch_keeps_required_row(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={
+            'CONDITIONAL': {'type': 'str', 'required': True,
+                            'conditional_defaults': [{'when': {'TUI_MODE': 'unit'}, 'value': 'unit default'}]},
+        })
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            assert app.screen.query_one(DataTable).get_row_at(0)[:2] == ['CONDITIONAL', 'Required — no default']
+    asyncio.run(scenario())

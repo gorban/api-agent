@@ -264,3 +264,19 @@ def test_unset_source_independent_of_write_target_reveals_fallback(session):
     assert 'VALUE' not in read_dotenv(base)
     assert session.saved_path('VALUE') is None
     assert session.dotenv_path == pack
+
+
+def test_default_review_ignores_mode_applicability_but_preserves_pack_scope(session):
+    from dataclasses import replace
+    session.schema.fields['DETAIL'] = replace(session.schema.fields['DETAIL'], applies_when={'TUI_MODE': 'unit'})
+    session.schema.fields['VALUE'] = replace(session.schema.fields['VALUE'], pack_only=True)
+    session.context.external_pack = False
+    session.switch_target(session.context.base_root / '.env')
+    candidates = {row.name: row for row in session.default_candidates()}
+    assert candidates['DETAIL'].value == 'low'
+    assert 'VALUE' not in candidates
+    assert 'DETAIL' not in session.result().fields
+    session.save_defaults(['DETAIL'])
+    assert read_dotenv(session.dotenv_path)['DETAIL'] == 'low'
+    assert 'DETAIL' not in session.result().fields
+    assert 'DETAIL' not in {row.name for row in session.default_candidates()}

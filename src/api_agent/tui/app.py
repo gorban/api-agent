@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from api_agent.config.declarations import UNSET
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
@@ -296,12 +297,17 @@ class ApiAgentApp(App[int]):
             self.show_required_auth()
             return
         active = set(result.fields) | set(result.missing)
+        review = self.session.result(_review=True)
+        default_names = {name for name, field in self.schema.fields.items()
+                         if field.default is not UNSET or field.conditional_defaults}
         self.review_names.update(self.configuration_pending())
         rows = []
         for name in self.schema.fields:
-            if name not in self.review_names or name not in active:
+            if name not in self.review_names or (name not in active and name not in default_names):
                 continue
-            resolved = result.fields.get(name)
+            resolved = review.fields.get(name) if name in default_names else result.fields.get(name)
+            if name in default_names and resolved is None and name not in result.missing:
+                continue
             rows.append((name, (name,
                         display(resolved.value) if resolved else "Required — no default",
                         resolved.source if resolved else "Not provided")))
@@ -344,7 +350,7 @@ class ApiAgentApp(App[int]):
         self.prompt_name = self.focused_setting()
         if not self.prompt_name:
             return
-        resolved = self.session.result().fields.get(self.prompt_name)
+        resolved = self.session.result(_review=True).fields.get(self.prompt_name)
         self.prompt_value = display(resolved.value) if resolved else ""
         self.show("input", f"Configure {self.prompt_name}",
                   f"Declared type: {self.schema.fields[self.prompt_name].type}. Enter saves this value to {self.session.dotenv_path}. Use Tab to focus actions; s switches the target outside the value input.",

@@ -113,7 +113,7 @@ class ConfigSession:
             self._restore(target, previous)
             raise
 
-    def result(self, *, _cleanup=False):
+    def result(self, *, _cleanup=False, _review=False):
         dotenv, origins = {}, {}
         for path in self.target_paths:
             entries = read_dotenv(path)
@@ -125,10 +125,13 @@ class ConfigSession:
         boundary = argv.index('--') if '--' in argv else len(argv)
         argv[boundary:boundary] = [f'--{name}={text}' for name, text in self._choices.items()]
         schema = self.schema
-        if _cleanup:
-            schema = ConfigSchema({name: replace(field, applies_when={}, pack_only=False)
+        # Default review spans modes; execution still uses ordinary applicability.
+        # Pack scope remains enforced except in the explicit cleanup inventory.
+        if _cleanup or _review:
+            schema = ConfigSchema({name: replace(field, applies_when={},
+                                                 pack_only=False if _cleanup else field.pack_only)
                                    for name, field in self.schema.fields.items()})
-            if "HELP" in schema.fields:
+            if _cleanup and "HELP" in schema.fields:
                 boundary = argv.index("--") if "--" in argv else len(argv)
                 argv.insert(boundary, "--help=False")
         result = resolve_config(schema, argv=argv, environ=self.environ,
@@ -140,7 +143,7 @@ class ConfigSession:
         return replace(result, fields=fields)
 
     def default_candidates(self):
-        result = self.result()
+        result = self.result(_review=True)
         return [DefaultCandidate(name, value, self.schema.fields[name])
                 for name, value in result.fields.items()
                 if not value.explicit and name not in _CONTROLS
