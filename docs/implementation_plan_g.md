@@ -21,6 +21,7 @@ The trees describe responsibility ownership and intended paths, not files to cre
 api-agent/
 ├── AGENTS.md
 ├── pyproject.toml
+├── launch.py                              # Default demo pack + api-agent test ownership
 ├── docs/                                  # Existing implementation plans; generated docs separately
 ├── src/api_agent/
 │   ├── __main__.py                        # Shared CLI entry point
@@ -104,3 +105,5 @@ The first implementation slice includes configuration resolution, LLM provider a
 Knowledge sources contain stable IDs, titles, aliases/user wording, entity names, keywords, canonical GraphQL path hints, explanatory notes, and instructions to confirm against the live schema. Multiple files are supported. The new importer can accept an appropriate declarative knowledge format without retaining an old application's directory layout or treating those hints as authoritative schema.
 
 Each resource pack documents its navigation data format, stable identifiers, route templates, and optional metadata. Preserve that documented contract during ingestion rather than requiring fields from a particular upstream application. Navigation hints can become graph relationships while the original generated files remain intact.
+
+Pack descriptions also select test-owner repository identity/root and per-mode test paths. The default demo uses api-agent's tests, while selected resource packs use their own declared tests. The shared TUI/runner consumes that launch context; changing directories does not change which repository a launcher represents. Pack launchers locate the base runtime through the conditional `API_AGENT_DIR` setting documented in the [configuration plan](implementation_plan_b.md).
