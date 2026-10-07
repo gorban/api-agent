@@ -1,3 +1,8 @@
+# Source-controlled configuration declarations and defaults.
+# Put your non-default values in ../.env (relative to this file; the
+# api-agent repository root), environment variables, or CLI options.
+# A selected external resource pack uses its own root .env instead.
+
 version = 1
 
 [fields.HELP]
