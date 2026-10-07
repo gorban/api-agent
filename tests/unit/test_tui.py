@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from api_agent.config import schema_from_dict
 from api_agent.testing import TestIdentity as Identity
 from api_agent.tui.app import ApiAgentApp, E2E_WARNING
-from textual.widgets import Button, DataTable, Input, Static
+from textual.widgets import Button, DataTable, Input, Select, Static
 
 
 def fixture(tmp_path, mode=None, fields=None, collector=None, argv=()):
@@ -267,8 +267,8 @@ def test_no_stdin_choice_exits_without_more_prompts(tmp_path):
             await pilot.press("e")
             await pilot.pause(0.4)
             assert app.prompt_name == "NO_STD_IN"
-            app.screen.query_one(Input).value = "True"
-            await pilot.press("enter")
+            app.screen.query_one(Select).value = "True"
+            await pilot.click("#submit")
             await pilot.pause(0.4)
             assert app.return_value == 2
             assert "Restart" in app.console_error
@@ -332,8 +332,8 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             table.move_cursor(row=0)
             await pilot.press("e")
             await pilot.pause(0.4)
-            app.screen.query_one(Input).value = "False"
-            await pilot.press("enter")
+            app.screen.query_one(Select).value = "False"
+            await pilot.click("#submit")
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
             assert table.row_count == 2
@@ -345,8 +345,8 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             assert app.screen.kind == "defaults"
             await pilot.press("e")
             await pilot.pause(0.4)
-            app.screen.query_one(Input).value = "True"
-            await pilot.press("enter")
+            app.screen.query_one(Select).value = "True"
+            await pilot.click("#submit")
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
             assert table.row_count == 2
@@ -684,8 +684,8 @@ def test_optional_trace_rows_and_conditional_target_review(tmp_path):
             assert not (tmp_path / '.env').exists()
             await pilot.press('e')
             await pilot.pause()
-            assert app.screen.query_one(Input).value == ''
-            app.screen.query_one(Input).value = 'LangFuse'
+            assert app.screen.query_one(Select).value == ''
+            app.screen.query_one(Select).value = 'LangFuse'
             await pilot.click('#submit')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
@@ -728,22 +728,41 @@ def test_optional_trace_review_does_not_block_mode_or_repeat_explicit_settings(t
     asyncio.run(scenario())
 
 
-def test_enum_edit_lists_blank_choice_and_spaces_target_section(tmp_path):
+def test_enum_edit_dropdown_saves_blank_and_trace_mode(tmp_path):
     async def scenario():
-        app = fixture(tmp_path, fields={'TRACE_MODE': {'type': 'str', 'enum': ['', 'LangFuse', 'OTEL'], 'review_optional': True}})
+        app = fixture(tmp_path, fields={
+            'TRACE_MODE': {'type': 'str', 'enum': ['', 'LangFuse', 'OTEL'], 'review_optional': True},
+            'TRACE_TARGET': {'type': 'str', 'review_optional': True, 'conditional_defaults': [
+                {'when': {'TRACE_MODE': 'LangFuse'}, 'value': 'http://localhost:3000'}]}})
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
             await pilot.press('e')
             await pilot.pause()
-            hint = app.screen.query_one('#enum-info', Static)
-            assert str(hint.content) == 'Enum (str) — exact values: <blank>, LangFuse, OTEL'
-            value = app.screen.query_one(Input)
-            assert hint.region.y > value.region.bottom
-            assert app.screen.query_one('#dotenv-targets').region.y > hint.region.bottom
-            value.value = 'langfuse'
-            await pilot.press('enter')
+            picker = app.screen.query_one('#config-value', Select)
+            assert not app.screen.query(Input)
+            assert picker.value == ''
+            assert not app.screen.query('#enum-info')
+            await pilot.press('enter', 'down', 'enter')
+            assert picker.value == 'LangFuse'
+            await pilot.click('#submit')
             await pilot.pause()
-            assert 'expected one of <blank>, LangFuse, OTEL' in str(app.screen.query_one('#error', Static).content)
+            assert app.session.result(_review=True).values['TRACE_MODE'] == 'LangFuse'
+            assert app.session.result(_review=True).values['TRACE_TARGET'] == 'http://localhost:3000'
+            await pilot.press('e')
+            await pilot.pause()
+            picker = app.screen.query_one('#config-value', Select)
+            assert picker.value == 'LangFuse'
+            picker.value = 'OTEL'
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values['TRACE_MODE'] == 'OTEL'
+            await pilot.press('e')
+            await pilot.pause()
+            app.screen.query_one('#config-value', Select).value = ''
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values['TRACE_MODE'] == ''
+            assert 'TRACE_MODE=\"\"' in (tmp_path / '.env').read_text()
     asyncio.run(scenario())
 
 
@@ -1374,4 +1393,98 @@ def test_explicit_unit_mode_bypasses_setup_and_defaults_and_renders_parameter_id
                 'test_finished', 'base', identity=item, status='passed', duration=1))
             await pilot.pause(.2)
             assert str(app.screen.query_one(DataTable).get_row_at(0)[1]) == item.id
+    asyncio.run(scenario())
+
+
+def test_boolean_dropdown_saves_typed_true_and_false(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'LOG_CONTENT': {'type': 'bool', 'default': False}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            await pilot.press('e')
+            await pilot.pause()
+            picker = app.screen.query_one('#config-value', Select)
+            assert picker.value == 'False'
+            assert not app.screen.query(Input)
+            picker.value = 'True'
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values['LOG_CONTENT'] is True
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.screen.query_one('#config-value', Select).value == 'True'
+            app.screen.query_one('#config-value', Select).value = 'False'
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values['LOG_CONTENT'] is False
+    asyncio.run(scenario())
+
+
+def test_required_boolean_dropdown_does_not_invent_missing_value(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'ENABLED': {'type': 'bool', 'required': True}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            await pilot.press('e')
+            await pilot.pause()
+            picker = app.screen.query_one('#config-value', Select)
+            assert picker.value is Select.NULL
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.screen.kind == 'input'
+            assert 'Select a value for ENABLED' in str(app.screen.query_one('#error', Static).content)
+            assert not (tmp_path / '.env').exists()
+            picker.value = 'False'
+            # Let the first button press animation finish before pressing it again.
+            await pilot.pause(0.5)
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values['ENABLED'] is False
+    asyncio.run(scenario())
+
+
+def test_dropdown_value_survives_target_switch_and_enum_int_stays_typed(tmp_path):
+    async def scenario():
+        base, pack = tmp_path / 'base', tmp_path / 'pack'
+        base.mkdir()
+        pack.mkdir()
+        app = fixture(base, fields={'CHOICE': {'type': 'int', 'enum': [1, 2], 'default': 1}})
+        app.context.pack_root = pack
+        app.context.external_pack = True
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            await pilot.press('e')
+            await pilot.pause()
+            picker = app.screen.query_one('#config-value', Select)
+            picker.value = '2'
+            previous = app.session.dotenv_path
+            await pilot.click('#switch-target')
+            await pilot.pause()
+            assert app.session.dotenv_path != previous
+            assert picker.value == '2'
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values['CHOICE'] == 2
+            assert app.session.result(_review=True).fields['CHOICE'].source == app.session._source(app.session.dotenv_path)
+    asyncio.run(scenario())
+
+
+def test_path_enum_dropdown_recognizes_anchored_effective_value(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'LOCATION': {
+            'type': 'path', 'anchor': 'base_root', 'enum': ['one', 'two'], 'default': 'one'}})
+        app.context.anchors = {'base_root': tmp_path}
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            await pilot.press('e')
+            await pilot.pause()
+            picker = app.screen.query_one('#config-value', Select)
+            assert picker.value == 'one'
+            picker.value = 'two'
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values['LOCATION'] == tmp_path / 'two'
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.screen.query_one('#config-value', Select).value == 'two'
     asyncio.run(scenario())

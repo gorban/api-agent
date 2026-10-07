@@ -6,7 +6,7 @@ import json
 import threading
 from rich.text import Text
 from api_agent.config.declarations import UNSET
-from api_agent.config.resolve import ConfigError
+from api_agent.config.resolve import ConfigError, convert_value
 from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
                                           reconcile_results_table, styled_summary)
@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen, ModalScreen
-from textual.widgets import Button, DataTable, Footer, Input, Static
+from textual.widgets import Button, DataTable, Footer, Input, Select, Static
 
 MODES = (("run-local", "Run local"), ("unit", "Unit tests w/ coverage"),
          ("integration", "Integration tests"), ("e2e", "E2E tests"),
@@ -188,12 +188,18 @@ class WorkbenchScreen(FocusNavigation, Screen):
             if self.rows:
                 yield DataTable(id="choices", cursor_type="row")
             if self.kind == "input":
-                yield Input(id="config-value")
                 field = app.schema.fields[app.prompt_name]
-                if field.enum:
-                    from api_agent.config.resolve import format_enum_values
-                    yield Static(f"Enum ({field.type}) — exact values: {format_enum_values(field.enum)}",
-                                 id="enum-info", markup=False)
+                choices = field.enum or ((True, False) if field.type == 'bool' else ())
+                if choices:
+                    options = [(Text('-' if value == '' else display(value)), display(value)) for value in choices]
+                    current = next((display(value) for value in choices
+                                    if display(convert_value(field, value, external=False,
+                                                             anchors=app.context.anchors)) == app.prompt_value),
+                                   Select.NULL)
+                    yield Select(options, value=current, allow_blank=current is Select.NULL,
+                                 prompt='-', id='config-value')
+                else:
+                    yield Input(id="config-value")
             if self.kind not in {"cleanup", "test-results"}:
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions") as actions:
@@ -237,8 +243,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 table.move_cursor(row=0)
             table.focus()
         elif self.kind == "input":
-            self.query_one(Input).value = self.app.prompt_value
-            self.query_one(Input).focus()
+            control = self.query_one('#config-value')
+            if isinstance(control, Input):
+                control.value = self.app.prompt_value
+            control.focus()
         elif self.actions:
             self.query_one(Button).focus()
         if self.kind == "suggest":
@@ -331,6 +339,12 @@ class WorkbenchScreen(FocusNavigation, Screen):
     async def on_button_pressed(self, event):
         await self.app.choose(event.button.id)
 
+    def config_value(self):
+        value = self.query_one('#config-value').value
+        if value is Select.NULL:
+            raise ValueError(f'Select a value for {self.app.prompt_name} before saving.')
+        return value
+
     async def on_input_submitted(self, event):
         await self.app.choose("submit")
 
@@ -390,7 +404,6 @@ class ApiAgentApp(App[int]):
     CSS = """
     Screen { padding: 1 2; }
     #dotenv-targets { height: auto; margin-top: 1; margin-bottom: 1; }
-    #enum-info { height: auto; margin-top: 1; margin-bottom: 1; }
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
@@ -464,7 +477,6 @@ class ApiAgentApp(App[int]):
 
     def switch_target(self):
         kind = self.screen.kind
-        value = self.screen.query_one(Input).value if kind == "input" else None
         self.session.switch_target()
         if kind == "cleanup":
             self.show_cleanup()
@@ -472,7 +484,6 @@ class ApiAgentApp(App[int]):
             self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
             self.screen.query_one("#body", Static).update(
                 f"Declared type: {self.schema.fields[self.prompt_name].type}. Use Tab to focus actions; s switches the target outside the value input.")
-            self.screen.query_one(Input).value = value
         elif kind == "defaults":
             self.show_configuration()
         else:
@@ -1019,7 +1030,7 @@ class ApiAgentApp(App[int]):
             elif key == "skip":
                 await self.start_configuration()
             elif key == "submit":
-                value = self.screen.query_one(Input).value
+                value = self.screen.config_value()
                 self.session.set_value(self.prompt_name, value, persist=True)
                 self.operation_status = 0
                 if self.session.result().values.get("NO_STD_IN"):
