@@ -2,9 +2,13 @@
 
 The shared Python runtime is being rebuilt. The foundation implements typed configuration, resource-pack discovery, source launchers, and a Git/worktree provenance gate. The interactive TUI, test runner, authentication, providers, and application API are the next implementation group. `--help` works; other operations currently return a clear nonzero "pending Segment B" result and start no tests or services.
 
+## Prerequisites
+
+Use Python 3.13 or newer, Git on PATH (required by the launcher's provenance gate), and `uv` for the development setup below. The current foundation has no third-party runtime dependencies; development tools are installed into each repository's own `.venv`.
+
 ## Development setup
 
-Use Python 3.13 or newer and a project virtual environment. From this repository:
+Run these commands from `api-agent`:
 
 ```sh
 uv venv --python python3 .venv
