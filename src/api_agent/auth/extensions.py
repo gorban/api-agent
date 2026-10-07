@@ -54,3 +54,22 @@ def load_identity_adapter(context, config):
         raise IdentityExtensionError('Identity extension failed to initialize; check its declaration and configuration') from None
     finally:
         sys.modules.pop(name, None)
+
+
+class OperationUnavailableError(ValueError):
+    """An explicitly safe, pack-owned execution blocker for user display."""
+
+
+def validate_operation(context, config):
+    """Run optional pack-owned checks only at accepted execution boundaries."""
+    if getattr(context, 'identity_factory_path', None) is None:
+        return
+    adapter = load_identity_adapter(context, config)
+    try:
+        validator = getattr(adapter, 'validate_operation', None)
+        if validator is not None:
+            validator()
+    except OperationUnavailableError:
+        raise
+    except Exception:
+        raise IdentityExtensionError('Operation preflight failed; check pack configuration') from None

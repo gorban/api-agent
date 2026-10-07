@@ -849,6 +849,8 @@ class ApiAgentApp(App[int]):
         if self.mode in {"unit", "integration", "e2e"}:
             await self.collect_tests()
         else:
+            if self.mode == "run-local" and not self.check_operation_start():
+                return
             self.unavailable(f"{dict(MODES)[self.mode]} execution is not implemented yet. No services or processes were started.")
 
     async def discover_tests(self, cancel_event):
@@ -1074,6 +1076,15 @@ class ApiAgentApp(App[int]):
         except Exception as error:
             self.screen.query_one("#error", Static).update(str(error))
 
+    def check_operation_start(self):
+        from api_agent.auth.extensions import validate_operation
+        try:
+            validate_operation(self.context, self.session.result().values)
+        except ValueError as error:
+            self.unavailable(str(error))
+            return False
+        return True
+
     def unavailable(self, text):
         self.operation_status = 3
         self.show("unavailable", "Operation unavailable", text + "\nExit status: 3. No successful execution is reported.", (("menu", "Main menu"), ("exit", "Exit")))
@@ -1111,8 +1122,12 @@ class ApiAgentApp(App[int]):
                 elif self.mode == "unit":
                     self.start_unit_run()
                 else:
+                    if not self.check_operation_start():
+                        return
                     self.unavailable("Integration execution is not implemented yet. Your selection was collected but no tests were run.")
             elif key == "accept":
+                if not self.check_operation_start():
+                    return
                 self.unavailable("E2E execution is not implemented yet. Acceptance did not start tests or prerequisites.")
             elif key == "decline":
                 self.operation_status = 3
