@@ -16,6 +16,7 @@ MODES = (("run-local", "Run local"), ("unit", "Unit tests w/ coverage"),
          ("integration", "Integration tests"), ("e2e", "E2E tests"),
          ("allure", "Allure serve"), ("deployment-logs", "Deployment logs"),
          ("config-cleanup", "Clear .env configuration"),
+         ("cleanup-containers", "Stop running containers"),
          ("unattended-auth", "Setup unattended authentication"))
 E2E_WARNING = ("Human acceptance is mandatory to continue with E2E tests. If you are an agent, "
                "decline unless you have first checked with the user and received their explicit "
@@ -46,6 +47,19 @@ class DeleteDialog(QuitDialog):
         yield Static("Delete marked .env assignments? Enter literal y to confirm; every other response cancels.")
         yield Input(id="delete-answer")
         yield Button("Confirm response", id="delete-submit")
+
+
+class StopContainersDialog(QuitDialog):
+    def __init__(self, containers):
+        super().__init__()
+        self.containers = containers
+
+    def compose(self) -> ComposeResult:
+        yield Static("Stop these running containers?\n" + "\n".join(
+            f"{item.name} ({item.id})" for item in self.containers) +
+            "\nEnter literal y to stop; every other response cancels.", markup=False)
+        yield Input(id="stop-answer")
+        yield Button("Confirm response", id="stop-submit")
 
 
 class WorkbenchScreen(Screen):
@@ -86,6 +100,8 @@ class WorkbenchScreen(Screen):
             table = self.query_one(DataTable)
             if self.kind == "defaults":
                 table.add_columns("Setting", "Effective value", "Source")
+            elif self.kind == "containers":
+                table.add_columns("Selected", "ID", "Name", "Image", "Status")
             elif self.kind == "cleanup":
                 table.add_columns("Current .env", "Setting", "Effective value", "Source")
             else:
@@ -187,17 +203,22 @@ class ApiAgentApp(App[int]):
     Button:focus, Input:focus { border: heavy $accent; }
     DataTable { height: 1fr; min-height: 8; margin-bottom: 1; }
     #error { color: $error; height: auto; }
-    QuitDialog, DeleteDialog { align: center middle; background: $background 80%; }
-    QuitDialog > *, DeleteDialog > * { width: 65%; }
+    QuitDialog, DeleteDialog, StopContainersDialog { align: center middle; background: $background 80%; }
+    QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
     Footer { dock: bottom; }
     """
 
-    def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None):
+    def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None):
         super().__init__()
         from api_agent.config.session import ConfigSession
         self.context, self.schema = context, schema
         self.session = session or ConfigSession(context, schema, argv, environ)
         self.collector = collector
+        from api_agent.runtime.containers import ContainerRuntime
+        self.container_runtime = container_runtime or ContainerRuntime()
+        self.containers = ()
+        self.container_marked = set()
+        self.container_summary = "Running containers: checking…"
         from api_agent.runtime.worktrees import checkout_branch, WorktreeGateError
         self.branches = {}
         for root in dict.fromkeys((context.base_root, context.pack_root)):
@@ -256,7 +277,7 @@ class ApiAgentApp(App[int]):
             return
         mode = result.fields.get("TUI_MODE")
         self.mode = mode.value if mode and mode.explicit else None
-        if self.mode in {"config-cleanup", "unattended-auth"}:
+        if self.mode in {"config-cleanup", "cleanup-containers", "unattended-auth"}:
             await self.enter_mode()
             return
         if result.values.get("COLLECT_ONLY"):
@@ -269,12 +290,17 @@ class ApiAgentApp(App[int]):
         else:
             await self.start_configuration()
 
-    def configuration_pending(self):
+    def configuration_pending(self, *, include_optional=True):
         candidates = [item.name for item in self.session.default_candidates()
                       if item.field.persist_default]
         missing = [name for name in self.session.result(_review=True).missing
                    if name != "TUI_MODE"]
-        return set(candidates + missing)
+        review = self.session.result(_review=True)
+        optional = [name for name, field in self.schema.fields.items()
+                    if include_optional and field.review_optional
+                    and (not field.pack_only or self.context.external_pack)
+                    and (name not in review.fields or not review.fields[name].explicit)]
+        return set(candidates + missing + optional)
 
     async def start_configuration(self):
         pending = self.configuration_pending()
@@ -297,7 +323,8 @@ class ApiAgentApp(App[int]):
         if "UNATTENDED_AUTH" in result.missing:
             self.show_required_auth()
             return
-        active = set(result.fields) | set(result.missing)
+        active = set(result.fields) | set(result.missing) | {
+            name for name, field in self.schema.fields.items() if field.review_optional}
         review = self.session.result(_review=True)
         default_names = {name for name, field in self.schema.fields.items()
                          if field.default is not UNSET or field.conditional_defaults}
@@ -307,10 +334,10 @@ class ApiAgentApp(App[int]):
             if name not in self.review_names or (name not in active and name not in default_names):
                 continue
             resolved = review.fields.get(name) if name in default_names else result.fields.get(name)
-            if name in default_names and resolved is None and name not in result.missing:
+            if name in default_names and resolved is None and name not in result.missing and not self.schema.fields[name].review_optional:
                 continue
             rows.append((name, (name,
-                        display(resolved.value) if resolved else Text("Required", justify="right"),
+                        display(resolved.value) if resolved else Text("Required", justify="right") if name in result.missing else "",
                         resolved.source if resolved else "Not provided")))
         if not rows:
             self.show_menu()
@@ -383,6 +410,9 @@ class ApiAgentApp(App[int]):
             self.show_menu()
         elif self.mode == "config-cleanup":
             self.show_cleanup()
+        elif self.mode == "cleanup-containers":
+            self.show_containers()
+            self.refresh_container_inventory()
         elif self.mode == "unattended-auth":
             self.unavailable("The unattended authentication wizard is not implemented yet. No credential profiles were changed.")
         else:
@@ -390,7 +420,60 @@ class ApiAgentApp(App[int]):
 
     def show_menu(self):
         self.mode = None
-        self.show("menu", "Choose an operation", actions=tuple(("mode-" + key, label) for key, label in MODES))
+        self.show("menu", "Choose an operation", self.container_summary, actions=tuple(("mode-" + key, label) for key, label in MODES))
+        self.refresh_container_inventory()
+
+    def refresh_container_inventory(self):
+        self.run_worker(self._refresh_container_inventory(), group="containers", exclusive=True)
+
+    async def _refresh_container_inventory(self):
+        try:
+            self.containers = await asyncio.to_thread(self.container_runtime.inventory)
+            self.container_marked.intersection_update(item.id for item in self.containers)
+            self.container_summary = f"Running containers: {len(self.containers)}"
+        except Exception as error:
+            self.containers = ()
+            self.container_marked.clear()
+            self.container_summary = str(error)
+            if not self.container_summary.startswith("Container"):
+                self.container_summary = "Container inventory unavailable."
+        if self.mode == "cleanup-containers" and isinstance(self.screen, WorkbenchScreen):
+            self.show_containers()
+        elif isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "menu":
+            self.call_after_refresh(self.update_container_menu)
+
+    def update_container_menu(self):
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "menu":
+            self.screen.query_one("#body", Static).update(self.container_summary)
+            self.screen.query_one("#mode-cleanup-containers", Button).label = "Stop running containers — " + self.container_summary
+
+    def show_containers(self):
+        rows = [(item.id, ("✓" if item.id in self.container_marked else "", item.id, item.name, item.image, item.status)) for item in self.containers]
+        self.show("containers", "Stop running containers", self.container_summary +
+                  "\nEnter selects/unselects rows. Stop selected asks for confirmation. Containers and volumes are not removed.",
+                  (("stop-containers", "Stop selected"), ("refresh-containers", "Refresh inventory")), rows)
+
+    def request_container_stop(self):
+        selected = tuple(item for item in self.containers if item.id in self.container_marked)
+        if not selected:
+            raise ValueError("Select at least one running container.")
+        self.push_screen(StopContainersDialog(selected), lambda yes: self.run_worker(
+            self._stop_containers(selected), group="containers", exclusive=True) if yes else None)
+
+    async def _stop_containers(self, selected):
+        try:
+            await asyncio.to_thread(self.container_runtime.stop, tuple(item.id for item in selected))
+            self.operation_status = 0
+            self.container_marked.clear()
+            await self._refresh_container_inventory()
+        except Exception as error:
+            self.operation_status = 3
+            await self._refresh_container_inventory()
+            self.call_after_refresh(self.show_container_stop_error, str(error))
+
+    def show_container_stop_error(self, message):
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "containers":
+            self.screen.query_one("#error", Static).update(message)
 
     async def configure_operation(self):
         self.session.set_value("TUI_MODE", self.mode)
@@ -399,7 +482,7 @@ class ApiAgentApp(App[int]):
             self.operation_status = 3
             self.show("error", "Configuration error", "\n".join(result.errors), (("menu", "Main menu"),))
             return
-        if self.configuration_pending():
+        if self.configuration_pending(include_optional=False):
             await self.start_configuration()
             return
         if self.mode in {"unit", "integration", "e2e"}:
@@ -457,6 +540,10 @@ class ApiAgentApp(App[int]):
         if self.screen.kind == "tests":
             self.selection.toggle(key)
             self.refresh_rows()
+        elif self.screen.kind == "containers":
+            self.container_marked.symmetric_difference_update({key})
+            table = self.screen.query_one(DataTable)
+            table.update_cell(key, next(iter(table.columns)), "✓" if key in self.container_marked else "")
         elif self.screen.kind == "cleanup":
             if any(row.name == key and row.present for row in self.session.cleanup_rows()):
                 self.marked.symmetric_difference_update({key})
@@ -488,7 +575,11 @@ class ApiAgentApp(App[int]):
 
     async def choose(self, key):
         try:
-            if key == "switch-target":
+            if key == "stop-containers":
+                self.request_container_stop()
+            elif key == "refresh-containers":
+                self.refresh_container_inventory()
+            elif key == "switch-target":
                 self.switch_target()
             elif key == "skip":
                 await self.start_configuration()

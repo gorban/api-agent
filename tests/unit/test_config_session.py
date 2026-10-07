@@ -297,3 +297,36 @@ def test_resource_pack_token_is_reviewed_before_mode_selection(session):
     assert 'PACK_TEST_TOKEN' not in pack_session.result().missing
     demo = ConfigSession(session.context, shared, environ={})
     assert 'PACK_TEST_TOKEN' not in demo.result(_review=True).missing
+
+
+def test_trace_conditional_defaults_preserve_explicit_target(session):
+    from api_agent.config.declarations import load_shared_schema, UNSET
+    session.schema = load_shared_schema()
+    assert session.schema.fields['TRACE_MODE'].default is UNSET
+    assert session.schema.fields['TRACE_TARGET'].default is UNSET
+    assert not {'TRACE_MODE', 'TRACE_TARGET'} & set(session.result().values)
+    assert session.result().values['LOG_CONTENT'] is False
+    assert not session.result().fields['LOG_CONTENT'].explicit
+    with pytest.raises(ConfigError):
+        session.save_defaults(['TRACE_MODE'])
+    with pytest.raises(ConfigError):
+        session.save_defaults(['TRACE_TARGET'])
+    session.set_value('TRACE_MODE', 'LangFuse')
+    assert session.result().values['TRACE_TARGET'] == 'http://localhost:3000'
+    assert session.result().fields['TRACE_TARGET'].source == 'shared_default'
+    session.set_value('TRACE_MODE', 'OTEL')
+    assert session.result().values['TRACE_TARGET'] == 'http://localhost:4318/v1/traces'
+    session.set_value('TRACE_TARGET', 'https://collector.example/traces', persist=True)
+    session.set_value('TRACE_MODE', 'LangFuse')
+    assert session.result().values['TRACE_TARGET'] == 'https://collector.example/traces'
+    assert session.result().fields['TRACE_TARGET'].explicit
+    session.set_value('TRACE_MODE', '')
+    assert session.result().values['TRACE_TARGET'] == 'https://collector.example/traces'
+    with pytest.raises(ConfigError):
+        session.set_value('TRACE_MODE', 'otel')
+
+
+def test_review_optional_metadata_is_strict_boolean():
+    with pytest.raises(ValueError, match='review_optional must be boolean'):
+        schema_from_dict({'version': 1, 'fields': {'OPTION': {
+            'type': 'str', 'review_optional': 'true'}}})

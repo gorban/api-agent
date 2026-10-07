@@ -1,0 +1,18 @@
+# Tracing before the first Ok graph run
+
+## Completed declaration slice
+
+- [x] Add optional TRACE_MODE/TRACE_TARGET with generic optional-review metadata, conditional local endpoint defaults, dynamic review updates, and LOG_CONTENT=False. Live exporters, content gating and Compose lifecycle remain tasks below.
+
+## Checklist
+
+- [ ] Declare shared optional `TRACE_MODE` without a default: omitted/empty disables tracing; exact `LangFuse` or `OTEL` selects the backend. Declare optional `TRACE_TARGET` without an unconditional default. Show both fields in configuration review even when not provided. A missing optional field has a blank effective value and `Not provided` source, without a Required marker.
+- [ ] Use conditional target defaults: LangFuse `http://localhost:3000`; OTEL `http://localhost:4318/v1/traces` (OTLP/HTTP). Changing mode recomputes target and Source while target is still defaulted. An explicitly saved/environment/CLI target stays explicit when mode changes; unset it to resume conditional defaults. Preserve config precedence and validate backend/endpoint combinations before startup.
+- [ ] Before the first Ok integration/E2E run, wire LangGraph, node and provider tracing to the selected backend/target. Disabled mode creates no exporter or tracer containers. Correlate session/suite/test/attempt identifiers and token metrics; flush on completion, cancellation and shutdown. LangFuse may require public/secret keys; declare appropriate conditional authentication configuration when implementing, with headless local provisioning and no secrets in trace payloads.
+- [ ] Design local tracing setup from the public [Langfuse Docker Compose documentation](https://langfuse.com/self-hosting/deployment/docker-compose) and [headless initialization documentation](https://langfuse.com/self-hosting/administration/headless-initialization). Pin the selected upstream release and use its documented dependency stack and initialization settings to provision a local project and API keys. Keep credentials out of committed configuration and trace payloads.
+- [ ] Add separate Compose `langfuse` and `otel` profiles. When tracing is enabled and the effective target equals that mode's local default endpoint, start/reuse its local stack; remote/custom targets start no local tracer. Use Jaeger all-in-one for the local OTEL route, exposing OTLP HTTP port 4318 and UI port 16686. Verify the selected supported image and pin it when implementing.
+- [ ] For local runs, stop tracer containers started/owned by that local invocation when quitting the TUI. Do not stop a reused tracer owned by another active invocation. For integration/E2E, retain the stack after completion for inspection and reuse on later runs; check health/configuration before reuse, reject incompatible stacks, and record ownership/configuration metadata.
+- [ ] Implement the [LOG_CONTENT emission gate](implementation_plan_j.md) before exporting the first Ok trace. Declare default False now. Only explicitly supplied True permits user/LLM/tool content; credentials remain excluded even with True. Verify omitted/default/False scrubbing and explicit-True behavior for both backends.
+- [ ] Add deterministic config/lifecycle/export tests and targeted human-reviewed integration checks for both backends before the Ok milestone. Confirm retained test traces remain viewable, subsequent tests reuse the stack, remote tracing starts no container, and local-run shutdown respects ownership.
+
+Jaeger endpoint evidence: [official deployment ports and protocols](https://www.jaegertracing.io/docs/1.76/deployment/) and [current OTLP APIs](https://www.jaegertracing.io/docs/2.21/architecture/apis/). OTLP HTTP traces use `/v1/traces`; the browser UI is a separate endpoint.

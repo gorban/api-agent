@@ -117,7 +117,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                               for name in result.missing)
             if result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'} and not result.values.get('COLLECT_ONLY'):
                 errors.append('NO_STD_IN=True is incompatible with integration/E2E execution; collection-only is allowed.')
-            if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'unattended-auth'}:
+            if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'cleanup-containers', 'unattended-auth'}:
                 errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')
             if result.values.get('COLLECT_ONLY') and mode is not None and mode not in {'unit', 'integration', 'e2e'}:
                 errors.append('COLLECT_ONLY requires unit, integration, or e2e mode.')
@@ -204,6 +204,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
                   '',
                   'Modes: run-local starts local services/UI; unit runs base plus pack units;',
                   'integration and e2e select pack suites; allure opens reports; deployment-logs shows deployment logs;',
-                  'config-cleanup reviews persisted options; unattended-auth configures credential profiles.',
+                  'config-cleanup reviews persisted options; cleanup-containers stops selected running containers;',
+                  'unattended-auth configures credential profiles.',
                   ])
     return '\n'.join(lines)

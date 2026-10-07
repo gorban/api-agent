@@ -6,6 +6,23 @@
 
 version = 1
 
+[fields.TRACE_MODE]
+type = "str"
+enum = ["", "LangFuse", "OTEL"]
+review_optional = true
+help = "Trace exporter mode. Empty disables tracing; LangFuse and OTEL select an exporter."
+
+[fields.TRACE_TARGET]
+type = "str"
+review_optional = true
+conditional_defaults = [{when = {TRACE_MODE = "LangFuse"}, value = "http://localhost:3000"}, {when = {TRACE_MODE = "OTEL"}, value = "http://localhost:4318/v1/traces"}]
+help = "Optional trace destination. Defaults to the selected trace mode's local endpoint."
+
+[fields.LOG_CONTENT]
+type = "bool"
+default = false
+help = "Only explicitly setting LOG_CONTENT=True enables message and tool content logging; tracing does not enable content logging."
+
 [fields.HELP]
 type = "bool"
 default = false
@@ -29,7 +46,7 @@ help = "Collect test identities without executing tests or prerequisites."
 
 [fields.TUI_MODE]
 type = "str"
-enum = ["run-local", "unit", "integration", "e2e", "allure", "deployment-logs", "config-cleanup", "unattended-auth"]
+enum = ["run-local", "unit", "integration", "e2e", "allure", "deployment-logs", "config-cleanup", "cleanup-containers", "unattended-auth"]
 help = "Select an operation; positional test selectors require an explicit test mode."
 [fields.TUI_MODE.required_when]
 NO_STD_IN = true

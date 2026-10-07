@@ -19,7 +19,7 @@ def fixture(tmp_path, mode=None, fields=None, collector=None):
     environ = {"UNATTENDED_AUTH": '{"LLM User":[{"manager":"keeper","cli_path":"/bin/keeper","vault":"fixture","user":"fixture"}]}'}
     if mode:
         environ["TUI_MODE"] = mode
-    return ApiAgentApp(context, schema, environ=environ, collector=collector)
+    return ApiAgentApp(context, schema, environ=environ, collector=collector, container_runtime=SimpleNamespace(inventory=lambda: ()))
 
 
 def test_defaults_save_and_typed_prompt(tmp_path):
@@ -570,7 +570,8 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             assert 'UI_SOURCE_DIR' not in rows
             assert not {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH', 'NO_STD_IN', 'COLLECT_ONLY',
                         'API_AGENT_DIR', 'E2E_DEBUG', 'AUTH_BROWSER_DEBUG', 'E2E_LOG_INDEX'} & rows.keys()
-            app.session.save_defaults(rows)
+            app.session.save_defaults(item.name for item in app.session.default_candidates()
+                                      if item.field.persist_default)
             app.show_configuration()
             await pilot.pause()
             assert app.screen.query_one(DataTable).row_count == len(rows)
@@ -582,7 +583,9 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
         relaunched.context.anchors = app.context.anchors
         async with relaunched.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
-            assert relaunched.screen.kind == 'menu'
+            assert relaunched.screen.kind == 'defaults'
+            table = relaunched.screen.query_one(DataTable)
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET']
     asyncio.run(scenario())
 
 
@@ -631,4 +634,70 @@ def test_conditional_only_default_with_no_matching_branch_keeps_required_row(tmp
             await pilot.pause()
             assert app.screen.kind == 'defaults'
             assert app.screen.query_one(DataTable).get_row_at(0)[:2] == ['CONDITIONAL', Text("Required", justify="right")]
+    asyncio.run(scenario())
+
+
+def test_optional_trace_rows_and_conditional_target_review(tmp_path):
+    from api_agent.config.declarations import load_shared_schema
+    declarations = load_shared_schema().fields
+    fields = {name: {'type': declarations[name].type,
+                     'enum': list(declarations[name].enum),
+                     'conditional_defaults': list(declarations[name].conditional_defaults),
+                     'review_optional': True}
+              for name in ('TRACE_MODE', 'TRACE_TARGET')}
+
+    async def scenario():
+        app = fixture(tmp_path, fields=fields)
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(0) == ['TRACE_MODE', '', 'Not provided']
+            assert table.get_row_at(1) == ['TRACE_TARGET', '', 'Not provided']
+            assert not app.focused_default()
+            await pilot.press('a')
+            assert not (tmp_path / '.env').exists()
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.screen.query_one(Input).value == ''
+            app.screen.query_one(Input).value = 'LangFuse'
+            await pilot.click('#submit')
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(1) == ['TRACE_TARGET', 'http://localhost:3000', 'shared_default']
+            app.session.set_value('TRACE_MODE', 'OTEL')
+            app.show_configuration()
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(1) == ['TRACE_TARGET', 'http://localhost:4318/v1/traces', 'shared_default']
+            table.move_cursor(row=1)
+            assert app.focused_default()
+            await pilot.press('a')
+            await pilot.pause()
+            app.session.set_value('TRACE_MODE', 'LangFuse')
+            app.show_configuration()
+            await pilot.pause()
+            assert app.screen.query_one(DataTable).get_row_at(1)[1] == 'http://localhost:4318/v1/traces'
+    asyncio.run(scenario())
+
+
+def test_optional_trace_review_does_not_block_mode_or_repeat_explicit_settings(tmp_path):
+    fields = {'TRACE_MODE': {'type': 'str', 'review_optional': True},
+              'TRACE_TARGET': {'type': 'str', 'review_optional': True}}
+    async def scenario():
+        app = fixture(tmp_path, fields=fields)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            await pilot.press('c')
+            await pilot.pause()
+            await pilot.click('#mode-run-local')
+            await pilot.pause()
+            assert app.screen.kind == 'unavailable'
+        configured = fixture(tmp_path, fields=fields)
+        configured.session.set_value('TRACE_MODE', '', persist=True)
+        configured.session.set_value('TRACE_TARGET', '', persist=True)
+        async with configured.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert configured.screen.kind == 'menu'
     asyncio.run(scenario())

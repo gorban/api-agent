@@ -2,6 +2,8 @@
 
 ## Checklist
 
+- [ ] Complete [LangFuse and OTEL tracing](implementation_plan_k.md), [content scrubbing](implementation_plan_j.md), and [retained-container cleanup](implementation_plan_l.md) before the first live Ok integration/E2E run.
+
 - [ ] Establish [Allure reporting](implementation_plan_d.md) before the first integration or E2E test in this milestone, and persist results from the very first run to retain the implementation's development history. Exclude unit tests from Allure; require deterministic unit tests without live LLM calls and a 100% pass rate for every commit.
 - [ ] Implement the [declarative configuration format and runtime parser](implementation_plan_b.md) as prerequisites for this milestone. Use it for application and TUI configuration, including required types, defaults/optional values, `.env`/environment/CLI precedence, and missing-value handling described in the [TUI plan](implementation_plan_a.md). Graph Layout construction remains the later extension.
 - [ ] Implement authentication to the LLM provider for this milestone, including login/callback/session behavior. Cover the authenticated "Ok" API path in the example tests. Defer upstream API authentication to the resource pack, and that separate authentication is not required for the initial api-agent milestone.

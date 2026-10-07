@@ -13,6 +13,7 @@ class FieldDeclaration:
     type: str
     override: bool = False
     required: bool = False
+    review_optional: bool = False
     default: Any = UNSET
     enum: tuple = ()
     applies_when: Mapping[str, Any] = field(default_factory=dict)
@@ -45,7 +46,7 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         if set(spec) - allowed or spec.get('type') not in TYPES:
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
-        for flag in ('override', 'required', 'acknowledge_default', 'persist_default', 'pack_only'):
+        for flag in ('override', 'required', 'review_optional', 'acknowledge_default', 'persist_default', 'pack_only'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
         if spec.get('anchor') not in (None, 'pack_root', 'owner_root', 'base_root'):
