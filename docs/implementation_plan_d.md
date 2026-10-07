@@ -3,9 +3,10 @@
 
 ## Checklist
 
-- [ ] Establish Allure output before the first rewrite integration or E2E test, including the initial "Ok" milestone. Record integration and human-accepted E2E runs through the interactive TUI only, after explicit continuation from the test picker. Neither execution mode supports `NO_STD_IN`; collect-only is not a recorded test run. Unit tests must not be Allure-recorded.
+- [ ] Establish Allure output before the first rewrite integration or E2E test, including the initial "Ok" milestone. Record integration and human-accepted E2E runs through the interactive TUI only, after explicit continuation from the test picker. Neither execution mode supports `NO_STD_IN`; collect-only is not a recorded test run. Unit tests must never be Allure-recorded: disable Allure collection/writers for unit mode, create no Allure result files or S3/secondary Allure uploads, and leave the latest integration/E2E run unchanged. Unit pass/coverage reports belong to local output and CI checks.
 - [ ] Organize Allure results as `<repo> -> <test mode: integration / E2E> -> <test file name> -> <test>`. Map repository, test mode, and test file to the suite hierarchy and retain individual test names. Use the test mode selected through `TUI_MODE`; keep LLM provider authentication configuration separate.
   - [ ] Verify this hierarchy explicitly: the reference artifact-upload commit establishes staging/persistence, work with the user to come up with explicit explicit parent-suite/suite/sub-suite labeling
+- [ ] Add deterministic checks proving unit execution never initializes Allure recording/storage, writes or uploads Allure artifacts, or replaces the latest recorded run, including shared-runner use.
 - [ ] Keep unit tests deterministic and independent of live LLM execution. Require a 100% unit-test pass rate for every commit; this is distinct from the final 100% code-coverage target.
 - [ ] Persist all Allure results in S3 from the initial "Ok" milestone onward, retaining successive runs as a history of implementation development rather than overwriting earlier runs. Use LocalStack for local S3 testing.
 - [ ] Add optional typed configuration for a secondary Allure results destination, such as a local directory. When configured, write results there as well as to S3; it must not replace primary S3 persistence.
