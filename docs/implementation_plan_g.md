@@ -34,13 +34,20 @@ api-agent/
 │   │   ├── layout.py                       # Later: build LangGraph from Layout
 │   │   ├── prerequisites.py                # Conditional service/profile selection
 │   │   └── processes.py                    # Compose + host UI lifecycle
+│   ├── auth/                             # Generic credential retrieval
+│   │   ├── credential_sources.py           # Named profiles and retrieval orchestration
+│   │   └── password_managers/
+│   │       ├── keeper.py
+│   │       └── one_password.py
 │   ├── providers/
 │   │   ├── llm.py                          # Public LLM provider contract
 │   │   └── load.py                         # Required provider location and config integration
 │   ├── api/
 │   │   └── agent.py                        # LLM discovery, chat and SSE; framework undecided
 │   ├── tui/
-│   │   └── app.py                          # Textual views, configuration and mode selection
+│   │   ├── app.py                          # Textual views, configuration and mode selection
+│   │   ├── config_cleanup.py               # Effective values and .env deletion
+│   │   └── unattended_auth.py              # Credential-source setup wizard
 │   ├── workflows/
 │   │   ├── conversation/
 │   │   │   └── respond/
