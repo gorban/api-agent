@@ -289,3 +289,10 @@ def test_secondary_role_is_resource_pack_only():
 def test_shared_runtime_rejects_pack_only_account_index():
     result = resolve_config(load_shared_schema(), argv=['--unattended-user-index=1'], environ={})
     assert any('Unknown option' in error for error in result.errors)
+
+
+def test_cli_and_bootstrap_defaults_skip_interactive_review():
+    schema = load_shared_schema()
+    for name in ('NO_STD_IN', 'COLLECT_ONLY', 'API_AGENT_DIR'):
+        assert schema.fields[name].acknowledge_default is False
+        assert schema.fields[name].persist_default is False

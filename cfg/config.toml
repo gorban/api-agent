@@ -23,6 +23,8 @@ help = "Disable interactive input; used for scripted access like from CI or Agen
 [fields.COLLECT_ONLY]
 type = "bool"
 default = false
+acknowledge_default = false
+persist_default = false
 help = "Collect test identities without executing tests or prerequisites."
 
 [fields.TUI_MODE]
@@ -64,6 +66,8 @@ TUI_MODE = "run-local"
 COLLECT_ONLY = false
 
 [fields.API_AGENT_DIR]
+acknowledge_default = false
+persist_default = false
 type = "path"
 anchor = "pack_root"
 default = "../api-agent"
