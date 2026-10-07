@@ -1,0 +1,12 @@
+version = 1
+id = "demo"
+owner = ".."
+config = "config.toml"
+
+[tests]
+unit = ["tests/unit"]
+integration = ["tests/integration"]
+e2e = ["tests/e2e"]
+
+[defaults]
+UI_NX_APP = "agent"

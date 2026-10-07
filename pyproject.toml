@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "api-agent"
+version = "0.1.0"
+description = "Shared agent runtime and resource-pack development interface"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-cov>=6,<8", "build>=1.2,<2"]
+
+[project.scripts]
+api-agent = "api_agent.runtime.bootstrap:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/api_agent"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"demo" = "api_agent/demo"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+addopts = "--strict-markers"
+
+[tool.coverage.run]
+source = ["api_agent"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
