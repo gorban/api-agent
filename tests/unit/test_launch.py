@@ -17,12 +17,13 @@ class LaunchTests(unittest.TestCase):
     def test_help_is_curated_and_links_full_configuration(self):
         output = generated_help(load_shared_schema())
         for option in ('--help', '--no-std-in', '--collect-only', '--tui-mode',
-                       '--e2e-debug', '--unattended-user-index'):
+                       '--e2e-debug'):
             self.assertIn(option, output)
         self.assertIn(os.path.relpath(ROOT / 'cfg/config.toml'), output)
         self.assertNotIn('[shared.toml]', output)
         self.assertNotIn('\033[', output)
         self.assertNotIn('--ui-source-dir', output)
+        self.assertNotIn('--unattended-user-index', output)
         for option in ('--auth-browser-debug', '--unattended-secondary-user-index',
                        '--resource-pack-dir', '--api-agent-dir'):
             self.assertNotIn(option, output)

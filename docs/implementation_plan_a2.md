@@ -58,3 +58,5 @@ Keeper TOTP (raw output):
 ```
 
 - [ ] Keep selection of needed credential roles synchronized through `UNATTENDED_USER_INDEX` only. Preserve paired array ordering; never independently pick a secondary index. Zero-entry arrays retain attended fallback; validate a selected shared index against every nonempty array consumed by the operation, including single-entry arrays, and fail invalid pairings rather than silently using another account. Interactive selection chooses one session-only index for the needed arrays.
+
+- [ ] Selected LLM providers and resource packs may declare optional `UNATTENDED_USER_INDEX` when they offer indexed credential selection, including a single LLM role with multiple accounts. Shared/demo config does not hardcode it; shared help lists it only when contributed to the active schema. Generic account selection consumes the field when present and validates the selected index across the nonempty role arrays needed by the operation. Keep session-only interactive choices and fail noninteractive ambiguity. Private provider adapters perform authenticated-identity validation.

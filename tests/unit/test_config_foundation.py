@@ -70,8 +70,26 @@ def test_dotenv_is_literal_and_missing_file_empty(tmp_path):
     path.write_text('# comment\nexport NAME="$(touch /tmp/no)"\nFLAG=True\n')
     assert read_dotenv(path) == {'NAME': '$(touch /tmp/no)', 'FLAG': 'True'}
 
+def resource_pack_schema():
+    from pathlib import Path
+    shared = load_shared_schema()
+    extension = schema_from_dict({'version': 1, 'fields': {
+        'UI_NX_APP': {'type': 'str', 'override': True, 'default': 'shell',
+                     'applies_when': {'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}], 'COLLECT_ONLY': False}},
+        'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User',
+                                    'applies_when': {'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'], 'COLLECT_ONLY': False}}}},
+        base_schema=shared, source='pack_default')
+    if 'UNATTENDED_USER_INDEX' not in extension.fields:
+        selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
+            'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
+            'persist_default': False, 'applies_when': {
+                'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
+                'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
+        extension = compose_schema(extension, selection)
+    return compose_schema(shared, extension)
+
 def test_json_resolution_index_validation_and_secret_diagnostics(tmp_path):
-    result = resolve_config(load_shared_schema(), environ={'TUI_MODE': 'e2e', 'UI_SOURCE_DIR': '/example/frontend',
+    result = resolve_config(resource_pack_schema(), environ={'TUI_MODE': 'e2e', 'UI_SOURCE_DIR': '/example/frontend',
                             'UNATTENDED_AUTH': 'secret-invalid', 'UNATTENDED_USER_INDEX': '-1',
                             'E2E_BROWSER_RESOLUTION': '0x900'}, anchors={'owner_root': tmp_path})
     assert len(result.errors) == 3
@@ -83,7 +101,8 @@ def test_pack_only_path_and_metadata(tmp_path):
     result = resolve_config(schema, environ={}, pack_launcher=True, anchors={'pack_root': tmp_path})
     assert result.values['API_AGENT_DIR'] == (tmp_path / '../api-agent').resolve()
     assert schema.fields['E2E_DEBUG'].acknowledge_default is False
-    assert schema.fields['UNATTENDED_USER_INDEX'].persist_default is False
+    assert 'UNATTENDED_USER_INDEX' not in schema.fields
+    assert resource_pack_schema().fields['UNATTENDED_USER_INDEX'].persist_default is False
 
 def test_cli_missing_value_and_end_options():
     parsed = parse_options(load_shared_schema(), ['--tui-mode', '--no-std-in', '--', '--literal'])
@@ -137,6 +156,13 @@ def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
         'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User',
                                     'applies_when': {'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'], 'COLLECT_ONLY': False}}}},
         base_schema=shared, source='pack_default')
+    if 'UNATTENDED_USER_INDEX' not in extension.fields:
+        selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
+            'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
+            'persist_default': False, 'applies_when': {
+                'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
+                'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
+        extension = compose_schema(extension, selection)
     schema = compose_schema(shared, extension)
     result = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True',
                             'UNATTENDED_USER_INDEX': '1', 'UI_SOURCE_DIR': 'frontend'}, anchors={'owner_root': tmp_path})
@@ -256,3 +282,8 @@ def test_secondary_role_is_resource_pack_only():
     assert 'UNATTENDED_SECONDARY_USER' not in shared.fields
     result = resolve_config(shared, argv=['--unattended-secondary-user=Resource Pack User'], environ={})
     assert result.errors
+
+
+def test_shared_runtime_rejects_pack_only_account_index():
+    result = resolve_config(load_shared_schema(), argv=['--unattended-user-index=1'], environ={})
+    assert any('Unknown option' in error for error in result.errors)

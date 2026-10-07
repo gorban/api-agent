@@ -115,16 +115,7 @@ COLLECT_ONLY = false
 [fields.UNATTENDED_AUTH]
 type = "jsonobject"
 default = {}
-help = "Compact JSON mapping from provider-declared credential role keys to account arrays. Selected providers and resource packs declare the roles they require. Selected accounts are validated by authentication setup."
+help = "Compact JSON mapping from credential role keys to account arrays. The selected LLM provider declares its primary role key. A selected resource pack may declare additional role keys. Selected accounts are validated by authentication setup."
 [fields.UNATTENDED_AUTH.applies_when]
-TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
-COLLECT_ONLY = false
-
-[fields.UNATTENDED_USER_INDEX]
-type = "int"
-validation = "nonnegative"
-acknowledge_default = false
-persist_default = false
-[fields.UNATTENDED_USER_INDEX.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false
