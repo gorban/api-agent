@@ -152,8 +152,14 @@ class StopContainersDialog(QuitDialog):
         yield ButtonFooter()
 
 
-class SettingHelpDialog(FocusNavigation, ModalScreen):
-    BINDINGS = [Binding("escape,c", "close", "Close", key_display="Esc / c", priority=True)]
+class SettingHelpDialog(ModalScreen):
+    BINDINGS = [Binding("escape,c", "close", "Close", key_display="Esc / c", priority=True),
+                Binding("up,k", "scroll_description('up')", show=False),
+                Binding("down,j", "scroll_description('down')", show=False),
+                Binding("left,h", "scroll_description('left')", show=False),
+                Binding("right,l", "scroll_description('right')", show=False),
+                Binding("pageup", "scroll_description('page_up')", show=False),
+                Binding("pagedown", "scroll_description('page_down')", show=False)]
 
     def __init__(self, name, description):
         super().__init__()
@@ -162,20 +168,24 @@ class SettingHelpDialog(FocusNavigation, ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="setting-help-dialog"):
             yield Static(Text(self.setting_name, style="bold"), id="setting-help-title")
-            with VerticalScroll(id="setting-help-scroll"):
+            with VerticalScroll(id="setting-help-scroll") as scroll:
+                scroll.can_focus = False
                 yield Static(self.description, id="setting-help-text", markup=False)
             yield Button("Close", id="setting-help-close")
-        yield ButtonFooter()
+        yield Footer()
 
     def on_mount(self):
         self.set_class(self.size.height < 18, "compact-setting-help")
-        self.query_one("#setting-help-scroll").focus()
+        self.query_one("#setting-help-close").focus()
 
     def on_resize(self, event):
         self.set_class(event.size.height < 18, "compact-setting-help")
 
     def action_close(self):
         self.dismiss()
+
+    def action_scroll_description(self, direction):
+        getattr(self.query_one("#setting-help-scroll"), "scroll_" + direction)(animate=False)
 
     def on_button_pressed(self, event):
         self.action_close()
