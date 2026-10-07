@@ -50,6 +50,8 @@ def ensure_environment(context, argv, *, collect=False):
         marker.write_text(fingerprint + '\n')
     if Path(sys.prefix).resolve() == environment.resolve():
         return None
+    pack_arguments = [] if getattr(context, 'show_pack_bootstrap', False) else [
+        '--resource-pack-dir', str(context.pack_root)]
     return subprocess.call([str(python), str(context.base_root / 'launch.py'),
-                            '--resource-pack-dir', str(context.pack_root),
+                            *pack_arguments,
                             '--_launcher-root', str(getattr(context, 'launcher_root', None) or context.base_root), *argv], env=os.environ.copy())
