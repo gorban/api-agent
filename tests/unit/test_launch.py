@@ -19,7 +19,7 @@ class LaunchTests(unittest.TestCase):
         for option in ('--help', '--no-std-in', '--collect-only', '--tui-mode',
                        '--e2e-debug', '--unattended-user-index'):
             self.assertIn(option, output)
-        self.assertIn(os.path.relpath(ROOT / 'src/api_agent/config/shared.toml'), output)
+        self.assertIn(os.path.relpath(ROOT / 'cfg/config.toml'), output)
         self.assertNotIn('[shared.toml]', output)
         self.assertNotIn('\033[', output)
         self.assertNotIn('--ui-source-dir', output)
@@ -39,7 +39,7 @@ class LaunchTests(unittest.TestCase):
         with patch.dict(os.environ, {'TERM': 'xterm'}, clear=True), patch('sys.stdout', stream), patch('api_agent.runtime.worktrees.verify_worktrees'):
             self.assertTrue(_supports_color(stream))
             self.assertEqual(main(['--help'], base_root=ROOT), 0)
-            self.assertIn('\033[34m' + os.path.relpath(ROOT / 'src/api_agent/config/shared.toml') + '\033[0m', stream.getvalue())
+            self.assertIn('\033[34m' + os.path.relpath(ROOT / 'cfg/config.toml') + '\033[0m', stream.getvalue())
             self.assertIn('\033[31mBootstrap:', stream.getvalue())
             with patch.dict(os.environ, {'NO_COLOR': '1'}):
                 self.assertFalse(_supports_color(stream))

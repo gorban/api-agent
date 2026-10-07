@@ -103,8 +103,18 @@ def load_declarations(path: str | Path, *, base_schema: ConfigSchema | None = No
     with Path(path).open('rb') as handle:
         return schema_from_dict(tomllib.load(handle), base_schema=base_schema, source=source)
 
-def load_shared_schema() -> ConfigSchema:
-    return load_declarations(Path(__file__).with_name('shared.toml'))
+def shared_declaration_path(base_root: Path | None = None) -> Path:
+    """Locate human-edited source declarations or their bundled wheel copy."""
+    if base_root is not None:
+        return Path(base_root).resolve() / 'cfg/config.toml'
+    source = Path(__file__).resolve().parents[3] / 'cfg/config.toml'
+    if source.is_file():
+        return source
+    return Path(__file__).resolve().parents[1] / 'cfg/config.toml'
+
+
+def load_shared_schema(base_root: Path | None = None) -> ConfigSchema:
+    return load_declarations(shared_declaration_path(base_root))
 
 def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                    overrides: Mapping[str, Any] | None = None) -> ConfigSchema:

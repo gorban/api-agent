@@ -1,7 +1,7 @@
 version = 1
 id = "demo"
 owner = ".."
-config = "config.toml"
+config = "cfg/config.toml"
 
 [tests]
 unit = ["tests/unit"]

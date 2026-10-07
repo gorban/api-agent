@@ -4,6 +4,10 @@ This skeleton describes generic runtime and resource-pack responsibilities. Impl
 
 The trees describe responsibility ownership and intended paths, not files to create immediately. Add files only as their selected feature is implemented. Pack/config `.yaml` names illustrate separate declarative documents; Layout uses restricted Markdown. Choose the remaining formats in the [declarative formats plan](implementation_plan_b.md). Python implementations and prompts stay together by responsibility and node; runtime prompt order comes from Layout declarations, not filenames.
 
+## Declaration and prompt placement
+
+Use a separate root `cfg/` tree for human-edited configuration, workflow Layout Markdown, and prompts. Shared settings are `api-agent/cfg/config.toml`; demo settings are `demo/cfg/config.toml`; resource-pack settings are `cfg/config.toml` under its pack root. Keep `pack.toml` at each pack root, and Python parsing/node implementations under `src/` or pack-owned code directories. This placement supersedes declaration/prompt locations in the illustrative trees below: mirror responsibility/node hierarchy under `cfg/workflows/`, with Layout-relative prompt links. Create workflow/prompt files only when their tasks are implemented.
+
 ## Checklist
 
 - [ ] Establish this skeleton early, creating only the files needed for the [initial milestone](implementation_plan_e.md) and its prerequisites. Preserve existing instructions and planning documents; keep legacy deletions unstaged until final cleanup. Do not create empty placeholders for later workflows.

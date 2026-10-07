@@ -17,9 +17,11 @@ api-agent = "api_agent.runtime.bootstrap:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/api_agent"]
+exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "demo" = "api_agent/demo"
+"cfg" = "api_agent/cfg"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]

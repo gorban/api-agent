@@ -91,7 +91,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             base_root = candidate
         context = load_launch_context(Path(base_root).resolve(), resource_pack_dir, launcher_root)
         verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout)
-        shared = load_shared_schema()
+        shared = load_shared_schema(context.base_root)
         schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
                                 overrides=context.defaults)
         result = resolve_config(schema, argv=argv, environ=os.environ,
@@ -112,7 +112,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if result.help_requested:
             print(generated_help(schema, pack_launcher=context.external_pack,
                                  color=_supports_color(sys.stdout),
-                                 declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
+                                 declaration_paths=[context.base_root / 'cfg/config.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
             if resource_pack_dir is None and launcher_root is None:
                 print('\n' + _colored('Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.',
@@ -154,7 +154,8 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
             lines.append('  ' + description)
     lines.extend(['', 'Debug and credential-index switches skip startup default acknowledgement/persistence.',
                   'All declared configuration values also accept CLI options; see the executable declarations:'])
-    for path in declaration_paths or [Path(__file__).resolve().parents[1] / 'config/shared.toml']:
+    from api_agent.config.declarations import shared_declaration_path
+    for path in declaration_paths or [shared_declaration_path()]:
         path = Path(path).resolve()
         lines.append('  ' + _colored(os.path.relpath(path, Path.cwd()), '34', color))
     lines.extend(['', 'With space-separated values, --field-name --VALUE=... treats --VALUE as the next option.',

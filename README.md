@@ -36,9 +36,9 @@ The missing-mode example returns configuration error status `2`. A valid unit co
 
 ## Executable declarations
 
-- [Shared configuration](src/api_agent/config/shared.toml) declares a version and each field's type, defaults, conditions, path anchor, help, and presentation metadata.
-- [Demo pack](demo/pack.toml) selects the [demo extensions](demo/config.toml), test owner, suite paths, and default overrides. The included demo is also bundled in the wheel.
-- Resource packs may provide their own root `pack.toml` and `config.toml`, app defaults, and authentication declarations. No authentication runs in the foundation.
+- [Shared configuration](cfg/config.toml) declares a version and each field's type, defaults, conditions, path anchor, help, and presentation metadata.
+- [Demo pack](demo/pack.toml) selects the [demo extensions](demo/cfg/config.toml), test owner, suite paths, and default overrides. The included demo is also bundled in the wheel.
+- Resource packs may provide their own root `pack.toml` and `cfg/config.toml`, app defaults, and authentication declarations. No authentication runs in the foundation.
 
 Values resolve as shared defaults, then pack defaults, then the active `.env`, environment, and CLI. The bundled demo uses the base repository's `.env`; a resource pack uses its own root `.env`, independently of where its tests are owned. Resolution retains whether a value is explicit and its source. An extension can refer to shared controls in its conditions; inactive requirements do not block an operation.
 
@@ -55,3 +55,5 @@ Before help, collection, or any future TUI operation, the gate requires Git and 
 If a selected checkout is stale, the gate lists all relevant roots, branches/SHAs, dates, reasons, selected checkouts, and newest checkouts, then requires explicit `y` on stdin. This intentionally applies even with `NO_STD_IN=True`, help, or collect-only. Decline/EOF/unavailable stdin stops with a nonzero status; there is no bypass option. Inaccessible or unrelated registered checkouts also fail verification. The gate never creates, switches, repairs, or deletes worktrees.
 
 Select an explicit resource pack with `--resource-pack-dir PATH` or `RESOURCE_PACK_DIR=PATH` (CLI takes precedence). Relative explicit pack paths resolve from the calling directory. Resource-pack launchers default to their own pack; api-agent defaults to its demo and shows a bootstrap hint only when no pack was explicitly selected.
+
+Human-edited declarations and future workflow Layout/prompt files live under `cfg/`, organized by responsibility and node. Python parsers remain under `src/api_agent/config/`. Each resource pack has its own `cfg/` tree, selected by its root `pack.toml`.
