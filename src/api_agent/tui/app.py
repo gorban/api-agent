@@ -71,7 +71,10 @@ class WorkbenchScreen(Screen):
     def on_mount(self):
         if self.rows:
             table = self.query_one(DataTable)
-            table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
+            if self.kind in {"defaults", "cleanup"}:
+                table.add_columns("Current .env", "Setting", "Effective value", "Source")
+            else:
+                table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
             for key, cells in self.rows:
                 table.add_row(*cells, key=key)
             table.focus()
