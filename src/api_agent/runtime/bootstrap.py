@@ -95,7 +95,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
                                 overrides=context.defaults)
         result = resolve_config(schema, argv=argv, environ=os.environ,
-                                dotenv=read_dotenv(context.dotenv_path), anchors=context.anchors,
+                                dotenv={**read_dotenv(context.base_root / '.env'),
+                                        **read_dotenv(context.dotenv_path)}, anchors=context.anchors,
                                 interactive=False, pack_launcher=context.external_pack)
         errors = list(result.errors)
         if not result.help_requested:

@@ -1,7 +1,8 @@
 # Source-controlled configuration declarations and defaults.
-# Put your non-default values in ../.env (relative to this file; the
-# api-agent repository root), environment variables, or CLI options.
-# A selected external resource pack uses its own root .env instead.
+# Put your non-default values in ../.env, environment variables, or CLI options.
+# Values from ../.env are loaded first; a selected resource pack's root .env
+# overrides only the values it provides. Environment variables override both,
+# and CLI options override everything.
 
 version = 1
 

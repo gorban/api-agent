@@ -141,7 +141,7 @@ class LaunchTests(unittest.TestCase):
             self.assertIn('checkout/launch.py', result.stderr)
 
     def test_external_pack_dotenv_and_conditional_extension_provenance(self):
-        from api_agent.config import resolve_config
+        from api_agent.config import resolve_config, read_dotenv
         with tempfile.TemporaryDirectory() as directory:
             pack = Path(directory)
             owner = pack / 'test-owner'
@@ -150,12 +150,17 @@ class LaunchTests(unittest.TestCase):
             (pack / 'config.toml').write_text('version = 1\n[fields.PACK_FLAG]\ntype = "bool"\ndefault = true\n[fields.PACK_FLAG.applies_when]\nTUI_MODE = "unit"\n')
             (pack / '.env').write_text('TUI_MODE=unit\nAPI_AGENT_DIR=../chosen-base\n')
             (owner / '.env').write_text('TUI_MODE=integration\n')
-            with patch.dict(os.environ, {}, clear=True):
+            def layered_dotenv(path):
+                if Path(path) == ROOT / '.env':
+                    return {'TUI_MODE': 'integration', 'NO_STD_IN': 'False'}
+                return read_dotenv(path)
+            with patch.dict(os.environ, {}, clear=True), patch('api_agent.config.read_dotenv', side_effect=layered_dotenv):
                 with patch('api_agent.runtime.worktrees.verify_worktrees') as gate:
                     with patch('api_agent.config.resolve_config', wraps=resolve_config) as resolve:
                         self.assertEqual(main(['selected_test'], base_root=ROOT, resource_pack_dir=pack), 3)
                         kwargs = resolve.call_args.kwargs
                         self.assertEqual(kwargs['dotenv']['TUI_MODE'], 'unit')
+                        self.assertEqual(kwargs['dotenv']['NO_STD_IN'], 'False')
                         resolved = resolve_config(resolve.call_args.args[0], **kwargs)
                         self.assertEqual(resolved.fields['PACK_FLAG'].source, 'pack_default')
                         self.assertFalse(resolved.fields['PACK_FLAG'].explicit)
