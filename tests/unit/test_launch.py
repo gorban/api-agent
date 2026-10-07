@@ -14,6 +14,13 @@ from api_agent.config import load_shared_schema, schema_from_dict
 ROOT = Path(__file__).resolve().parents[2]
 
 class LaunchTests(unittest.TestCase):
+    def test_internal_interpreter_handoff_does_not_repeat_worktree_gate(self):
+        with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', StringIO()), patch('api_agent.runtime.worktrees.verify_worktrees') as gate:
+            self.assertEqual(main(['--help'], base_root=ROOT, _worktrees_verified=True), 0)
+            gate.assert_not_called()
+            self.assertEqual(main(['--help'], base_root=ROOT), 0)
+            gate.assert_called_once()
+
     def test_help_is_curated_and_links_full_configuration(self):
         output = generated_help(load_shared_schema())
         for option in ('--help', '--no-std-in', '--collect-only', '--tui-mode',

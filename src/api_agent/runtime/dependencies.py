@@ -52,6 +52,15 @@ def ensure_environment(context, argv, *, collect=False):
         return None
     pack_arguments = [] if getattr(context, 'show_pack_bootstrap', False) else [
         '--resource-pack-dir', str(context.pack_root)]
-    return subprocess.call([str(python), str(context.base_root / 'launch.py'),
+    # The parent already completed the gate; this is an internal interpreter handoff,
+    # not another user launch. No command-line or environment approval flag exists.
+    handoff = (
+        "import sys; from pathlib import Path; "
+        "base = Path(sys.argv[1]).resolve().parent; "
+        "sys.path.insert(0, str(base / 'src')); "
+        "from api_agent.runtime.bootstrap import main; "
+        "raise SystemExit(main(sys.argv[2:], base_root=base, _worktrees_verified=True))"
+    )
+    return subprocess.call([str(python), '-c', handoff, str(context.base_root / 'launch.py'),
                             *pack_arguments,
                             '--_launcher-root', str(getattr(context, 'launcher_root', None) or context.base_root), *argv], env=os.environ.copy())
