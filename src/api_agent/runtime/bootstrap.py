@@ -114,7 +114,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
             if resource_pack_dir is None and launcher_root is None:
-                print('Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.')
+                print('\nBootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.')
             return 0
         print(f'Validated foundation configuration for {context.name} ({context.pack_root}).')
         operation = 'Test collection' if result.values.get('COLLECT_ONLY') else 'Requested operation'
@@ -153,6 +153,6 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
                   'Help skips execution requirements; unknown options still fail.', '',
                   'Modes: run-local starts local services/UI; unit runs base plus pack units;',
                   'integration and e2e select pack suites; allure opens reports; deployment-logs shows deployment logs;',
-                  'config-cleanup reviews persisted options; unattended-auth configures credential profiles.', '',
+                  'config-cleanup reviews persisted options; unattended-auth configures credential profiles.',
                   ])
     return '\n'.join(lines)

@@ -26,6 +26,7 @@ class LaunchTests(unittest.TestCase):
             self.assertNotIn(option, output)
         self.assertNotIn('--e2e-browser-resolution', output)
         self.assertNotIn('Configuration options:', output)
+        self.assertFalse(output.endswith('\n'))
         for text in ('Positional test selectors require', 'Explicit unit mode can bypass',
                      'validates collection requirements', 'NO_STD_IN=True requires', 'E2E_RERUNS'):
             self.assertNotIn(text, output)
