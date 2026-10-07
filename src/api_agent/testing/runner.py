@@ -1,4 +1,5 @@
 """Owned pytest unit execution and fixed, per-file production coverage gates."""
+from .contracts import TestResult, RunnerEvent
 from dataclasses import dataclass
 import json
 import os
@@ -12,15 +13,6 @@ import threading
 import time
 
 from .collection import CollectionError, TestIdentity, collect_tests
-
-
-@dataclass(frozen=True)
-class TestResult:
-    __test__ = False
-    identity: TestIdentity
-    status: str
-    duration: float = 0
-    traceback: str = ''
 
 
 @dataclass(frozen=True)
@@ -43,17 +35,6 @@ class CoverageArea:
     @property
     def complete(self):
         return self.covered_lines == self.num_statements and self.covered_branches == self.num_branches
-
-
-@dataclass(frozen=True)
-class RunnerEvent:
-    kind: str
-    repo: str = ''
-    identity: TestIdentity | None = None
-    status: str | None = None
-    duration: float = 0
-    traceback: str = ''
-    text: str = ''
 
 
 @dataclass(frozen=True)

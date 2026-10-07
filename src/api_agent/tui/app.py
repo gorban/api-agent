@@ -6,6 +6,9 @@ import json
 import threading
 from rich.text import Text
 from api_agent.config.declarations import UNSET
+from api_agent.testing.lifecycle import TestRunLifecycle
+from api_agent.tui.test_results import (progress_summary, ordered_result_rows,
+                                          reconcile_results_table, styled_summary)
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -151,6 +154,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         super().__init__()
         self.kind, self.heading, self.body = kind, title, text
         self.actions, self.rows = actions, rows
+        self.test_run_complete = False
+        self.style_results = None
         self.config_saved = set()
         self.config_defaults = set()
 
@@ -159,7 +164,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         yield Static(app.identity_text(), id="identity", markup=False)
         with VerticalScroll(id="workbench-content"):
             yield Static(self.heading, id="heading")
-            if self.kind == "unit-results":
+            if self.kind == "test-results":
                 with VerticalScroll(id="unit-summary"):
                     yield Static(self.body, id="body", markup=False)
             else:
@@ -173,16 +178,16 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                     from api_agent.config.resolve import format_enum_values
                     yield Static(f"Enum ({field.type}) — exact values: {format_enum_values(field.enum)}",
                                  id="enum-info", markup=False)
-            if self.kind not in {"cleanup", "unit-results"}:
+            if self.kind not in {"cleanup", "test-results"}:
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions") as actions:
-                if self.kind == "unit-results":
+                if self.kind == "test-results":
                     actions.display = False
                 if self.kind == "input" and len(app.session.target_paths) > 1:
                     yield Button("Switch target .env (s outside input)", id="switch-target")
                 for key, label in self.actions:
                     yield Button(label, id=key)
-            if self.kind != "unit-results":
+            if self.kind != "test-results":
                 yield Static("", id="error", markup=False)
         if self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
             with Vertical(id="menu-bottom-bar"):
@@ -197,7 +202,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             table = self.query_one(DataTable)
             if self.kind == "defaults":
                 table.add_columns("Setting", "Effective value", "Source")
-            elif self.kind == "unit-results":
+            elif self.kind == "test-results":
                 table.add_columns("Status", "Test", "Execution time")
             elif self.kind == "containers":
                 table.add_columns("Selected", "ID", "Name", "Image", "Status")
@@ -210,7 +215,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                 table.add_row(*cells, key=key)
             if self.kind == "defaults":
                 self.app.refresh_configuration_rows(self)
-            if self.kind == "unit-results":
+            if self.kind == "test-results":
                 table.move_cursor(row=0)
             table.focus()
         elif self.kind == "input":
@@ -224,17 +229,17 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             self._bindings.bind("s", "stop_selected", "Stop selected containers")
         if self.kind == "tests":
             self._bindings.bind("s", "start_selected", "Start selected tests")
-        if self.kind == "unit-results":
-            self.call_after_refresh(self.layout_unit_results)
+        if self.kind == "test-results":
+            self.call_after_refresh(self.layout_test_results)
         if self.kind == "defaults":
             self._bindings.bind("c", "close_view", "Next menu")
         self.refresh_bindings()
 
     def on_resize(self, event):
-        if self.kind == "unit-results":
-            self.call_after_refresh(self.layout_unit_results)
+        if self.kind == "test-results":
+            self.call_after_refresh(self.layout_test_results)
 
-    def layout_unit_results(self):
+    def layout_test_results(self):
         if not self.is_mounted or not self.rows or self.app.screen is not self or not self.query("#workbench-content"):
             return
         viewport = self.query_one("#workbench-content", VerticalScroll)
@@ -244,7 +249,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         margins = sum(widget.styles.margin.top + widget.styles.margin.bottom
                       for widget in (heading, summary, table))
         available = viewport.content_size.height - heading.outer_size.height - margins
-        summary_height = 6 if self.app.unit_result is None else max(6, (available - 8) // 2)
+        summary_height = 6 if not self.test_run_complete else max(6, (available - 8) // 2)
         self.query_one("#unit-summary").styles.height = summary_height
         self.query_one(DataTable).styles.height = max(8, available - summary_height)
 
@@ -257,7 +262,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         if self.app.screen is not self:
             return False
         if action.startswith("failure_"):
-            return self.kind == "unit-failure"
+            return self.kind == "test-failure"
         if action == "back_to_configuration":
             return self.kind == "input"
         if action == "close_view" and self.kind == "input":
@@ -382,6 +387,7 @@ class ApiAgentApp(App[int]):
         self.collector = collector
         self.unit_runner = unit_runner
         self.unit_result = None
+        self.test_run = None
         self.unit_rows = {}
         from api_agent.runtime.containers import ContainerRuntime
         self.container_runtime = container_runtime or ContainerRuntime()
@@ -696,6 +702,13 @@ class ApiAgentApp(App[int]):
         else:
             self.unavailable(f"{dict(MODES)[self.mode]} execution is not implemented yet. No services or processes were started.")
 
+    async def discover_tests(self, cancel_event):
+        from api_agent.testing.collection import collect_tests
+        collector = self.collector or collect_tests
+        arguments = (self.context, self.mode, self.active_test_selectors)
+        return await asyncio.to_thread(
+            collector, *arguments, **({} if self.collector else {"cancel_event": cancel_event}))
+
     async def collect_tests(self):
         self.active_test_selectors = self.pending_test_selectors
         self.pending_test_selectors = ()
@@ -705,13 +718,8 @@ class ApiAgentApp(App[int]):
     async def _collect_tests(self, cancel_event):
         self.show("collecting", "Collecting tests", "Collecting pytest identities only; no application prerequisites or tests are executed.")
         try:
-            from api_agent.testing.collection import collect_tests
             from api_agent.testing.selection import SelectionModel
-            collector = self.collector or collect_tests
-            if self.collector:
-                tests = await asyncio.to_thread(collector, self.context, self.mode, self.active_test_selectors)
-            else:
-                tests = await asyncio.to_thread(collector, self.context, self.mode, self.active_test_selectors, cancel_event)
+            tests = await self.discover_tests(cancel_event)
             if cancel_event.is_set():
                 return
             if self.session.result().values.get("COLLECT_ONLY"):
@@ -729,9 +737,10 @@ class ApiAgentApp(App[int]):
 
     def start_unit_run(self):
         self.operation_status = 3
-        self.collection_cancel = threading.Event()
+        self.test_run = TestRunLifecycle()
+        self.collection_cancel = self.test_run.cancel_event
         self.unit_result = None
-        self.unit_stopped = asyncio.Event()
+        self.unit_stopped = self.test_run.stopped
         self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
         self.show_unit_results(self.unit_progress())
         self.run_worker(self._run_units(), group="unit-run", exclusive=True)
@@ -740,11 +749,7 @@ class ApiAgentApp(App[int]):
         from api_agent.testing.runner import run_unit_tests
         runner = self.unit_runner or run_unit_tests
         try:
-            from api_agent.testing.collection import collect_tests
-            collector = self.collector or collect_tests
-            arguments = (self.context, self.mode, self.active_test_selectors)
-            fresh_tests = await asyncio.to_thread(
-                collector, *arguments, **({} if self.collector else {"cancel_event": self.collection_cancel}))
+            fresh_tests = await self.discover_tests(self.collection_cancel)
             if self.collection_cancel.is_set():
                 return
             self.selection.refresh_for_run(fresh_tests)
@@ -769,16 +774,10 @@ class ApiAgentApp(App[int]):
             if not self.collection_cancel.is_set():
                 self.show("error", "Unit execution failed", str(error), (("menu", "Main menu"),))
         finally:
-            self.unit_stopped.set()
+            self.test_run.finish()
 
     def unit_progress(self):
-        statuses = [row[0] for row in self.unit_rows.values()]
-        passed = statuses.count("PASSED")
-        failed = sum(status in {"FAILED", "ERROR"} for status in statuses)
-        return Text.assemble("Running selected unit tests… ",
-                             (f"{passed} passed", "green"), " / ",
-                             (f"{failed} failed", "red" if failed else ""), " / ",
-                             f"{statuses.count('RUNNING')} running / {statuses.count('PENDING')} pending")
+        return progress_summary(self.mode or "unit", self.unit_rows)
 
     def unit_event(self, event):
         if self.collection_cancel.is_set():
@@ -787,7 +786,7 @@ class ApiAgentApp(App[int]):
             key = event.identity.id
             self.unit_rows[key] = ((event.status or "RUNNING").upper(), key,
                                    f"{event.duration:.3f}s" if event.kind == "test_finished" else "")
-            if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results" and self.screen.query(DataTable) and self.screen.query("#body"):
+            if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results" and self.screen.query(DataTable) and self.screen.query("#body"):
                 table = self.screen.query_one(DataTable)
                 self.screen.query_one("#body", Static).update(self.unit_progress())
                 for column, value in zip(table.columns, self.unit_rows[key]):
@@ -797,51 +796,35 @@ class ApiAgentApp(App[int]):
         if summary is None:
             from api_agent.testing.runner import format_unit_summary
             summary = format_unit_summary(self.unit_result)
-        rows = list(self.unit_rows.items())
-        if self.unit_result is not None:
-            # Python's stable sort preserves discovery order within each group.
-            rows.sort(key=lambda row: row[1][0] not in {"FAILED", "ERROR"})
-        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
+        rows = ordered_result_rows(self.unit_rows, completed=self.unit_result is not None)
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             screen = self.screen
             screen.body, screen.rows = summary, rows
-            self.call_after_refresh(self.update_unit_results, screen)
+            self.call_after_refresh(self.update_test_results, screen)
         else:
-            self.show("unit-results", "Unit test results", summary, rows=rows)
+            self.show("test-results", "Unit test results", summary, rows=rows)
+        self.screen.test_run_complete = self.unit_result is not None
+        self.screen.style_results = self.style_unit_summary
         if self.unit_result is not None:
             self.call_after_refresh(self.style_unit_summary)
 
-    def update_unit_results(self, screen):
+    def update_test_results(self, screen):
         if self.screen is not screen or not screen.query(DataTable):
             return
         screen.query_one("#body", Static).update(screen.body)
         table = screen.query_one(DataTable)
-        keys = [table.get_row_at(i)[1] for i in range(table.row_count)]
-        if keys != [key for key, _ in screen.rows]:
-            table.clear()
-            for key, cells in screen.rows:
-                table.add_row(*cells, key=key)
-        else:
-            for key, cells in screen.rows:
-                for column, value in zip(table.columns, cells):
-                    table.update_cell(key, column, value)
-        if self.unit_result is not None:
-            table.move_cursor(row=0)
-            self.style_unit_summary()
-        screen.layout_unit_results()
+        reconcile_results_table(table, screen.rows, completed=screen.test_run_complete)
+        if screen.test_run_complete and screen.style_results:
+            screen.style_results()
+        screen.layout_test_results()
 
     def style_unit_summary(self):
-        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
-            from rich.text import Text
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             body = self.screen.query_one("#body", Static)
-            summary = Text()
-            for index, line in enumerate((body.content.plain if isinstance(body.content, Text) else body.content).splitlines()):
-                if index:
-                    summary.append("\n")
-                style = "green" if line.startswith("Production coverage: 100%") else (
-                    "" if not self.unit_result.require_full_coverage and index > 0 else
-                    "red" if self.unit_result.exit_code else "green")
-                summary.append(line, style=style)
-            body.update(summary)
+            body.update(styled_summary(
+                body.content, failed=bool(self.unit_result.exit_code),
+                neutral_details=not self.unit_result.require_full_coverage,
+                green_prefixes=("Production coverage: 100%",)))
 
     def show_selection(self):
         rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
@@ -863,10 +846,10 @@ class ApiAgentApp(App[int]):
         return any(row.name == key and row.present and str(row.source).endswith("/.env") for row in self.session.cleanup_rows())
 
     def toggle_row(self, key):
-        if self.screen.kind == "unit-results" and self.unit_result is not None:
+        if self.screen.kind == "test-results" and self.unit_result is not None:
             failed = next((test for test in self.unit_result.tests if test.identity.id == key and test.traceback), None)
             if failed:
-                self.show("unit-failure", "Unit test failure", key + "\n\n" + failed.traceback)
+                self.show("test-failure", "Unit test failure", key + "\n\n" + failed.traceback)
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
         elif self.screen.kind == "tests":
             self.selection.toggle(key)
@@ -963,7 +946,7 @@ class ApiAgentApp(App[int]):
                 self.operation_status = 3
                 self.show_selection()
             elif key == "menu":
-                if self.unit_run_active():
+                if self.test_run_active():
                     await self.close_view()
                 else:
                     self.show_menu()
@@ -976,26 +959,25 @@ class ApiAgentApp(App[int]):
         if self.mode == "unit" and self.unit_rows and self.unit_result is None:
             self.operation_status = 130
         self.collection_cancel.set()
-        if self.unit_run_active():
-            await self.unit_stopped.wait()
+        if self.test_run_active():
+            await self.test_run.stop_and_wait()
         self.exit(self.operation_status)
 
     def on_unmount(self):
         self.collection_cancel.set()
 
-    def unit_run_active(self):
-        return self.mode == "unit" and hasattr(self, "unit_stopped") and not self.unit_stopped.is_set()
+    def test_run_active(self):
+        return self.test_run is not None and self.test_run.active
 
     async def stop_tests_to_menu(self, accepted):
         if not accepted:
             return
-        self.collection_cancel.set()
-        await self.unit_stopped.wait()
+        await self.test_run.stop_and_wait()
         self.operation_status = 130
         self.show_menu()
 
     async def close_view(self):
-        if self.unit_run_active():
+        if self.test_run_active():
             self.push_screen(QuitDialog("Stop running tests and return to the menu? Enter literal y to confirm; every other response cancels."),
                              self.stop_tests_to_menu)
             return
@@ -1005,9 +987,9 @@ class ApiAgentApp(App[int]):
             await self.start_configuration()
         elif self.screen.kind == "input":
             self.show_configuration()
-        elif self.screen.kind == "unit-failure":
+        elif self.screen.kind == "test-failure":
             self.show_unit_results()
-        elif self.screen.kind == "unit-results" and self.unit_result is None:
+        elif self.screen.kind == "test-results" and self.unit_result is None:
             return
         elif self.screen.kind == "cleanup" and self.configuration_pending():
             self.show_configuration()

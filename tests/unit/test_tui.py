@@ -1033,17 +1033,17 @@ def test_unit_runner_events_final_failure_and_view(tmp_path):
                     break
             assert calls == [((identity,), 8)]
             assert app.operation_status == 1, str(app.screen.query_one("#body", Static).content)
-            assert app.screen.kind == 'unit-results'
+            assert app.screen.kind == 'test-results'
             table = app.screen.query_one(DataTable)
             assert table.get_row_at(0) == ['FAILED', identity.id, '0.125s']
             assert '50.00%' in str(app.screen.query_one('#body', Static).render())
             await pilot.press('enter')
             await pilot.pause()
-            assert app.screen.kind == 'unit-failure'
+            assert app.screen.kind == 'test-failure'
             assert 'AssertionError' in str(app.screen.query_one('#body', Static).render())
             await pilot.press('c')
             await pilot.pause()
-            assert app.screen.kind == 'unit-results'
+            assert app.screen.kind == 'test-results'
     asyncio.run(scenario())
 
 
@@ -1201,7 +1201,7 @@ def test_close_running_tests_confirms_and_waits_for_runner_stop(tmp_path):
             assert 'Stop running tests' in str(app.screen.query_one(Static).content)
             await pilot.press('escape')
             await pilot.pause()
-            assert app.screen.kind == 'unit-results'
+            assert app.screen.kind == 'test-results'
             assert not app.collection_cancel.is_set()
             await pilot.press('c', 'y', 'enter')
             for _ in range(30):
