@@ -2,7 +2,7 @@
 
 ## Checklist
 
-- [ ] Choose the TUI library and interface layout with the user during planning. Evaluate [Textual](https://textual.textualize.io/widget_gallery/) for the live selectable test list, scrollable failure screens, fixed key-help footer, and quit confirmation; library selection remains to be agreed.
+- [ ] Use [Textual](https://textual.textualize.io/widget_gallery/) as the selected TUI library for the live selectable test list, scrollable failure screens, fixed key-help footer, and quit confirmation. Review remaining interface layout details with the user during planning.
 - [ ] Allow unit and integration tests to run interactively or through startup CLI arguments with `--no-std-in`. Unit tests remain deterministic without live LLM execution, are excluded from Allure, and must have a 100% pass rate for every commit; integration and E2E runs use [Allure reporting](implementation_plan_d.md).
 - [ ] Build an option parser driven by the declarative configuration description. Resolve explicit values in increasing precedence: `.env`, environment variables, then command-line options.
   - [ ] Normalize CLI key hyphens and underscores to the same uppercase environment key: `--no-std-in` and `--no_std_in` both map to `NO_STD_IN`.
