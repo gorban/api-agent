@@ -330,3 +330,15 @@ def test_review_optional_metadata_is_strict_boolean():
     with pytest.raises(ValueError, match='review_optional must be boolean'):
         schema_from_dict({'version': 1, 'fields': {'OPTION': {
             'type': 'str', 'review_optional': 'true'}}})
+
+
+def test_cleanup_hidden_fields_only_while_saved_in_either_dotenv(session):
+    def names():
+        return {row.name for row in session.cleanup_rows()}
+
+    assert not {'DEBUG', 'TRANSIENT'} & names()
+    for path in session.target_paths:
+        path.write_text('DEBUG=False\nTRANSIENT=local\n')
+        assert {'DEBUG', 'TRANSIENT'} <= names()
+        session.delete_keys(['DEBUG', 'TRANSIENT'])
+        assert not {'DEBUG', 'TRANSIENT'} & names()

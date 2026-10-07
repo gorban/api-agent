@@ -216,4 +216,6 @@ class ConfigSession:
         persisted = set().union(*(DotenvEditor(path).keys() for path in self.target_paths))
         return [CleanupRow(name, result.fields.get(name), field, name in base,
                            name in pack, name in persisted)
-                for name, field in self.schema.fields.items() if name != 'UNATTENDED_AUTH']
+                for name, field in self.schema.fields.items()
+                if name != 'UNATTENDED_AUTH'
+                and (field.acknowledge_default and field.persist_default or name in persisted)]

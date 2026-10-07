@@ -64,12 +64,12 @@ def test_cleanup_context_and_deletion(tmp_path):
             await pilot.pause(0.4)
             assert app.screen.kind == "cleanup"
             table = app.screen.query_one(DataTable)
-            assert "UNATTENDED_AUTH" not in [table.get_row_at(i)[0] for i in range(table.row_count)]
-            row = next(i for i in range(table.row_count) if table.get_row_at(i)[0] == "COUNT")
+            assert "UNATTENDED_AUTH" not in [table.get_row_at(i)[1] for i in range(table.row_count)]
+            row = next(i for i in range(table.row_count) if table.get_row_at(i)[1] == "COUNT")
             table.move_cursor(row=row)
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == "X COUNT"
+            assert table.get_row_at(row)[0] == "X"
             await pilot.press("d")
             await pilot.pause(0.4)
             assert not app.screen_stack[-2].check_action("switch_target", ())
@@ -77,15 +77,15 @@ def test_cleanup_context_and_deletion(tmp_path):
             app.screen.query_one(Input).value = "n"
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == "X COUNT"
+            assert table.get_row_at(row)[0] == "X"
             assert "COUNT=" in (tmp_path / ".env").read_text()
             await pilot.press("d")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "y"
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == "COUNT"
-            assert table.get_row_at(row)[1] == "4"
+            assert table.get_row_at(row)[0] == ""
+            assert table.get_row_at(row)[2] == "4"
             assert not app.focused_cleanup_present()
             assert "# keep" in (tmp_path / ".env").read_text()
             assert "COUNT=" not in (tmp_path / ".env").read_text()
@@ -898,18 +898,23 @@ def test_cleanup_both_dotenvs_hidden_setting_and_default_review(tmp_path):
             assert not app.screen.query('#dotenv-targets')
             assert not app.screen.check_action('switch_target', ())
             table = app.screen.query_one(DataTable)
-            assert len(table.columns) == 3
+            assert len(table.columns) == 4
+            assert next(iter(table.columns.values())).width == 1
             for name in ('UI_NX_APP', 'COUNT'):
-                index = next(i for i in range(table.row_count) if table.get_row_at(i)[0] == name)
+                index = next(i for i in range(table.row_count) if table.get_row_at(i)[1] == name)
                 table.move_cursor(row=index)
                 await pilot.pause()
+                assert table.get_row_at(index)[0] == '✓'
                 assert app.screen.check_action('delete_marked', ())
                 await pilot.press('d')
                 await pilot.pause()
                 app.screen.query_one(Input).value = 'y'
                 await pilot.press('enter')
                 await pilot.pause()
-                assert not app.focused_cleanup_present()
+                if name == 'UI_NX_APP':
+                    assert name not in [table.get_row_at(i)[1] for i in range(table.row_count)]
+                else:
+                    assert not app.focused_cleanup_present()
                 for directory in (base, pack):
                     assert name + '=' not in (directory / '.env').read_text()
             await pilot.press('c')

@@ -175,6 +175,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             elif self.kind == "containers":
                 table.add_columns("Selected", "ID", "Name", "Image", "Status")
             elif self.kind == "cleanup":
+                table.add_column("", width=1)
                 table.add_columns("Setting", "Effective value", "Source")
             else:
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
@@ -242,7 +243,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         if self.app.focused_cleanup_present():
             if not self.app.marked:
                 table = self.query_one(DataTable)
-                self.app.marked.add(str(table.get_row_at(table.cursor_row)[0]).removeprefix("X "))
+                self.app.marked.add(str(table.get_row_at(table.cursor_row)[1]))
             self.app.push_screen(DeleteDialog(), lambda yes: self.app.delete_marked() if yes else None)
 
     def action_switch_target(self):
@@ -627,7 +628,7 @@ class ApiAgentApp(App[int]):
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Continue explicitly confirms the selection.", (("continue", "Continue"),), rows)
 
     def show_cleanup(self):
-        rows = [(row.name, (("X " if row.name in self.marked else "") + row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+        rows = [(row.name, ("X" if row.name in self.marked else "✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
         self.show("cleanup", "Clear .env configuration", "Enter marks/unmarks .env settings. d confirms deletion from all agent/resource-pack .env files.", rows=rows)
 
     def focused_cleanup_present(self):
@@ -636,7 +637,7 @@ class ApiAgentApp(App[int]):
         table = self.screen.query_one(DataTable)
         if not table.row_count:
             return False
-        key = str(table.get_row_at(table.cursor_row)[0]).removeprefix("X ")
+        key = str(table.get_row_at(table.cursor_row)[1])
         return any(row.name == key and row.present and str(row.source).endswith("/.env") for row in self.session.cleanup_rows())
 
     def toggle_row(self, key):
@@ -657,7 +658,16 @@ class ApiAgentApp(App[int]):
         if self.screen.kind == "tests":
             rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
         else:
-            rows = [(row.name, (("X " if row.name in self.marked else "") + row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+            rows = [(row.name, ("X" if row.name in self.marked else "✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+        if self.screen.kind == "cleanup":
+            cursor = table.cursor_row
+            table.clear()
+            for key, cells in rows:
+                table.add_row(*cells, key=key)
+            if rows:
+                table.move_cursor(row=min(cursor, len(rows) - 1))
+            self.screen.refresh_bindings()
+            return
         for key, cells in rows:
             for column, value in zip(table.columns, cells):
                 table.update_cell(key, column, value)
