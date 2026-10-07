@@ -1,10 +1,11 @@
-# External LLM adapter requirements
+# Shared LLM adapter requirements
 
-The selected external adapter restores authentication, transport and usage functionality through [generic provider contracts](implementation_plan_m.md). Public core supplies orchestration and normalized results; private protocols/configuration/cache formats/metadata remain provider-owned. This checklist does not claim any external adapter is implemented.
+The included [personal GPT provider](implementation_plan_f2.md) and replaceable external LLM adapters use the same [generic contracts](implementation_plan_m.md). Complete [consumer hardening](implementation_plan_m3.md) first. Core supplies orchestration and shared LLM shapes; transport/authentication/cache/metadata remain provider-owned. Non-inference access adapters have separate capabilities and do not inherit inference requirements.
 
 ## Checklist
 
 - [ ] Implement the versioned factory/capabilities for discovery, completion, streaming and structured output. Preserve the UI-selected model and generation options; return normalized results/errors and supported capability descriptions, with deadlines/cancellation and explicit runtime client disposal.
+- [ ] Advertise only supported operations/features. A static-key adapter omits authentication or provides an explicit async no-op, applies its configured secret to each request, and never starts a login browser or asks for an indexed vault account. Browser/cache tasks below apply only to providers advertising those needs.
 - [ ] Contribute typed protocol, authentication and request-metadata settings before first executable use. Receive application/pack identity and tracing context through generic services; build the provider's required headers consistently across discovery, generation, retries and usage reads. Human-review actual settings before any outbound authentication/provider traffic.
 - [ ] Register optional attended start/status/completion/recovery handlers through the shared registrar, binding protocol transactions to generic initiating request ownership. Validate provider-specific state/identity/expiry in the adapter; core does not interpret protocol claims or callback names.
 - [ ] Implement optional unattended `authenticate` returning the callable, asynchronously disposable `LLMAuthSession` in [the browser contract](provider_architecture.md). Use the runtime-owned dedicated headless session and role-bound reader; retrieve fresh challenge credentials on demand. Share refresh/state across authenticated calls without sharing across identities.

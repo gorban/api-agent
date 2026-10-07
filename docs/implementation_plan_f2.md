@@ -1,0 +1,17 @@
+# Included personal GPT LLM provider
+
+This is the early exception to deferred public demo applications. Build a replaceable included provider, not inference code inside orchestration. First complete [consumer contract hardening](implementation_plan_m3.md); apply [shared adapter requirements](implementation_plan_f1.md). Actual live GPT calls need the user's personal credentials and reviewed settings.
+
+## Checklist
+
+- [ ] Settle personal transport with the user before implementation. Chat Completions is the requested wire format. Eligible ChatGPT-plan integration uses the documented Responses interface instead; allowing it inside this adapter is a separate pending choice. Do not silently substitute Responses or use subscription credentials on an unsupported endpoint.
+- [ ] Establish `llm-providers/gpt-provider/`, an importable `gpt_provider` package, adjacent typed configuration, distribution/dependency metadata and independently authored contract tests. Load it through the ordinary LLM factory contract; support source and relocated installed use. Inclusion does not select it for unrelated operations.
+- [ ] For the API-key route, contribute endpoint, secret API key and GPT selection settings. Authentication requires no login browser or indexed password-manager account: omit the optional hook or implement an explicit async no-op, and supply the configured bearer key on each authorized request. Register secrets before diagnostics. Keep endpoint/key overrides reviewed and avoid exposing the key in traces, URLs or artifacts.
+- [ ] If the user selects the subscription route, verify its preview feature/parameter limits against required tools and structured output, then implement documented OAuth registration/consent, account selection, token lifetime and Responses streaming inside this provider. Reject unsupported generation parameters rather than ignoring them. Do not scrape another application's auth cache. Report limits and unavailable cost data honestly; eligibility and actual account access require live verification.
+- [ ] Support GPT-only discovery/selection, completion, streaming, tools and structured output where advertised. Translate transport-specific messages/events/usage into the shared schemas. Reject unsupported features or selections; do not silently fall back to another LLM family.
+- [ ] Prepare selected dependencies from either launcher through managed bootstrap in its venv. Do not require manual installation of an editable sibling or unrelated optional providers.
+- [ ] Normalize usage and provider-owned cost estimates without inventing prices or zero cost when unavailable. Keep personal inference accounting separate from any external access adapter's quota snapshots. Preserve the exact selected GPT throughout workflow personas.
+- [ ] Test API-key header forwarding, absent/no-op auth, zero browser/credential retrieval, supported feature rejection, stream early close, deadlines, errors, privacy and disposal with controlled transports. Compare the same consumer with a second synthetic LLM adapter.
+- [ ] Human-review contributed settings and personal funding/transport, then verify no-inference discovery before the first small personal GPT renderer call. Record integration/E2E history from the first live run, preserving interactive gates and human E2E acceptance.
+
+This task chooses no particular GPT variant and makes no live call. Demo UI/API implementations remain deferred and are not prerequisites for this provider.

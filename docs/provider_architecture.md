@@ -1,6 +1,6 @@
 # Pluggable API and LLM providers
 
-This is the authoritative boundary and browser-session requirements document. It supersedes conflicting wording in earlier checklists. The [version-1 foundation](provider_contracts_v1.md) defines executable protocol exports and reusable owners. Unchecked tasks below include their remaining consumers and live verification. Follow the [shared provider task list](implementation_plan_m.md), [included GraphQL tasks](implementation_plan_m1.md), [external API extension tasks](implementation_plan_m2.md), and [external LLM adapter tasks](implementation_plan_f1.md).
+This is the authoritative boundary and browser-session requirements document. It supersedes conflicting wording in earlier checklists. The [version-1 foundation](provider_contracts_v1.md) records current exports and owners; its consumer surface remains provisional until [contract hardening](implementation_plan_m3.md). Follow the [shared provider task list](implementation_plan_m.md), [included GraphQL tasks](implementation_plan_m1.md), [external API extension tasks](implementation_plan_m2.md), and [LLM adapter tasks](implementation_plan_f1.md).
 
 ## Responsibility boundaries
 
@@ -9,13 +9,20 @@ This is the authoritative boundary and browser-session requirements document. It
 | api-agent core | Typed configuration, provider loading, routing, credential broker, mode/account selection, browser allocation, evidence, usage aggregation and cancellation/cleanup | Selected runtime and credential binding |
 | Included `api-providers/graphql-api-provider/` | Generic GraphQL transport, schema evidence, operation execution and upstream extension interfaces | Selected API provider |
 | External upstream API extension | Authentication, signing, request/identity validation, upstream configuration and optional routes | Selected extension; no private default in core |
-| External LLM provider | Discovery, inference, streaming, structured output, upstream metadata, authentication, token state/cache/refresh, usage reads and pricing | Selected provider |
+| Included personal GPT provider or replaceable external LLM provider | Discovery, inference, streaming, structured output, upstream metadata, optional authentication, usage and pricing | Selected inference provider; [early GPT task](implementation_plan_f2.md) |
+| Optional external access adapter | Non-inference discovery/usage checks, scoped authentication and routes | Separately activated access operation; no completion/streaming capability |
 | Optional UI provider | Frontend launch plan, authoritative proxy configuration, instance-owned readiness and process lifecycle | Selected pack and operation |
 | Resource pack | Knowledge/navigation/prompts, scenario tests, UI authentication strategy and optional credential roles | Selected pack; UI hook once per newly created session |
 
 Core is independent of the API type. A provider at a different path may implement REST or another API without accepting GraphQL queries. The included GraphQL package is `graphql_api_provider`; it requires a separately selected upstream extension. Product-specific code and examples belong to their external owners. Public tests use synthetic adapters, identities and API data.
 
 Core owns browser resources operationally. A provider exclusively uses its LLM session until disposal finishes; a pack exclusively prepares its UI session before handing it to the test/user. Login pages, selectors, signing, cookie contents, protocol transactions and token interpretation remain outside core. Core request-session storage contains opaque request ownership, not provider tokens.
+
+## Implementation phases
+
+Contract hardening and synthetic consumer proofs come first, then the included personal GPT provider and external API/UI/access consumers. Real public demo UI/Nx applications, demo GraphQL servers and demo non-GraphQL providers are deferred. The generic GraphQL adapter library remains needed for external API consumers; it is not a demo server. A synthetic REST fixture proves replaceability without implementing a production demo provider.
+
+Static API-key LLM providers require neither browser login nor credential-array selection. An absent or explicit no-op authentication hook is valid; configured keys are applied by that provider per request. API caller identity and unrelated LLM service credentials remain separate. Optional access adapters must not force selection of an inference provider just to test authentication/discovery.
 
 ## Selection, configuration and routes
 
@@ -93,6 +100,6 @@ Allure records integration/E2E, including authentication/setup failures, from th
 
 - [ ] Verify synthetic GraphQL and outside-path REST replacement, typed config/route collisions, absent/no-op/invalid hooks, identical pack/test sessions, fresh per-attempt cookies, every visibility/retention combination, worker ownership, lazy/coalesced LLM initialization, getter freshness, credential isolation, cancellation and bounded/idempotent disposal.
 - [ ] Review concrete declarations, provider boundaries and deterministic evidence with the user before live provider traffic. Record real authentication, model discovery, tracing/history and initial renderer checks separately; migrated foundation checks do not prove those operations.
-- [ ] Give the included demo its own independently designed provider implementations, UI and listener/completion routes. Choose its own ports and callback paths when implementing it; never inherit an external provider's product-specific defaults. The generic repository currently has no standalone live-provider acceptance.
+- [ ] After early external-consumer acceptance, give the included demo independently designed UI/API providers and listener/completion routes, with its own ports and callback paths. These real demo applications are not early-phase prerequisites. The personal GPT provider is the explicit early exception; the generic repository currently has no standalone live-provider acceptance.
 
 - [ ] Remove the unused legacy `src/api_agent/config/shared.toml` snapshot in final cleanup. Runtime and wheel packaging use `cfg/config.toml`; do not maintain a second declaration source.

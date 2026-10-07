@@ -2,6 +2,8 @@
 
 Follow the [shared contracts](implementation_plan_m.md) and [external LLM adapter checklist](implementation_plan_f1.md). Core tests exercise synthetic adapters; the selected provider owns authentication protocols, cache/refresh, headers and pricing.
 
+The [included personal GPT adapter](implementation_plan_f2.md) is early work; real public demo UI/API applications are deferred. Non-inference access adapters are separately activated and cannot serve completions. Keep their quota snapshots separate from selected GPT inference usage/cost. The application picker describes its actual inference provider, not an unrelated access-test catalog. Static API-key operation skips browser/indexed-account authentication tasks.
+
 ## Checklist
 
 - [ ] Define typed, runtime-parsed configuration with a required value specifying where to load the LLM provider. Combine the provider's own `cfg/config.toml`, when present, with api-agent's configuration as though it were api-agent's own. Preserve the UI-selected model throughout the workflow. Review the provider configuration and authentication setup.

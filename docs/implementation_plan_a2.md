@@ -31,6 +31,11 @@
   - [x] Treat successful Keeper password/TOTP and 1Password TOTP output as raw values. Parse the 1Password password output with Python's CSV processor as exactly one cell, so embedded commas/quotes are handled correctly. Reject unsuccessful/invalid output rather than returning it as a credential.
   - [x] Keep successful retrieved credentials in memory for the authentication consumer; do not print or persist them to `.env`, logs, or test artifacts. Captured failure/prompt output supplies the requested diagnostics.
 - [ ] Make helpers available to LLM provider authentication and the selected pack's additional local authenticated-UI adapter. Keep the password-manager retrieval layer separate from browser/API login logic and from TUI screens.
+- [ ] Add `get_username` alongside password/TOTP retrieval. The saved descriptor's `user` identifies the vault login/item; it is not necessarily the actual login username. Retrieve the username on demand using the exact commands below without adding a redundant stored username or changing existing descriptor files.
+  - [ ] Parse 1Password username stdout as exactly one CSV cell through Python's CSV processor; keep Keeper username stdout raw, removing only the CLI output terminator. Reject missing/empty or malformed results. Preserve names/paths and significant returned content using argv execution, never a shell.
+  - [ ] Reuse closed-stdin, prompt detection, bounded timeout, process-group supervision and nonzero-exit handling for both username commands. Keep actual usernames in memory and scrub them from diagnostics, traces and report attachments; entry labels already used by the setup UI do not authorize logging fetched identity data.
+  - [ ] Extend role-bound and LLM-bound credential readers and any versioned credential IPC to allow `username` explicitly alongside `password` and `totp`. Reject all unsupported kinds before invoking helpers; preserve role/index, deadline, revocation and closed-owner guards. Do not let a new kind fall through to TOTP retrieval.
+  - [ ] Add deterministic argv/CSV/raw-output/error tests, including entry name differing from retrieved username, spaces/quotes/commas, no empty credential, no cross-role retrieval and no real vault access. Join the browser-login tasks only after these helper contracts pass.
 - [ ] Add deterministic tests for JSON round trips, individual removal, manager reset and empty-role attended transition, role/default selection, zero/one/many entries, configured and explicitly persisted picker index selection, noninteractive ambiguity failures, shared manager and per-account vault/item descriptors, legacy migration, exact command argument forwarding, single-cell CSV parsing, and stdin/prompt/timeout/nonzero failure handling. Use simulated CLI processes; do not require real vault access or credentials to validate this layer.
 
 ## Single-line .env example
@@ -43,6 +48,12 @@ When a secondary role is enabled, include another array within `roles` under tha
 
 ## Exact retrieval commands
 
+Keeper username (raw output):
+
+```text
+<path_to_keeper_cli> clipboard-copy '<vault>/<name>' --field login --output stdout
+```
+
 Keeper password (raw output):
 
 ```text
@@ -53,6 +64,12 @@ Keeper TOTP (raw output):
 
 ```text
 <path_to_keeper_cli> clipboard-copy '<vault>/<name>' --totp --output stdout -t
+```
+
+1Password username (CSV-formatted single cell):
+
+```text
+<path_to_op_cli> item get '<name>' --vault '<vault>' --fields username
 ```
 
 1Password password (CSV-formatted single cell):
