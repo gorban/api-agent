@@ -98,7 +98,8 @@
 
 - [x] Execute selected base/pack unit identities with owner working directories, pytest configuration, raw output or per-test events, failure tracebacks and durations. Support `TEST_PARALLEL_JOBS` through pytest-xdist (`0` disables); cancel/reap owned process groups, including children left after normal pytest exit. Never retry or record units in Allure.
 - [x] Gate unit result status on all selected tests passing and exact 100% line/branch counters for every measured production file, retaining full source scope for subsets. Show red failure summaries and nonzero status for coverage gaps. Missing/empty mandatory base units remain an error.
-- [ ] Human-review real unit results, failure scrolling, cancellation and coverage summaries. Final rewrite code coverage remains a later task.
+- [x] Reach exact 100% line and branch coverage for the current B2 production code, using separate deterministic coverage lanes and high-review checks; verify the combined real launcher passes. Final rewrite coverage must still be reverified after later features.
+- [ ] Human-review real unit results, failure scrolling, cancellation and coverage summaries, including the current all-tests green completion in the interactive TUI and NO_STD_IN.
 
 - [ ] For every executable test mode, recollect once immediately before execution without continuously refreshing the picker. Explicitly selected All/file/tag scopes include newly collected tests inside that scope; individual choices stay exact. Incidental checked groups caused by overlapping membership do not broaden selection. New unrelated files/tags stay excluded. Unit execution implements this; apply the shared selection contract when integration/E2E runners are added.
 
