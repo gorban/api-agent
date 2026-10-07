@@ -57,7 +57,7 @@ def test_cleanup_requires_literal_y_and_refreshes(tmp_path):
             await pilot.press('enter')
             await pilot.pause()
             assert stopped == [('abc',)]
-            assert app.screen.query_one(DataTable).row_count == 1
+            assert app.screen.query_one(DataTable).row_count == 2
             await app.choose('menu')
             await pilot.pause()
             assert 'Running containers: 1' in str(app.screen.query_one('#body', Static).content)
@@ -85,3 +85,31 @@ def test_timeout_and_invalid_inventory_are_unavailable():
     with patch('api_agent.runtime.containers.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='not json')):
         with pytest.raises(ContainerError, match='invalid engine response'):
             ContainerRuntime('/bin/docker').inventory()
+
+
+def test_container_all_selection_tracks_individuals_and_empty_inventory(tmp_path):
+    async def scenario(count):
+        app = fixture(tmp_path / str(count), 'cleanup-containers')
+        items = tuple(Container(str(i), 'service', 'image', 'Up') for i in range(count))
+        app.container_runtime = SimpleNamespace(inventory=lambda: items)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if not count:
+                assert not app.screen.query(DataTable)
+                return
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(0)[1] == 'All'
+            assert table.get_row_at(0)[0] == ''
+            await pilot.press('enter')
+            assert app.container_marked == {item.id for item in items}
+            assert all(table.get_row_at(i)[0] == '✓' for i in range(table.row_count))
+            await pilot.press('enter')
+            assert not app.container_marked
+            for item in items:
+                app.toggle_row(item.id)
+            assert table.get_row_at(0)[0] == '✓'
+            app.toggle_row(items[0].id)
+            assert table.get_row_at(0)[0] == ''
+            assert 'container-all' not in app.container_marked
+    for count in (0, 1, 2):
+        asyncio.run(scenario(count))

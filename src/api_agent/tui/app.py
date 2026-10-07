@@ -557,6 +557,9 @@ class ApiAgentApp(App[int]):
 
     def show_containers(self):
         rows = [(item.id, ("✓" if item.id in self.container_marked else "", item.id, item.name, item.image, item.status)) for item in self.containers]
+        if self.containers:
+            all_selected = all(item.id in self.container_marked for item in self.containers)
+            rows.insert(0, ("container-all", ("✓" if all_selected else "", "All", "", "", "")))
         self.show("containers", "Stop running containers", self.container_summary +
                   "\nEnter selects/unselects rows. Stop selected asks for confirmation. Containers and volumes are not removed.",
                   (("stop-containers", "Stop selected"), ("refresh-containers", "Refresh inventory")), rows)
@@ -651,9 +654,17 @@ class ApiAgentApp(App[int]):
             self.selection.toggle(key)
             self.refresh_rows()
         elif self.screen.kind == "containers":
-            self.container_marked.symmetric_difference_update({key})
+            ids = {item.id for item in self.containers}
+            if key == "container-all":
+                self.container_marked = set() if ids <= self.container_marked else ids
+            elif key in ids:
+                self.container_marked.symmetric_difference_update({key})
             table = self.screen.query_one(DataTable)
-            table.update_cell(key, next(iter(table.columns)), "✓" if key in self.container_marked else "")
+            column = next(iter(table.columns))
+            for item in self.containers:
+                table.update_cell(item.id, column, "✓" if item.id in self.container_marked else "")
+            if ids:
+                table.update_cell("container-all", column, "✓" if ids <= self.container_marked else "")
 
     def refresh_rows(self):
         table = self.screen.query_one(DataTable)
