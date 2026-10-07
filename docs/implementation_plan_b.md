@@ -33,7 +33,7 @@ Implementation reference: [LangGraph Graph API](https://docs.langchain.com/oss/p
 
 - [x] Reject `NO_STD_IN=True` for integration/E2E execution as an incompatible configuration before startup. Keep `HELP` and configured-test-mode `COLLECT_ONLY` as nonexecuting, noninteractive shortcuts; collection does not require execution acceptance.
 
-- [ ] Declare typed `UNATTENDED_AUTH` role-to-entry-array credential sources (compact JSON object) for provider-declared authentication. Additional credential roles and their configuration fields belong to provider or resource-pack declarations/adapters; apply only selected profiles when validating setup. Derive both configuration cleanup and unattended-auth setup fields from these executable declarations. See [authentication setup](implementation_plan_a2.md).
+- [ ] Declare typed UNATTENDED_AUTH credentials as a compact JSON object with one shared password_manager and per-role account arrays for provider-declared authentication. Providers and resource packs declare any additional roles and configuration. Validate only selected profiles, and derive configuration cleanup and credential-wizard fields from the executable declarations. See [authentication setup](implementation_plan_a2.md).
 
 - [ ] Declare `E2E_BROWSER_RESOLUTION` (validated `WIDTHxHEIGHT`, default `1440x900`) and boolean `E2E_DEBUG=False`. Add declarative field presentation metadata to exempt the debug default from startup default-configuration prompts without removing its ENV/CLI/help/cleanup support. Validate debug's strict-subset requirement at E2E start. See [Playwright E2E plan](implementation_plan_a3.md).
 

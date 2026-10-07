@@ -1,4 +1,4 @@
-"""Role-level unattended-auth persistence without credential retrieval."""
+"""Canonical auth storage and migration through temporary dotenv files."""
 import json
 from types import SimpleNamespace
 
@@ -6,6 +6,7 @@ import pytest
 
 from api_agent.config import schema_from_dict
 from api_agent.config.dotenv import read_dotenv
+from api_agent.config.editor import DotenvEditor
 from api_agent.config.resolve import ConfigError
 from api_agent.config.session import ConfigSession
 
@@ -20,8 +21,12 @@ def session(tmp_path, *, environ=None, argv=()):
     return ConfigSession(context, schema, environ=environ or {}, argv=argv)
 
 
-def descriptor(user='one'):
-    return {'manager': 'keeper', 'cli_path': 'keeper', 'vault': 'vault', 'user': user}
+def account(user='one'):
+    return {'vault': 'vault', 'user': user}
+
+
+def put(path, value):
+    DotenvEditor(path).update({'UNATTENDED_AUTH': json.dumps(value, separators=(',', ':'))})
 
 
 def saved(path):
@@ -29,163 +34,201 @@ def saved(path):
     return json.loads(raw) if raw is not None else None
 
 
-def test_distinct_roles_merge_and_duplicate_moves(tmp_path):
+def test_role_locality_merge_and_explicit_empty(tmp_path):
     config = session(tmp_path)
     base, pack = config.target_paths[0], config.target_paths[-1]
-    config.save_auth_role('LLM User', [descriptor()])
+    config.save_auth_role('LLM User', [account('llm')])
+    config.save_auth_role('Secondary', [account('api')])
+    assert config.dotenv_path == base
+    assert saved(base) == {'roles': {'LLM User': [account('llm')]}}
+    assert saved(pack) == {'roles': {'Secondary': [account('api')]}}
+    effective = config.result(_review=True).values['UNATTENDED_AUTH']
+    assert effective['roles'] == {'LLM User': [account('llm')], 'Secondary': [account('api')]}
     config.switch_target(pack)
-    config.save_auth_role('Secondary', [descriptor('two')])
-    assert saved(base) == {'LLM User': [descriptor()]}
-    assert saved(pack) == {'Secondary': [descriptor('two')]}
-    assert config.result(_review=True).values['UNATTENDED_AUTH'] == {
-        'LLM User': [descriptor()], 'Secondary': [descriptor('two')]}
     config.save_auth_role('LLM User', [])
     assert saved(base) is None
-    assert saved(pack) == {'Secondary': [descriptor('two')], 'LLM User': []}
-    assert config.result(_review=True).values['UNATTENDED_AUTH']['LLM User'] == []
+    assert saved(pack)['roles']['LLM User'] == []
 
 
-def test_unknown_role_payload_preserved_and_explicit_empty(tmp_path):
+def test_legacy_uniform_migrates_when_edited_and_conflict_rejected(tmp_path):
     config = session(tmp_path)
     base, pack = config.target_paths[0], config.target_paths[-1]
-    from api_agent.config.editor import DotenvEditor
-    DotenvEditor(base).update({'UNATTENDED_AUTH': json.dumps({'Other': [{'unvalidated': 'kept'}]})})
-    config.switch_target(pack)
-    config.save_auth_role('LLM User', [])
-    assert saved(base) == {'Other': [{'unvalidated': 'kept'}]}
-    assert saved(pack) == {'LLM User': []}
-    assert config.result(_review=True).values['UNATTENDED_AUTH']['Other'] == [{'unvalidated': 'kept'}]
-
-
-def test_invalid_outer_json_rejected_without_mutation(tmp_path):
-    config = session(tmp_path)
-    base = config.target_paths[0]
-    base.write_text('UNATTENDED_AUTH="not JSON"\n')
+    put(base, {'LLM User': [{'manager': 'keeper', 'cli_path': '/keeper', **account('old')}], 'Secondary': []})
+    config.save_auth_role('LLM User', [account('new')])
+    assert saved(base) == {'password_manager': {'manager': 'keeper', 'cli_path': '/keeper'},
+                           'roles': {'LLM User': [account('new')], 'Secondary': []}}
     before = base.read_bytes()
-    with pytest.raises(ConfigError, match='JSON object'):
+    put(pack, {'Secondary': [{'manager': '1password', 'cli_path': 'op', **account('x')},
+                             {'manager': 'keeper', 'cli_path': 'keeper', **account('y')}]})
+    with pytest.raises(ConfigError, match='choose one shared password manager'):
         config.save_auth_role('LLM User', [])
     assert base.read_bytes() == before
 
 
-def test_external_precedence_and_clear_override(tmp_path):
-    external = json.dumps({'LLM User': [descriptor('external')]})
+def test_manager_save_move_reset_and_external_override(tmp_path):
+    external = json.dumps({'password_manager': {'manager': '1password', 'cli_path': 'op'}, 'roles': {'LLM User': [account('external')]}})
     config = session(tmp_path, environ={'UNATTENDED_AUTH': external})
-    config.save_auth_role('LLM User', [descriptor('saved')])
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    config.save_auth_role('LLM User', [account('saved')])
+    config.save_auth_manager({'manager': '1password', 'cli_path': '/custom op'})
+    assert saved(base)['password_manager'] == {'manager': '1password', 'cli_path': '/custom op'}
     assert config.result(_review=True).values['UNATTENDED_AUTH'] == json.loads(external)
-    config.clear_auth_config()
-    assert config.result(_review=True).values['UNATTENDED_AUTH'] == {}
+    config.switch_target(pack)
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': '/new keeper'})
+    assert 'password_manager' not in saved(base)
+    assert saved(pack)['password_manager']['cli_path'] == '/new keeper'
+    config.reset_auth_manager()
+    assert saved(pack) is None
+    current = config.result(_review=True).values['UNATTENDED_AUTH']
+    assert current['password_manager'] == {'manager': 'keeper', 'cli_path': 'keeper'}
     assert config.environ['UNATTENDED_AUTH'] == external
 
 
-def test_validation_and_rollback(tmp_path, monkeypatch):
+def test_inactive_role_preserved_and_pack_override(tmp_path):
     config = session(tmp_path)
     base, pack = config.target_paths[0], config.target_paths[-1]
-    config.save_auth_role('LLM User', [descriptor()])
-    config.switch_target(pack)
+    put(base, {'roles': {'LLM User': [account('base')], 'Inactive': [{'unknown': 'kept'}]}})
+    put(pack, {'roles': {'LLM User': [account('pack')]}})
+    config.save_auth_role('Secondary', [])
+    assert saved(base)['roles']['Inactive'] == [{'unknown': 'kept'}]
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['roles']['LLM User'] == [account('pack')]
+    assert saved(pack)['roles']['Secondary'] == []
+
+
+def test_invalid_outer_and_symlink_preflight(tmp_path):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    base.write_text('UNATTENDED_AUTH="bad json"\n')
+    with pytest.raises(ConfigError, match='JSON object'):
+        config.save_auth_role('LLM User', [])
+    base.unlink()
+    real = tmp_path / 'linked.env'
+    put(real, {'roles': {'Secondary': [account()]}})
+    pack.symlink_to(real)
+    with pytest.raises(ValueError, match='symlink'):
+        config.save_auth_role('Secondary', [account('new')])
+    assert pack.is_symlink() and saved(real)['roles']['Secondary'] == [account()]
+
+
+def test_rollback_destination_then_source_failure(tmp_path, monkeypatch):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    put(base, {'roles': {'Secondary': [account('old')]}})
     before = base.read_bytes()
-    from api_agent.config.editor import DotenvEditor
-    original_delete = DotenvEditor.delete
-    def fail_base(self, names):
-        if self.path == base:
-            raise OSError('fixture write failure')
-        return original_delete(self, names)
-    monkeypatch.setattr(DotenvEditor, 'delete', fail_base)
-    with pytest.raises(OSError, match='fixture write failure'):
-        config.save_auth_role('LLM User', [descriptor('new')])
-    assert base.read_bytes() == before
-    assert not pack.exists()
-    with pytest.raises(ConfigError, match='nonempty'):
-        config.save_auth_role('LLM User', [{'manager': 'keeper', 'cli_path': '', 'vault': 'v', 'user': 'u'}])
-
-
-def test_pack_role_migrates_from_base_and_pack_wins_on_read(tmp_path):
-    config = session(tmp_path)
-    base, pack = config.target_paths[0], config.target_paths[-1]
-    from api_agent.config.editor import DotenvEditor
-    DotenvEditor(base).update({'UNATTENDED_AUTH': json.dumps({
-        'LLM User': [descriptor('base')], 'Secondary': [descriptor('old')]})})
-    DotenvEditor(pack).update({'UNATTENDED_AUTH': json.dumps({
-        'LLM User': [descriptor('pack')]})})
-    effective = config.result(_review=True).values['UNATTENDED_AUTH']
-    assert effective['LLM User'] == [descriptor('pack')]
-    assert effective['Secondary'] == [descriptor('old')]
-    config.switch_target(pack)
-    config.save_auth_role('Secondary', [descriptor('new')])
-    assert saved(base) == {'LLM User': [descriptor('base')]}
-    assert saved(pack) == {'LLM User': [descriptor('pack')], 'Secondary': [descriptor('new')]}
-
-
-def test_destination_failure_before_creation_keeps_source(tmp_path, monkeypatch):
-    config = session(tmp_path)
-    base, pack = config.target_paths[0], config.target_paths[-1]
-    from api_agent.config.editor import DotenvEditor
-    DotenvEditor(base).update({'UNATTENDED_AUTH': json.dumps({'Secondary': [descriptor('old')]})})
-    before = base.read_bytes()
-    config.switch_target(pack)
-    from api_agent.config.editor import DotenvEditor
-    original_update = DotenvEditor.update
-    def fail_pack(self, values):
+    original = DotenvEditor.update
+    def fail_target(self, values):
         if self.path == pack:
-            raise OSError('destination unavailable')
-        return original_update(self, values)
-    monkeypatch.setattr(DotenvEditor, 'update', fail_pack)
-    with pytest.raises(OSError, match='destination unavailable'):
-        config.save_auth_role('Secondary', [descriptor('new')])
-    assert base.read_bytes() == before
-    assert not pack.exists()
-
-
-def test_source_failure_after_mutation_restores_both_files(tmp_path, monkeypatch):
-    config = session(tmp_path)
-    base, pack = config.target_paths[0], config.target_paths[-1]
-    from api_agent.config.editor import DotenvEditor
-    DotenvEditor(base).update({'UNATTENDED_AUTH': json.dumps({'Secondary': [descriptor('old')]})})
-    base_before = base.read_bytes()
-    pack.write_text('# keep pack\nOTHER=1\n')
-    pack_before = pack.read_bytes()
-    config.switch_target(pack)
-    from api_agent.config.editor import DotenvEditor
+            raise OSError('target failure')
+        return original(self, values)
+    monkeypatch.setattr(DotenvEditor, 'update', fail_target)
+    with pytest.raises(OSError, match='target failure'):
+        config.save_auth_role('Secondary', [account('new')])
+    assert base.read_bytes() == before and not pack.exists()
+    monkeypatch.setattr(DotenvEditor, 'update', original)
     original_delete = DotenvEditor.delete
-    def fail_after_delete(self, names):
+    def fail_after_source(self, names):
         original_delete(self, names)
         if self.path == base:
-            raise OSError('source delete failed afterward')
-    monkeypatch.setattr(DotenvEditor, 'delete', fail_after_delete)
-    with pytest.raises(OSError, match='source delete failed afterward'):
-        config.save_auth_role('Secondary', [descriptor('new')])
-    assert base.read_bytes() == base_before
-    assert pack.read_bytes() == pack_before
+            raise OSError('source failure')
+    monkeypatch.setattr(DotenvEditor, 'delete', fail_after_source)
+    with pytest.raises(OSError, match='source failure'):
+        config.save_auth_role('Secondary', [account('new')])
+    assert base.read_bytes() == before and not pack.exists()
 
 
-def test_pack_role_uses_pack_target_even_when_base_selected(tmp_path):
+def test_explicit_manager_choice_resolves_mixed_legacy(tmp_path):
+    config = session(tmp_path)
+    base = config.target_paths[0]
+    put(base, {'LLM User': [{'manager': 'keeper', 'cli_path': 'keeper', **account('A')},
+                            {'manager': '1password', 'cli_path': 'op', **account('B')}]})
+    with pytest.raises(ConfigError, match='choose one shared password manager'):
+        config.save_auth_role('LLM User', [account('A')])
+    config.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+    assert saved(base) == {'password_manager': {'manager': '1password', 'cli_path': 'op'},
+                           'roles': {'LLM User': [account('A'), account('B')]}}
+
+
+def test_cross_file_legacy_conflict_and_empty_role_manager(tmp_path):
     config = session(tmp_path)
     base, pack = config.target_paths[0], config.target_paths[-1]
-    assert config.dotenv_path == base
-    config.save_auth_role('Secondary', [descriptor()])
-    assert config.dotenv_path == base
-    assert not base.exists()
-    assert saved(pack) == {'Secondary': [descriptor()]}
+    put(base, {'LLM User': [{'manager': 'keeper', 'cli_path': '/keeper', **account('A')}]})
+    put(pack, {'Secondary': [{'manager': '1password', 'cli_path': 'op', **account('B')}]})
+    combined = config.result(_review=True).values['UNATTENDED_AUTH']
+    from api_agent.auth.profiles import normalize_auth
+    with pytest.raises(ValueError, match='choose one shared password manager'):
+        normalize_auth(combined)
+    config.switch_target(pack)
+    config.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['roles'] == {
+        'LLM User': [account('A')], 'Secondary': [account('B')]}
+    assert saved(base) == {'roles': {'LLM User': [account('A')]}}
+    assert saved(pack) == {'password_manager': {'manager': '1password', 'cli_path': 'op'},
+                           'roles': {'Secondary': [account('B')]}}
+    # An empty legacy array carries no manager choice and must not erase the shared one.
+    put(base, {'LLM User': [{'manager': '1password', 'cli_path': 'op', **account('A')}]})
+    put(pack, {'Secondary': []})
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['password_manager'] == {
+        'manager': '1password', 'cli_path': 'op'}
 
 
-@pytest.mark.parametrize('linked_position', ['target', 'source'])
-def test_symlink_preflight_preserves_every_file(tmp_path, linked_position):
+def test_reset_manager_reloads_roles_after_later_role_save(tmp_path):
+    external = json.dumps({'password_manager': {'manager': '1password', 'cli_path': 'op'},
+                           'roles': {'LLM User': [account('outside')]}})
+    config = session(tmp_path, environ={'UNATTENDED_AUTH': external})
+    config.save_auth_role('Secondary', [account('first')])
+    config.reset_auth_manager()
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['password_manager']['manager'] == 'keeper'
+    config.save_auth_role('Secondary', [account('second')])
+    # ENV supplies the roles for this invocation; the reset never freezes an old file snapshot.
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['roles'] == {'LLM User': [account('outside')]}
+    config.save_auth_manager({'manager': '1password', 'cli_path': '/op'})
+    assert config.result(_review=True).values['UNATTENDED_AUTH'] == json.loads(external)
+
+
+def test_reset_manager_followed_by_role_save_refreshes_current_roles(tmp_path):
+    config = session(tmp_path)
+    config.save_auth_role('LLM User', [account('first')])
+    config.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+    config.reset_auth_manager()
+    config.save_auth_role('LLM User', [account('second')])
+    effective = config.result(_review=True).values['UNATTENDED_AUTH']
+    assert effective['password_manager'] == {'manager': 'keeper', 'cli_path': 'keeper'}
+    assert effective['roles']['LLM User'] == [account('second')]
+
+
+def test_role_save_rejects_cross_file_manager_conflict_before_writes(tmp_path):
     config = session(tmp_path)
     base, pack = config.target_paths[0], config.target_paths[-1]
-    from api_agent.config.editor import DotenvEditor
-    real = tmp_path / 'linked.env'
-    DotenvEditor(real).update({'UNATTENDED_AUTH': json.dumps({'Secondary': [descriptor('old')]})})
-    if linked_position == 'target':
-        pack.symlink_to(real)
-        DotenvEditor(base).update({'UNATTENDED_AUTH': json.dumps({'Secondary': [descriptor('base')]})})
-    else:
-        base.symlink_to(real)
-        DotenvEditor(pack).update({'UNATTENDED_AUTH': json.dumps({'Secondary': [descriptor('pack')]})})
-    real_before = real.read_bytes()
-    base_before = base.read_bytes()
-    pack_before = pack.read_bytes()
-    with pytest.raises(ValueError, match='symlink'):
-        config.save_auth_role('Secondary', [descriptor('new')])
-    assert (pack if linked_position == 'target' else base).is_symlink()
-    assert real.read_bytes() == real_before
-    assert base.read_bytes() == base_before
-    assert pack.read_bytes() == pack_before
+    put(base, {'password_manager': {'manager': 'keeper', 'cli_path': 'keeper'},
+               'roles': {'LLM User': [account('A')]}})
+    put(pack, {'password_manager': {'manager': '1password', 'cli_path': 'op'},
+               'roles': {'Secondary': [account('B')]}})
+    before = base.read_bytes(), pack.read_bytes()
+    with pytest.raises(ConfigError, match='choose one shared password manager'):
+        config.save_auth_role('LLM User', [account('new')])
+    assert (base.read_bytes(), pack.read_bytes()) == before
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': 'keeper'})
+    config.save_auth_role('LLM User', [account('new')])
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['roles']['LLM User'] == [account('new')]
+
+
+@pytest.mark.parametrize('bad', ['not json', json.dumps({'password_manager': {'manager': 'invalid', 'cli_path': 'x'}, 'roles': {}})])
+def test_invalid_earlier_file_remains_invalid_after_later_valid(tmp_path, bad):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    DotenvEditor(base).update({'UNATTENDED_AUTH': bad})
+    put(pack, {'roles': {'Secondary': []}})
+    from api_agent.auth.profiles import normalize_auth
+    with pytest.raises(ValueError, match='malformed or invalid') as error:
+        normalize_auth(config.result(_review=True).values['UNATTENDED_AUTH'])
+    assert bad not in str(error.value)
+
+
+def test_mixed_legacy_in_one_file_reports_manager_choice(tmp_path):
+    config = session(tmp_path)
+    base = config.target_paths[0]
+    put(base, {'LLM User': [{'manager': 'keeper', 'cli_path': 'keeper', **account('A')},
+                            {'manager': '1password', 'cli_path': 'op', **account('B')}]})
+    from api_agent.auth.profiles import normalize_auth
+    with pytest.raises(ValueError, match='choose one shared password manager'):
+        normalize_auth(config.result(_review=True).values['UNATTENDED_AUTH'])
