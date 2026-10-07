@@ -16,3 +16,5 @@
 - [ ] Include `-h` / `--help` / `HELP=True` and `--collect-only` in generated usage documentation. Show configured-mode, positional-selector-filtered collection examples, including environment-provided `TUI_MODE` with `NO_STD_IN=False` that still lists tests without stdin. Explain that collection needs no inference credentials or E2E acceptance and creates no executed-test results.
 
 - [ ] Document the interactive `.env` cleanup mode and unattended-auth setup suggestion/`s` skip, compact JSON profile format, optional secondary role, exact Keeper/1Password retrieval commands, and the requirement to log into the selected password-manager CLI before noninteractive retrieval.
+
+- [ ] Document blank `.env` presence cells for absent values, checkmarks for present values, and `X` only for pending deletion. Keep unattended JSON out of general config cleanup; document its dedicated `x` clear/confirm action returning to attended authentication.
