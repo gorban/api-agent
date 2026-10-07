@@ -204,32 +204,66 @@ def _date(timestamp: float | None) -> str:
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat() + " (UTC)"
 
 
-def format_report(reports: Sequence[RepositoryReport]) -> str:
-    lines = ["The running folders:"]
-    for report in reports:
-        selected = next(checkout for checkout in report.checkouts if checkout.selected)
-        branch = selected.branch.removeprefix('refs/heads/')
-        lines.append(f"  {report.selected_root} ({branch})")
-    lines.extend(["", "", "don't match the latest worktrees:"])
-    for report in reports:
-        lines.extend(f"  {checkout.root} ({checkout.branch.removeprefix('refs/heads/')})"
-                     for checkout in report.checkouts if checkout.newest and not checkout.bare)
-    return "\n".join(lines)
+def _marker(text: str, code: str, color: bool) -> str:
+    return f"\033[{code}m{text}\033[0m" if color else text
 
+
+def format_report(reports: Sequence[RepositoryReport], *, color: bool = False) -> str:
+    """Render selected checkouts before all newest comparison checkouts."""
+    lines = [
+        "WORKTREE APPROVAL",
+        "Review the repositories used by this launch before continuing.",
+        "Approval permits startup only; it does not approve test execution or E2E acceptance.",
+        "Dates use observable HEAD commit/file timestamps; deleted files have no recoverable modification date.",
+    ]
+    for index, report in enumerate(reports, start=1):
+        selected = next(checkout for checkout in report.checkouts if checkout.selected)
+        lines.extend(["", f"Repository {index}: {report.selected_root.name}",
+                      "Current checkout — this is the directory this launch will use."])
+
+        def describe(checkout: CheckoutReport, *, current: bool = False) -> None:
+            status = (_marker("[X] STALE", "31", color) if current and not checkout.newest
+                      else _marker("[✓] NEWEST", "32", color))
+            lines.extend([f"  {status}", f"  Directory: {checkout.root}",
+                          f"  Branch: {checkout.branch.removeprefix('refs/heads/')}",
+                          f"  HEAD: {checkout.sha}",
+                          f"  Last modified: {_date(checkout.timestamp)}",
+                          f"  Determining reason: {checkout.reason}",
+                          f"  HEAD committed: {_date(checkout.commit_timestamp)}"])
+            if checkout.dirty_timestamp is not None:
+                lines.append(f"  Latest eligible file: {_date(checkout.dirty_timestamp)} ({checkout.dirty_path!r})")
+            if checkout.missing_paths:
+                preview = checkout.missing_paths[:5]
+                omitted = len(checkout.missing_paths) - len(preview)
+                suffix = f"; {omitted} more absent paths" if omitted else ""
+                lines.append(f"  Absent dirty paths (no file timestamp): {preview!r}{suffix}")
+            if checkout.locked is not None:
+                lines.append(f"  Locked: {checkout.locked or 'yes'}")
+            if checkout.prunable is not None:
+                lines.append(f"  Prunable: {checkout.prunable or 'yes'}")
+
+        describe(selected, current=True)
+        lines.extend(["", "Comparison checkout(s) — newest registered checkout(s) by these timestamps."])
+        newest = [checkout for checkout in report.checkouts if checkout.newest and not checkout.bare]
+        for checkout in newest:
+            describe(checkout)
+        if selected.newest:
+            lines.append("  The current checkout is among the newest (ties are accepted).")
+    return "\n".join(lines)
 
 
 def verify_worktrees(
     roots: Sequence[Path], *, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout
 ) -> None:
-    """Require an explicit `y` only when a selected checkout is older."""
+    """Always require explicit y followed by Enter before any launch dispatch."""
     reports = inspect_worktrees(roots)
-    if not any(r.stale for r in reports):
-        return
-    stdout.write(format_report(reports) + "\n\nContinue using the running folders? [y/N]: ")
+    color = (getattr(stdout, "isatty", lambda: False)()
+             and os.environ.get("TERM", "dumb") != "dumb" and "NO_COLOR" not in os.environ)
+    stdout.write(format_report(reports, color=color) + "\n\nApprove these current checkouts? [y/N] (default No): ")
     stdout.flush()
     try:
         answer = stdin.readline() if stdin is not None else ""
     except (OSError, ValueError, AttributeError) as exc:
-        raise WorktreeGateError("Stale checkout requires explicit y on stdin; stdin is unavailable.") from exc
-    if answer.strip().lower() != "y":
-        raise WorktreeGateError("Stale checkout was not acknowledged with explicit y; startup stopped.")
+        raise WorktreeGateError("Worktree approval requires explicit y followed by Enter; stdin is unavailable.") from exc
+    if not answer.endswith("\n") or answer.rstrip("\r\n") != "y":
+        raise WorktreeGateError("Worktree approval declined or unavailable; enter y then press Enter to approve. Startup stopped.")
