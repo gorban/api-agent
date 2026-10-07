@@ -18,7 +18,7 @@ These completed primitives do not complete the contracts or consumers below.
 - [x] Independently review failure and cancellation assertions with focused mutations and join all applicable unit/coverage/build checks. The core suite passes 1,656 tests with exact 100% measured lines/branches; its wheel builds and installed exports load.
 - [ ] Obtain human review of the concrete [contract document](provider_contracts_v1.md) before external adapter/operation consumers proceed.
 
-These primitives are separate from dependency installation, private adapter implementation, runner/TUI use, public operation completion and live acceptance. Do not mark the broader consumer tasks complete from synthetic owner checks.
+These primitives are separate from dependency installation, private adapter implementation, runner/TUI use, public operation completion and live acceptance. Do not mark the broader consumer tasks complete from synthetic owner checks. The surface is provisional until [consumer hardening](implementation_plan_m3.md) resolves normalized LLM data, activation, errors/deadlines, managed streams and graph-wide cleanup; that work precedes concrete consumer lanes and stable-contract human acceptance.
 
 ## Checklist
 

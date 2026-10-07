@@ -1,6 +1,6 @@
 # Provider contracts, version 1
 
-The executable declarations are in [contracts.py](../src/api_agent/providers/contracts.py). Payload meaning stays in adapters: public core does not require GraphQL-shaped requests or parse external authentication tokens. This contract is the current implementation batch's interface; real external adapters and live operation wiring remain separate tasks.
+The executable declarations are in [contracts.py](../src/api_agent/providers/contracts.py). This document records the foundation currently implemented, not a frozen consumer-ready contract. Complete [consumer hardening](implementation_plan_m3.md) before concrete adapter/operation lanes depend on it. API payloads remain adapter-defined; shared LLM data/feature shapes still need specification. Core does not parse external authentication tokens.
 
 ## Factory and capabilities
 
@@ -30,6 +30,6 @@ A malformed returned adapter may still need disposal. `ProviderError.retained_ow
 
 ## Review limits
 
-This batch verifies contracts with synthetic providers, injected browser/process doubles and local configuration. Independent adversarial review is clear after lifecycle/precedence repairs and focused mutations. The core suite passes 1,656 units with exact 100% measured line/branch coverage, and its wheel builds with the new exports. Human contract review remains pending.
+This batch verified foundation exports and owners with synthetic providers, injected browser/process doubles and local configuration. Scoped implementation review passed after lifecycle/precedence repairs and focused mutations. The checkpoint core suite passed 1,656 units with exact 100% measured line/branch coverage, and its wheel built with the exports. Subsequent consumer review identified additional contract decisions in the hardening task; stable-contract human acceptance remains pending.
 
 This does not authorize live login, API traffic or E2E acceptance. Dependency installation, real adapter protocols, UI callback forwarding, live frontend authentication and TUI/runner consumption have follow-up tasks. Unit results do not complete those operations.

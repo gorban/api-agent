@@ -2,6 +2,8 @@
 
 Implement inside `api-providers/graphql-api-provider/`, with importable package `graphql_api_provider`. Core contracts remain API-type-independent; see [shared provider composition](implementation_plan_m.md).
 
+This is a generic adapter library for selected upstream consumers, not a demo GraphQL server. Real public demo API applications are deferred; synthetic schema/REST fixtures remain early conformance checks. Settle the optional generic tool/evidence catalog in [contract hardening](implementation_plan_m3.md) before planner/API consumers.
+
 ## Checklist
 
 - [ ] Establish only the needed package, `cfg/config.toml`, source and synthetic unit/contract fixtures under the included provider root. Specify how it is built, loaded and measured by public CI without assuming installation from CWD.
