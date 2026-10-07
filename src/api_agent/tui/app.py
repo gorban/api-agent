@@ -220,8 +220,14 @@ class WorkbenchScreen(FocusNavigation, Screen):
     def compose(self) -> ComposeResult:
         app = self.app
         yield Static(app.identity_text(), id="identity", markup=False)
-        with VerticalScroll(id="workbench-content"):
+        with VerticalScroll(id="workbench-content") as viewport:
+            # Scroll-only content should not add an empty stop beside real controls.
+            viewport.can_focus = not (self.rows or self.actions or self.kind == "input")
             yield Static(self.heading, id="heading")
+            if self.kind == "input":
+                field = app.schema.fields[app.prompt_name]
+                if field.help.strip():
+                    yield Static(field.help, id="config-description", markup=False)
             if self.kind == "test-results":
                 with VerticalScroll(id="unit-summary"):
                     yield Static(self.body, id="body", markup=False)
@@ -484,6 +490,7 @@ class ApiAgentApp(App[int]):
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
+    #config-description { height: auto; margin: 1 0; }
     #unit-summary { height: 1fr; min-height: 6; margin-bottom: 1; }
     #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
