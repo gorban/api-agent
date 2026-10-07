@@ -196,6 +196,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             with Horizontal(id="actions") as actions:
                 if self.kind == "test-results":
                     actions.display = False
+                elif self.kind == "input":
+                    actions.styles.dock = "bottom"
                 if self.kind == "input" and len(app.session.target_paths) > 1:
                     yield Button("Switch target .env (s outside input)", id="switch-target")
                 for key, label in self.actions:
@@ -393,7 +395,7 @@ class ApiAgentApp(App[int]):
     #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
     Button:focus, Input:focus { border: heavy $accent; }
-    DataTable { height: 1fr; min-height: 8; margin-bottom: 1; }
+    DataTable { height: 1fr; min-height: 8; max-height: 100vh; margin-bottom: 1; }
     #error { color: $error; height: auto; }
     QuitDialog, DeleteDialog, StopContainersDialog { align: center middle; background: $background 80%; }
     QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
