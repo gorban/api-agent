@@ -47,7 +47,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     AuthSetupScreen #auth-targets { margin-top: 1; }
     """
     BINDINGS = [Binding("a", "add_entry", "Add"), Binding("e", "edit_entry", "Edit"),
-                Binding("r", "remove_entry", "Remove"), Binding("s", "switch_target", "Switch .env"),
+                Binding("r", "remove_entry", "Remove"),
+                Binding("[", "move_entry_up", "Move up"), Binding("]", "move_entry_down", "Move down"), Binding("s", "switch_target", "Switch .env"),
                 Binding("c", "close_view", "Close"), Binding("q", "quit_request", "Quit"),
                 Binding("escape", "cancel_form", "Back")]
 
@@ -78,7 +79,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             yield Static("Select an account, or the password-manager row to edit its settings.", id="auth-selection-help", markup=False)
             yield Static("", id="auth-form-title", markup=False)
             yield Static("Password manager", classes="auth-manager-field")
-            yield Select([("Keeper", "keeper"), ("1Password", "1password")], value="keeper", id="auth-manager")
+            yield Select([("-", ""), ("Keeper", "keeper"), ("1Password", "1password")], value="", allow_blank=False, id="auth-manager")
             yield Static("CLI executable path", classes="auth-manager-field")
             yield Input(id="auth-path")
             yield Static("Vault", classes="auth-user-field")
@@ -207,7 +208,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         table.move_cursor(row=cursor)
         manager = self.query_one('#auth-manager-table', DataTable)
         manager.clear()
-        manager.add_row(*(literal_cell(x) for x in (self.manager['manager'], self.manager['cli_path'])), key='manager')
+        manager.add_row(*(literal_cell(x) for x in (self.manager['manager'] or '-', self.manager['cli_path'] or '-')), key='manager')
         self._error(self.load_error)
         self._refresh_target()
 
@@ -260,6 +261,11 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         if action == 'edit_entry':
             selected = self._selected()
             return self.editing is None and (self._manager_selected() or not self.load_error and selected is not None)
+        if action in {'move_entry_up', 'move_entry_down'}:
+            selected = self._selected()
+            return (self.editing is None and not self.load_error and not self._manager_selected()
+                    and selected is not None and selected[1] is not None
+                    and len(self.entries[selected[0]]) > 1)
         if action == 'remove_entry':
             selected = self._selected()
             return self.editing is None and (self._manager_selected() or not self.load_error and selected is not None and selected[1] is not None)
@@ -320,6 +326,35 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         except Exception as exc:
             self._error(f'Unable to save: {exc}')
 
+    def _move_entry(self, step):
+        action = 'move_entry_up' if step < 0 else 'move_entry_down'
+        if not self.check_action(action, ()):
+            return
+        role, index = self._selected()
+        destination = index + step
+        if not 0 <= destination < len(self.entries[role]):
+            return
+        entries = [dict(item) for item in self.entries[role]]
+        entries[index], entries[destination] = entries[destination], entries[index]
+        try:
+            self.app.session.save_auth_role(role, entries)
+        except Exception as exc:
+            self._error(f'Unable to move account: {exc}')
+            return
+        self.entries[role] = entries
+        self.changed = True
+        self._refresh()
+        table = self.query_one('#auth-table', DataTable)
+        row = sum(max(1, len(self.entries[earlier])) for earlier in self.roles[:self.roles.index(role)]) + destination
+        table.move_cursor(row=row)
+        table.focus()
+
+    def action_move_entry_up(self):
+        self._move_entry(-1)
+
+    def action_move_entry_down(self):
+        self._move_entry(1)
+
     def action_remove_entry(self):
         if not self.check_action('remove_entry', ()):
             return
@@ -362,8 +397,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def on_select_changed(self, event):
         if event.select.id == 'auth-manager' and self.editing == 'manager':
             path = self.query_one('#auth-path', Input)
-            if path.value in {'keeper', 'op'}:
-                path.value = 'op' if event.value == '1password' else 'keeper'
+            if path.value in {'', 'keeper', 'op'}:
+                path.value = {'keeper': 'keeper', '1password': 'op'}.get(event.value, '')
 
     def action_close_view(self):
         if self.editing is not None:

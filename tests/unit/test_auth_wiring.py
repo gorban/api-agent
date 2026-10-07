@@ -50,7 +50,7 @@ def test_direct_wizard_mode_and_return_to_menu(tmp_path):
     asyncio.run(scenario())
 
 
-def test_startup_suggestion_closes_to_defaults_then_empty_array_skips_it(tmp_path):
+def test_startup_suggestion_closes_to_defaults_then_empty_array_still_suggests_it(tmp_path):
     async def scenario():
         app = app_fixture(tmp_path)
         async with app.run_test(size=(100, 35)) as pilot:
@@ -65,13 +65,13 @@ def test_startup_suggestion_closes_to_defaults_then_empty_array_skips_it(tmp_pat
         app = app_fixture(tmp_path, environ={'UNATTENDED_AUTH': '{"LLM User":[]}'})
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.screen.kind == 'menu'
+            assert app.screen.kind == 'suggest'
     asyncio.run(scenario())
 
 
 
 def test_primary_role_only_ignores_unselected_pack_profiles(tmp_path):
-    app = app_fixture(tmp_path, environ={'UNATTENDED_AUTH': '{"roles":{"LLM User":[],"Other pack":[{"unused":"value"}]}}'})
+    app = app_fixture(tmp_path, environ={'UNATTENDED_AUTH': json.dumps({'password_manager': {'manager': 'keeper', 'cli_path': 'keeper'}, 'roles': {'LLM User': [{'vault': 'Example', 'user': 'LLM'}], 'Other pack': [{'unused': 'value'}]}})})
     assert app.credential_roles() == ('LLM User',)
     assert not app.auth_setup_needed()
     app.context.credential_role_fields = ('UNKNOWN',)
@@ -118,3 +118,17 @@ def test_pack_role_form_displays_brackets_literally(tmp_path):
             await pilot.pause()
             assert len(app.screen.entries[label]) == 1
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('roles,manager,needed', [
+    ({'LLM User': []}, {'manager': '', 'cli_path': ''}, True),
+    ({'LLM User': [{'vault': 'Example', 'user': 'LLM'}]}, {'manager': '', 'cli_path': ''}, True),
+    ({'LLM User': [{'vault': 'Example', 'user': 'LLM'}]}, {'manager': 'keeper', 'cli_path': 'keeper'}, True),
+    ({'LLM User': [{'vault': 'Example', 'user': 'LLM'}], 'Partner': []}, {'manager': 'keeper', 'cli_path': 'keeper'}, True),
+    ({'LLM User': [{'vault': 'Example', 'user': 'LLM'}], 'Partner': [{'vault': 'Example', 'user': 'Partner'}]}, {'manager': '', 'cli_path': ''}, True),
+    ({'LLM User': [{'vault': 'Example', 'user': 'LLM'}], 'Partner': [{'vault': 'Example', 'user': 'Partner'}]}, {'manager': 'keeper', 'cli_path': 'keeper'}, False),
+    ({'LLM User': [{'vault': 'Example', 'user': 'LLM'}, {'vault': 'Example', 'user': 'LLM2'}], 'Partner': [{'vault': 'Example', 'user': 'Partner'}]}, {'manager': '1password', 'cli_path': 'op'}, False),
+])
+def test_setup_readiness_requires_every_role_and_manager(tmp_path, roles, manager, needed):
+    app = app_fixture(tmp_path, extra=True, environ={'UNATTENDED_AUTH': json.dumps({'password_manager': manager, 'roles': roles})})
+    assert app.auth_setup_needed() is needed

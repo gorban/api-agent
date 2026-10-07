@@ -10,7 +10,7 @@ from .declarations import ConfigSchema, FieldDeclaration
 from .dotenv import read_dotenv
 from .editor import DotenvEditor, serialize_value
 from .resolve import ConfigError, ResolvedValue, convert_value, resolve_config
-from api_agent.auth.profiles import DEFAULT_PASSWORD_MANAGER, _canonical_shape, normalize_auth, parse_profiles
+from api_agent.auth.profiles import DEFAULT_PASSWORD_MANAGER, _canonical_shape, normalize_auth, validate_role_entries
 
 _CONTROLS = {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH'}
 
@@ -154,7 +154,9 @@ class ConfigSession:
     def save_auth_role(self, role, entries):
         """Save one role, enforcing pack targets and removing older copies."""
         try:
-            parse_profiles({'roles': {role: entries}}, (role,))
+            if not isinstance(role, str) or not role.strip():
+                raise ValueError('Credential role label must be nonempty.')
+            validate_role_entries(role, entries)
         except ValueError as exc:
             raise ConfigError(f'UNATTENDED_AUTH role is invalid: {exc}') from None
         objects = {path: self._auth_object(path) for path in self.target_paths}
@@ -229,7 +231,7 @@ class ConfigSession:
         return self.result(_review=True)
 
     def reset_auth_manager(self):
-        """Remove saved manager choices and use Keeper defaults this invocation."""
+        """Remove saved manager choices and use blank defaults this invocation."""
         objects = {path: self._auth_object(path, chosen_manager=DEFAULT_PASSWORD_MANAGER)
                    for path in self.target_paths}
         updated = deepcopy(objects)

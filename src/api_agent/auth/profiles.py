@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from .credentials import CredentialError, CredentialSource
 
-DEFAULT_PASSWORD_MANAGER = {"manager": "keeper", "cli_path": "keeper"}
+DEFAULT_PASSWORD_MANAGER = {"manager": "", "cli_path": ""}
 
 
 def _canonical_shape(value: Mapping) -> bool:
@@ -19,10 +19,12 @@ def _manager(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping) or set(value) != {"manager", "cli_path"}:
         raise ValueError("password_manager requires exactly manager and cli_path.")
     manager, path = value["manager"], value["cli_path"]
-    if not isinstance(manager, str) or manager not in {"keeper", "1password"}:
-        raise ValueError("password_manager manager must be keeper or 1password.")
-    if not isinstance(path, str) or not path.strip():
-        raise ValueError("password_manager cli_path must be a nonempty string.")
+    if not isinstance(manager, str) or manager not in {"", "keeper", "1password"}:
+        raise ValueError("password_manager manager must be blank, keeper or 1password.")
+    if not isinstance(path, str):
+        raise ValueError("password_manager cli_path must be a string.")
+    if manager and not path.strip():
+        path = "keeper" if manager == "keeper" else "op"
     return {"manager": manager, "cli_path": path}
 
 
@@ -128,23 +130,32 @@ def parse_profiles(value: object, enabled_roles: Sequence[str]) -> CredentialPro
     if unknown:
         raise ValueError("UNATTENDED_AUTH contains an unknown role label.")
     result = []
-    fields = {"vault", "user"}
     for role in labels:
         entries = roles.get(role, [])
-        if not isinstance(entries, list):
-            raise ValueError(f"Credential role {role!r} must contain an array.")
+        validate_role_entries(role, entries)
         sources = []
         for index, entry in enumerate(entries):
-            if not isinstance(entry, Mapping):
-                raise ValueError(f"Credential role {role!r} entry {index} must be an object.")
-            if set(entry) != fields:
-                raise ValueError(f"Credential role {role!r} entry {index} requires exactly vault and user.")
+            if not canonical["password_manager"]["manager"] or not canonical["password_manager"]["cli_path"].strip():
+                raise ValueError("Select a password manager and CLI path before unattended retrieval.")
             try:
                 sources.append(CredentialSource.from_mapping({**canonical["password_manager"], **entry}))
             except CredentialError as exc:
                 raise ValueError(f"Credential role {role!r} entry {index}: {exc}") from exc
         result.append((role, tuple(sources)))
     return CredentialProfiles(tuple(result))
+
+
+def validate_role_entries(role: str, entries: object) -> None:
+    """Validate account descriptors independently of an unfinished manager draft."""
+    if not isinstance(entries, list):
+        raise ValueError(f"Credential role {role!r} must contain an array.")
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"Credential role {role!r} entry {index} must be an object.")
+        if set(entry) != {"vault", "user"}:
+            raise ValueError(f"Credential role {role!r} entry {index} requires exactly vault and user.")
+        if any(not isinstance(entry[key], str) or not entry[key].strip() for key in ("vault", "user")):
+            raise ValueError(f"Credential role {role!r} entry {index} requires nonempty vault and user strings.")
 
 
 def _index(value: object, name: str) -> int | None:
@@ -170,16 +181,18 @@ def select_profiles(
     configured = _index(configured_index, "Configured index")
     index = configured if configured is not None else _index(session_index, "Session index")
     arrays = tuple((role, profiles.for_role(role)) for role in requested)
-    nonempty = tuple((role, sources) for role, sources in arrays if sources)
-    if index is None and any(len(sources) > 1 for _, sources in nonempty):
+    complete_count = min((len(sources) for _, sources in arrays), default=0)
+    if complete_count == 0:
+        if index is not None:
+            raise ValueError(f"Shared credential index {index} has no complete account pair for requested roles.")
+        return ProfileSelection((), requested, None)
+    if index is None and complete_count > 1:
         options = tuple(SelectionOption(role, i, source.vault, source.user)
-                        for role, sources in nonempty for i, source in enumerate(sources))
+                        for role, sources in arrays for i, source in enumerate(sources[:complete_count]))
         raise SelectionRequired(options)
     if index is not None:
-        for role, sources in nonempty:
-            if index >= len(sources):
-                raise ValueError(f"Shared credential index {index} is out of bounds for role {role!r} ({len(sources)} entries).")
-    selected_index = index if index is not None else (0 if nonempty else None)
-    selected = tuple((role, sources[selected_index]) for role, sources in nonempty)
-    attended = tuple(role for role, sources in arrays if not sources)
-    return ProfileSelection(selected, attended, selected_index)
+        if index >= complete_count:
+            raise ValueError(f"Shared credential index {index} is out of bounds for a complete account pair ({complete_count} pairs).")
+    selected_index = index if index is not None else 0
+    selected = tuple((role, sources[selected_index]) for role, sources in arrays)
+    return ProfileSelection(selected, (), selected_index)

@@ -80,7 +80,7 @@ def test_manager_save_move_reset_and_external_override(tmp_path):
     config.reset_auth_manager()
     assert saved(pack) is None
     current = config.result(_review=True).values['UNATTENDED_AUTH']
-    assert current['password_manager'] == {'manager': 'keeper', 'cli_path': 'keeper'}
+    assert current['password_manager'] == {'manager': '', 'cli_path': ''}
     assert config.environ['UNATTENDED_AUTH'] == external
 
 
@@ -177,7 +177,7 @@ def test_reset_manager_reloads_roles_after_later_role_save(tmp_path):
     config = session(tmp_path, environ={'UNATTENDED_AUTH': external})
     config.save_auth_role('Secondary', [account('first')])
     config.reset_auth_manager()
-    assert config.result(_review=True).values['UNATTENDED_AUTH']['password_manager']['manager'] == 'keeper'
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['password_manager']['manager'] == ''
     config.save_auth_role('Secondary', [account('second')])
     # ENV supplies the roles for this invocation; the reset never freezes an old file snapshot.
     assert config.result(_review=True).values['UNATTENDED_AUTH']['roles'] == {'LLM User': [account('outside')]}
@@ -192,14 +192,14 @@ def test_reset_manager_followed_by_role_save_refreshes_current_roles(tmp_path):
     config.reset_auth_manager()
     config.save_auth_role('LLM User', [account('second')])
     effective = config.result(_review=True).values['UNATTENDED_AUTH']
-    assert effective['password_manager'] == {'manager': 'keeper', 'cli_path': 'keeper'}
+    assert effective['password_manager'] == {'manager': '', 'cli_path': ''}
     assert effective['roles']['LLM User'] == [account('second')]
 
 
 def test_role_save_rejects_cross_file_manager_conflict_before_writes(tmp_path):
     config = session(tmp_path)
     base, pack = config.target_paths[0], config.target_paths[-1]
-    put(base, {'password_manager': {'manager': 'keeper', 'cli_path': 'keeper'},
+    put(base, {'password_manager': {'manager': '', 'cli_path': ''},
                'roles': {'LLM User': [account('A')]}})
     put(pack, {'password_manager': {'manager': '1password', 'cli_path': 'op'},
                'roles': {'Secondary': [account('B')]}})
@@ -207,7 +207,7 @@ def test_role_save_rejects_cross_file_manager_conflict_before_writes(tmp_path):
     with pytest.raises(ConfigError, match='choose one shared password manager'):
         config.save_auth_role('LLM User', [account('new')])
     assert (base.read_bytes(), pack.read_bytes()) == before
-    config.save_auth_manager({'manager': 'keeper', 'cli_path': 'keeper'})
+    config.save_auth_manager({'manager': '', 'cli_path': ''})
     config.save_auth_role('LLM User', [account('new')])
     assert config.result(_review=True).values['UNATTENDED_AUTH']['roles']['LLM User'] == [account('new')]
 
@@ -232,3 +232,14 @@ def test_mixed_legacy_in_one_file_reports_manager_choice(tmp_path):
     from api_agent.auth.profiles import normalize_auth
     with pytest.raises(ValueError, match='choose one shared password manager'):
         normalize_auth(config.result(_review=True).values['UNATTENDED_AUTH'])
+
+
+def test_account_draft_saves_before_manager_selection(tmp_path):
+    config = session(tmp_path)
+    base = config.target_paths[0]
+    config.save_auth_role('LLM User', [account('draft')])
+    assert saved(base) == {'roles': {'LLM User': [account('draft')]}}
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['password_manager'] == {
+        'manager': '', 'cli_path': ''}
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': ''})
+    assert saved(base)['password_manager'] == {'manager': 'keeper', 'cli_path': 'keeper'}

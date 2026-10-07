@@ -117,7 +117,7 @@ def test_shared_manager_edit_default_path_custom_path_and_reset(tmp_path):
             assert profile(app)['roles']['LLM User'] == [account()]
             await pilot.press('r')
             await pilot.pause()
-            assert profile(app)['password_manager'] == {'manager': 'keeper', 'cli_path': 'keeper'}
+            assert profile(app)['password_manager'] == {'manager': '', 'cli_path': ''}
             assert 'password_manager' not in saved(app.session.dotenv_path)
             assert profile(app)['roles']['LLM User'] == [account()]
     asyncio.run(scenario())
@@ -453,4 +453,98 @@ def test_tab_has_only_tables_without_form_and_manager_stays_last(tmp_path):
             assert screen.query_one('#auth-content') not in screen.focus_chain
             await pilot.press('escape')
             assert app.focused is users
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('role', ['LLM User', 'Partner'])
+def test_reorder_persists_role_and_keeps_moved_account_selected(tmp_path, role):
+    async def scenario():
+        app = WizardApp(tmp_path, external=True, roles=('LLM User', 'Partner'))
+        app.session.save_auth_role(role, [account('A'), account('B'), account('C')])
+        async with app.run_test(size=(110, 45)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one('#auth-table', DataTable)
+            offset = 0 if role == 'LLM User' else 1
+            table.move_cursor(row=offset)
+            await pilot.pause()
+            assert screen.check_action('move_entry_up', ())
+            assert screen.check_action('move_entry_down', ())
+            await pilot.press('[')
+            assert screen.entries[role] == [account('A'), account('B'), account('C')]
+            await pilot.press(']')
+            await pilot.pause()
+            assert screen.entries[role] == [account('B'), account('A'), account('C')]
+            assert table.cursor_row == offset + 1
+            assert str(table.get_row_at(table.cursor_row)[3]) == 'A'
+            await pilot.press(']')
+            await pilot.pause()
+            assert screen.entries[role] == [account('B'), account('C'), account('A')]
+            assert table.cursor_row == offset + 2
+            assert screen.check_action('move_entry_up', ()) and screen.check_action('move_entry_down', ())
+            await pilot.press(']')
+            assert table.cursor_row == offset + 2
+            await pilot.press('[')
+            await pilot.pause()
+            assert table.cursor_row == offset + 1
+            assert str(table.get_row_at(table.cursor_row)[3]) == 'A'
+            target = app.context.pack_root / '.env' if role == 'Partner' else app.context.base_root / '.env'
+            assert saved(target)['roles'][role] == [account('B'), account('A'), account('C')]
+            screen.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.pause()
+            assert not screen.check_action('move_entry_up', ())
+            assert not screen.check_action('move_entry_down', ())
+    asyncio.run(scenario())
+
+
+def test_reorder_hidden_for_singleton_and_failed_save_preserves_selection(tmp_path, monkeypatch):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        app.session.save_auth_role('LLM User', [account('A')])
+        async with app.run_test(size=(110, 45)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert not screen.check_action('move_entry_up', ())
+            assert not screen.check_action('move_entry_down', ())
+            app.session.save_auth_role('LLM User', [account('A'), account('B')])
+            screen._load()
+            screen._refresh()
+            await pilot.pause()
+            before = app.session.dotenv_path.read_bytes()
+            def fail(*args):
+                raise OSError('Synthetic write failure')
+            monkeypatch.setattr(app.session, 'save_auth_role', fail)
+            await pilot.press(']')
+            await pilot.pause()
+            assert screen.entries['LLM User'] == [account('A'), account('B')]
+            assert screen.query_one('#auth-table', DataTable).cursor_row == 0
+            assert app.session.dotenv_path.read_bytes() == before
+            assert 'Unable to move' in str(screen.query_one('#auth-error', Static).content)
+    asyncio.run(scenario())
+
+
+def test_manager_starts_unselected_and_path_defaults_follow_selection(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(110, 45)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one('#auth-manager-table', DataTable)
+            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
+            table.focus()
+            await pilot.press('e')
+            assert screen.query_one('#auth-manager', Select).value == ''
+            assert screen.query_one('#auth-path', Input).value == ''
+            screen.query_one('#auth-manager', Select).value = 'keeper'
+            await pilot.pause()
+            assert screen.query_one('#auth-path', Input).value == 'keeper'
+            screen.query_one('#auth-manager', Select).value = '1password'
+            await pilot.pause()
+            assert screen.query_one('#auth-path', Input).value == 'op'
+            screen.query_one('#auth-manager', Select).value = ''
+            await pilot.pause()
+            assert screen.query_one('#auth-path', Input).value == ''
+            screen.save_entry()
+            await pilot.pause()
+            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
     asyncio.run(scenario())
