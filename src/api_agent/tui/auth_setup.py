@@ -13,6 +13,25 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Input, Select, Static
 
 
+class AuthTable(DataTable):
+    """Continue row navigation between the account and manager tables."""
+
+    def action_cursor_down(self):
+        if (self.id == 'auth-table' and self.row_count
+                and self.cursor_row == self.row_count - 1 and self.screen.editing is None):
+            self.screen.query_one('#auth-manager-table', DataTable).focus()
+        else:
+            super().action_cursor_down()
+
+    def action_cursor_up(self):
+        if self.id == 'auth-manager-table' and self.screen.editing is None:
+            users = self.screen.query_one('#auth-table', DataTable)
+            users.move_cursor(row=max(0, users.row_count - 1))
+            users.focus()
+        else:
+            super().action_cursor_up()
+
+
 class AuthSetupScreen(FocusNavigation, Screen[bool]):
     DEFAULT_CSS = """
     AuthSetupScreen #auth-identity { height: auto; color: $text-muted; margin-bottom: 1; }
@@ -24,7 +43,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     AuthSetupScreen #auth-content Static { height: auto; }
     AuthSetupScreen #auth-form-actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     AuthSetupScreen #auth-form-actions Button { width: 100%; }
-        AuthSetupScreen #auth-error { color: $error; }
+    AuthSetupScreen #auth-error { color: $error; }
     AuthSetupScreen #auth-targets { margin-top: 1; }
     """
     BINDINGS = [Binding("a", "add_entry", "Add"), Binding("e", "edit_entry", "Edit"),
@@ -54,8 +73,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
                          "Enter its exact vault and login/item names here.\n"
                          "Duplicates of each role allowed; pair like users on same index to select them together.", id="auth-profile-help", markup=False)
             yield Static("", id="auth-workflow", markup=False)
-            yield DataTable(id="auth-table", cursor_type="row")
-            yield DataTable(id="auth-manager-table", cursor_type="row")
+            yield AuthTable(id="auth-table", cursor_type="row")
+            yield AuthTable(id="auth-manager-table", cursor_type="row")
             yield Static("Select an account, or the password-manager row to edit its settings.", id="auth-selection-help", markup=False)
             yield Static("", id="auth-form-title", markup=False)
             yield Static("Password manager", classes="auth-manager-field")
@@ -75,6 +94,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
 
     def on_mount(self):
         self.shared_target = self.app.session.dotenv_path
+        self.query_one('#auth-content', VerticalScroll).can_focus = False
         self.query_one('#auth-table', DataTable).add_columns('Role', 'Index', 'Vault', 'Login / item')
         manager_table = self.query_one('#auth-manager-table', DataTable)
         manager_table.add_columns('Password manager', 'CLI path')
@@ -84,6 +104,13 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self._load()
         self._refresh()
         self.query_one('#auth-table', DataTable).focus()
+
+    @property
+    def focus_chain(self):
+        chain = super().focus_chain
+        users = [widget for widget in chain if widget.id == 'auth-table']
+        manager = [widget for widget in chain if widget.id == 'auth-manager-table']
+        return users + [widget for widget in chain if widget not in users + manager] + manager
 
     def _load(self):
         self.load_error = ''
@@ -137,7 +164,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self.call_after_refresh(self._fit_tables)
 
     def _workflow_text(self):
-        steps = [(None, 'Select a role'), ('a', 'Add account'), (None, 'Enter vault'),
+        steps = [(None, 'Select a role'), ('a', 'Add account'), (None, 'Enter vault name'),
                  (None, 'Enter login/item name'), ('Enter', 'Save'),
                  (None, 'Repeat for more accounts'), ('e', 'Edit password manager'), ('c', 'Close setup')]
         if len(self._target_paths()) > 1:
@@ -232,7 +259,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             return self.editing is None and not self.load_error and not self._manager_selected()
         if action == 'edit_entry':
             selected = self._selected()
-            return self.editing is None and (self._manager_selected() or not self.load_error and selected is not None and selected[1] is not None)
+            return self.editing is None and (self._manager_selected() or not self.load_error and selected is not None)
         if action == 'remove_entry':
             selected = self._selected()
             return self.editing is None and (self._manager_selected() or not self.load_error and selected is not None and selected[1] is not None)
@@ -263,8 +290,9 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             role, index = self._selected()
             self.editing = role, index
             self.query_one('#auth-form-title', Static).update(f'Edit account for {role}')
-            self.query_one('#auth-vault', Input).value = self.entries[role][index]['vault']
-            self.query_one('#auth-user', Input).value = self.entries[role][index]['user']
+            item = self.entries[role][index] if index is not None else {'vault': '', 'user': role}
+            self.query_one('#auth-vault', Input).value = item['vault']
+            self.query_one('#auth-user', Input).value = item['user']
             self._show_form(True)
             self.query_one('#auth-vault', Input).focus()
 
