@@ -171,7 +171,9 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                                  id="enum-info", markup=False)
             if self.kind not in {"cleanup", "unit-results"}:
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
-            with Horizontal(id="actions"):
+            with Horizontal(id="actions") as actions:
+                if self.kind == "unit-results":
+                    actions.display = False
                 if self.kind == "input" and len(app.session.target_paths) > 1:
                     yield Button("Switch target .env (s outside input)", id="switch-target")
                 for key, label in self.actions:
@@ -232,8 +234,13 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         if not self.is_mounted or not self.rows or self.app.screen is not self or not self.query("#workbench-content"):
             return
         viewport = self.query_one("#workbench-content", VerticalScroll)
-        available = viewport.size.height - self.query_one("#heading").outer_size.height - 2
-        summary_height = max(6, (available - 8) // 2)
+        heading = self.query_one("#heading")
+        summary = self.query_one("#unit-summary")
+        table = self.query_one(DataTable)
+        margins = sum(widget.styles.margin.top + widget.styles.margin.bottom
+                      for widget in (heading, summary, table))
+        available = viewport.content_size.height - heading.outer_size.height - margins
+        summary_height = 6 if self.app.unit_result is None else max(6, (available - 8) // 2)
         self.query_one("#unit-summary").styles.height = summary_height
         self.query_one(DataTable).styles.height = max(8, available - summary_height)
 
@@ -784,16 +791,40 @@ class ApiAgentApp(App[int]):
         if self.unit_result is not None:
             # Python's stable sort preserves discovery order within each group.
             rows.sort(key=lambda row: row[1][0] not in {"FAILED", "ERROR"})
-        self.show("unit-results", "Unit test results", summary, rows=rows)
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
+            screen = self.screen
+            screen.body, screen.rows = summary, rows
+            self.call_after_refresh(self.update_unit_results, screen)
+        else:
+            self.show("unit-results", "Unit test results", summary, rows=rows)
         if self.unit_result is not None:
             self.call_after_refresh(self.style_unit_summary)
+
+    def update_unit_results(self, screen):
+        if self.screen is not screen or not screen.query(DataTable):
+            return
+        screen.query_one("#body", Static).update(screen.body)
+        table = screen.query_one(DataTable)
+        keys = [table.get_row_at(i)[1] for i in range(table.row_count)]
+        if keys != [key for key, _ in screen.rows]:
+            table.clear()
+            for key, cells in screen.rows:
+                table.add_row(*cells, key=key)
+        else:
+            for key, cells in screen.rows:
+                for column, value in zip(table.columns, cells):
+                    table.update_cell(key, column, value)
+        if self.unit_result is not None:
+            table.move_cursor(row=0)
+            self.style_unit_summary()
+        screen.layout_unit_results()
 
     def style_unit_summary(self):
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
             from rich.text import Text
             body = self.screen.query_one("#body", Static)
             summary = Text()
-            for index, line in enumerate(body.content.splitlines()):
+            for index, line in enumerate((body.content.plain if isinstance(body.content, Text) else body.content).splitlines()):
                 if index:
                     summary.append("\n")
                 style = "green" if line.startswith("Production coverage: 100%") else (
