@@ -10,3 +10,5 @@
 - [ ] Generate documentation for shared/pack default hierarchy, conditional required settings, selectable prerequisite combinations, local database seeding, and host UI startup/path/app overrides from the [infrastructure declarations](implementation_plan_h.md).
 
 - [ ] Document the All/tag/file/individual test picker, positional selectors with explicitly configured test mode, and default all-tests behavior. Document exit statuses, fixed unit coverage enforcement, integration without reruns, and E2E-only consecutive confirmation reruns; selector shortcuts do not bypass E2E human acceptance.
+
+- [ ] Document interactive local-run `b` browser destinations and `l` log-source menus, numbered shortcuts, conditional entries, and the default agent-log view. Generate actual endpoint/configuration descriptions from runtime declarations.
