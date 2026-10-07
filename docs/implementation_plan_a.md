@@ -2,7 +2,7 @@
 
 ## Completed B1 review slice
 
-- [x] Implement configuration defaults save/use-once/typed individual prompts and conditional revalidation, real `.env` cleanup, Textual mode/focus/footer controls, real pytest collection/selector filtering, overlapping All/tag/file/test selection, and prompt cancellation. Controlled execution and authentication setup remain explicitly unavailable; this does not complete the full runner/results/auth tasks below. Parent human checkpoint B1 is still awaiting acceptance.
+- [x] Implement configuration row-by-row default acceptance/typed edits and conditional revalidation, real `.env` cleanup, Textual mode/focus/footer controls, real pytest collection/selector filtering, overlapping All/tag/file/test selection, and prompt cancellation. Controlled execution and authentication setup remain explicitly unavailable; this does not complete the full runner/results/auth tasks below. Parent human checkpoint B1 is still awaiting acceptance.
 
 ## Checklist
 
@@ -28,8 +28,8 @@
 - [ ] Add the [interactive unattended-auth setup mode and CLI credential helpers](implementation_plan_a2.md). On interactive launches with missing/empty required profiles, suggest setup with `s` to skip before normal mode selection and execution-specific configuration prompts; keep help/collect-only short-circuits noninteractive.
 - [ ] When `NO_STD_IN` is absent or `False`, check which configuration values have explicit values from `.env`, environment variables, or CLI options; a declared default does not count as explicitly supplied.
   - [ ] Explain why newly encountered defaults require acknowledgement: the developer may know an override is needed, or may persist the current defaults into a solid point-in-time `.env` for reproducing/comparing/sharing a run's configuration. Exempt debug/account-index fields according to their declaration metadata; do not offer to persist them through this defaulting step.
-  - [ ] List all unsupplied values with declared defaults in one step. Offer three choices: save their defaults to `.env`, use their defaults for this invocation without saving, or supply values individually. If saving is accepted, write those defaults to `.env`.
-  - [ ] Ask for each remaining required value without an explicit value one at a time. The individual-values choice also prompts for the unsupplied defaulted values, showing `(default: <default>)` in each prompt. Optional values without defaults do not require a prompt.
+  - [ ] List unsupplied applicable defaulted settings and missing required settings together in a row checklist. For a selected defaulted row, `a` accepts its default or `e` edits it; Enter saves to the active `.env` and checks the row. Keep saved rows visible. `c` is labeled **Next menu**; unresolved required settings still block operations.
+  - [ ] Required rows without defaults offer only `e` to explicitly enter and save a value, including an explicit empty string where the declaration permits it. Display the declared type and default when editing. Optional values without defaults do not require a prompt. Preserve default-review exemptions for debug/account-index settings.
   - [ ] Defer an unsupplied `TUI_MODE` to the main selection menu rather than asking for it as an ordinary required configuration value.
 - [ ] After resolving the other configuration values, use an explicitly supplied `TUI_MODE` or present the first main TUI interaction: a selection menu containing "Run local", "Unit tests w/ coverage", "Integration tests", "E2E tests", "Allure serve", "Deployment logs", "Clear .env configuration", and finally "Setup unattended authentication". With `NO_STD_IN=True`, require `TUI_MODE` through configuration instead of presenting the menu.
 - [ ] After choosing unit, integration, or E2E mode interactively, collect the available tests and show a selection screen before execution. Collection must not start application prerequisites or invoke an LLM.

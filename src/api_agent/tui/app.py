@@ -42,7 +42,10 @@ class QuitDialog(ModalScreen):
 class WorkbenchScreen(Screen):
     BINDINGS = [Binding("q", "quit_request", "Quit"), Binding("c", "close_view", "Close / menu"),
                 Binding("d", "delete_marked", "Delete marked .env assignments"),
-                Binding("s", "skip_setup", "Skip setup")]
+                Binding("s", "skip_setup", "Skip setup"),
+                Binding("a", "accept_default", "Accept default"),
+                Binding("e", "edit_setting", "Edit"),
+                Binding("escape", "back_to_configuration", "Back to configuration")]
 
     def __init__(self, kind, title, text="", actions=(), rows=()):
         super().__init__()
@@ -73,12 +76,23 @@ class WorkbenchScreen(Screen):
                 table.add_row(*cells, key=key)
             table.focus()
         elif self.kind == "input":
+            self.query_one(Input).value = self.app.prompt_value
             self.query_one(Input).focus()
         elif self.actions:
             self.query_one(Button).focus()
+        if self.kind == "defaults":
+            self._bindings.bind("c", "close_view", "Next menu")
         self.refresh_bindings()
 
     def check_action(self, action, parameters):
+        if action == "back_to_configuration":
+            return self.kind == "input"
+        if action == "close_view" and self.kind == "input":
+            return False
+        if action == "accept_default":
+            return self.kind == "defaults" and self.app.focused_default()
+        if action == "edit_setting":
+            return self.kind == "defaults"
         if action == "delete_marked":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "skip_setup":
@@ -106,6 +120,15 @@ class WorkbenchScreen(Screen):
     def action_delete_marked(self):
         if self.app.focused_cleanup_present():
             self.app.delete_marked()
+
+    def action_back_to_configuration(self):
+        self.app.show_configuration()
+
+    def action_accept_default(self):
+        self.app.edit_setting(accept=True)
+
+    def action_edit_setting(self):
+        self.app.edit_setting()
 
     async def action_skip_setup(self):
         await self.app.start_configuration()
@@ -136,8 +159,7 @@ class ApiAgentApp(App[int]):
         self.operation_status = 3
         self.marked = set()
         self.mode = None
-        self.edit_queue = []
-        self.default_acknowledged = {}
+        self.review_names = set()
         self.selection = None
         self.prompt_name = None
         self.collection_cancel = threading.Event()
@@ -169,15 +191,74 @@ class ApiAgentApp(App[int]):
         else:
             await self.start_configuration()
 
+    def configuration_pending(self):
+        candidates = [item.name for item in self.session.default_candidates()
+                      if item.field.persist_default]
+        missing = [name for name in self.session.result().missing
+                   if name != "TUI_MODE"]
+        return set(candidates + missing)
+
     async def start_configuration(self):
-        candidates = [item for item in self.session.default_candidates() if self.default_acknowledged.get(item.name) != (display(item.resolved.value), item.resolved.source) and item.name != "TUI_MODE"]
-        if candidates:
-            self.candidates = candidates
-            text = ("A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.\n\n" +
-                    "\n".join(f"{item.name} = {display(item.resolved.value)} ({item.resolved.source})" for item in candidates))
-            self.show("defaults", "Review configuration defaults", text, (("save", "Save defaults to .env"), ("once", "Use defaults once"), ("edit", "Supply individually")))
+        pending = self.configuration_pending()
+        if "UNATTENDED_AUTH" in pending:
+            self.show_required_auth()
+            return
+        self.review_names.update(pending)
+        if pending or self.review_names:
+            self.show_configuration()
             return
         await self.enter_mode()
+
+    def show_required_auth(self):
+        self.show("error", "Unattended authentication required",
+                  "UNATTENDED_AUTH is required for this operation. Configure it through unattended authentication setup or provide it explicitly.",
+                  (("setup", "View authentication setup"), ("menu", "Main menu")))
+
+    def show_configuration(self):
+        result = self.session.result()
+        if "UNATTENDED_AUTH" in result.missing:
+            self.show_required_auth()
+            return
+        active = set(result.fields) | set(result.missing)
+        self.review_names.update(self.configuration_pending())
+        present = self.session.dotenv_keys()
+        rows = []
+        for name in self.schema.fields:
+            if name not in self.review_names or name not in active:
+                continue
+            resolved = result.fields.get(name)
+            rows.append((name, ("✓" if name in present else "", name,
+                        display(resolved.value) if resolved else "Required — no default",
+                        resolved.source if resolved else "Not provided")))
+        if not rows:
+            self.show_menu()
+            return
+        self.show("defaults", "Review configuration",
+                  "Review each setting: a accepts its default, e edits it, and Enter saves to .env. "
+                  "Checkmarks identify saved settings. c opens the next menu; required values still block execution.\n\n"
+                  "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
+                  rows=rows)
+
+    def focused_setting(self):
+        table = self.screen.query_one(DataTable)
+        return str(table.get_row_at(table.cursor_row)[1]) if table.row_count else None
+
+    def focused_default(self):
+        name = self.focused_setting()
+        return any(item.name == name and item.field.persist_default
+                   for item in self.session.default_candidates())
+
+    def edit_setting(self, accept=False):
+        if self.screen.kind != "defaults":
+            return
+        self.prompt_name = self.focused_setting()
+        if not self.prompt_name or accept and not self.focused_default():
+            return
+        resolved = self.session.result().fields.get(self.prompt_name)
+        self.prompt_value = display(resolved.value) if resolved else ""
+        self.show("input", f"Configure {self.prompt_name}",
+                  f"Declared type: {self.schema.fields[self.prompt_name].type}. Enter saves this value to {self.session.dotenv_path}.",
+                  (("submit", "Save value (Enter)"),))
 
     async def enter_mode(self):
         result = self.session.result()
@@ -221,31 +302,13 @@ class ApiAgentApp(App[int]):
             self.operation_status = 3
             self.show("error", "Configuration error", "\n".join(result.errors), (("menu", "Main menu"),))
             return
-        if any(self.default_acknowledged.get(item.name) != (display(item.resolved.value), item.resolved.source) for item in self.session.default_candidates()):
+        if self.configuration_pending():
             await self.start_configuration()
-            return
-        missing = [key for key in result.missing if key != "TUI_MODE"]
-        if missing:
-            self.edit_queue = missing
-            self.prompt_next()
             return
         if self.mode in {"unit", "integration", "e2e"}:
             await self.collect_tests()
         else:
             self.unavailable(f"{dict(MODES)[self.mode]} execution is not implemented yet. No services or processes were started.")
-
-    def prompt_next(self):
-        result = self.session.result()
-        active = set(result.fields) | set(result.missing)
-        self.edit_queue = [name for name in self.edit_queue if name in active]
-        if not self.edit_queue:
-            self.run_worker(self.enter_mode())
-            return
-        self.prompt_name = self.edit_queue[0]
-        field = self.schema.fields[self.prompt_name]
-        resolved = self.session.result().fields.get(self.prompt_name)
-        default = f" (default: {display(resolved.value)})" if resolved else ""
-        self.show("input", f"Configure {self.prompt_name}", f"Declared type: {field.type}{default}", (("submit", "Apply value"),))
 
     async def collect_tests(self):
         self.collection_cancel = threading.Event()
@@ -328,39 +391,16 @@ class ApiAgentApp(App[int]):
 
     async def choose(self, key):
         try:
-            if key in {"skip", "once", "save", "edit"}:
-                if key != "skip":
-                    names = [item.name for item in self.candidates]
-                    self.default_acknowledged.update({item.name: (display(item.resolved.value), item.resolved.source) for item in self.candidates})
-                    if key == "save":
-                        self.session.save_defaults([item.name for item in self.candidates if item.field.persist_default])
-                        self.operation_status = 0
-                    if key == "edit":
-                        self.edit_queue = names
-                        self.prompt_next()
-                        return
+            if key == "skip":
                 await self.start_configuration()
             elif key == "submit":
                 value = self.screen.query_one(Input).value
-                if value:
-                    self.session.set_value(self.prompt_name, value)
-                elif self.prompt_name not in self.session.result().fields:
-                    raise ValueError(f"{self.prompt_name} requires a value")
-                self.edit_queue.pop(0)
-                result = self.session.result()
-                if result.values.get("NO_STD_IN"):
+                self.session.set_value(self.prompt_name, value, persist=True)
+                self.operation_status = 0
+                if self.session.result().values.get("NO_STD_IN"):
                     await self.enter_mode()
                     return
-                if result.errors:
-                    self.operation_status = 3
-                    self.show("error", "Configuration error", "\n".join(result.errors), (("menu", "Main menu"),))
-                    return
-                active = set(result.fields) | set(result.missing)
-                self.edit_queue = [name for name in self.edit_queue if name in active]
-                if self.edit_queue:
-                    self.prompt_next()
-                else:
-                    await self.enter_mode()
+                self.show_configuration()
             elif key.startswith("mode-"):
                 self.mode = key[5:]
                 await self.enter_mode()
@@ -397,6 +437,8 @@ class ApiAgentApp(App[int]):
             self.collection_cancel.set()
         if self.screen.kind == "suggest" or self.screen.kind == "unavailable" and self.mode is None:
             await self.start_configuration()
+        elif self.screen.kind == "input":
+            self.show_configuration()
         elif self.screen.kind == "acceptance":
             self.show_selection()
         else:

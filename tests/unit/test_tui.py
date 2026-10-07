@@ -27,7 +27,7 @@ def test_defaults_save_and_typed_prompt(tmp_path):
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
-            await pilot.click("#edit")
+            await pilot.press("e")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "bad"
             await pilot.click("#submit")
@@ -37,13 +37,18 @@ def test_defaults_save_and_typed_prompt(tmp_path):
             await pilot.click("#submit")
             await pilot.pause(0.4)
             assert app.session.result().values["COUNT"] == 8
-            assert app.screen.kind == "menu"
+            assert app.screen.kind == "defaults"
+            assert (tmp_path / ".env").read_text() == 'COUNT="8"\n'
+            assert app.screen.query_one(DataTable).get_row_at(0)[0] == "✓"
     asyncio.run(scenario())
+    (tmp_path / ".env").unlink()
     async def save():
         app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause(0.4)
-            await pilot.click("#save")
+            await pilot.press("a")
+            await pilot.pause(0.4)
+            await pilot.press("enter")
             await pilot.pause(0.4)
             assert app.session.result().values["COUNT"] == 4
             assert "COUNT=" in (tmp_path / ".env").read_text()
@@ -105,26 +110,39 @@ def test_e2e_picker_acceptance_and_unavailable(tmp_path):
     asyncio.run(scenario())
 
 
-def test_required_prompt_once_and_confirmed_quit(tmp_path):
+def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
     async def scenario():
-        app = fixture(tmp_path, "run-local", {"VALUE": {"type": "int", "required": True}, "COUNT": {"type": "int", "default": 4}})
+        app = fixture(tmp_path, "run-local", {"VALUE": {"type": "str", "required": True}, "COUNT": {"type": "int", "default": 4}})
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause(0.4)
-            await pilot.click("#once")
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(0)[1] == "VALUE"
+            assert not app.focused_default()
+            await pilot.press("c")
             await pilot.pause(0.4)
-            assert app.screen.kind == "input"
-            app.screen.query_one(Input).value = "9"
+            await pilot.click("#mode-run-local")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("e")
+            await pilot.pause(0.4)
             await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert 'VALUE=""' in (tmp_path / ".env").read_text()
+            assert app.session.result().values["VALUE"] == ""
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(0)[0] == "✓"
+            table.move_cursor(row=1)
+            await pilot.press("a")
+            await pilot.pause(0.4)
+            assert app.screen.query_one(Input).value == "4"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert app.screen.query_one(DataTable).get_row_at(1)[0] == "✓"
+            await pilot.press("c")
+            await pilot.pause(0.4)
+            await pilot.click("#mode-run-local")
             await pilot.pause(0.4)
             assert app.screen.kind == "unavailable"
-            assert not (tmp_path / ".env").exists()
-            await pilot.press("q")
-            await pilot.pause(0.4)
-            app.screen.query_one(Input).value = "y"
-            await pilot.press("enter")
-            await pilot.pause(0.4)
-            assert app.return_value == 3
-            assert app.collection_cancel.is_set()
     asyncio.run(scenario())
 
 
@@ -165,12 +183,12 @@ def test_conditional_default_is_acknowledged_again(tmp_path):
         app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 1, "conditional_defaults": [{"when": {"TUI_MODE": "integration"}, "value": 2}]}})
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(0.4)
-            await pilot.click("#once")
+            await pilot.press("c")
             await pilot.pause(0.4)
             await pilot.click("#mode-integration")
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
-            assert "COUNT = 2" in str(app.screen.query_one("#body", Static).render())
+            assert app.screen.query_one(DataTable).get_row_at(0)[2] == "2"
     asyncio.run(scenario())
 
 
@@ -222,7 +240,7 @@ def test_no_stdin_choice_exits_without_more_prompts(tmp_path):
         app = fixture(tmp_path, fields={"NO_STD_IN": {"type": "bool", "default": False}, "COUNT": {"type": "int", "default": 4}})
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(0.4)
-            await pilot.click("#edit")
+            await pilot.press("e")
             await pilot.pause(0.4)
             assert app.prompt_name == "NO_STD_IN"
             app.screen.query_one(Input).value = "True"
@@ -249,20 +267,74 @@ def test_collect_only_validates_newly_active_settings(tmp_path):
     asyncio.run(scenario())
 
 
-def test_default_buttons_have_visible_label_area_at_terminal_sizes(tmp_path):
+def test_config_checklist_and_save_button_visible_at_terminal_sizes(tmp_path):
     async def scenario():
         for size in ((80, 24), (100, 35)):
             app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
             async with app.run_test(size=size) as pilot:
                 await pilot.pause(0.4)
-                rendered = app.export_screenshot()
-                for key, label in (("save", "Save defaults to .env"),
-                                   ("once", "Use defaults once"),
-                                   ("edit", "Supply individually")):
-                    button = app.screen.query_one("#" + key, Button)
-                    assert str(button.label) == label
-                    assert label in rendered or label.replace(" ", "&#160;") in rendered
-                    assert button.content_region.height >= 1
-                    assert button.content_region.width >= len(label)
-                    assert button.region.bottom <= app.screen.query_one("Footer").region.y
+                assert app.screen.query_one(DataTable).get_row_at(0)[1] == "COUNT"
+                await pilot.press("a")
+                await pilot.pause(0.4)
+                button = app.screen.query_one("#submit", Button)
+                assert button.content_region.height >= 1
+                assert button.region.bottom <= app.screen.query_one("Footer").region.y
+    asyncio.run(scenario())
+
+
+def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={
+            "ENABLED": {"type": "bool", "default": True},
+            "DETAIL": {"type": "str", "required_when": {"ENABLED": True}, "applies_when": {"ENABLED": True}},
+            "DEBUG": {"type": "bool", "default": False, "acknowledge_default": False, "persist_default": False},
+        })
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause(0.4)
+            table = app.screen.query_one(DataTable)
+            assert [table.get_row_at(i)[1] for i in range(table.row_count)] == ["ENABLED", "DETAIL"]
+            table.move_cursor(row=1)
+            await pilot.press("e")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "saved detail"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            table = app.screen.query_one(DataTable)
+            table.move_cursor(row=0)
+            await pilot.press("e")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "False"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            table = app.screen.query_one(DataTable)
+            assert table.row_count == 1
+            assert table.get_row_at(0)[0:3] == ["✓", "ENABLED", "False"]
+            await pilot.press("e")
+            await pilot.pause(0.4)
+            await pilot.press("escape")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("e")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "True"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            table = app.screen.query_one(DataTable)
+            assert table.row_count == 2
+            assert table.get_row_at(1)[0:3] == ["✓", "DETAIL", "saved detail"]
+    asyncio.run(scenario())
+
+
+def test_required_auth_does_not_enter_execution_or_general_checklist(tmp_path):
+    async def scenario():
+        calls = []
+        app = fixture(tmp_path, "integration", {"UNATTENDED_AUTH": {"type": "jsonobject", "required": True}}, collector=lambda *args: calls.append(args))
+        app.session.environ.pop("UNATTENDED_AUTH")
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause(0.4)
+            await pilot.press("s")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "error"
+            assert "UNATTENDED_AUTH is required" in str(app.screen.query_one("#body", Static).render())
+            assert not calls
     asyncio.run(scenario())
