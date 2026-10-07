@@ -222,6 +222,18 @@ def test_quit_remains_responsive_during_collection(tmp_path):
             await pilot.press("q")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "y"
+            await pilot.press("escape")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("q")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "y"
+            await pilot.click("#quit-cancel")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("q")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "y"
             await pilot.press("enter")
             await pilot.pause(0.4)
             assert app.return_value == 3
@@ -366,6 +378,18 @@ def test_quit_dialog_from_configuration_checklist(tmp_path):
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "n"
             await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("q")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "y"
+            await pilot.press("escape")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("q")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "y"
+            await pilot.click("#quit-cancel")
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
             await pilot.press("q")

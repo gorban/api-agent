@@ -30,23 +30,32 @@ def display(value):
 
 
 class QuitDialog(ModalScreen):
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
+
+    def action_cancel(self):
+        self.dismiss(False)
+
     def compose(self) -> ComposeResult:
         yield Static("Quit this operation? Enter literal y to confirm; every other response cancels.")
         yield Input(id="quit-answer")
-        yield Button("Confirm response", id="quit-submit")
+        with Horizontal(classes="confirmation-actions"):
+            yield Button("Confirm response", id="quit-submit")
+            yield Button("Cancel", id="quit-cancel")
 
     def on_input_submitted(self, event: Input.Submitted):
         self.dismiss(event.value == "y")
 
     def on_button_pressed(self, event: Button.Pressed):
-        self.dismiss(self.query_one(Input).value == "y")
+        self.dismiss(event.button.id.endswith("-submit") and self.query_one(Input).value == "y")
 
 
 class DeleteDialog(QuitDialog):
     def compose(self) -> ComposeResult:
         yield Static("Delete marked .env assignments? Enter literal y to confirm; every other response cancels.")
         yield Input(id="delete-answer")
-        yield Button("Confirm response", id="delete-submit")
+        with Horizontal(classes="confirmation-actions"):
+            yield Button("Confirm response", id="delete-submit")
+            yield Button("Cancel", id="delete-cancel")
 
 
 class StopContainersDialog(QuitDialog):
@@ -59,7 +68,9 @@ class StopContainersDialog(QuitDialog):
             f"{item.name} ({item.id})" for item in self.containers) +
             "\nEnter literal y to stop; every other response cancels.", markup=False)
         yield Input(id="stop-answer")
-        yield Button("Confirm response", id="stop-submit")
+        with Horizontal(classes="confirmation-actions"):
+            yield Button("Confirm response", id="stop-submit")
+            yield Button("Cancel", id="stop-cancel")
 
 
 class WorkbenchScreen(Screen):
@@ -216,6 +227,8 @@ class ApiAgentApp(App[int]):
     #error { color: $error; height: auto; }
     QuitDialog, DeleteDialog, StopContainersDialog { align: center middle; background: $background 80%; }
     QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
+    .confirmation-actions { height: auto; }
+    .confirmation-actions Button { width: 1fr; }
     Footer { dock: bottom; }
     """
 
