@@ -129,8 +129,15 @@ def test_conditional_controllers_resolve_before_applicability():
     assert result.values['ENABLED'] is True
 
 def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
-    schema = compose_schema(load_shared_schema(), overrides={
-        'UI_NX_APP': 'shell', 'UI_SOURCE_DIR': 'frontend', 'UNATTENDED_SECONDARY_USER': 'Resource Pack User'})
+    from pathlib import Path
+    shared = load_shared_schema()
+    extension = schema_from_dict({'version': 1, 'fields': {
+        'UI_NX_APP': {'type': 'str', 'override': True, 'default': 'shell',
+                     'applies_when': {'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}], 'COLLECT_ONLY': False}},
+        'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User',
+                                    'applies_when': {'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'], 'COLLECT_ONLY': False}}}},
+        base_schema=shared, source='pack_default')
+    schema = compose_schema(shared, extension)
     result = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True',
                             'UNATTENDED_USER_INDEX': '1', 'UI_SOURCE_DIR': 'frontend'}, anchors={'owner_root': tmp_path})
     result.raise_for_errors()
@@ -242,3 +249,10 @@ def test_parallel_jobs_defaults_serial_and_validation(tmp_path, mode):
     invalid = resolve_config(schema, environ=options, argv=['--test-parallel-jobs=-1'],
                              anchors={'owner_root': tmp_path})
     assert any('TEST_PARALLEL_JOBS' in error for error in invalid.errors)
+
+
+def test_secondary_role_is_resource_pack_only():
+    shared = load_shared_schema()
+    assert 'UNATTENDED_SECONDARY_USER' not in shared.fields
+    result = resolve_config(shared, argv=['--unattended-secondary-user=Resource Pack User'], environ={})
+    assert result.errors

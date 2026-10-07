@@ -120,13 +120,6 @@ help = "Compact JSON role-to-credential-entry arrays; selected profiles are vali
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false
 
-[fields.UNATTENDED_SECONDARY_USER]
-type = "str"
-help = "Optional secondary credential role."
-[fields.UNATTENDED_SECONDARY_USER.applies_when]
-TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
-COLLECT_ONLY = false
-
 [fields.UNATTENDED_USER_INDEX]
 type = "int"
 validation = "nonnegative"
