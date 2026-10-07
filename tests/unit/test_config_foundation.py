@@ -224,3 +224,21 @@ def test_explicit_field_override_validation():
         extension = schema_from_dict({'version': 1, 'fields': {'APP': spec}})
         with pytest.raises(ValueError, match=message):
             compose_schema(shared, extension)
+
+
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+def test_parallel_jobs_defaults_serial_and_validation(tmp_path, mode):
+    schema = load_shared_schema()
+    options = {'TUI_MODE': mode, 'UI_SOURCE_DIR': str(tmp_path / 'frontend')}
+    result = resolve_config(schema, environ=options, anchors={'owner_root': tmp_path})
+    result.raise_for_errors()
+    assert result.values['TEST_PARALLEL_JOBS'] == 8
+    if mode == 'e2e':
+        assert result.values['E2E_RERUNS'] == 2
+    serial = resolve_config(schema, environ=options, argv=['--test-parallel-jobs=0'],
+                            anchors={'owner_root': tmp_path})
+    serial.raise_for_errors()
+    assert serial.values['TEST_PARALLEL_JOBS'] == 0
+    invalid = resolve_config(schema, environ=options, argv=['--test-parallel-jobs=-1'],
+                             anchors={'owner_root': tmp_path})
+    assert any('TEST_PARALLEL_JOBS' in error for error in invalid.errors)

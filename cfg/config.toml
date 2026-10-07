@@ -68,10 +68,19 @@ default = "../api-agent"
 pack_only = true
 help = "Base runtime location, resolved relative to the pack root."
 
-[fields.E2E_RERUNS]
-help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires human acceptance."
+[fields.TEST_PARALLEL_JOBS]
 type = "int"
-default = 0
+default = 8
+validation = "nonnegative"
+help = "Number of parallel test workers. Set to 0 to disable parallelism and run tests serially."
+[fields.TEST_PARALLEL_JOBS.applies_when]
+TUI_MODE = ["unit", "integration", "e2e"]
+COLLECT_ONLY = false
+
+[fields.E2E_RERUNS]
+help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires human acceptance. Set to 0 to turn off."
+type = "int"
+default = 2
 validation = "nonnegative"
 [fields.E2E_RERUNS.applies_when]
 TUI_MODE = "e2e"

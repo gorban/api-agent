@@ -86,3 +86,5 @@
 - [ ] Add deterministic tests for initial/group/overlapping selection behavior, explicit-mode positional selection, missing conditional mode, per-mode exit status, and child-process status forwarding. Verify integration/E2E always show a selector-filtered picker and wait for explicit Continue, and reject `NO_STD_IN` execution without reading stdin or starting prerequisites while still allowing collect-only. No live LLM or full E2E run is needed to validate these controls.
 
 - [ ] After the "Ok" milestone, apply the shared [LOG_CONTENT policy](implementation_plan_j.md) to captured/displayed diagnostic log streams, including selected-source and interleaved views. Raw log formatting and source switching must not bypass content scrubbing; preserving original log content is subject to this gate.
+
+- [ ] Use `TEST_PARALLEL_JOBS` (nonnegative integer, default `8`) for unit, integration, and E2E execution; `0` disables parallelism and runs serially. Preserve test event identity, per-test artifacts/auth isolation, and E2E consecutive confirmation ordering when scheduling workers. Collection starts no workers.
