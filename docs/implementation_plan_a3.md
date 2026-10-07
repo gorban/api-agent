@@ -18,3 +18,5 @@
 Implementation references: [Playwright screenshots](https://playwright.dev/python/docs/screenshots) describes page and element capture; [Playwright browsers](https://playwright.dev/python/docs/browsers) covers browser installation and headed/headless support. Ensure the installed browser supports both normal headless and debug headed operation.
 
 - [ ] Compute E2E browser visibility as `RUN_UI or E2E_DEBUG`; explicit `E2E_DEBUG=True` is always headed and retains browsers after the selected tests regardless of `RUN_UI`. Keep the existing subset-only debug restriction and do not introduce a duplicate DEBUG setting. Test all visibility/retention combinations without sacrificing screenshot evidence.
+
+- [x] Preserve typed RUN_UI and its default/explicit source in E2E configuration for the demo and selected resource packs. It controls browser visibility without disabling mandatory E2E UI_SOURCE_DIR/UI_NX_APP; exclude it from collection-only and unrelated modes. Runner visibility/retention wiring remains above.
