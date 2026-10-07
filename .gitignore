@@ -13,3 +13,5 @@ build/
 artifacts/
 /token_usage.csv
 .certs/
+
+.provider-state/

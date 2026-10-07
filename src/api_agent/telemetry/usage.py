@@ -161,9 +161,16 @@ class SuiteUsage:
         elif after.pct_used < before.pct_used:
             reason = 'negative_delta'
         delta = None if reason else after.pct_used - before.pct_used
+        per_prompt = None if delta is None or prompts == 0 else delta / prompts
         reset_seconds = None
         if after is not None and after.reset_at is not None:
             reset_seconds = max(0, int((after.reset_at - _utc(now or datetime.now(timezone.utc))).total_seconds()))
+        rows = self.rows()
+        estimate = None
+        if self.cost_estimator is not None:
+            estimate = self.cost_estimator(usage_rows=rows, before=before, after=after)
+            if type(estimate) not in (int, float) or not math.isfinite(estimate) or estimate < 0:
+                raise ValueError('provider cost estimate must be finite and nonnegative')
         rows = self.rows()
         estimate = None
         if self.cost_estimator is not None:
@@ -175,6 +182,7 @@ class SuiteUsage:
                 'pct_used_after': None if after is None or not _valid_pct(after.pct_used) else after.pct_used,
                 'pct_point_delta': delta, 'quota_unavailable_reason': reason,
                 'estimated_cost_usd': estimate, 'cost_per_prompt_usd': None if estimate is None or prompts == 0 else estimate / prompts,
+                'pct_used_per_prompt': None if per_prompt is None else f'{per_prompt:.3f}',
                 'prompt_counts': counts, 'prompt_count': prompts,
                 'concurrent_consumption_possible': True,
                 'reset_countdown_seconds': reset_seconds,
