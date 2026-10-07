@@ -7,10 +7,11 @@ name = "api-agent"
 version = "0.1.0"
 description = "Shared agent runtime and resource-pack development interface"
 requires-python = ">=3.13"
-dependencies = ["textual>=8.2.8,<9", "Django>=5.2.17,<5.3", "uvicorn>=0.53,<0.54"]
+dependencies = ["textual>=8.2.8,<9", "Django>=5.2.17,<5.3", "uvicorn>=0.53,<0.54", "packaging>=24,<27"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist>=3,<4", "build>=1.2,<2", "playwright>=1.63,<2"]
+browser = ["playwright>=1.63,<1.64"]
+dev = ["pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist>=3,<4", "build>=1.2,<2", "playwright>=1.63,<1.64"]
 
 [project.scripts]
 api-agent = "api_agent.runtime.bootstrap:main"

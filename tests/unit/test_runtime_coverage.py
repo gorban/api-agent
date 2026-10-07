@@ -104,7 +104,7 @@ def test_missing_venv_creation_and_external_root(tmp_path, uv):
         if ('venv' in command):
             (pack / '.venv/bin').mkdir(parents=True)
             (pack / '.venv/bin/python').touch()
-    with patch.object(deps.shutil, 'which', return_value=uv), patch.object(deps.subprocess, 'run', side_effect=create) as run, patch.object(deps.subprocess, 'call', return_value=4):
+    with patch.object(deps.shutil, 'which', return_value=uv), patch.object(deps.subprocess, 'run', side_effect=create) as run, patch.object(deps, '_installed_requirements', return_value=()), patch.object(deps.subprocess, 'call', return_value=4):
         assert deps.ensure_environment(context, []) == 4
         assert run.call_count == 2
         assert (pack / '.venv/.api-agent-dependencies').is_file()
