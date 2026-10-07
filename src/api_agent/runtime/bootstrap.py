@@ -159,7 +159,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             from api_agent.testing.runner import run_unit_tests, format_unit_summary
             tests = collect_tests(context, 'unit', result.positionals)
             execution = run_unit_tests(context, tests, output=lambda chunk: print(chunk, end='', flush=True),
-                                       parallel_jobs=result.values.get('TEST_PARALLEL_JOBS', 8))
+                                       parallel_jobs=result.values.get('TEST_PARALLEL_JOBS', 8),
+                                       require_full_coverage=not result.positionals)
             print(format_unit_summary(execution))
             return execution.exit_code
         if result.values.get('NO_STD_IN'):

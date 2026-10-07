@@ -32,7 +32,7 @@ The source launchers load the selected shared checkout directly; neither needs a
 .venv/bin/python launch.py --no-std-in=True --tui-mode integration
 ```
 
-The missing-mode example returns configuration error status `2`. Unit execution returns `0` only when selected tests and every measured production coverage area pass; coverage or test failures return nonzero. Integration/E2E execution rejects `NO_STD_IN=True`. Help returns `0` after the worktree check and any required stale-checkout approval. Git/pack/schema/bootstrap/collection errors return `2`. Configured test collection returns `0` only when valid nonempty matches are listed, without opening the TUI or executing tests.
+The missing-mode example returns configuration error status `2`. Unit execution returns `0` when selected tests pass; All tests additionally requires every measured production coverage area to reach 100%. Partial selections report coverage informationally; coverage or test failures return nonzero. Integration/E2E execution rejects `NO_STD_IN=True`. Help returns `0` after the worktree check and any required stale-checkout approval. Git/pack/schema/bootstrap/collection errors return `2`. Configured test collection returns `0` only when valid nonempty matches are listed, without opening the TUI or executing tests.
 
 ## Configuration and discovery workbench review
 

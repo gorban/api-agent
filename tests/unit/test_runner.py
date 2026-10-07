@@ -162,3 +162,14 @@ def test_summary_omits_complete_files_and_reports_one_full_coverage_line():
     summary = format_unit_summary(UnitRunResult(1, (), (complete, complete), ''))
     assert summary.count('Production coverage: 100%') == 1
     assert 'empty.py' not in summary
+
+
+def test_partial_selection_reports_coverage_without_failing_passed_tests(tmp_path):
+    base = fixture_repo(tmp_path / 'base', code='def unused():\n    return 1\n', test='def test_ok():\n    assert True\n')
+    ctx = context(base)
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'), require_full_coverage=False)
+    assert result.exit_code == 0
+    assert not result.require_full_coverage
+    assert any(not area.complete for area in result.coverage)
+    from api_agent.testing.runner import format_unit_summary
+    assert 'Unit results: PASS' in format_unit_summary(result)
