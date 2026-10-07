@@ -12,7 +12,7 @@ from test_tui import fixture
 
 
 @pytest.mark.parametrize('mode', [None, 'config-cleanup'])
-@pytest.mark.parametrize('close', ['escape', 'c', 'button'])
+@pytest.mark.parametrize('close', ['escape', 'c', 'button', 'enter'])
 def test_setting_description_popup_preserves_selected_row_and_config(tmp_path, mode, close):
     async def scenario():
         description = '[red]Literal declaration text[/red]\n' + '\n'.join(f'Explanation line {i}' for i in range(60))
@@ -34,10 +34,20 @@ def test_setting_description_popup_preserves_selected_row_and_config(tmp_path, m
             assert str(app.screen.query_one('#setting-help-text', Static).content) == description
             assert not screen.check_action('setting_help', ())
             scroll = app.screen.query_one(VerticalScroll)
-            assert scroll.has_focus
+            close_button = app.screen.query_one('#setting-help-close')
+            assert close_button.has_focus
+            assert app.screen.focus_chain == [close_button]
+            assert not app.screen.query('#tab-select-hint')
+            for key in ('tab', 'tab', 'shift+tab'):
+                await pilot.press(key)
+                assert close_button.has_focus
             await pilot.press('j', 'down')
             await pilot.pause()
             assert scroll.scroll_y > 0
+            assert close_button.has_focus
+            await pilot.press('pagedown', 'pageup', 'k', 'up', 'h', 'left', 'l', 'right')
+            await pilot.pause()
+            assert close_button.has_focus
             await pilot.resize_terminal(65, 18)
             await pilot.pause()
             dialog = app.screen.query_one('#setting-help-dialog')
