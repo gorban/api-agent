@@ -1,6 +1,6 @@
 """Deterministic overlapping test-group selection for the workbench."""
 from dataclasses import dataclass
-from .collection import CollectionError
+from .collection import CollectionError, select_tests
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,21 @@ class SelectionModel:
         self.tests = tuple(dict((test.id, test) for test in tests).values())
         self.selected_ids = {test.id for test in self.tests}
         self.selected_scopes = {"all"}
+
+    def preselect(self, selectors):
+        """Select startup matches against the full suite, retaining group intent."""
+        self.selected_ids = {test.id for test in select_tests(self.tests, selectors)}
+        self.selected_scopes = set()
+        for row in self.groups():
+            if row.kind == "file" and row.selected and any(
+                selector == row.label or selector == row.label.split("::", 1)[1]
+                for selector in selectors
+            ):
+                self.selected_scopes.add(row.id)
+            elif row.kind == "tag" and row.selected and f"tag:{row.label}" in selectors:
+                self.selected_scopes.add(row.id)
+        if self.selected_ids == {test.id for test in self.tests}:
+            self.selected_scopes.add("all")
 
     def groups(self):
         specifications = [("all", "All tests", "all", frozenset(test.id for test in self.tests))]
