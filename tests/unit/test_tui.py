@@ -1353,3 +1353,25 @@ def test_main_menu_disables_close_and_space_toggles_test_selection(tmp_path):
             await pilot.pause()
             assert app.selection.selected_tests == (identity,)
     asyncio.run(scenario())
+
+
+def test_explicit_unit_mode_bypasses_setup_and_defaults_and_renders_parameter_ids(tmp_path):
+    async def scenario():
+        item = Identity('base::test.py::test_path[/absolute]', 'base', 'test.py', 'test.py::test_path[/absolute]')
+        app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}},
+                      argv=('--tui-mode', 'unit'), collector=lambda *args: [item])
+        app.session.environ.pop('UNATTENDED_AUTH')
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause(.3)
+            assert app.screen.kind == 'tests'
+            table = app.screen.query_one(DataTable)
+            assert any(str(table.get_row_at(i)[1]) == item.id for i in range(table.row_count))
+            assert not (tmp_path / '.env').exists()
+            app.unit_rows = {item.id: ('PASSED', item.id, '1s')}
+            app.show_unit_results('Passing')
+            await pilot.pause(.2)
+            app.unit_event(__import__('api_agent.testing.contracts', fromlist=['RunnerEvent']).RunnerEvent(
+                'test_finished', 'base', identity=item, status='passed', duration=1))
+            await pilot.pause(.2)
+            assert str(app.screen.query_one(DataTable).get_row_at(0)[1]) == item.id
+    asyncio.run(scenario())

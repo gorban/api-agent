@@ -2,6 +2,11 @@
 from rich.text import Text
 
 
+def literal_cell(value):
+    """Bracket-bearing data is literal text, never Rich markup."""
+    return Text(value) if isinstance(value, str) and "[" in value else value
+
+
 def progress_summary(mode, rows):
     statuses = [row[0] for row in rows.values()]
     passed = statuses.count('PASSED')
@@ -21,15 +26,15 @@ def ordered_result_rows(rows, *, completed):
 
 def reconcile_results_table(table, rows, *, completed):
     """Keep the mounted table; replace rows only when identities/order change."""
-    keys = [table.get_row_at(i)[1] for i in range(table.row_count)]
+    keys = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
     if keys != [key for key, _ in rows]:
         table.clear()
         for key, cells in rows:
-            table.add_row(*cells, key=key)
+            table.add_row(*(literal_cell(cell) for cell in cells), key=key)
     else:
         for key, cells in rows:
             for column, value in zip(table.columns, cells):
-                table.update_cell(key, column, value)
+                table.update_cell(key, column, literal_cell(value))
     if completed:
         table.move_cursor(row=0)
 

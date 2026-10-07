@@ -7,7 +7,7 @@ import threading
 from rich.text import Text
 from api_agent.config.declarations import UNSET
 from api_agent.testing.lifecycle import TestRunLifecycle
-from api_agent.tui.test_results import (progress_summary, ordered_result_rows,
+from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
                                           reconcile_results_table, styled_summary)
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -227,7 +227,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
             else:
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
             for key, cells in self.rows:
-                table.add_row(*cells, key=key)
+                table.add_row(*(literal_cell(cell) for cell in cells), key=key)
             if self.kind == "defaults":
                 self.app.refresh_configuration_rows(self)
             if self.kind == "test-results":
@@ -489,8 +489,8 @@ class ApiAgentApp(App[int]):
             return
         mode = result.fields.get("TUI_MODE")
         self.mode = mode.value if mode and mode.explicit else None
-        if self.mode in {"config-cleanup", "cleanup-containers", "unattended-auth"}:
-            await self.enter_mode()
+        if self.mode is not None:
+            await self.enter_mode(skip_defaults=True)
             return
         if result.values.get("COLLECT_ONLY"):
             self.show_menu()
@@ -577,7 +577,7 @@ class ApiAgentApp(App[int]):
                      Text("Required", justify="right") if name in result.missing else "",
                      resolved.source if resolved else "Not provided")
             for column, value in zip(table.columns, cells):
-                table.update_cell(row.key, column, value)
+                table.update_cell(row.key, column, literal_cell(value))
         screen.config_saved, screen.config_defaults = saved, defaults
 
     def focused_setting(self):
@@ -615,7 +615,7 @@ class ApiAgentApp(App[int]):
                   f"Declared type: {self.schema.fields[self.prompt_name].type}. Use Tab to focus actions; s switches the target outside the value input.",
                   (("submit", "Save value (Enter)"),))
 
-    async def enter_mode(self):
+    async def enter_mode(self, *, skip_defaults=False):
         result = self.session.result()
         if result.values.get("NO_STD_IN"):
             self.console_error = "NO_STD_IN=True was selected during interactive configuration. Restart with --no-std-in=True and supply required configuration explicitly."
@@ -647,7 +647,7 @@ class ApiAgentApp(App[int]):
         elif self.mode == "unattended-auth":
             self.unavailable("The unattended authentication wizard is not implemented yet. No credential profiles were changed.")
         else:
-            await self.configure_operation()
+            await self.configure_operation(skip_defaults=skip_defaults)
 
     def show_menu(self):
         self.pending_test_selectors = ()
@@ -716,14 +716,14 @@ class ApiAgentApp(App[int]):
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "containers":
             self.screen.query_one("#error", Static).update(message)
 
-    async def configure_operation(self):
+    async def configure_operation(self, *, skip_defaults=False):
         self.session.set_value("TUI_MODE", self.mode)
         result = self.session.result()
         if result.errors:
             self.operation_status = 3
             self.show("error", "Configuration error", "\n".join(result.errors), (("menu", "Main menu"),))
             return
-        if self.configuration_pending(include_optional=False):
+        if result.missing or (not skip_defaults and self.configuration_pending(include_optional=False)):
             await self.start_configuration()
             return
         if self.mode in {"unit", "integration", "e2e"}:
@@ -837,7 +837,7 @@ class ApiAgentApp(App[int]):
                 table = self.screen.query_one(DataTable)
                 self.screen.query_one("#body", Static).update(self.unit_progress())
                 for column, value in zip(table.columns, self.unit_rows[key]):
-                    table.update_cell(key, column, value)
+                    table.update_cell(key, column, literal_cell(value))
 
     def show_unit_results(self, summary=None):
         if summary is None:
@@ -931,7 +931,7 @@ class ApiAgentApp(App[int]):
             selected = current[cursor][1] if current else None
             table.clear()
             for key, cells in rows:
-                table.add_row(*cells, key=key)
+                table.add_row(*(literal_cell(cell) for cell in cells), key=key)
             if rows:
                 row_index = next((i for i, (key, _) in enumerate(rows) if key == selected),
                                  min(cursor, len(rows) - 1))
@@ -940,7 +940,7 @@ class ApiAgentApp(App[int]):
             return
         for key, cells in rows:
             for column, value in zip(table.columns, cells):
-                table.update_cell(key, column, value)
+                table.update_cell(key, column, literal_cell(value))
         self.screen.refresh_bindings()
 
     def delete_assignment(self, name):
