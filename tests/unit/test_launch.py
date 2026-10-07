@@ -63,6 +63,9 @@ class LaunchTests(unittest.TestCase):
                 with self.subTest(argv=argv, env=env), patch.dict(os.environ, env), patch('sys.stdout', new_callable=StringIO) as output:
                     self.assertEqual(main(argv, base_root=ROOT), 0)
                     self.assertEqual('Bootstrap:' in output.getvalue(), expected)
+                    if expected:
+                        self.assertIn('\n\nBootstrap:', output.getvalue())
+                        self.assertNotIn('\n\n\nBootstrap:', output.getvalue())
 
     def test_collection_is_honestly_unavailable(self):
         with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):

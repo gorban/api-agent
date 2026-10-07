@@ -114,7 +114,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
             if resource_pack_dir is None and launcher_root is None:
-                print('\nBootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.')
+                print('Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.')
             return 0
         print(f'Validated foundation configuration for {context.name} ({context.pack_root}).')
         operation = 'Test collection' if result.values.get('COLLECT_ONLY') else 'Requested operation'
