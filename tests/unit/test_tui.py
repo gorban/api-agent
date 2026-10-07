@@ -1026,13 +1026,13 @@ def test_unit_runner_events_final_failure_and_view(tmp_path):
             await pilot.click('#mode-unit')
             await pilot.pause()
             assert app.screen.kind == 'tests'
-            await pilot.click('#continue')
+            await pilot.press('s')
             for _ in range(20):
                 await pilot.pause(.05)
                 if app.unit_result is not None:
                     break
             assert calls == [((identity,), 8)]
-            assert app.operation_status == 1
+            assert app.operation_status == 1, str(app.screen.query_one("#body", Static).content)
             assert app.screen.kind == 'unit-results'
             table = app.screen.query_one(DataTable)
             assert table.get_row_at(0) == ['FAILED', identity.id, '0.125s']
@@ -1098,8 +1098,49 @@ def test_unit_summary_scroll_and_full_coverage_color(tmp_path):
             assert isinstance(content, Text)
             coverage_start = content.plain.index('Production coverage: 100%')
             assert any(span.start == coverage_start and span.style == 'green' for span in content.spans)
+            viewport = app.screen.query_one('#workbench-content', VerticalScroll)
+            initial_scroll = viewport.max_scroll_y
+            initial_summary_height = app.screen.query_one('#unit-summary').size.height
             await pilot.resize_terminal(70, 15)
             await pilot.pause()
             assert app.screen.query_one('#unit-summary').size.height >= 6
             assert app.screen.query_one(DataTable).size.height >= 6
+            assert viewport.max_scroll_y > 0
+            await pilot.resize_terminal(100, 30)
+            await pilot.pause()
+            assert viewport.max_scroll_y == initial_scroll
+            assert app.screen.query_one('#unit-summary').size.height == initial_summary_height
+            summary = app.screen.query_one('#unit-summary')
+            table = app.screen.query_one(DataTable)
+            assert table.region.y - summary.region.bottom >= 1
+    asyncio.run(scenario())
+
+
+def test_unit_progress_counts_and_colors(tmp_path):
+    app = fixture(tmp_path)
+    app.unit_rows = {str(i): (status, str(i), '') for i, status in enumerate(
+        ['PASSED', 'FAILED', 'ERROR', 'RUNNING', 'PENDING', 'PENDING'])}
+    text = app.unit_progress()
+    assert text.plain.endswith('1 passed / 2 failed / 1 running / 2 pending')
+    assert any(text.plain[span.start:span.end] == '1 passed' and span.style == 'green' for span in text.spans)
+    assert any(text.plain[span.start:span.end] == '2 failed' and span.style == 'red' for span in text.spans)
+    app.unit_rows = {'pending': ('PENDING', 'pending', '')}
+    text = app.unit_progress()
+    assert '0 failed' in text.plain
+    assert not any(span.style == 'red' for span in text.spans)
+
+
+def test_start_shortcut_e2e_requires_acceptance_with_selected_count(tmp_path):
+    identity = Identity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one')
+    async def scenario():
+        app = fixture(tmp_path, collector=lambda *args: [identity])
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click('#mode-e2e')
+            await pilot.pause()
+            await pilot.press('s')
+            await pilot.pause()
+            assert app.screen.kind == 'acceptance'
+            assert '1 tests selected to run' in str(app.screen.query_one('#body', Static).content)
+            assert E2E_WARNING in str(app.screen.query_one('#body', Static).content)
     asyncio.run(scenario())
