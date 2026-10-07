@@ -72,13 +72,11 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(reports[0].stale)
         self.assertFalse(reports[1].stale)
         rendered = gate.format_report(reports)
-        self.assertIn("Current checkout", rendered)
-        self.assertIn("[X] STALE\n  Directory: /base", rendered)
-        self.assertIn("[✓] NEWEST\n  Directory: /pack", rendered)
-        self.assertIn("Directory: /base-new\n  Branch: detached HEAD", rendered)
-        self.assertIn("Last modified:", rendered)
-        self.assertIn("Determining reason: HEAD committer timestamp", rendered)
-        self.assertNotIn(".git", rendered)
+        self.assertIn("The api-agent requested to run does not have the newest changes.", rendered)
+        self.assertIn("  Directory:\n    This one: /base\n    But found newer: /base-new", rendered)
+        self.assertIn("    Branch of newer: detached HEAD", rendered)
+        self.assertNotIn("This one: /pack", rendered)
+        self.assertIn("  Last modified:", rendered)
 
     def test_common_directory_bind_aliases_have_same_identity(self):
         sim = GitSimulation({"base": ["/base", "/other"]}, {"/base": 10, "/other": 20})
@@ -154,16 +152,17 @@ class WorktreeTests(unittest.TestCase):
             with self.assertRaises(gate.WorktreeGateError):
                 gate.verify_worktrees([Path("/base"), Path("/pack")], stdin=StringIO("\n"), stdout=output)
         text = output.getvalue()
-        self.assertEqual(text.count("[X] STALE"), 2)
-        self.assertEqual(text.count("Approve these current checkouts?"), 1)
-        self.assertLess(text.index("Directory: /pack-new"), text.index("Approve these current checkouts?"))
-        self.assertIn("eligible dirty file 'edited'", text)
-        self.assertIn("Absent dirty paths (no file timestamp): ('deleted',)", text)
+        self.assertEqual(text.count("does not have the newest changes."), 2)
+        self.assertEqual(text.count("Ignore newer worktree and run with current directories anyways?"), 1)
+        self.assertLess(text.index("But found newer: /pack-new"), text.index("Ignore newer worktree"))
+        self.assertNotIn("eligible dirty file", text)
+        self.assertNotIn("Absent dirty paths", text)
         self.assertIn("UTC", text)
         self.assertNotIn("\033[", text)
-        colored = gate.format_report(reports, color=True)
-        self.assertIn("\033[31m[X] STALE\033[0m", colored)
-        self.assertIn("\033[32m[✓] NEWEST\033[0m", colored)
+        colored = gate.format_report(reports, color=True, resource_pack_name="demo-pack")
+        self.assertIn("\033[31mnot running on latest worktree\033[0m", colored)
+        self.assertIn('The "demo-pack" resource pack requested to run', colored)
+        self.assertNotIn("Repository 1", colored)
 
     def test_current_ties_are_shown_and_still_require_approval(self):
         checkout = gate.CheckoutReport(Path("/base"), "main", "abc", 10, None, None, (), True, newest=True)
@@ -173,11 +172,9 @@ class WorktreeTests(unittest.TestCase):
         with patch.object(gate, "inspect_worktrees", return_value=reports):
             gate.verify_worktrees([Path("/base")], stdin=StringIO("y\n"), stdout=output)
         text = output.getvalue()
-        self.assertLess(text.index("Current checkout"), text.index("Comparison checkout"))
-        self.assertIn("Directory: /other", text)
-        self.assertIn("ties are accepted", text)
-        self.assertIn("default No", text)
-        self.assertIn("does not approve test execution", text)
+        self.assertEqual(text, "WORKTREE APPROVAL\n\nApprove these current checkouts? [y/N] (default No): ")
+        self.assertNotIn("Comparison", text)
+        self.assertNotIn("/other", text)
 
     def test_git_uses_argument_arrays_and_byte_capture(self):
         with patch.dict(os.environ, {"GIT_DIR": "/foreign/.git", "GIT_CONFIG_GLOBAL": "/host/gitconfig"}), patch.object(gate.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"x\0", stderr=b"")) as run:
@@ -308,3 +305,18 @@ class WorktreeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_only_stale_resource_pack_uses_requested_pack_name():
+    current = gate.CheckoutReport(Path('/base'), 'main', 'a', 30, None, None, (), True, newest=True)
+    selected = gate.CheckoutReport(Path('/resource-pack'), 'pack-branch', 'b', 10, None, None, (), True)
+    newer = gate.CheckoutReport(Path('/different-directory-name'), 'new-branch', 'c', 20, None, None, (), False, newest=True)
+    reports = (gate.RepositoryReport(current.root, (current,)),
+               gate.RepositoryReport(selected.root, (selected, newer)))
+    text = gate.format_report(reports, resource_pack_name='demo-pack')
+    assert 'The "demo-pack" resource pack requested to run does not have the newest changes.' in text
+    assert 'This one: /base' not in text
+    assert 'This one: /resource-pack' in text
+    assert 'But found newer: /different-directory-name' in text
+    assert 'This one: pack-branch' in text
+    assert 'Branch of newer: new-branch' in text
