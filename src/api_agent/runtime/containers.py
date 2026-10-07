@@ -56,8 +56,9 @@ def is_session_container(identifier, names, identities):
 
 
 class ContainerRuntime:
-    def __init__(self, executable=None):
+    def __init__(self, executable=None, scope=None):
         self.executable = executable
+        self.scope = scope
 
     def _run(self, arguments):
         executable = self.executable or shutil.which("docker") or shutil.which("podman")
@@ -72,31 +73,60 @@ class ContainerRuntime:
             raise ContainerError(f"Container engine command failed (exit {result.returncode}).")
         return result.stdout
 
-    def inventory(self):
-        output = self._run(["ps", "--format", "{{json .}}"])
-        containers = []
-        protected = session_container_identity()
+    def _inspect(self, identifiers):
         try:
-            for line in output.splitlines():
-                record = json.loads(line)
-                identifier = record.get("ID") or record.get("Id")
-                names = record.get("Names")
-                if isinstance(names, list):
-                    names = ", ".join(names)
-                if not identifier or not names:
-                    raise ValueError("Missing ID or name")
-                if is_session_container(str(identifier), str(names), protected):
-                    continue
-                containers.append(Container(str(identifier), str(names), str(record.get("Image", "")), str(record.get("Status", ""))))
-        except (ValueError, TypeError, AttributeError) as error:
+            records = json.loads(self._run(["inspect", *identifiers]))
+            if not isinstance(records, list):
+                raise ValueError("Expected inspect array")
+            for record in records:
+                if (not isinstance(record, dict)
+                        or not isinstance(record.get("Id"), str)
+                        or not record["Id"]
+                        or not isinstance(record.get("Name"), str)
+                        or not isinstance(record.get("Config"), dict)
+                        or not isinstance(record.get("State"), dict)):
+                    raise ValueError("Invalid inspect record")
+            return records
+        except (ValueError, TypeError) as error:
             raise ContainerError("Container inventory unavailable: invalid engine response.") from error
-        return tuple(containers)
+
+    def _eligible(self, record, protected):
+        return (self.scope.owns(record["Config"].get("Labels"))
+                and not is_session_container(record["Id"], record["Name"], protected)
+                and not any(key.startswith(("com.github.containers.toolbox", "distrobox", "io.github.distrobox"))
+                            or (key == "manager" and value == "distrobox")
+                            for key, value in record["Config"]["Labels"].items()))
+
+    def inventory(self):
+        if self.scope is None:
+            return ()
+        identifiers = self._run([
+            "ps", "--quiet", "--no-trunc",
+            "--filter", "label=api-agent.managed=true",
+            "--filter", f"label=api-agent.scope={self.scope.id}",
+            "--filter", f"label=com.docker.compose.project={self.scope.project}",
+        ]).split()
+        if not identifiers:
+            return ()
+        protected = session_container_identity()
+        return tuple(Container(record["Id"], record["Name"].lstrip("/"),
+                               str(record["Config"].get("Image", "")),
+                               str(record["State"].get("Status", "")))
+                     for record in self._inspect(identifiers)
+                     if self._eligible(record, protected) and record["State"].get("Running") is True)
 
     def stop(self, identifiers):
+        if self.scope is None:
+            raise ContainerError("Container ownership scope is required before stopping.")
         identifiers = tuple(dict.fromkeys(identifiers))
-        if not identifiers or any(not identifier or identifier.startswith("-") for identifier in identifiers):
+        if not identifiers or any(not isinstance(identifier, str) or not identifier or identifier.startswith("-") for identifier in identifiers):
             raise ContainerError("Select valid container IDs before stopping.")
         protected = session_container_identity()
         if any(is_session_container(identifier, identifier, protected) for identifier in identifiers):
             raise ContainerError("Cannot stop the container hosting this session.")
+        records = self._inspect(identifiers)
+        if (len(records) != len(identifiers)
+                or {record["Id"] for record in records} != set(identifiers)
+                or not all(self._eligible(record, protected) for record in records)):
+            raise ContainerError("Selected containers are no longer owned by this stack scope.")
         self._run(["stop", *identifiers])
