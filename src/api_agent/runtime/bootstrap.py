@@ -97,13 +97,23 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         result = resolve_config(schema, argv=argv, environ=os.environ,
                                 dotenv={**read_dotenv(context.base_root / '.env'),
                                         **read_dotenv(context.dotenv_path)}, anchors=context.anchors,
-                                interactive=False, pack_launcher=context.external_pack)
+                                interactive=True, pack_launcher=context.external_pack)
         errors = list(result.errors)
+        if result.values.get('NO_STD_IN') and not result.help_requested:
+            errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}'
+                          for name in result.missing)
         if not result.help_requested:
             mode = result.values.get('TUI_MODE')
             mode_field = result.fields.get('TUI_MODE')
+            if result.values.get('COLLECT_ONLY') and mode_field and mode_field.explicit and not result.values.get('NO_STD_IN'):
+                errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}'
+                              for name in result.missing)
             if result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'} and not result.values.get('COLLECT_ONLY'):
                 errors.append('NO_STD_IN=True is incompatible with integration/E2E execution; collection-only is allowed.')
+            if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'unattended-auth'}:
+                errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')
+            if result.values.get('COLLECT_ONLY') and mode is not None and mode not in {'unit', 'integration', 'e2e'}:
+                errors.append('COLLECT_ONLY requires unit, integration, or e2e mode.')
             if result.positionals and (mode not in {'unit', 'integration', 'e2e'} or not mode_field or not mode_field.explicit):
                 errors.append('Positional test selectors require an explicit unit, integration, or e2e TUI_MODE from .env, environment, or CLI.')
         if errors:
@@ -119,12 +129,31 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 print('\n' + _colored('Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.',
                                       '31', _supports_color(sys.stdout)))
             return 0
-        print(f'Validated foundation configuration for {context.name} ({context.pack_root}).')
-        operation = 'Test collection' if result.values.get('COLLECT_ONLY') else 'Requested operation'
-        print(f'{operation} is not implemented yet. No tests or services were started.',
-              file=sys.stderr)
-        return 3
-    except (ValueError, OSError, WorktreeGateError) as exc:
+        mode = result.values.get('TUI_MODE')
+        mode_field = result.fields.get('TUI_MODE')
+        configured_collection = result.values.get('COLLECT_ONLY') and mode_field and mode_field.explicit
+        if configured_collection:
+            from api_agent.runtime.dependencies import ensure_environment
+            status = ensure_environment(context, argv, collect=True)
+            if status is not None:
+                return status
+            from api_agent.testing.collection import collect_tests
+            for test in collect_tests(context, mode, result.positionals):
+                print(test.id)
+            return 0
+        # Execution runners/providers are subsequent work, not simulated successes.
+        if result.values.get('NO_STD_IN') or (mode == 'unit' and mode_field and mode_field.explicit and not result.missing):
+            print('Requested operation is not implemented yet. No tests or services were started.', file=sys.stderr)
+            return 3
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise ValueError('Interactive modes require a terminal. Use --help or a configured test mode with --collect-only for noninteractive output.')
+        from api_agent.runtime.dependencies import ensure_environment
+        status = ensure_environment(context, argv, collect=True)
+        if status is not None:
+            return status
+        from api_agent.tui.app import run_tui
+        return run_tui(context, schema, argv, os.environ.copy())
+    except (ValueError, OSError, WorktreeGateError, subprocess.CalledProcessError) as exc:
         print(f'Launch error: {exc}', file=sys.stderr)
         return 2
 

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from api_agent.runtime.bootstrap import _extract_option, _supports_color, generated_help, main
-from api_agent.config import load_shared_schema
+from api_agent.config import load_shared_schema, schema_from_dict
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -85,9 +85,19 @@ class LaunchTests(unittest.TestCase):
                         self.assertIn('\n\nBootstrap:', output.getvalue())
                         self.assertNotIn('\n\n\nBootstrap:', output.getvalue())
 
-    def test_collection_is_honestly_unavailable(self):
-        with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(main(['--tui-mode=unit', '--collect-only'], base_root=ROOT), 3)
+    def test_configured_collection_shortcuts_interaction(self):
+        with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True), patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), patch('api_agent.testing.collection.collect_tests', return_value=[type('Test', (), {'id': 'base::test_example.py::test_one'})()]):
+            self.assertEqual(main(['--tui-mode=unit', '--collect-only'], base_root=ROOT), 0)
+
+    def test_explicit_collection_checks_missing_values_without_no_std_in(self):
+        schema = schema_from_dict({'version': 1, 'fields': {
+            'HELP': {'type': 'bool', 'default': False},
+            'TUI_MODE': {'type': 'str'}, 'COLLECT_ONLY': {'type': 'bool', 'default': False},
+            'NEEDED': {'type': 'str', 'required_when': {'COLLECT_ONLY': True}}}})
+        with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True), patch('api_agent.config.compose_schema', return_value=schema), patch('api_agent.testing.collection.collect_tests') as collect, patch('api_agent.runtime.dependencies.ensure_environment') as prepare:
+            self.assertEqual(main(['--tui-mode=unit', '--collect-only'], base_root=ROOT), 2)
+            collect.assert_not_called()
+            prepare.assert_not_called()
 
     def test_gate_precedes_help_and_invalid_options(self):
         from api_agent.runtime.worktrees import WorktreeGateError
@@ -105,10 +115,10 @@ class LaunchTests(unittest.TestCase):
                     self.assertNotIn('not implemented yet', stderr.getvalue())
 
     def test_noninteractive_live_collection_remains_nonexecuting(self):
-        with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
+        with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True), patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), patch('api_agent.testing.collection.collect_tests', return_value=[]):
             for mode in ('integration', 'e2e'):
                 with self.subTest(mode=mode):
-                    self.assertEqual(main(['--tui-mode=' + mode, '--no-std-in', '--collect-only'], base_root=ROOT), 3)
+                    self.assertEqual(main(['--tui-mode=' + mode, '--no-std-in', '--collect-only'], base_root=ROOT), 0)
 
     def test_selectors_need_explicit_test_mode(self):
         with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
