@@ -135,7 +135,10 @@ def collect_tests(context, mode, selectors=(), cancel_event=None):
             if mode == "unit" and path != base / "tests/unit":
                 continue
             raise CollectionError(f"Declared {mode} suite does not exist: {path}")
-        root = base if path.is_relative_to(base) else owner
+        if mode == 'unit' and path == base / 'tests/unit':
+            root = base
+        else:
+            root = owner if path.is_relative_to(owner) else base
         if not path.is_relative_to(root):
             raise CollectionError(f"Suite is outside its repository owner: {path}")
         suites.setdefault(root, []).append(path)

@@ -93,3 +93,9 @@
 - [ ] Before the first traced "Ok" run, apply the shared [LOG_CONTENT policy](implementation_plan_j.md) to captured/displayed diagnostic log streams, including selected-source and interleaved views. Raw log formatting and source switching must not bypass content scrubbing; preserving original log content is subject to this gate.
 
 - [ ] Use `TEST_PARALLEL_JOBS` (nonnegative integer, default `8`) for unit, integration, and E2E execution; `0` disables parallelism and runs serially. Preserve test event identity, per-test artifacts/auth isolation, and E2E consecutive confirmation ordering when scheduling workers. Collection starts no workers.
+
+## B2 unit execution slice
+
+- [x] Execute selected base/pack unit identities with owner working directories, pytest configuration, raw output or per-test events, failure tracebacks and durations. Support `TEST_PARALLEL_JOBS` through pytest-xdist (`0` disables); cancel/reap owned process groups, including children left after normal pytest exit. Never retry or record units in Allure.
+- [x] Gate unit result status on all selected tests passing and exact 100% line/branch counters for every measured production file, retaining full source scope for subsets. Show red failure summaries and nonzero status for coverage gaps. Missing/empty mandatory base units remain an error.
+- [ ] Human-review real unit results, failure scrolling, cancellation and coverage summaries. Final rewrite code coverage remains a later task.

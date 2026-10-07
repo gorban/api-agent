@@ -24,7 +24,7 @@ def requirements(context, *, collect=False):
             if name != 'api-agent':
                 dependencies.append(requirement)
     if collect:
-        dependencies.append('pytest>=8,<10')
+        dependencies.extend(('pytest>=8,<10', 'pytest-cov>=6,<8', 'pytest-xdist>=3,<4'))
     return tuple(dict.fromkeys(dependencies))
 
 

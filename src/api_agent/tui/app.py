@@ -137,7 +137,11 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                 Binding("a", "accept_default", "Accept default"),
                 Binding("e", "edit_setting", "Edit"),
                 Binding("u", "unset_setting", "Unset"),
-                Binding("escape", "back_to_configuration", "Back to configuration")]
+                Binding("escape", "back_to_configuration", "Back to configuration"),
+                Binding("up,k", "failure_up", "Scroll up", key_display="↑/k"),
+                Binding("down,j", "failure_down", "Scroll down", key_display="↓/j"),
+                Binding("pageup", "failure_page_up", "Page up"),
+                Binding("pagedown", "failure_page_down", "Page down")]
 
     def __init__(self, kind, title, text="", actions=(), rows=()):
         super().__init__()
@@ -182,6 +186,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             table = self.query_one(DataTable)
             if self.kind == "defaults":
                 table.add_columns("Setting", "Effective value", "Source")
+            elif self.kind == "unit-results":
+                table.add_columns("Status", "Test", "Execution time")
             elif self.kind == "containers":
                 table.add_columns("Selected", "ID", "Name", "Image", "Status")
             elif self.kind == "cleanup":
@@ -212,6 +218,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         # Their contextual actions must not inspect the modal as this screen.
         if self.app.screen is not self:
             return False
+        if action.startswith("failure_"):
+            return self.kind == "unit-failure"
         if action == "back_to_configuration":
             return self.kind == "input"
         if action == "close_view" and self.kind == "input":
@@ -282,6 +290,18 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         except Exception as error:
             self.query_one("#error", Static).update(str(error))
 
+    def action_failure_up(self):
+        self.query_one(VerticalScroll).scroll_up(animate=False)
+
+    def action_failure_down(self):
+        self.query_one(VerticalScroll).scroll_down(animate=False)
+
+    def action_failure_page_up(self):
+        self.query_one(VerticalScroll).scroll_page_up(animate=False)
+
+    def action_failure_page_down(self):
+        self.query_one(VerticalScroll).scroll_page_down(animate=False)
+
     async def action_stop_selected(self):
         await self.app.choose("stop-containers")
 
@@ -313,12 +333,15 @@ class ApiAgentApp(App[int]):
     #pack-bootstrap { height: auto; color: red; }
     """
 
-    def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None):
+    def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None, unit_runner=None):
         super().__init__()
         from api_agent.config.session import ConfigSession
         self.context, self.schema = context, schema
         self.session = session or ConfigSession(context, schema, argv, environ)
         self.collector = collector
+        self.unit_runner = unit_runner
+        self.unit_result = None
+        self.unit_rows = {}
         from api_agent.runtime.containers import ContainerRuntime
         self.container_runtime = container_runtime or ContainerRuntime()
         self.containers = ()
@@ -651,11 +674,67 @@ class ApiAgentApp(App[int]):
             self.selection = SelectionModel(tests)
             if not tests:
                 raise ValueError("No tests matched the selected suite/selectors")
-            self.show_selection()
+            mode_field = self.session.result().fields.get("TUI_MODE")
+            if self.mode == "unit" and mode_field and mode_field.explicit and mode_field.source != "interactive":
+                self.start_unit_run()
+            else:
+                self.show_selection()
         except Exception as error:
             if cancel_event.is_set():
                 return
             self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
+
+    def start_unit_run(self):
+        self.operation_status = 3
+        self.collection_cancel = threading.Event()
+        self.unit_result = None
+        self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
+        self.show_unit_results("Running selected unit tests…")
+        self.run_worker(self._run_units(), group="unit-run", exclusive=True)
+
+    async def _run_units(self):
+        from api_agent.testing.runner import run_unit_tests
+        runner = self.unit_runner or run_unit_tests
+        try:
+            result = await asyncio.to_thread(
+                runner, self.context, self.selection.selected_tests,
+                on_event=lambda event: self.call_from_thread(self.unit_event, event),
+                cancel_event=self.collection_cancel,
+                parallel_jobs=self.session.result().values.get("TEST_PARALLEL_JOBS", 8))
+            self.unit_result = result
+            for test in result.tests:
+                self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
+            self.operation_status = result.exit_code
+            if not self.collection_cancel.is_set():
+                self.show_unit_results()
+        except Exception as error:
+            self.operation_status = 3
+            if not self.collection_cancel.is_set():
+                self.show("error", "Unit execution failed", str(error), (("menu", "Main menu"),))
+
+    def unit_event(self, event):
+        if self.collection_cancel.is_set():
+            return
+        if event.identity is not None and event.kind in {"test_started", "test_finished"}:
+            key = event.identity.id
+            self.unit_rows[key] = ((event.status or "RUNNING").upper(), key,
+                                   f"{event.duration:.3f}s" if event.kind == "test_finished" else "")
+            if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
+                table = self.screen.query_one(DataTable)
+                for column, value in zip(table.columns, self.unit_rows[key]):
+                    table.update_cell(key, column, value)
+
+    def show_unit_results(self, summary=None):
+        if summary is None:
+            from api_agent.testing.runner import format_unit_summary
+            summary = format_unit_summary(self.unit_result)
+        self.show("unit-results", "Unit test results", summary, rows=list(self.unit_rows.items()))
+        if self.unit_result is not None and self.unit_result.exit_code:
+            self.call_after_refresh(self.style_unit_summary)
+
+    def style_unit_summary(self):
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
+            self.screen.query_one("#body", Static).styles.color = "red"
 
     def show_selection(self):
         rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
@@ -677,7 +756,12 @@ class ApiAgentApp(App[int]):
         return any(row.name == key and row.present and str(row.source).endswith("/.env") for row in self.session.cleanup_rows())
 
     def toggle_row(self, key):
-        if self.screen.kind == "tests":
+        if self.screen.kind == "unit-results" and self.unit_result is not None:
+            failed = next((test for test in self.unit_result.tests if test.identity.id == key and test.traceback), None)
+            if failed:
+                self.show("unit-failure", "Unit test failure", key + "\n\n" + failed.traceback)
+                self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
+        elif self.screen.kind == "tests":
             self.selection.toggle(key)
             self.refresh_rows()
         elif self.screen.kind == "containers":
@@ -762,8 +846,10 @@ class ApiAgentApp(App[int]):
                     raise ValueError("Select at least one test before continuing")
                 if self.mode == "e2e":
                     self.show("acceptance", "E2E human acceptance", E2E_WARNING, (("accept", "Accept for this run"), ("decline", "Decline")))
+                elif self.mode == "unit":
+                    self.start_unit_run()
                 else:
-                    self.unavailable("Test execution is not implemented yet. Your selection was collected but no tests were run.")
+                    self.unavailable("Integration execution is not implemented yet. Your selection was collected but no tests were run.")
             elif key == "accept":
                 self.unavailable("E2E execution is not implemented yet. Acceptance did not start tests or prerequisites.")
             elif key == "decline":
@@ -777,6 +863,8 @@ class ApiAgentApp(App[int]):
             self.screen.query_one("#error", Static).update(str(error))
 
     def confirm_quit(self):
+        if self.mode == "unit" and self.unit_rows and self.unit_result is None:
+            self.operation_status = 130
         self.collection_cancel.set()
         self.exit(self.operation_status)
 
@@ -790,6 +878,10 @@ class ApiAgentApp(App[int]):
             await self.start_configuration()
         elif self.screen.kind == "input":
             self.show_configuration()
+        elif self.screen.kind == "unit-failure":
+            self.show_unit_results()
+        elif self.screen.kind == "unit-results" and self.unit_result is None:
+            return
         elif self.screen.kind == "cleanup" and self.configuration_pending():
             self.show_configuration()
         elif self.screen.kind == "acceptance":

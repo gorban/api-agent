@@ -61,7 +61,7 @@ class LaunchTests(unittest.TestCase):
 
     def test_help_from_unrelated_cwd(self):
         result = subprocess.run([sys.executable, str(ROOT / 'launch.py'), '--help'],
-                                cwd='/', capture_output=True, text=True,
+                                cwd='/', capture_output=True, text=True, input='y\n',
                                 env={k: v for k, v in os.environ.items()
                                      if k not in {'HELP', 'NO_STD_IN', 'TUI_MODE'}})
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -121,7 +121,7 @@ class LaunchTests(unittest.TestCase):
                     self.assertEqual(main(['--tui-mode=' + mode, '--no-std-in', '--collect-only'], base_root=ROOT), 0)
 
     def test_selectors_need_explicit_test_mode(self):
-        with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
+        with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True), patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=True), patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), patch('api_agent.tui.app.run_tui', return_value=3):
             for argv in (['selected_test'], ['--tui-mode=run-local', 'selected_test']):
                 with self.subTest(argv=argv), patch('sys.stderr', new_callable=StringIO) as stderr:
                     self.assertEqual(main(argv, base_root=ROOT), 2)
@@ -178,7 +178,7 @@ class LaunchTests(unittest.TestCase):
                 if Path(path) == ROOT / '.env':
                     return {'TUI_MODE': 'integration', 'NO_STD_IN': 'False'}
                 return read_dotenv(path)
-            with patch.dict(os.environ, {}, clear=True), patch('api_agent.config.read_dotenv', side_effect=layered_dotenv):
+            with patch.dict(os.environ, {}, clear=True), patch('api_agent.config.read_dotenv', side_effect=layered_dotenv), patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=True), patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), patch('api_agent.tui.app.run_tui', return_value=3):
                 with patch('api_agent.runtime.worktrees.verify_worktrees') as gate:
                     with patch('api_agent.config.resolve_config', wraps=resolve_config) as resolve:
                         self.assertEqual(main(['selected_test'], base_root=ROOT, resource_pack_dir=pack), 3)

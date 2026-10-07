@@ -1006,3 +1006,42 @@ def test_demo_directory_highlighted_in_pack_identity_only(tmp_path):
     assert [(span.start, span.end, span.style) for span in text.spans] == [(start, start + 4, 'red')]
     app.context.external_pack = True
     assert not app.identity_text().spans
+
+
+def test_unit_runner_events_final_failure_and_view(tmp_path):
+    from api_agent.testing.runner import RunnerEvent, TestResult, UnitRunResult, CoverageArea
+    identity = Identity('base::test.py::test_fail', 'base', 'test.py', 'test.py::test_fail')
+    calls = []
+    def runner(context, tests, **kwargs):
+        calls.append((tests, kwargs['parallel_jobs']))
+        kwargs['on_event'](RunnerEvent('test_started', 'base', identity))
+        # No finished event: final state must still replace PENDING/RUNNING.
+        return UnitRunResult(1, (TestResult(identity, 'failed', .125, 'AssertionError: expected Ok'),),
+                             (CoverageArea('base', 'src/example.py', 1, 2, 0, 0),), '')
+    async def scenario():
+        app = fixture(tmp_path, collector=lambda *args: [identity])
+        app.unit_runner = runner
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click('#mode-unit')
+            await pilot.pause()
+            assert app.screen.kind == 'tests'
+            await pilot.click('#continue')
+            for _ in range(20):
+                await pilot.pause(.05)
+                if app.unit_result is not None:
+                    break
+            assert calls == [((identity,), 8)]
+            assert app.operation_status == 1
+            assert app.screen.kind == 'unit-results'
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(0) == ['FAILED', identity.id, '0.125s']
+            assert '50.00%' in str(app.screen.query_one('#body', Static).render())
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen.kind == 'unit-failure'
+            assert 'AssertionError' in str(app.screen.query_one('#body', Static).render())
+            await pilot.press('c')
+            await pilot.pause()
+            assert app.screen.kind == 'unit-results'
+    asyncio.run(scenario())
