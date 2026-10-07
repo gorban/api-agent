@@ -281,6 +281,81 @@ def test_auth_edit_keeps_displayed_values_aligned_with_override_source(tmp_path)
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('component', ('role', 'manager'))
+@pytest.mark.parametrize('switch_in_editor', (False, True))
+def test_auth_editor_switch_and_save_moves_only_edited_component(tmp_path, component, switch_in_editor):
+    async def scenario():
+        app = WizardApp(tmp_path, external=True, roles=('LLM User', 'Partner'))
+        app.session.save_auth_role('LLM User', [account('A'), account('B')])
+        app.session.save_auth_role('Partner', [account('Pack')])
+        app.session.save_auth_manager({'manager': 'keeper', 'cli_path': '/custom/keeper'})
+        base, pack = app.context.base_root / '.env', app.context.pack_root / '.env'
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            listing = app.screen
+            if component == 'manager':
+                listing.query_one('#auth-manager-table', DataTable).focus()
+            before = {path: path.read_bytes() for path in (base, pack)}
+            if not switch_in_editor:
+                await pilot.press('s')
+            await pilot.press('enter')
+            await pilot.pause()
+            editor = app.screen
+            if switch_in_editor:
+                field_id = '#auth-path' if component == 'manager' else '#auth-user'
+                field_value = editor.query_one(field_id, Input).value
+                editor.query_one('#auth-save', Button).focus()
+                await pilot.press('s')
+                assert editor.query_one(field_id, Input).value == field_value
+            assert app.session.dotenv_path == pack
+            assert f'✓ {pack}' in str(editor.query_one('#auth-targets', Static).content)
+            assert before == {path: path.read_bytes() for path in (base, pack)}
+            editor.query_one('#auth-save', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            base_data, pack_data = saved(base), saved(pack)
+            if component == 'manager':
+                assert 'password_manager' not in base_data
+                assert pack_data['password_manager'] == {'manager': 'keeper', 'cli_path': '/custom/keeper'}
+                assert base_data['roles']['LLM User'] == [account('A'), account('B')]
+                assert str(listing.query_one('#auth-manager-table', DataTable).get_row_at(0)[-1]) == '../pack/.env'
+            else:
+                assert 'LLM User' not in base_data.get('roles', {})
+                assert pack_data['roles']['LLM User'] == [account('A'), account('B')]
+                assert base_data['password_manager'] == {'manager': 'keeper', 'cli_path': '/custom/keeper'}
+                assert str(listing.query_one('#auth-table', DataTable).get_row_at(0)[-1]) == '../pack/.env'
+            assert pack_data['roles']['Partner'] == [account('Pack')]
+    asyncio.run(scenario())
+
+
+def test_auth_editor_switch_button_preserves_edits_and_cancel_does_not_move(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path, external=True, roles=('LLM User', 'Partner'))
+        app.session.save_auth_role('LLM User', [account('Original')])
+        base, pack = app.context.base_root / '.env', app.context.pack_root / '.env'
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            await pilot.press('enter')
+            await pilot.pause()
+            app.screen.query_one('#auth-user', Input).value = 'Unsaved edit'
+            before = base.read_bytes()
+            await pilot.click('#auth-switch-target')
+            await pilot.pause()
+            assert app.screen.query_one('#auth-user', Input).value == 'Unsaved edit'
+            assert app.session.dotenv_path == pack
+            app.screen.query_one('#auth-cancel', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert base.read_bytes() == before and not pack.exists()
+            app.screen.query_one('#auth-table', DataTable).move_cursor(row=1)
+            await pilot.press('enter')
+            await pilot.pause()
+            assert not app.screen.query('#auth-switch-target')
+            assert not app.screen.check_action('switch_target', ())
+            assert str(app.screen.query_one('#auth-targets', Static).content) == f'Target .env files:\n✓ {pack}'
+    asyncio.run(scenario())
+
+
 def test_account_validation_cancel_and_target_switch(tmp_path):
     async def scenario():
         app = WizardApp(tmp_path, external=True)
@@ -748,7 +823,7 @@ def test_child_cancel_keeps_list_geometry_cursor_and_scroll(tmp_path):
             viewport = listing.query_one('#auth-content', VerticalScroll)
             users.move_cursor(row=20)
             users.focus()
-            await pilot.pause()
+            await pilot.wait_for_scheduled_animations()
             before = (users.region, manager.region, viewport.scroll_y, users.cursor_row)
             await pilot.press('e')
             await pilot.pause()
@@ -757,6 +832,7 @@ def test_child_cancel_keeps_list_geometry_cursor_and_scroll(tmp_path):
             assert app.screen.query_one('#auth-vault', Input).value == 'Example'
             await pilot.press('escape')
             await pilot.pause()
+            await pilot.wait_for_scheduled_animations()
             assert app.screen is listing
             assert app.focused is users
             assert (users.region, manager.region, users.cursor_row) == (before[0], before[1], before[3])

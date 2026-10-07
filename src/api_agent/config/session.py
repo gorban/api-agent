@@ -302,10 +302,8 @@ class ConfigSession:
             origins.update({name: self._source(path) for name in entries})
         if auth_error:
             dotenv['UNATTENDED_AUTH'] = json.dumps({'_auth_error': auth_error})
-        # Put choices last as CLI options to re-evaluate conditional defaults and
-        # applicability using the ordinary resolver, then restore UI provenance.
-        argv = list(self.argv)
-        boundary = argv.index('--') if '--' in argv else len(argv)
+        # Re-evaluate UI choices without inventing duplicate CLI arguments.
+        argv = self.argv
         choices = dict(self._choices)
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
@@ -330,14 +328,12 @@ class ConfigSession:
                     choices['UNATTENDED_AUTH'] = json.dumps(normalized, ensure_ascii=False, separators=(',', ':'))
                 except ValueError:
                     pass
-        boundary = argv.index('--') if '--' in argv else len(argv)
-        argv[boundary:boundary] = [f'--{name}={text}' for name, text in choices.items()]
         if _cleanup and "HELP" in schema.fields:
-            boundary = argv.index('--') if '--' in argv else len(argv)
-            argv.insert(boundary, "--help=False")
+            choices['HELP'] = 'False'
         result = resolve_config(schema, argv=argv, environ=self.environ,
                                 dotenv=dotenv, anchors=self.context.anchors,
-                                interactive=True, pack_launcher=self.context.external_pack)
+                                interactive=True, pack_launcher=self.context.external_pack,
+                                overrides=choices)
         fields = {name: replace(value, source='interactive' if name in choices
                                 else origins[name] if value.source == 'dotenv' else value.source)
                   for name, value in result.fields.items()}
