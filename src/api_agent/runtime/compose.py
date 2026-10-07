@@ -20,6 +20,10 @@ class ComposeError(ValueError):
     pass
 
 
+LOCALSTACK_HOOK_MOUNT = ('${SA_LOCALSTACK_READY_HOOK:?controlled local development value required}'
+                        ':/etc/localstack/init/ready.d/10-api-agent-s3.sh:ro,z')
+
+
 class Scope(Protocol):
     id: str
     project: str
@@ -151,13 +155,10 @@ def validate_document(document, scope, profiles):
             if dependency not in services or services[dependency].get('profiles') != service_profiles:
                 raise ComposeError('Compose dependency must belong to the same profile.')
         for volume in service.get('volumes', []):
-            if isinstance(volume, dict):
-                if (name != 'localstack' or volume != {'type': 'bind',
-                        'source': '${SA_LOCALSTACK_READY_HOOK:?controlled local development value required}',
-                        'target': '/etc/localstack/init/ready.d/10-api-agent-s3.sh', 'read_only': True,
-                        'bind': {'create_host_path': False, 'selinux': 'z'}}):
-                    raise ComposeError('Compose bind mounts require the controlled LocalStack hook.')
+            if name == 'localstack' and volume == LOCALSTACK_HOOK_MOUNT:
                 continue
+            if isinstance(volume, dict):
+                raise ComposeError('Compose bind mounts require the controlled LocalStack hook.')
             if not isinstance(volume, str) or volume.split(':')[0] not in document.get('volumes', {}):
                 raise ComposeError('Compose service data requires declared named volumes.')
         if profile in profiles:

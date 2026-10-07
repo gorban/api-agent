@@ -46,6 +46,10 @@ def test_every_profile_combination_has_dependencies_and_scope(mode, localstack):
     for name in active:
         assert set(doc['services'][name].get('depends_on', {})) <= active
     assert not any('ports' in doc['services'][name] for name in ('postgres', 'clickhouse', 'redis', 'langfuse-worker'))
+    assert doc['services']['postgres']['image'] == 'docker.io/library/postgres:17.6'
+    assert doc['services']['redis']['image'] == 'docker.io/library/redis:7.4.5'
+    assert doc['services']['minio']['image'] == ('cgr.dev/chainguard/minio:latest@sha256:'
+        '90a55c0e00a6a5e932c2ffd1d357e5fa5bd33495abd3aac45f0a83b6be80dae5')
     assert plan.environment['SA_SCOPE'] == scope.id
 
 
@@ -335,16 +339,23 @@ def test_localstack_readonly_hook_mount_and_configuration_contract():
     plan = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'chosen-results'}, Scope())
     document = json.loads((plan.directory / 'compose.json').read_text())
     spec = _interpolate(document['services']['localstack'], plan.environment)
+    assert spec['image'] == ('docker.io/gresau/localstack-persist:4.14.0@sha256:'
+                             '57a8a80a3bfc0c498858df261ef9d39ba129a191d034a8a5d47c5db9a656611f')
+    assert spec['volumes'][0] == 'localstack-data:/persisted-data'
+    assert spec['environment']['PERSIST_DEFAULT'] == '0'
+    assert spec['environment']['PERSIST_S3'] == '1'
+    assert spec['environment']['PERSIST_FREQUENCY'] == '1'
+    assert 'PERSISTENCE' not in spec['environment']
     assert spec['environment']['SA_ALLURE_S3_BUCKET'] == 'chosen-results'
     assert spec['environment']['AWS_DEFAULT_REGION'] == plan.environment['SA_ALLURE_S3_REGION']
     assert spec['environment']['SA_LOCALSTACK_READY_DIGEST'] == plan.environment['SA_LOCALSTACK_READY_DIGEST']
-    assert spec['volumes'][1] == {'type': 'bind', 'source': str(plan.directory / 'localstack-ready.sh'),
-        'target': '/etc/localstack/init/ready.d/10-api-agent-s3.sh', 'read_only': True,
-        'bind': {'create_host_path': False, 'selinux': 'z'}}
+    assert spec['volumes'][1] == (str(plan.directory / 'localstack-ready.sh')
+        + ':/etc/localstack/init/ready.d/10-api-agent-s3.sh:ro,z')
     for name, change in [('localstack', {'read_only': False}), ('localstack', {'source': '/private'}),
                          ('jaeger', {})]:
         altered = json.loads((plan.directory / 'compose.json').read_text())
-        mount = {**document['services']['localstack']['volumes'][1], **change}
+        mount = {'type': 'bind', 'source': '/private',
+                 'target': '/etc/localstack/init/ready.d/10-api-agent-s3.sh', **change}
         altered['services'][name]['volumes'] = [mount]
         with pytest.raises(ComposeError, match='controlled LocalStack hook'):
             validate_document(altered, Scope(), plan.profiles)

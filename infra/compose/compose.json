@@ -140,7 +140,7 @@
       }
     },
     "postgres": {
-      "image": "docker.io/postgres:17.6",
+      "image": "docker.io/library/postgres:17.6",
       "profiles": [
         "langfuse"
       ],
@@ -206,7 +206,7 @@
       }
     },
     "redis": {
-      "image": "docker.io/redis:7.4.5",
+      "image": "docker.io/library/redis:7.4.5",
       "profiles": [
         "langfuse"
       ],
@@ -241,7 +241,7 @@
       }
     },
     "minio": {
-      "image": "docker.io/minio/minio:RELEASE.2025-04-22T22-12-26Z",
+      "image": "cgr.dev/chainguard/minio:latest@sha256:90a55c0e00a6a5e932c2ffd1d357e5fa5bd33495abd3aac45f0a83b6be80dae5",
       "profiles": [
         "langfuse"
       ],
@@ -297,7 +297,7 @@
       ]
     },
     "localstack": {
-      "image": "docker.io/localstack/localstack:4.14.0",
+      "image": "docker.io/gresau/localstack-persist:4.14.0@sha256:57a8a80a3bfc0c498858df261ef9d39ba129a191d034a8a5d47c5db9a656611f",
       "profiles": [
         "localstack"
       ],
@@ -308,7 +308,9 @@
       },
       "environment": {
         "SERVICES": "s3",
-        "PERSISTENCE": "1",
+        "PERSIST_DEFAULT": "0",
+        "PERSIST_S3": "1",
+        "PERSIST_FREQUENCY": "1",
         "AWS_DEFAULT_REGION": "${SA_ALLURE_S3_REGION:?controlled local development value required}",
         "AWS_ACCESS_KEY_ID": "test",
         "AWS_SECRET_ACCESS_KEY": "test",
@@ -320,17 +322,8 @@
         "127.0.0.1:4566:4566"
       ],
       "volumes": [
-        "localstack-data:/var/lib/localstack",
-        {
-          "type": "bind",
-          "source": "${SA_LOCALSTACK_READY_HOOK:?controlled local development value required}",
-          "target": "/etc/localstack/init/ready.d/10-api-agent-s3.sh",
-          "read_only": true,
-          "bind": {
-            "create_host_path": false,
-            "selinux": "z"
-          }
-        }
+        "localstack-data:/persisted-data",
+        "${SA_LOCALSTACK_READY_HOOK:?controlled local development value required}:/etc/localstack/init/ready.d/10-api-agent-s3.sh:ro,z"
       ]
     }
   },

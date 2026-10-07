@@ -4,6 +4,11 @@
 
 - [x] Add optional TRACE_MODE/TRACE_TARGET with generic optional-review metadata, conditional local endpoint defaults, dynamic review updates, and LOG_CONTENT=False. Live exporters, content gating and Compose lifecycle remain tasks below.
 
+## Live backend proof slice
+
+- [x] Export a scrubbed synthetic span through the actual OTEL profile and retrieve its trace ID through Jaeger v3. Confirm private synthetic prompt/auth values are absent and stop only the diagnostic scope's owned container. This is backend diagnostic evidence, not a TUI-started integration or graph trace.
+- [x] Restore the upstream-selected Chainguard MinIO dependency pinned by digest for the complete LangFuse profile. Verify actual authenticated span export/retrieval, content scrubbing, retained traces and reuse of all six services through production owners. Use explicit Docker Hub `library` namespaces for Postgres/Redis. These synthetic backend diagnostics do not complete graph instrumentation or TUI integration/E2E acceptance.
+
 ## Checklist
 
 - [x] Make exporter shutdown completion checking atomic with cleanup-worker acquisition. Direct concurrent close calls must flush/shut down the provider once; verify the former check/acquisition interleaving with gated scheduling, not only repeated sequential calls.
