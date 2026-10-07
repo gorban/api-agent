@@ -491,3 +491,101 @@ def test_restore_failure_preserves_private_backup(tmp_path, monkeypatch, failed_
         assert result.material.key_file.read_text() == 'recoverable old key'
         assert not result.material.cert_file.exists()
     assert 'recoverable old cert' not in str(error.value)
+
+
+def test_lock_with_broad_permissions_is_rejected_before_commands(tmp_path):
+    root = tmp_path / 'ca'; root.mkdir()
+    runner = FakeRunner(root)
+    directory = tmp_path / '.certs'; directory.mkdir()
+    lock = directory / '.https.lock'
+    lock.touch(mode=0o600)
+    lock.chmod(0o644)
+    with pytest.raises(HTTPSPreparationError, match='Unsafe HTTPS lock file permissions'):
+        prepare_local_https(directory, runner=runner)
+    assert runner.calls == []
+
+
+def test_lock_open_error_is_redacted_before_commands(tmp_path, monkeypatch):
+    from api_agent.runtime import https
+    root = tmp_path / 'ca'; root.mkdir()
+    runner = FakeRunner(root)
+    original_open = https.os.open
+    def denied(path, flags, mode=0o777):
+        if Path(path).name == '.https.lock':
+            raise PermissionError('private filesystem detail')
+        return original_open(path, flags, mode)
+    monkeypatch.setattr(https.os, 'open', denied)
+    with pytest.raises(HTTPSPreparationError, match='Could not acquire local HTTPS preparation lock') as error:
+        prepare_local_https(tmp_path / '.certs', runner=runner)
+    assert 'private filesystem detail' not in str(error.value)
+    assert runner.calls == []
+
+
+def test_renewal_window_must_include_one_second(tmp_path):
+    with pytest.raises(ValueError, match='renewal_days is too small'):
+        prepare_local_https(tmp_path / '.certs', renewal_days=1 / 100000, runner=lambda *a, **k: pytest.fail('runner called'))
+
+
+def test_failed_first_install_removes_new_certificate(tmp_path, monkeypatch):
+    from api_agent.runtime import https
+    root = tmp_path / 'ca'; root.mkdir()
+    runner = FakeRunner(root)
+    directory = tmp_path / '.certs'
+    original_replace = https.os.replace
+    def fail_key_install(src, dst):
+        if Path(src).name == 'key.pem' and Path(dst).name.endswith('-key.pem'):
+            raise OSError('private install error')
+        return original_replace(src, dst)
+    monkeypatch.setattr(https.os, 'replace', fail_key_install)
+    with pytest.raises(HTTPSPreparationError, match='Could not install') as error:
+        prepare_local_https(directory, runner=runner)
+    assert 'private install error' not in str(error.value)
+    assert not (directory / 'localhost.pem').exists()
+    assert not (directory / 'localhost-key.pem').exists()
+    assert not list(directory.glob('.https-*'))
+
+
+def test_failed_cleanup_preserves_backup_and_redacts_error(tmp_path, monkeypatch):
+    from api_agent.runtime import https
+    root = tmp_path / 'ca'; root.mkdir()
+    runner = FakeRunner(root)
+    directory = tmp_path / '.certs'
+    result = prepare_local_https(directory, runner=runner)
+    result.material.cert_file.write_text('old certificate')
+    result.material.key_file.write_text('old key')
+    original_replace = https.os.replace
+    original_unlink = Path.unlink
+    def fail_install_and_restore(src, dst):
+        source, target = Path(src), Path(dst)
+        if source.name == 'key.pem' and target == result.material.key_file:
+            raise OSError('private install error')
+        if source.name == 'old-cert.pem' and target == result.material.cert_file:
+            raise OSError('private restore error')
+        return original_replace(src, dst)
+    def fail_cleanup(path, *args, **kwargs):
+        if path == result.material.cert_file:
+            raise OSError('private cleanup error')
+        return original_unlink(path, *args, **kwargs)
+    monkeypatch.setattr(https.os, 'replace', fail_install_and_restore)
+    monkeypatch.setattr(Path, 'unlink', fail_cleanup)
+    class Expired:
+        generated = False
+        def __call__(self, argv, *, timeout, interactive):
+            if argv[:2] == ['mkcert', '-cert-file']:
+                self.generated = True
+            if not self.generated and '-checkend' in argv:
+                return subprocess.CompletedProcess(argv, 1, '', '')
+            return runner(argv, timeout=timeout, interactive=interactive)
+    with pytest.raises(HTTPSPreparationError, match='recover backup files from ') as error:
+        prepare_local_https(directory, runner=Expired())
+    recovery = Path(str(error.value).split('recover backup files from ', 1)[1])
+    assert (recovery / 'old-cert.pem').read_text() == 'old certificate'
+    assert result.material.key_file.read_text() == 'old key'
+    assert all(secret not in str(error.value) for secret in ('private install error', 'private restore error', 'private cleanup error'))
+
+
+def test_lock_works_without_nofollow_flag(tmp_path, monkeypatch):
+    from api_agent.runtime import https
+    monkeypatch.delattr(https.os, 'O_NOFOLLOW', raising=False)
+    with https._directory_lock(tmp_path, timeout=1):
+        assert (tmp_path / '.https.lock').is_file()

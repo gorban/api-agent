@@ -140,3 +140,47 @@ def test_host_validated_before_any_route(path):
     app = create_application(Runtime("demo"))
     assert http(app, path, host="hostile.example")[0] == 400
     assert http(app, path, host="testserver:4200")[0] != 400
+
+
+def test_application_rejects_unsupported_scope():
+    app = create_application(Runtime("demo"))
+
+    async def unused():
+        raise AssertionError("receive must not be called")
+
+    with pytest.raises(ValueError, match="Unsupported ASGI scope: websocket"):
+        asyncio.run(app({"type": "websocket"}, unused, unused))
+
+
+def test_factory_rejects_non_runtime_before_settings_access():
+    with pytest.raises(TypeError, match="runtime must be a Runtime"):
+        create_application(object())
+
+
+def test_factory_rejects_foreign_django_settings(monkeypatch):
+    from api_agent.api import application
+
+    class ForeignSettings:
+        configured = True
+        API_AGENT_API_MARKER = "another-application"
+
+    monkeypatch.setattr(application, "settings", ForeignSettings())
+    monkeypatch.setattr(application, "get_asgi_application", lambda: pytest.fail("Django must not initialize"))
+    with pytest.raises(RuntimeError, match="Foreign Django settings"):
+        application.create_application(Runtime("demo"))
+
+
+def test_lifespan_ignores_other_events_before_shutdown():
+    app = create_application(Runtime("demo"))
+    events = iter(({"type": "lifespan.heartbeat"}, {"type": "lifespan.shutdown"}))
+    sent = []
+
+    async def receive():
+        return next(events)
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app({"type": "lifespan"}, receive, send))
+    assert sent == [{"type": "lifespan.shutdown.complete"}]
+    assert app.runtime.draining

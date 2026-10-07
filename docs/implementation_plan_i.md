@@ -31,4 +31,4 @@
 
 - [x] Implement `src/api_agent/runtime/https.py` with mkcert/OpenSSL preparation, renewal/SAN/key/CA checks, private key permissions, cooperating-preparer locking and recoverable replacement rollback. Preserve certificate-directory symlinks and ignore `.certs/`. Deterministic tests use synthetic command results and failure injection; no CA trust installation is claimed.
 - [ ] Wire preparation to owned local/callback/Nx listeners and verify actual hostname resolution, host/browser trust and HTTPS readiness. Keep prompts visible; noninteractive setup must fail promptly when trust setup cannot complete.
-- [ ] Complete uncovered platform/locking/recovery branches before the final coverage gate; do not relax the unit runner’s 100% threshold.
+- [x] Complete current HTTPS platform/locking/recovery coverage with deterministic failure injection, including unavailable platform flags, unsafe/failed locks, first-install cleanup and preserved backups. The combined launcher verified exact 100% lines and branches on 2026-10-05; preserve the threshold and reverify as later code is added.

@@ -298,3 +298,93 @@ def test_auth_sources_legacy_and_pack_override_use_launcher_relative_paths(tmp_p
     put(pack, {'roles': {'LLM User': [account('new')]}})
     assert config.auth_sources() == {'password_manager': '../base/.env',
                                      'roles': {'LLM User': '../pack/.env', 'Secondary': '../base/.env'}}
+
+
+@pytest.mark.parametrize('bad,message', [
+    ({'LLM User': [{'manager': 'keeper', 'cli_path': 'keeper', **account('A')},
+                   {'manager': '1password', 'cli_path': 'op', **account('B')}], 'Other': {}},
+     'legacy roles must contain arrays'),
+    ({'LLM User': [{'manager': 'keeper', 'cli_path': 'keeper', **account('A')},
+                   {'manager': '1password', 'cli_path': 'op', 'vault': '', 'user': 'B'}]},
+     'nonempty vault and user'),
+])
+def test_manager_choice_does_not_repair_malformed_legacy_accounts(tmp_path, bad, message):
+    config = session(tmp_path)
+    base = config.target_paths[0]
+    put(base, bad)
+    before = base.read_bytes()
+    with pytest.raises(ConfigError, match=message):
+        config.save_auth_manager({'manager': 'keeper', 'cli_path': 'keeper'})
+    assert base.read_bytes() == before
+
+
+def test_invalid_manager_or_role_preserves_saved_accounts(tmp_path):
+    config = session(tmp_path)
+    config.save_auth_role('LLM User', [account('original')])
+    base = config.target_paths[0]
+    before = base.read_bytes()
+    with pytest.raises(ConfigError, match='manager'):
+        config.save_auth_manager({'manager': 'unknown', 'cli_path': 'cli'})
+    with pytest.raises(ConfigError, match='nonempty'):
+        config.save_auth_role('', [account('replacement')])
+    assert base.read_bytes() == before
+
+
+def test_manager_move_failure_restores_all_auth_files_and_session_choice(tmp_path, monkeypatch):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    config.save_auth_role('LLM User', [account('A')])
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': 'keeper'})
+    config.switch_target(pack)
+    before = base.read_bytes()
+    update = DotenvEditor.update
+
+    def fail_after_update(editor, values):
+        update(editor, values)
+        if editor.path == base:
+            raise OSError('source write failed')
+
+    monkeypatch.setattr(DotenvEditor, 'update', fail_after_update)
+    with pytest.raises(OSError, match='source write failed'):
+        config.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+    assert base.read_bytes() == before
+    assert not pack.exists()
+    assert config.auth_sources()['password_manager'] == '../base/.env'
+
+
+def test_manager_move_rejects_symlink_before_changing_source(tmp_path):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': 'keeper'})
+    before = base.read_bytes()
+    real = tmp_path / 'linked-auth.env'
+    real.write_text('# keep\n')
+    pack.symlink_to(real)
+    config.switch_target(pack)
+    with pytest.raises(ValueError, match='symlink'):
+        config.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+    assert base.read_bytes() == before and real.read_text() == '# keep\n'
+
+
+def test_invalid_external_auth_has_no_claimed_component_sources(tmp_path):
+    config = session(tmp_path, environ={'UNATTENDED_AUTH': json.dumps({'_auth_error': 'invalid_profile'})})
+    assert config.auth_sources() == {'password_manager': 'Not provided', 'roles': {}}
+    config.reset_auth_manager()
+    assert config.auth_sources() == {'password_manager': 'Not provided', 'roles': {}}
+
+
+def test_manager_reset_preserves_accounts_when_auth_field_is_inactive(tmp_path):
+    config = session(tmp_path)
+    config.save_auth_role('LLM User', [account('kept')])
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': 'keeper'})
+    config.schema = schema_from_dict({'version': 1, 'fields': {
+        'AUTH_ENABLED': {'type': 'bool', 'default': False},
+        'UNATTENDED_AUTH': {'type': 'jsonobject', 'applies_when': {'AUTH_ENABLED': True}},
+    }})
+    config.reset_auth_manager()
+    assert 'UNATTENDED_AUTH' not in config.result().fields
+    assert saved(config.dotenv_path) == {'roles': {'LLM User': [account('kept')]}}
+    assert config.auth_sources()['password_manager'] == 'Not provided'
+    review = config.result(_review=True)
+    assert review.values['UNATTENDED_AUTH']['roles']['LLM User'] == [account('kept')]
+    assert review.values['UNATTENDED_AUTH']['password_manager'] == {'manager': '', 'cli_path': ''}
