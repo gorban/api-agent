@@ -6,6 +6,7 @@ from rich.text import Text
 from api_agent.auth.profiles import normalize_auth, DEFAULT_PASSWORD_MANAGER
 from api_agent.tui.app import ButtonFooter, FocusNavigation, QuitDialog
 from api_agent.tui.test_results import literal_cell
+from api_agent.tui.select import AdvancingSelect
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
@@ -62,7 +63,7 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
             yield Static(self.title, id='auth-form-title', markup=False)
             if self.manager_form:
                 yield Static('Password manager', id='auth-first-label')
-                yield Select([('-', ''), ('1Password', '1password'), ('Keeper', 'keeper')],
+                yield AdvancingSelect([('-', ''), ('1Password', '1password'), ('Keeper', 'keeper')],
                              value=self.values['manager'], allow_blank=False, id='auth-manager')
                 yield Static('CLI executable path', classes='auth-next-field')
                 yield Input(value=self.values['cli_path'], id='auth-path')
@@ -77,7 +78,7 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
                 f"{'✓' if path == self.app.session.dotenv_path else ' '} {path}" for path in paths),
                 id='auth-targets', markup=False)
         with Horizontal(id='auth-form-actions'):
-            yield Button('Save', id='auth-save')
+            yield Button('Save value (Enter)', id='auth-save')
             yield Button('Cancel', id='auth-cancel')
         yield ButtonFooter()
 
@@ -116,6 +117,10 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
 
     def on_input_submitted(self, event):
         self.save_entry()
+
+    def on_advancing_select_submitted(self, event):
+        if self.manager_form:
+            self.query_one('#auth-path', Input).focus()
 
     def on_select_changed(self, event):
         if event.select.id == 'auth-manager':

@@ -744,6 +744,7 @@ def test_enum_edit_dropdown_saves_blank_and_trace_mode(tmp_path):
             assert not app.screen.query('#enum-info')
             await pilot.press('enter', 'down', 'enter')
             assert picker.value == 'LangFuse'
+            assert app.focused.id == 'submit'
             await pilot.click('#submit')
             await pilot.pause()
             assert app.session.result(_review=True).values['TRACE_MODE'] == 'LangFuse'
@@ -1487,4 +1488,75 @@ def test_path_enum_dropdown_recognizes_anchored_effective_value(tmp_path):
             await pilot.press('e')
             await pilot.pause()
             assert app.screen.query_one('#config-value', Select).value == 'two'
+    asyncio.run(scenario())
+
+
+def test_config_picker_confirmation_advances_even_when_value_is_unchanged(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'ENABLED': {'type': 'bool', 'default': False}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.focused.id == 'config-value'
+            await pilot.press('enter', 'escape')
+            assert app.focused.id == 'config-value'
+            assert not (tmp_path / '.env').exists()
+            await pilot.press('enter', 'enter')
+            assert app.focused.id == 'submit'
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            assert app.session.result(_review=True).values['ENABLED'] is False
+            assert 'ENABLED=' in (tmp_path / '.env').read_text()
+    asyncio.run(scenario())
+
+
+def test_config_row_enter_accepts_unsaved_default_otherwise_edits(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 4},
+                                        'NAME': {'type': 'str', 'required': True}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            assert app.session.result(_review=True).fields['COUNT'].explicit
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen.kind == 'input'
+            assert app.screen.query_one(Input).value == '4'
+            await pilot.press('escape')
+            await pilot.pause()
+            app.screen.query_one(DataTable).move_cursor(row=1)
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen.kind == 'input'
+            assert app.prompt_name == 'NAME'
+    asyncio.run(scenario())
+
+
+def test_menu_offers_configuration_review_only_while_pending(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 4}})
+        async with app.run_test(size=(100, 45)) as pilot:
+            await pilot.pause()
+            await pilot.press('c')
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+            assert app.screen.actions[-1] == ('review-config', 'Review configuration')
+            app.screen.query_one('#review-config', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            await pilot.press('enter')
+            await pilot.pause()
+            await pilot.press('c')
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+            assert not app.screen.query('#review-config')
+            (tmp_path / '.env').write_text('')
+            app.show_menu()
+            await pilot.pause()
+            assert app.screen.query('#review-config')
     asyncio.run(scenario())

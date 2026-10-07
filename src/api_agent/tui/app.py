@@ -10,6 +10,7 @@ from api_agent.config.resolve import ConfigError, convert_value
 from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
                                           reconcile_results_table, styled_summary)
+from api_agent.tui.select import AdvancingSelect
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -196,7 +197,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
                                     if display(convert_value(field, value, external=False,
                                                              anchors=app.context.anchors)) == app.prompt_value),
                                    Select.NULL)
-                    yield Select(options, value=current, allow_blank=current is Select.NULL,
+                    yield AdvancingSelect(options, value=current, allow_blank=current is Select.NULL,
                                  prompt='-', id='config-value')
                 else:
                     yield Input(id="config-value")
@@ -333,8 +334,18 @@ class WorkbenchScreen(FocusNavigation, Screen):
             self.app.refresh_rows()
         self.refresh_bindings()
 
-    def on_data_table_row_selected(self, event):
-        self.app.toggle_row(str(event.row_key.value))
+    async def on_data_table_row_selected(self, event):
+        if self.kind == 'defaults':
+            if self.app.focused_default() and self.app.focused_setting() not in self.config_saved:
+                await self.app.accept_default()
+            else:
+                self.app.edit_setting()
+        else:
+            self.app.toggle_row(str(event.row_key.value))
+
+    def on_advancing_select_submitted(self, event):
+        if self.kind == 'input' and event.select.value is not Select.NULL:
+            self.query_one('#submit', Button).focus()
 
     async def on_button_pressed(self, event):
         await self.app.choose(event.button.id)
@@ -719,7 +730,10 @@ class ApiAgentApp(App[int]):
         if self.context.external_pack:
             self.session.switch_target(self.context.pack_root / ".env")
         self.mode = None
-        self.show("menu", "Choose an operation", self.container_summary, actions=tuple(("mode-" + key, label) for key, label in MODES))
+        actions = tuple(("mode-" + key, label) for key, label in MODES)
+        if self.configuration_pending():
+            actions += (('review-config', 'Review configuration'),)
+        self.show("menu", "Choose an operation", self.container_summary, actions=actions)
         self.refresh_container_inventory()
 
     def refresh_container_inventory(self):
@@ -1029,6 +1043,8 @@ class ApiAgentApp(App[int]):
                 self.switch_target()
             elif key == "skip":
                 await self.start_configuration()
+            elif key == 'review-config':
+                self.show_configuration()
             elif key == "submit":
                 value = self.screen.config_value()
                 self.session.set_value(self.prompt_name, value, persist=True)
