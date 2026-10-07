@@ -195,6 +195,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             self.query_one(Button).focus()
         if self.kind == "suggest":
             self._bindings.bind("s", "skip_setup", "Skip setup")
+        if self.kind == "containers":
+            self._bindings.bind("s", "stop_selected", "Stop selected containers")
         if self.kind == "defaults":
             self._bindings.bind("c", "close_view", "Next menu")
         self.refresh_bindings()
@@ -219,6 +221,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         if action == "switch_target":
             return (self.kind in {"defaults", "input"}
                     or self.kind == "unavailable" and self.app.mode in {None, "unattended-auth"}) and len(self.app.session.target_paths) > 1
+        if action == "stop_selected":
+            return self.kind == "containers"
         if action == "skip_setup":
             return self.kind == "suggest"
         return True
@@ -271,6 +275,9 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             self.app.show_configuration()
         except Exception as error:
             self.query_one("#error", Static).update(str(error))
+
+    async def action_stop_selected(self):
+        await self.app.choose("stop-containers")
 
     async def action_skip_setup(self):
         await self.app.start_configuration()
@@ -562,7 +569,7 @@ class ApiAgentApp(App[int]):
             rows.insert(0, ("container-all", ("✓" if all_selected else "", "All", "", "", "")))
         self.show("containers", "Stop running containers", self.container_summary +
                   "\nEnter selects/unselects rows. Stop selected asks for confirmation. Containers and volumes are not removed.",
-                  (("stop-containers", "Stop selected"), ("refresh-containers", "Refresh inventory")), rows)
+                  (("stop-containers", "Stop selected containers (s)"), ("refresh-containers", "Refresh inventory")), rows)
 
     def request_container_stop(self):
         selected = tuple(item for item in self.containers if item.id in self.container_marked)

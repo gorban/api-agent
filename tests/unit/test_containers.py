@@ -44,14 +44,16 @@ def test_cleanup_requires_literal_y_and_refreshes(tmp_path):
             await pilot.pause()
             assert app.screen.kind == 'containers'
             app.toggle_row('abc')
-            await app.choose('stop-containers')
+            assert 'Stop selected containers (s)' in str(app.screen.query_one('#stop-containers').label)
+            assert app.screen.check_action('stop_selected', ())
+            await pilot.press('s')
             await pilot.pause()
             assert stopped == []
             app.screen.query_one(Input).value = 'yes'
             await pilot.press('enter')
             await pilot.pause()
             assert stopped == []
-            await app.choose('stop-containers')
+            await pilot.press('s')
             await pilot.pause()
             app.screen.query_one(Input).value = 'y'
             await pilot.press('enter')
