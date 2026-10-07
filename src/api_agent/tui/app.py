@@ -399,6 +399,8 @@ class ApiAgentApp(App[int]):
         self.mode = None
         self.review_names = set()
         self.selection = None
+        self.pending_test_selectors = tuple(self.session.result().positionals)
+        self.active_test_selectors = ()
         self.prompt_name = None
         self.collection_cancel = threading.Event()
 
@@ -613,6 +615,8 @@ class ApiAgentApp(App[int]):
             await self.configure_operation()
 
     def show_menu(self):
+        self.pending_test_selectors = ()
+        self.active_test_selectors = ()
         if self.context.external_pack:
             self.session.switch_target(self.context.pack_root / ".env")
         self.mode = None
@@ -693,6 +697,8 @@ class ApiAgentApp(App[int]):
             self.unavailable(f"{dict(MODES)[self.mode]} execution is not implemented yet. No services or processes were started.")
 
     async def collect_tests(self):
+        self.active_test_selectors = self.pending_test_selectors
+        self.pending_test_selectors = ()
         self.collection_cancel = threading.Event()
         self.run_worker(self._collect_tests(self.collection_cancel), exclusive=True)
 
@@ -703,9 +709,9 @@ class ApiAgentApp(App[int]):
             from api_agent.testing.selection import SelectionModel
             collector = self.collector or collect_tests
             if self.collector:
-                tests = await asyncio.to_thread(collector, self.context, self.mode, self.session.result().positionals)
+                tests = await asyncio.to_thread(collector, self.context, self.mode, self.active_test_selectors)
             else:
-                tests = await asyncio.to_thread(collector, self.context, self.mode, self.session.result().positionals, cancel_event)
+                tests = await asyncio.to_thread(collector, self.context, self.mode, self.active_test_selectors, cancel_event)
             if cancel_event.is_set():
                 return
             if self.session.result().values.get("COLLECT_ONLY"):
@@ -715,11 +721,7 @@ class ApiAgentApp(App[int]):
             self.selection = SelectionModel(tests)
             if not tests:
                 raise ValueError("No tests matched the selected suite/selectors")
-            mode_field = self.session.result().fields.get("TUI_MODE")
-            if self.mode == "unit" and mode_field and mode_field.explicit and mode_field.source != "interactive":
-                self.start_unit_run()
-            else:
-                self.show_selection()
+            self.show_selection()
         except Exception as error:
             if cancel_event.is_set():
                 return
@@ -740,7 +742,7 @@ class ApiAgentApp(App[int]):
         try:
             from api_agent.testing.collection import collect_tests
             collector = self.collector or collect_tests
-            arguments = (self.context, self.mode, self.session.result().positionals)
+            arguments = (self.context, self.mode, self.active_test_selectors)
             fresh_tests = await asyncio.to_thread(
                 collector, *arguments, **({} if self.collector else {"cancel_event": self.collection_cancel}))
             if self.collection_cancel.is_set():
@@ -755,7 +757,7 @@ class ApiAgentApp(App[int]):
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
                 parallel_jobs=self.session.result().values.get("TEST_PARALLEL_JOBS", 8),
-                require_full_coverage="all" in self.selection.selected_scopes)
+                require_full_coverage="all" in self.selection.selected_scopes and not self.active_test_selectors)
             self.unit_result = result
             for test in result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")

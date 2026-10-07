@@ -10,7 +10,7 @@ from api_agent.tui.app import ApiAgentApp, E2E_WARNING
 from textual.widgets import Button, DataTable, Input, Static
 
 
-def fixture(tmp_path, mode=None, fields=None, collector=None):
+def fixture(tmp_path, mode=None, fields=None, collector=None, argv=()):
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, pack_id="fixture",
                               dotenv_path=tmp_path / ".env", anchors={}, external_pack=False)
     declarations = {"TUI_MODE": {"type": "str"}, "UNATTENDED_AUTH": {"type": "jsonobject"}}
@@ -19,7 +19,7 @@ def fixture(tmp_path, mode=None, fields=None, collector=None):
     environ = {"UNATTENDED_AUTH": '{"LLM User":[{"manager":"keeper","cli_path":"/bin/keeper","vault":"fixture","user":"fixture"}]}'}
     if mode:
         environ["TUI_MODE"] = mode
-    return ApiAgentApp(context, schema, environ=environ, collector=collector, container_runtime=SimpleNamespace(inventory=lambda: ()))
+    return ApiAgentApp(context, schema, argv=argv, environ=environ, collector=collector, container_runtime=SimpleNamespace(inventory=lambda: ()))
 
 
 def test_defaults_save_and_typed_prompt(tmp_path):
@@ -1228,4 +1228,30 @@ def test_partial_selection_coverage_is_neutral_and_pass_summary_green(tmp_path):
             assert not any(span.style == 'red' for span in text.spans)
             coverage_start = text.plain.index('base::partial.py')
             assert not any(span.start <= coverage_start < span.end for span in text.spans)
+    asyncio.run(scenario())
+
+
+def test_startup_selectors_open_picker_once_then_menu_reentry_selects_all(tmp_path):
+    first = Identity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one')
+    second = Identity('base::b.py::test_two', 'base', 'b.py', 'b.py::test_two')
+    calls = []
+    def collector(context, mode, selectors):
+        calls.append(tuple(selectors))
+        return [first] if selectors else [first, second]
+    async def scenario():
+        app = fixture(tmp_path, mode='unit', collector=collector, argv=('base::a.py',))
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'tests'
+            assert app.selection.selected_tests == (first,)
+            assert app.unit_result is None
+            assert app.active_test_selectors == ('base::a.py',)
+            await pilot.press('c')
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+            await pilot.click('#mode-unit')
+            await pilot.pause()
+            assert app.screen.kind == 'tests'
+            assert app.selection.selected_tests == (first, second)
+            assert calls == [('base::a.py',), ()]
     asyncio.run(scenario())
