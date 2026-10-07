@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from rich.text import Text
 from api_agent.config.declarations import UNSET
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -309,7 +310,7 @@ class ApiAgentApp(App[int]):
             if name in default_names and resolved is None and name not in result.missing:
                 continue
             rows.append((name, (name,
-                        display(resolved.value) if resolved else "Required — no default",
+                        display(resolved.value) if resolved else Text("Required", justify="right"),
                         resolved.source if resolved else "Not provided")))
         if not rows:
             self.show_menu()

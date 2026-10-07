@@ -1,5 +1,6 @@
 """Headless UI tests use temporary configuration and simulated discovery."""
 import asyncio
+from rich.text import Text
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -408,7 +409,8 @@ def test_unset_saved_default_and_required_value(tmp_path):
             await pilot.press("u")
             await pilot.pause(0.4)
             assert "VALUE" in app.session.result().missing
-            assert app.screen.query_one(DataTable).get_row_at(1) == ["VALUE", "Required — no default", "Not provided"]
+            assert app.screen.query_one(DataTable).get_row_at(1) == ["VALUE", Text("Required", justify="right"), "Not provided"]
+            assert app.screen.query_one(DataTable).get_row_at(1)[1].justify == "right"
             app.screen.query_one(DataTable).move_cursor(row=1)
             assert not app.screen.check_action("accept_default", ())
     asyncio.run(scenario())
@@ -595,7 +597,7 @@ def test_new_inactive_default_and_required_field_review(tmp_path):
             assert app.screen.kind == 'defaults'
             assert app.screen.query_one(DataTable).get_row_at(0)[:2] == ['FUTURE_DEFAULT', '9']
             assert app.screen.query_one(DataTable).row_count == 2
-            assert app.screen.query_one(DataTable).get_row_at(1)[:2] == ['FUTURE_REQUIRED', 'Required — no default']
+            assert app.screen.query_one(DataTable).get_row_at(1)[:2] == ['FUTURE_REQUIRED', Text("Required", justify="right")]
             await pilot.press('e')
             await pilot.pause()
             assert app.screen.query_one(Input).value == '9'
@@ -605,7 +607,7 @@ def test_new_inactive_default_and_required_field_review(tmp_path):
             app.session.set_value('TUI_MODE', 'unit')
             app.show_configuration()
             await pilot.pause()
-            assert app.screen.query_one(DataTable).get_row_at(1)[:2] == ['FUTURE_REQUIRED', 'Required — no default']
+            assert app.screen.query_one(DataTable).get_row_at(1)[:2] == ['FUTURE_REQUIRED', Text("Required", justify="right")]
             app.session.set_value('FUTURE_REQUIRED', 'saved', persist=True)
             app.session.set_value('TUI_MODE', 'integration')
             app.show_configuration()
@@ -628,5 +630,5 @@ def test_conditional_only_default_with_no_matching_branch_keeps_required_row(tmp
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
             assert app.screen.kind == 'defaults'
-            assert app.screen.query_one(DataTable).get_row_at(0)[:2] == ['CONDITIONAL', 'Required — no default']
+            assert app.screen.query_one(DataTable).get_row_at(0)[:2] == ['CONDITIONAL', Text("Required", justify="right")]
     asyncio.run(scenario())
