@@ -994,3 +994,14 @@ def test_main_menu_bootstrap_hint_docked_above_footer_only_when_needed(tmp_path)
             await pilot.pause()
             assert not app.screen.query('#pack-bootstrap')
     asyncio.run(scenario())
+
+
+def test_demo_directory_highlighted_in_pack_identity_only(tmp_path):
+    app = fixture(tmp_path)
+    app.context.pack_root = tmp_path / 'demo'
+    text = app.identity_text()
+    start = text.plain.index('\nPack: ') + len('\nPack: ') + len(str(tmp_path)) + 1
+    assert text.plain[start:start + 4] == 'demo'
+    assert [(span.start, span.end, span.style) for span in text.spans] == [(start, start + 4, 'red')]
+    app.context.external_pack = True
+    assert not app.identity_text().spans

@@ -148,7 +148,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
 
     def compose(self) -> ComposeResult:
         app = self.app
-        yield Static(app.identity_summary(), id="identity", markup=False)
+        yield Static(app.identity_text(), id="identity", markup=False)
         with VerticalScroll():
             yield Static(self.heading, id="heading")
             yield Static(self.body, id="body", markup=False)
@@ -344,6 +344,14 @@ class ApiAgentApp(App[int]):
             return f"{root} ({branch})" if branch else str(root)
         return (f"Base: {path_with_branch(self.context.base_root)}\n"
                 f"Pack: {path_with_branch(self.context.pack_root)}")
+
+    def identity_text(self):
+        text = Text(self.identity_summary())
+        pack = self.context.pack_root
+        if not self.context.external_pack and pack.name == "demo":
+            start = text.plain.index("\nPack: ") + len("\nPack: ") + len(str(pack)) - len("demo")
+            text.stylize("red", start, start + len("demo"))
+        return text
 
     def target_summary(self):
         return "Target .env files:\n" + "\n".join(
