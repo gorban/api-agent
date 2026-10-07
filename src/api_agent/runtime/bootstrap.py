@@ -93,7 +93,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  'with the current Python, or use a resource-pack launcher with API_AGENT_DIR.')
             base_root = candidate
         context = load_launch_context(Path(base_root).resolve(), resource_pack_dir, launcher_root)
-        verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout)
+        verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout,
+                         resource_pack_name=context.pack_id if context.external_pack else None)
         shared = load_shared_schema(context.base_root)
         schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
                                 overrides=context.defaults)

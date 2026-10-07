@@ -23,6 +23,6 @@
 
 ## B2 implementation
 
-- [x] Implement the parent plan's always-interactive approval for current and stale checkouts, preserving inspection/ranking. Show current then newest comparison paths, branches, UTC dates and determining reasons, with green checks/red X plus textual markers. Require lowercase literal `y` and Enter before help, collection or operation dispatch, including `NO_STD_IN`. No flag/environment bypass exists.
+- [x] Implement the parent plan's always-interactive approval for current and stale checkouts, preserving inspection/ranking. For stale requested repositories, show the concise red-header warning with paired current/newer Directory, Branch and Last modified values. Use the requested pack identity when labeling a stale resource pack; omit unchanged repositories and self-comparisons. Require lowercase literal `y` and Enter before help, collection or operation dispatch, including `NO_STD_IN`. No flag/environment bypass exists.
 - [x] Verify the approval/ranking contract with deterministic fixtures; standard-library help remains available after approval.
 - [ ] Human-review the updated terminal approval presentation. A future full Textual presentation may refine its visuals without changing the approval contract.

@@ -208,58 +208,39 @@ def _marker(text: str, code: str, color: bool) -> str:
     return f"\033[{code}m{text}\033[0m" if color else text
 
 
-def format_report(reports: Sequence[RepositoryReport], *, color: bool = False) -> str:
-    """Render selected checkouts before all newest comparison checkouts."""
-    lines = [
-        "WORKTREE APPROVAL",
-        "Review the repositories used by this launch before continuing.",
-        "Approval permits startup only; it does not approve test execution or E2E acceptance.",
-        "Dates use observable HEAD commit/file timestamps; deleted files have no recoverable modification date.",
-    ]
-    for index, report in enumerate(reports, start=1):
+def format_report(reports: Sequence[RepositoryReport], *, color: bool = False,
+                  resource_pack_name: str | None = None) -> str:
+    """Show only stale requested repositories, paired with their newer checkouts."""
+    stale = [(index, report) for index, report in enumerate(reports) if report.stale]
+    if not stale:
+        return "WORKTREE APPROVAL"
+    lines = ["WORKTREE APPROVAL - " + _marker("not running on latest worktree", "31", color)]
+    for index, report in stale:
         selected = next(checkout for checkout in report.checkouts if checkout.selected)
-        lines.extend(["", f"Repository {index}: {report.selected_root.name}",
-                      "Current checkout — this is the directory this launch will use."])
-
-        def describe(checkout: CheckoutReport, *, current: bool = False) -> None:
-            status = (_marker("[X] STALE", "31", color) if current and not checkout.newest
-                      else _marker("[✓] NEWEST", "32", color))
-            lines.extend([f"  {status}", f"  Directory: {checkout.root}",
-                          f"  Branch: {checkout.branch.removeprefix('refs/heads/')}",
-                          f"  HEAD: {checkout.sha}",
-                          f"  Last modified: {_date(checkout.timestamp)}",
-                          f"  Determining reason: {checkout.reason}",
-                          f"  HEAD committed: {_date(checkout.commit_timestamp)}"])
-            if checkout.dirty_timestamp is not None:
-                lines.append(f"  Latest eligible file: {_date(checkout.dirty_timestamp)} ({checkout.dirty_path!r})")
-            if checkout.missing_paths:
-                preview = checkout.missing_paths[:5]
-                omitted = len(checkout.missing_paths) - len(preview)
-                suffix = f"; {omitted} more absent paths" if omitted else ""
-                lines.append(f"  Absent dirty paths (no file timestamp): {preview!r}{suffix}")
-            if checkout.locked is not None:
-                lines.append(f"  Locked: {checkout.locked or 'yes'}")
-            if checkout.prunable is not None:
-                lines.append(f"  Prunable: {checkout.prunable or 'yes'}")
-
-        describe(selected, current=True)
-        lines.extend(["", "Comparison checkout(s) — newest registered checkout(s) by these timestamps."])
-        newest = [checkout for checkout in report.checkouts if checkout.newest and not checkout.bare]
-        for checkout in newest:
-            describe(checkout)
-        if selected.newest:
-            lines.append("  The current checkout is among the newest (ties are accepted).")
+        newer = [checkout for checkout in report.checkouts if checkout.newest and not checkout.bare]
+        subject = ("The api-agent" if index == 0 else
+                   f'The "{resource_pack_name or report.selected_root.name}" resource pack')
+        lines.extend(["", f"{subject} requested to run does not have the newest changes.",
+                      "  Directory:", f"    This one: {report.selected_root}"])
+        lines.extend(f"    But found newer: {checkout.root}" for checkout in newer)
+        lines.extend(["  Branch:", f"    This one: {selected.branch.removeprefix('refs/heads/')}"])
+        lines.extend(f"    Branch of newer: {checkout.branch.removeprefix('refs/heads/')}" for checkout in newer)
+        lines.extend(["  Last modified:", f"    This one: {_date(selected.timestamp)}"])
+        lines.extend(f"    More recent: {_date(checkout.timestamp)}" for checkout in newer)
     return "\n".join(lines)
 
 
 def verify_worktrees(
-    roots: Sequence[Path], *, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout
+    roots: Sequence[Path], *, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout,
+    resource_pack_name: str | None = None
 ) -> None:
     """Always require explicit y followed by Enter before any launch dispatch."""
     reports = inspect_worktrees(roots)
     color = (getattr(stdout, "isatty", lambda: False)()
              and os.environ.get("TERM", "dumb") != "dumb" and "NO_COLOR" not in os.environ)
-    stdout.write(format_report(reports, color=color) + "\n\nApprove these current checkouts? [y/N] (default No): ")
+    prompt = ("Ignore newer worktree and run with current directories anyways? [y/N] (default No): "
+              if any(report.stale for report in reports) else "Approve these current checkouts? [y/N] (default No): ")
+    stdout.write(format_report(reports, color=color, resource_pack_name=resource_pack_name) + "\n\n" + prompt)
     stdout.flush()
     try:
         answer = stdin.readline() if stdin is not None else ""
