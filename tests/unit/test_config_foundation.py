@@ -139,15 +139,15 @@ def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
     assert result.values['UNATTENDED_USER_INDEX'] == 1
 
 @pytest.mark.parametrize('argv', [
-    ['--tui-mode=--no-std-in'], ['--tui-mode', '--no-std-in'],
+    ['--tui-mode', '--no-std-in'],
 ])
 def test_option_like_value_becomes_next_key(argv):
     result = resolve_config(load_shared_schema(), argv=argv, environ={})
     assert result.values['NO_STD_IN'] is True
     assert any('TUI_MODE: option requires a value' in error for error in result.errors)
 
-def test_boolean_equals_option_like_value_becomes_bare_flag():
-    result = resolve_config(load_shared_schema(), argv=['--no-std-in=--tui-mode=unit'], environ={})
+def test_boolean_space_option_like_value_becomes_bare_flag():
+    result = resolve_config(load_shared_schema(), argv=['--no-std-in', '--tui-mode=unit'], environ={})
     result.raise_for_errors()
     assert result.values['NO_STD_IN'] is True and result.values['TUI_MODE'] == 'unit'
 
@@ -186,3 +186,10 @@ def test_removed_secondary_index_is_rejected():
     assert 'UNATTENDED_SECONDARY_USER_INDEX' not in schema.fields
     result = resolve_config(schema, argv=['--unattended-secondary-user-index=1'], environ={})
     assert result.errors
+
+
+def test_equals_preserves_option_like_literal():
+    schema = schema_from_dict({'version': 1, 'fields': {'TEXT': {'type': 'str'}}})
+    result = resolve_config(schema, argv=['--text=--literal=value'], environ={})
+    result.raise_for_errors()
+    assert result.values['TEXT'] == '--literal=value'

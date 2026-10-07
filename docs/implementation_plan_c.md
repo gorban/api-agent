@@ -4,7 +4,7 @@
 
 - [ ] Start `README.md` with application and TUI usage documentation, deriving configuration details from the declarative executable descriptions.
 - [ ] Document equivalent environment/CLI names, `.env` < environment < CLI precedence, strict `True`/`False` boolean values, bare boolean flags, and both `--key=value` and `--key value` forms.
-- [ ] Add the TUI parser caveat: values starting with `--` cannot be parsed as values and are treated as another option key.
+- [ ] Add the TUI parser caveat: space-separated values starting with `--` are treated as another option key (preceding boolean becomes `True`; nonboolean reports a missing value). `--key=value` preserves literal values.
 - [ ] Document `--no-std-in`, aggregate missing-configuration errors, available `TUI_MODE` selections, and the mandatory human acceptance for E2E runs.
 - [ ] Document the [pre-TUI worktree provenance gate](implementation_plan_a6.md), its base/selected-pack repository checks, commit-versus-nonignored-dirty-file recency rule, timestamp limitations for deletions, and selected/newest worktree display. Explicitly document the stale-checkout stdin-acknowledgement exception to `NO_STD_IN`, help, and collect-only: there is no bypass setting; decline/EOF/unavailable stdin or an unverifiable required checkout exits nonzero before an operation starts.
 

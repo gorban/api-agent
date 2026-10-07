@@ -138,20 +138,20 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
     for path in declaration_paths or [Path(__file__).resolve().parents[1] / 'config/shared.toml']:
         path = Path(path).resolve()
         lines.append(f'  [{path.name}]({path})')
-    lines.extend(['', 'Option forms: --field-name VALUE, --field_name VALUE, and --field-name=VALUE.',
-                  'Boolean switches alone mean True; explicit boolean values must be exactly True or False.',
-                  '-h aliases --help. Values starting with -- are treated as option keys, even after =.',
-                  '-- ends option parsing; relative directory values can use ./ to avoid that prefix.',
+    lines.extend(['', 'With space-separated values, --field-name --VALUE=... treats --VALUE as the next option.',
+                  'For a boolean field, this means --field-name=True --VALUE=...;',
+                  'a nonboolean field instead reports a missing value. Use --field-name=VALUE for a literal value.',
+                  '',
                   'Shared defaults < pack defaults < active pack/base .env < environment < CLI.',
-                  'Help skips execution requirements; unknown options still fail.',
+                  'Help skips execution requirements; unknown options still fail.', '',
                   'Modes: run-local starts local services/UI; unit runs base plus pack units;',
                   'integration and e2e select pack suites; allure opens reports; deployment-logs shows deployment logs;',
-                  'config-cleanup reviews persisted options; unattended-auth configures credential profiles.',
+                  'config-cleanup reviews persisted options; unattended-auth configures credential profiles.', '',
                   'Positional test selectors require an explicit test mode from .env, environment, or CLI.',
                   'Explicit unit mode can bypass its picker; integration/E2E execution retains an interactive picker.',
                   '--collect-only validates collection requirements and skips execution acceptance.',
                   'NO_STD_IN=True requires TUI_MODE and rejects integration/E2E execution, except collection-only.',
                   'E2E execution requires human acceptance; E2E_RERUNS applies only to E2E; unit/integration never retry.',
-                  'Fresh-worktree acceptance uses stdin even with NO_STD_IN=True or --help.',
+                  '', 'Fresh-worktree acceptance uses stdin even with NO_STD_IN=True or --help.', '',
                   'These operation descriptions are contracts: all execution, collection, and UI operations remain pending Segment B.'])
     return '\n'.join(lines)

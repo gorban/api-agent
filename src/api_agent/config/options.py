@@ -27,9 +27,6 @@ def parse_options(schema, argv):
             errors.append(f'Unknown option {token}')
             continue
         key, separator, value = token[2:].partition('=')
-        if separator and value.startswith('--'):
-            argv.insert(index, value)
-            separator, value = '', ''
         key = key.replace('-', '_').upper()
         declaration = schema.fields.get(key)
         if declaration is None:
