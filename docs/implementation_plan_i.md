@@ -27,6 +27,8 @@
 
 ## Local HTTPS preparation
 
+- [x] Human-review and approve the automatic local HTTPS approach using mkcert/OpenSSL and Linux certutil instead of requiring .NET for certificates (2026-10-05). Approval covers the proposed setup; actual host/browser trust, listener wiring and readiness remain below.
+
 - [x] Implement `src/api_agent/runtime/https.py` with mkcert/OpenSSL preparation, renewal/SAN/key/CA checks, private key permissions, cooperating-preparer locking and recoverable replacement rollback. Preserve certificate-directory symlinks and ignore `.certs/`. Deterministic tests use synthetic command results and failure injection; no CA trust installation is claimed.
 - [ ] Wire preparation to owned local/callback/Nx listeners and verify actual hostname resolution, host/browser trust and HTTPS readiness. Keep prompts visible; noninteractive setup must fail promptly when trust setup cannot complete.
 - [ ] Complete uncovered platform/locking/recovery branches before the final coverage gate; do not relax the unit runner’s 100% threshold.
