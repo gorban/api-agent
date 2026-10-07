@@ -111,10 +111,12 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return 2
         if result.help_requested:
             print(generated_help(schema, pack_launcher=context.external_pack,
+                                 color=_supports_color(sys.stdout),
                                  declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
             if resource_pack_dir is None and launcher_root is None:
-                print('\nBootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.')
+                print('\n' + _colored('Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.',
+                                      '31', _supports_color(sys.stdout)))
             return 0
         print(f'Validated foundation configuration for {context.name} ({context.pack_root}).')
         operation = 'Test collection' if result.values.get('COLLECT_ONLY') else 'Requested operation'
@@ -126,7 +128,17 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         return 2
 
 
-def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
+def _supports_color(stream):
+    """Use ANSI colors only on an advertised terminal, respecting NO_COLOR."""
+    return (stream.isatty() and os.environ.get('TERM', 'dumb') != 'dumb'
+            and 'NO_COLOR' not in os.environ)
+
+
+def _colored(text, code, enabled):
+    return f'\033[{code}m{text}\033[0m' if enabled else text
+
+
+def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color=False):
     """Show CLI behavior and deliberate callouts; declarations own full config docs."""
     lines = ['Usage: ./launch.py [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
     callouts = {
@@ -144,7 +156,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
                   'All declared configuration values also accept CLI options; see the executable declarations:'])
     for path in declaration_paths or [Path(__file__).resolve().parents[1] / 'config/shared.toml']:
         path = Path(path).resolve()
-        lines.append(f'  [{path.name}]({path})')
+        lines.append('  ' + _colored(os.path.relpath(path, Path.cwd()), '34', color))
     lines.extend(['', 'With space-separated values, --field-name --VALUE=... treats --VALUE as the next option.',
                   'For a boolean field, this means --field-name=True --VALUE=...;',
                   'a nonboolean field instead reports a missing value. Use --field-name=VALUE for a literal value.',

@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
-from api_agent.runtime.bootstrap import _extract_option, generated_help, main
+from api_agent.runtime.bootstrap import _extract_option, _supports_color, generated_help, main
 from api_agent.config import load_shared_schema
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +19,9 @@ class LaunchTests(unittest.TestCase):
         for option in ('--help', '--no-std-in', '--collect-only', '--tui-mode',
                        '--e2e-debug', '--unattended-user-index'):
             self.assertIn(option, output)
-        self.assertIn(str(ROOT / 'src/api_agent/config/shared.toml'), output)
+        self.assertIn(os.path.relpath(ROOT / 'src/api_agent/config/shared.toml'), output)
+        self.assertNotIn('[shared.toml]', output)
+        self.assertNotIn('\033[', output)
         self.assertNotIn('--ui-source-dir', output)
         for option in ('--auth-browser-debug', '--unattended-secondary-user-index',
                        '--resource-pack-dir', '--api-agent-dir'):
@@ -30,6 +32,20 @@ class LaunchTests(unittest.TestCase):
         for text in ('Positional test selectors require', 'Explicit unit mode can bypass',
                      'validates collection requirements', 'NO_STD_IN=True requires', 'E2E_RERUNS'):
             self.assertNotIn(text, output)
+
+    def test_terminal_colors_for_paths_and_bootstrap(self):
+        stream = StringIO()
+        stream.isatty = lambda: True
+        with patch.dict(os.environ, {'TERM': 'xterm'}, clear=True), patch('sys.stdout', stream), patch('api_agent.runtime.worktrees.verify_worktrees'):
+            self.assertTrue(_supports_color(stream))
+            self.assertEqual(main(['--help'], base_root=ROOT), 0)
+            self.assertIn('\033[34m' + os.path.relpath(ROOT / 'src/api_agent/config/shared.toml') + '\033[0m', stream.getvalue())
+            self.assertIn('\033[31mBootstrap:', stream.getvalue())
+            with patch.dict(os.environ, {'NO_COLOR': '1'}):
+                self.assertFalse(_supports_color(stream))
+            with patch.dict(os.environ, {'TERM': 'dumb'}):
+                self.assertFalse(_supports_color(stream))
+        self.assertFalse(_supports_color(StringIO()))
 
     def test_option_consumption_preserves_selectors(self):
         self.assertEqual(_extract_option(['--resource-pack-dir=/a b', '--help', 'x'],
