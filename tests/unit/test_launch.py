@@ -17,11 +17,13 @@ class LaunchTests(unittest.TestCase):
     def test_help_is_curated_and_links_full_configuration(self):
         output = generated_help(load_shared_schema())
         for option in ('--help', '--no-std-in', '--collect-only', '--tui-mode',
-                       '--e2e-debug', '--auth-browser-debug',
-                       '--unattended-llm-user-index', '--unattended-secondary-user-index'):
+                       '--e2e-debug', '--unattended-user-index'):
             self.assertIn(option, output)
         self.assertIn(str(ROOT / 'src/api_agent/config/shared.toml'), output)
         self.assertNotIn('--ui-source-dir', output)
+        for option in ('--auth-browser-debug', '--unattended-secondary-user-index',
+                       '--resource-pack-dir', '--api-agent-dir'):
+            self.assertNotIn(option, output)
         self.assertNotIn('--e2e-browser-resolution', output)
         self.assertNotIn('Configuration options:', output)
 

@@ -121,20 +121,11 @@ help = "Optional secondary credential role."
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false
 
-[fields.UNATTENDED_LLM_USER_INDEX]
+[fields.UNATTENDED_USER_INDEX]
 type = "int"
 validation = "nonnegative"
 acknowledge_default = false
 persist_default = false
-[fields.UNATTENDED_LLM_USER_INDEX.applies_when]
-TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
-COLLECT_ONLY = false
-
-[fields.UNATTENDED_SECONDARY_USER_INDEX]
-type = "int"
-validation = "nonnegative"
-acknowledge_default = false
-persist_default = false
-[fields.UNATTENDED_SECONDARY_USER_INDEX.applies_when]
+[fields.UNATTENDED_USER_INDEX.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false

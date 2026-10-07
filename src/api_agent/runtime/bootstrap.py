@@ -128,16 +128,11 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
         'COLLECT_ONLY': '--collect-only: list selected tests without running them.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
-        'AUTH_BROWSER_DEBUG': '--auth-browser-debug: retain headed authentication browsers.',
-        'UNATTENDED_LLM_USER_INDEX': '--unattended-llm-user-index INDEX: select an LLM credential entry (zero-based).',
-        'UNATTENDED_SECONDARY_USER_INDEX': '--unattended-secondary-user-index INDEX: select a secondary credential entry (zero-based).',
+        'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select the same zero-based entry in needed credential arrays.',
     }
     for name, description in callouts.items():
         if name in schema.fields:
             lines.append('  ' + description)
-    lines.append('  --resource-pack-dir PATH: select the resource-pack root.')
-    if pack_launcher:
-        lines.append('  --api-agent-dir PATH (API_AGENT_DIR): select the base source checkout.')
     lines.extend(['', 'Debug and credential-index switches skip startup default acknowledgement/persistence.',
                   'All declared configuration values also accept CLI options; see the executable declarations:'])
     for path in declaration_paths or [Path(__file__).resolve().parents[1] / 'config/shared.toml']:

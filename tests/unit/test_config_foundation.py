@@ -72,7 +72,7 @@ def test_dotenv_is_literal_and_missing_file_empty(tmp_path):
 
 def test_json_resolution_index_validation_and_secret_diagnostics():
     result = resolve_config(load_shared_schema(), environ={'TUI_MODE': 'e2e', 'UI_SOURCE_DIR': '/example/frontend',
-                            'UNATTENDED_AUTH': 'secret-invalid', 'UNATTENDED_LLM_USER_INDEX': '-1',
+                            'UNATTENDED_AUTH': 'secret-invalid', 'UNATTENDED_USER_INDEX': '-1',
                             'E2E_BROWSER_RESOLUTION': '0x900'})
     assert len(result.errors) == 3
     assert 'secret-invalid' not in '\n'.join(result.errors)
@@ -83,7 +83,7 @@ def test_pack_only_path_and_metadata(tmp_path):
     result = resolve_config(schema, environ={}, pack_launcher=True, anchors={'pack_root': tmp_path})
     assert result.values['API_AGENT_DIR'] == (tmp_path / '../api-agent').resolve()
     assert schema.fields['E2E_DEBUG'].acknowledge_default is False
-    assert schema.fields['UNATTENDED_LLM_USER_INDEX'].persist_default is False
+    assert schema.fields['UNATTENDED_USER_INDEX'].persist_default is False
 
 def test_cli_missing_value_and_end_options():
     parsed = parse_options(load_shared_schema(), ['--tui-mode', '--no-std-in', '--', '--literal'])
@@ -128,15 +128,15 @@ def test_conditional_controllers_resolve_before_applicability():
     assert result.missing == ('DEPENDENT',)
     assert result.values['ENABLED'] is True
 
-def test_resource_pack_local_defaults_and_secondary_index(tmp_path):
+def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
     schema = compose_schema(load_shared_schema(), overrides={
         'UI_NX_APP': 'shell', 'UI_SOURCE_DIR': 'frontend', 'UNATTENDED_SECONDARY_USER': 'Resource Pack User'})
     result = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True',
-                            'UNATTENDED_SECONDARY_USER_INDEX': '1'}, anchors={'owner_root': tmp_path})
+                            'UNATTENDED_USER_INDEX': '1', 'UI_SOURCE_DIR': 'frontend'}, anchors={'owner_root': tmp_path})
     result.raise_for_errors()
     assert result.values['UI_NX_APP'] == 'shell'
     assert result.values['UNATTENDED_SECONDARY_USER'] == 'Resource Pack User'
-    assert result.values['UNATTENDED_SECONDARY_USER_INDEX'] == 1
+    assert result.values['UNATTENDED_USER_INDEX'] == 1
 
 @pytest.mark.parametrize('argv', [
     ['--tui-mode=--no-std-in'], ['--tui-mode', '--no-std-in'],
@@ -179,3 +179,10 @@ def test_extension_default_source_from_loaded_toml(tmp_path):
     result = resolve_config(schema, environ={})
     assert result.fields['PACK_NAME'].source == 'pack_default'
     assert result.fields['PACK_NAME'].explicit is False
+
+
+def test_removed_secondary_index_is_rejected():
+    schema = load_shared_schema()
+    assert 'UNATTENDED_SECONDARY_USER_INDEX' not in schema.fields
+    result = resolve_config(schema, argv=['--unattended-secondary-user-index=1'], environ={})
+    assert result.errors
