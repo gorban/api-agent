@@ -148,8 +148,19 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             for test in collect_tests(context, mode, result.positionals):
                 print(test.id)
             return 0
-        # Execution runners/providers are subsequent work, not simulated successes.
-        if result.values.get('NO_STD_IN') or (mode == 'unit' and mode_field and mode_field.explicit and not result.missing):
+        if result.values.get('NO_STD_IN') and mode == 'unit':
+            from api_agent.runtime.dependencies import ensure_environment
+            status = ensure_environment(context, argv, collect=True)
+            if status is not None:
+                return status
+            from api_agent.testing.collection import collect_tests
+            from api_agent.testing.runner import run_unit_tests, format_unit_summary
+            tests = collect_tests(context, 'unit', result.positionals)
+            execution = run_unit_tests(context, tests, output=lambda chunk: print(chunk, end='', flush=True),
+                                       parallel_jobs=result.values.get('TEST_PARALLEL_JOBS', 8))
+            print(format_unit_summary(execution))
+            return execution.exit_code
+        if result.values.get('NO_STD_IN'):
             print('Requested operation is not implemented yet. No tests or services were started.', file=sys.stderr)
             return 3
         if not sys.stdin.isatty() or not sys.stdout.isatty():

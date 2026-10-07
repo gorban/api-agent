@@ -11,7 +11,7 @@ def test_requirements_merge_without_source_install(tmp_path):
     (base / 'pyproject.toml').write_text('[project]\ndependencies=["textual>=8,<9"]\n')
     (pack / 'pyproject.toml').write_text('[project]\ndependencies=["api-agent==0.1.0", "other>=1"]\n')
     context = SimpleNamespace(base_root=base, pack_root=pack)
-    assert requirements(context, collect=True) == ('textual>=8,<9', 'other>=1', 'pytest>=8,<10')
+    assert requirements(context, collect=True) == ('textual>=8,<9', 'other>=1', 'pytest>=8,<10', 'pytest-cov>=6,<8', 'pytest-xdist>=3,<4')
 
 
 def test_prepare_once_reexec_and_preserve_arguments(tmp_path):

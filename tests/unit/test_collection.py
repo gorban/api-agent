@@ -157,3 +157,12 @@ def test_empty_optional_pack_units_do_not_hide_missing_base(tmp_path):
     (base / 'tests/unit/test_tiny.py').unlink()
     with pytest.raises(CollectionError):
         collect_tests(ctx, 'unit')
+
+
+def test_nested_pack_keeps_its_owner_working_directory(tmp_path):
+    base = tmp_path / 'base'
+    suite(base)
+    owner = base / 'packs' / 'nested'
+    units = suite(owner)
+    identities = collect_tests(context(base, owner, {'unit': (units,)}), 'unit')
+    assert {test.repo for test in identities} == {'base', 'nested'}
