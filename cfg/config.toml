@@ -266,3 +266,8 @@ COLLECT_ONLY = false
 type = "str"
 review_optional = true
 help = "Required factory location (file.py:factory) for executable LLM operations; no default provider is selected."
+
+[fields.API_LISTENER_URL]
+type = "str"
+review_optional = true
+help = "Required HTTPS listener URL for executable local API operations; configured independently of provider completion routes."

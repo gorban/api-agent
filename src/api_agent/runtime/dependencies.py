@@ -86,6 +86,17 @@ print(json.dumps(result))
         return wanted
 
 
+def active_environment(environment):
+    """Recognize the active venv through filesystem aliases as well as paths."""
+    active = Path(sys.prefix)
+    if active.resolve() == environment.resolve():
+        return True
+    try:
+        return active.samefile(environment)
+    except OSError:
+        return False
+
+
 def ensure_environment(context, argv, *, collect=False, groups=()):
     """Return a relaunched command's status, or None in the ready local venv."""
     root = context.pack_root if context.external_pack else context.base_root
@@ -112,7 +123,7 @@ def ensure_environment(context, argv, *, collect=False, groups=()):
             if unresolved := _installed_requirements(python, wanted):
                 raise OSError(f'Installed dependencies remain unavailable or incompatible: {", ".join(unresolved)}')
         marker.write_text(fingerprint + '\n')
-    if Path(sys.prefix).resolve() == environment.resolve():
+    if active_environment(environment):
         return None
     pack_arguments = [] if getattr(context, 'show_pack_bootstrap', False) else [
         '--resource-pack-dir', str(context.pack_root)]

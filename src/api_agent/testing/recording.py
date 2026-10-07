@@ -130,11 +130,19 @@ class RunRecorder:
         self._results.append({'file': filename, 'status': result.status})
         return filename
 
-    def finalize(self, metadata=None, *, status=None):
+    def finalize(self, metadata=None, *, status=None, shared_artifacts=()):
         if self._finalized:
             raise RuntimeError('Run already finalized')
         if self._write_failed:
             raise RuntimeError('Run has an incomplete artifact write')
+        shared_rows = []
+        for title, source, mime in shared_artifacts:
+            _safe_component(source)
+            if (source not in self._files or source.endswith('-result.json')
+                    or not isinstance(title, str) or not title
+                    or not isinstance(mime, str) or not mime):
+                raise ValueError('Shared attachments require a recorded artifact, title and MIME type')
+            shared_rows.append({'name': self._safe_text(title), 'source': source, 'type': mime})
         statuses = {row['status'] for row in self._results}
         derived = ('interrupted' if statuses & {'cancelled', 'interrupted'} else
                    'failed' if statuses & {'failed', 'broken', 'error'} else 'completed')
@@ -151,6 +159,24 @@ class RunRecorder:
             setup = TestIdentity(f'{self.identity.repo}::__suite__', self.identity.repo,
                                  '__suite__', '__suite__::setup')
             self.record_test(TestResult(setup, 'interrupted' if status == 'interrupted' else 'broken'))
+        # Quota is known only after all tests drain. Attach one frozen suite
+        # artifact to every outcome, including synthetic setup failures, before
+        # hashing files and publishing the manifest that makes this run visible.
+        if shared_rows:
+            for result in self._results:
+                path = self.directory / result['file']
+                temporary = self.directory / f'.{uuid4()}.tmp'
+                try:
+                    row = json.loads(path.read_bytes())
+                    row['attachments'].extend(shared_rows)
+                    with temporary.open('xb') as stream:
+                        stream.write(json.dumps(row, sort_keys=True).encode())
+                    temporary.replace(path)
+                except (OSError, ValueError, KeyError):
+                    self._write_failed = True
+                    raise
+                finally:
+                    temporary.unlink(missing_ok=True)
         boundary = EmissionBoundary(assigned_ids=(self.identity.run_id,))
         safe_metadata = boundary.export(metadata or {})
         files = {name: hashlib.sha256((self.directory / name).read_bytes()).hexdigest()

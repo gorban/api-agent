@@ -176,3 +176,18 @@ def test_empty_requirements_still_create_missing_environment(tmp_path):
         assert ensure_environment(context,[]) is None
         assert run.call_count == 1
         assert (environment/'.api-agent-dependencies').is_file()
+
+
+def test_active_environment_recognizes_physical_alias_and_missing_path(tmp_path, monkeypatch):
+    from api_agent.runtime.dependencies import active_environment
+    target = tmp_path / 'venv'
+    target.mkdir()
+    alias = tmp_path / 'alias'
+    alias.mkdir()
+    monkeypatch.setattr('api_agent.runtime.dependencies.sys.prefix', str(alias))
+    with patch.object(Path, 'samefile', return_value=True) as samefile:
+        assert active_environment(target)
+        samefile.assert_called_once_with(target)
+    assert not active_environment(tmp_path / 'absent')
+    monkeypatch.setattr('api_agent.runtime.dependencies.sys.prefix', str(target))
+    assert active_environment(target)

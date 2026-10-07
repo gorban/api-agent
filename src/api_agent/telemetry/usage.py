@@ -171,12 +171,6 @@ class SuiteUsage:
             estimate = self.cost_estimator(usage_rows=rows, before=before, after=after)
             if type(estimate) not in (int, float) or not math.isfinite(estimate) or estimate < 0:
                 raise ValueError('provider cost estimate must be finite and nonnegative')
-        rows = self.rows()
-        estimate = None
-        if self.cost_estimator is not None:
-            estimate = self.cost_estimator(usage_rows=rows, before=before, after=after)
-            if type(estimate) not in (int, float) or not math.isfinite(estimate) or estimate < 0:
-                raise ValueError('provider cost estimate must be finite and nonnegative')
         return {'run_id': self.run_id, 'before': _snapshot_json(before), 'after': _snapshot_json(after),
                 'pct_used_before': None if before is None or not _valid_pct(before.pct_used) else before.pct_used,
                 'pct_used_after': None if after is None or not _valid_pct(after.pct_used) else after.pct_used,

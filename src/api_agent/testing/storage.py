@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import stat
+from urllib.parse import urlsplit
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from uuid import UUID
@@ -32,8 +33,15 @@ class RunStorage:
         if self.client is None:
             import boto3
             from botocore.config import Config
+            endpoint = urlsplit(self.endpoint_url or '')
+            local = (endpoint.scheme == 'http' and endpoint.hostname in {'localhost', '127.0.0.1'}
+                     and endpoint.port == 4566 and not endpoint.path.rstrip('/')
+                     and not endpoint.query and not endpoint.fragment and not endpoint.username
+                     and not endpoint.password)
+            credentials = {'aws_access_key_id': 'test', 'aws_secret_access_key': 'test'} if local else {}
             self.client = boto3.client('s3', endpoint_url=self.endpoint_url,
                                        region_name=self.region_name,
+                                       **credentials,
                                        config=Config(connect_timeout=5, read_timeout=15,
                                                      retries={'mode': 'standard', 'total_max_attempts': 3}))
         return self.client
