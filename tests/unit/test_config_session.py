@@ -280,3 +280,20 @@ def test_default_review_ignores_mode_applicability_but_preserves_pack_scope(sess
     assert read_dotenv(session.dotenv_path)['DETAIL'] == 'low'
     assert 'DETAIL' not in session.result().fields
     assert 'DETAIL' not in {row.name for row in session.default_candidates()}
+
+
+def test_resource_pack_token_is_reviewed_before_mode_selection(session):
+    from pathlib import Path
+    from api_agent.config import compose_schema, load_declarations, load_shared_schema
+    base = Path(__file__).resolve().parents[2]
+    shared = load_shared_schema(base)
+    from api_agent.config import schema_from_dict
+    pack = schema_from_dict({'version': 1, 'fields': {'PACK_TEST_TOKEN': {
+        'type': 'str', 'required': True, 'applies_when': {
+            'TUI_MODE': ['integration', 'e2e'], 'COLLECT_ONLY': False}}}},
+        base_schema=shared, source='pack_default')
+    pack_session = ConfigSession(session.context, compose_schema(shared, pack), environ={})
+    assert 'PACK_TEST_TOKEN' in pack_session.result(_review=True).missing
+    assert 'PACK_TEST_TOKEN' not in pack_session.result().missing
+    demo = ConfigSession(session.context, shared, environ={})
+    assert 'PACK_TEST_TOKEN' not in demo.result(_review=True).missing

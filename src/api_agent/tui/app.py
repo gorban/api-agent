@@ -271,7 +271,7 @@ class ApiAgentApp(App[int]):
     def configuration_pending(self):
         candidates = [item.name for item in self.session.default_candidates()
                       if item.field.persist_default]
-        missing = [name for name in self.session.result().missing
+        missing = [name for name in self.session.result(_review=True).missing
                    if name != "TUI_MODE"]
         return set(candidates + missing)
 
@@ -292,7 +292,7 @@ class ApiAgentApp(App[int]):
                   (("setup", "View authentication setup"), ("menu", "Main menu")))
 
     def show_configuration(self):
-        result = self.session.result()
+        result = self.session.result(_review=True)
         if "UNATTENDED_AUTH" in result.missing:
             self.show_required_auth()
             return

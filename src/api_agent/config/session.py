@@ -129,7 +129,9 @@ class ConfigSession:
         # Pack scope remains enforced except in the explicit cleanup inventory.
         if _cleanup or _review:
             schema = ConfigSchema({name: replace(field, applies_when={},
-                                                 pack_only=False if _cleanup else field.pack_only)
+                                                 pack_only=False if _cleanup else field.pack_only,
+                                                 required=(field.required or bool(field.required_when)) if _review else field.required,
+                                                 required_when={} if _review else field.required_when)
                                    for name, field in self.schema.fields.items()})
             if _cleanup and "HELP" in schema.fields:
                 boundary = argv.index("--") if "--" in argv else len(argv)

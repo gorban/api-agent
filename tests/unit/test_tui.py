@@ -322,7 +322,7 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             await pilot.press("enter")
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            assert table.row_count == 1
+            assert table.row_count == 2
             assert table.get_row_at(0)[0:3] == ["ENABLED", "False", app.session._source(app.session.dotenv_path)]
             await pilot.press("e")
             await pilot.pause(0.4)
@@ -594,7 +594,8 @@ def test_new_inactive_default_and_required_field_review(tmp_path):
             await pilot.pause()
             assert app.screen.kind == 'defaults'
             assert app.screen.query_one(DataTable).get_row_at(0)[:2] == ['FUTURE_DEFAULT', '9']
-            assert app.screen.query_one(DataTable).row_count == 1
+            assert app.screen.query_one(DataTable).row_count == 2
+            assert app.screen.query_one(DataTable).get_row_at(1)[:2] == ['FUTURE_REQUIRED', 'Required — no default']
             await pilot.press('e')
             await pilot.pause()
             assert app.screen.query_one(Input).value == '9'
@@ -609,7 +610,7 @@ def test_new_inactive_default_and_required_field_review(tmp_path):
             app.session.set_value('TUI_MODE', 'integration')
             app.show_configuration()
             await pilot.pause()
-            assert app.screen.query_one(DataTable).row_count == 1
+            assert app.screen.query_one(DataTable).row_count == 2
             assert app.screen.query_one(DataTable).get_row_at(0)[0] == 'FUTURE_DEFAULT'
             app.session.set_value('TUI_MODE', 'unit')
             app.show_configuration()
