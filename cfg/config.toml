@@ -260,7 +260,8 @@ type = "str"
 review_optional = true
 help = "Required factory location (file.py:factory) for executable LLM operations; no default provider is selected."
 
-[fields.API_LISTENER_URL]
+[fields.AGENT_DJANGO_URL]
 type = "str"
+default = "https://localhost:8443"
 review_optional = true
-help = "Required HTTPS listener URL for executable local API operations; configured independently of provider completion routes."
+help = "HTTPS origin of the agent's Django backend serving its HTTP API. Local operations bind its port on loopback; frontend and provider callback URLs are configured separately."

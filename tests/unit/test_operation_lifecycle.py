@@ -17,10 +17,32 @@ class Config:
     missing: tuple = ()
 
 
+@pytest.mark.parametrize('argv,environ,dotenv,expected,source', [
+    ((), {}, {}, 'https://localhost:8443', 'shared_default'),
+    ((), {}, {'AGENT_DJANGO_URL': 'https://saved.example:9443'}, 'https://saved.example:9443', 'dotenv'),
+    ((), {'AGENT_DJANGO_URL': 'https://env.example:9444'},
+     {'AGENT_DJANGO_URL': 'https://saved.example:9443'}, 'https://env.example:9444', 'environment'),
+    (('--agent-django-url=https://cli.example:9445',), {'AGENT_DJANGO_URL': 'https://env.example:9444'},
+     {'AGENT_DJANGO_URL': 'https://saved.example:9443'}, 'https://cli.example:9445', 'cli'),
+])
+def test_declared_backend_origin_drives_listener_with_explicit_precedence(tmp_path, argv, environ, dotenv, expected, source):
+    from api_agent.config import load_shared_schema, resolve_config
+    schema = load_shared_schema()
+    assert 'API_LISTENER_URL' not in schema.fields
+    config = resolve_config(schema, argv=('--tui-mode=unit', *argv), environ=environ,
+                            dotenv=dotenv, anchors={'owner_root': tmp_path})
+    config.raise_for_errors()
+    assert config.values['AGENT_DJANGO_URL'] == expected
+    assert config.fields['AGENT_DJANGO_URL'].source == source
+    endpoint = callback_endpoint(config)
+    assert endpoint.origin == expected
+    assert endpoint.port == int(expected.rsplit(':', 1)[1])
+
+
 @pytest.fixture
 def rig():
     events = []
-    config = Config({'API_LISTENER_URL': 'https://agent.example:4200/custom/callback?tenant=one'})
+    config = Config({'AGENT_DJANGO_URL': 'https://agent.example:4200/custom/callback?tenant=one'})
     tls = type('TLS', (), {'material': object()})()
 
     class Manager:
@@ -136,7 +158,7 @@ def test_partial_listener_start_rolls_back(rig):
     'https://agent.example:4200/cb#fragment'])
 def test_callback_rejects_invalid_listener_authority(uri):
     with pytest.raises(ValueError, match='invalid_callback_uri'):
-        callback_endpoint(Config({'API_LISTENER_URL': uri}))
+        callback_endpoint(Config({'AGENT_DJANGO_URL': uri}))
 
 
 def test_invalid_config_prevents_preparation(rig):
@@ -177,7 +199,7 @@ def test_listener_ready_timeout_and_start(monkeypatch):
     monkeypatch.setitem(sys.modules, 'uvicorn', SimpleNamespace(Config=lambda *a, **kw: kw, Server=Server))
     async def scenario():
         listener = UvicornListener()
-        endpoint = callback_endpoint(Config({'API_LISTENER_URL': 'https://agent.example:4200/cb'}))
+        endpoint = callback_endpoint(Config({'AGENT_DJANGO_URL': 'https://agent.example:4200/cb'}))
         material = SimpleNamespace(cert_file='cert', key_file='key')
         await listener.start('app', material, endpoint)
         assert listener.server.config['port'] == 4200
@@ -195,7 +217,7 @@ def test_listener_ready_timeout_and_start(monkeypatch):
 
 def test_callback_type_and_runner_timeout(rig):
     runner, events, config = rig
-    config.values['API_LISTENER_URL'] = None
+    config.values['AGENT_DJANGO_URL'] = None
     with pytest.raises(ValueError, match='invalid_callback_uri'):
         callback_endpoint(config)
     with pytest.raises(ValueError, match='timeout must be positive'):
@@ -203,7 +225,7 @@ def test_callback_type_and_runner_timeout(rig):
             plan=None, manager=None, compose_runtime=None, create_application=None,
             listener=None, timeout=0)
     assert not events
-    default_port = callback_endpoint(Config({'API_LISTENER_URL': 'https://agent.example/cb?x=1'}))
+    default_port = callback_endpoint(Config({'AGENT_DJANGO_URL': 'https://agent.example/cb?x=1'}))
     assert default_port.port == 443
     assert default_port.origin == 'https://agent.example'
 
@@ -316,7 +338,7 @@ def test_local_factory_wires_helpers_without_io_at_initialization(monkeypatch, t
     import api_agent.runtime.listener as listener_module
     import api_agent.auth.extensions as extensions
     events = []
-    config = Config({'API_LISTENER_URL': 'https://agent.example/cb'})
+    config = Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'})
     context = SimpleNamespace(base_root=tmp_path)
     def preflight(selected, values):
         assert selected is context and values is config.values
@@ -378,8 +400,8 @@ def test_local_factory_pack_preflight_checks_fresh_valid_config_before_side_effe
     import api_agent.api.composition as composition
 
     calls = []
-    configs = iter((Config({'API_LISTENER_URL': 'https://agent.example/cb'}, errors=('bad',)),
-                    Config({'API_LISTENER_URL': 'https://agent.example/cb', 'API_ENDPOINT': ''})))
+    configs = iter((Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'}, errors=('bad',)),
+                    Config({'AGENT_DJANGO_URL': 'https://agent.example/cb', 'API_ENDPOINT': ''})))
     context = SimpleNamespace(base_root=tmp_path)
     def preflight(selected, values):
         calls.append(('preflight', selected, values))
@@ -409,7 +431,7 @@ def test_factory_handoff_status_is_explicit(monkeypatch, tmp_path):
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *a, **kw: 0)
     monkeypatch.setattr('api_agent.runtime.operation.sys.prefix', str(tmp_path / '.venv'))
     runner = local_operation(SimpleNamespace(base_root=tmp_path),
-        resolve=lambda: Config({'API_LISTENER_URL': 'https://agent.example/cb'}),
+        resolve=lambda: Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'}),
         argv=(), scope='scope', ownership_directory=tmp_path)
     async def scenario():
         with pytest.raises(RuntimeError, match='interpreter_handoff_required'):
@@ -508,7 +530,7 @@ def test_first_and_repeated_cancellation_during_cleanup_propagates_after_drain(r
 
 def test_port_zero_is_not_silently_replaced_with_443():
     with pytest.raises(ValueError, match='invalid_callback_uri'):
-        callback_endpoint(Config({'API_LISTENER_URL': 'https://agent.example:0/cb'}))
+        callback_endpoint(Config({'AGENT_DJANGO_URL': 'https://agent.example:0/cb'}))
 
 
 def test_factory_rejects_wrong_interpreter_before_nested_handoff(monkeypatch, tmp_path):
@@ -517,7 +539,7 @@ def test_factory_rejects_wrong_interpreter_before_nested_handoff(monkeypatch, tm
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *a, **kw: calls.append('nested-launch'))
     monkeypatch.setattr('api_agent.runtime.operation.sys.prefix', str(tmp_path / 'wrong'))
     runner = local_operation(SimpleNamespace(base_root=tmp_path),
-        resolve=lambda: Config({'API_LISTENER_URL': 'https://agent.example/cb'}),
+        resolve=lambda: Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'}),
         argv=(), scope='scope', ownership_directory=tmp_path)
     async def scenario():
         with pytest.raises(RuntimeError, match='interpreter_handoff_required'):
