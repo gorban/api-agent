@@ -8,7 +8,7 @@ from rich.text import Text
 from api_agent.config.declarations import UNSET
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen, ModalScreen
 from textual.widgets import Button, DataTable, Footer, Input, Static
 
@@ -169,7 +169,13 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                 for key, label in self.actions:
                     yield Button(label, id=key)
             yield Static("", id="error", markup=False)
-        yield ButtonFooter()
+        if self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
+            with Vertical(id="menu-bottom-bar"):
+                yield Static("Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.",
+                             id="pack-bootstrap", markup=False)
+                yield ButtonFooter()
+        else:
+            yield ButtonFooter()
 
     def on_mount(self):
         if self.rows:
@@ -302,6 +308,9 @@ class ApiAgentApp(App[int]):
     .confirmation-actions Button { width: 1fr; }
     #tab-select-hint { width: auto; height: 1; }
     Footer { dock: bottom; width: 100%; }
+    #menu-bottom-bar { dock: bottom; height: auto; }
+    #menu-bottom-bar Footer { dock: none; }
+    #pack-bootstrap { height: auto; color: red; }
     """
 
     def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None):

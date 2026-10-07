@@ -91,3 +91,16 @@ def test_context_retains_launch_origin_with_external_pack(tmp_path):
     make_pack(pack)
     assert load_launch_context(base, pack).launcher_root == base
     assert load_launch_context(base, pack, pack).launcher_root == pack
+
+
+def test_bootstrap_hint_only_without_explicit_pack(tmp_path):
+    base = tmp_path / 'base'
+    base.mkdir()
+    demo = base / 'demo'
+    demo.mkdir()
+    (demo / 'pack.toml').write_text('version=1\nid="demo"\nconfig="config.toml"\n')
+    (demo / 'config.toml').write_text('version=1\n')
+    assert load_launch_context(base).show_pack_bootstrap
+    assert load_launch_context(base, launcher_root=base).show_pack_bootstrap
+    assert not load_launch_context(base, demo).show_pack_bootstrap
+    assert not load_launch_context(base, launcher_root=demo).show_pack_bootstrap

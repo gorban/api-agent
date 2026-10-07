@@ -973,3 +973,24 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
             await pilot.pause()
             assert 'UI_NX_APP' not in rows()
     asyncio.run(scenario())
+
+
+def test_main_menu_bootstrap_hint_docked_above_footer_only_when_needed(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path)
+        app.context.show_pack_bootstrap = True
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            warning = app.screen.query_one('#pack-bootstrap', Static)
+            footer = app.screen.query_one('Footer')
+            assert warning.region.bottom == footer.region.y
+            assert footer.region.bottom == app.screen.content_region.bottom
+            assert 'RESOURCE_PACK_DIR' in str(warning.render())
+            app.show('unavailable', 'Status', actions=(('menu', 'Main menu'),))
+            await pilot.pause()
+            assert not app.screen.query('#pack-bootstrap')
+            app.context.show_pack_bootstrap = False
+            app.show_menu()
+            await pilot.pause()
+            assert not app.screen.query('#pack-bootstrap')
+    asyncio.run(scenario())
