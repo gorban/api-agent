@@ -1144,3 +1144,28 @@ def test_start_shortcut_e2e_requires_acceptance_with_selected_count(tmp_path):
             assert '1 tests selected to run' in str(app.screen.query_one('#body', Static).content)
             assert E2E_WARNING in str(app.screen.query_one('#body', Static).content)
     asyncio.run(scenario())
+
+
+def test_running_results_stay_mounted_and_horizontal_scroll_stays_inside_table(tmp_path):
+    from textual.containers import VerticalScroll
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            key = 'base::' + 'very_long_test_name_' * 15
+            app.unit_rows = {key: ('PENDING', key, '')}
+            app.show_unit_results(app.unit_progress())
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one(DataTable)
+            position = table.region
+            viewport = screen.query_one('#workbench-content', VerticalScroll)
+            assert table.max_scroll_x > 0
+            assert viewport.max_scroll_y == 0, (viewport.size, viewport.content_size, [(w.id, w.region, w.outer_size, w.display) for w in viewport.children])
+            app.show_unit_results(app.unit_progress())
+            await pilot.pause()
+            assert app.screen is screen
+            assert app.screen.query_one(DataTable) is table
+            assert table.region == position
+            assert viewport.max_scroll_y == 0, (viewport.size, viewport.content_size, [(w.id, w.region, w.outer_size, w.display) for w in viewport.children])
+    asyncio.run(scenario())
