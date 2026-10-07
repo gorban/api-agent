@@ -26,6 +26,9 @@ class LaunchTests(unittest.TestCase):
             self.assertNotIn(option, output)
         self.assertNotIn('--e2e-browser-resolution', output)
         self.assertNotIn('Configuration options:', output)
+        for text in ('Positional test selectors require', 'Explicit unit mode can bypass',
+                     'validates collection requirements', 'NO_STD_IN=True requires', 'E2E_RERUNS'):
+            self.assertNotIn(text, output)
 
     def test_option_consumption_preserves_selectors(self):
         self.assertEqual(_extract_option(['--resource-pack-dir=/a b', '--help', 'x'],

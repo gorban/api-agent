@@ -73,6 +73,7 @@ pack_only = true
 help = "Base runtime location, resolved relative to the pack root."
 
 [fields.E2E_RERUNS]
+help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires human acceptance."
 type = "int"
 default = 0
 validation = "nonnegative"

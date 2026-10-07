@@ -154,10 +154,5 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
                   'Modes: run-local starts local services/UI; unit runs base plus pack units;',
                   'integration and e2e select pack suites; allure opens reports; deployment-logs shows deployment logs;',
                   'config-cleanup reviews persisted options; unattended-auth configures credential profiles.', '',
-                  'Positional test selectors require an explicit test mode from .env, environment, or CLI.',
-                  'Explicit unit mode can bypass its picker; integration/E2E execution retains an interactive picker.',
-                  '--collect-only validates collection requirements and skips execution acceptance.',
-                  'NO_STD_IN=True requires TUI_MODE and rejects integration/E2E execution, except collection-only.',
-                  'E2E execution requires human acceptance; E2E_RERUNS applies only to E2E; unit/integration never retry.',
                   ])
     return '\n'.join(lines)
