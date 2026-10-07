@@ -321,7 +321,7 @@ class ApiAgentApp(App[int]):
             branch = self.branches.get(root)
             return f"{root} ({branch})" if branch else str(root)
         return (f"Base: {path_with_branch(self.context.base_root)}\n"
-                f"Pack: {self.context.pack_id}: {path_with_branch(self.context.pack_root)}")
+                f"Pack: {path_with_branch(self.context.pack_root)}")
 
     def target_summary(self):
         return "Target .env files:\n" + "\n".join(

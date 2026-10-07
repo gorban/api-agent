@@ -558,7 +558,7 @@ def test_identity_paths_include_checkout_branches(tmp_path):
     with patch('api_agent.runtime.worktrees.checkout_branch', return_value='feature/rewrite'):
         app = fixture(tmp_path)
     assert app.identity_summary() == (f"Base: {tmp_path} (feature/rewrite)\n"
-                                      f"Pack: fixture: {tmp_path} (feature/rewrite)")
+                                      f"Pack: {tmp_path} (feature/rewrite)")
     with patch('api_agent.runtime.worktrees.checkout_branch', return_value='detached HEAD'):
         app = fixture(tmp_path)
     assert '(detached HEAD)' in app.identity_summary()
@@ -569,7 +569,7 @@ def test_identity_omits_parentheses_when_git_branch_check_fails(tmp_path):
     from api_agent.runtime.worktrees import WorktreeGateError
     with patch('api_agent.runtime.worktrees.checkout_branch', side_effect=WorktreeGateError('cannot check')):
         app = fixture(tmp_path)
-    assert app.identity_summary() == f"Base: {tmp_path}\nPack: fixture: {tmp_path}"
+    assert app.identity_summary() == f"Base: {tmp_path}\nPack: {tmp_path}"
 
 
 def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
