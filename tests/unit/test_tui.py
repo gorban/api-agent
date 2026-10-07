@@ -338,3 +338,25 @@ def test_required_auth_does_not_enter_execution_or_general_checklist(tmp_path):
             assert "UNATTENDED_AUTH is required" in str(app.screen.query_one("#body", Static).render())
             assert not calls
     asyncio.run(scenario())
+
+
+def test_quit_dialog_from_configuration_checklist(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("q")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "n"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            await pilot.press("q")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "y"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert app.return_value == 3
+            assert app.collection_cancel.is_set()
+    asyncio.run(scenario())

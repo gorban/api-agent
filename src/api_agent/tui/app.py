@@ -88,6 +88,10 @@ class WorkbenchScreen(Screen):
         self.refresh_bindings()
 
     def check_action(self, action, parameters):
+        # Textual evaluates underlying screen bindings while a modal is open.
+        # Their contextual actions must not inspect the modal as this screen.
+        if self.app.screen is not self:
+            return False
         if action == "back_to_configuration":
             return self.kind == "input"
         if action == "close_view" and self.kind == "input":
