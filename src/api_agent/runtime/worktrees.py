@@ -120,6 +120,16 @@ def _dirty(root: Path) -> tuple[float | None, str | None, tuple[str, ...]]:
     return newest, newest_path, tuple(missing)
 
 
+def _same_directory(left: Path, right: Path) -> bool:
+    """Compare filesystem identity, including bind-mount aliases such as /home."""
+    if left == right:
+        return True
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
 def inspect_worktrees(roots: Sequence[Path]) -> tuple[RepositoryReport, ...]:
     """Inspect only registered worktrees, deduplicating selected Git roots."""
     if shutil.which("git") is None:
@@ -128,11 +138,11 @@ def inspect_worktrees(roots: Sequence[Path]) -> tuple[RepositoryReport, ...]:
     for root in roots:
         root = Path(root).resolve()
         top = Path(os.fsdecode(_git(root, "rev-parse", "--show-toplevel")).removesuffix("\n")).resolve()
-        if not root.is_relative_to(top):
+        if not any(_same_directory(parent, top) for parent in (root, *root.parents)):
             raise WorktreeGateError(
                 f"Selected launcher path {root} does not belong to discovered Git root {top}."
             )
-        if top not in selected_roots:
+        if not any(_same_directory(top, existing) for existing in selected_roots):
             selected_roots.append(top)
     if not selected_roots:
         raise WorktreeGateError("No selected repository roots were supplied to the worktree gate.")
@@ -155,15 +165,14 @@ def inspect_worktrees(roots: Sequence[Path]) -> tuple[RepositoryReport, ...]:
                 continue
             try:
                 actual_top = Path(os.fsdecode(_git(root, "rev-parse", "--show-toplevel")).removesuffix("\n")).resolve()
-                if actual_top != root:
+                if not _same_directory(actual_top, root):
                     raise WorktreeGateError(f"Registered checkout {root} resolves to another Git root {actual_top}.")
                 actual_common_dir = Path(os.fsdecode(_git(
                     root, "rev-parse", "--path-format=absolute", "--git-common-dir"
                 )).removesuffix("\n")).resolve()
-                if actual_common_dir != common_dir:
+                if not _same_directory(actual_common_dir, common_dir):
                     raise WorktreeGateError(
-                        f"Registered checkout {root} belongs to an unrelated repository "
-                        f"(Git common directory {actual_common_dir}; expected {common_dir})."
+                        f"Registered checkout {root} belongs to an unrelated repository."
                     )
                 sha = _git(root, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
                 commit = float(_git(root, "show", "-s", "--format=%ct", "HEAD").strip())
@@ -173,7 +182,7 @@ def inspect_worktrees(roots: Sequence[Path]) -> tuple[RepositoryReport, ...]:
                 raise WorktreeGateError(f"Registered runnable checkout {root} cannot be verified{state}: {exc}") from exc
             branch = os.fsdecode(entry.get(b"branch", b"detached HEAD"))
             checkouts.append(CheckoutReport(root, branch, sha, commit, dirty, path, missing,
-                                            root == selected, locked=locked, prunable=prunable))
+                                            _same_directory(root, selected), locked=locked, prunable=prunable))
         if not any(c.selected for c in checkouts):
             raise WorktreeGateError(f"Selected checkout {selected} is absent from Git's registered runnable worktrees.")
         latest = max(c.timestamp for c in checkouts if not c.bare)
@@ -189,23 +198,13 @@ def _date(timestamp: float | None) -> str:
 
 
 def format_report(reports: Sequence[RepositoryReport]) -> str:
-    lines = ["Worktree provenance (observable commit/file timestamps):"]
+    lines = ["The running folders:"]
+    lines.extend(f"  {report.selected_root}" for report in reports)
+    lines.extend(["", "", "don't match the latest worktrees:"])
     for report in reports:
-        lines.append(f"Repository selected: {report.selected_root}")
-        for checkout in report.checkouts:
-            markers = ", ".join(x for x, enabled in (("SELECTED", checkout.selected), ("NEWEST", checkout.newest)) if enabled)
-            lines.append(f"  {str(checkout.root)!r} [{markers}] {checkout.branch} HEAD={checkout.sha or 'n/a'}")
-            lines.append(f"    rank={_date(checkout.timestamp)}; reason={checkout.reason}")
-            if not checkout.bare:
-                lines.append(f"    commit={_date(checkout.commit_timestamp)}; eligible dirty={_date(checkout.dirty_timestamp)}")
-            if checkout.locked is not None:
-                lines.append(f"    locked: {checkout.locked or 'yes'}")
-            if checkout.prunable is not None:
-                lines.append(f"    prunable: {checkout.prunable or 'yes'}")
-            if checkout.missing_paths:
-                lines.append(f"    absent dirty paths {checkout.missing_paths!r}: no recoverable deletion timestamp")
-    lines.append("Ordering cannot recover modification dates for deleted files or rename sources.")
+        lines.extend(f"  {checkout.root}" for checkout in report.checkouts if checkout.newest and not checkout.bare)
     return "\n".join(lines)
+
 
 
 def verify_worktrees(
@@ -215,7 +214,7 @@ def verify_worktrees(
     reports = inspect_worktrees(roots)
     if not any(r.stale for r in reports):
         return
-    stdout.write(format_report(reports) + "\nSelected checkout is older. Continue using it? Type y: ")
+    stdout.write(format_report(reports) + "\n\nContinue using the running folders? [y/N]: ")
     stdout.flush()
     try:
         answer = stdin.readline() if stdin is not None else ""

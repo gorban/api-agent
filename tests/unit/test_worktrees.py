@@ -72,11 +72,21 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(reports[0].stale)
         self.assertFalse(reports[1].stale)
         rendered = gate.format_report(reports)
-        self.assertIn("SELECTED", rendered)
-        self.assertIn("NEWEST", rendered)
-        self.assertIn("detached HEAD", rendered)
-        self.assertIn("abc123", rendered)
-        self.assertIn("UTC", rendered)
+        self.assertIn("The running folders:\n  /base\n  /pack", rendered)
+        self.assertIn("don't match the latest worktrees:\n  /base-new\n  /pack", rendered)
+        self.assertNotIn(".git", rendered)
+
+    def test_common_directory_bind_aliases_have_same_identity(self):
+        sim = GitSimulation({"base": ["/base", "/other"]}, {"/base": 10, "/other": 20})
+        original = sim.git
+        def git(root, *args, **kwargs):
+            if str(root) == '/other' and args == ('rev-parse', '--path-format=absolute', '--git-common-dir'):
+                return b'/alias/.git\n'
+            return original(root, *args, **kwargs)
+        sim.git = git
+        with patch.object(gate.os.path, 'samefile', side_effect=lambda a, b: {str(a), str(b)} == {'/base/.git', '/alias/.git'}):
+            reports = self.inspect(sim, ['/base'])
+        self.assertTrue(reports[0].stale)
 
     def test_dirty_candidates_ignore_staged_only_and_missing_sources(self):
         strange = 'quote " and newline\n\\file'
@@ -92,7 +102,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(selected.dirty_path, strange)
         self.assertTrue(selected.newest)
         self.assertEqual(selected.missing_paths, ("deleted", "source"))
-        self.assertIn("no recoverable deletion timestamp", gate.format_report([report]))
+        self.assertNotIn(".git", gate.format_report([report]))
         self.assertTrue(all(c[2].get("input", b"").endswith(b"\0") for c in sim.calls if c[1][0] == "check-ignore"))
 
     def test_ties_and_commit_newer_than_file(self):
@@ -172,7 +182,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(reports[0].checkouts[0].bare)
         self.assertIsNone(reports[0].checkouts[0].timestamp)
         self.assertFalse(reports[0].stale)
-        self.assertIn("administrative bare entry; excluded", gate.format_report(reports))
+        self.assertNotIn("/administrative", gate.format_report(reports))
         self.assertFalse(any(root == "/administrative" for root, _, _ in sim.calls))
 
     @unittest.skipUnless(shutil.which("git"), "requires Git CLI")
