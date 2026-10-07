@@ -2,6 +2,8 @@
 
 ## Checklist
 
+- [ ] Review the public provider authentication contracts and unattended authentication integration points. The LLM provider owns its authentication sessions and routes; upstream API-provider extensions own signing, login hints and required identity validation. Implement and verify the handlers and authentication behavior described below.
+
 - [ ] Provide pluggable authentication extensions. The api-agent and UI renderer must work without resource-pack-specific API credentials. The selected LLM provider owns its authentication, token/session handling and optional route setup. Selected upstream API-provider extensions own additional authentication, request validation and optional routes. Keep identities isolated and verify standalone and resource-pack isolation deterministically.
 
 - [ ] Keep local-run startup from executing the test-suite authentication preflight. Whenever a UI session is created, call the selected resource pack authentication hook or its normalized no-op before handing over that session. Initialize unattended LLM provider authentication lazily when an authenticated provider operation first needs it, using a separate headless browser session.
