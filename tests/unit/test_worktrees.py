@@ -126,7 +126,16 @@ class WorktreeTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.WorktreeGateError, "not a repository"):
             self.inspect(sim, ["/unrelated"])
 
-    def test_current_and_stale_require_explicit_y_followed_by_enter(self):
+    def test_unavailable_inspection_silently_skips_approval(self):
+        for error in (gate.WorktreeGateError("Git CLI unavailable"),
+                      OSError("missing checkout"), ValueError("invalid metadata"),
+                      gate.subprocess.CalledProcessError(1, "git")):
+            with self.subTest(error=error), patch.object(gate, "inspect_worktrees", side_effect=error):
+                output = StringIO()
+                gate.verify_worktrees([Path("/base")], stdin=False, stdout=output)
+                self.assertEqual(output.getvalue(), "")
+
+    def test_only_stale_requires_explicit_y_followed_by_enter(self):
         checkout = gate.CheckoutReport(Path("/base"), "main", "abc", 10, None, None, (), True)
         stale = (gate.RepositoryReport(Path("/base"), (checkout,)),)
         with patch.object(gate, "inspect_worktrees", return_value=stale):
@@ -136,9 +145,9 @@ class WorktreeTests(unittest.TestCase):
             gate.verify_worktrees([Path("/base")], stdin=StringIO("y\n"), stdout=StringIO())
         current = (gate.RepositoryReport(Path("/base"), (gate.replace(checkout, newest=True),)),)
         with patch.object(gate, "inspect_worktrees", return_value=current):
-            with self.assertRaises(gate.WorktreeGateError):
-                gate.verify_worktrees([Path("/base")], stdin=False, stdout=StringIO())
-            gate.verify_worktrees([Path("/base")], stdin=StringIO("y\n"), stdout=StringIO())
+            output = StringIO()
+            gate.verify_worktrees([Path("/base")], stdin=False, stdout=output)
+            self.assertEqual(output.getvalue(), "")
 
     def test_both_repositories_display_before_one_approval_and_no_environment_bypass(self):
         reports = tuple(gate.RepositoryReport(Path(root), (
@@ -164,7 +173,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn('The "demo-pack" resource pack requested to run', colored)
         self.assertNotIn("Repository 1", colored)
 
-    def test_current_ties_are_shown_and_still_require_approval(self):
+    def test_current_ties_skip_approval(self):
         checkout = gate.CheckoutReport(Path("/base"), "main", "abc", 10, None, None, (), True, newest=True)
         reports = (gate.RepositoryReport(Path("/base"), (checkout,
                    gate.replace(checkout, root=Path("/other"), selected=False))),)
@@ -172,7 +181,7 @@ class WorktreeTests(unittest.TestCase):
         with patch.object(gate, "inspect_worktrees", return_value=reports):
             gate.verify_worktrees([Path("/base")], stdin=StringIO("y\n"), stdout=output)
         text = output.getvalue()
-        self.assertEqual(text, "WORKTREE APPROVAL\n\nApprove these current checkouts? [y/N] (default No): ")
+        self.assertEqual(text, "")
         self.assertNotIn("Comparison", text)
         self.assertNotIn("/other", text)
 
