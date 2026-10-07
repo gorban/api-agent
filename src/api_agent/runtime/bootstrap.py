@@ -132,7 +132,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  color=_supports_color(sys.stdout),
                                  declaration_paths=[context.base_root / 'cfg/config.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
-            if resource_pack_dir is None and launcher_root is None:
+            if context.show_pack_bootstrap:
                 print('\n' + _colored('Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.',
                                       '31', _supports_color(sys.stdout)))
             return 0

@@ -31,3 +31,22 @@ def test_prepare_once_reexec_and_preserve_arguments(tmp_path):
     with patch('api_agent.runtime.dependencies.sys.prefix', str(environment)), patch('api_agent.runtime.dependencies.subprocess.call') as launch:
         assert ensure_environment(context, []) is None
         launch.assert_not_called()
+
+
+def test_venv_restart_preserves_implicit_demo_selection(tmp_path):
+    base = tmp_path / 'base'
+    base.mkdir()
+    (base / 'pyproject.toml').write_text('[project]\ndependencies=[]\n')
+    environment = base / '.venv'
+    (environment / 'bin').mkdir(parents=True)
+    (environment / 'bin/python').touch()
+    context = SimpleNamespace(base_root=base, pack_root=base / 'demo',
+                              launcher_root=base, external_pack=False, show_pack_bootstrap=True)
+    with patch('api_agent.runtime.dependencies.subprocess.call', return_value=0) as launch:
+        ensure_environment(context, [])
+        command = launch.call_args.args[0]
+        assert '--resource-pack-dir' not in command
+        assert command[-2:] == ['--_launcher-root', str(base)]
+        context.show_pack_bootstrap = False
+        ensure_environment(context, [])
+        assert '--resource-pack-dir' in launch.call_args.args[0]
