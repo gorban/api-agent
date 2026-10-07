@@ -2,6 +2,8 @@
 
 ## Checklist
 
+- [ ] Verify generic authentication contracts independently: upstream API extensions own credential expiry and validation; the selected LLM provider owns its authentication configuration, sessions and routes. Public handlers and live flows remain to be verified.
+
 - [ ] Review the public provider authentication contracts and unattended authentication integration points. The LLM provider owns its authentication sessions and routes; upstream API-provider extensions own signing, login hints and required identity validation. Implement and verify the handlers and authentication behavior described below.
 
 - [x] Provide pluggable authentication extensions. The api-agent and UI renderer must work without resource-pack-specific API credentials. The selected LLM provider owns its authentication, token/session handling and optional route setup. Selected upstream API-provider extensions own additional authentication, request validation and optional routes. Keep identities isolated and verify standalone and resource-pack isolation deterministically.
