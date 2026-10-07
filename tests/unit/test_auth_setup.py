@@ -158,6 +158,35 @@ def test_manager_confirmation_advances_path_enter_saves_cancel_does_not(tmp_path
     asyncio.run(scenario())
 
 
+def test_enter_on_account_and_manager_rows_opens_edit(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            listing = app.screen
+            await pilot.press('enter')
+            await pilot.pause()
+            assert listing.editing == ('LLM User', None)
+            assert str(app.screen.query_one('#auth-form-title', Static).content) == 'Edit account for LLM User'
+            app.screen.query_one('#auth-vault', Input).value = 'Example'
+            app.screen.query_one('#auth-user', Input).value = 'Saved login'
+            await pilot.press('enter')
+            await pilot.pause()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert listing.editing == ('LLM User', 0)
+            assert app.screen.query_one('#auth-user', Input).value == 'Saved login'
+            await pilot.press('escape')
+            await pilot.pause()
+            listing.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert listing.editing == 'manager'
+            assert str(app.screen.query_one('#auth-form-title', Static).content) == 'Edit shared password manager'
+            assert app.focused.id == 'auth-manager'
+    asyncio.run(scenario())
+
+
 def test_account_validation_cancel_and_target_switch(tmp_path):
     async def scenario():
         app = WizardApp(tmp_path, external=True)
