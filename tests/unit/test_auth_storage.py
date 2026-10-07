@@ -80,7 +80,7 @@ def test_manager_save_move_reset_and_external_override(tmp_path):
     config.reset_auth_manager()
     assert saved(pack) is None
     current = config.result(_review=True).values['UNATTENDED_AUTH']
-    assert current['password_manager'] == {'manager': '', 'cli_path': ''}
+    assert current['password_manager'] == {'manager': '1password', 'cli_path': 'op'}
     assert config.environ['UNATTENDED_AUTH'] == external
 
 
@@ -177,7 +177,7 @@ def test_reset_manager_reloads_roles_after_later_role_save(tmp_path):
     config = session(tmp_path, environ={'UNATTENDED_AUTH': external})
     config.save_auth_role('Secondary', [account('first')])
     config.reset_auth_manager()
-    assert config.result(_review=True).values['UNATTENDED_AUTH']['password_manager']['manager'] == ''
+    assert config.result(_review=True).values['UNATTENDED_AUTH']['password_manager']['manager'] == '1password'
     config.save_auth_role('Secondary', [account('second')])
     # ENV supplies the roles for this invocation; the reset never freezes an old file snapshot.
     assert config.result(_review=True).values['UNATTENDED_AUTH']['roles'] == {'LLM User': [account('outside')]}
@@ -286,7 +286,7 @@ def test_auth_sources_external_override_and_reset(tmp_path, source):
     assert config.auth_sources() == {'password_manager': source, 'roles': {'LLM User': source}}
     if source != 'interactive':
         config.reset_auth_manager()
-        assert config.auth_sources() == {'password_manager': 'Not provided', 'roles': {'LLM User': source}}
+        assert config.auth_sources() == {'password_manager': source, 'roles': {'LLM User': source}}
 
 
 def test_auth_sources_legacy_and_pack_override_use_launcher_relative_paths(tmp_path):

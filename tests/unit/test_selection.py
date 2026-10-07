@@ -83,3 +83,43 @@ def test_startup_file_selection_leaves_all_unchecked_and_expands_new_file_member
     selection_state.refresh_for_run(identities() + [new])
     assert new in selection_state.selected_tests
     assert 'repo::b.py::test_c' not in selection_state.selected_ids
+
+
+@pytest.mark.parametrize('selector,expanded', [
+    ('repo::only.py::test_one', set()),
+    ('repo::only.py', {'repo::only.py::test_two'}),
+    ('tag:shared', {'repo::other.py::test_two'}),
+])
+def test_startup_full_coverage_does_not_infer_all_intent(selector, expanded):
+    original = TestIdentity('repo::only.py::test_one', 'repo', 'only.py', 'only.py::test_one', {'shared'})
+    selection_state = SelectionModel([original])
+    selection_state.preselect([selector])
+    assert 'all' not in selection_state.selected_scopes
+    additions = [TestIdentity('repo::only.py::test_two', 'repo', 'only.py', 'only.py::test_two'),
+                 TestIdentity('repo::other.py::test_two', 'repo', 'other.py', 'other.py::test_two', {'shared'}),
+                 TestIdentity('repo::unrelated.py::test_three', 'repo', 'unrelated.py', 'unrelated.py::test_three')]
+    selection_state.refresh_for_run([original, *additions])
+    assert selection_state.selected_ids == {original.id} | expanded
+
+
+def test_qualified_tag_refresh_stays_within_repository():
+    base = TestIdentity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one', {'shared'})
+    pack = TestIdentity('pack::a.py::test_one', 'pack', 'a.py', 'a.py::test_one', {'shared'})
+    selection_state = SelectionModel([base, pack])
+    selection_state.preselect(['base::tag:shared'])
+    assert selection_state.selected_scopes == {'base::tag:shared'}
+    additions = [TestIdentity('base::b.py::test_new', 'base', 'b.py', 'b.py::test_new', {'shared'}),
+                 TestIdentity('pack::b.py::test_new', 'pack', 'b.py', 'b.py::test_new', {'shared'})]
+    selection_state.refresh_for_run([base, pack, *additions])
+    assert selection_state.selected_ids == {base.id, additions[0].id}
+
+
+def test_qualified_tag_scope_clears_when_last_member_is_deselected():
+    old = TestIdentity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one', {'shared'})
+    selection_state = SelectionModel([old])
+    selection_state.preselect(['base::tag:shared'])
+    selection_state.toggle(old.id)
+    assert not selection_state.selected_scopes
+    new = TestIdentity('base::b.py::test_new', 'base', 'b.py', 'b.py::test_new', {'shared'})
+    selection_state.refresh_for_run([old, new])
+    assert not selection_state.selected_ids

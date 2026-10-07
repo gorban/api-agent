@@ -66,9 +66,9 @@ def _git(root: Path, *args: str, allowed: tuple[int, ...] = (0,), input: bytes |
     try:
         result = subprocess.run(
             ["git", "-C", os.fspath(root), *args], capture_output=True, check=False,
-            input=input, env=environment
+            input=input, env=environment, timeout=5
         )
-    except OSError as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
         raise WorktreeGateError(f"Cannot run Git for {root}: {exc}") from exc
     if result.returncode not in allowed:
         error = os.fsdecode(result.stderr).strip()

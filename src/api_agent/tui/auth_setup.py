@@ -290,6 +290,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def _refresh(self):
         self._load()
         table = self.query_one('#auth-table', DataTable)
+        manager = self.query_one('#auth-manager-table', DataTable)
+        scroll = ((table.scroll_x, table.scroll_y), (manager.scroll_x, manager.scroll_y))
         sources = self.app.session.auth_sources()
         selected = self.editing if isinstance(self.editing, tuple) else self._selected()
         rows = []
@@ -307,12 +309,18 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
                 if selected and selected[0] == role and index == min(selected[1] if selected[1] is not None else len(entries) - 1, len(entries) - 1):
                     cursor = len(rows) - 1
         replace_auth_rows(table, ('Role', 'Index', 'Vault', 'Login / item', 'Source'), rows)
-        table.move_cursor(row=cursor)
-        manager = self.query_one('#auth-manager-table', DataTable)
+        table.move_cursor(row=cursor, scroll=False)
         replace_auth_rows(manager, ('Password manager', 'CLI path', 'Source'), [
             ('manager', (self.manager['manager'] or '-', self.manager['cli_path'] or '-', sources['password_manager']))])
+        self.call_after_refresh(lambda: self._restore_table_scroll(scroll))
         self._error(self.load_error)
         self._refresh_target()
+
+    def _restore_table_scroll(self, scroll):
+        for table, (x, y) in zip((self.query_one('#auth-table', DataTable),
+                                  self.query_one('#auth-manager-table', DataTable)), scroll):
+            table.scroll_to(x=min(x, table.max_scroll_x), y=min(y, table.max_scroll_y),
+                            animate=False, force=True)
 
     def _fit_tables(self):
         if not self.is_mounted:
@@ -418,6 +426,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         if not 0 <= destination < len(self.entries[role]):
             return
         entries = [dict(item) for item in self.entries[role]]
+        moved = entries[index]
+        occurrence = sum(item == moved for item in entries[:index])
         entries[index], entries[destination] = entries[destination], entries[index]
         try:
             self.app.session.save_auth_role(role, entries)
@@ -428,7 +438,9 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self.changed = True
         self._refresh()
         table = self.query_one('#auth-table', DataTable)
-        row = sum(max(1, len(self.entries[earlier])) for earlier in self.roles[:self.roles.index(role)]) + destination
+        matches = [position for position, item in enumerate(self.entries[role]) if item == moved]
+        selected_index = matches[occurrence] if occurrence < len(matches) else min(destination, len(self.entries[role]) - 1)
+        row = sum(max(1, len(self.entries[earlier])) for earlier in self.roles[:self.roles.index(role)]) + selected_index
         table.move_cursor(row=row)
         table.focus()
 

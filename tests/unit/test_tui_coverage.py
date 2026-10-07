@@ -108,7 +108,7 @@ def test_configuration_action_errors_keep_editable_rows(tmp_path, monkeypatch):
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 4}})
         async with app.run_test() as pilot:
             await pilot.pause()
-            monkeypatch.setattr(app.session, 'set_value', failure('write failed'))
+            monkeypatch.setattr(app.session, 'save_defaults', failure('write failed'))
             await app.accept_default()
             assert 'write failed' in str(app.screen.query_one('#error', Static).render())
             monkeypatch.setattr(app.session, 'unset_saved', failure('unset failed'))
@@ -142,15 +142,18 @@ def test_collection_errors_cancellation_and_selection_refresh(tmp_path):
             await pilot.pause()
             await app.back_to_selection()
             app.mode = 'unit'
-            await app._collect_tests(threading.Event())
+            app.collection_cancel = threading.Event()
+            await app._collect_tests(app.collection_cancel)
             await pilot.pause()
             assert app.screen.heading == 'Collection failed'
             app.collector = failure('collection import failed')
-            await app._collect_tests(threading.Event())
+            app.collection_cancel = threading.Event()
+            await app._collect_tests(app.collection_cancel)
             await pilot.pause()
             assert 'import failed' in str(app.screen.query_one('#body', Static).render())
             stopped = threading.Event()
             stopped.set()
+            app.collection_cancel = stopped
             await app._collect_tests(stopped)
             await pilot.pause()
             assert app.screen.kind == 'collecting'

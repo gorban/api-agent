@@ -97,9 +97,8 @@ def ensure_environment(context, argv, *, collect=False, groups=()):
             raise ValueError(f'Direct URL requirement needs explicit verification: {requirement}')
     fingerprint = hashlib.sha256(json.dumps(wanted).encode()).hexdigest()
     marker = environment / '.api-agent-dependencies'
-    marker_matches = python.is_file() and marker.is_file() and marker.read_text().strip() == fingerprint
-    missing = _installed_requirements(python, wanted) if marker_matches and wanted else wanted
-    ready = marker_matches and not missing
+    missing = _installed_requirements(python, wanted) if python.is_file() and wanted else wanted
+    ready = python.is_file() and not missing
     if not ready:
         print(f'Preparing development tools in {environment}...', file=sys.stderr, flush=True)
         uv = shutil.which('uv')

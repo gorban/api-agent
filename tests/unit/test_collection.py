@@ -122,6 +122,65 @@ def test_cancel_collection_import_reaps_owned_child(tmp_path):
             os.kill(int(pid_file.read_text()), 0)
 
 
+def test_successful_collection_reaps_child_with_closed_output(tmp_path):
+    import os
+    import time
+    if os.name != 'posix':
+        pytest.skip('POSIX process groups required')
+    path = suite(tmp_path)
+    pid_file = tmp_path / 'child.pid'
+    (path / 'test_tiny.py').write_text(
+        'import subprocess, sys\nfrom pathlib import Path\n'
+        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], '
+        'stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
+        f'Path({str(pid_file)!r}).write_text(str(child.pid))\n'
+        'def test_one(): pass\n'
+    )
+    assert len(collect_tests(context(tmp_path), 'unit')) == 1
+    stat = Path('/proc') / pid_file.read_text() / 'stat'
+    assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+
+
+def test_successful_collection_reaps_child_holding_output_pipe(tmp_path):
+    import os
+    import time
+    if os.name != 'posix':
+        pytest.skip('POSIX process groups required')
+    path = suite(tmp_path)
+    pid_file = tmp_path / 'child-pipe.pid'
+    (path / 'test_tiny.py').write_text(
+        'import subprocess, sys\nfrom pathlib import Path\n'
+        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])\n'
+        f'Path({str(pid_file)!r}).write_text(str(child.pid))\n'
+        'def test_one(): pass\n'
+    )
+    start = time.monotonic()
+    assert len(collect_tests(context(tmp_path), 'unit')) == 1
+    assert time.monotonic() - start < 5
+    stat = Path('/proc') / pid_file.read_text() / 'stat'
+    assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+
+
+def test_finished_collector_leader_does_not_wait_for_inherited_pipe(tmp_path):
+    import os
+    import sys
+    import time
+    from api_agent.testing.collection import _run_collection
+    if os.name != 'posix':
+        pytest.skip('POSIX process groups required')
+    marker = tmp_path / 'pipe-child.pid'
+    source = ('import subprocess, sys\nfrom pathlib import Path\n'
+              'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])\n'
+              f'Path({str(marker)!r}).write_text(str(child.pid))\n'
+              'print("collected", flush=True)\n')
+    start = time.monotonic()
+    result = _run_collection([sys.executable, '-c', source], tmp_path, os.environ.copy(), 'repo', None)
+    assert result.returncode == 0 and result.stdout.strip() == 'collected'
+    assert time.monotonic() - start < 5
+    stat = Path('/proc') / marker.read_text() / 'stat'
+    assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+
+
 def test_precancel_does_not_spawn_and_timeout_reaps(tmp_path, monkeypatch):
     import os
     import sys

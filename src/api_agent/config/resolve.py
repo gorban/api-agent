@@ -30,6 +30,21 @@ class ConfigResult:
             raise ConfigError('\n'.join(self.errors))
         return self
 
+def runtime_directory_overrides(context):
+    """Pin the checkout selected before imports; ordinary dotenv cannot retarget it."""
+    return ({'API_AGENT_DIR': str(context.base_root)}
+            if getattr(context, 'bootstrap_source', None) is not None else {})
+
+def retain_runtime_directory(result, context):
+    from dataclasses import replace
+    source = getattr(context, 'bootstrap_source', None)
+    if source is None or 'API_AGENT_DIR' not in result.fields:
+        return result
+    fields = dict(result.fields)
+    fields['API_AGENT_DIR'] = replace(fields['API_AGENT_DIR'], source=source,
+                                         explicit=context.bootstrap_explicit)
+    return replace(result, fields=fields)
+
 def format_enum_values(values):
     return ', '.join('<blank>' if value == '' else str(value) for value in values)
 

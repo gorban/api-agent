@@ -221,6 +221,6 @@ class LaunchTests(unittest.TestCase):
                         resolved = resolve_config(resolve.call_args.args[0], **kwargs)
                         self.assertEqual(resolved.fields['PACK_FLAG'].source, 'pack_default')
                         self.assertFalse(resolved.fields['PACK_FLAG'].explicit)
-                        self.assertEqual(resolved.fields['API_AGENT_DIR'].source, 'dotenv')
-                        self.assertEqual(resolved.values['API_AGENT_DIR'], (pack / '../chosen-base').resolve())
+                        self.assertEqual(kwargs['overrides']['API_AGENT_DIR'], str(ROOT.resolve()))
+                        self.assertEqual(resolved.values['API_AGENT_DIR'], ROOT.resolve())
                         self.assertEqual(gate.call_args.args[0], [ROOT.resolve(), pack.resolve(), owner.resolve()])

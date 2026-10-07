@@ -4,10 +4,10 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import signal
 import time
 import sys
 import tempfile
+from .processes import finalize
 
 
 class CollectionError(ValueError):
@@ -73,26 +73,7 @@ def select_tests(tests, selectors=()):
 
 def _stop_collection(process):
     """Terminate only this collector's process group and reap its leader."""
-    def send(sig):
-        try:
-            if os.name == "posix":
-                os.killpg(process.pid, sig)
-            elif sig == signal.SIGTERM:
-                process.terminate()
-            else:
-                process.kill()
-        except ProcessLookupError:
-            pass
-    send(signal.SIGTERM)
-    try:
-        process.communicate(timeout=0.5)
-    except subprocess.TimeoutExpired:
-        send(signal.SIGKILL)
-        process.communicate(timeout=5)
-    finally:
-        # A descendant can ignore TERM after the leader has exited.
-        if os.name == "posix":
-            send(signal.SIGKILL)
+    return finalize(process, communicate=True)
 
 
 def _run_collection(args, root, env, repo, cancel_event, timeout=120):
@@ -114,8 +95,12 @@ def _run_collection(args, root, env, repo, cancel_event, timeout=120):
                 raise CollectionError(f"Pytest collection for {repo} exceeded {timeout} seconds; inspect collection hooks/imports")
             try:
                 stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                _stop_collection(process)
                 return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
             except subprocess.TimeoutExpired:
+                if process.poll() is not None:
+                    stdout, stderr = _stop_collection(process)
+                    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
                 continue
     except BaseException:
         _stop_collection(process)

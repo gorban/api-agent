@@ -32,6 +32,37 @@ def _extract_option(argv, names):
     return remaining, selected
 
 
+def _bind_runtime_directory(context, argv, environ):
+    """Only a pack launcher selects code through API_AGENT_DIR."""
+    from dataclasses import replace
+    from api_agent.config.dotenv import read_dotenv
+    _, explicit = _extract_option(list(argv), {'--api-agent-dir', '--api_agent_dir'})
+    pack_launcher = context.external_pack and context.launcher_root != context.base_root
+    if pack_launcher:
+        saved = read_dotenv(context.pack_root / '.env')
+        if explicit is not None:
+            raw, source, provided = explicit, 'cli', True
+        elif 'API_AGENT_DIR' in environ:
+            raw, source, provided = environ['API_AGENT_DIR'], 'environment', True
+        elif 'API_AGENT_DIR' in saved:
+            raw = saved['API_AGENT_DIR']
+            source = '../' + os.path.relpath(context.pack_root / '.env', context.launcher_root.parent)
+            provided = True
+        else:
+            raw, source, provided = '../api-agent', 'shared_default', False
+    else:
+        raw, source, provided = explicit, 'cli' if explicit is not None else 'source_checkout', explicit is not None
+    if raw is not None:
+        if not raw.strip():
+            raise ValueError('API_AGENT_DIR requires a nonempty directory value')
+        selected = Path(raw).expanduser()
+        selected = (selected if selected.is_absolute() else context.pack_root / selected).resolve()
+        if selected != context.base_root:
+            raise ValueError('API_AGENT_DIR does not match the running checkout. '
+                             'Use the resource-pack launcher to select another api-agent checkout.')
+    return replace(context, bootstrap_source=source, bootstrap_explicit=provided)
+
+
 def resource_pack_main(argv=None, *, launcher_root):
     """Resolve base checkout, then execute its source entry point with this Python."""
     from api_agent.config.dotenv import read_dotenv
@@ -73,6 +104,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     """Validate foundation contracts; later segments provide actual operations."""
     from api_agent.config import (compose_schema, load_declarations, load_shared_schema,
                                       read_dotenv, resolve_config)
+    from api_agent.config.resolve import runtime_directory_overrides, retain_runtime_directory
     from api_agent.runtime.resource_pack import load_launch_context
     from api_agent.runtime.worktrees import verify_worktrees, WorktreeGateError
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -95,6 +127,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  'with the current Python, or use a resource-pack launcher with API_AGENT_DIR.')
             base_root = candidate
         context = load_launch_context(Path(base_root).resolve(), resource_pack_dir, launcher_root)
+        context = _bind_runtime_directory(context, argv, os.environ)
         if not _worktrees_verified:
             verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout,
                              resource_pack_name=context.pack_id if context.external_pack else None)
@@ -108,7 +141,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             dotenv.update(read_dotenv(path))
         result = resolve_config(schema, argv=argv, environ=os.environ,
                                 dotenv=dotenv, anchors=context.anchors,
-                                interactive=True, pack_launcher=context.external_pack)
+                                interactive=True, pack_launcher=context.external_pack,
+                                overrides=runtime_directory_overrides(context))
+        result = retain_runtime_directory(result, context)
         errors = list(result.errors)
         if result.values.get('NO_STD_IN') and not result.help_requested:
             errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}'

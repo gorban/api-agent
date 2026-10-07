@@ -761,6 +761,57 @@ def test_reorder_hidden_for_singleton_and_failed_save_preserves_selection(tmp_pa
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('source', ['environment', 'cli'])
+def test_reorder_override_keeps_account_identity_for_following_remove(tmp_path, source):
+    async def scenario():
+        external = json.dumps({'roles': {'LLM User': [account('A'), account('B')]}})
+        app = WizardApp(tmp_path, environ={'UNATTENDED_AUTH': external} if source == 'environment' else None,
+                        argv=(f'--unattended-auth={external}',) if source == 'cli' else ())
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one('#auth-table', DataTable)
+            assert str(table.get_row_at(table.cursor_row)[3]) == 'A'
+            await pilot.press(']')
+            await pilot.pause()
+            assert saved(app.session.dotenv_path)['roles']['LLM User'] == [account('B'), account('A')]
+            assert screen.entries['LLM User'] == [account('A'), account('B')]
+            assert str(table.get_row_at(table.cursor_row)[3]) == 'A'
+            await pilot.press('r')
+            await pilot.pause()
+            assert saved(app.session.dotenv_path)['roles']['LLM User'] == [account('B')]
+            assert screen.entries['LLM User'] == [account('A'), account('B')]
+    asyncio.run(scenario())
+
+
+def test_edit_save_preserves_both_table_scroll_offsets(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        app.session.save_auth_role('LLM User', [account(str(i) + 'x' * 140) for i in range(30)])
+        app.session.save_auth_manager({'manager': 'keeper', 'cli_path': '/' + 'p' * 160})
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            listing = app.screen
+            users = listing.query_one('#auth-table', DataTable)
+            manager = listing.query_one('#auth-manager-table', DataTable)
+            users.move_cursor(row=20)
+            users.scroll_to(x=50, y=20, animate=False)
+            manager.scroll_to(x=30, animate=False)
+            await pilot.pause()
+            before = (users.scroll_x, users.scroll_y, manager.scroll_x, manager.scroll_y)
+            assert before[0] > 0 and before[1] > 0 and before[2] > 0
+            users.focus()
+            await pilot.press('e')
+            await pilot.pause()
+            app.screen.query_one('#auth-user', Input).value = 'saved-' + 'x' * 140
+            app.screen.query_one('#auth-save', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen is listing
+            assert (users.scroll_x, users.scroll_y, manager.scroll_x, manager.scroll_y) == before
+    asyncio.run(scenario())
+
+
 def test_manager_starts_unselected_and_path_defaults_follow_selection(tmp_path):
     async def scenario():
         app = WizardApp(tmp_path)

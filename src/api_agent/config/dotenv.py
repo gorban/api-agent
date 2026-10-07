@@ -1,5 +1,23 @@
 """Read literal .env assignments without expansion or executing shell code."""
 from pathlib import Path
+import json
+
+def decode_value(value):
+    """Decode generated escaped assignments; keep legacy literal values intact."""
+    marker = ' # api-agent-escaped'
+    if value.endswith(marker):
+        try:
+            decoded = json.loads(value[:-len(marker)])
+            if not isinstance(decoded, str):
+                raise ValueError()
+            return decoded
+        except ValueError:
+            raise ValueError('invalid escaped quoted value') from None
+    if value.startswith(('"', "'")):
+        if len(value) < 2 or value[-1] != value[0]:
+            raise ValueError('unclosed quoted value')
+        value = value[1:-1]
+    return value
 
 def read_dotenv(path):
     path = Path(path)
@@ -16,9 +34,8 @@ def read_dotenv(path):
         if not separator or not key.strip().isidentifier():
             raise ValueError(f'{path}:{line_number}: expected KEY=value')
         value = value.strip()
-        if value.startswith(('"', "'")):
-            if len(value) < 2 or value[-1] != value[0]:
-                raise ValueError(f'{path}:{line_number}: unclosed quoted value')
-            value = value[1:-1]
-        result[key.strip()] = value
+        try:
+            result[key.strip()] = decode_value(value)
+        except ValueError as error:
+            raise ValueError(f'{path}:{line_number}: {error}') from None
     return result
