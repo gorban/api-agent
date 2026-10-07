@@ -106,7 +106,6 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
             print('\nBootstrap: --resource-pack-dir PATH selects a resource pack independently of CWD.\n'
-                  'Fresh-worktree verification precedes help and every operation.\n'
                   'Foundation only: TUI, test collection/execution, servers, and reports are pending Segment B.')
             return 0
         print(f'Validated foundation configuration for {context.name} ({context.pack_root}).')
@@ -152,6 +151,6 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
                   '--collect-only validates collection requirements and skips execution acceptance.',
                   'NO_STD_IN=True requires TUI_MODE and rejects integration/E2E execution, except collection-only.',
                   'E2E execution requires human acceptance; E2E_RERUNS applies only to E2E; unit/integration never retry.',
-                  '', 'Fresh-worktree acceptance uses stdin even with NO_STD_IN=True or --help.', '',
+                  '',
                   'These operation descriptions are contracts: all execution, collection, and UI operations remain pending Segment B.'])
     return '\n'.join(lines)
