@@ -8,11 +8,23 @@ import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
-from api_agent.runtime.bootstrap import _extract_option, main
+from api_agent.runtime.bootstrap import _extract_option, generated_help, main
+from api_agent.config import load_shared_schema
 
 ROOT = Path(__file__).resolve().parents[2]
 
 class LaunchTests(unittest.TestCase):
+    def test_help_is_curated_and_links_full_configuration(self):
+        output = generated_help(load_shared_schema())
+        for option in ('--help', '--no-std-in', '--collect-only', '--tui-mode',
+                       '--e2e-debug', '--auth-browser-debug',
+                       '--unattended-llm-user-index', '--unattended-secondary-user-index'):
+            self.assertIn(option, output)
+        self.assertIn(str(ROOT / 'src/api_agent/config/shared.toml'), output)
+        self.assertNotIn('--ui-source-dir', output)
+        self.assertNotIn('--e2e-browser-resolution', output)
+        self.assertNotIn('Configuration options:', output)
+
     def test_option_consumption_preserves_selectors(self):
         self.assertEqual(_extract_option(['--resource-pack-dir=/a b', '--help', 'x'],
                                        {'--resource-pack-dir'}), (['--help', 'x'], '/a b'))

@@ -102,7 +102,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 print(f'Configuration error: {error}', file=sys.stderr)
             return 2
         if result.help_requested:
-            print(generated_help(schema, pack_launcher=context.external_pack))
+            print(generated_help(schema, pack_launcher=context.external_pack,
+                                 declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
+                                                    context.config_path, context.pack_root / 'pack.toml']))
             print('\nBootstrap: --resource-pack-dir PATH selects a resource pack independently of CWD.\n'
                   'Fresh-worktree verification precedes help and every operation.\n'
                   'Foundation only: TUI, test collection/execution, servers, and reports are pending Segment B.')
@@ -117,28 +119,30 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         return 2
 
 
-def generated_help(schema, *, pack_launcher=False):
-    """Generate options from exactly the schema used by the resolver."""
-    from api_agent.config.declarations import UNSET
-    lines = ['Usage: python launch.py [OPTIONS] [TEST SELECTORS]', '', 'Configuration options:']
-    for name, field in schema.fields.items():
-        if field.pack_only and not pack_launcher:
-            continue
-        option = '--' + name.lower().replace('_', '-')
-        details = [field.type]
-        if field.default is not UNSET:
-            details.append(f'default={field.default!r} ({field.default_source})')
-        if field.enum:
-            details.append('choices=' + ','.join(map(str, field.enum)))
-        if field.anchor:
-            details.append('relative to ' + field.anchor)
-        if field.required or field.required_when:
-            details.append('required' if field.required else f'required when {dict(field.required_when)}')
-        if field.applies_when:
-            details.append(f'applies when {dict(field.applies_when)}')
-        lines.append(f'  {option} ({name}; ' + '; '.join(details) + ')')
-        if field.help:
-            lines.append('      ' + field.help)
+def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
+    """Show CLI behavior and deliberate callouts; declarations own full config docs."""
+    lines = ['Usage: ./launch.py [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
+    callouts = {
+        'HELP': '-h, --help: print help without execution configuration validation.',
+        'NO_STD_IN': '--no-std-in: disable interactive input after the worktree gate.',
+        'COLLECT_ONLY': '--collect-only: list selected tests without running them.',
+        'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
+        'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
+        'AUTH_BROWSER_DEBUG': '--auth-browser-debug: retain headed authentication browsers.',
+        'UNATTENDED_LLM_USER_INDEX': '--unattended-llm-user-index INDEX: select an LLM credential entry (zero-based).',
+        'UNATTENDED_SECONDARY_USER_INDEX': '--unattended-secondary-user-index INDEX: select a secondary credential entry (zero-based).',
+    }
+    for name, description in callouts.items():
+        if name in schema.fields:
+            lines.append('  ' + description)
+    lines.append('  --resource-pack-dir PATH: select the resource-pack root.')
+    if pack_launcher:
+        lines.append('  --api-agent-dir PATH (API_AGENT_DIR): select the base source checkout.')
+    lines.extend(['', 'Debug and credential-index switches skip startup default acknowledgement/persistence.',
+                  'All declared configuration values also accept CLI options; see the executable declarations:'])
+    for path in declaration_paths or [Path(__file__).resolve().parents[1] / 'config/shared.toml']:
+        path = Path(path).resolve()
+        lines.append(f'  [{path.name}]({path})')
     lines.extend(['', 'Option forms: --field-name VALUE, --field_name VALUE, and --field-name=VALUE.',
                   'Boolean switches alone mean True; explicit boolean values must be exactly True or False.',
                   '-h aliases --help. Values starting with -- are treated as option keys, even after =.',
