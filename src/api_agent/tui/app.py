@@ -43,12 +43,12 @@ class ButtonFooter(Footer):
             yield from super().compose()
 
 
-class ButtonNavigation:
-    """Move among buttons by their rendered positions without wrapping at edges."""
+class FocusNavigation:
+    """Directional button navigation and Vim keys for focused tables/scroll panes."""
 
     def on_key(self, event):
         focused = self.app.focused
-        if not isinstance(focused, Button) or focused.screen is not self:
+        if not isinstance(focused, (Button, DataTable, VerticalScroll)) or focused.screen is not self:
             return
         directions = {"up": "up", "k": "up", "down": "down", "j": "down",
                       "left": "left", "h": "left", "right": "right", "l": "right"}
@@ -60,6 +60,17 @@ class ButtonNavigation:
             for binding in self._bindings.key_to_bindings.get(event.key, []):
                 if self.check_action(binding.action, ()) is not False:
                     return
+        if not isinstance(focused, Button):
+            if event.key not in {"h", "j", "k", "l"}:
+                return  # Leave ordinary arrows to the focused widget.
+            if isinstance(focused, DataTable):
+                if direction in {"up", "down"} or focused.allow_horizontal_scroll:
+                    getattr(focused, "action_cursor_" + direction)()
+            else:
+                getattr(focused, "scroll_" + direction)(animate=False)
+            event.prevent_default()
+            event.stop()
+            return
         origin = focused.region
         candidates = []
         for button in self.query(Button):
@@ -82,7 +93,7 @@ class ButtonNavigation:
         event.stop()
 
 
-class QuitDialog(ButtonNavigation, ModalScreen):
+class QuitDialog(FocusNavigation, ModalScreen):
     BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def __init__(self, message="Quit this operation? Enter literal y to confirm; every other response cancels."):
@@ -137,13 +148,14 @@ class StopContainersDialog(QuitDialog):
         yield ButtonFooter()
 
 
-class WorkbenchScreen(ButtonNavigation, Screen):
+class WorkbenchScreen(FocusNavigation, Screen):
     BINDINGS = [Binding("q", "quit_request", "Quit"), Binding("c", "close_view", "Close / menu"),
                 Binding("d", "delete_assignment", "Delete .env assignment"),
                 Binding("s", "switch_target", "Switch target .env"),
                 Binding("a", "accept_default", "Accept default"),
                 Binding("e", "edit_setting", "Edit"),
                 Binding("u", "unset_setting", "Unset"),
+                Binding("b", "back_to_selection", "Back to selection"),
                 Binding("escape", "back_to_configuration", "Back to configuration"),
                 Binding("up,k", "failure_up", "Scroll up", key_display="↑/k"),
                 Binding("down,j", "failure_down", "Scroll down", key_display="↓/j"),
@@ -253,6 +265,9 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         self.query_one("#unit-summary").styles.height = summary_height
         self.query_one(DataTable).styles.height = max(8, available - summary_height)
 
+    async def action_back_to_selection(self):
+        self.app.run_worker(self.app.back_to_selection(), group="collection", exclusive=True)
+
     async def action_start_selected(self):
         await self.app.choose("continue")
 
@@ -261,6 +276,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         # Their contextual actions must not inspect the modal as this screen.
         if self.app.screen is not self:
             return False
+        if action == "back_to_selection":
+            return self.kind == "test-results" and self.test_run_complete and not self.app.test_run_active()
         if action.startswith("failure_"):
             return self.kind == "test-failure"
         if action == "back_to_configuration":
@@ -737,6 +754,21 @@ class ApiAgentApp(App[int]):
             if cancel_event.is_set():
                 return
             self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
+
+    async def back_to_selection(self):
+        if self.test_run_active() or self.selection is None:
+            return
+        self.collection_cancel = threading.Event()
+        self.show("collecting", "Refreshing test selection", "Collecting current tests while preserving your selection.")
+        try:
+            tests = await self.discover_tests(self.collection_cancel)
+            if self.collection_cancel.is_set():
+                return
+            self.selection.refresh_for_run(tests)
+            self.show_selection()
+        except Exception as error:
+            if not self.collection_cancel.is_set():
+                self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
 
     def start_unit_run(self):
         self.operation_status = 3

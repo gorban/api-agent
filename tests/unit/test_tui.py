@@ -1257,3 +1257,75 @@ def test_startup_selectors_open_picker_once_then_menu_reentry_selects_all(tmp_pa
             assert app.selection.selected_tests == (first, second)
             assert calls == [(), ()]
     asyncio.run(scenario())
+
+
+def test_completed_results_back_refreshes_selection_and_keeps_file_scope(tmp_path):
+    from api_agent.testing.selection import SelectionModel
+    from api_agent.testing.runner import UnitRunResult
+    first = Identity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one')
+    other = Identity('base::b.py::test_other', 'base', 'b.py', 'b.py::test_other')
+    added = Identity('base::a.py::test_new', 'base', 'a.py', 'a.py::test_new')
+    unrelated = Identity('base::new.py::test_new', 'base', 'new.py', 'new.py::test_new')
+    async def scenario():
+        app = fixture(tmp_path, collector=lambda *args: [first, other, added, unrelated])
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.mode = 'unit'
+            app.selection = SelectionModel([first, other])
+            app.selection.preselect(['base::a.py'])
+            app.unit_rows = {first.id: ('PASSED', first.id, '1s')}
+            app.unit_result = UnitRunResult(0, (), (), '')
+            app.show_unit_results()
+            await pilot.pause()
+            await pilot.press('b')
+            await pilot.pause()
+            assert app.screen.kind == 'tests'
+            assert app.selection.selected_tests == (first, added)
+            assert len(app.selection.tests) == 4
+            assert not app.selection.groups()[0].selected
+    asyncio.run(scenario())
+
+
+def test_vim_navigation_tables_scroll_panes_and_input_safety(tmp_path):
+    from api_agent.testing.selection import SelectionModel
+    from api_agent.testing.runner import UnitRunResult, CoverageArea
+    from textual.containers import VerticalScroll
+    async def scenario():
+        app = fixture(tmp_path, fields={'LONG_NAME': {'type': 'str', 'default': 'x'}, 'OTHER': {'type': 'str', 'default': 'y'}})
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            await pilot.press('j')
+            await pilot.pause()
+            assert table.cursor_row == 1
+            await pilot.press('k')
+            await pilot.pause()
+            assert table.cursor_row == 0
+            app.mode = 'unit'
+            long_id = 'base::' + 'long_name_' * 30
+            app.unit_rows = {long_id: ('FAILED', long_id, '1s')}
+            app.unit_result = UnitRunResult(1, (), tuple(CoverageArea('base', f'file{i}', 0, 1, 0, 0) for i in range(40)), '')
+            app.show_unit_results()
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            await pilot.press('l')
+            await pilot.pause(.2)
+            assert table.scroll_x > 0
+            await pilot.press('h')
+            await pilot.pause(.2)
+            assert table.scroll_x == 0
+            pane = app.screen.query_one('#unit-summary', VerticalScroll)
+            pane.focus()
+            await pilot.press('j')
+            await pilot.pause()
+            assert pane.scroll_y > 0
+            await pilot.press('k')
+            await pilot.pause()
+            assert pane.scroll_y == 0
+            app.prompt_name = 'LONG_NAME'
+            app.prompt_value = ''
+            app.show('input', 'Edit setting')
+            await pilot.pause()
+            await pilot.press('j', 'k', 'h', 'l')
+            assert app.screen.query_one(Input).value == 'jkhl'
+    asyncio.run(scenario())
