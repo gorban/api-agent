@@ -16,6 +16,8 @@ persist_default = false
 [fields.NO_STD_IN]
 type = "bool"
 default = false
+acknowledge_default = false
+persist_default = false
 help = "Disable interactive input; used for scripted access like from CI or Agents."
 
 [fields.COLLECT_ONLY]

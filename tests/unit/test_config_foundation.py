@@ -100,6 +100,8 @@ def test_pack_only_path_and_metadata(tmp_path):
     assert 'API_AGENT_DIR' not in resolve_config(schema, environ={}).values
     result = resolve_config(schema, environ={}, pack_launcher=True, anchors={'pack_root': tmp_path})
     assert result.values['API_AGENT_DIR'] == (tmp_path / '../api-agent').resolve()
+    assert schema.fields['NO_STD_IN'].acknowledge_default is False
+    assert schema.fields['NO_STD_IN'].persist_default is False
     assert schema.fields['E2E_DEBUG'].acknowledge_default is False
     assert 'UNATTENDED_USER_INDEX' not in schema.fields
     assert resource_pack_schema().fields['UNATTENDED_USER_INDEX'].persist_default is False
