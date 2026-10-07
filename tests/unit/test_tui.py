@@ -64,12 +64,12 @@ def test_cleanup_context_and_deletion(tmp_path):
             await pilot.pause(0.4)
             assert app.screen.kind == "cleanup"
             table = app.screen.query_one(DataTable)
-            assert "UNATTENDED_AUTH" not in [table.get_row_at(i)[1] for i in range(table.row_count)]
-            row = next(i for i in range(table.row_count) if table.get_row_at(i)[1] == "COUNT")
+            assert "UNATTENDED_AUTH" not in [table.get_row_at(i)[0] for i in range(table.row_count)]
+            row = next(i for i in range(table.row_count) if table.get_row_at(i)[0] == "COUNT")
             table.move_cursor(row=row)
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == "X"
+            assert table.get_row_at(row)[0] == "X COUNT"
             await pilot.press("d")
             await pilot.pause(0.4)
             assert not app.screen_stack[-2].check_action("switch_target", ())
@@ -77,15 +77,15 @@ def test_cleanup_context_and_deletion(tmp_path):
             app.screen.query_one(Input).value = "n"
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == "X"
+            assert table.get_row_at(row)[0] == "X COUNT"
             assert "COUNT=" in (tmp_path / ".env").read_text()
             await pilot.press("d")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "y"
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert table.get_row_at(row)[0] == ""
-            assert table.get_row_at(row)[2] == "4"
+            assert table.get_row_at(row)[0] == "COUNT"
+            assert table.get_row_at(row)[1] == "4"
             assert not app.focused_cleanup_present()
             assert "# keep" in (tmp_path / ".env").read_text()
             assert "COUNT=" not in (tmp_path / ".env").read_text()
@@ -872,4 +872,51 @@ def test_button_footer_tab_hint_precedes_shortcuts_without_binding(tmp_path):
             app.show("list", "Settings", rows=(("VALUE", ("VALUE", "", "Not provided")),))
             await pilot.pause()
             assert not app.screen.query("#tab-select-hint")
+    asyncio.run(scenario())
+
+
+def test_cleanup_both_dotenvs_hidden_setting_and_default_review(tmp_path):
+    from api_agent.config.session import ConfigSession
+
+    async def scenario():
+        base, pack = tmp_path / 'base', tmp_path / 'pack'
+        base.mkdir()
+        pack.mkdir()
+        for directory in (base, pack):
+            (directory / '.env').write_text('UI_NX_APP="shell"\nCOUNT="6"\n')
+        app = fixture(tmp_path, 'config-cleanup', fields={
+            'UI_NX_APP': {'type': 'str', 'default': 'agent',
+                          'acknowledge_default': False, 'persist_default': False},
+            'COUNT': {'type': 'int', 'default': 4}})
+        app.context.base_root, app.context.pack_root = base, pack
+        app.context.external_pack = True
+        app.context.dotenv_path = pack / '.env'
+        app.session = ConfigSession(app.context, app.schema, environ=app.session.environ)
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'cleanup'
+            assert not app.screen.query('#dotenv-targets')
+            assert not app.screen.check_action('switch_target', ())
+            table = app.screen.query_one(DataTable)
+            assert len(table.columns) == 3
+            for name in ('UI_NX_APP', 'COUNT'):
+                index = next(i for i in range(table.row_count) if table.get_row_at(i)[0] == name)
+                table.move_cursor(row=index)
+                await pilot.pause()
+                assert app.screen.check_action('delete_marked', ())
+                await pilot.press('d')
+                await pilot.pause()
+                app.screen.query_one(Input).value = 'y'
+                await pilot.press('enter')
+                await pilot.pause()
+                assert not app.focused_cleanup_present()
+                for directory in (base, pack):
+                    assert name + '=' not in (directory / '.env').read_text()
+            await pilot.press('c')
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            table = app.screen.query_one(DataTable)
+            names = [table.get_row_at(i)[0] for i in range(table.row_count)]
+            assert 'COUNT' in names
+            assert 'UI_NX_APP' not in names
     asyncio.run(scenario())

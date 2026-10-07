@@ -83,7 +83,7 @@ def test_cleanup_presence_overrides_duplicates_and_fallback(session):
     session.delete_keys(['VALUE'])
     assert session.result().values['VALUE'] == 5
     session.environ.clear()
-    assert session.result().values['VALUE'] == 2
+    assert session.result().values['VALUE'] == 1
     assert session.dotenv_path.read_text() == '# keep\nUNATTENDED_AUTH={}\n'
     assert session.dotenv_keys() == {'UNATTENDED_AUTH'}
     with pytest.raises(ConfigError):
@@ -119,10 +119,10 @@ def test_switch_target_keeps_pack_precedence_and_tracks_origins(session):
     assert session.result().values['VALUE'] == 3
     assert session.result().fields['VALUE'].source == '../pack/.env'
     session.delete_keys(['VALUE'])
-    assert session.result().values['VALUE'] == 3
+    assert session.result().values['VALUE'] == 1
     rows = {row.name: row for row in session.cleanup_rows()}
     assert not rows['VALUE'].base_present
-    assert rows['VALUE'].pack_present
+    assert not rows['VALUE'].pack_present
     assert not rows['VALUE'].present
     with pytest.raises(ConfigError, match='Unknown dotenv target'):
         session.switch_target(base.parent / 'other.env')

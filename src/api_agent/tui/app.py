@@ -157,7 +157,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                     from api_agent.config.resolve import format_enum_values
                     yield Static(f"Enum ({field.type}) — exact values: {format_enum_values(field.enum)}",
                                  id="enum-info", markup=False)
-            yield Static(app.target_summary(), id="dotenv-targets", markup=False)
+            if self.kind != "cleanup":
+                yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions"):
                 if self.kind == "input" and len(app.session.target_paths) > 1:
                     yield Button("Switch target .env (s outside input)", id="switch-target")
@@ -174,7 +175,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             elif self.kind == "containers":
                 table.add_columns("Selected", "ID", "Name", "Image", "Status")
             elif self.kind == "cleanup":
-                table.add_columns("Current .env", "Setting", "Effective value", "Source")
+                table.add_columns("Setting", "Effective value", "Source")
             else:
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
             for key, cells in self.rows:
@@ -211,7 +212,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         if action == "delete_marked":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
-            return (self.kind in {"defaults", "input", "cleanup"}
+            return (self.kind in {"defaults", "input"}
                     or self.kind == "unavailable" and self.app.mode in {None, "unattended-auth"}) and len(self.app.session.target_paths) > 1
         if action == "skip_setup":
             return self.kind == "suggest"
@@ -239,6 +240,9 @@ class WorkbenchScreen(ButtonNavigation, Screen):
 
     def action_delete_marked(self):
         if self.app.focused_cleanup_present():
+            if not self.app.marked:
+                table = self.query_one(DataTable)
+                self.app.marked.add(str(table.get_row_at(table.cursor_row)[0]).removeprefix("X "))
             self.app.push_screen(DeleteDialog(), lambda yes: self.app.delete_marked() if yes else None)
 
     def action_switch_target(self):
@@ -623,8 +627,8 @@ class ApiAgentApp(App[int]):
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Continue explicitly confirms the selection.", (("continue", "Continue"),), rows)
 
     def show_cleanup(self):
-        rows = [(row.name, ("X" if row.name in self.marked else "✓" if row.present else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
-        self.show("cleanup", "Clear .env configuration", f"Active file: {self.session.dotenv_path}\nEnter marks/unmarks present assignments. d asks for confirmation to delete marked assignments when the focused row exists in this file.", rows=rows)
+        rows = [(row.name, (("X " if row.name in self.marked else "") + row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+        self.show("cleanup", "Clear .env configuration", "Enter marks/unmarks .env settings. d confirms deletion from all agent/resource-pack .env files.", rows=rows)
 
     def focused_cleanup_present(self):
         if self.screen.kind != "cleanup":
@@ -632,8 +636,8 @@ class ApiAgentApp(App[int]):
         table = self.screen.query_one(DataTable)
         if not table.row_count:
             return False
-        key = str(table.get_row_at(table.cursor_row)[1])
-        return any(row.name == key and row.present for row in self.session.cleanup_rows())
+        key = str(table.get_row_at(table.cursor_row)[0]).removeprefix("X ")
+        return any(row.name == key and row.present and str(row.source).endswith("/.env") for row in self.session.cleanup_rows())
 
     def toggle_row(self, key):
         if self.screen.kind == "tests":
@@ -644,7 +648,7 @@ class ApiAgentApp(App[int]):
             table = self.screen.query_one(DataTable)
             table.update_cell(key, next(iter(table.columns)), "✓" if key in self.container_marked else "")
         elif self.screen.kind == "cleanup":
-            if any(row.name == key and row.present for row in self.session.cleanup_rows()):
+            if any(row.name == key and row.present and str(row.source).endswith("/.env") for row in self.session.cleanup_rows()):
                 self.marked.symmetric_difference_update({key})
                 self.refresh_rows()
 
@@ -653,7 +657,7 @@ class ApiAgentApp(App[int]):
         if self.screen.kind == "tests":
             rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
         else:
-            rows = [(row.name, ("X" if row.name in self.marked else "✓" if row.present else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+            rows = [(row.name, (("X " if row.name in self.marked else "") + row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
         for key, cells in rows:
             for column, value in zip(table.columns, cells):
                 table.update_cell(key, column, value)
@@ -727,6 +731,8 @@ class ApiAgentApp(App[int]):
         if self.screen.kind == "suggest" or self.screen.kind == "unavailable" and self.mode is None:
             await self.start_configuration()
         elif self.screen.kind == "input":
+            self.show_configuration()
+        elif self.screen.kind == "cleanup" and self.configuration_pending():
             self.show_configuration()
         elif self.screen.kind == "acceptance":
             self.show_selection()

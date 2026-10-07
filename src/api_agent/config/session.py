@@ -200,7 +200,8 @@ class ConfigSession:
         names = tuple(names)
         if 'UNATTENDED_AUTH' in names:
             raise ConfigError('UNATTENDED_AUTH is managed by authentication setup')
-        DotenvEditor(self.dotenv_path).delete(names)
+        for path in self.target_paths:
+            DotenvEditor(path).delete(names)
         for name in names:
             self._choices.pop(name, None)
         return self.result()
@@ -212,7 +213,7 @@ class ConfigSession:
             result.fields["HELP"] = original.fields["HELP"]
         base = read_dotenv(self.context.base_root / '.env')
         pack = read_dotenv(self.context.pack_root / '.env') if self.context.external_pack else {}
-        selected = read_dotenv(self.dotenv_path)
+        persisted = set().union(*(DotenvEditor(path).keys() for path in self.target_paths))
         return [CleanupRow(name, result.fields.get(name), field, name in base,
-                           name in pack, name in selected)
+                           name in pack, name in persisted)
                 for name, field in self.schema.fields.items() if name != 'UNATTENDED_AUTH']
