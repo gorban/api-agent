@@ -4,7 +4,7 @@ from api_agent.config import (ConfigError, compose_schema, load_declarations, lo
                                  parse_options, read_dotenv, resolve_config, schema_from_dict)
 
 # Synthetic transport prerequisites isolate the unrelated configuration contracts below.
-AUTH = {"API_ENDPOINT": "https://api.example/graphql", "UI_SOURCE_DIR": "/example/frontend"}
+AUTH = {"API_ENDPOINT": "https://api.example/graphql", "ALLURE_S3_BUCKET": "synthetic-results"}
 
 def test_precedence_and_explicit_mode_preserve_positionals():
     result = resolve_config(load_shared_schema(), argv=['--tui_mode=unit', 'one', '--no-std-in', 'False', 'two'],

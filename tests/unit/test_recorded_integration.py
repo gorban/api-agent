@@ -1,0 +1,207 @@
+"""Synthetic hooks join recording, usage and storage without live suites/S3."""
+from datetime import datetime, timedelta, timezone
+import csv
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from api_agent.telemetry.usage import QuotaSnapshot
+from api_agent.testing.collection import TestIdentity
+from api_agent.testing.contracts import TestResult
+from api_agent.testing.integration import IntegrationRunResult
+from api_agent.testing import recorded
+
+
+class Storage:
+    def __init__(self, fail=False):
+        self.calls = []
+        self.fail = fail
+
+    def persist(self, directory, manifest):
+        self.calls.append((directory, manifest))
+        if self.fail:
+            raise RuntimeError('private-provider-error')
+
+
+def fixture(tmp_path):
+    context = SimpleNamespace(owner_root=tmp_path / 'pack')
+    test = TestIdentity('pack::tests/integration/test_api.py::test_listing', 'pack',
+                        'tests/integration/test_api.py', 'tests/integration/test_api.py::test_listing')
+    config = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
+              'ALLURE_RESULTS_DIR': tmp_path / 'artifacts', 'TEST_PARALLEL_JOBS': 0}
+    return context, test, config
+
+
+def fake_runner(status='passed', *, deliver=True):
+    def run(context, tests, **hooks):
+        assert hooks['accepted'] is True and hooks['no_std_in'] is False
+        outcomes = tuple(TestResult(test, status, .25) for test in tests)
+        result = IntegrationRunResult(130 if status == 'cancelled' else int(status != 'passed'),
+                                      outcomes, '', status == 'cancelled')
+        try:
+            hooks['before_run']()
+            if deliver:
+                for outcome in outcomes:
+                    hooks['on_result'](outcome)
+            hooks['after_run'](result)
+        except Exception:
+            result = IntegrationRunResult(result.exit_code or 1, outcomes, 'hook failed', result.cancelled)
+        return result
+    return run
+
+
+@pytest.mark.parametrize('status,expected', [('passed', 'completed'), ('failed', 'failed'), ('cancelled', 'interrupted')])
+def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, status, expected):
+    context, test, config = fixture(tmp_path)
+    config['TOKEN_USAGE_CSV'] = tmp_path / 'external.csv'
+    storage = Storage()
+    instant = datetime(2028, 1, 1, tzinfo=timezone.utc)
+    snapshots = iter([QuotaSnapshot(10, 'window', instant + timedelta(hours=1), instant),
+                      QuotaSnapshot(11.5, 'window', instant + timedelta(hours=1), instant + timedelta(seconds=5))])
+    def prepare(usage):
+        usage.record_prompt(turn_id='turn', prompt_id='initial', kind='initial')
+        usage.add_usage(provider='synthetic_provider', model='selected', session_id='session', input_tokens=2, output_tokens=3)
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True, storage=storage,
+                    quota_fetcher=lambda: next(snapshots), prepare=prepare, runner=fake_runner(status))
+    assert result.exit_code == (130 if status == 'cancelled' else int(status != 'passed'))
+    assert result.persisted and len(storage.calls) == 1
+    assert result.manifest['status'] == expected
+    assert result.usage['pct_point_delta'] == 1.5 and result.usage['cost_per_prompt_usd'] is None
+    summary = json.loads((result.directory / 'usage-summary.json').read_text())
+    assert summary['prompt_count'] == 1 and summary['before']['pct_used'] == 10
+    with (result.directory / 'token-usage.csv').open() as stream:
+        row = list(csv.DictReader(stream))[0]
+    assert row['total_tokens'] == '5'
+    assert (tmp_path / 'external.csv').read_bytes() == (result.directory / 'token-usage.csv').read_bytes()
+    assert {'usage-summary.json', 'token-usage.csv'} <= result.manifest['files'].keys()
+    rows = list(result.directory.glob('*-result.json'))
+    assert len(rows) == 1 and json.loads(rows[0].read_text())['name'] == 'test_listing'
+
+
+@pytest.mark.parametrize('updates,kwargs', [({}, {}), ({}, {'no_std_in': True}),
+       ({'NO_STD_IN': True}, {}), ({'COLLECT_ONLY': True}, {}), ({'TUI_MODE': 'unit'}, {}),
+       ({'TUI_MODE': 'e2e'}, {}), ({}, {'accepted': 'yes'})])
+def test_rejected_modes_and_acceptance_have_no_recording_side_effects(tmp_path, updates, kwargs):
+    context, test, config = fixture(tmp_path)
+    config.update(updates)
+    options = {'accepted': True, **kwargs}
+    if updates == {} and kwargs == {}:
+        options['accepted'] = False
+    with pytest.raises(PermissionError):
+        recorded.run_recorded_integration(context, [test], config, **options)
+    assert not (tmp_path / 'artifacts').exists()
+
+
+@pytest.mark.parametrize('empty', [True, False])
+def test_empty_selection_or_missing_s3_rejected_before_artifacts(tmp_path, empty):
+    context, test, config = fixture(tmp_path)
+    if not empty:
+        config['ALLURE_S3_BUCKET'] = ''
+    with pytest.raises(ValueError):
+        recorded.run_recorded_integration(context, [] if empty else [test], config, accepted=True)
+    assert not (tmp_path / 'artifacts').exists()
+
+
+def test_unavailable_quota_and_missing_callbacks_still_record_zero_prompt_run(tmp_path, monkeypatch):
+    context, test, config = fixture(tmp_path)
+    storage = Storage()
+    options = []
+    def factory(bucket, **kwargs):
+        options.append((bucket, kwargs))
+        return storage
+    monkeypatch.setattr(recorded, 'RunStorage', factory)
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True, runner=fake_runner(deliver=False))
+    assert result.exit_code == 0 and result.persisted
+    assert result.usage['prompt_count'] == 0 and result.usage['cost_per_prompt_usd'] is None
+    assert result.usage['quota_unavailable_reason'] == 'missing_snapshot'
+    assert len(list(result.directory.glob('*-result.json'))) == 1
+    assert options[0][0] == 'synthetic' and options[0][1]['prefix'] == 'allure'
+
+
+def test_quota_failure_is_unavailable_and_storage_failure_fails_operation(tmp_path):
+    context, test, config = fixture(tmp_path)
+    def fail():
+        raise RuntimeError('private-quota-token')
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                   quota_fetcher=fail, storage=Storage(fail=True), runner=fake_runner())
+    assert result.exit_code == 1 and not result.persisted
+    assert result.usage['quota_unavailable_reason'] == 'missing_snapshot'
+    assert 'private-quota-token' not in json.dumps(result.usage)
+    assert 'private-provider-error' not in result.execution.output
+
+
+def test_bad_optional_csv_keeps_primary_usage_and_records_finalization_failure(tmp_path):
+    context, test, config = fixture(tmp_path)
+    config['TOKEN_USAGE_CSV'] = tmp_path
+    storage = Storage()
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                         storage=storage, runner=fake_runner())
+    assert result.exit_code == 1 and result.persisted
+    assert result.manifest['status'] == 'failed'
+    assert 'token-usage.csv' in result.manifest['files']
+    assert 'usage-summary.json' in result.manifest['files']
+    assert len(storage.calls) == 1
+    results = [json.loads(p.read_text()) for p in result.directory.glob('*-result.json')]
+    assert any(row['name'] == 'usage_csv' and row['status'] == 'broken' for row in results)
+
+
+def test_returned_usage_is_the_single_frozen_persisted_report(tmp_path, monkeypatch):
+    context, test, config = fixture(tmp_path)
+    calls = []
+    original = recorded.SuiteUsage.report
+    def report(self):
+        calls.append(None)
+        return {**original(self), 'reset_countdown_seconds': len(calls)}
+    monkeypatch.setattr(recorded.SuiteUsage, 'report', report)
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                        storage=Storage(), runner=fake_runner())
+    assert len(calls) == 1
+    assert result.usage == json.loads((result.directory / 'usage-summary.json').read_text())
+
+
+def test_recorded_evidence_always_scrubs_configured_and_dynamic_credentials(tmp_path):
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    context, test, config = fixture(tmp_path)
+    config.update(PROVIDER_SECRET='provider-private', EXTENSION_SECRET='extension-private', LOG_CONTENT=False)
+    def run(context, tests, **hooks):
+        hooks['before_run']()
+        outcome = TestResult(test, 'failed', .1, 'provider-private extension-private trace evidence')
+        result = IntegrationRunResult(1, (outcome,), '', False)
+        hooks['on_result'](outcome)
+        hooks['after_run'](result)
+        return result
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                                              storage=Storage(), runner=run, secret_values=(config['PROVIDER_SECRET'], config['EXTENSION_SECRET']))
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    assert row['statusDetails']['trace'] == '[REDACTED] [REDACTED] trace evidence'
+    assert result.persisted and result.exit_code == 1
+    boundary = EmissionBoundary(ContentPolicy(True))
+    boundary.register_secret('trace evidence')
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                         storage=Storage(), runner=run, evidence_boundary=boundary)
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    assert '[REDACTED]' in row['statusDetails']['trace']
+    assert 'trace evidence' not in row['statusDetails']['trace']
+
+
+def test_real_runner_setup_failure_persists_failed_run_without_starting_pytest(tmp_path, monkeypatch):
+    from api_agent.testing import integration
+    context, test, config = fixture(tmp_path)
+    context.base_root = context.owner_root
+    monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: [test])
+    def no_process(*args, **kwargs):
+        pytest.fail('Failed suite preparation must not start a test child')
+    monkeypatch.setattr(integration.subprocess, 'Popen', no_process)
+    def prepare(usage):
+        raise RuntimeError('private-setup-password')
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                                               storage=Storage(), prepare=prepare)
+    assert result.exit_code == 1 and result.persisted
+    assert result.manifest['status'] == 'failed'
+    assert result.execution.tests[0].status == 'error'
+    assert 'private-setup-password' not in result.execution.output
+    assert {'token-usage.csv', 'usage-summary.json'} <= result.manifest['files'].keys()
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    assert row['status'] == 'broken'
+    assert 'private-setup-password' not in json.dumps(row)
