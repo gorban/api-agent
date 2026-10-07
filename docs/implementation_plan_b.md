@@ -24,6 +24,8 @@
 
 Implementation reference: [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api) provides programmatic nodes, conditional edges, graph state, and loops. The Layout format and loader are project features to build on that API.
 
-- [ ] Declare `TUI_MODE` as required when `NO_STD_IN=True`, and preserve whether its test-mode value came explicitly from `.env`/environment/CLI for picker bypass and positional selectors. Make `E2E_RERUNS` applicable only to E2E; unit/integration have no retries.
+- [ ] Declare `TUI_MODE` as required when `NO_STD_IN=True` unless `HELP=True`, and preserve whether its test-mode value came explicitly from `.env`/environment/CLI for picker bypass and positional selectors. Make `E2E_RERUNS` applicable only to E2E; unit/integration have no retries.
 
 - [ ] Describe the conditional local-run `RUN_LOG_SOURCE` default in executable configuration: `all` when `NO_STD_IN=True`, otherwise `agent`, subject to pack defaults and explicit value precedence. Validate named sources against active service declarations; menu numbers are not configuration values. Use this default through both TUI and unattended launch paths.
+
+- [ ] Declare boolean `HELP` and `COLLECT_ONLY`, both defaulting to `False`, including the special `-h` alias for `HELP=True`. Resolve the help short-circuit before execution configuration checks, and make collection-only validate only active collection requirements. Preserve explicit mode provenance so collect-only can bypass all interactivity when a test mode is supplied through `.env`/environment/CLI.
