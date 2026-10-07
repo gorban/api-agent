@@ -3,7 +3,7 @@
 
 ## Checklist
 
-- [ ] Establish Allure output before the first rewrite integration or E2E test, including the initial "Ok" milestone. Record integration runs from the TUI and supported unattended CLI invocations, and human-accepted E2E runs through the TUI. Unit tests must not be Allure-recorded.
+- [ ] Establish Allure output before the first rewrite integration or E2E test, including the initial "Ok" milestone. Record integration and human-accepted E2E runs through the interactive TUI only, after explicit continuation from the test picker. Neither execution mode supports `NO_STD_IN`; collect-only is not a recorded test run. Unit tests must not be Allure-recorded.
 - [ ] Organize Allure results as `<repo> -> <test mode: integration / E2E> -> <test file name> -> <test>`. Map repository, test mode, and test file to the suite hierarchy and retain individual test names. Use the test mode selected through `TUI_MODE`; keep LLM provider authentication configuration separate.
   - [ ] Verify this hierarchy explicitly: the reference artifact-upload commit establishes staging/persistence, work with the user to come up with explicit explicit parent-suite/suite/sub-suite labeling
 - [ ] Keep unit tests deterministic and independent of live LLM execution. Require a 100% unit-test pass rate for every commit; this is distinct from the final 100% code-coverage target.
