@@ -160,8 +160,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         with VerticalScroll(id="auth-content"):
             yield Static("", id="auth-override", markup=False)
             yield Static("Create a 1Password/Keeper login with password and optional TOTP.\n"
-                         "Enter its exact vault and login/item names here.\n"
-                         "Duplicates of each role allowed; pair like users on same index to select them together.", id="auth-profile-help", markup=False)
+                         "Duplicates of each role allowed; pair like users on same index to select them together.\n", id="auth-profile-help", markup=False)
             yield Static("", id="auth-workflow", markup=False)
             yield AuthTable(id="auth-table", cursor_type="row")
             yield AuthTable(id="auth-manager-table", cursor_type="row")
