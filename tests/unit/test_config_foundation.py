@@ -91,7 +91,7 @@ def resource_pack_schema():
         extension = compose_schema(extension, selection)
     token = schema_from_dict({'version': 1, 'fields': {'PACK_TEST_TOKEN': {
         'type': 'str', 'required': True, 'applies_when': {
-            'TUI_MODE': ['integration', 'e2e'], 'COLLECT_ONLY': False}}}},
+            'TUI_MODE': ['run-local', 'integration', 'e2e'], 'COLLECT_ONLY': False}}}},
         base_schema=shared, source='pack_default')
     if 'UNATTENDED_USER_INDEX' not in extension.fields:
         selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
@@ -182,7 +182,7 @@ def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
         extension = compose_schema(extension, selection)
     schema = compose_schema(shared, extension)
     result = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True',
-                            'UNATTENDED_USER_INDEX': '1', 'UI_SOURCE_DIR': 'frontend'}, anchors={'owner_root': tmp_path})
+                            'UNATTENDED_USER_INDEX': '1', 'PACK_TEST_TOKEN': 'synthetic-secret', 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors={'owner_root': tmp_path})
     result.raise_for_errors()
     assert result.values['UI_NX_APP'] == 'shell'
     assert result.values['UNATTENDED_SECONDARY_USER'] == 'Resource Pack User'
@@ -320,17 +320,17 @@ def test_resource_pack_internal_defaults_skip_interactive_review():
         assert schema.fields[name].persist_default is False
 
 
-def test_resource_pack_token_required_only_for_test_execution(tmp_path):
+def test_resource_pack_token_required_for_api_and_test_execution(tmp_path):
     schema = resource_pack_schema()
     anchors = {'owner_root': tmp_path, 'pack_root': tmp_path}
-    for mode in ('integration', 'e2e'):
+    for mode in ('run-local', 'integration', 'e2e'):
         missing = resolve_config(schema, environ={'TUI_MODE': mode, 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors=anchors, interactive=True)
         assert missing.missing == ('PACK_TEST_TOKEN',)
         supplied = resolve_config(schema, environ={'TUI_MODE': mode, 'PACK_TEST_TOKEN': 'test-only', 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors=anchors)
         assert not supplied.errors
         collected = resolve_config(schema, environ={'TUI_MODE': mode, 'COLLECT_ONLY': 'True'}, anchors=anchors)
         assert not collected.errors
-    for mode in ('unit', 'run-local', 'config-cleanup'):
+    for mode in ('unit', 'config-cleanup', 'unattended-auth'):
         result = resolve_config(schema, environ={'TUI_MODE': mode}, anchors=anchors)
         assert not result.errors
         assert 'PACK_TEST_TOKEN' not in result.values

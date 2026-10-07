@@ -6,6 +6,7 @@ import json
 import threading
 from rich.text import Text
 from api_agent.config.declarations import UNSET
+from api_agent.config.resolve import ConfigError
 from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
                                           reconcile_results_table, styled_summary)
@@ -34,7 +35,9 @@ def display(value):
 
 class ButtonFooter(Footer):
     def compose(self) -> ComposeResult:
-        if self._bindings_ready and self.screen.query(Button):
+        buttons = [button for button in self.screen.query(Button)
+                   if button.visible and all(node.display for node in (button, *button.ancestors))]
+        if self._bindings_ready and buttons:
             yield Static(Text.assemble((" Tab", "bold yellow"), " select "),
                          id="tab-select-hint")
             yield from super().compose()
@@ -104,7 +107,7 @@ class QuitDialog(FocusNavigation, ModalScreen):
         self.dismiss(False)
 
     def compose(self) -> ComposeResult:
-        yield Static(self.message)
+        yield Static(self.message, markup=False)
         yield Input(id="quit-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="quit-submit")
@@ -495,10 +498,9 @@ class ApiAgentApp(App[int]):
         if result.values.get("COLLECT_ONLY"):
             self.show_menu()
             return
-        profile = self.session.result(_cleanup=True).values.get("UNATTENDED_AUTH")
-        incomplete = not profile or any(not isinstance(entries, list) or not entries or any(not isinstance(entry, dict) or entry.get("manager") not in {"keeper", "1password"} or any(not entry.get(key) for key in ("cli_path", "vault", "user")) for entry in entries) for entries in profile.values())
+        incomplete = self.auth_setup_needed()
         if incomplete and self.mode != "unattended-auth":
-            self.show("suggest", "Unattended authentication", "Credential profiles are absent or empty. Setup is suggested; you may skip. The credential wizard is pending implementation.", (("setup", "View setup status"), ("skip", "Skip (s)")))
+            self.show("suggest", "Unattended authentication", "Credential profiles are absent or incomplete. Configure account sources, or skip to continue with attended authentication.", (("setup", "Setup authentication"), ("skip", "Skip (s)")))
         else:
             await self.start_configuration()
 
@@ -513,6 +515,55 @@ class ApiAgentApp(App[int]):
                     and (not field.pack_only or self.context.external_pack)
                     and (name not in review.fields or not review.fields[name].explicit)]
         return set(candidates + missing + optional)
+
+    def credential_roles(self):
+        """Read generic pack-declared role labels from executable configuration."""
+        roles = ["LLM User"]
+        result = self.session.result(_review=True)
+        for name in getattr(self.context, 'credential_role_fields', ()):
+            field = self.schema.fields.get(name)
+            if field is None or field.type != 'str':
+                raise ConfigError(f'{name}: credential role must name a declared string field')
+            label = result.values.get(name)
+            if not label:
+                continue
+            if not label.strip() or label in roles:
+                raise ConfigError(f'{name}: credential role must be nonblank and unique')
+            roles.append(label)
+        return tuple(roles)
+
+    def auth_setup_needed(self):
+        from api_agent.auth.profiles import parse_profiles
+        profile = self.session.result(_review=True).values.get('UNATTENDED_AUTH')
+        try:
+            roles = self.credential_roles()
+            if not isinstance(profile, dict) or any(role not in profile for role in roles):
+                return True
+            parse_profiles({role: profile[role] for role in roles}, roles)
+        except ValueError:
+            return True
+        # Explicit empty arrays are a completed attended-auth choice.
+        return False
+
+    def show_auth_setup(self, *, startup=False):
+        from api_agent.tui.auth_setup import AuthSetupScreen
+        try:
+            roles = self.credential_roles()
+        except ConfigError as error:
+            self.show('error', 'Authentication setup configuration error', str(error),
+                      (("menu", "Main menu"),))
+            return
+        self.push_screen(AuthSetupScreen(roles),
+                         lambda changed: self.auth_setup_closed(changed, startup=startup))
+
+    async def auth_setup_closed(self, changed, *, startup=False):
+        if changed:
+            self.operation_status = 0
+        if startup:
+            self.mode = None
+            await self.start_configuration()
+        else:
+            self.show_menu()
 
     async def start_configuration(self):
         pending = self.configuration_pending()
@@ -645,7 +696,7 @@ class ApiAgentApp(App[int]):
             self.show_containers()
             self.refresh_container_inventory()
         elif self.mode == "unattended-auth":
-            self.unavailable("The unattended authentication wizard is not implemented yet. No credential profiles were changed.")
+            self.show_auth_setup()
         else:
             await self.configure_operation(skip_defaults=skip_defaults)
 
@@ -977,7 +1028,7 @@ class ApiAgentApp(App[int]):
                 self.mode = key[5:]
                 await self.enter_mode()
             elif key == "setup":
-                self.unavailable("The unattended authentication wizard is not implemented yet. Press c to continue normal configuration.")
+                self.show_auth_setup(startup=self.mode is None)
             elif key == "continue":
                 if not self.selection.selected_ids:
                     raise ValueError("Select at least one test before continuing")

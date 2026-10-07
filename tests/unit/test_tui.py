@@ -441,7 +441,7 @@ def test_unset_saved_default_and_required_value(tmp_path):
     asyncio.run(scenario())
 
 
-def test_empty_or_absent_auth_suggested_with_saved_defaults(tmp_path):
+def test_absent_auth_suggested_but_explicit_attended_profile_skips_suggestion(tmp_path):
     async def scenario():
         for profile in (None, '{"LLM User":[]}'):
             (tmp_path / ".env").write_text('COUNT="4"\n')
@@ -452,9 +452,10 @@ def test_empty_or_absent_auth_suggested_with_saved_defaults(tmp_path):
                 app.session.environ["UNATTENDED_AUTH"] = profile
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause(0.2)
-                assert app.screen.kind == "suggest"
-                await pilot.press("s")
-                await pilot.pause(0.2)
+                if profile is None:
+                    assert app.screen.kind == "suggest"
+                    await pilot.press("s")
+                    await pilot.pause(0.2)
                 assert app.screen.kind == "menu"
     asyncio.run(scenario())
 

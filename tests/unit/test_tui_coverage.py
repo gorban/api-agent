@@ -287,8 +287,9 @@ def test_navigation_setup_acceptance_and_menu_routes(tmp_path):
             await pilot.pause()
             await app.choose('setup')
             await pilot.pause()
-            assert app.screen.kind == 'unavailable'
-            await app.close_view()
+            from api_agent.tui.auth_setup import AuthSetupScreen
+            assert isinstance(app.screen, AuthSetupScreen)
+            await pilot.press('c')
             await pilot.pause()
             assert app.screen.kind == 'menu'
             await app.choose('skip')
@@ -296,8 +297,8 @@ def test_navigation_setup_acceptance_and_menu_routes(tmp_path):
             assert app.screen.kind == 'menu'
             await app.choose('mode-unattended-auth')
             await pilot.pause()
-            assert app.screen.kind == 'unavailable'
-            await app.choose('menu')
+            assert isinstance(app.screen, AuthSetupScreen)
+            await pilot.press('c')
             await pilot.pause()
             assert app.mode is None and app.screen.kind == 'menu'
             app.mode = 'integration'

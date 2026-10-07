@@ -206,6 +206,16 @@ class ConfigSession:
             self._choices.pop(name, None)
         return self.result()
 
+    def clear_auth_config(self):
+        """Clear the selected saved profile and use attended auth for this run."""
+        if 'UNATTENDED_AUTH' in self.dotenv_keys():
+            DotenvEditor(self.dotenv_path).delete(['UNATTENDED_AUTH'])
+        # External ENV/CLI and another saved file remain unchanged. The temporary
+        # override makes this invocation attended even when those still exist.
+        self._choices['UNATTENDED_AUTH'] = '{}'
+        self._choices.pop('UNATTENDED_USER_INDEX', None)
+        return self.result()
+
     def cleanup_rows(self):
         original = self.result()
         result = self.result(_cleanup=True)
