@@ -120,3 +120,5 @@
 
 - [x] Completed unit results provide `b` Back to selection, recollecting the full suite and retaining explicit scopes/individual selections; this is distinct from returning through the mode menu, which resets to All tests. Apply the same shared `back_to_selection` behavior when integration/E2E adapters are connected.
 - [x] Share `FocusNavigation` across workbench/dialog screens: focused tables and scroll panes support `h/j/k/l` as left/down/up/right, with native arrow behavior, ordinary input typing, and precedence for active letter shortcuts. Buttons retain directional selection without wrapping. Keep this navigation in future selectors/results/configuration views.
+
+- [x] Explicit startup TUI_MODE from dotenv, environment or CLI bypasses the startup authentication suggestion and default acknowledgement, dispatching directly to its operation; required operation configuration is still validated. Ordinary menu navigation retains conditional-default review. Render parameterized test IDs and other bracket-bearing table data literally in selection and live/completed results.
