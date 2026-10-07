@@ -54,10 +54,10 @@ def test_provider_config_is_combined_before_factory_import(tmp_path):
 def test_lifecycle_and_routes_are_runtime_owned(tmp_path):
     context = SimpleNamespace(pack_id='demo', identity_factory_path=None)
     runtime = compose_runtime(context, {'LLM_PROVIDER': factory(tmp_path)}, callback_origin='https://agent.example')
-    owner = runtime.llm_provider.implementation
-    assert not owner.calls
+    assert runtime.llm_provider is None
     async def scenario():
         await runtime.astart()
+        owner = runtime.llm_provider.implementation
         await runtime.astart()
         assert owner.calls == ['routes', 'start']
         assert runtime.ready
@@ -73,6 +73,7 @@ def test_lifecycle_and_routes_are_runtime_owned(tmp_path):
 def test_route_collisions_do_not_replace_existing_handlers():
     registrar = RouteRegistrar()
     async def handler(request): pass
+    asyncio.run(handler(None))
     registrar.add('/provider/test', ('GET',), handler)
     with pytest.raises(RouteError, match='conflict'):
         registrar.add('/provider/test', ('GET',), handler)
@@ -91,18 +92,21 @@ def test_registered_routes_dispatch_with_runtime_isolation(tmp_path):
     async def start():
         await first.astart()
         await second.astart()
-    asyncio.run(start())
-    try:
-        status, headers, body = http(first_app, '/provider/status')
-        assert status == 200 and json.loads(body) == {'ready': True}
-        assert http(second_app, '/provider/status')[0] == 404
-        status, headers, body = http(first_app, '/provider/status', method='POST')
-        assert status == 405 and headers[b'allow'] == b'GET'
-    finally:
-        async def close():
-            await first.aclose()
-            await second.aclose()
-        asyncio.run(close())
+    from unittest.mock import patch
+    with asyncio.Runner() as runner:
+        runner.run(start())
+        try:
+            with patch('asyncio.run', runner.run):
+                status, headers, body = http(first_app, '/provider/status')
+                assert status == 200 and json.loads(body) == {'ready': True}
+                assert http(second_app, '/provider/status')[0] == 404
+                status, headers, body = http(first_app, '/provider/status', method='POST')
+                assert status == 405 and headers[b'allow'] == b'GET'
+        finally:
+            async def close():
+                await first.aclose()
+                await second.aclose()
+            runner.run(close())
 
 
 def test_request_sessions_do_not_own_provider_token_state():

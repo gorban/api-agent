@@ -6,9 +6,19 @@ Follow [provider architecture](provider_architecture.md) for ownership and the a
 
 - [x] Provide explicit `LLM_PROVIDER` Python-file factory loading, integer version-1 validation, optional lifecycle/route hooks and neutral initialization errors in `src/api_agent/providers/loading.py`.
 - [x] Discover the selected LLM provider's adjacent `cfg/config.toml` without importing its factory, and combine typed declarations before operation configuration. Keep help/configuration free of authentication/inference.
-- [x] Honor pack-declared LLM factory defaults, owner-root-relative factory paths and ordered declarative `providers.configs` contributions. Present provider defaults as effective pack settings; preserve explicit value precedence and schema refresh after saves. API/upstream factory loading, capability/role contracts and executable UI composition remain below.
+- [x] Honor pack-declared LLM factory defaults, owner-root-relative factory paths and ordered declarative `providers.configs` contributions. Present provider defaults as effective pack settings; preserve explicit value precedence and schema refresh after saves. Operation consumers, dependency setup and external adapters remain below.
 
 These completed primitives do not complete the contracts or consumers below.
+
+## Version-1 foundation checkpoint
+
+- [x] Complete typed protocol/carrier exports in `providers/contracts.py`, operation capability checks and synthetic API/LLM/UI/upstream conformance without external protocol implementations.
+- [x] Complete optional API/UI selection and nested declaration bootstrap, owner-relative imports, precedence/cycle rejection, deferred runtime startup, immutable services, route collision rollback and retained failed-load disposal. Check a regular streaming factory's async iterator when called; discovery must not invoke it.
+- [x] Complete reusable scoped credential readers, coalesced browser preparation, lazy opaque LLM sessions, fresh getters, nested call tracking, process/loop ownership, bounded retryable disposal and explicit debug inspection retention in `providers/sessions.py`.
+- [x] Independently review failure and cancellation assertions with focused mutations and join all applicable unit/coverage/build checks. The core suite passes 1,656 tests with exact 100% measured lines/branches; its wheel builds and installed exports load.
+- [ ] Obtain human review of the concrete [contract document](provider_contracts_v1.md) before external adapter/operation consumers proceed.
+
+These primitives are separate from dependency installation, private adapter implementation, runner/TUI use, public operation completion and live acceptance. Do not mark the broader consumer tasks complete from synthetic owner checks.
 
 ## Checklist
 
