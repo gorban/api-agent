@@ -167,10 +167,11 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 Binding("pageup", "failure_page_up", "Page up"),
                 Binding("pagedown", "failure_page_down", "Page down")]
 
-    def __init__(self, kind, title, text="", actions=(), rows=()):
+    def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
         super().__init__()
         self.kind, self.heading, self.body = kind, title, text
         self.actions, self.rows = actions, rows
+        self.selected_row = selected_row
         self.test_run_complete = False
         self.style_results = None
         self.config_saved = set()
@@ -240,8 +241,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 table.add_row(*(literal_cell(cell) for cell in cells), key=key)
             if self.kind == "defaults":
                 self.app.refresh_configuration_rows(self)
-            if self.kind == "test-results":
-                table.move_cursor(row=0)
+            table.move_cursor(row=next((i for i, (key, _) in enumerate(self.rows)
+                                        if key == self.selected_row), 0))
             table.focus()
         elif self.kind == "input":
             control = self.query_one('#config-value')
@@ -515,8 +516,8 @@ class ApiAgentApp(App[int]):
         else:
             self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
 
-    def show(self, kind, title, text="", actions=(), rows=()):
-        screen = WorkbenchScreen(kind, title, text, actions, rows)
+    def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
+        screen = WorkbenchScreen(kind, title, text, actions, rows, selected_row=selected_row)
         if isinstance(self.screen, WorkbenchScreen):
             self.switch_screen(screen)
         else:
@@ -620,6 +621,12 @@ class ApiAgentApp(App[int]):
                   (("setup", "View authentication setup"), ("menu", "Main menu")))
 
     def show_configuration(self):
+        selected_row = None
+        if isinstance(self.screen, WorkbenchScreen):
+            if self.screen.kind == "defaults":
+                selected_row = self.focused_setting()
+            elif self.screen.kind == "input":
+                selected_row = self.prompt_name
         result = self.session.result(_review=True)
         if "UNATTENDED_AUTH" in result.missing:
             self.show_required_auth()
@@ -648,7 +655,7 @@ class ApiAgentApp(App[int]):
                   "Review each setting: a saves its default immediately; e edits its value, then Enter saves to .env. "
                   "Source identifies where each value comes from. c opens the next menu; required values still block execution.\n\n"
                   "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
-                  rows=rows)
+                  rows=rows, selected_row=selected_row)
 
     def refresh_configuration_rows(self, screen):
         """Refresh displayed values and contextual actions as one UI snapshot."""
