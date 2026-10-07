@@ -24,3 +24,7 @@ The TUI enforces exact 100% line/branch coverage for All tests; partial selectio
 - [ ] Add conservative content scrubbing for logs, Langfuse, and traces, allowing content only with explicitly supplied `LOG_CONTENT=True`. See [content logging grouping plan](implementation_plan_j.md).
 
 - [ ] Share generic unattended provider session ownership and operation-wide usage accounting across tests and explicitly unattended local runs. The provider owns token refresh and any persistence. See [unattended lifecycle grouping](implementation_plan_a7.md).
+
+## Current provider architecture
+
+Follow the [pluggable API and LLM provider plan](provider_architecture.md) for provider configuration, route extensions, authentication and browser lifetimes.
