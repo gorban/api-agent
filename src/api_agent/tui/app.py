@@ -45,6 +45,7 @@ class WorkbenchScreen(Screen):
                 Binding("s", "skip_setup", "Skip setup"),
                 Binding("a", "accept_default", "Accept default"),
                 Binding("e", "edit_setting", "Edit"),
+                Binding("u", "unset_setting", "Unset"),
                 Binding("escape", "back_to_configuration", "Back to configuration")]
 
     def __init__(self, kind, title, text="", actions=(), rows=()):
@@ -98,6 +99,8 @@ class WorkbenchScreen(Screen):
             return False
         if action == "accept_default":
             return self.kind == "defaults" and self.app.focused_default()
+        if action == "unset_setting":
+            return self.kind == "defaults" and self.app.focused_setting() in self.app.session.dotenv_keys()
         if action == "edit_setting":
             return self.kind == "defaults"
         if action == "delete_marked":
@@ -136,6 +139,15 @@ class WorkbenchScreen(Screen):
 
     def action_edit_setting(self):
         self.app.edit_setting()
+
+    def action_unset_setting(self):
+        try:
+            name = self.app.focused_setting()
+            if name in self.app.session.dotenv_keys():
+                self.app.session.delete_keys([name])
+                self.app.show_configuration()
+        except Exception as error:
+            self.query_one("#error", Static).update(str(error))
 
     async def action_skip_setup(self):
         await self.app.start_configuration()

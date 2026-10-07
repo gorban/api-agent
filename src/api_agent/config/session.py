@@ -112,6 +112,8 @@ class ConfigSession:
         if 'UNATTENDED_AUTH' in names:
             raise ConfigError('UNATTENDED_AUTH is managed by authentication setup')
         DotenvEditor(self.dotenv_path).delete(names)
+        for name in names:
+            self._choices.pop(name, None)
         return self.result()
 
     def cleanup_rows(self):

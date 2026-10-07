@@ -360,3 +360,40 @@ def test_quit_dialog_from_configuration_checklist(tmp_path):
             assert app.return_value == 3
             assert app.collection_cancel.is_set()
     asyncio.run(scenario())
+
+
+def test_unset_saved_default_and_required_value(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4},
+                                       "VALUE": {"type": "str", "required": True}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause(0.4)
+            assert not app.screen.check_action("unset_setting", ())
+            await pilot.press("e")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "8"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert app.screen.check_action("unset_setting", ())
+            await pilot.press("u")
+            await pilot.pause(0.4)
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(0)[0:3] == ["", "COUNT", "4"]
+            assert "COUNT" not in app.session._choices
+            assert "COUNT=" not in (tmp_path / ".env").read_text()
+            assert not app.screen.check_action("unset_setting", ())
+            table.move_cursor(row=1)
+            await pilot.press("e")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "provided"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            table = app.screen.query_one(DataTable)
+            table.move_cursor(row=1)
+            await pilot.press("u")
+            await pilot.pause(0.4)
+            assert "VALUE" in app.session.result().missing
+            assert app.screen.query_one(DataTable).get_row_at(1)[0] == ""
+            app.screen.query_one(DataTable).move_cursor(row=1)
+            assert not app.screen.check_action("accept_default", ())
+    asyncio.run(scenario())
