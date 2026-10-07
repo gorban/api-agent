@@ -50,9 +50,9 @@ api-agent/
 │   │   ├── config_cleanup.py               # Effective values and .env deletion
 │   │   └── unattended_auth.py              # Credential-source setup wizard
 │   ├── workflows/
-│   │   ├── conversation/
-│   │   │   └── respond/
-│   │   │       ├── node.py                 # Initial reusable single-node behavior
+│   │   ├── rendering/
+│   │   │   └── renderer/
+│   │   │       ├── node.py                 # Initial final renderer: Ok, no verifier/guard
 │   │   │       └── prompts/
 │   │   │           └── response_contract.md
 │   │   ├── planning/                       # Later expansion examples
@@ -90,8 +90,8 @@ api-agent/
 │   ├── config.yaml                          # Shared config schema + demo declarations
 │   ├── layout.yaml                          # Later executable graph + ordered prompt links
 │   ├── workflows/
-│   │   ├── conversation/
-│   │   │   └── respond/
+│   │   ├── rendering/
+│   │   │   └── renderer/
 │   │   │       └── prompts/say_ok.md
 │   │   └── planning/                        # Later expansion example
 │   │       └── planner/
@@ -113,7 +113,7 @@ api-agent/
 
 `workflows/<responsibility>/<node>/prompts/` is the navigation convention for generic code/prompts and pack-specific prompt components. Framework services such as authentication or recording have responsibility folders but do not need artificial LangGraph nodes. Tests can mirror these responsibilities within their test category as they grow. Packaging support files are omitted from the tree for readability.
 
-The first implementation slice includes configuration resolution, LLM provider authentication, model discovery/provider wiring, recording/Allure, the API, Textual test controls, and `conversation/respond`, plus the demo pack and generic resource-pack loading. General Layout execution, Neo4j ingestion, and planner/GraphQL examples expand in their own tasks; the skeleton does not make them prerequisites for the token-free model-listing test.
+The first implementation slice includes configuration resolution, LLM provider authentication, model discovery/provider wiring, recording/Allure, the API, Textual test controls, and `rendering/respond`, plus the demo pack and generic resource-pack loading. General Layout execution, Neo4j ingestion, and planner/GraphQL examples expand in their own tasks; the skeleton does not make them prerequisites for the token-free model-listing test.
 
 ## Resource content contract
 
