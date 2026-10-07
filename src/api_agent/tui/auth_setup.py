@@ -439,7 +439,12 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self._refresh()
         table = self.query_one('#auth-table', DataTable)
         matches = [position for position, item in enumerate(self.entries[role]) if item == moved]
-        selected_index = matches[occurrence] if occurrence < len(matches) else min(destination, len(self.entries[role]) - 1)
+        source = self.app.session.auth_sources()['roles'].get(role)
+        # Identical neighbors still move by index when saved ordering is effective.
+        if source not in {'environment', 'environ', 'cli', 'interactive'} and self.entries[role] == entries:
+            selected_index = destination
+        else:
+            selected_index = matches[occurrence] if occurrence < len(matches) else min(destination, len(self.entries[role]) - 1)
         row = sum(max(1, len(self.entries[earlier])) for earlier in self.roles[:self.roles.index(role)]) + selected_index
         table.move_cursor(row=row)
         table.focus()

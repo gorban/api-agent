@@ -93,3 +93,6 @@ Deletion is one selected account or the shared manager at a time; there is no du
 - [x] Preserve and clamp both inner-table scroll axes through account/manager rebuilds.
 - [x] Preserve raw password trailing CR/LF on Linux/macOS by removing one CLI output terminator; retain single-cell CSV parsing for 1Password.
 - [x] Delete only the selected saved account or shared manager, preserving ENV/CLI effective descriptors and provenance. There is no bulk Clear action.
+
+- [x] Follow the requested reorder destination for effective saved arrays, including adjacent identical account descriptors; preserve descriptor occurrence when ENV/CLI leaves the effective array unchanged. Verify both directions and subsequent removal.
+- [x] Escape accepted Unicode line separators in generated single-line dotenv values, including U+0085, U+2028 and U+2029. Preserve ordinary readable Unicode, legacy literal backslashes and unrelated assignments through shared/source-only reload and later edits.
