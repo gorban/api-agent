@@ -2,6 +2,8 @@
 
 ## Checklist
 
+- [x] Implement and human-review the existing stale-only CLI gate: compare filesystem identity across `/home` and `/var/home`, rank registered worktrees, show running/newest paths with branches, and require explicit y on stale launches. A real review worktree was created, tested in both recency directions, and removed. The polished always-interactive approval screen remains in parent group B.
+
 - [ ] Before entering the TUI or dispatching any operation, verify which Git working trees are being used. Run this gate for every entry point and mode, including `NO_STD_IN=True`, help, and collect-only; do not start application/container/UI processes, acquire credentials, call an LLM, or run tests before it completes.
   - [ ] Resolve canonical base api-agent and selected resource-pack/test-owner repository roots from the launcher context, rather than the current working directory. Check both repositories independently when the selected pack belongs to another repository; de-duplicate a demo pack or pack nested in the same Git working tree.
   - [ ] Require an available Git CLI and verify each selected root belongs to the expected working tree. Missing Git, an invalid selected checkout, or failure to enumerate/inspect required worktrees must stop with a nonzero exit status and actionable diagnostics.

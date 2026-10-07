@@ -10,6 +10,8 @@ Use a separate root `cfg/` tree for human-edited configuration, workflow Layout 
 
 ## Checklist
 
+- [x] Establish the initial packaging/source skeleton, shared `cfg/config.toml`, demo root pack with `demo/cfg/config.toml`, and packaged declaration loading. Human-reviewed foundation complete; later workflow/prompt/knowledge files remain uncreated until implemented.
+
 - [ ] Establish this skeleton early, creating only the files needed for the [initial milestone](implementation_plan_e.md) and its prerequisites. Preserve existing instructions and planning documents; keep legacy deletions unstaged until final cleanup. Do not create empty placeholders for later workflows.
 - [ ] Keep reusable runtime code in api-agent. Keep the included `demo/` directly under its repository root as an independently loadable resource pack. Support independently supplied resource packs selected by `--resource-pack-dir`, with each pack owning its configuration and launch integration.
 - [ ] Give each pack a declarative identity/source manifest, configuration description, and Layout document. Share generic configuration declarations through a common schema rather than duplicating their definitions across packs; keep upstream API authentication requirements inside the selected pack. Parse configuration at runtime for the initial milestone; introduce the general Layout interpreter in the later [Layout work](implementation_plan_b.md).
