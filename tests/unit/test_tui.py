@@ -1,5 +1,6 @@
 """Headless UI tests use temporary configuration and simulated discovery."""
 import asyncio
+import pytest
 from rich.text import Text
 from pathlib import Path
 from types import SimpleNamespace
@@ -1608,4 +1609,36 @@ def test_reopened_configuration_review_omits_previously_saved_rows(tmp_path):
             await pilot.press('c')
             await pilot.pause()
             assert not app.screen.query('#review-config')
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('accept_key', ['a', 'enter'])
+def test_accept_default_retains_focused_setting_and_updates_source(tmp_path, accept_key):
+    async def scenario():
+        app=fixture(tmp_path, fields={f'SETTING_{i}':{'type':'int','default':i} for i in range(24)})
+        async with app.run_test(size=(100,25)) as pilot:
+            await pilot.pause()
+            table=app.screen.query_one(DataTable)
+            table.move_cursor(row=18)
+            await pilot.pause()
+            assert app.focused_setting()=='SETTING_18'
+            await pilot.press(accept_key)
+            await pilot.pause()
+            table=app.screen.query_one(DataTable)
+            assert app.focused_setting()=='SETTING_18'
+            assert table.cursor_row==18 and table.has_focus
+            assert table.get_row_at(18)==['SETTING_18','18',app.session._source(tmp_path/'.env')]
+            assert table.scroll_y>0
+            assert not app.screen.check_action('accept_default',())
+            assert app.screen.check_action('unset_setting',())
+            assert app.session.saved_path('SETTING_18')==tmp_path/'.env'
+            assert app.session.saved_path('SETTING_0') is None
+            await pilot.press('e')
+            await pilot.pause()
+            app.screen.query_one(Input).value='42'
+            await pilot.press('enter')
+            await pilot.pause()
+            table=app.screen.query_one(DataTable)
+            assert app.focused_setting()=='SETTING_18' and table.has_focus
+            assert table.get_row_at(18)==['SETTING_18','42',app.session._source(tmp_path/'.env')]
     asyncio.run(scenario())
