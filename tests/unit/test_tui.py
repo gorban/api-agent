@@ -769,3 +769,48 @@ def test_external_dotenv_removal_refreshes_source_and_unset_together(tmp_path):
             assert table.get_row_at(0) == ['TRACE_MODE', '', 'Not provided']
             assert not app.screen.check_action('unset_setting', ())
     asyncio.run(scenario())
+
+
+def test_button_directional_navigation_and_edges(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.show_menu()
+            await pilot.pause()
+            assert app.focused.id == "mode-run-local"
+            for key in ("up", "k", "left", "h"):
+                await pilot.press(key)
+                assert app.focused.id == "mode-run-local"
+            for key, expected in (("right", "mode-unit"), ("right", "mode-unit"),
+                                  ("j", "mode-e2e"), ("h", "mode-integration"),
+                                  ("k", "mode-run-local"), ("l", "mode-unit"),
+                                  ("down", "mode-e2e"), ("left", "mode-integration"),
+                                  ("up", "mode-run-local")):
+                await pilot.press(key)
+                assert app.focused.id == expected
+            for expected in ("mode-integration", "mode-allure", "mode-config-cleanup", "mode-unattended-auth"):
+                await pilot.press("down")
+                assert app.focused.id == expected
+            for key in ("down", "j", "right", "l"):
+                await pilot.press(key)
+                assert app.focused.id == "mode-unattended-auth"
+            await pilot.press("q")
+            await pilot.pause()
+            app.screen.query_one("#quit-submit", Button).focus()
+            await pilot.press("l")
+            assert app.focused.id == "quit-cancel"
+            await pilot.press("right")
+            assert app.focused.id == "quit-cancel"
+            await pilot.press("h")
+            assert app.focused.id == "quit-submit"
+            await pilot.press("escape")
+            await pilot.pause()
+            app.show("suggest", "Authentication", actions=(("setup", "Setup"), ("skip", "Skip")))
+            await pilot.pause()
+            assert app.focused.id == "setup"
+            await pilot.press("l")
+            assert app.focused.id == "skip"
+            await pilot.press("h")
+            assert app.focused.id == "setup"
+    asyncio.run(scenario())

@@ -29,7 +29,46 @@ def display(value):
     return str(value)
 
 
-class QuitDialog(ModalScreen):
+class ButtonNavigation:
+    """Move among buttons by their rendered positions without wrapping at edges."""
+
+    def on_key(self, event):
+        focused = self.app.focused
+        if not isinstance(focused, Button) or focused.screen is not self:
+            return
+        directions = {"up": "up", "k": "up", "down": "down", "j": "down",
+                      "left": "left", "h": "left", "right": "right", "l": "right"}
+        direction = directions.get(event.key)
+        if direction is None:
+            return
+        # Leave letter shortcuts to the screen when they have an active binding.
+        if event.key in {"h", "j", "k", "l"}:
+            for binding in self._bindings.key_to_bindings.get(event.key, []):
+                if self.check_action(binding.action, ()) is not False:
+                    return
+        origin = focused.region
+        candidates = []
+        for button in self.query(Button):
+            if button is focused or not button.can_focus or not button.display:
+                continue
+            target = button.region
+            if direction in {"left", "right"}:
+                if not (target.y < origin.bottom and origin.y < target.bottom):
+                    continue
+                distance = (target.x - origin.x) if direction == "right" else (origin.x - target.x)
+            else:
+                if not (target.x < origin.right and origin.x < target.right):
+                    continue
+                distance = (target.y - origin.y) if direction == "down" else (origin.y - target.y)
+            if distance > 0:
+                candidates.append((distance, button))
+        if candidates:
+            min(candidates, key=lambda item: item[0])[1].focus()
+        event.prevent_default()
+        event.stop()
+
+
+class QuitDialog(ButtonNavigation, ModalScreen):
     BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def action_cancel(self):
@@ -73,7 +112,7 @@ class StopContainersDialog(QuitDialog):
             yield Button("Cancel", id="stop-cancel")
 
 
-class WorkbenchScreen(Screen):
+class WorkbenchScreen(ButtonNavigation, Screen):
     BINDINGS = [Binding("q", "quit_request", "Quit"), Binding("c", "close_view", "Close / menu"),
                 Binding("d", "delete_marked", "Delete marked .env assignments"),
                 Binding("s", "switch_target", "Switch target .env"),
