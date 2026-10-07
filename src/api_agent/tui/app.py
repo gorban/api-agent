@@ -199,6 +199,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                 table.add_row(*cells, key=key)
             if self.kind == "defaults":
                 self.app.refresh_configuration_rows(self)
+            if self.kind == "unit-results":
+                table.move_cursor(row=0)
             table.focus()
         elif self.kind == "input":
             self.query_one(Input).value = self.app.prompt_value
@@ -696,6 +698,18 @@ class ApiAgentApp(App[int]):
         from api_agent.testing.runner import run_unit_tests
         runner = self.unit_runner or run_unit_tests
         try:
+            from api_agent.testing.collection import collect_tests
+            collector = self.collector or collect_tests
+            arguments = (self.context, self.mode, self.session.result().positionals)
+            fresh_tests = await asyncio.to_thread(
+                collector, *arguments, **({} if self.collector else {"cancel_event": self.collection_cancel}))
+            if self.collection_cancel.is_set():
+                return
+            self.selection.refresh_for_run(fresh_tests)
+            if not self.selection.selected_tests:
+                raise ValueError("No selected tests remain after recollection")
+            self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
+            self.show_unit_results("Running selected unit tests…")
             result = await asyncio.to_thread(
                 runner, self.context, self.selection.selected_tests,
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
@@ -728,7 +742,11 @@ class ApiAgentApp(App[int]):
         if summary is None:
             from api_agent.testing.runner import format_unit_summary
             summary = format_unit_summary(self.unit_result)
-        self.show("unit-results", "Unit test results", summary, rows=list(self.unit_rows.items()))
+        rows = list(self.unit_rows.items())
+        if self.unit_result is not None:
+            # Python's stable sort preserves discovery order within each group.
+            rows.sort(key=lambda row: row[1][0] not in {"FAILED", "ERROR"})
+        self.show("unit-results", "Unit test results", summary, rows=rows)
         if self.unit_result is not None and self.unit_result.exit_code:
             self.call_after_refresh(self.style_unit_summary)
 

@@ -1045,3 +1045,30 @@ def test_unit_runner_events_final_failure_and_view(tmp_path):
             await pilot.pause()
             assert app.screen.kind == 'unit-results'
     asyncio.run(scenario())
+
+
+def test_completed_unit_failures_sort_stably_first_and_reset_selection(tmp_path):
+    from api_agent.testing.runner import UnitRunResult
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.unit_rows = {
+                'pass-first': ('PASSED', 'pass-first', '1s'),
+                'fail-first': ('FAILED', 'fail-first', '2s'),
+                'pass-second': ('PASSED', 'pass-second', '3s'),
+                'fail-second': ('FAILED', 'fail-second', '4s'),
+            }
+            app.show_unit_results('Running')
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            assert [table.get_row_at(i)[1] for i in range(4)] == list(app.unit_rows)
+            table.move_cursor(row=3)
+            app.unit_result = UnitRunResult(1, (), (), '')
+            app.show_unit_results('Done')
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            assert [table.get_row_at(i)[1] for i in range(4)] == [
+                'fail-first', 'fail-second', 'pass-first', 'pass-second']
+            assert table.cursor_row == 0
+    asyncio.run(scenario())
