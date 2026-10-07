@@ -1,36 +1,93 @@
 # Pluggable API and LLM providers
 
-This is the current provider architecture plan. It supersedes earlier plan wording about provider ownership, UI authentication invocation, and browser lifetime.
+This is the authoritative boundary and browser-session requirements document. It supersedes conflicting wording in earlier checklists. Unchecked tasks describe work to implement and verify; the contract sketches below are requirements, not existing Python exports. Follow the [shared provider task list](implementation_plan_m.md), [included GraphQL tasks](implementation_plan_m1.md), [external API extension tasks](implementation_plan_m2.md), and [external LLM adapter tasks](implementation_plan_f1.md).
 
-## API providers
+## Responsibility boundaries
 
-- [ ] Keep api-agent independent of the upstream API type. Select an API provider through a required configured factory location, with no implicit provider or private-path default.
-- [ ] Include the public GraphQL example under `api-providers/graphql-api-provider/`, with its importable Python package `graphql_api_provider`. It supplies generic GraphQL transport, schema and execution behavior; other API types can supply their own implementation of the API-provider contract.
-- [ ] Require a separate upstream-provider factory location for the GraphQL example. Its selected upstream implementation supplies authentication and any extra validation. Run validation before upstream execution and pass only the declared generic authentication context. Provider-specific identity rules remain in that extension.
-- [ ] Define versioned capability contracts and validate configured factories before starting the application. Load the required provider locations first, then combine optional provider `cfg/config.toml` declarations with base configuration using the shared type, applicability, precedence, help and documentation pipeline. Reject incompatible declarations; never infer a private provider location.
-- [ ] Allow both LLM providers and upstream API-provider extensions to contribute optional `setup_routes(registrar, services)` capabilities. Register handlers once at startup after resolving configuration and before serving requests. Reject method/path conflicts. Routes must be available for attended authentication and recovery even when automatic authentication has failed. Handler logic and protocol details belong to the provider. Route setup must not depend on a successful unattended login.
+| Component | Responsibility | Scope |
+| --- | --- | --- |
+| api-agent core | Typed configuration, provider loading, routing, credential broker, mode/account selection, browser allocation, evidence, usage aggregation and cancellation/cleanup | Selected runtime and credential binding |
+| Included `api-providers/graphql-api-provider/` | Generic GraphQL transport, schema evidence, operation execution and upstream extension interfaces | Selected API provider |
+| External upstream API extension | Authentication, signing, request/identity validation, upstream configuration and optional routes | Selected extension; no private default in core |
+| External LLM provider | Discovery, inference, streaming, structured output, upstream metadata, authentication, token state/cache/refresh, usage reads and pricing | Selected provider |
+| Resource pack | Knowledge/navigation/prompts, scenario tests, UI authentication strategy and optional credential roles | Selected pack; UI hook once per newly created session |
 
-## UI authentication
+Core is independent of the API type. A provider at a different path may implement REST or another API without accepting GraphQL queries. The included GraphQL package is `graphql_api_provider`; it requires a separately selected upstream extension. Product-specific code and examples belong to their external owners. Public tests use synthetic adapters, identities and API data.
 
-- [ ] Each E2E attempt uses the real UI and a fresh worker-owned Playwright browser session. Before yielding that same session to the test, call the selected resource pack's optional `authenticate` capability. Missing capabilities and explicit no-op implementations are valid; a failed hook prevents the test body from starting.
-- [ ] Supply the ordinary `tui_mode` enum, the browser session, a resolved unattended account index or `None` for attended use, and a credential callback accepting the declared user role and requested credential kind. Do not require a scenario or identity-mode argument. Resource packs choose their normal strategy from mode and account selection and own specialized authentication tests.
-- [ ] Local-run with `RUN_UI=True` uses one visible UI session and dispatches that hook before handing over the UI. Local-run with `RUN_UI=False` creates no UI session. Unit/integration execution never requires a UI regardless of `RUN_UI`. E2E always requires `UI_SOURCE_DIR`; `RUN_UI=False` changes E2E visibility, not UI participation.
-- [ ] E2E UI sessions are headless only when neither `RUN_UI` nor debug is enabled. Apply the existing E2E debug setting to this policy. Debug retains every Playwright browser, including failed setup attempts, until explicit inspection cleanup. Keep the owning worker/driver alive or supervise retained resources so inspection is possible.
-- [ ] Keep Playwright objects inside the process/event loop that created them. Send credential requests through generic services when crossing process boundaries; never serialize browser objects between workers and the agent runtime.
+Core owns browser resources operationally. A provider exclusively uses its LLM session until disposal finishes; a pack exclusively prepares its UI session before handing it to the test/user. Login pages, selectors, signing, cookie contents, protocol transactions and token interpretation remain outside core. Core request-session storage contains opaque request ownership, not provider tokens.
 
-## LLM authentication and usage
+## Selection, configuration and routes
 
-- [ ] Support an optional unattended LLM authentication capability. When an authenticated provider operation first needs it, create a separate headless Playwright session and call the provider with the resolved unattended account index and a credential callback bound to the LLM User role. Coalesce concurrent initialization. Providers without this capability need no authentication browser.
-- [ ] Return a callable `LLMAuthSession` with asynchronous token retrieval and `aclose()`. Before each authenticated provider operation, retrieve a fresh opaque token and pass it through unchanged. The provider owns token format, expiry and refresh. Pure local operations such as cost arithmetic do not initiate authentication.
-- [ ] Share that session across the selected agent runtime, including an E2E suite or local-run. Keep UI cookies and LLM cookies separate. Do not dispose the shared LLM session at the end of an individual UI test. Stop provider tasks and dispose the session at runtime shutdown; token calls after disposal fail explicitly.
-- [ ] Keep the LLM browser headless even in debug. Debug retains it too, after provider work is disposed at runtime shutdown. Explicit inspection cleanup finally closes retained browsers, contexts and drivers. Ordinary runs close resources automatically, including on cancellation and partial initialization failure.
-- [ ] Allow LLM completion responses to report token counts and optional quota percentage used and quota reset datetime in UTC. Define a provider cost-estimation capability accepting these counts and optional before/after quota snapshots, returning an estimate with currency or an explicit unavailable result. Pricing and quota arithmetic belong to the provider.
-- [ ] Resolve only the credential roles consumed by an operation. Validate configured indices across those roles; use attended fallback for empty arrays and reject noninteractive ambiguity. Retrieve passwords only when needed and fresh TOTP values at the challenge. Keep credentials and opaque tokens out of ordinary logs and artifacts.
+`LLM_PROVIDER` already selects a Python-file factory (`path.py:factory`). The existing loader accepts synchronous factories returning an integer `version = 1`, exposes lifecycle/optional route hooks, and reads adjacent `cfg/config.toml` without importing the factory during schema discovery. This foundation does not implement the operation or browser contracts below.
 
-## Validation
+- [ ] Add `API_PROVIDER` for the generic API factory and `UPSTREAM_API_PROVIDER` contributed by the included GraphQL provider for its upstream extension. These are planned fields, not currently available CLI options. Require each only for an operation using that capability; the initial demo renderer does not need an upstream API.
+- [ ] Resolve relative factory locations against a declared configuration owner root, independent of CWD. Support bundled and external locations and provider-local imports/dependencies without changing global `sys.path`.
+- [ ] Bootstrap selected locations before full option validation, then merge all selected providers' optional typed declarations through the same defaults, applicability, explicit override, dotenv, ENV, CLI, help and TUI pipeline. Reject incompatible declarations and recursive selection; no unselected provider is imported or configured.
+- [ ] Let providers/packs contribute credential roles and optional `UNATTENDED_USER_INDEX`, including an LLM-only role. Bare core/demo does not declare an account index. Share one index across the roles consumed by an operation; do not require every declared role for every mode.
+- [ ] Invoke optional `setup_routes(registrar, services)` once per runtime, after configuration and before serving. LLM and upstream API extensions may both supply it. Reject method/path collisions with core or another provider. Routes remain available without successful automatic login; route setup is separate from browser hooks and token retrieval.
+- [ ] Keep executable listener configuration (`API_LISTENER_URL`, HTTPS authority) independent of provider callback/registration settings. Supply a verified TLS context and generic lifecycle, authentication, credential and privacy services; never infer protocol endpoints in core.
 
-- [ ] Use synthetic providers to verify optional/no-op/invalid capabilities, configuration and route collisions, failed authentication before a test, identical pack/test sessions, worker ownership, lazy coalesced LLM initialization, fresh token retrieval, identity isolation, cancellation, disposal and all visibility/retention combinations. Verify cost estimates with deterministic usage fixtures. Verify the configured real UI with Playwright for E2E.
+## Browser and authentication contracts
 
-Executable local API operations require a non-defaulted `API_LISTENER_URL` with an HTTPS listener authority. Configure it independently of provider completion routes and external registration. Providers receive a verified TLS context through generic services.
+The conceptual capability shapes to implement are:
 
-Core usage accounting retains token counts and optional quota snapshots. A provider-supplied cost estimator accepts usage rows and before/after snapshots; absent estimates remain unavailable. Quota percentage change is displayed separately from estimated currency, and per-prompt cost requires a nonzero prompt count.
+```python
+class BrowserSession:
+    browser: Browser
+    context: BrowserContext
+    page: Page  # Active page; the pack may update it after redirects/popups.
+
+class ResourcePackAuthenticator(Protocol):
+    async def authenticate(
+        self, *, session: BrowserSession, tui_mode: RunMode,
+        user_index: int | None, credentials: RoleCredentialReader,
+    ) -> None: ...
+
+class LLMAuthSession(Protocol):
+    async def __call__(self) -> object: ...  # Fresh opaque authentication value.
+    async def aclose(self) -> None: ...
+
+class LLMAuthenticator(Protocol):
+    async def authenticate(
+        self, *, session: BrowserSession, user_index: int,
+        credentials: LLMCredentialReader,
+    ) -> LLMAuthSession: ...
+```
+
+Version and validate optional capability contracts. An absent UI hook or explicit async no-op is valid; a present malformed hook errors. Absence/no-op does not claim verified login. `user_index=None` means attended UI use, never unresolved unattended selection. There is no extra scenario or identity-mode argument: the pack chooses its strategy from ordinary mode and account selection.
+
+The role reader accepts declared role, index and credential kind; the LLM reader is already bound to its provider-declared LLM role and accepts index/kind only. Reject undeclared roles, unsupported kinds, ambiguous/out-of-range selections and attempts to switch the bound account. Retrieve passwords only when needed and fresh TOTP at the challenge. Credentials and opaque tokens never enter ordinary logs, traces or report attachments, even with content logging enabled.
+
+### UI session policy
+
+| Mode | UI session | Visibility and preparation |
+| --- | --- | --- |
+| Unit, integration, help, collection | None | No frontend regardless of `RUN_UI`; integration may need a separate LLM login browser |
+| Local-run, `RUN_UI=False` | None | No UI hook |
+| Local-run, `RUN_UI=True` | One until local-run ends | Always headed; invoke pack hook before user handoff |
+| E2E | Fresh separate browser instance/context/session for every attempt, including confirmation retries | Always real UI; headless only when neither `RUN_UI` nor debug is enabled; pack hook before test body |
+
+- [ ] Yield the exact same `BrowserSession`, context and updated active page from pack preparation to test/user. Finish pack navigation tasks before handoff; do not open a different default-browser profile to continue an authenticated session. Attribute failed hook setup to that E2E attempt and do not run its test body.
+- [ ] Map `E2E_DEBUG` to the debug policy. Debug retains every created browser, including failed setup attempts, through an explicit inspection owner/supervisor. Keep worker/driver ownership alive until inspection cleanup; retention cannot rely on pytest workers surviving implicitly.
+- [ ] Keep the dedicated LLM browser headless even in debug, while retaining it too after provider disposal. Supersede the earlier headed `AUTH_BROWSER_DEBUG` plan; reconcile its existing declaration without creating a second contradictory visibility policy.
+- [ ] Ordinary completion/cancellation closes all browser resources, including partial setup. Explicit inspection cleanup closes retained contexts, browsers and drivers. Retention never keeps provider refresh tasks or a disposed token getter active.
+
+### Shared LLM session policy
+
+- [ ] Initialize unattended LLM authentication lazily at the first authenticated provider call, only if the optional capability exists. Coalesce concurrent initialization. Factory validation, config/capability inspection and local cost arithmetic do not authenticate. Authenticated discovery/status/usage reads use the same mechanism without inference.
+- [ ] Before every authenticated provider call, await the returned session's getter and pass its opaque value unchanged. The provider owns freshness, expiry, refresh and any persistent cache; core does not parse token claims or cache token values.
+- [ ] Share one session across the selected backend runtime and credential binding, including a whole suite/local run. UI attempts have separate sessions/cookies; finishing one UI test does not dispose suite LLM authentication. Changing provider/account/credential binding disposes the old session.
+- [ ] Retain provider-owned attended challenge/status/completion routes. Attended calls do not silently launch unattended login or borrow another user's getter.
+- [ ] At shutdown, reject new calls, drain/cancel in-flight operations, finalize usage while authentication remains usable, await provider/session disposal, then close or retain browsers under bounded cleanup. Close is idempotent; getter calls after close raise a typed session-closed error.
+- [ ] Keep browser objects and the getter inside their creating process/event loop. Test workers own UI sessions; the backend owns the suite LLM session. IPC carries generic credential requests/results, never Playwright objects or serialized opaque tokens.
+
+## Usage and evidence
+
+Core aggregates token counts, optional quota/reset snapshots and provider-returned finite nonnegative currency estimates. Pricing and quota-to-currency conversion belong to the provider. Missing values remain unavailable rather than measured zero; per-prompt currency requires a nonzero prompt count. Bracket the selected parallel workload once, count user turns rather than internal nodes, and disclose possible unrelated account consumption. See [session/usage lifecycle](implementation_plan_a7.md).
+
+Allure records integration/E2E, including authentication/setup failures, from the first run. Unit tests remain excluded. Capture all-tab current-state browser failure evidence before teardown, with credential-safe attachments; successful response evidence follows the maximized/top-first rules. Human E2E acceptance and interactive integration/E2E selection remain mandatory.
+
+## Acceptance
+
+- [ ] Verify synthetic GraphQL and outside-path REST replacement, typed config/route collisions, absent/no-op/invalid hooks, identical pack/test sessions, fresh per-attempt cookies, every visibility/retention combination, worker ownership, lazy/coalesced LLM initialization, getter freshness, credential isolation, cancellation and bounded/idempotent disposal.
+- [ ] Review concrete declarations, provider boundaries and deterministic evidence with the user before live provider traffic. Record real authentication, model discovery, tracing/history and initial renderer checks separately; migrated foundation checks do not prove those operations.

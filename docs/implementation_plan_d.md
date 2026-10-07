@@ -27,7 +27,7 @@
   - [ ] Support `a` from the completed test-list/summary screen as an immediate transition into Allure mode, pinned to that screen's run ID. A concurrently completed run must not redirect this shortcut away from the results the user was viewing. If no recorded run exists, show that clearly.
   - [ ] Test latest-run selection and the results-to-Allure transition deterministically, including failed/interrupted finalized runs, newer concurrent runs, and a subsequent unit run.
 
-- [ ] Before the first integration/E2E run, establish [token and suite-wide quota tracking](implementation_plan_f.md). Retain usage CSV artifacts and before/after `pctUsed` snapshots and delta with each run, and include the suite delta in TUI results.
+- [ ] Before the first integration/E2E run, establish [token and suite-wide quota tracking](implementation_plan_f.md). Retain usage CSV artifacts and before/after provider-supplied quota percentage snapshots and delta with each run, and include the suite delta in TUI results.
 
 - [ ] Require [Playwright UI evidence](implementation_plan_a3.md) for every E2E run: original `response_text` and `response_html` when present, plus rendered screenshots after maximizing the agent modal and scrolling to the top. Retain both outputs and complete scroll-region evidence where needed, including debug and confirmation attempts, under the correct test/run identity in S3 history.
 
@@ -36,4 +36,4 @@
 - [ ] Before live recording, automatically request the `reports` dependency group through shared environment preparation. Keep help, collection and unit execution independent of boto3. Exercise LocalStack upload/retry/history with actual S3-compatible responses before treating persistence as live-verified.
 - [ ] At the live runner boundary, register newly issued bearer/access/refresh/password/TOTP values on the shared evidence boundary before results can emit. Sanitize raw event/output callbacks and binary browser attachments through their approved evidence path. Allure evidence is separate from `LOG_CONTENT` diagnostic exports; credential scrubbing always applies.
 
-- [ ] Include the [unattended operation usage summary](implementation_plan_a7.md) in every recorded test report: starting/final pctUsed, delta, actual full-user-turn count and three-decimal quota per prompt, with explicit unavailable/reset status and exclusive-account-use assumption. Units and local-run remain outside executed-test Allure recording.
+- [ ] Include the [operation usage summary](implementation_plan_a7.md) in every recorded integration/E2E report: optional starting/final quota percentage, delta, full-user-turn count and three-decimal quota per prompt, with explicit unavailable/reset status and possible unrelated account use. Treat a zero prompt denominator as unavailable. Pricing belongs to the provider. Units and local-run remain outside executed-test Allure recording.

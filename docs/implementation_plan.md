@@ -27,4 +27,8 @@ The TUI enforces exact 100% line/branch coverage for All tests; partial selectio
 
 ## Current provider architecture
 
+- [ ] Complete generic factory, configuration, capability, route and lifecycle composition. See [shared provider contracts](implementation_plan_m.md).
+- [ ] Build the included generic GraphQL provider with a separately selected upstream extension, and prove an outside-path API replacement. See [GraphQL provider](implementation_plan_m1.md).
+- [ ] Restore upstream authentication/validation through an external API extension and LLM authentication/transport/cache/usage through an external LLM adapter. See [API extension requirements](implementation_plan_m2.md) and [LLM adapter requirements](implementation_plan_f1.md). Keep system-specific requirements and implementations in their respective external repositories.
+
 Follow the [pluggable API and LLM provider plan](provider_architecture.md) for provider configuration, route extensions, authentication and browser lifetimes.

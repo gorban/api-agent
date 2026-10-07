@@ -1,5 +1,7 @@
 # LLM providers, authenticated discovery, and usage tracking
 
+Follow the [shared contracts](implementation_plan_m.md) and [external LLM adapter checklist](implementation_plan_f1.md). Core tests exercise synthetic adapters; the selected provider owns authentication protocols, cache/refresh, headers and pricing.
+
 ## Checklist
 
 - [ ] Define typed, runtime-parsed configuration with a required value specifying where to load the LLM provider. Combine the provider's own `cfg/config.toml`, when present, with api-agent's configuration as though it were api-agent's own. Preserve the UI-selected model throughout the workflow. Review the provider configuration and authentication setup.

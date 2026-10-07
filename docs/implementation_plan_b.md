@@ -37,9 +37,9 @@ Implementation reference: [LangGraph Graph API](https://docs.langchain.com/oss/p
 
 - [ ] Declare `E2E_BROWSER_RESOLUTION` (validated `WIDTHxHEIGHT`, default `1440x900`) and boolean `E2E_DEBUG=False`. Add declarative field presentation metadata to exempt the debug default from startup default-configuration prompts without removing its ENV/CLI/help/cleanup support. Validate debug's strict-subset requirement at E2E start. See [Playwright E2E plan](implementation_plan_a3.md).
 
-- [ ] Declare `AUTH_BROWSER_DEBUG=False` for explicit headed/retained authentication-browser debugging, distinct from subset-only `E2E_DEBUG`. Allow packs to declare an authenticated-UI launcher handler while keeping their application-specific login logic outside api-agent.
+- [ ] Reconcile debug declarations with [browser policy](provider_architecture.md): UI debug makes E2E headed/retained, whereas the LLM authentication browser is always headless and retained under debug. Supersede the earlier headed AUTH_BROWSER_DEBUG behavior and separate Authenticated UI action; invoke the pack hook for every created UI session.
 
-- [ ] Declare optional zero-based `UNATTENDED_USER_INDEX` shared by credential arrays for the roles needed by the operation with no default selection for multiple entries. Exclude this field from automatic default acknowledgement/persistence, and keep interactive choices session-only. Resolve zero/one/many entries through the [authentication selection rules](implementation_plan_a2.md), prompting only for roles the operation needs and failing ambiguity under `NO_STD_IN`.
+- [ ] Load optional zero-based UNATTENDED_USER_INDEX only when contributed by the selected provider or pack, including LLM-only accounts. Bare core/demo does not declare it. Exclude it from default acknowledgement; explicit test-picker saves and session-only ambiguity choices follow [authentication selection](implementation_plan_a2.md).
 
 - [ ] Before the first traced "Ok" run, declare boolean `LOG_CONTENT=False` with explicit-value provenance: a declaration/pack default must not grant content-logging permission. Only the effective explicit `True` enables the shared [logging/trace content gate](implementation_plan_j.md); omitted/default/False cases require thorough scrubbing tests.
 
