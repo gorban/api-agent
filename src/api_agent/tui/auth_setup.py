@@ -32,6 +32,98 @@ class AuthTable(DataTable):
             super().action_cursor_up()
 
 
+class AuthEditScreen(FocusNavigation, Screen[bool]):
+    """Edit account descriptors on a separate page without resizing the list."""
+
+    DEFAULT_CSS = """
+    AuthEditScreen #auth-edit-identity { height: auto; color: $text-muted; margin-bottom: 1; }
+    AuthEditScreen #auth-edit-content { height: 1fr; }
+    AuthEditScreen #auth-edit-content Static { height: auto; }
+    AuthEditScreen #auth-form-title { text-style: bold; margin-bottom: 1; }
+    AuthEditScreen .auth-next-field { margin-top: 1; }
+    AuthEditScreen #auth-targets { margin-top: 1; }
+    AuthEditScreen #auth-error { color: $error; }
+    AuthEditScreen #auth-form-actions { height: 4; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
+    AuthEditScreen #auth-form-actions Button { width: 100%; }
+    """
+    BINDINGS = [Binding('escape', 'cancel', 'Cancel'),
+                Binding('c', 'cancel', 'Cancel'), Binding('q', 'quit_request', 'Quit')]
+
+    def __init__(self, owner, title, values):
+        super().__init__()
+        self.owner, self.title, self.values = owner, title, dict(values)
+        self.manager_form = owner.editing == 'manager'
+
+    def compose(self) -> ComposeResult:
+        identity = getattr(self.app, 'identity_text', None)
+        yield Static(identity() if identity else f"Base: {self.app.context.base_root}\nPack: {self.app.context.pack_root}",
+                     id='auth-edit-identity', markup=False)
+        with VerticalScroll(id='auth-edit-content'):
+            yield Static(self.title, id='auth-form-title', markup=False)
+            if self.manager_form:
+                yield Static('Password manager', id='auth-first-label')
+                yield Select([('-', ''), ('Keeper', 'keeper'), ('1Password', '1password')],
+                             value=self.values['manager'], allow_blank=False, id='auth-manager')
+                yield Static('CLI executable path', classes='auth-next-field')
+                yield Input(value=self.values['cli_path'], id='auth-path')
+            else:
+                yield Static('Vault name', id='auth-first-label')
+                yield Input(value=self.values['vault'], id='auth-vault')
+                yield Static('Login / item name', id='auth-login-label', classes='auth-next-field')
+                yield Input(value=self.values['user'], id='auth-user')
+            yield Static('', id='auth-error', markup=False)
+            paths = self.owner._target_paths()
+            yield Static('Target .env files:\n' + '\n'.join(
+                f"{'✓' if path == self.app.session.dotenv_path else ' '} {path}" for path in paths),
+                id='auth-targets', markup=False)
+        with Horizontal(id='auth-form-actions'):
+            yield Button('Save', id='auth-save')
+            yield Button('Cancel', id='auth-cancel')
+        yield ButtonFooter()
+
+    def on_mount(self):
+        self.query_one('#auth-edit-content', VerticalScroll).can_focus = False
+        self.query_one('#auth-error').display = False
+        self.query_one('#auth-manager' if self.manager_form else '#auth-vault').focus()
+
+    def save_entry(self):
+        if self.manager_form:
+            values = {'manager': self.query_one('#auth-manager', Select).value,
+                      'cli_path': self.query_one('#auth-path', Input).value}
+        else:
+            values = {'vault': self.query_one('#auth-vault', Input).value,
+                      'user': self.query_one('#auth-user', Input).value}
+        try:
+            self.owner._save_entry(values)
+        except Exception as exc:
+            error = self.query_one('#auth-error', Static)
+            error.update(f'Unable to save: {exc}')
+            error.display = True
+        else:
+            self.dismiss(True)
+
+    def action_cancel(self):
+        self.dismiss(False)
+
+    def action_quit_request(self):
+        self.app.push_screen(QuitDialog(), lambda yes: self.app.confirm_quit() if yes else None)
+
+    def on_button_pressed(self, event):
+        if event.button.id == 'auth-save':
+            self.save_entry()
+        elif event.button.id == 'auth-cancel':
+            self.action_cancel()
+
+    def on_input_submitted(self, event):
+        self.save_entry()
+
+    def on_select_changed(self, event):
+        if event.select.id == 'auth-manager':
+            path = self.query_one('#auth-path', Input)
+            if path.value in {'', 'keeper', 'op'}:
+                path.value = {'keeper': 'keeper', '1password': 'op'}.get(event.value, '')
+
+
 class AuthSetupScreen(FocusNavigation, Screen[bool]):
     DEFAULT_CSS = """
     AuthSetupScreen #auth-identity { height: auto; color: $text-muted; margin-bottom: 1; }
@@ -41,16 +133,13 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     AuthSetupScreen #auth-workflow { margin-bottom: 1; }
     AuthSetupScreen #auth-content { height: 1fr; }
     AuthSetupScreen #auth-content Static { height: auto; }
-    AuthSetupScreen #auth-form-actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
-    AuthSetupScreen #auth-form-actions Button { width: 100%; }
     AuthSetupScreen #auth-error { color: $error; }
     AuthSetupScreen #auth-targets { margin-top: 1; }
     """
     BINDINGS = [Binding("a", "add_entry", "Add"), Binding("e", "edit_entry", "Edit"),
                 Binding("r", "remove_entry", "Remove"),
                 Binding("[", "move_entry_up", "Move up"), Binding("]", "move_entry_down", "Move down"), Binding("s", "switch_target", "Switch .env"),
-                Binding("c", "close_view", "Close"), Binding("q", "quit_request", "Quit"),
-                Binding("escape", "cancel_form", "Back")]
+                Binding("c", "close_view", "Close"), Binding("q", "quit_request", "Quit")]
 
     def __init__(self, roles: tuple[str, ...]):
         super().__init__()
@@ -77,18 +166,6 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             yield AuthTable(id="auth-table", cursor_type="row")
             yield AuthTable(id="auth-manager-table", cursor_type="row")
             yield Static("Select an account, or the password-manager row to edit its settings.", id="auth-selection-help", markup=False)
-            yield Static("", id="auth-form-title", markup=False)
-            yield Static("Password manager", classes="auth-manager-field")
-            yield Select([("-", ""), ("Keeper", "keeper"), ("1Password", "1password")], value="", allow_blank=False, id="auth-manager")
-            yield Static("CLI executable path", classes="auth-manager-field")
-            yield Input(id="auth-path")
-            yield Static("Vault", classes="auth-user-field")
-            yield Input(id="auth-vault")
-            yield Static("Login / item name", classes="auth-user-field")
-            yield Input(id="auth-user")
-            with Horizontal(id="auth-form-actions"):
-                yield Button("Save", id="auth-save")
-                yield Button("Cancel", id="auth-cancel")
             yield Static("", id="auth-error", markup=False)
             yield Static("", id="auth-targets", markup=False)
         yield ButtonFooter()
@@ -101,17 +178,9 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         manager_table.add_columns('Password manager', 'CLI path')
         manager_table.styles.margin = (1, 0, 0, 0)
         self.query_one('#auth-table', DataTable).styles.margin = 0
-        self._show_form(False)
         self._load()
         self._refresh()
         self.query_one('#auth-table', DataTable).focus()
-
-    @property
-    def focus_chain(self):
-        chain = super().focus_chain
-        users = [widget for widget in chain if widget.id == 'auth-table']
-        manager = [widget for widget in chain if widget.id == 'auth-manager-table']
-        return users + [widget for widget in chain if widget not in users + manager] + manager
 
     def _load(self):
         self.load_error = ''
@@ -237,18 +306,6 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         if self.shared_target is not None and self.app.screen is self:
             self._refresh_target()
 
-    def _show_form(self, show):
-        manager = show and self.editing == 'manager'
-        for widget in self.query('#auth-manager, #auth-path, .auth-manager-field'):
-            widget.display = manager
-        for widget in self.query('#auth-vault, #auth-user, .auth-user-field'):
-            widget.display = show and not manager
-        for widget in self.query('#auth-form-title, #auth-form-actions'):
-            widget.display = show
-        self.query_one(ButtonFooter).refresh(recompose=True)
-        self.refresh_bindings()
-        self.call_after_refresh(self._fit_tables)
-
     def check_action(self, action, parameters):
         if self.app.screen is not self:
             return False
@@ -269,60 +326,49 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             return self.editing is None and (self._manager_selected() or not self.load_error and selected is not None and selected[1] is not None)
         return True
 
+    def _open_editor(self, editing, title, values):
+        self.editing = editing
+        self._refresh_target()
+        self.app.push_screen(AuthEditScreen(self, title, values), self._edit_closed)
+
     def action_add_entry(self):
         if not self.check_action('add_entry', ()):
             return
         role, _ = self._selected()
-        self.editing = role, None
-        self.query_one('#auth-form-title', Static).update(f'Add account for {role}')
-        self.query_one('#auth-vault', Input).value = ''
-        self.query_one('#auth-user', Input).value = role
-        self._show_form(True)
-        self.query_one('#auth-vault', Input).focus()
+        self._open_editor((role, None), f'Add account for {role}', {'vault': '', 'user': role})
 
     def action_edit_entry(self):
         if not self.check_action('edit_entry', ()):
             return
         if self._manager_selected():
-            self.editing = 'manager'
-            self.query_one('#auth-form-title', Static).update('Edit shared password manager')
-            self.query_one('#auth-manager', Select).value = self.manager['manager']
-            self.query_one('#auth-path', Input).value = self.manager['cli_path']
-            self._show_form(True)
-            self.query_one('#auth-path', Input).focus()
+            self._open_editor('manager', 'Edit shared password manager', self.manager)
         else:
             role, index = self._selected()
-            self.editing = role, index
-            self.query_one('#auth-form-title', Static).update(f'Edit account for {role}')
-            item = self.entries[role][index] if index is not None else {'vault': '', 'user': role}
-            self.query_one('#auth-vault', Input).value = item['vault']
-            self.query_one('#auth-user', Input).value = item['user']
-            self._show_form(True)
-            self.query_one('#auth-vault', Input).focus()
+            values = self.entries[role][index] if index is not None else {'vault': '', 'user': role}
+            self._open_editor((role, index), f'Edit account for {role}', values)
 
-    def save_entry(self):
-        if self.editing is None:
-            return
-        try:
-            if self.editing == 'manager':
-                manager = {'manager': self.query_one('#auth-manager', Select).value, 'cli_path': self.query_one('#auth-path', Input).value}
-                self.app.session.save_auth_manager(manager)
-                self._load()
+    def _save_entry(self, values):
+        if self.editing == 'manager':
+            self.app.session.save_auth_manager(values)
+            self._load()
+        else:
+            role, index = self.editing
+            entries = [dict(value) for value in self.entries[role]]
+            if index is None:
+                entries.append(values)
             else:
-                role, index = self.editing
-                item = {'vault': self.query_one('#auth-vault', Input).value, 'user': self.query_one('#auth-user', Input).value}
-                entries = [dict(value) for value in self.entries[role]]
-                if index is None:
-                    entries.append(item)
-                else:
-                    entries[index] = item
-                self.app.session.save_auth_role(role, entries)
-                self.entries[role] = entries
-            self.changed = True
+                entries[index] = values
+            self.app.session.save_auth_role(role, entries)
+            self.entries[role] = entries
+        self.changed = True
+
+    def _edit_closed(self, saved):
+        target = '#auth-manager-table' if self.editing == 'manager' else '#auth-table'
+        if saved:
             self._refresh()
-            self.action_cancel_form()
-        except Exception as exc:
-            self._error(f'Unable to save: {exc}')
+        self.editing = None
+        self.query_one(target, DataTable).focus()
+        self._refresh_target()
 
     def _move_entry(self, step):
         action = 'move_entry_up' if step < 0 else 'move_entry_down'
@@ -377,14 +423,6 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         error.display = bool(text)
         self.call_after_refresh(self._fit_tables)
 
-    def action_cancel_form(self):
-        if self.editing is not None:
-            target = '#auth-manager-table' if self.editing == 'manager' else '#auth-table'
-            self.editing = None
-            self._show_form(False)
-            self.query_one(target, DataTable).focus()
-            self._refresh_target()
-
     def action_switch_target(self):
         if not self.check_action('switch_target', ()):
             return
@@ -396,26 +434,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             self.shared_target = self.app.session.dotenv_path
         self._refresh_target()
 
-    def on_select_changed(self, event):
-        if event.select.id == 'auth-manager' and self.editing == 'manager':
-            path = self.query_one('#auth-path', Input)
-            if path.value in {'', 'keeper', 'op'}:
-                path.value = {'keeper': 'keeper', '1password': 'op'}.get(event.value, '')
-
     def action_close_view(self):
-        if self.editing is not None:
-            self.action_cancel_form()
-        else:
-            self.dismiss(self.changed)
+        self.dismiss(self.changed)
 
     def action_quit_request(self):
         self.app.push_screen(QuitDialog(), lambda yes: self.app.confirm_quit() if yes else None)
-
-    def on_button_pressed(self, event):
-        if event.button.id == 'auth-save':
-            self.save_entry()
-        elif event.button.id == 'auth-cancel':
-            self.action_cancel_form()
-
-    def on_input_submitted(self, event):
-        self.save_entry()

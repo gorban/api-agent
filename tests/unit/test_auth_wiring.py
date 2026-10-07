@@ -37,6 +37,7 @@ def test_direct_wizard_mode_and_return_to_menu(tmp_path):
             assert isinstance(app.screen, AuthSetupScreen)
             assert app.screen.roles == ('LLM User', 'Partner')
             app.screen.action_add_entry()
+            await pilot.pause()
             app.screen.query_one('#auth-vault', Input).value = 'Example vault'
             app.screen.save_entry()
             await pilot.pause()
