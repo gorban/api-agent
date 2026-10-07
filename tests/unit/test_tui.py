@@ -1560,3 +1560,25 @@ def test_menu_offers_configuration_review_only_while_pending(tmp_path):
             await pilot.pause()
             assert app.screen.query('#review-config')
     asyncio.run(scenario())
+
+
+def test_menu_directional_navigation_skips_disabled_container_button(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 4}})
+        async with app.run_test(size=(100, 45)) as pilot:
+            await pilot.pause()
+            await pilot.press('c')
+            await pilot.pause()
+            assert app.screen.query_one('#mode-cleanup-containers', Button).disabled
+            logs = app.screen.query_one('#mode-deployment-logs', Button)
+            review = app.screen.query_one('#review-config', Button)
+            for down, up in (('down', 'up'), ('j', 'k')):
+                logs.focus()
+                await pilot.press(down)
+                assert app.focused is review
+                await pilot.press(up)
+                assert app.focused is logs
+            app.screen.query_one('#mode-cleanup-containers', Button).disabled = False
+            await pilot.press('down')
+            assert app.focused.id == 'mode-cleanup-containers'
+    asyncio.run(scenario())
