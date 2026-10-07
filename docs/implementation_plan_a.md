@@ -1,5 +1,9 @@
 # Python TUI
 
+## Completed B1 review slice
+
+- [x] Implement configuration defaults save/use-once/typed individual prompts and conditional revalidation, real `.env` cleanup, Textual mode/focus/footer controls, real pytest collection/selector filtering, overlapping All/tag/file/test selection, and prompt cancellation. Controlled execution and authentication setup remain explicitly unavailable; this does not complete the full runner/results/auth tasks below. Parent human checkpoint B1 is still awaiting acceptance.
+
 ## Checklist
 
 - [ ] Implement the [pre-TUI worktree provenance gate](implementation_plan_a6.md) before all mode dispatch, including help, collect-only, and `NO_STD_IN`: compare the selected base and external-pack checkouts with their other registered worktrees. A stale selected checkout requires explicit stdin acknowledgement even under `NO_STD_IN`; every statement below about noninteractive shortcuts or never reading stdin applies after this gate has completed. Missing Git or unverifiable required worktrees fail with diagnostics.

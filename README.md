@@ -1,10 +1,10 @@
 # api-agent
 
-The shared Python runtime is being rebuilt. The foundation implements typed configuration, resource-pack discovery, source launchers, and a Git/worktree provenance gate. The interactive TUI, test runner, authentication, providers, and application API are the next implementation group. `--help` works; other operations currently return a clear nonzero "not implemented yet" result and start no tests or services.
+The shared Python runtime is being rebuilt. Configuration/default acknowledgement, `.env` cleanup, mode selection, pytest collection, and grouped test selection now have an interactive Textual workbench. Actual test execution, authentication setup/login, providers, application services, and Allure are still being implemented. Their entries explicitly report unavailable operations; no tests or services are started by those entries.
 
 ## Prerequisites
 
-Use Python 3.13 or newer, Git on PATH (required by the launcher's provenance gate), and `uv` for the development setup below. The current foundation has no third-party runtime dependencies; development tools are installed into each repository's own `.venv`.
+Use Python 3.13 or newer, Git on PATH (required by the launcher's provenance gate), and `uv` for the development setup below. The workbench uses Textual. `./launch.py` prepares the repository-local `.venv` and declared external tools automatically when an interactive operation or collection needs them; it loads source directly without an editable installation. `--help` needs only Python and Git. Development commands below install the full test/build tools explicitly.
 
 ## Development setup
 
@@ -21,7 +21,7 @@ source .venv/bin/activate
 
 For development tools, activate `.venv` in each new shell; its `#!/usr/bin/env python3` shebang selects Python from the active environment. Both launch scripts are executable in Git. If a file copy loses the executable permission, restore it with `chmod +x launch.py`. Without activation, use `.venv/bin/python launch.py --help` explicitly.
 
-The source launchers load the selected shared checkout directly; neither needs an editable package installation for the current standard-library runtime. With Python 3.13 or newer on PATH, `./launch.py --help` works without a virtual environment. The development install above supplies pytest and build tools. Build artifacts and the environment are ignored. Unit tests make no live LLM calls. Source launchers use their own checkout, independently of the current directory; installed console entry points require the known editable source layout, and direct wheel execution reports an actionable source-launcher error instead of guessing a checkout.
+The source launchers load the selected shared checkout directly; neither needs an editable package installation to launch. With Python 3.13 or newer on PATH, `./launch.py --help` works without a virtual environment; interactive launch and collection prepare the local environment when needed. The development install above supplies pytest and build tools. Build artifacts and the environment are ignored. Unit tests make no live LLM calls. Source launchers use their own checkout, independently of the current directory; installed console entry points require the known editable source layout, and direct wheel execution reports an actionable source-launcher error instead of guessing a checkout.
 
 ## Foundation review
 
@@ -32,7 +32,28 @@ The source launchers load the selected shared checkout directly; neither needs a
 .venv/bin/python launch.py --no-std-in=True --tui-mode integration
 ```
 
-The missing-mode example returns configuration error status `2`. A valid unit configuration currently returns status `3` because the runner is not implemented; it does not pretend to pass tests. Integration/E2E execution rejects `NO_STD_IN=True`; collection-only bypasses that execution restriction but collection itself is also pending. Help returns `0` after the provenance gate. Git/pack/schema/bootstrap errors return `2`. These foundation statuses will be extended by the real operation-specific statuses in the TUI implementation.
+The missing-mode example returns configuration error status `2`. Explicit unit execution currently returns status `3` because the runner is not implemented. Integration/E2E execution rejects `NO_STD_IN=True`. Help returns `0` after the existing stale-worktree gate. Git/pack/schema/bootstrap/collection errors return `2`. Configured test collection returns `0` only when valid nonempty matches are listed, without opening the TUI or executing tests.
+
+## Configuration and discovery workbench review
+
+```sh
+./launch.py
+./launch.py --tui-mode=config-cleanup
+./launch.py --tui-mode=unit --collect-only
+./launch.py --tui-mode=unit --collect-only api-agent::tests/unit/test_selection.py
+```
+
+The launcher creates/updates local external tools on first use; subsequent launches reuse them. It does not install the shared source package. `q` opens a quit confirmation; enter literal `y` to confirm. `c` returns to the main menu where available. Buttons and tables show focus, and the bottom bar lists contextual shortcuts.
+
+Skip the suggested unattended setup for now: that wizard is explicitly unavailable. Default acknowledgement offers **Save defaults to .env**, **Use defaults once**, or **Supply individually**, with declared types and revalidation when a controlling value changes. Select a mode to expose its applicable settings. Saving updates only the active repository/pack `.env`; it preserves unrelated assignments/comments and skips debug/index defaults according to metadata.
+
+From the main menu, select unit tests to review discovery and selection: All tests comes first, then tag/file groups, then individual identities. Enter toggles the focused group/test and counts update across overlapping groups. Continue currently shows the unavailable runner; it does not execute the selected tests. An explicitly configured unit mode bypasses the picker and also reports the pending runner.
+
+Cleanup shows the active file path and effective values/sources. A check means the assignment exists in that file, a blank means absent, and Enter toggles a present row to/from `X`. `d` appears only while focused on a present row and deletes marked assignments, including duplicates, preserving unrelated content. Inherited base `.env` values are shown but can only be deleted from their owning repository's cleanup. `UNATTENDED_AUTH` is excluded because its separate setup mode owns it.
+
+Selectors are a de-duplicated union of `tests/unit/file.py`, full pytest node IDs, or `tag:NAME`. Prefix file/node/tag selectors with `api-agent::` or the selected owner repository name to disambiguate combined units. Unknown/ambiguous selectors and empty matches are errors. Collection uses each repository's cwd/config and does not run tests or prerequisites. Missing optional pack unit suites are skipped; missing/empty base units are errors. Integration/E2E suites not yet created report missing-suite errors.
+
+The current worktree gate still asks only when stale. The polished always-interactive worktree approval screen, credential wizard, running/results/failure screens, provider/usage/Allure wiring, and services are separate unfinished tasks.
 
 ## Executable declarations
 

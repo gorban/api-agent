@@ -18,3 +18,5 @@
 - [ ] Expand these placeholders with implementation details only when their dependencies and actual contracts become relevant. Link concrete follow-up items from the affected checklist so the initial stub cannot silently become the final implementation.
 
 - [ ] Keep both source launchers free of editable-package installation steps. When runtime dependencies are added, provide shared managed-virtual-environment/dependency setup callable from either launcher, using each repository's dependency declarations and preserving the selected source checkout. Avoid modifying system Python; make dependency failures actionable and retain the same simple `./launch.py` entry point.
+
+- [x] Add automatic repository-local runtime tool setup for interactive screens and collect-only, reading base/pack external dependencies without installing the shared source package. Help stays standard-library-only; own `.venv` reuse/relaunch and failures are verified. Future real runner dependencies must be added to this setup when their tasks are implemented.
