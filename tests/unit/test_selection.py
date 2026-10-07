@@ -33,3 +33,42 @@ def test_unknown_and_empty_selection():
     assert not selection_state.groups()[0].selected
     with pytest.raises(CollectionError):
         selection_state.toggle('missing')
+
+
+@pytest.mark.parametrize('selection,expected', [
+    ('all', {'new-a', 'new-b', 'new-file'}),
+    ('file:repo::a.py', {'new-a'}),
+    ('tag:shared', {'new-a', 'new-file'}),
+    ('repo::a.py::test_a', set()),
+])
+def test_recollection_expands_checked_groups_only(selection, expected):
+    old = identities()
+    selection_state = SelectionModel(old)
+    if selection != 'all':
+        selection_state.toggle('all')
+        selection_state.toggle(selection)
+    new = [
+        TestIdentity('new-a', 'repo', 'a.py', 'a.py::new', {'shared'}),
+        TestIdentity('new-b', 'repo', 'b.py', 'b.py::new', {'new-tag'}),
+        TestIdentity('new-file', 'repo', 'new.py', 'new.py::new', {'shared'}),
+    ]
+    original_selected = selection_state.selected_ids.copy()
+    selection_state.refresh_for_run(old + new)
+    assert selection_state.selected_ids == original_selected | expected
+
+
+def test_recollection_does_not_reselect_existing_excluded_tests():
+    selection_state = SelectionModel(identities())
+    selection_state.toggle('repo::a.py::test_b')
+    selection_state.refresh_for_run(identities())
+    assert 'repo::a.py::test_b' not in selection_state.selected_ids
+
+
+def test_individual_selection_does_not_expand_incidentally_checked_tag():
+    selection_state = SelectionModel(identities())
+    selection_state.toggle('all')
+    selection_state.toggle('repo::a.py::test_b')
+    assert next(row for row in selection_state.groups() if row.id == 'tag:other').selected
+    new = TestIdentity('new-other', 'repo', 'new.py', 'new.py::new', {'other'})
+    selection_state.refresh_for_run(identities() + [new])
+    assert selection_state.selected_ids == {'repo::a.py::test_b'}

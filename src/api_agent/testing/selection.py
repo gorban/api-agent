@@ -18,6 +18,7 @@ class SelectionModel:
     def __init__(self, tests):
         self.tests = tuple(dict((test.id, test) for test in tests).values())
         self.selected_ids = {test.id for test in self.tests}
+        self.selected_scopes = {"all"}
 
     def groups(self):
         specifications = [("all", "All tests", "all", frozenset(test.id for test in self.tests))]
@@ -39,6 +40,26 @@ class SelectionModel:
             self.selected_ids.difference_update(row.members)
         else:
             self.selected_ids.update(row.members)
+            if row.kind != "test":
+                self.selected_scopes.add(row.id)
+        checked = {group.id for group in self.groups() if group.selected}
+        self.selected_scopes.intersection_update(checked)
+
+    def refresh_for_run(self, tests):
+        """Recollect once, expanding checked groups but preserving exact exclusions."""
+        checked = [row for row in self.groups() if row.selected and row.id in self.selected_scopes]
+        all_selected = any(row.kind == "all" for row in checked)
+        tags = {row.label for row in checked if row.kind == "tag"}
+        files = {(test.repo, test.file) for test in self.tests
+                 if any(row.kind == "file" and test.id in row.members for row in checked)}
+        old_ids = {test.id for test in self.tests}
+        selected = self.selected_ids.copy()
+        self.tests = tuple(dict((test.id, test) for test in tests).values())
+        self.selected_ids = {
+            test.id for test in self.tests
+            if test.id in selected or (test.id not in old_ids and (
+                all_selected or bool(tags & test.tags) or (test.repo, test.file) in files))
+        }
 
     @property
     def selected_tests(self):
