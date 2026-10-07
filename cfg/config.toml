@@ -153,14 +153,6 @@ acknowledge_default = false
 TUI_MODE = "e2e"
 COLLECT_ONLY = false
 
-[fields.AUTH_BROWSER_DEBUG]
-type = "bool"
-default = false
-acknowledge_default = false
-[fields.AUTH_BROWSER_DEBUG.applies_when]
-TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
-COLLECT_ONLY = false
-
 [fields.E2E_BROWSER_RESOLUTION]
 type = "str"
 default = "1440x900"
@@ -178,7 +170,7 @@ help = "Compact JSON object with shared password_manager (manager and cli_path) 
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false
 
-# OAuth transport configuration; no provider calls occur during config review.
+# Provider contributions do not execute authentication during configuration review.
 
 [fields.ALLURE_S3_USE_LOCALSTACK]
 type = "bool"
@@ -263,6 +255,7 @@ COLLECT_ONLY = false
 
 
 [fields.LLM_PROVIDER]
+acknowledge_default = false
 type = "str"
 review_optional = true
 help = "Required factory location (file.py:factory) for executable LLM operations; no default provider is selected."

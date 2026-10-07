@@ -16,6 +16,36 @@ def make_pack(root, *, owner=".", unit=True):
     )
 
 
+def test_component_configuration_paths_are_ordered_and_owner_relative(tmp_path, monkeypatch):
+    base, pack = tmp_path / 'base', tmp_path / 'pack'
+    make_pack(base / 'demo')
+    make_pack(pack)
+    outside = tmp_path / 'adapter'
+    outside.mkdir()
+    (outside / 'config.toml').write_text('version=1\n')
+    (pack / 'ui.toml').write_text('version=1\n')
+    with (pack / 'pack.toml').open('a') as stream:
+        stream.write('[providers]\nconfigs=["../adapter/config.toml","ui.toml","../adapter/config.toml"]\n')
+    monkeypatch.chdir(base)
+    context = load_launch_context(base, pack)
+    assert context.provider_config_paths == (outside / 'config.toml', pack / 'ui.toml')
+
+
+@pytest.mark.parametrize('entry', [
+    'providers=7', 'providers={unknown=[]}', 'providers={configs="bad"}',
+    'providers={configs=["missing.toml"]}', 'providers={configs=["config.txt"]}',
+    'providers={configs=[""]}', 'providers={configs=[7]}',
+])
+def test_invalid_component_configuration_manifest_is_rejected(tmp_path, entry):
+    base = tmp_path / 'base'
+    make_pack(base / 'demo')
+    (base / 'demo/config.txt').write_text('version=1\n')
+    manifest = base / 'demo/pack.toml'
+    manifest.write_text('version=1\nid="fixture"\nconfig="config.toml"\n' + entry + '\n')
+    with pytest.raises(ResourcePackError, match='providers'):
+        load_launch_context(base)
+
+
 def test_demo_owner_and_paths_do_not_depend_on_cwd(tmp_path, monkeypatch):
     base = tmp_path / "api-agent"
     make_pack(base / "demo", owner="..")

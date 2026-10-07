@@ -1,5 +1,6 @@
 """Load explicitly configured factories and their configuration declarations."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from collections.abc import Mapping
 import importlib.util
 import inspect
 from pathlib import Path
@@ -44,33 +45,44 @@ class LoadedProvider:
             sys.modules.pop(self.module_name, None)
 
 
-def provider_location(location):
+def provider_location(location, *, owner_root=None):
     if not isinstance(location, str) or not location.strip():
         raise ProviderError('provider_location_required')
     path_text, separator, factory = location.rpartition(':')
     if not separator or not factory.isidentifier():
         raise ProviderError('provider_location_invalid')
-    path = Path(path_text).expanduser().resolve()
+    path = Path(path_text).expanduser()
+    if not path.is_absolute() and owner_root is not None:
+        path = Path(owner_root) / path
+    path = path.resolve()
     if not path.is_file() or path.suffix != '.py':
         raise ProviderError('provider_location_invalid')
     return path, factory
 
 
-def provider_schema(location, base_schema):
+def contribution_schema(declaration, base_schema):
+    """Expose compatible provider defaults as effective pack declarations."""
+    from api_agent.config.declarations import ConfigSchema, load_declarations, compose_schema
+    contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default')
+    fields = {name: replace(value, override=True) if name in base_schema.fields else value
+              for name, value in contributed.fields.items()}
+    return compose_schema(base_schema, ConfigSchema(fields))
+
+
+def provider_schema(location, base_schema, *, owner_root=None):
     """Resolve contributed declarations before creating executable adapters."""
-    from api_agent.config.declarations import load_declarations, compose_schema
-    path, _ = provider_location(location)
+    path, _ = provider_location(location, owner_root=owner_root)
     declaration = path.parent / 'cfg/config.toml'
     if not declaration.exists():
         return base_schema
     if not declaration.resolve().is_relative_to(path.parent):
         raise ProviderError('provider_configuration_escape')
-    return compose_schema(base_schema, load_declarations(
-        declaration, base_schema=base_schema, source='provider_default'))
+    return contribution_schema(declaration, base_schema)
 
 
 def load_provider(location, config, services):
-    path, factory_name = provider_location(location)
+    owner_root = services.get('owner_root') if isinstance(services, Mapping) else None
+    path, factory_name = provider_location(location, owner_root=owner_root)
     name = '_api_agent_provider_' + uuid.uuid4().hex
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -101,11 +113,18 @@ def load_provider(location, config, services):
         raise ProviderError('provider_initialization_failed') from None
 
 
-def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None):
+def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
+                     owner_root=None, configuration_paths=()):
     """Select the provider before parsing its additional CLI/config fields."""
     from api_agent.config.options import parse_options
-    selected = dotenv.get('LLM_PROVIDER')
+    from api_agent.config.declarations import UNSET
+    declaration = base_schema.fields.get('LLM_PROVIDER')
+    selected = declaration.default if declaration is not None and declaration.default is not UNSET else None
+    selected = dotenv.get('LLM_PROVIDER', selected)
     selected = environ.get('LLM_PROVIDER', selected)
     selected = parse_options(base_schema, argv).values.get('LLM_PROVIDER', selected)
     selected = (overrides or {}).get('LLM_PROVIDER', selected)
-    return provider_schema(selected, base_schema) if selected else base_schema
+    schema = provider_schema(selected, base_schema, owner_root=owner_root) if selected else base_schema
+    for path in configuration_paths:
+        schema = contribution_schema(path, schema)
+    return schema

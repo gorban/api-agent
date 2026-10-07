@@ -2,9 +2,9 @@
 
 ## Testing during implementation
 
-Write deterministic unit tests covering each task's requirements as it is implemented, preferably red-to-green where possible: demonstrate the missing behavior with a failing test, then implement it and make the test pass. Maintain a 100% unit-test pass rate for every commit. Do not pursue or require 100% code coverage at each implementation step; coverage completion is an explicit later task, before final documentation archival and cleanup.
+Write deterministic unit tests covering each task's requirements as it is implemented, preferably red-to-green where possible. Before committing code changes, require all applicable unit tests to pass with 100% line and branch coverage, as required by AGENTS.md. Use focused mutation checks for rejection assertions that could pass for the wrong reason.
 
-The TUI enforces exact 100% line/branch coverage for All tests; partial selections report coverage informationally. Before PR merges, CI must require the full applicable unit suites to pass with exact 100% production coverage; see the [shared CI gate task](implementation_plan_i.md). Unit tests are excluded from Allure. During implementation, that coverage result identifies remaining work and does not block committing a step whose unit tests all pass. Use targeted tests to verify the current requirements. The final E2E acceptance pass-rate gate is also a separate root-plan task, with its threshold and measurement rules still to be established with the user.
+The TUI enforces exact 100% line/branch coverage for All tests; partial selections report coverage informationally. CI must enforce the full applicable unit suites and coverage gate before PR merges. Unit tests are excluded from Allure. Reverify coverage as features land and again before final cleanup. The final E2E acceptance pass-rate gate remains a separate task, with its threshold and measurement rules to be established with the user.
 
 ## Checklist
 
