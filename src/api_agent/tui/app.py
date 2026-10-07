@@ -156,6 +156,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 Binding("e", "edit_setting", "Edit"),
                 Binding("u", "unset_setting", "Unset"),
                 Binding("b", "back_to_selection", "Back to selection"),
+                Binding("space", "toggle_selection", "Toggle selection", show=False),
                 Binding("escape", "back_to_configuration", "Back to configuration"),
                 Binding("up,k", "failure_up", "Scroll up", key_display="↑/k"),
                 Binding("down,j", "failure_down", "Scroll down", key_display="↓/j"),
@@ -265,6 +266,11 @@ class WorkbenchScreen(FocusNavigation, Screen):
         self.query_one("#unit-summary").styles.height = summary_height
         self.query_one(DataTable).styles.height = max(8, available - summary_height)
 
+    def action_toggle_selection(self):
+        table = self.query_one(DataTable)
+        if table.row_count:
+            table.action_select_cursor()
+
     async def action_back_to_selection(self):
         self.app.run_worker(self.app.back_to_selection(), group="collection", exclusive=True)
 
@@ -275,6 +281,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
         # Textual evaluates underlying screen bindings while a modal is open.
         # Their contextual actions must not inspect the modal as this screen.
         if self.app.screen is not self:
+            return False
+        if action == "toggle_selection":
+            return isinstance(self.app.focused, DataTable)
+        if action == "close_view" and self.kind == "menu":
             return False
         if action == "back_to_selection":
             return self.kind == "test-results" and self.test_run_complete and not self.app.test_run_active()

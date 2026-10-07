@@ -1329,3 +1329,27 @@ def test_vim_navigation_tables_scroll_panes_and_input_safety(tmp_path):
             await pilot.press('j', 'k', 'h', 'l')
             assert app.screen.query_one(Input).value == 'jkhl'
     asyncio.run(scenario())
+
+
+def test_main_menu_disables_close_and_space_toggles_test_selection(tmp_path):
+    from api_agent.testing.selection import SelectionModel
+    identity = Identity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one')
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+            assert app.screen.check_action('close_view', ()) is False
+            await pilot.press('c')
+            assert app.screen.kind == 'menu'
+            app.mode = 'unit'
+            app.selection = SelectionModel([identity])
+            app.show_selection()
+            await pilot.pause()
+            await pilot.press('space')
+            await pilot.pause()
+            assert not app.selection.selected_tests
+            await pilot.press('space')
+            await pilot.pause()
+            assert app.selection.selected_tests == (identity,)
+    asyncio.run(scenario())
