@@ -57,20 +57,20 @@ def test_account_add_edit_remove_only_one_at_a_time(tmp_path):
             await pilot.pause()
             screen = app.screen
             await pilot.press('a')
-            assert not screen.query_one('#auth-manager').display
-            screen.query_one('#auth-vault', Input).value = 'Team [A]'
+            assert not app.screen.query('#auth-manager')
+            app.screen.query_one('#auth-vault', Input).value = 'Team [A]'
             await pilot.click('#auth-save')
             await pilot.pause()
             assert profile(app)['roles'] == {'LLM User': [account('LLM User', 'Team [A]')]}
             assert set(saved(app.session.dotenv_path)['roles']['LLM User'][0]) == {'vault', 'user'}
             await pilot.press('e')
-            assert screen.query_one('#auth-vault', Input).value == 'Team [A]'
-            assert screen.query_one('#auth-user', Input).value == 'LLM User'
-            screen.query_one('#auth-user', Input).value = 'Second'
+            assert app.screen.query_one('#auth-vault', Input).value == 'Team [A]'
+            assert app.screen.query_one('#auth-user', Input).value == 'LLM User'
+            app.screen.query_one('#auth-user', Input).value = 'Second'
             await pilot.click('#auth-save')
             await pilot.pause()
             await pilot.press('a')
-            screen.query_one('#auth-vault', Input).value = 'Another'
+            app.screen.query_one('#auth-vault', Input).value = 'Another'
             await pilot.click('#auth-save')
             await pilot.pause()
             assert len(profile(app)['roles']['LLM User']) == 2
@@ -101,17 +101,17 @@ def test_shared_manager_edit_default_path_custom_path_and_reset(tmp_path):
             assert screen.editing is None
             await pilot.press('e')
             assert screen.editing == 'manager'
-            assert not screen.query_one('#auth-vault').display
-            screen.query_one('#auth-manager', Select).value = '1password'
+            assert not app.screen.query('#auth-vault')
+            app.screen.query_one('#auth-manager', Select).value = '1password'
             await pilot.pause()
-            assert screen.query_one('#auth-path', Input).value == 'op'
-            screen.query_one('#auth-path', Input).value = '/custom path/op'
-            screen.query_one('#auth-manager', Select).value = 'keeper'
+            assert app.screen.query_one('#auth-path', Input).value == 'op'
+            app.screen.query_one('#auth-path', Input).value = '/custom path/op'
+            app.screen.query_one('#auth-manager', Select).value = 'keeper'
             await pilot.pause()
-            assert screen.query_one('#auth-path', Input).value == '/custom path/op'
+            assert app.screen.query_one('#auth-path', Input).value == '/custom path/op'
             for key in ('a', 'r', 's'):
                 assert not screen.check_action({'a': 'add_entry', 'r': 'remove_entry', 's': 'switch_target'}[key], ())
-            screen.save_entry()
+            app.screen.save_entry()
             await pilot.pause()
             assert profile(app)['password_manager'] == {'manager': 'keeper', 'cli_path': '/custom path/op'}
             assert profile(app)['roles']['LLM User'] == [account()]
@@ -130,9 +130,9 @@ def test_account_validation_cancel_and_target_switch(tmp_path):
             await pilot.pause()
             screen = app.screen
             await pilot.press('a')
-            screen.save_entry()
-            assert 'nonempty' in str(screen.query_one('#auth-error', Static).content)
-            screen.query_one('#auth-vault', Input).value = 'V'
+            app.screen.save_entry()
+            assert 'nonempty' in str(app.screen.query_one('#auth-error', Static).content)
+            app.screen.query_one('#auth-vault', Input).value = 'V'
             await pilot.press('enter')
             await pilot.pause()
             assert screen.editing is None
@@ -186,8 +186,8 @@ def test_other_pack_entries_preserved_without_validation_or_display(tmp_path):
             assert not screen.load_error
             assert screen.query_one('#auth-table', DataTable).row_count == 1
             await pilot.press('a')
-            screen.query_one('#auth-vault', Input).value = 'Example'
-            screen.save_entry()
+            app.screen.query_one('#auth-vault', Input).value = 'Example'
+            app.screen.save_entry()
             assert saved(app.session.dotenv_path)['roles']['Other pack'] == other
     asyncio.run(scenario())
 
@@ -214,8 +214,8 @@ def test_pack_role_scope_and_shared_manager_restore_target(tmp_path, start_in_pa
             assert app.session.dotenv_path == pack
             assert screen.shared_target == previous
             await pilot.press('a')
-            screen.query_one('#auth-vault', Input).value = 'Pack vault'
-            screen.save_entry()
+            app.screen.query_one('#auth-vault', Input).value = 'Pack vault'
+            app.screen.save_entry()
             await pilot.pause()
             assert saved(pack)['roles']['Partner'] == [account('Partner', 'Pack vault')]
             screen.query_one('#auth-manager-table', DataTable).focus()
@@ -227,8 +227,8 @@ def test_pack_role_scope_and_shared_manager_restore_target(tmp_path, start_in_pa
             await pilot.pause()
             assert app.session.dotenv_path == previous
             await pilot.press('a')
-            screen.query_one('#auth-vault', Input).value = 'LLM vault'
-            screen.save_entry()
+            app.screen.query_one('#auth-vault', Input).value = 'LLM vault'
+            app.screen.save_entry()
             await pilot.pause()
             assert profile(app)['roles'] == {'LLM User': [account('LLM User', 'LLM vault')],
                                             'Partner': [account('Partner', 'Pack vault')]}
@@ -266,9 +266,9 @@ def test_explicit_manager_choice_repairs_mixed_legacy_accounts(tmp_path):
             assert 'choose one shared' in screen.load_error
             screen.query_one('#auth-manager-table', DataTable).focus()
             await pilot.press('e')
-            screen.query_one('#auth-manager', Select).value = '1password'
+            app.screen.query_one('#auth-manager', Select).value = '1password'
             await pilot.pause()
-            screen.save_entry()
+            app.screen.save_entry()
             await pilot.pause()
             assert not screen.load_error
             assert screen.entries['LLM User'] == [account('first'), account('second')]
@@ -313,7 +313,7 @@ def test_readonly_workflow_title_and_form_labels(tmp_path):
             await pilot.pause()
             await pilot.press('a')
             for selector, label in (('#auth-save', 'Save'), ('#auth-cancel', 'Cancel')):
-                screen.query_one(selector).scroll_visible(animate=False)
+                app.screen.query_one(selector).scroll_visible(animate=False)
                 await pilot.pause()
                 rendered = ''.join(ElementTree.fromstring(app.export_screenshot()).itertext())
                 assert label in rendered
@@ -368,7 +368,7 @@ def test_wide_tables_reserve_horizontal_scrollbar_space(tmp_path):
             manager.focus()
             await pilot.press('e')
             await pilot.pause()
-            assert screen.query_one('#auth-path', Input).value.startswith('/long/')
+            assert app.screen.query_one('#auth-path', Input).value.startswith('/long/')
             await pilot.press('escape')
             await pilot.pause()
             assert viewport.max_scroll_y == 0
@@ -386,21 +386,21 @@ def test_edit_blank_role_creates_account_and_edit_uses_last_saved_values(tmp_pat
             assert screen.check_action('add_entry', ())
             await pilot.press('e')
             assert screen.editing == ('LLM User', None)
-            assert screen.query_one('#auth-vault', Input).value == ''
-            screen.query_one('#auth-vault', Input).value = 'Saved vault'
-            screen.query_one('#auth-user', Input).value = 'Saved login'
-            screen.save_entry()
+            assert app.screen.query_one('#auth-vault', Input).value == ''
+            app.screen.query_one('#auth-vault', Input).value = 'Saved vault'
+            app.screen.query_one('#auth-user', Input).value = 'Saved login'
+            app.screen.save_entry()
             await pilot.pause()
             await pilot.press('e')
-            assert screen.query_one('#auth-vault', Input).value == 'Saved vault'
-            assert screen.query_one('#auth-user', Input).value == 'Saved login'
-            screen.query_one('#auth-user', Input).value = 'Edited login'
-            screen.save_entry()
+            assert app.screen.query_one('#auth-vault', Input).value == 'Saved vault'
+            assert app.screen.query_one('#auth-user', Input).value == 'Saved login'
+            app.screen.query_one('#auth-user', Input).value = 'Edited login'
+            app.screen.save_entry()
             await pilot.pause()
             assert profile(app)['roles']['LLM User'] == [account('Edited login', 'Saved vault')]
             await pilot.press('a')
             assert screen.editing == ('LLM User', None)
-            assert screen.query_one('#auth-vault', Input).value == ''
+            assert app.screen.query_one('#auth-vault', Input).value == ''
             await pilot.press('escape')
     asyncio.run(scenario())
 
@@ -538,18 +538,18 @@ def test_manager_starts_unselected_and_path_defaults_follow_selection(tmp_path):
             assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
             table.focus()
             await pilot.press('e')
-            assert screen.query_one('#auth-manager', Select).value == ''
-            assert screen.query_one('#auth-path', Input).value == ''
-            screen.query_one('#auth-manager', Select).value = 'keeper'
+            assert app.screen.query_one('#auth-manager', Select).value == ''
+            assert app.screen.query_one('#auth-path', Input).value == ''
+            app.screen.query_one('#auth-manager', Select).value = 'keeper'
             await pilot.pause()
-            assert screen.query_one('#auth-path', Input).value == 'keeper'
-            screen.query_one('#auth-manager', Select).value = '1password'
+            assert app.screen.query_one('#auth-path', Input).value == 'keeper'
+            app.screen.query_one('#auth-manager', Select).value = '1password'
             await pilot.pause()
-            assert screen.query_one('#auth-path', Input).value == 'op'
-            screen.query_one('#auth-manager', Select).value = ''
+            assert app.screen.query_one('#auth-path', Input).value == 'op'
+            app.screen.query_one('#auth-manager', Select).value = ''
             await pilot.pause()
-            assert screen.query_one('#auth-path', Input).value == ''
-            screen.save_entry()
+            assert app.screen.query_one('#auth-path', Input).value == ''
+            app.screen.save_entry()
             await pilot.pause()
             assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
     asyncio.run(scenario())
@@ -575,4 +575,90 @@ def test_standalone_keeps_target_step_and_single_target_switch_is_noop(tmp_path)
             await pilot.resize_terminal(45, 35)
             await pilot.pause()
             assert str(screen.query_one('#auth-workflow', Static).content).splitlines()[0] == '1. (s) Choose .env target'
+    asyncio.run(scenario())
+
+
+def test_child_cancel_keeps_list_geometry_cursor_and_scroll(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        app.session.save_auth_role('LLM User', [account(str(i)) for i in range(30)])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            listing = app.screen
+            users = listing.query_one('#auth-table', DataTable)
+            manager = listing.query_one('#auth-manager-table', DataTable)
+            viewport = listing.query_one('#auth-content', VerticalScroll)
+            users.move_cursor(row=20)
+            users.focus()
+            await pilot.pause()
+            before = (users.region, manager.region, viewport.scroll_y, users.cursor_row)
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.screen is not listing
+            assert not app.screen.query('#auth-manager')
+            assert app.screen.query_one('#auth-vault', Input).value == 'Example'
+            await pilot.press('escape')
+            await pilot.pause()
+            assert app.screen is listing
+            assert app.focused is users
+            assert (users.region, manager.region, users.cursor_row) == (before[0], before[1], before[3])
+            assert abs(viewport.scroll_y - before[2]) < 0.1
+    asyncio.run(scenario())
+
+
+def test_child_spacing_validation_and_save_returns_focus(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            listing = app.screen
+            users = listing.query_one('#auth-table', DataTable)
+            await pilot.press('a')
+            await pilot.pause()
+            editor = app.screen
+            title = editor.query_one('#auth-form-title', Static)
+            vault_label = editor.query_one('#auth-first-label', Static)
+            vault = editor.query_one('#auth-vault', Input)
+            login_label = editor.query_one('#auth-login-label', Static)
+            assert title.styles.text_style.bold
+            assert vault_label.region.y >= title.region.bottom + 1
+            assert login_label.region.y >= vault.region.bottom + 1
+            assert not editor.query('#auth-manager') and not editor.query('#auth-path')
+            editor.save_entry()
+            assert 'nonempty' in str(editor.query_one('#auth-error', Static).content)
+            assert app.screen is editor
+            assert vault.value == ''
+            vault.value = 'Team vault'
+            editor.query_one('#auth-user', Input).value = 'Saved user'
+            await pilot.click('#auth-save')
+            await pilot.pause()
+            assert app.screen is listing and app.focused is users
+            assert listing.query_one('#auth-table', DataTable).cursor_row == 0
+            assert profile(app)['roles']['LLM User'] == [account('Saved user', 'Team vault')]
+    asyncio.run(scenario())
+
+
+def test_manager_editor_cancel_and_dropdown_escape(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            listing = app.screen
+            manager_table = listing.query_one('#auth-manager-table', DataTable)
+            manager_table.focus()
+            await pilot.press('e')
+            await pilot.pause()
+            editor = app.screen
+            assert not editor.query('#auth-vault') and not editor.query('#auth-user')
+            assert app.focused is editor.query_one('#auth-manager', Select)
+            await pilot.press('enter')
+            await pilot.pause()
+            await pilot.press('escape')
+            await pilot.pause()
+            assert app.screen is editor
+            await pilot.press('escape')
+            await pilot.pause()
+            assert app.screen is listing and app.focused is manager_table
+            assert not (app.context.base_root / '.env').exists()
+            assert [str(cell) for cell in manager_table.get_row_at(0)] == ['-', '-']
     asyncio.run(scenario())
