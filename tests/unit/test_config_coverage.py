@@ -25,6 +25,7 @@ def schema(fields):
     ({'version': 1, 'fields': {'X': {'type': 'path'}}}, 'explicit anchor'),
     ({'version': 1, 'fields': {'X': {'type': 'str', 'anchor': 'invalid'}}}, 'invalid path anchor'),
     ({'version': 1, 'fields': {'X': {'type': 'str', 'validation': 'invalid'}}}, 'unknown validation'),
+    ({'version': 1, 'fields': {'X': {'type': 'str', 'validation': 'positive'}}}, 'positive validation requires int'),
     ({'version': 1, 'fields': {'X': {'type': 'str', 'conditional_defaults': {}}}}, 'array'),
     ({'version': 1, 'fields': {'X': {'type': 'str', 'applies_when': []}}}, 'Predicate'),
     ({'version': 1, 'fields': {'X': {'type': 'str', 'applies_when': {'any': []}}}}, 'nonempty'),
@@ -120,6 +121,14 @@ def test_conversion_and_resolution_boundaries(tmp_path):
                      'B': {'type': 'str', 'conditional_defaults': [{'when': {'A': 'x'}, 'value': 'x'}]}})
     with pytest.raises(ConfigError, match='cyclic'):
         resolve_config(cyclic, environ={})
+
+
+@pytest.mark.parametrize('value', [0, -1])
+def test_positive_integer_validation_rejects_nonpositive_values(value):
+    field = FieldDeclaration('LIMIT', 'int', validation='positive')
+    with pytest.raises(ValueError, match='expected positive integer'):
+        convert_value(field, value, external=False, anchors=None)
+    assert convert_value(field, 1, external=False, anchors=None) == 1
 
 
 def make_session(tmp_path):
