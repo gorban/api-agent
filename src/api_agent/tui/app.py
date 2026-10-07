@@ -705,7 +705,7 @@ class ApiAgentApp(App[int]):
     async def discover_tests(self, cancel_event):
         from api_agent.testing.collection import collect_tests
         collector = self.collector or collect_tests
-        arguments = (self.context, self.mode, self.active_test_selectors)
+        arguments = (self.context, self.mode, ())
         return await asyncio.to_thread(
             collector, *arguments, **({} if self.collector else {"cancel_event": cancel_event}))
 
@@ -723,10 +723,13 @@ class ApiAgentApp(App[int]):
             if cancel_event.is_set():
                 return
             if self.session.result().values.get("COLLECT_ONLY"):
-                self.collected_output = "\n".join(test.id for test in tests)
+                from api_agent.testing.collection import select_tests
+                self.collected_output = "\n".join(test.id for test in select_tests(tests, self.active_test_selectors))
                 self.exit(0)
                 return
             self.selection = SelectionModel(tests)
+            if self.active_test_selectors:
+                self.selection.preselect(self.active_test_selectors)
             if not tests:
                 raise ValueError("No tests matched the selected suite/selectors")
             self.show_selection()
@@ -762,7 +765,7 @@ class ApiAgentApp(App[int]):
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
                 parallel_jobs=self.session.result().values.get("TEST_PARALLEL_JOBS", 8),
-                require_full_coverage="all" in self.selection.selected_scopes and not self.active_test_selectors)
+                require_full_coverage=self.selection.groups()[0].selected)
             self.unit_result = result
             for test in result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")

@@ -1244,6 +1244,8 @@ def test_startup_selectors_open_picker_once_then_menu_reentry_selects_all(tmp_pa
             await pilot.pause()
             assert app.screen.kind == 'tests'
             assert app.selection.selected_tests == (first,)
+            assert not app.selection.groups()[0].selected
+            assert len(app.selection.tests) == 2
             assert app.unit_result is None
             assert app.active_test_selectors == ('base::a.py',)
             await pilot.press('c')
@@ -1253,5 +1255,5 @@ def test_startup_selectors_open_picker_once_then_menu_reentry_selects_all(tmp_pa
             await pilot.pause()
             assert app.screen.kind == 'tests'
             assert app.selection.selected_tests == (first, second)
-            assert calls == [('base::a.py',), ()]
+            assert calls == [(), ()]
     asyncio.run(scenario())

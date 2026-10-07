@@ -72,3 +72,14 @@ def test_individual_selection_does_not_expand_incidentally_checked_tag():
     new = TestIdentity('new-other', 'repo', 'new.py', 'new.py::new', {'other'})
     selection_state.refresh_for_run(identities() + [new])
     assert selection_state.selected_ids == {'repo::a.py::test_b'}
+
+
+def test_startup_file_selection_leaves_all_unchecked_and_expands_new_file_members():
+    selection_state = SelectionModel(identities())
+    selection_state.preselect(['repo::a.py'])
+    assert not selection_state.groups()[0].selected
+    assert {test.file for test in selection_state.selected_tests} == {'a.py'}
+    new = TestIdentity('new-file-test', 'repo', 'a.py', 'a.py::new')
+    selection_state.refresh_for_run(identities() + [new])
+    assert new in selection_state.selected_tests
+    assert 'repo::b.py::test_c' not in selection_state.selected_ids
