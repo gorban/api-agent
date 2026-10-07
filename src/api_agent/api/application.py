@@ -1,3 +1,8 @@
+import asyncio
+import inspect
+from django.core.handlers.asgi import ASGIHandler
+from api_agent.providers.loading import ProviderError
+from .routes import RouteRegistrar
 """Compose a Django ASGI application without opening listeners or loading secrets."""
 
 from dataclasses import dataclass, field
@@ -15,37 +20,107 @@ _settings_lock = Lock()
 _HOST_PATTERN = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z")
 
 
+class RuntimeLifecycleError(RuntimeError):
+    pass
+
+
 @dataclass
 class Runtime:
-    """The selected pack and the health state owned by one ASGI application."""
-
     pack_id: str
+    identity_adapter: object = field(default=None, repr=False)
+    sessions: object = field(default=None, repr=False)
+    llm_provider: object = field(default=None, repr=False)
+    emissions: object = field(default=None, repr=False)
+    routes: object = field(default_factory=RouteRegistrar, repr=False)
+    urlconf: object = field(default=None, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
     _draining: bool = field(default=False, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
+    _start_task: object = field(default=None, init=False, repr=False)
+    _close_task: object = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
         if not isinstance(self.pack_id, str) or not self.pack_id.strip():
-            raise ValueError("pack_id must be a nonempty string")
+            raise ValueError('pack_id must be a nonempty string')
 
     @property
-    def started(self):
-        return self._started
+    def started(self): return self._started
 
     @property
-    def ready(self):
-        return self._started and not self._draining
+    def ready(self): return self._started and not self._draining
 
     @property
-    def draining(self):
-        return self._draining
+    def draining(self): return self._draining
+
+    def require_llm_provider(self):
+        if self.llm_provider is None:
+            raise ProviderError('provider_location_required')
+        return self.llm_provider.implementation
 
     def start(self):
-        self._draining = False
-        self._started = True
+        if self._closed:
+            raise RuntimeLifecycleError('runtime_closed')
+        self._started, self._draining = True, False
 
     def stop(self):
-        self._draining = True
-        self._started = False
+        self._started, self._draining = False, True
+
+    async def _start_owned(self):
+        services = {'sessions': self.sessions, 'emissions': self.emissions}
+        for owner in (self.llm_provider, self.identity_adapter):
+            setup = getattr(owner, 'setup_routes', None)
+            if setup is not None:
+                result = setup(self.routes, services)
+                if inspect.isawaitable(result):
+                    await result
+            start = getattr(owner, 'astart', None)
+            if start is not None:
+                await start()
+        self.urlconf = self.routes.freeze()
+        self.start()
+
+    async def astart(self):
+        if self._closed:
+            raise RuntimeLifecycleError('runtime_closed')
+        if self._start_task is None:
+            self._start_task = asyncio.create_task(self._start_owned())
+        try:
+            await self._start_task
+        except BaseException as error:
+            await self.aclose()
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            raise RuntimeLifecycleError('runtime_start_failed') from None
+
+    async def _close_owned(self):
+        if self._start_task is not None and not self._start_task.done():
+            self._start_task.cancel()
+            await asyncio.gather(self._start_task, return_exceptions=True)
+        failed = False
+        for owner in (self.sessions, self.identity_adapter, self.llm_provider):
+            close = getattr(owner, 'aclose', None)
+            if close is not None:
+                try:
+                    await close()
+                except BaseException:
+                    failed = True
+        if failed:
+            raise RuntimeLifecycleError('runtime_cleanup_failed')
+
+    async def aclose(self):
+        if self._close_task is None:
+            self._closed = True
+            self.stop()
+            self._close_task = asyncio.create_task(self._close_owned())
+        await asyncio.shield(self._close_task)
+
+
+class RuntimeHandler(ASGIHandler):
+    async def get_response_async(self, request):
+        runtime = request.scope['api_agent_runtime']
+        if runtime.urlconf is not None:
+            request.urlconf = runtime.urlconf
+        return await super().get_response_async(request)
 
 
 class Application:
@@ -58,10 +133,10 @@ class Application:
             while True:
                 event = await receive()
                 if event["type"] == "lifespan.startup":
-                    self.runtime.start()
+                    await self.runtime.astart()
                     await send({"type": "lifespan.startup.complete"})
                 elif event["type"] == "lifespan.shutdown":
-                    self.runtime.stop()
+                    await self.runtime.aclose()
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         elif scope["type"] == "http":
@@ -130,5 +205,5 @@ def create_application(runtime: Runtime, *, allowed_hosts=("localhost", "127.0.0
                 MIDDLEWARE=["api_agent.api.application.ValidateHostMiddleware"],
                 USE_TZ=True,
             )
-        django_app = get_asgi_application()
+        django_app = RuntimeHandler()
     return Application(runtime, django_app)
