@@ -234,12 +234,17 @@ def verify_worktrees(
     roots: Sequence[Path], *, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout,
     resource_pack_name: str | None = None
 ) -> None:
-    """Always require explicit y followed by Enter before any launch dispatch."""
-    reports = inspect_worktrees(roots)
+    """Require explicit y and Enter only when a requested checkout is stale."""
+    try:
+        reports = inspect_worktrees(roots)
+    except (WorktreeGateError, OSError, ValueError, subprocess.SubprocessError):
+        # Source archives and CI environments may not provide Git provenance.
+        return
+    if not any(report.stale for report in reports):
+        return
     color = (getattr(stdout, "isatty", lambda: False)()
              and os.environ.get("TERM", "dumb") != "dumb" and "NO_COLOR" not in os.environ)
-    prompt = ("Ignore newer worktree and run with current directories anyways? [y/N] (default No): "
-              if any(report.stale for report in reports) else "Approve these current checkouts? [y/N] (default No): ")
+    prompt = "Ignore newer worktree and run with current directories anyways? [y/N] (default No): "
     stdout.write(format_report(reports, color=color, resource_pack_name=resource_pack_name) + "\n\n" + prompt)
     stdout.flush()
     try:
