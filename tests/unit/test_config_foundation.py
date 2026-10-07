@@ -86,12 +86,24 @@ def resource_pack_schema():
                 'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
                 'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
         extension = compose_schema(extension, selection)
+    token = schema_from_dict({'version': 1, 'fields': {'PACK_TEST_TOKEN': {
+        'type': 'str', 'required': True, 'applies_when': {
+            'TUI_MODE': ['integration', 'e2e'], 'COLLECT_ONLY': False}}}},
+        base_schema=shared, source='pack_default')
+    if 'UNATTENDED_USER_INDEX' not in extension.fields:
+        selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
+            'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
+            'persist_default': False, 'applies_when': {
+                'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
+                'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
+        extension = compose_schema(extension, selection)
+    extension = compose_schema(extension, token)
     return compose_schema(shared, extension)
 
 def test_json_resolution_index_validation_and_secret_diagnostics(tmp_path):
     result = resolve_config(resource_pack_schema(), environ={'TUI_MODE': 'e2e', 'UI_SOURCE_DIR': '/example/frontend',
                             'UNATTENDED_AUTH': 'secret-invalid', 'UNATTENDED_USER_INDEX': '-1',
-                            'E2E_BROWSER_RESOLUTION': '0x900'}, anchors={'owner_root': tmp_path})
+                            'E2E_BROWSER_RESOLUTION': '0x900', 'PACK_TEST_TOKEN': 'test-only'}, anchors={'owner_root': tmp_path})
     assert len(result.errors) == 3
     assert 'secret-invalid' not in '\n'.join(result.errors)
 
@@ -243,7 +255,7 @@ def test_ui_applies_to_e2e_and_optional_local_only(tmp_path, mode, run_ui, activ
             'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}],
             'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
     for schema, app in [(shared, 'agent'), (compose_schema(shared, extension), 'shell')]:
-        result = resolve_config(schema, environ={'TUI_MODE': mode, 'RUN_UI': run_ui, 'UI_SOURCE_DIR': 'frontend'},
+        result = resolve_config(schema, environ={'TUI_MODE': mode, 'RUN_UI': run_ui, 'PACK_TEST_TOKEN': 'test-only', 'UI_SOURCE_DIR': str(tmp_path / 'ui')},
                                 anchors={'owner_root': tmp_path})
         result.raise_for_errors()
         assert ('UI_NX_APP' in result.values) == active
@@ -296,3 +308,19 @@ def test_cli_and_bootstrap_defaults_skip_interactive_review():
     for name in ('NO_STD_IN', 'COLLECT_ONLY', 'API_AGENT_DIR'):
         assert schema.fields[name].acknowledge_default is False
         assert schema.fields[name].persist_default is False
+
+
+def test_resource_pack_token_required_only_for_test_execution(tmp_path):
+    schema = resource_pack_schema()
+    anchors = {'owner_root': tmp_path, 'pack_root': tmp_path}
+    for mode in ('integration', 'e2e'):
+        missing = resolve_config(schema, environ={'TUI_MODE': mode, 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors=anchors, interactive=True)
+        assert missing.missing == ('PACK_TEST_TOKEN',)
+        supplied = resolve_config(schema, environ={'TUI_MODE': mode, 'PACK_TEST_TOKEN': 'test-only', 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors=anchors)
+        assert not supplied.errors
+        collected = resolve_config(schema, environ={'TUI_MODE': mode, 'COLLECT_ONLY': 'True'}, anchors=anchors)
+        assert not collected.errors
+    for mode in ('unit', 'run-local', 'config-cleanup'):
+        result = resolve_config(schema, environ={'TUI_MODE': mode}, anchors=anchors)
+        assert not result.errors
+        assert 'PACK_TEST_TOKEN' not in result.values
