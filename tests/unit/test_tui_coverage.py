@@ -206,7 +206,7 @@ def test_real_green_execution_from_picker_and_completed_nonfailure_row(tmp_path)
     (tmp_path / 'tests/unit').mkdir(parents=True)
     (tmp_path / 'tests/unit/test_green.py').write_text('from green_fixture import VALUE\ndef test_green():\n    assert VALUE == 1\n')
     async def scenario():
-        app = fixture(tmp_path, 'unit', fields={'TEST_PARALLEL_JOBS': {'type': 'int', 'default': 0, 'acknowledge_default': False, 'persist_default': False}})
+        app = fixture(tmp_path, 'unit', fields={'TEST_PARALLEL_JOBS': {'type': 'int', 'default': 0, 'acknowledge_default': False}})
         app.context.owner_root = tmp_path
         app.context.suite_paths = lambda mode: [tmp_path / 'tests/unit']
         async with app.run_test(size=(100, 40)) as pilot:
@@ -429,7 +429,7 @@ def test_configuration_empty_auth_invalid_startup_and_collect_mode_errors(tmp_pa
             assert app.screen.heading == 'Configuration error'
     run(scenario)
     async def mode_error():
-        app = fixture(tmp_path, fields={'COLLECT_ONLY': {'type': 'bool', 'default': False, 'acknowledge_default': False, 'persist_default': False}})
+        app = fixture(tmp_path, fields={'COLLECT_ONLY': {'type': 'bool', 'default': False, 'acknowledge_default': False}})
         app.session.environ['COLLECT_ONLY'] = 'True'
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -552,7 +552,7 @@ def test_menu_request_while_active_requires_stop_handshake(tmp_path):
 def test_cleanup_removed_last_hidden_setting_handles_empty_snapshot(tmp_path):
     async def scenario():
         (tmp_path / '.env').write_text('HIDDEN=present\n')
-        app = fixture(tmp_path, 'config-cleanup', fields={'HIDDEN': {'type': 'str', 'acknowledge_default': False, 'persist_default': False}})
+        app = fixture(tmp_path, 'config-cleanup', fields={'HIDDEN': {'type': 'str', 'acknowledge_default': False}})
         async with app.run_test() as pilot:
             await pilot.pause()
             table = app.screen.query_one(DataTable)

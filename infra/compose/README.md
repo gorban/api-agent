@@ -57,3 +57,36 @@ Config validation discards stdout/stderr to avoid exposing resolved secrets.
 The PostgreSQL 17.6, ClickHouse 25.3.6.56 and Redis 7.4.5 pins are conservative
 compatibility selections, not claims to be their newest releases. Container
 startup and fresh/existing-volume headless provisioning remain runtime checks.
+
+## Managed local result history
+
+`ALLURE_S3_USE_LOCALSTACK=True` selects local result storage with the declared
+`allure-results` bucket and `http://localhost:4566` endpoint defaults. An explicit
+bucket or region remains selected; `us-east-1` is the default region. The toggle
+rejects an explicit conflicting endpoint before any engine command. With the
+toggle False, an explicitly selected conventional local endpoint still selects
+LocalStack; ordinary remote S3 remains independent.
+
+`localstack-ready.sh` provisions the selected bucket with `awslocal`, using an
+explicit container-local endpoint and synthetic `test` credentials. It checks
+existence, creates only when missing, and verifies readability after creation.
+Creation and final verification errors fail startup. Regions other than
+`us-east-1` receive an explicit location constraint. The script never contacts
+AWS. Its content digest and selected bucket/region participate in configuration
+compatibility, so an existing stack with different initialization must be
+reviewed instead of silently reused.
+
+The public hook is the only permitted bind mount. The planner resolves its source
+from checkout or installed package assets, mounts it read-only at the fixed
+`ready.d` path, disables automatic host-directory creation, and uses shared
+SELinux `z` labeling for the workstation's rootless Podman. No engine socket is
+mounted. Readiness waits for S3 and the controlled automatic hook to complete
+successfully; acquisition then executes the same idempotent hook inside the
+inspected immutable container ID, including for reused services. This also
+checks that the selected bucket remains readable before result publication.
+
+The hook and mount contracts follow [LocalStack initialization hooks](https://docs.localstack.cloud/aws/customization/advanced/initialization-hooks/)
+and [Compose bind mount options](https://docs.docker.com/reference/compose-file/services/).
+Config-only validation accepts the long mount syntax. Unit tests execute the hook
+against a controlled fake `awslocal`; live engine startup and S3 provisioning
+remain integration checks.

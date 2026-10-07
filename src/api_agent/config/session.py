@@ -13,8 +13,6 @@ from .resolve import (ConfigError, ResolvedValue, convert_value, resolve_config,
                       runtime_directory_overrides, retain_runtime_directory)
 from api_agent.auth.profiles import DEFAULT_PASSWORD_MANAGER, _canonical_shape, normalize_auth, validate_role_entries
 
-_CONTROLS = {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH'}
-
 
 @dataclass(frozen=True)
 class DefaultCandidate:
@@ -346,7 +344,7 @@ class ConfigSession:
         result = self.result(_review=True)
         return [DefaultCandidate(name, value, self.schema.fields[name])
                 for name, value in result.fields.items()
-                if not value.explicit and name not in _CONTROLS
+                if not value.explicit
                 and self.schema.fields[name].acknowledge_default]
 
     def set_value(self, name, text, persist=False):
@@ -377,7 +375,7 @@ class ConfigSession:
         names = tuple(dict.fromkeys(names))
         values = {}
         for name in names:
-            if name not in candidates or not candidates[name].field.persist_default:
+            if name not in candidates:
                 raise ConfigError(f'{name}: default cannot be persisted through acknowledgement')
             values[name] = self.external_value(name, candidates[name].value)
         if values:
@@ -425,5 +423,5 @@ class ConfigSession:
                            name in pack, name in persisted)
                 for name, field in self.schema.fields.items()
                 if name != 'UNATTENDED_AUTH'
-                and ((name != 'TUI_MODE' and field.acknowledge_default and field.persist_default)
+                and (field.acknowledge_default
                      or name in persisted)]

@@ -29,3 +29,6 @@
 - [ ] Prove attended and unattended LLM provider authentication using the [test-authentication tasks](implementation_plan_a4.md). During authentication-only integration, forbid inference and leave quota unavailable when not queried. Verify authenticated model-list response separately; an authentication token alone does not prove discovery.
 
 - [ ] Verify request metadata within the selected provider. Public integration tests use synthetic metadata consumers and do not assert a private upstream header set.
+
+- [ ] Supply application/resource-pack service identity to the selected provider through generic context. Provider-owned metadata configuration observes normal precedence; core tests verify identity selection independently of working directory or installed paths.
+- [ ] Wire selected provider transports to their own metadata builders, including their separately documented usage-read contract. Complete human configuration review and authentication proof before live inference.

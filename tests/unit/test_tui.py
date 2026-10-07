@@ -13,7 +13,8 @@ from textual.widgets import Button, DataTable, Input, Select, Static
 def fixture(tmp_path, mode=None, fields=None, collector=None, argv=()):
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, pack_id="fixture",
                               dotenv_path=tmp_path / ".env", anchors={}, external_pack=False)
-    declarations = {"TUI_MODE": {"type": "str"}, "UNATTENDED_AUTH": {"type": "jsonobject"}}
+    declarations = {"TUI_MODE": {"type": "str", "acknowledge_default": False},
+                    "UNATTENDED_AUTH": {"type": "jsonobject", "acknowledge_default": False}}
     declarations.update(fields or {})
     schema = schema_from_dict({"version": 1, "fields": declarations})
     environ = {"UNATTENDED_AUTH": '{"LLM User":[{"manager":"keeper","cli_path":"/bin/keeper","vault":"fixture","user":"fixture"}]}'}
@@ -316,7 +317,7 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
         app = fixture(tmp_path, fields={
             "ENABLED": {"type": "bool", "default": True},
             "DETAIL": {"type": "str", "required_when": {"ENABLED": True}, "applies_when": {"ENABLED": True}},
-            "DEBUG": {"type": "bool", "default": False, "acknowledge_default": False, "persist_default": False},
+            "DEBUG": {"type": "bool", "default": False, "acknowledge_default": False},
         })
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(0.4)
@@ -596,7 +597,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
                         'API_AGENT_DIR', 'UI_SOURCE_DIR', 'UI_NX_APP', 'E2E_DEBUG',
                         'AUTH_BROWSER_DEBUG', 'E2E_LOG_INDEX'} & rows.keys()
             app.session.save_defaults(item.name for item in app.session.default_candidates()
-                                      if item.field.persist_default)
+                                      if item.field.acknowledge_default)
             app.show_configuration()
             await pilot.pause()
             assert app.screen.query_one(DataTable).row_count == len(rows)
@@ -610,7 +611,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             await pilot.pause()
             assert relaunched.screen.kind == 'defaults'
             table = relaunched.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET', 'CLIENT_CA_FILE', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY', 'ALLURE_S3_BUCKET']
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET', 'LLM_PROVIDER', 'ALLURE_S3_BUCKET']
     asyncio.run(scenario())
 
 
@@ -907,7 +908,7 @@ def test_cleanup_both_dotenvs_hidden_setting_and_default_review(tmp_path):
             (directory / '.env').write_text('UI_NX_APP="shell"\nCOUNT="6"\n')
         app = fixture(tmp_path, 'config-cleanup', fields={
             'UI_NX_APP': {'type': 'str', 'default': 'agent',
-                          'acknowledge_default': False, 'persist_default': False},
+                          'acknowledge_default': False},
             'COUNT': {'type': 'int', 'default': 4}})
         app.context.base_root, app.context.pack_root = base, pack
         app.context.external_pack = True
@@ -962,7 +963,7 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
         dotenv.write_text('UI_NX_APP=agent\nCOUNT=6\n')
         app = fixture(tmp_path, 'config-cleanup', fields={
             'UI_NX_APP': {'type': 'str', 'default': 'agent',
-                          'acknowledge_default': False, 'persist_default': False},
+                          'acknowledge_default': False},
             'COUNT': {'type': 'int', 'default': 4},
             'OTHER': {'type': 'int', 'default': 1}})
         async with app.run_test(size=(110, 40)) as pilot:

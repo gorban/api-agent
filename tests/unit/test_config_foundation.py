@@ -145,10 +145,8 @@ def test_pack_only_path_and_metadata(tmp_path):
     result = resolve_config(schema, environ={}, pack_launcher=True, anchors={'pack_root': tmp_path})
     assert result.values['API_AGENT_DIR'] == (tmp_path / '../api-agent').resolve()
     assert schema.fields['NO_STD_IN'].acknowledge_default is False
-    assert schema.fields['NO_STD_IN'].persist_default is False
     assert schema.fields['E2E_DEBUG'].acknowledge_default is False
     assert 'UNATTENDED_USER_INDEX' not in schema.fields
-    assert resource_pack_schema().fields['UNATTENDED_USER_INDEX'].persist_default is False
 
 def test_cli_missing_value_and_end_options():
     parsed = parse_options(load_shared_schema(), ['--tui-mode', '--no-std-in', '--', '--literal'])
@@ -342,14 +340,12 @@ def test_cli_and_bootstrap_defaults_skip_interactive_review():
     schema = load_shared_schema()
     for name in ('NO_STD_IN', 'COLLECT_ONLY', 'API_AGENT_DIR', 'UI_SOURCE_DIR', 'UI_NX_APP'):
         assert schema.fields[name].acknowledge_default is False
-        assert schema.fields[name].persist_default is False
 
 
 def test_resource_pack_internal_defaults_skip_interactive_review():
     schema = resource_pack_schema()
     for name in ('UI_SOURCE_DIR', 'UI_NX_APP', 'UNATTENDED_SECONDARY_USER'):
         assert schema.fields[name].acknowledge_default is False
-        assert schema.fields[name].persist_default is False
 
 
 def test_resource_pack_token_required_for_api_and_test_execution(tmp_path):

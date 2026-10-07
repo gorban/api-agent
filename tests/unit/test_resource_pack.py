@@ -130,3 +130,31 @@ def test_invalid_credential_role_declarations_fail_before_dispatch(tmp_path, dec
     (pack / 'pack.toml').write_text('version=1\nid="fixture"\nconfig="config.toml"\n' + declaration + '\n')
     with pytest.raises(ResourcePackError, match='authentication'):
         load_launch_context(base, pack)
+
+
+def test_manifest_service_identity_defaults_for_existing_packs(tmp_path):
+    base,pack=tmp_path/'base',tmp_path/'external'
+    base.mkdir()
+    make_pack(pack)
+    assert load_launch_context(base,pack).service_name=='api-agent'
+
+
+@pytest.mark.parametrize('declaration', ['service_name=""','service_name=1','service_name="é-service"','service_name="bad\\nheader"'])
+def test_manifest_invalid_service_identity_rejected(tmp_path,declaration):
+    base,pack=tmp_path/'base',tmp_path/'external'
+    base.mkdir()
+    make_pack(pack)
+    manifest=pack/'pack.toml'
+    manifest.write_text(declaration+'\n'+manifest.read_text())
+    with pytest.raises(ResourcePackError,match='service_name'):
+        load_launch_context(base,pack)
+
+
+def test_resource_pack_service_identity_is_cwd_independent(tmp_path, monkeypatch):
+    base, pack = tmp_path / 'base', tmp_path / 'resource-pack'
+    base.mkdir()
+    make_pack(pack)
+    manifest = pack / 'pack.toml'
+    manifest.write_text('service_name="synthetic-api"\n' + manifest.read_text())
+    monkeypatch.chdir(tmp_path)
+    assert load_launch_context(base, pack).service_name == 'synthetic-api'

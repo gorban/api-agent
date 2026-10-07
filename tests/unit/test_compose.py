@@ -144,7 +144,7 @@ def test_installed_compose_assets_are_found_without_cwd(tmp_path, monkeypatch):
     module.parent.mkdir(parents=True)
     assets.mkdir(parents=True)
     module.write_text('# installed module')
-    for name in ('compose.json', 'empty.env'):
+    for name in ('compose.json', 'empty.env', 'localstack-ready.sh'):
         (assets / name).write_text((source_plan.directory / name).read_text())
     unrelated = tmp_path / 'unrelated'
     unrelated.mkdir()
@@ -297,3 +297,88 @@ def test_wrapper_host_uid_is_only_accepted_as_explicit_public_transport_value(mo
 def test_wrapper_host_uid_rejects_non_numeric_transport_value(uid):
     with pytest.raises(ComposeError, match='ASCII digits'):
         plan_compose({}, Scope(), engine_environment={'API_AGENT_HOST_UID': uid})
+
+
+def test_localstack_toggle_defaults_and_explicit_selected_bucket_region():
+    default = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True}, Scope())
+    assert default.profiles == ('localstack',)
+    assert default.environment['SA_ALLURE_S3_BUCKET'] == 'allure-results'
+    assert default.environment['SA_ALLURE_S3_REGION'] == 'us-east-1'
+    assert Path(default.environment['SA_LOCALSTACK_READY_HOOK']).is_absolute()
+    explicit = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'selected-bucket',
+        'ALLURE_S3_REGION': 'eu-west-1', 'ALLURE_S3_ENDPOINT': 'http://127.0.0.1:4566/'}, Scope())
+    assert explicit.environment['SA_ALLURE_S3_BUCKET'] == 'selected-bucket'
+    assert explicit.environment['SA_ALLURE_S3_REGION'] == 'eu-west-1'
+    assert len(explicit.environment['SA_LOCALSTACK_READY_DIGEST']) == 64
+
+
+@pytest.mark.parametrize('endpoint', ['https://s3.example', '', 'http://[::1]:4566',
+    'http://localhost:4567', 'http://localhost:4566/bucket', 'http://localhost:4566?x=1'])
+def test_localstack_toggle_refuses_explicit_conflicting_endpoint(endpoint):
+    with pytest.raises(ComposeError):
+        plan_compose({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': endpoint}, Scope())
+
+
+@pytest.mark.parametrize('config', [{'ALLURE_S3_USE_LOCALSTACK': 'True'},
+    {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': ''},
+    {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 7},
+    {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'bad..bucket'},
+    {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': '127.0.0.1'},
+    {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_REGION': ''},
+    {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_REGION': 7}])
+def test_localstack_selection_validates_bucket_region_and_typed_toggle(config):
+    with pytest.raises(ComposeError): plan_compose(config, Scope())
+
+
+def test_localstack_readonly_hook_mount_and_configuration_contract():
+    from api_agent.runtime.prerequisites import _interpolate
+    plan = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'chosen-results'}, Scope())
+    document = json.loads((plan.directory / 'compose.json').read_text())
+    spec = _interpolate(document['services']['localstack'], plan.environment)
+    assert spec['environment']['SA_ALLURE_S3_BUCKET'] == 'chosen-results'
+    assert spec['environment']['AWS_DEFAULT_REGION'] == plan.environment['SA_ALLURE_S3_REGION']
+    assert spec['environment']['SA_LOCALSTACK_READY_DIGEST'] == plan.environment['SA_LOCALSTACK_READY_DIGEST']
+    assert spec['volumes'][1] == {'type': 'bind', 'source': str(plan.directory / 'localstack-ready.sh'),
+        'target': '/etc/localstack/init/ready.d/10-api-agent-s3.sh', 'read_only': True,
+        'bind': {'create_host_path': False, 'selinux': 'z'}}
+    for name, change in [('localstack', {'read_only': False}), ('localstack', {'source': '/private'}),
+                         ('jaeger', {})]:
+        altered = json.loads((plan.directory / 'compose.json').read_text())
+        mount = {**document['services']['localstack']['volumes'][1], **change}
+        altered['services'][name]['volumes'] = [mount]
+        with pytest.raises(ComposeError, match='controlled LocalStack hook'):
+            validate_document(altered, Scope(), plan.profiles)
+
+
+@pytest.mark.parametrize('case', ['missing', 'symlink', 'unreadable'])
+def test_controlled_hook_asset_must_be_real_readable_file(tmp_path, monkeypatch, case):
+    import shutil
+    source = plan_compose({}, Scope()).directory
+    for name in ('compose.json', 'empty.env'):
+        shutil.copyfile(source / name, tmp_path / name)
+    hook = tmp_path / 'localstack-ready.sh'
+    if case == 'symlink': hook.symlink_to(source / 'localstack-ready.sh')
+    if case == 'unreadable':
+        shutil.copyfile(source / 'localstack-ready.sh', hook)
+        original = Path.read_bytes
+        def read(path):
+            if path == hook: raise PermissionError('private')
+            return original(path)
+        monkeypatch.setattr(Path, 'read_bytes', read)
+    with pytest.raises(ComposeError, match='hook'):
+        plan_compose({}, Scope(), compose_directory=tmp_path)
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_resolved_localstack_toggle_and_selected_bucket_feed_provisioning_plan(explicit, tmp_path):
+    from api_agent.config import load_shared_schema, resolve_config
+    environment = {'TUI_MODE': 'integration', 'ALLURE_S3_USE_LOCALSTACK': 'True'}
+    if explicit:
+        environment.update(ALLURE_S3_BUCKET='explicit-results', ALLURE_S3_REGION='eu-west-1')
+    result = resolve_config(load_shared_schema(), environ=environment, dotenv={}, anchors={'owner_root': tmp_path})
+    assert not result.errors and not result.missing
+    plan = plan_compose(result.values, Scope())
+    assert plan.profiles == ('localstack',)
+    assert plan.environment['SA_ALLURE_S3_BUCKET'] == ('explicit-results' if explicit else 'allure-results')
+    assert plan.environment['SA_ALLURE_S3_REGION'] == ('eu-west-1' if explicit else 'us-east-1')
+    assert result.values['ALLURE_S3_ENDPOINT'] == 'http://localhost:4566'

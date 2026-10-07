@@ -31,6 +31,7 @@ class LaunchContext:
     production_paths: tuple[Path, ...] = ()
     bootstrap_source: str | None = None
     bootstrap_explicit: bool = False
+    service_name: str = "api-agent"
 
     @property
     def dotenv_path(self) -> Path:
@@ -85,7 +86,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -93,6 +94,10 @@ def load_launch_context(
     pack_id = data.get("id")
     if not isinstance(pack_id, str) or not pack_id.strip():
         raise ResourcePackError(f"Resource-pack id must be a nonempty string: {manifest}")
+    service_name = data.get("service_name", "api-agent")
+    if (type(service_name) is not str or not service_name
+            or any(not 32 <= ord(char) <= 126 for char in service_name)):
+        raise ResourcePackError("Resource-pack service_name must be nonempty printable ASCII")
     owner = _relative_path(data.get("owner", "."), pack, "owner")
     if packaged_demo:
         owner = base
@@ -158,4 +163,5 @@ def load_launch_context(
         tuple(role_fields),
         factory_path, factory_name,
         tuple(dict.fromkeys(production_paths)),
+        service_name=service_name,
     )

@@ -16,15 +16,15 @@ def session(tmp_path):
                               anchors={'base_root': base, 'pack_root': pack, 'owner_root': pack},
                               external_pack=True)
     schema = schema_from_dict({'version': 1, 'fields': {
-        'TUI_MODE': {'type': 'str', 'required': True},
+        'TUI_MODE': {'type': 'str', 'required': True, 'acknowledge_default': False},
         'VALUE': {'type': 'int', 'default': 1},
-        'HELP': {'type': 'bool', 'default': False},
+        'HELP': {'type': 'bool', 'default': False, 'acknowledge_default': False},
         'DEBUG': {'type': 'bool', 'default': False, 'acknowledge_default': False},
-        'TRANSIENT': {'type': 'str', 'default': 'once', 'persist_default': False},
+        'TRANSIENT': {'type': 'str', 'default': 'once', 'acknowledge_default': False},
         'DETAIL': {'type': 'str', 'default': 'low', 'conditional_defaults': [
             {'when': {'TUI_MODE': 'unit'}, 'value': 'high'}]},
         'REQUIRED': {'type': 'str', 'required_when': {'TUI_MODE': 'run'}},
-        'UNATTENDED_AUTH': {'type': 'jsonobject', 'default': {}},
+        'UNATTENDED_AUTH': {'type': 'jsonobject', 'default': {}, 'acknowledge_default': False},
     }})
     return ConfigSession(context, schema, environ={})
 
@@ -74,7 +74,7 @@ def test_choices_recompute_conditional_defaults_and_missing(session):
 
 def test_candidate_metadata_and_default_saving(session):
     candidates = {row.name: row for row in session.default_candidates()}
-    assert set(candidates) == {'VALUE', 'DETAIL', 'TRANSIENT'}
+    assert set(candidates) == {'VALUE', 'DETAIL'}
     assert candidates['VALUE'].value == 1
     session.save_defaults(['VALUE', 'DETAIL'])
     assert session.result().fields['VALUE'].source == '../pack/.env'
@@ -118,7 +118,7 @@ def test_cleanup_includes_effective_inactive_fields_without_changing_applicabili
     assert 'DETAIL' not in session.result().fields
     row = next(row for row in session.cleanup_rows() if row.name == 'DETAIL')
     assert row.value == 'low' and row.source == 'shared_default'
-    session.set_value('HELP', 'True')
+    session.set_value('HELP', 'True', persist=True)
     rows = {row.name: row for row in session.cleanup_rows()}
     assert rows['HELP'].value is True
     assert rows['DETAIL'].value == 'low'
