@@ -59,12 +59,22 @@ def test_failure_traceback_and_no_source_pack(tmp_path):
     assert 'deliberate failure' in result.output
 
 
-def test_full_coverage_success_and_optional_missing_pack(tmp_path):
+def test_full_coverage_success_and_optional_missing_pack(tmp_path, monkeypatch):
+    from api_agent.testing import recording, storage
+    def forbidden(*args, **kwargs):
+        pytest.fail('Unit execution must not initialize Allure recording/storage')
+    monkeypatch.setattr(recording, 'RunRecorder', forbidden)
+    monkeypatch.setattr(storage, 'RunStorage', forbidden)
+    latest = tmp_path / 'latest-integration-manifest.json'
+    latest.write_text('{"run_id": "prior-integration"}')
     base = fixture_repo(tmp_path / 'base')
     ctx = context(base, tmp_path / 'absent')
     result = run_unit_tests(ctx, collect_tests(ctx, 'unit'))
     assert result.exit_code == 0
     assert all(a.complete for a in result.coverage)
+    assert latest.read_text() == '{"run_id": "prior-integration"}'
+    assert not list(base.rglob('*-result.json'))
+    assert not (base / 'artifacts/allure').exists()
     with pytest.raises(CollectionError, match='empty'):
         run_unit_tests(ctx, [])
 

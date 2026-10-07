@@ -150,6 +150,62 @@ COLLECT_ONLY = false
 
 # OAuth transport configuration; no provider calls occur during config review.
 
+[fields.ALLURE_S3_BUCKET]
+type = "str"
+help = "Required S3 bucket for integration/E2E result history. LocalStack may provide local S3."
+[fields.ALLURE_S3_BUCKET.required_when]
+TUI_MODE = ["integration", "e2e"]
+[fields.ALLURE_S3_BUCKET.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
+[fields.ALLURE_S3_PREFIX]
+type = "str"
+default = "allure"
+help = "S3 prefix for separate repository/run histories. Existing runs are retained."
+[fields.ALLURE_S3_PREFIX.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
+[fields.ALLURE_S3_ENDPOINT]
+type = "str"
+help = "Optional S3-compatible endpoint, such as LocalStack; omitted uses AWS S3."
+[fields.ALLURE_S3_ENDPOINT.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
+[fields.ALLURE_S3_REGION]
+type = "str"
+default = "us-east-1"
+help = "AWS signing region for result storage, including LocalStack."
+[fields.ALLURE_S3_REGION.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
+[fields.ALLURE_RESULTS_DIR]
+type = "path"
+anchor = "owner_root"
+default = "artifacts/allure"
+help = "Local working directory for isolated recorded run artifacts and manifests."
+[fields.ALLURE_RESULTS_DIR.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
+[fields.ALLURE_SECONDARY_DIR]
+type = "path"
+anchor = "owner_root"
+help = "Optional extra results copy; S3 persistence remains required."
+[fields.ALLURE_SECONDARY_DIR.applies_when]
+TUI_MODE = ["integration", "e2e"]
+COLLECT_ONLY = false
+
+[fields.TOKEN_USAGE_CSV]
+type = "path"
+anchor = "owner_root"
+help = "Optional additional token-usage CSV. Recorded suites always retain their own usage CSV artifact."
+[fields.TOKEN_USAGE_CSV.applies_when]
+TUI_MODE = ["run-local", "integration", "e2e"]
+COLLECT_ONLY = false
 
 [fields.LLM_PROVIDER]
 type = "str"
