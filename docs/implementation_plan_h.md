@@ -4,6 +4,9 @@ Local API here means the pack's upstream API; the api-agent chat API remains the
 
 ## Checklist
 
+- [x] Implement `runtime/prerequisites.py` for the selected LangFuse/Jaeger/LocalStack plan: bounded command execution/readiness, exact compatible reuse, restarted/new versus reused ownership, cross-process leases, failed-start rollback and retained test services. Engine connection variables are explicit rather than ambient; cleanup shares the same lease lock. Deterministic controlled processes are verified; actual startup hooks, host engine and profile combinations require integration proof below.
+- [ ] Wire the lifecycle into accepted local/test operations, requesting only the needed `tracing`/`reports` dependency groups and supplying explicitly selected host-engine connection variables. Acquire before listeners/exporters, release locally or retain after tests, and record failure/cancellation cleanup honestly. Verify actual LocalStack Allure history and both local tracer backends before live provider integrations.
+
 - [x] Add separately selectable LangFuse, OTEL/Jaeger and LocalStack definitions in `infra/compose/compose.json`, plus controlled-env planning/config-only validation in `runtime/compose.py`. Every dependency has its own profile membership, ownership labels, a pinned image and appropriate named volumes/loopback publication. Source and installed-wheel assets are supported. No lifecycle startup/readiness/reuse is claimed; the full manager remains below.
 
 - [ ] With the first Compose prerequisite added, implement the [ownership-filtered inventory/count and stop-time validation gate](implementation_plan_l.md) before enabling its app/test startup. This applies to every profile and dependency service, regardless of which stack is built first.

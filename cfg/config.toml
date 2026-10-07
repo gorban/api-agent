@@ -23,6 +23,37 @@ type = "bool"
 default = false
 help = "Only explicitly setting LOG_CONTENT=True enables message and tool content logging; tracing does not enable content logging."
 
+[fields.CLIENT_CA_FILE]
+type = "path"
+anchor = "owner_root"
+review_optional = true
+help = "Optional public CA bundle added to verified HTTP clients. Local HTTPS preparation supplies its public mkcert CA automatically; certificate and hostname verification stay enabled."
+[fields.CLIENT_CA_FILE.applies_when]
+TUI_MODE = ["run-local", "integration", "e2e"]
+COLLECT_ONLY = false
+
+[fields.LANGFUSE_PUBLIC_KEY]
+type = "str"
+conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "pk-lf-local-dev-0000000000"}]
+help = "LangFuse public API key. The local Compose service provisions the local development pair; provide your project's keys for a remote target."
+[fields.LANGFUSE_PUBLIC_KEY.applies_when]
+TRACE_MODE = "LangFuse"
+TUI_MODE = ["run-local", "integration", "e2e"]
+COLLECT_ONLY = false
+[fields.LANGFUSE_PUBLIC_KEY.required_when]
+TRACE_MODE = "LangFuse"
+
+[fields.LANGFUSE_SECRET_KEY]
+type = "str"
+conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "sk-lf-local-dev-0000000000"}]
+help = "LangFuse secret API key. The local default is only a development credential; remote targets require an explicit project secret."
+[fields.LANGFUSE_SECRET_KEY.applies_when]
+TRACE_MODE = "LangFuse"
+TUI_MODE = ["run-local", "integration", "e2e"]
+COLLECT_ONLY = false
+[fields.LANGFUSE_SECRET_KEY.required_when]
+TRACE_MODE = "LangFuse"
+
 [fields.HELP]
 type = "bool"
 default = false
@@ -206,6 +237,7 @@ help = "Optional additional token-usage CSV. Recorded suites always retain their
 [fields.TOKEN_USAGE_CSV.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
+
 
 [fields.LLM_PROVIDER]
 type = "str"

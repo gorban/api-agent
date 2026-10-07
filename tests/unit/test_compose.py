@@ -205,3 +205,95 @@ def test_langfuse_v3_storage_and_headless_contract():
 
 def test_ipv6_s3_requires_user_managed_endpoint():
     assert selected_profiles({'ALLURE_S3_ENDPOINT': 'http://[::1]:4566'}) == ()
+
+
+def test_explicit_engine_transport_paths_are_preserved_without_user_environment(monkeypatch):
+    monkeypatch.setenv('DOCKER_HOST', 'unix:///not-selected.sock')
+    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), engine_environment={
+        'PATH': '/usr/local/bin:/usr/bin', 'DOCKER_HOST': 'unix:///chosen.sock',
+        'HOME': '/tmp/public-home', 'DOCKER_CONFIG': '/tmp/public-engine-config',
+        'CONTAINER_HOST': 'unix:///chosen-podman.sock', 'XDG_RUNTIME_DIR': '/run/user/1000'})
+    assert plan.environment['DOCKER_HOST'] == 'unix:///chosen.sock'
+    assert plan.environment['PATH'].startswith('/usr/local/bin')
+    assert plan.environment['SA_SCOPE'] == Scope().id
+
+
+@pytest.mark.parametrize('environment', [{'AWS_SECRET_ACCESS_KEY': 'private'}, {'PATH': 7}, {'HOME': 'bad\x00path'}])
+def test_engine_environment_rejects_unapproved_keys_or_values(environment):
+    with pytest.raises(ComposeError, match='environment override'):
+        plan_compose({}, Scope(), engine_environment=environment)
+
+
+def test_local_headless_keys_match_explicit_reviewed_configuration():
+    plan = plan_compose({'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': 'pk-lf-reviewed-local',
+                         'LANGFUSE_SECRET_KEY': 'sk-lf-reviewed-local'}, Scope())
+    assert plan.environment['SA_LANGFUSE_PUBLIC_KEY'] == 'pk-lf-reviewed-local'
+    assert plan.environment['SA_LANGFUSE_SECRET_KEY'] == 'sk-lf-reviewed-local'
+    assert 'sk-lf-reviewed-local' not in repr(plan)
+
+
+@pytest.mark.parametrize('key', [None, '', ' ', 7, 'bad\x00key', ' key '])
+def test_local_project_key_validation(key):
+    if key is None:
+        assert plan_compose({'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': key}, Scope()).environment['SA_LANGFUSE_PUBLIC_KEY'].startswith('pk-lf-local-')
+    else:
+        with pytest.raises(ComposeError, match='project keys'):
+            plan_compose({'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': key}, Scope())
+
+
+@pytest.mark.parametrize('explicit_keys', [False, True])
+def test_resolved_configuration_headless_readiness_and_tracing_keys_match_across_scopes(tmp_path, monkeypatch, explicit_keys):
+    import asyncio
+    import base64
+    from types import SimpleNamespace
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.runtime.ownership import StackScope
+    from api_agent.runtime import prerequisites
+    from api_agent.telemetry.tracing import TraceRuntime
+    environment = {'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse'}
+    if explicit_keys:
+        environment.update(LANGFUSE_PUBLIC_KEY='pk-lf-explicit-local', LANGFUSE_SECRET_KEY='sk-lf-explicit-local')
+    result = resolve_config(load_shared_schema(), environ=environment, dotenv={})
+    assert not result.errors and not result.missing
+    expected = (result.values['LANGFUSE_PUBLIC_KEY'] + ':' + result.values['LANGFUSE_SECRET_KEY']).encode()
+    scopes = [StackScope.from_roots(tmp_path / 'base', tmp_path / name) for name in ('one', 'two')]
+    assert scopes[0].id != scopes[1].id
+    for scope in scopes:
+        plan = plan_compose(result.values, scope)
+        assert (plan.environment['SA_LANGFUSE_PUBLIC_KEY'] + ':' + plan.environment['SA_LANGFUSE_SECRET_KEY']).encode() == expected
+        document = json.loads((plan.directory / 'compose.json').read_text())
+        headless = prerequisites._interpolate(document['services']['langfuse-web']['environment'], plan.environment)
+        assert (headless['LANGFUSE_INIT_PROJECT_PUBLIC_KEY'] + ':' + headless['LANGFUSE_INIT_PROJECT_SECRET_KEY']).encode() == expected
+        requests = []
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit): return json.dumps({'data': [{'id': 'api-agent-' + scope.id}]}).encode()
+        def open_local(request, **kwargs):
+            requests.append(request)
+            return Response()
+        monkeypatch.setattr(prerequisites, 'urlopen', open_local)
+        assert prerequisites._readiness('langfuse', .1, plan.environment)
+        assert base64.b64decode(requests[0].headers['Authorization'].split()[1]) == expected
+        exports = []
+        def factory(endpoint, headers, resource):
+            exports.append((endpoint, headers))
+            return SimpleNamespace(), SimpleNamespace()
+        runtime = TraceRuntime(result, factory=factory)
+        asyncio.run(runtime.astart())
+        assert exports[0][0] == 'http://localhost:3000/api/public/otel/v1/traces'
+        assert base64.b64decode(exports[0][1]['Authorization'].split()[1]) == expected
+
+
+def test_wrapper_host_uid_is_only_accepted_as_explicit_public_transport_value(monkeypatch):
+    monkeypatch.setenv('API_AGENT_HOST_UID', '999')
+    assert 'API_AGENT_HOST_UID' not in plan_compose({}, Scope()).environment
+    plan = plan_compose({}, Scope(), engine_environment={'API_AGENT_HOST_UID': '1000', 'PATH': '/usr/local/bin:/usr/bin'})
+    assert plan.environment['API_AGENT_HOST_UID'] == '1000'
+
+
+@pytest.mark.parametrize('uid', ['', '-1', 'one', '1.5', '١', ' 1000'])
+def test_wrapper_host_uid_rejects_non_numeric_transport_value(uid):
+    with pytest.raises(ComposeError, match='ASCII digits'):
+        plan_compose({}, Scope(), engine_environment={'API_AGENT_HOST_UID': uid})

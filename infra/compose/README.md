@@ -9,18 +9,29 @@ project-scoped named volumes. Jaeger uses its default in-memory development
 storage, so its traces reset when its container restarts.
 
 The planner passes explicit project, project directory, file, and the controlled
-empty env file. Its subprocess environment contains only generated synthetic
-scope-bound local development values and `COMPOSE_DISABLE_ENV_FILE=1`. No user
-dotenv or inherited AWS/provider credentials are loaded. These public development
+empty env file. Its subprocess environment contains generated synthetic
+scope-bound local development values, explicitly resolved LangFuse API keys and
+`COMPOSE_DISABLE_ENV_FILE=1`. The lifecycle accepts an explicit allowlist of host
+engine connection variables so a Docker-to-host-Podman wrapper can work. No
+unselected dotenv values or inherited AWS/provider credentials are loaded. These public development
 values are deliberately stable for an existing database; they are unsuitable for
 production. The web service initializes a local organization, project, API keys,
 and login via `LANGFUSE_INIT_*`. Values are passed directly, without literal
 quote characters. The scope identity is based on both canonical roots.
 
-Only planning and `config --quiet` validation are implemented here. Starting,
-reusing, or stopping containers requires the separate ownership lifecycle and
-human review. Config validation discards stdout/stderr to avoid exposing resolved
-secrets. No image was pulled and no container started as part of this foundation.
+`runtime/prerequisites.py` supplies bounded startup, readiness, cross-process
+leases and shutdown. It compares exact service/image/scope/configuration before
+reuse, uses `up --no-recreate` with health-gated dependencies, and rolls back only
+newly created or restarted containers. Local release stops its own unleased
+containers; test release retains the stack. Cleanup holds the same scope lock
+through final lease/ownership checks and immutable-ID stop. Named volumes remain.
+The journal lives under the active test-owner repository's ignored
+`artifacts/prerequisites/`. Unverifiable leases refuse cleanup.
+
+Operation startup and TUI test execution wiring remain separate tasks. Unit
+tests use controlled engine processes; actual engine startup, provisioning,
+tracer export and retained history still require integration verification.
+Config validation discards stdout/stderr to avoid exposing resolved secrets.
 
 ## Version and upstream evidence (verified 2026-10-05)
 

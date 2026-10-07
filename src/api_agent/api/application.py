@@ -32,6 +32,7 @@ class Runtime:
     sessions: object = field(default=None, repr=False)
     llm_provider: object = field(default=None, repr=False)
     emissions: object = field(default=None, repr=False)
+    tracing: object = field(default=None, repr=False)
     routes: object = field(default_factory=RouteRegistrar, repr=False)
     urlconf: object = field(default=None, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
@@ -68,7 +69,7 @@ class Runtime:
 
     async def _start_owned(self):
         services = {'sessions': self.sessions, 'emissions': self.emissions}
-        for owner in (self.llm_provider, self.identity_adapter):
+        for owner in (self.tracing, self.llm_provider, self.identity_adapter):
             setup = getattr(owner, 'setup_routes', None)
             if setup is not None:
                 result = setup(self.routes, services)
@@ -98,7 +99,7 @@ class Runtime:
             self._start_task.cancel()
             await asyncio.gather(self._start_task, return_exceptions=True)
         failed = False
-        for owner in (self.sessions, self.identity_adapter, self.llm_provider):
+        for owner in (self.sessions, self.identity_adapter, self.llm_provider, self.tracing):
             close = getattr(owner, 'aclose', None)
             if close is not None:
                 try:
