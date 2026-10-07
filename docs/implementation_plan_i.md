@@ -24,3 +24,9 @@
 - [x] Add automatic repository-local runtime tool setup for interactive screens and collect-only, reading base/pack external dependencies without installing the shared source package. Help stays standard-library-only; own `.venv` reuse/relaunch and failures are verified. Future real runner dependencies must be added to this setup when their tasks are implemented.
 
 - [ ] Before PR merges, require CI to run the complete applicable unit suites with every test passing and exact 100% production line/branch coverage per file/area, using shared local/CI check scripts. Include base and any resource-pack production code without hiding gaps through aggregate percentages; data-only packs have no production-code percentage. Make these CI checks required for merge. Keep this full-suite merge gate separate from quick pre-commit checks and informational partial local runs; do not record units in Allure. Establish the final coverage gate before rewrite completion rather than demanding final coverage at each current implementation step.
+
+## Local HTTPS preparation
+
+- [x] Implement `src/api_agent/runtime/https.py` with mkcert/OpenSSL preparation, renewal/SAN/key/CA checks, private key permissions, cooperating-preparer locking and recoverable replacement rollback. Preserve certificate-directory symlinks and ignore `.certs/`. Deterministic tests use synthetic command results and failure injection; no CA trust installation is claimed.
+- [ ] Wire preparation to owned local/callback/Nx listeners and verify actual hostname resolution, host/browser trust and HTTPS readiness. Keep prompts visible; noninteractive setup must fail promptly when trust setup cannot complete.
+- [ ] Complete uncovered platform/locking/recovery branches before the final coverage gate; do not relax the unit runner’s 100% threshold.
