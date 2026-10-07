@@ -1,6 +1,6 @@
 # Pluggable API and LLM providers
 
-This is the authoritative boundary and browser-session requirements document. It supersedes conflicting wording in earlier checklists. Unchecked tasks describe work to implement and verify; the contract sketches below are requirements, not existing Python exports. Follow the [shared provider task list](implementation_plan_m.md), [included GraphQL tasks](implementation_plan_m1.md), [external API extension tasks](implementation_plan_m2.md), and [external LLM adapter tasks](implementation_plan_f1.md).
+This is the authoritative boundary and browser-session requirements document. It supersedes conflicting wording in earlier checklists. The [version-1 foundation](provider_contracts_v1.md) defines executable protocol exports and reusable owners. Unchecked tasks below include their remaining consumers and live verification. Follow the [shared provider task list](implementation_plan_m.md), [included GraphQL tasks](implementation_plan_m1.md), [external API extension tasks](implementation_plan_m2.md), and [external LLM adapter tasks](implementation_plan_f1.md).
 
 ## Responsibility boundaries
 
@@ -10,6 +10,7 @@ This is the authoritative boundary and browser-session requirements document. It
 | Included `api-providers/graphql-api-provider/` | Generic GraphQL transport, schema evidence, operation execution and upstream extension interfaces | Selected API provider |
 | External upstream API extension | Authentication, signing, request/identity validation, upstream configuration and optional routes | Selected extension; no private default in core |
 | External LLM provider | Discovery, inference, streaming, structured output, upstream metadata, authentication, token state/cache/refresh, usage reads and pricing | Selected provider |
+| Optional UI provider | Frontend launch plan, authoritative proxy configuration, instance-owned readiness and process lifecycle | Selected pack and operation |
 | Resource pack | Knowledge/navigation/prompts, scenario tests, UI authentication strategy and optional credential roles | Selected pack; UI hook once per newly created session |
 
 Core is independent of the API type. A provider at a different path may implement REST or another API without accepting GraphQL queries. The included GraphQL package is `graphql_api_provider`; it requires a separately selected upstream extension. Product-specific code and examples belong to their external owners. Public tests use synthetic adapters, identities and API data.
@@ -18,9 +19,9 @@ Core owns browser resources operationally. A provider exclusively uses its LLM s
 
 ## Selection, configuration and routes
 
-`LLM_PROVIDER` already selects a Python-file factory (`path.py:factory`). The existing loader accepts synchronous factories returning an integer `version = 1`, exposes lifecycle/optional route hooks, and reads adjacent `cfg/config.toml` without importing the factory during schema discovery. This foundation does not implement the operation or browser contracts below.
+`LLM_PROVIDER`, `API_PROVIDER` and `UI_PROVIDER` select Python-file factories (`path.py:factory`). The loader accepts synchronous factories returning an integer `version = 1`, exposes lifecycle/optional route hooks, and reads adjacent `cfg/config.toml` without importing the factory during schema discovery. Factories are instantiated at awaited runtime startup. The protocol and owner foundation does not complete external adapters or operation consumers.
 
-- [ ] Add `API_PROVIDER` for the generic API factory and `UPSTREAM_API_PROVIDER` contributed by the included GraphQL provider for its upstream extension. These are planned fields, not currently available CLI options. Require each only for an operation using that capability; the initial demo renderer does not need an upstream API.
+- [ ] Consume the optional `API_PROVIDER` and `UI_PROVIDER` selections and an API-contributed `UPSTREAM_API_PROVIDER` at executable operation boundaries. The selections/loader are available; the included GraphQL provider and actual operation wiring remain tasks. Require each only for an operation using that capability; the initial demo renderer does not need an upstream API.
 - [ ] Resolve relative factory locations against a declared configuration owner root, independent of CWD. Support bundled and external locations and provider-local imports/dependencies without changing global `sys.path`.
 - [ ] Bootstrap selected locations before full option validation, then merge all selected providers' optional typed declarations through the same defaults, applicability, explicit override, dotenv, ENV, CLI, help and TUI pipeline. Reject incompatible declarations and recursive selection; no unselected provider is imported or configured.
 - [x] Resource packs may list ordered `providers.configs` declaration paths in pack.toml. Compatible provider declarations take precedence over pack defaults and appear as pack_default in the TUI; .env, ENV and CLI remain higher. Resolve these paths from the pack root without importing executable providers. Selected LLM file paths resolve against the configuration owner, and declared factory defaults participate in schema discovery.
@@ -30,7 +31,7 @@ Core owns browser resources operationally. A provider exclusively uses its LLM s
 
 ## Browser and authentication contracts
 
-The conceptual capability shapes to implement are:
+The protocol shapes exported from [contracts.py](../src/api_agent/providers/contracts.py) are:
 
 ```python
 class BrowserSession:

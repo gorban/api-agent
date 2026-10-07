@@ -151,7 +151,24 @@ def create(config, services): return Adapter(services)
     context = SimpleNamespace(pack_id='synthetic', identity_factory_path=None)
     runtime = compose_runtime(context, {'LLM_PROVIDER': str(provider_file) + ':create'},
         callback_origin='https://agent.example', tls_material=SimpleNamespace(ca_file=certificates[0]))
-    trust = runtime.require_llm_provider().services['ssl_context']
-    require_verified_context(trust)
-    handshake(trust, certificates)
-    asyncio.run(runtime.aclose())
+    async def scenario():
+        await runtime.astart()
+        trust = runtime.llm_provider.implementation.services['ssl_context']
+        require_verified_context(trust)
+        handshake(trust, certificates)
+        await runtime.aclose()
+    asyncio.run(scenario())
+
+
+def test_loopback_helper_reports_server_worker_failure(certificates, monkeypatch):
+    context = verified_client_context(certificates[0])
+    original = ssl.SSLContext
+    def server_context(protocol):
+        server = original(protocol)
+        def fail(*args, **kwargs):
+            raise RuntimeError('synthetic worker failure')
+        server.wrap_socket = fail
+        return server
+    monkeypatch.setattr(ssl, 'SSLContext', server_context)
+    with pytest.raises(AssertionError):
+        handshake(context, certificates)

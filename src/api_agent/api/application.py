@@ -1,11 +1,11 @@
+"""Compose a Django ASGI application without opening listeners or loading secrets."""
 import asyncio
+import os
 import inspect
 from django.core.handlers.asgi import ASGIHandler
-from api_agent.providers.loading import ProviderError
+from api_agent.providers.loading import ProviderError, _task
 from .routes import RouteRegistrar
-"""Compose a Django ASGI application without opening listeners or loading secrets."""
 
-import asyncio
 from dataclasses import dataclass, field
 import re
 from threading import Lock
@@ -31,6 +31,12 @@ class Runtime:
     identity_adapter: object = field(default=None, repr=False)
     sessions: object = field(default=None, repr=False)
     llm_provider: object = field(default=None, repr=False)
+    api_provider: object = field(default=None, repr=False)
+    upstream_provider: object = field(default=None, repr=False)
+    ui_provider: object = field(default=None, repr=False)
+    identity_plan: object = field(default=None, repr=False)
+    factory_plan: object = field(default=None, repr=False)
+    services: object = field(default=None, repr=False)
     emissions: object = field(default=None, repr=False)
     tracing: object = field(default=None, repr=False)
     routes: object = field(default_factory=RouteRegistrar, repr=False)
@@ -40,10 +46,28 @@ class Runtime:
     _closed: bool = field(default=False, init=False, repr=False)
     _start_task: object = field(default=None, init=False, repr=False)
     _close_task: object = field(default=None, init=False, repr=False)
+    timeout: float = field(default=5, repr=False)
+    _pid: int = field(default_factory=os.getpid, init=False, repr=False)
+    _loop: object = field(default=None, init=False, repr=False)
+    _cleanup_tasks: dict = field(default_factory=dict, init=False, repr=False)
+    _cleaned: set = field(default_factory=set, init=False, repr=False)
+    _retained_owners: list = field(default_factory=list, init=False, repr=False)
+    _cancel_requested: set = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self):
         if not isinstance(self.pack_id, str) or not self.pack_id.strip():
             raise ValueError('pack_id must be a nonempty string')
+
+    def _context(self):
+        if self._pid != os.getpid():
+            raise RuntimeLifecycleError('runtime_execution_context_invalid')
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._loop is not None and self._loop is not loop:
+            raise RuntimeLifecycleError('runtime_execution_context_invalid')
+        self._loop = loop
 
     @property
     def started(self): return self._started
@@ -54,27 +78,62 @@ class Runtime:
     @property
     def draining(self): return self._draining
 
-    def require_llm_provider(self):
-        if self.llm_provider is None:
-            raise ProviderError('provider_location_required')
-        return self.llm_provider.implementation
+    def require_provider(self, kind, operation):
+        self._context()
+        if self._closed or self._draining:
+            raise RuntimeLifecycleError("runtime_closed")
+        owner = getattr(self, kind + "_provider", None)
+        if owner is None:
+            raise ProviderError("provider_location_required")
+        return owner.require(kind, operation)
+
+    def require_llm_provider(self, operation="complete"):
+        return self.require_provider("llm", operation)
 
     def start(self):
+        self._context()
         if self._closed:
             raise RuntimeLifecycleError('runtime_closed')
         self._started, self._draining = True, False
 
     def stop(self):
+        self._context()
         self._started, self._draining = False, True
 
     async def _start_owned(self):
-        services = {'sessions': self.sessions, 'emissions': self.emissions}
-        for owner in (self.tracing, self.llm_provider, self.identity_adapter):
+        if self.factory_plan is not None:
+            for kind, location, config, services in self.factory_plan:
+                from api_agent.providers.loading import aload_provider, provider_location
+                if kind == 'upstream' and config.get('API_PROVIDER'):
+                    from types import MappingProxyType
+                    path, _ = provider_location(config['API_PROVIDER'], owner_root=services['owner_root'])
+                    services = MappingProxyType({**services, 'owner_root': path.parent})
+                try:
+                    owner = await aload_provider(location, config, services, kind=kind)
+                except BaseException as error:
+                    self._retained_owners.extend(getattr(error, 'retained_owners', ()))
+                    raise
+                setattr(self, kind + "_provider", owner)
+                if self._closed:
+                    raise RuntimeLifecycleError('runtime_closed')
+            self.factory_plan = None
+        if self.identity_plan is not None:
+            self.identity_adapter = self.identity_plan()
+            self.identity_plan = None
+        from types import MappingProxyType
+        services = self.services or MappingProxyType({'sessions': self.sessions, 'emissions': self.emissions})
+        for owner in (self.tracing, self.upstream_provider, self.api_provider, self.llm_provider, self.ui_provider, self.identity_adapter):
+            if self._closed:
+                raise RuntimeLifecycleError('runtime_closed')
             setup = getattr(owner, 'setup_routes', None)
             if setup is not None:
-                result = setup(self.routes, services)
+                result = setup(self.routes, getattr(owner, 'services', None) or services)
                 if inspect.isawaitable(result):
                     await result
+            if self._closed:
+                raise RuntimeLifecycleError('runtime_closed')
+            if owner is not None and owner is self.ui_provider:
+                owner.require('ui', 'launch')
             start = getattr(owner, 'astart', None)
             if start is not None:
                 await start()
@@ -82,38 +141,58 @@ class Runtime:
         self.start()
 
     async def astart(self):
+        self._context()
         if self._closed:
             raise RuntimeLifecycleError('runtime_closed')
         if self._start_task is None:
-            self._start_task = asyncio.create_task(self._start_owned())
+            self._start_task = _task(self._start_owned())
         try:
             await asyncio.shield(self._start_task)
-        except BaseException as error:
+        except asyncio.CancelledError:
+            try:
+                await self.aclose()
+            except Exception:
+                pass
+            raise
+        except Exception:
             await self.aclose()
-            if isinstance(error, asyncio.CancelledError):
-                raise
             raise RuntimeLifecycleError('runtime_start_failed') from None
 
     async def _close_owned(self):
-        if self._start_task is not None and not self._start_task.done():
-            self._start_task.cancel()
-            await asyncio.gather(self._start_task, return_exceptions=True)
-        failed = False
-        for owner in (self.sessions, self.identity_adapter, self.llm_provider, self.tracing):
+        from api_agent.providers.sessions import _drain
+        try:
+            await _drain([self._start_task] if self._start_task is not None else [],
+                         self.timeout, self._cancel_requested)
+        except Exception:
+            raise RuntimeLifecycleError('runtime_cleanup_pending') from None
+        owners = (*self._retained_owners, self.sessions, self.identity_adapter, self.ui_provider,
+                  self.llm_provider, self.api_provider, self.upstream_provider, self.tracing)
+        for owner in owners:
             close = getattr(owner, 'aclose', None)
-            if close is not None:
-                try:
-                    await close()
-                except BaseException:
-                    failed = True
-        if failed:
-            raise RuntimeLifecycleError('runtime_cleanup_failed')
+            key = id(owner)
+            if close is None or key in self._cleaned:
+                continue
+            if key not in self._cleanup_tasks:
+                async def dispose(selected=owner):
+                    await selected.aclose()
+                self._cleanup_tasks[key] = _task(dispose())
+            task = self._cleanup_tasks[key]
+            done, _ = await asyncio.wait({task}, timeout=self.timeout)
+            if not done:
+                raise RuntimeLifecycleError('runtime_cleanup_pending') from None
+            try:
+                task.result()
+            except BaseException:
+                del self._cleanup_tasks[key]
+                raise RuntimeLifecycleError('runtime_cleanup_failed') from None
+            self._cleaned.add(key)
 
     async def aclose(self):
-        if self._close_task is None:
+        self._context()
+        if self._close_task is None or self._close_task.done() and self._close_task.exception() is not None:
             self._closed = True
             self.stop()
-            self._close_task = asyncio.create_task(self._close_owned())
+            self._close_task = _task(self._close_owned())
         await asyncio.shield(self._close_task)
 
 

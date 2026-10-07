@@ -260,6 +260,18 @@ type = "str"
 review_optional = true
 help = "Required factory location (file.py:factory) for executable LLM operations; no default provider is selected."
 
+[fields.API_PROVIDER]
+acknowledge_default = false
+type = "str"
+review_optional = true
+help = "Optional API adapter factory location (file.py:factory), required when an operation invokes an upstream API."
+
+[fields.UI_PROVIDER]
+acknowledge_default = false
+type = "str"
+review_optional = true
+help = "Optional frontend lifecycle factory location (file.py:factory), selected by the resource pack."
+
 [fields.AGENT_DJANGO_URL]
 type = "str"
 default = "https://localhost:8443"

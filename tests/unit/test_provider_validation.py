@@ -68,7 +68,13 @@ def test_invalid_factories_do_not_leave_imports_or_expose_details(tmp_path, body
     before = set(sys.modules)
     with pytest.raises(loading.ProviderError) as caught:
         loading.load_provider(location, {}, {})
-    assert str(caught.value) == 'provider_initialization_failed'
+    if caught.value.retained_owners:
+        assert str(caught.value) == 'provider_cleanup_pending'
+        owner = caught.value.retained_owners[0]
+        assert owner.module_name in sys.modules
+        asyncio.run(owner.aclose())
+    else:
+        assert str(caught.value) == 'provider_initialization_failed'
     assert set(sys.modules) == before
 
 
@@ -105,17 +111,26 @@ def create(config, services): return Adapter()
     assert registrations == [services]
 
 
-def test_failed_shutdown_still_releases_import(tmp_path):
+def test_failed_shutdown_retains_import_until_confirmed_retry(tmp_path):
     location = factory(tmp_path, '''class Adapter:
     version = 1
     async def aclose(self): raise RuntimeError('shutdown failed')
 def create(config, services): return Adapter()
 ''')
     owner = loading.load_provider(location, {}, {})
-    with pytest.raises(RuntimeError, match='shutdown failed'):
-        asyncio.run(owner.aclose())
-    assert owner.closed and owner.module_name not in sys.modules
-    asyncio.run(owner.aclose())
+    from unittest.mock import AsyncMock
+    async def scenario():
+        with pytest.raises(loading.ProviderError, match='cleanup_pending') as error:
+            await owner.aclose()
+        assert error.value.retained_owners == (owner,)
+        assert owner.closed and not owner.disposed and owner.module_name in sys.modules
+        owner.implementation.aclose = AsyncMock()
+        await owner.aclose()
+        assert owner.disposed and owner.module_name not in sys.modules
+        owner.implementation.aclose.assert_awaited_once()
+        await owner.aclose()
+        owner.implementation.aclose.assert_awaited_once()
+    asyncio.run(scenario())
 
 
 def test_factory_gets_an_immutable_configuration_snapshot(tmp_path):
