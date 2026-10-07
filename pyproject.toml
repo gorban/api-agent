@@ -7,7 +7,7 @@ name = "api-agent"
 version = "0.1.0"
 description = "Shared agent runtime and resource-pack development interface"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = ["textual>=8.2.8,<9"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "pytest-cov>=6,<8", "build>=1.2,<2"]
