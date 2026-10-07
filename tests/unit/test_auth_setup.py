@@ -187,6 +187,29 @@ def test_enter_on_account_and_manager_rows_opens_edit(tmp_path):
     asyncio.run(scenario())
 
 
+def test_new_manager_path_renders_fully_while_still_focused(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        path = '/opt/example-vault/fixture-runtime1/bin/keeper'
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one('#auth-manager-table', DataTable)
+            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
+            table.focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            await pilot.press('enter', 'down', 'down', 'enter')
+            assert app.focused.id == 'auth-path'
+            app.screen.query_one('#auth-path', Input).value = path
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.focused is table
+            assert profile(app)['password_manager'] == {'manager': 'keeper', 'cli_path': path}
+            rendered = ''.join(ElementTree.fromstring(app.export_screenshot()).itertext()).replace('\xa0', ' ')
+            assert path in rendered
+    asyncio.run(scenario())
+
+
 def test_account_validation_cancel_and_target_switch(tmp_path):
     async def scenario():
         app = WizardApp(tmp_path, external=True)
