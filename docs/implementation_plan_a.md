@@ -3,7 +3,7 @@
 ## Checklist
 
 - [ ] Choose the interface layout with the user during planning.
-- [ ] Allow unit and integration tests to run interactively or through startup CLI arguments with `--no-std-in`.
+- [ ] Allow unit and integration tests to run interactively or through startup CLI arguments with `--no-std-in`. Unit tests remain deterministic without live LLM execution, are excluded from Allure, and must have a 100% pass rate for every commit; integration and E2E runs use [Allure reporting](implementation_plan_d.md).
 - [ ] Build an option parser driven by the declarative configuration description. Resolve explicit values in increasing precedence: `.env`, environment variables, then command-line options.
   - [ ] Normalize CLI key hyphens and underscores to the same uppercase environment key: `--no-std-in` and `--no_std_in` both map to `NO_STD_IN`.
   - [ ] For boolean options, a bare flag means `True`. Accept both `--no-std-in=True` and `--no-std-in True`; accept `--no-std-in=False` and `--no-std-in False` to disable it. Apply the same behavior to the underscore spelling. Accept only the boolean values `True` and `False`, including from environment/config sources.
