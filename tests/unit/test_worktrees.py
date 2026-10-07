@@ -72,8 +72,12 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(reports[0].stale)
         self.assertFalse(reports[1].stale)
         rendered = gate.format_report(reports)
-        self.assertIn("The running folders:\n  /base (main)\n  /pack (main)", rendered)
-        self.assertIn("don't match the latest worktrees:\n  /base-new (detached HEAD)\n  /pack (main)", rendered)
+        self.assertIn("Current checkout", rendered)
+        self.assertIn("[X] STALE\n  Directory: /base", rendered)
+        self.assertIn("[✓] NEWEST\n  Directory: /pack", rendered)
+        self.assertIn("Directory: /base-new\n  Branch: detached HEAD", rendered)
+        self.assertIn("Last modified:", rendered)
+        self.assertIn("Determining reason: HEAD committer timestamp", rendered)
         self.assertNotIn(".git", rendered)
 
     def test_common_directory_bind_aliases_have_same_identity(self):
@@ -124,17 +128,56 @@ class WorktreeTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.WorktreeGateError, "not a repository"):
             self.inspect(sim, ["/unrelated"])
 
-    def test_stale_explicit_y_only_and_fresh_never_reads(self):
+    def test_current_and_stale_require_explicit_y_followed_by_enter(self):
         checkout = gate.CheckoutReport(Path("/base"), "main", "abc", 10, None, None, (), True)
         stale = (gate.RepositoryReport(Path("/base"), (checkout,)),)
         with patch.object(gate, "inspect_worktrees", return_value=stale):
-            for stdin in [StringIO("n\n"), StringIO(""), StringIO("yes\n"), None, False]:
+            for stdin in [StringIO("n\n"), StringIO(""), StringIO("yes\n"), StringIO("Y\n"), StringIO("\n"), StringIO("y"), StringIO(" y\n"), None, False]:
                 with self.subTest(stdin=stdin), self.assertRaises(gate.WorktreeGateError):
                     gate.verify_worktrees([Path("/base")], stdin=stdin, stdout=StringIO())
             gate.verify_worktrees([Path("/base")], stdin=StringIO("y\n"), stdout=StringIO())
         current = (gate.RepositoryReport(Path("/base"), (gate.replace(checkout, newest=True),)),)
         with patch.object(gate, "inspect_worktrees", return_value=current):
-            gate.verify_worktrees([Path("/base")], stdin=False, stdout=StringIO())
+            with self.assertRaises(gate.WorktreeGateError):
+                gate.verify_worktrees([Path("/base")], stdin=False, stdout=StringIO())
+            gate.verify_worktrees([Path("/base")], stdin=StringIO("y\n"), stdout=StringIO())
+
+    def test_both_repositories_display_before_one_approval_and_no_environment_bypass(self):
+        reports = tuple(gate.RepositoryReport(Path(root), (
+            gate.CheckoutReport(Path(root), "main", "abc", 10, None, None, (), True),
+            gate.CheckoutReport(Path(root + "-new"), "detached HEAD", "def", 20,
+                                25, "edited", ("deleted",), False, newest=True),
+        )) for root in ("/base", "/pack"))
+        output = StringIO()
+        with patch.object(gate, "inspect_worktrees", return_value=reports), patch.dict(
+                os.environ, {"NO_STD_IN": "True", "WORKTREE_APPROVAL": "y", "TERM": "xterm"}):
+            with self.assertRaises(gate.WorktreeGateError):
+                gate.verify_worktrees([Path("/base"), Path("/pack")], stdin=StringIO("\n"), stdout=output)
+        text = output.getvalue()
+        self.assertEqual(text.count("[X] STALE"), 2)
+        self.assertEqual(text.count("Approve these current checkouts?"), 1)
+        self.assertLess(text.index("Directory: /pack-new"), text.index("Approve these current checkouts?"))
+        self.assertIn("eligible dirty file 'edited'", text)
+        self.assertIn("Absent dirty paths (no file timestamp): ('deleted',)", text)
+        self.assertIn("UTC", text)
+        self.assertNotIn("\033[", text)
+        colored = gate.format_report(reports, color=True)
+        self.assertIn("\033[31m[X] STALE\033[0m", colored)
+        self.assertIn("\033[32m[✓] NEWEST\033[0m", colored)
+
+    def test_current_ties_are_shown_and_still_require_approval(self):
+        checkout = gate.CheckoutReport(Path("/base"), "main", "abc", 10, None, None, (), True, newest=True)
+        reports = (gate.RepositoryReport(Path("/base"), (checkout,
+                   gate.replace(checkout, root=Path("/other"), selected=False))),)
+        output = StringIO()
+        with patch.object(gate, "inspect_worktrees", return_value=reports):
+            gate.verify_worktrees([Path("/base")], stdin=StringIO("y\n"), stdout=output)
+        text = output.getvalue()
+        self.assertLess(text.index("Current checkout"), text.index("Comparison checkout"))
+        self.assertIn("Directory: /other", text)
+        self.assertIn("ties are accepted", text)
+        self.assertIn("default No", text)
+        self.assertIn("does not approve test execution", text)
 
     def test_git_uses_argument_arrays_and_byte_capture(self):
         with patch.dict(os.environ, {"GIT_DIR": "/foreign/.git", "GIT_CONFIG_GLOBAL": "/host/gitconfig"}), patch.object(gate.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"x\0", stderr=b"")) as run:
@@ -260,7 +303,7 @@ class WorktreeTests(unittest.TestCase):
             report = gate.inspect_worktrees([root, root / "."])[0]
             self.assertEqual(report.checkouts[0].dirty_path, odd.name)
             self.assertEqual(report.checkouts[0].dirty_timestamp, commit + 10)
-            gate.verify_worktrees([root], stdin=False, stdout=StringIO())
+            gate.verify_worktrees([root], stdin=StringIO("y\n"), stdout=StringIO())
 
 
 if __name__ == "__main__":
