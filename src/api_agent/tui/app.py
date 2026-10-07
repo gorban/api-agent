@@ -78,7 +78,7 @@ class FocusNavigation:
         origin = focused.region
         candidates = []
         for button in self.query(Button):
-            if button is focused or not button.can_focus or not button.display:
+            if button is focused or button.disabled or not button.can_focus or not button.display:
                 continue
             target = button.region
             if direction in {"left", "right"}:
