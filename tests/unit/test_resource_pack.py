@@ -83,3 +83,11 @@ def test_external_pack_source_and_config_stay_separate_from_test_owner(tmp_path)
     assert context.external_pack
     assert context.dotenv_path == pack / ".env"
     assert context.suite_paths("unit") == (base / "tests/unit",)
+
+
+def test_context_retains_launch_origin_with_external_pack(tmp_path):
+    base, pack = tmp_path / "api-agent", tmp_path / "resource-pack"
+    base.mkdir()
+    make_pack(pack)
+    assert load_launch_context(base, pack).launcher_root == base
+    assert load_launch_context(base, pack, pack).launcher_root == pack

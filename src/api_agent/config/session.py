@@ -1,6 +1,8 @@
 """Editable launch configuration retaining original external provenance."""
 from dataclasses import dataclass, replace
 import os
+from pathlib import Path
+import tempfile
 
 from .declarations import ConfigSchema, FieldDeclaration
 from .dotenv import read_dotenv
@@ -46,14 +48,77 @@ class ConfigSession:
         self.argv = tuple(argv)
         self.environ = dict(os.environ if environ is None else environ)
         self._choices = {}
+        launcher = getattr(context, 'launcher_root', None)
+        self._dotenv_path = Path(launcher) / '.env' if launcher else Path(context.dotenv_path)
 
     @property
     def dotenv_path(self):
-        return self.context.dotenv_path
+        return self._dotenv_path
+
+    @property
+    def target_paths(self):
+        base = self.context.base_root / '.env'
+        pack = self.context.pack_root / '.env'
+        launcher = getattr(self.context, 'launcher_root', None) or self.context.base_root
+        paths = [base, Path(launcher) / '.env']
+        if self.context.external_pack:
+            paths.append(pack)
+        return tuple(dict.fromkeys(paths))
+
+    def switch_target(self, path=None):
+        if path is None:
+            paths = self.target_paths
+            path = paths[(paths.index(self.dotenv_path) + 1) % len(paths)]
+        path = Path(path)
+        if path not in self.target_paths:
+            raise ConfigError(f'Unknown dotenv target {path}')
+        self._dotenv_path = path
+
+    def _source(self, path):
+        launcher = getattr(self.context, 'launcher_root', None) or self.context.base_root
+        return '../' + os.path.relpath(path, Path(launcher).parent)
+
+    @staticmethod
+    def _restore(path, content):
+        if content is None:
+            path.unlink()
+            return
+        descriptor, temporary = tempfile.mkstemp(prefix='.env.rollback.', dir=path.parent)
+        try:
+            with os.fdopen(descriptor, 'wb') as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _persist(self, values):
+        target = self.dotenv_path
+        previous = target.read_bytes() if target.exists() else None
+        others = {path: path.read_bytes() for path in self.target_paths if path != target
+                  and set(values) & DotenvEditor(path).keys()}
+        changed = []
+        DotenvEditor(target).update(values)
+        try:
+            for path in others:
+                DotenvEditor(path).delete(values)
+                changed.append(path)
+        except Exception:
+            # Restore removed sources before the destination. If restoring a
+            # source fails, retain the new destination to preserve saved data.
+            for path in reversed(changed):
+                self._restore(path, others[path])
+            self._restore(target, previous)
+            raise
 
     def result(self, *, _cleanup=False):
-        dotenv = {**read_dotenv(self.context.base_root / '.env'),
-                  **read_dotenv(self.dotenv_path)}
+        dotenv, origins = {}, {}
+        for path in self.target_paths:
+            entries = read_dotenv(path)
+            dotenv.update(entries)
+            origins.update({name: self._source(path) for name in entries})
         # Put choices last as CLI options to re-evaluate conditional defaults and
         # applicability using the ordinary resolver, then restore UI provenance.
         argv = list(self.argv)
@@ -69,7 +134,8 @@ class ConfigSession:
         result = resolve_config(schema, argv=argv, environ=self.environ,
                                 dotenv=dotenv, anchors=self.context.anchors,
                                 interactive=True, pack_launcher=self.context.external_pack)
-        fields = {name: replace(value, source='interactive') if name in self._choices else value
+        fields = {name: replace(value, source='interactive' if name in self._choices
+                                else origins[name] if value.source == 'dotenv' else value.source)
                   for name, value in result.fields.items()}
         return replace(result, fields=fields)
 
@@ -88,8 +154,10 @@ class ConfigSession:
         except ValueError as error:
             raise ConfigError(f'{name}: {error}') from None
         if persist:
-            DotenvEditor(self.dotenv_path).update({name: text})
-        self._choices[name] = text
+            self._persist({name: text})
+            self._choices.pop(name, None)
+        else:
+            self._choices[name] = text
         return self.result()
 
     def save_defaults(self, names):
@@ -101,7 +169,9 @@ class ConfigSession:
                 raise ConfigError(f'{name}: default cannot be persisted through acknowledgement')
             values[name] = serialize_value(candidates[name].value)
         if values:
-            DotenvEditor(self.dotenv_path).update(values)
+            self._persist(values)
+            for name in values:
+                self._choices.pop(name, None)
         return self.result()
 
     def dotenv_keys(self):
@@ -122,7 +192,8 @@ class ConfigSession:
         if "HELP" in original.fields:
             result.fields["HELP"] = original.fields["HELP"]
         base = read_dotenv(self.context.base_root / '.env')
-        pack = read_dotenv(self.dotenv_path)
+        pack = read_dotenv(self.context.pack_root / '.env') if self.context.external_pack else {}
+        selected = read_dotenv(self.dotenv_path)
         return [CleanupRow(name, result.fields.get(name), field, name in base,
-                           name in pack, name in pack)
+                           name in pack, name in selected)
                 for name, field in self.schema.fields.items() if name != 'UNATTENDED_AUTH']

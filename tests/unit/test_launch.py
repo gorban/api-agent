@@ -151,6 +151,19 @@ class LaunchTests(unittest.TestCase):
             self.assertIn('no verified source checkout', result.stderr)
             self.assertIn('checkout/launch.py', result.stderr)
 
+    def test_launcher_dotenv_precedence_is_retained_with_demo_pack(self):
+        from api_agent.config import resolve_config
+        with tempfile.TemporaryDirectory() as directory:
+            origin = Path(directory)
+            def dotenv(path):
+                return {'NO_STD_IN': 'True'} if Path(path) == origin / '.env' else {'NO_STD_IN': 'False'}
+            with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
+                with patch('api_agent.config.read_dotenv', side_effect=dotenv):
+                    with patch('api_agent.config.resolve_config', wraps=resolve_config) as resolve:
+                        self.assertEqual(main(['--help', '--_launcher-root', str(origin)],
+                                              base_root=ROOT, resource_pack_dir=ROOT / 'demo'), 0)
+                        self.assertEqual(resolve.call_args.kwargs['dotenv']['NO_STD_IN'], 'True')
+
     def test_external_pack_dotenv_and_conditional_extension_provenance(self):
         from api_agent.config import resolve_config, read_dotenv
         with tempfile.TemporaryDirectory() as directory:

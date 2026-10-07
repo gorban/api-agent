@@ -39,10 +39,17 @@ class QuitDialog(ModalScreen):
         self.dismiss(self.query_one(Input).value == "y")
 
 
+class DeleteDialog(QuitDialog):
+    def compose(self) -> ComposeResult:
+        yield Static("Delete marked .env assignments? Enter literal y to confirm; every other response cancels.")
+        yield Input(id="delete-answer")
+        yield Button("Confirm response", id="delete-submit")
+
+
 class WorkbenchScreen(Screen):
     BINDINGS = [Binding("q", "quit_request", "Quit"), Binding("c", "close_view", "Close / menu"),
                 Binding("d", "delete_marked", "Delete marked .env assignments"),
-                Binding("s", "skip_setup", "Skip setup"),
+                Binding("s", "switch_target", "Switch target .env"),
                 Binding("a", "accept_default", "Accept default"),
                 Binding("e", "edit_setting", "Edit"),
                 Binding("u", "unset_setting", "Unset"),
@@ -55,6 +62,7 @@ class WorkbenchScreen(Screen):
 
     def compose(self) -> ComposeResult:
         app = self.app
+        yield Static(self.app.target_summary(), id="dotenv-targets", markup=False)
         yield Static(f"Base: {app.context.base_root}\nPack: {app.context.pack_id} ({app.context.pack_root})", id="identity")
         with VerticalScroll():
             yield Static(self.heading, id="heading")
@@ -64,6 +72,8 @@ class WorkbenchScreen(Screen):
             if self.kind == "input":
                 yield Input(id="config-value")
             with Horizontal(id="actions"):
+                if self.kind == "input" and len(app.session.target_paths) > 1:
+                    yield Button("Switch target .env (s outside input)", id="switch-target")
                 for key, label in self.actions:
                     yield Button(label, id=key)
             yield Static("", id="error", markup=False)
@@ -84,6 +94,8 @@ class WorkbenchScreen(Screen):
             self.query_one(Input).focus()
         elif self.actions:
             self.query_one(Button).focus()
+        if self.kind == "suggest":
+            self._bindings.bind("s", "skip_setup", "Skip setup")
         if self.kind == "defaults":
             self._bindings.bind("c", "close_view", "Next menu")
         self.refresh_bindings()
@@ -105,6 +117,9 @@ class WorkbenchScreen(Screen):
             return self.kind == "defaults"
         if action == "delete_marked":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
+        if action == "switch_target":
+            return (self.kind in {"defaults", "input", "cleanup"}
+                    or self.kind == "unavailable" and self.app.mode in {None, "unattended-auth"}) and len(self.app.session.target_paths) > 1
         if action == "skip_setup":
             return self.kind == "suggest"
         return True
@@ -129,13 +144,16 @@ class WorkbenchScreen(Screen):
 
     def action_delete_marked(self):
         if self.app.focused_cleanup_present():
-            self.app.delete_marked()
+            self.app.push_screen(DeleteDialog(), lambda yes: self.app.delete_marked() if yes else None)
+
+    def action_switch_target(self):
+        self.app.switch_target()
 
     def action_back_to_configuration(self):
         self.app.show_configuration()
 
-    def action_accept_default(self):
-        self.app.edit_setting(accept=True)
+    async def action_accept_default(self):
+        await self.app.accept_default()
 
     def action_edit_setting(self):
         self.app.edit_setting()
@@ -156,6 +174,7 @@ class WorkbenchScreen(Screen):
 class ApiAgentApp(App[int]):
     CSS = """
     Screen { padding: 1 2; }
+    #dotenv-targets { height: auto; margin-bottom: 1; }
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
@@ -164,8 +183,8 @@ class ApiAgentApp(App[int]):
     Button:focus, Input:focus { border: heavy $accent; }
     DataTable { height: 1fr; min-height: 8; margin-bottom: 1; }
     #error { color: $error; height: auto; }
-    QuitDialog { align: center middle; background: $background 80%; }
-    QuitDialog > * { width: 65%; }
+    QuitDialog, DeleteDialog { align: center middle; background: $background 80%; }
+    QuitDialog > *, DeleteDialog > * { width: 65%; }
     Footer { dock: bottom; }
     """
 
@@ -182,6 +201,28 @@ class ApiAgentApp(App[int]):
         self.selection = None
         self.prompt_name = None
         self.collection_cancel = threading.Event()
+
+    def target_summary(self):
+        return "Target .env files (read only):\n" + "\n".join(
+            f"{'✓ selected' if path == self.session.dotenv_path else '  unselected'} {path}"
+            for path in self.session.target_paths)
+
+    def switch_target(self):
+        kind = self.screen.kind
+        value = self.screen.query_one(Input).value if kind == "input" else None
+        self.session.switch_target()
+        self.marked.clear()
+        if kind == "cleanup":
+            self.show_cleanup()
+        elif kind == "input":
+            self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
+            self.screen.query_one("#body", Static).update(
+                f"Declared type: {self.schema.fields[self.prompt_name].type}. Enter saves this value to {self.session.dotenv_path}. Use Tab to focus actions; s switches the target outside the value input.")
+            self.screen.query_one(Input).value = value
+        elif kind == "defaults":
+            self.show_configuration()
+        else:
+            self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
 
     def show(self, kind, title, text="", actions=(), rows=()):
         screen = WorkbenchScreen(kind, title, text, actions, rows)
@@ -204,7 +245,7 @@ class ApiAgentApp(App[int]):
             self.show_menu()
             return
         profile = self.session.result(_cleanup=True).values.get("UNATTENDED_AUTH")
-        incomplete = not profile or any(not isinstance(entries, list) or any(not isinstance(entry, dict) or entry.get("manager") not in {"keeper", "1password"} or any(not entry.get(key) for key in ("cli_path", "vault", "user")) for entry in entries) for entries in profile.values())
+        incomplete = not profile or any(not isinstance(entries, list) or not entries or any(not isinstance(entry, dict) or entry.get("manager") not in {"keeper", "1password"} or any(not entry.get(key) for key in ("cli_path", "vault", "user")) for entry in entries) for entries in profile.values())
         if incomplete and self.mode != "unattended-auth":
             self.show("suggest", "Unattended authentication", "Credential profiles are absent or empty. Setup is suggested; you may skip. The credential wizard is pending implementation.", (("setup", "View setup status"), ("skip", "Skip (s)")))
         else:
@@ -253,7 +294,7 @@ class ApiAgentApp(App[int]):
             self.show_menu()
             return
         self.show("defaults", "Review configuration",
-                  "Review each setting: a accepts its default, e edits it, and Enter saves to .env. "
+                  "Review each setting: a saves its default immediately; e edits its value, then Enter saves to .env. "
                   "Checkmarks identify saved settings. c opens the next menu; required values still block execution.\n\n"
                   "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
                   rows=rows)
@@ -267,16 +308,31 @@ class ApiAgentApp(App[int]):
         return any(item.name == name and item.field.persist_default
                    for item in self.session.default_candidates())
 
-    def edit_setting(self, accept=False):
+    async def accept_default(self):
+        if self.screen.kind != "defaults" or not self.focused_default():
+            return
+        try:
+            name = self.focused_setting()
+            candidate = next(item for item in self.session.default_candidates() if item.name == name)
+            self.session.set_value(name, display(candidate.value), persist=True)
+            self.operation_status = 0
+            if self.session.result().values.get("NO_STD_IN"):
+                await self.enter_mode()
+                return
+            self.show_configuration()
+        except Exception as error:
+            self.screen.query_one("#error", Static).update(str(error))
+
+    def edit_setting(self):
         if self.screen.kind != "defaults":
             return
         self.prompt_name = self.focused_setting()
-        if not self.prompt_name or accept and not self.focused_default():
+        if not self.prompt_name:
             return
         resolved = self.session.result().fields.get(self.prompt_name)
         self.prompt_value = display(resolved.value) if resolved else ""
         self.show("input", f"Configure {self.prompt_name}",
-                  f"Declared type: {self.schema.fields[self.prompt_name].type}. Enter saves this value to {self.session.dotenv_path}.",
+                  f"Declared type: {self.schema.fields[self.prompt_name].type}. Enter saves this value to {self.session.dotenv_path}. Use Tab to focus actions; s switches the target outside the value input.",
                   (("submit", "Save value (Enter)"),))
 
     async def enter_mode(self):
@@ -364,7 +420,7 @@ class ApiAgentApp(App[int]):
 
     def show_cleanup(self):
         rows = [(row.name, ("X" if row.name in self.marked else "✓" if row.present else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
-        self.show("cleanup", "Clear .env configuration", f"Active file: {self.session.dotenv_path}\nEnter marks/unmarks present assignments. d deletes marked assignments when the focused row exists in this file.", rows=rows)
+        self.show("cleanup", "Clear .env configuration", f"Active file: {self.session.dotenv_path}\nEnter marks/unmarks present assignments. d asks for confirmation to delete marked assignments when the focused row exists in this file.", rows=rows)
 
     def focused_cleanup_present(self):
         if self.screen.kind != "cleanup":
@@ -410,7 +466,9 @@ class ApiAgentApp(App[int]):
 
     async def choose(self, key):
         try:
-            if key == "skip":
+            if key == "switch-target":
+                self.switch_target()
+            elif key == "skip":
                 await self.start_configuration()
             elif key == "submit":
                 value = self.screen.query_one(Input).value

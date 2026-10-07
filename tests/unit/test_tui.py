@@ -15,7 +15,7 @@ def fixture(tmp_path, mode=None, fields=None, collector=None):
     declarations = {"TUI_MODE": {"type": "str"}, "UNATTENDED_AUTH": {"type": "jsonobject"}}
     declarations.update(fields or {})
     schema = schema_from_dict({"version": 1, "fields": declarations})
-    environ = {"UNATTENDED_AUTH": '{"LLM User":[]}'}
+    environ = {"UNATTENDED_AUTH": '{"LLM User":[{"manager":"keeper","cli_path":"/bin/keeper","vault":"fixture","user":"fixture"}]}'}
     if mode:
         environ["TUI_MODE"] = mode
     return ApiAgentApp(context, schema, environ=environ, collector=collector)
@@ -48,8 +48,8 @@ def test_defaults_save_and_typed_prompt(tmp_path):
             await pilot.pause(0.4)
             await pilot.press("a")
             await pilot.pause(0.4)
-            await pilot.press("enter")
-            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
+            assert app.screen.query_one(DataTable).get_row_at(0)[0] == "✓"
             assert app.session.result().values["COUNT"] == 4
             assert "COUNT=" in (tmp_path / ".env").read_text()
     asyncio.run(save())
@@ -70,6 +70,18 @@ def test_cleanup_context_and_deletion(tmp_path):
             await pilot.pause(0.4)
             assert table.get_row_at(row)[0] == "X"
             await pilot.press("d")
+            await pilot.pause(0.4)
+            assert not app.screen_stack[-2].check_action("switch_target", ())
+            assert not app.screen_stack[-2].check_action("delete_marked", ())
+            app.screen.query_one(Input).value = "n"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert table.get_row_at(row)[0] == "X"
+            assert "COUNT=" in (tmp_path / ".env").read_text()
+            await pilot.press("d")
+            await pilot.pause(0.4)
+            app.screen.query_one(Input).value = "y"
+            await pilot.press("enter")
             await pilot.pause(0.4)
             assert table.get_row_at(row)[0] == ""
             assert table.get_row_at(row)[2] == "4"
@@ -134,9 +146,7 @@ def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
             table.move_cursor(row=1)
             await pilot.press("a")
             await pilot.pause(0.4)
-            assert app.screen.query_one(Input).value == "4"
-            await pilot.press("enter")
-            await pilot.pause(0.4)
+            assert app.screen.kind == "defaults"
             assert app.screen.query_one(DataTable).get_row_at(1)[0] == "✓"
             await pilot.press("c")
             await pilot.pause(0.4)
@@ -274,7 +284,7 @@ def test_config_checklist_and_save_button_visible_at_terminal_sizes(tmp_path):
             async with app.run_test(size=size) as pilot:
                 await pilot.pause(0.4)
                 assert app.screen.query_one(DataTable).get_row_at(0)[1] == "COUNT"
-                await pilot.press("a")
+                await pilot.press("e")
                 await pilot.pause(0.4)
                 button = app.screen.query_one("#submit", Button)
                 assert button.content_region.height >= 1
@@ -396,4 +406,76 @@ def test_unset_saved_default_and_required_value(tmp_path):
             assert app.screen.query_one(DataTable).get_row_at(1)[0] == ""
             app.screen.query_one(DataTable).move_cursor(row=1)
             assert not app.screen.check_action("accept_default", ())
+    asyncio.run(scenario())
+
+
+def test_empty_or_absent_auth_suggested_with_saved_defaults(tmp_path):
+    async def scenario():
+        for profile in (None, '{"LLM User":[]}'):
+            (tmp_path / ".env").write_text('COUNT="4"\n')
+            app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
+            if profile is None:
+                app.session.environ.pop("UNATTENDED_AUTH")
+            else:
+                app.session.environ["UNATTENDED_AUTH"] = profile
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause(0.2)
+                assert app.screen.kind == "suggest"
+                await pilot.press("s")
+                await pilot.pause(0.2)
+                assert app.screen.kind == "menu"
+    asyncio.run(scenario())
+
+
+def test_switch_target_and_resave_prefilled_value(tmp_path):
+    async def scenario():
+        base = tmp_path / "base"
+        pack = tmp_path / "pack"
+        base.mkdir()
+        pack.mkdir()
+        (base / ".env").write_text('')
+        app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}, "OTHER": {"type": "int", "default": 1}})
+        app.context.base_root = base
+        app.context.pack_root = pack
+        app.context.dotenv_path = pack / ".env"
+        app.context.external_pack = True
+        # Recreate session so launcher target selection uses the pack context.
+        from api_agent.config.session import ConfigSession
+        app.session = ConfigSession(app.context, app.schema, environ=app.session.environ)
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause(0.2)
+            summary = str(app.screen.query_one("#dotenv-targets", Static).render())
+            assert str(base / ".env") in summary
+            assert str(pack / ".env") in summary
+            await pilot.press("a")
+            await pilot.pause(0.2)
+            assert app.screen.kind == "defaults"
+            assert app.screen.query_one(DataTable).get_row_at(0)[0] == "✓"
+            await pilot.press("e")
+            await pilot.pause(0.2)
+            assert app.screen.query_one(Input).value == "4"
+            app.screen.query_one(Input).value = "8"
+            await pilot.click("#switch-target")
+            await pilot.pause(0.2)
+            assert app.session.dotenv_path == base / ".env"
+            assert app.screen.query_one(Input).value == "8"
+            await pilot.press("s")
+            await pilot.pause(0.2)
+            assert app.session.dotenv_path == pack / ".env"
+            app.screen.query_one(Input).focus()
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert 'COUNT="8"' in (pack / ".env").read_text()
+            assert "COUNT=" not in (base / ".env").read_text()
+            await pilot.press("s")
+            await pilot.pause(0.2)
+            assert app.session.dotenv_path == base / ".env"
+            assert app.screen.query_one(DataTable).get_row_at(0)[0] == ""
+            await pilot.press("e")
+            await pilot.pause(0.2)
+            assert app.screen.query_one(Input).value == "8"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert 'COUNT="8"' in (base / ".env").read_text()
+            assert "COUNT=" not in (pack / ".env").read_text()
     asyncio.run(scenario())

@@ -60,7 +60,7 @@ def resource_pack_main(argv=None, *, launcher_root):
         if explicit is not None:
             boundary = remaining.index('--') if '--' in remaining else len(remaining)
             remaining.insert(boundary, f'--api-agent-dir={explicit}')
-        return subprocess.call([sys.executable, str(entry), '--resource-pack-dir', str(root), *remaining],
+        return subprocess.call([sys.executable, str(entry), '--resource-pack-dir', str(root), '--_launcher-root', str(Path(launcher_root).resolve()), *remaining],
                                env=os.environ.copy())
     except (ValueError, OSError) as exc:
         print(f'Launch error: {exc}', file=sys.stderr)
@@ -75,6 +75,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     from api_agent.runtime.worktrees import verify_worktrees, WorktreeGateError
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
+        argv, origin = _extract_option(argv, {'--_launcher-root'})
+        if origin is not None:
+            launcher_root = Path(origin).expanduser().resolve()
         argv, selected_pack = _extract_option(argv, {'--resource-pack-dir', '--resource_pack_dir'})
         if selected_pack is None and resource_pack_dir is None:
             selected_pack = os.environ.get('RESOURCE_PACK_DIR')
@@ -94,9 +97,13 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         shared = load_shared_schema(context.base_root)
         schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
                                 overrides=context.defaults)
+        dotenv = {}
+        for path in dict.fromkeys((context.base_root / '.env',
+                                  (context.launcher_root or context.base_root) / '.env',
+                                  context.dotenv_path)):
+            dotenv.update(read_dotenv(path))
         result = resolve_config(schema, argv=argv, environ=os.environ,
-                                dotenv={**read_dotenv(context.base_root / '.env'),
-                                        **read_dotenv(context.dotenv_path)}, anchors=context.anchors,
+                                dotenv=dotenv, anchors=context.anchors,
                                 interactive=True, pack_launcher=context.external_pack)
         errors = list(result.errors)
         if result.values.get('NO_STD_IN') and not result.help_requested:

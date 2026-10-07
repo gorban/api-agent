@@ -51,4 +51,5 @@ def ensure_environment(context, argv, *, collect=False):
     if Path(sys.prefix).resolve() == environment.resolve():
         return None
     return subprocess.call([str(python), str(context.base_root / 'launch.py'),
-                            '--resource-pack-dir', str(context.pack_root), *argv], env=os.environ.copy())
+                            '--resource-pack-dir', str(context.pack_root),
+                            '--_launcher-root', str(getattr(context, 'launcher_root', None) or context.base_root), *argv], env=os.environ.copy())
