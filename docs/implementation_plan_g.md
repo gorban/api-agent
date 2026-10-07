@@ -16,7 +16,8 @@ Use a separate root `cfg/` tree for human-edited configuration, workflow Layout 
 - [ ] Keep reusable runtime code in api-agent. Keep the included `demo/` directly under its repository root as an independently loadable resource pack. Support independently supplied resource packs selected by `--resource-pack-dir`, with each pack owning its configuration and launch integration.
 - [ ] Give each pack a declarative identity/source manifest, configuration description, and Layout document. Share generic configuration declarations through a common schema rather than duplicating their definitions across packs; keep upstream API authentication requirements inside the selected pack. Parse configuration at runtime for the initial milestone; introduce the general Layout interpreter in the later [Layout work](implementation_plan_b.md).
 - [ ] Include the demo pack in packaging/distribution and resolve its installed location independently of the working directory. Resolve `<resource_pack>` to the selected pack root. Keep pack prompt components under responsibility/node directories, listed explicitly by the ordered Layout prompt links.
-- [ ] Build Neo4j data from the selected pack's knowledge and navigation files using shared ingestion tooling; expose it as a retrieval/navigation tool. Keep checked-in sources separate from database storage and ignored local artifacts. Neo4j is a tool/evidence store, not the LangGraph execution engine.
+- [ ] Build an in-process graph snapshot from the selected pack's knowledge and navigation files using shared ingestion tooling; expose it as a retrieval/navigation tool inside the main Python agent process/container. Define an independently implemented runtime snapshot/cache and local search approach; do not require a Neo4j server or sidecar for this initial implementation. Keep checked-in sources separate from ignored derived artifacts. The graph is a tool/evidence store, not the LangGraph execution engine.
+  - [ ] Define a backend-independent ingestion/retrieval interface. Initially use Python graph snapshots and local search; test startup/rebuild, atomic activation, concurrent reads and pack isolation without an external database. For multi-process deployments, define per-process rebuild/cache behavior explicitly. Defer Neo4j persistence, Cypher/vector indexes and any server lifecycle until separately planned; do not describe the in-process snapshot as embedded Neo4j.
   - [ ] Scope imports and queries by stable pack identity and snapshot identity. Track source paths/origins, hashes, freshness, and evidence authority; prevent data from different packs from mixing. Define the rebuild/update lifecycle and test pack isolation before using imported data in a workflow.
   - [ ] Keep checked-in GraphQL knowledge as navigation hints. Mark MCP-derived schema evidence separately, and use snapshots only while healthy/fresh. Live MCP evidence wins on conflicts or stale/unavailable snapshots. Preserve tool results separately from user prompt content. Add vector retrieval only where it improves navigation.
 - [ ] Preserve generated `navigation/routes.json` relative to each pack root, its JSON contract, and any supplied generated navigation hierarchy. Adapt the importer to this output rather than reorganizing it. Knowledge and prompt files may use the new layout.
@@ -80,7 +81,7 @@ api-agent/
 │   ├── tooling/
 │   │   └── knowledge/
 │   │       ├── ingest.py                    # Pack knowledge/navigation import
-│   │       ├── graph.py                     # Neo4j snapshots, provenance and isolation
+│   │       ├── graph.py                     # In-process graph snapshots, provenance and isolation
 │   │       └── tool.py                      # Retrieval/navigation tool
 │   ├── recording/
 │   │   ├── session.py                       # User turns and provider call events
@@ -108,7 +109,6 @@ api-agent/
 │       └── routes.json                      # Preserve external generation contract
 ├── infrastructure/compose/                 # Independent reusable prerequisite stacks
 │   ├── langfuse.yaml
-│   ├── neo4j.yaml
 │   └── localstack.yaml
 ├── tests/
 │   ├── unit/                                # Deterministic; coverage; no Allure/retries
@@ -119,7 +119,7 @@ api-agent/
 
 `workflows/<responsibility>/<node>/prompts/` is the navigation convention for generic code/prompts and pack-specific prompt components. Framework services such as authentication or recording have responsibility folders but do not need artificial LangGraph nodes. Tests can mirror these responsibilities within their test category as they grow. Packaging support files are omitted from the tree for readability.
 
-The first implementation slice includes configuration resolution, LLM provider authentication, model discovery/provider wiring, recording/Allure, the API, Textual test controls, and `rendering/renderer`, plus the demo pack and generic resource-pack loading. General Layout execution, Neo4j ingestion, and planner/GraphQL examples expand in their own tasks; the skeleton does not make them prerequisites for the token-free model-listing test.
+The first implementation slice includes configuration resolution, LLM provider authentication, model discovery/provider wiring, recording/Allure, the API, Textual test controls, and `rendering/renderer`, plus the demo pack and generic resource-pack loading. General Layout execution, in-process graph ingestion, and planner/GraphQL examples expand in their own tasks; the skeleton does not make them prerequisites for the token-free model-listing test.
 
 ## Resource content contract
 
@@ -132,3 +132,5 @@ Pack descriptions also select test-owner repository identity/root and per-mode t
 Extend this skeleton through the [conditional infrastructure/host UI plan](implementation_plan_h.md). Pack manifests declare their own API/database Compose fragments and may supply UI-project defaults.
 
 Use [strict Markdown Layout](implementation_plan_b1.md) with genuine declaration-relative links for engine-local prompts. Pack prompt links retain `<resource_pack>` visibly and in their destination for runtime resolution; they do not resolve in editors/GitHub or point to a particular resource pack.
+
+Document the public upstream interfaces and independently authored snapshot/cache and retrieval design used for this backend. Keep backend lifecycle and persistence requirements explicit in this plan.
