@@ -3,6 +3,7 @@
 ## Checklist
 
 - [ ] Start `README.md` with application and TUI usage documentation, deriving configuration details from the declarative executable descriptions.
+- [ ] Document repo-local `.venv` creation/activation and `./launch.py` as the application setup path. The launcher installs needed declared application/test dependencies and prepares matching browsers automatically; user instructions must not require separate pip/dev-extra or browser-install commands for TUI operations. Distinguish external host tools from managed environment setup; verify this behavior before documenting it as complete. See [automatic setup tasks](implementation_plan_i.md).
 - [x] Document equivalent environment/CLI names, `.env` < environment < CLI precedence, strict `True`/`False` boolean values, bare boolean flags, and both `--key=value` and `--key value` forms.
 - [x] Add the TUI parser caveat: space-separated values starting with `--` are treated as another option key (preceding boolean becomes `True`; nonboolean reports a missing value). `--key=value` preserves literal values.
 - [ ] Document `--no-std-in`, aggregate missing-configuration errors, available `TUI_MODE` selections, and the mandatory human acceptance for E2E runs.
