@@ -37,7 +37,11 @@ def resource_pack_main(argv=None, *, launcher_root):
     root = Path(launcher_root).resolve()
     try:
         remaining, pack_override = _extract_option(argv, {'--resource-pack-dir', '--resource_pack_dir'})
+        if pack_override is None:
+            pack_override = os.environ.get('RESOURCE_PACK_DIR')
         if pack_override is not None:
+            if not pack_override.strip():
+                raise ValueError('RESOURCE_PACK_DIR requires a nonempty directory value')
             root = Path(pack_override).expanduser().resolve()
         remaining, explicit = _extract_option(remaining, {'--api-agent-dir', '--api_agent_dir'})
         dotenv = read_dotenv(root / '.env')
@@ -72,7 +76,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         argv, selected_pack = _extract_option(argv, {'--resource-pack-dir', '--resource_pack_dir'})
+        if selected_pack is None and resource_pack_dir is None:
+            selected_pack = os.environ.get('RESOURCE_PACK_DIR')
         if selected_pack is not None:
+            if not selected_pack.strip():
+                raise ValueError('RESOURCE_PACK_DIR requires a nonempty directory value')
             resource_pack_dir = Path(selected_pack).expanduser().resolve()
         if base_root is None:
             origin = Path(__file__).resolve()
@@ -105,7 +113,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print(generated_help(schema, pack_launcher=context.external_pack,
                                  declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
-            print('\nBootstrap: --resource-pack-dir PATH selects a resource pack independently of CWD.')
+            if resource_pack_dir is None and launcher_root is None:
+                print('\nBootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.')
             return 0
         print(f'Validated foundation configuration for {context.name} ({context.pack_root}).')
         operation = 'Test collection' if result.values.get('COLLECT_ONLY') else 'Requested operation'

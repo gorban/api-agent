@@ -48,6 +48,19 @@ class LaunchTests(unittest.TestCase):
         self.assertNotIn('Segment B', result.stdout)
         self.assertNotIn('Foundation only:', result.stdout)
 
+    def test_bootstrap_hint_only_when_pack_not_selected(self):
+        with tempfile.TemporaryDirectory() as directory, patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
+            resource_pack = Path(directory) / "pack"
+            shutil.copytree(ROOT / "demo", resource_pack)
+            cases = [(['--help'], {}, True),
+                     (['--help', '--resource-pack-dir', str(ROOT / 'demo')], {}, False),
+                     (['--help', '--resource-pack-dir', str(resource_pack)], {}, False),
+                     (['--help'], {'RESOURCE_PACK_DIR': str(resource_pack)}, False)]
+            for argv, env, expected in cases:
+                with self.subTest(argv=argv, env=env), patch.dict(os.environ, env), patch('sys.stdout', new_callable=StringIO) as output:
+                    self.assertEqual(main(argv, base_root=ROOT), 0)
+                    self.assertEqual('Bootstrap:' in output.getvalue(), expected)
+
     def test_collection_is_honestly_unavailable(self):
         with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
             self.assertEqual(main(['--tui-mode=unit', '--collect-only'], base_root=ROOT), 3)
