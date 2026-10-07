@@ -5,13 +5,23 @@ from collections.abc import Mapping
 from rich.text import Text
 from api_agent.auth.profiles import normalize_auth, DEFAULT_PASSWORD_MANAGER
 from api_agent.tui.app import ButtonFooter, FocusNavigation, QuitDialog
-from api_agent.tui.test_results import literal_cell
 from api_agent.tui.select import AdvancingSelect
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Input, Select, Static
+
+
+def replace_auth_rows(table, headings, rows):
+    """Size literal cells before drawing, avoiding deferred-width stale rows."""
+    rows = [(key, [Text(str(value)) for value in values]) for key, values in rows]
+    table.clear(columns=True)
+    for index, heading in enumerate(headings):
+        table.add_column(heading, width=max([Text(heading).cell_len,
+                                            *(cells[index].cell_len for _, cells in rows)]))
+    for key, cells in rows:
+        table.add_row(*cells, key=key)
 
 
 class AuthTable(DataTable):
@@ -177,11 +187,9 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def on_mount(self):
         self.shared_target = self.app.session.dotenv_path
         self.query_one('#auth-content', VerticalScroll).can_focus = False
-        self.query_one('#auth-table', DataTable).add_columns('Role', 'Index', 'Vault', 'Login / item')
         manager_table = self.query_one('#auth-manager-table', DataTable)
         manager_table.styles.margin = (1, 0, 0, 0)
         self.query_one('#auth-table', DataTable).styles.margin = 0
-        self._load()
         self._refresh()
         self.query_one('#auth-table', DataTable).focus()
 
@@ -261,29 +269,29 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         return Text('\n').join(rows)
 
     def _refresh(self):
+        self._load()
         table = self.query_one('#auth-table', DataTable)
+        sources = self.app.session.auth_sources()
         selected = self.editing if isinstance(self.editing, tuple) else self._selected()
-        table.clear()
+        rows = []
         cursor = 0
         for role in self.roles:
             entries = self.entries[role]
+            source = sources['roles'].get(role, 'Not provided')
             if not entries:
-                table.add_row(*(literal_cell(x) for x in (role, '—', '', 'Not configured')), key=f'{self.roles.index(role)}:-')
+                rows.append((f'{self.roles.index(role)}:-', (role, '—', '', 'Not configured', source)))
                 if selected and selected[0] == role:
-                    cursor = table.row_count - 1
+                    cursor = len(rows) - 1
             for index, item in enumerate(entries):
-                table.add_row(*(literal_cell(x) for x in (role, str(index), item['vault'], item['user'])), key=f'{self.roles.index(role)}:{index}')
+                rows.append((f'{self.roles.index(role)}:{index}',
+                             (role, str(index), item['vault'], item['user'], source)))
                 if selected and selected[0] == role and index == min(selected[1] if selected[1] is not None else len(entries) - 1, len(entries) - 1):
-                    cursor = table.row_count - 1
+                    cursor = len(rows) - 1
+        replace_auth_rows(table, ('Role', 'Index', 'Vault', 'Login / item', 'Source'), rows)
         table.move_cursor(row=cursor)
         manager = self.query_one('#auth-manager-table', DataTable)
-        cells = [Text(x) for x in (self.manager['manager'] or '-', self.manager['cli_path'] or '-')]
-        manager.clear(columns=True)
-        # Size the single row before drawing it: deferred auto-width measurement
-        # can leave a focused row cached at its previous, shorter column width.
-        for label, cell in zip(('Password manager', 'CLI path'), cells):
-            manager.add_column(label, width=max(Text(label).cell_len, cell.cell_len))
-        manager.add_row(*cells, key='manager')
+        replace_auth_rows(manager, ('Password manager', 'CLI path', 'Source'), [
+            ('manager', (self.manager['manager'] or '-', self.manager['cli_path'] or '-', sources['password_manager']))])
         self._error(self.load_error)
         self._refresh_target()
 
@@ -363,7 +371,6 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def _save_entry(self, values):
         if self.editing == 'manager':
             self.app.session.save_auth_manager(values)
-            self._load()
         else:
             role, index = self.editing
             entries = [dict(value) for value in self.entries[role]]
@@ -380,7 +387,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         if saved:
             self._refresh()
         self.editing = None
-        self.query_one(target, DataTable).focus()
+        self.query_one(target, DataTable).focus(scroll_visible=False)
         self._refresh_target()
 
     def _move_entry(self, step):
@@ -418,7 +425,6 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         try:
             if self._manager_selected():
                 self.app.session.reset_auth_manager()
-                self._load()
             else:
                 role, index = self._selected()
                 entries = [dict(item) for item in self.entries[role]]

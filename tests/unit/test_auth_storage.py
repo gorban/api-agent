@@ -243,3 +243,58 @@ def test_account_draft_saves_before_manager_selection(tmp_path):
         'manager': '', 'cli_path': ''}
     config.save_auth_manager({'manager': 'keeper', 'cli_path': ''})
     assert saved(base)['password_manager'] == {'manager': 'keeper', 'cli_path': 'keeper'}
+
+
+def test_auth_sources_follow_components_not_write_target(tmp_path):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    assert config.auth_sources() == {'password_manager': 'Not provided', 'roles': {}}
+    config.save_auth_role('LLM User', [account('one'), account('two')])
+    config.save_auth_role('Secondary', [account('pack')])
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': '/keeper'})
+    expected = {'password_manager': '../base/.env',
+                'roles': {'LLM User': '../base/.env', 'Secondary': '../pack/.env'}}
+    assert config.auth_sources() == expected
+    before = {path: path.read_bytes() for path in (base, pack)}
+    config.switch_target(pack)
+    assert config.auth_sources() == expected
+    assert before == {path: path.read_bytes() for path in (base, pack)}
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': '/keeper'})
+    expected['password_manager'] = '../pack/.env'
+    assert config.auth_sources() == expected
+    config.save_auth_role('LLM User', [])
+    expected['roles']['LLM User'] = '../pack/.env'
+    assert config.auth_sources() == expected
+    config.reset_auth_manager()
+    expected['password_manager'] = 'Not provided'
+    assert config.auth_sources() == expected
+
+
+@pytest.mark.parametrize('source', ('environment', 'cli', 'interactive'))
+def test_auth_sources_external_override_and_reset(tmp_path, source):
+    config = session(tmp_path)
+    config.save_auth_role('LLM User', [account('saved')])
+    config.save_auth_manager({'manager': 'keeper', 'cli_path': '/keeper'})
+    value = json.dumps({'password_manager': {'manager': '1password', 'cli_path': 'op'},
+                        'roles': {'LLM User': [account('external')]}})
+    if source == 'environment':
+        config.environ['UNATTENDED_AUTH'] = value
+    elif source == 'cli':
+        config.argv = (f'--unattended-auth={value}',)
+    else:
+        config.set_value('UNATTENDED_AUTH', value)
+    assert config.auth_sources() == {'password_manager': source, 'roles': {'LLM User': source}}
+    if source != 'interactive':
+        config.reset_auth_manager()
+        assert config.auth_sources() == {'password_manager': 'Not provided', 'roles': {'LLM User': source}}
+
+
+def test_auth_sources_legacy_and_pack_override_use_launcher_relative_paths(tmp_path):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    config.context.launcher_root = config.context.pack_root
+    put(base, {'LLM User': [{'manager': 'keeper', 'cli_path': 'keeper', **account('old')}],
+               'Secondary': []})
+    put(pack, {'roles': {'LLM User': [account('new')]}})
+    assert config.auth_sources() == {'password_manager': '../base/.env',
+                                     'roles': {'LLM User': '../pack/.env', 'Secondary': '../base/.env'}}
