@@ -104,7 +104,8 @@ class RunRecorder:
         for title, content, mime in attachments:
             name = self._write(f'{uuid4()}-attachment', content)
             attachment_rows.append({'name': self._safe_text(title), 'source': name, 'type': mime})
-        name = self._safe_text(test.node_id.split('::')[-1])
+        node_name, separator, parameters = test.node_id.removeprefix(test.file + '::').partition('[')
+        name = self._safe_text(node_name.rsplit('::', 1)[-1] + separator + parameters)
         ended = self._clock()
         _timestamp(ended)
         stopped_ms = int(ended.timestamp() * 1000)

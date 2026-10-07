@@ -269,3 +269,163 @@ def test_secondary_existing_fifo_is_rejected_without_blocking(tmp_path):
     with pytest.raises(StorageError):
         storage.persist(source, manifest)
     assert not (target / 'manifest.json').exists()
+
+
+@pytest.mark.parametrize('name', ['manifest.json', 'a-result.json'])
+@pytest.mark.parametrize('kind', ['fifo', 'directory'])
+def test_nonregular_sources_fail_promptly_before_commit(tmp_path, name, kind):
+    import subprocess
+    source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z')
+    path = source / name
+    path.unlink()
+    if kind == 'fifo':
+        os.mkfifo(path)
+    else:
+        path.mkdir()
+    script = '''
+import json, sys
+from api_agent.testing.storage import RunStorage, StorageError
+class Client:
+    def put_object(self, **kwargs):
+        pass
+try:
+    RunStorage._read_source(__import__('pathlib').Path(sys.argv[1]) / sys.argv[3])
+except StorageError:
+    pass
+else:
+    raise AssertionError('Nonregular source read was accepted')
+try:
+    RunStorage('bucket', client=Client()).persist(sys.argv[1], json.loads(sys.argv[2]))
+except StorageError as error:
+    assert str(error) == 'Could not persist Allure run'
+else:
+    raise AssertionError('Nonregular source was accepted')
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(source), json.dumps(manifest), name],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+
+
+def test_source_fifo_swapped_after_primary_commit_fails_promptly(tmp_path):
+    import subprocess
+    source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z')
+    secondary = tmp_path / 'copies'
+    script = '''
+import json, os, sys
+from pathlib import Path
+from api_agent.testing.storage import RunStorage, StorageError
+source = Path(sys.argv[1])
+class Client:
+    def put_object(self, **kwargs):
+        if kwargs['Key'].endswith('/manifest.json'):
+            path = source / 'a-result.json'
+            path.unlink()
+            os.mkfifo(path)
+try:
+    RunStorage('bucket', client=Client(), secondary_directory=sys.argv[3]).persist(
+        source, json.loads(sys.argv[2]))
+except StorageError as error:
+    assert str(error) == 'Could not persist Allure run'
+else:
+    raise AssertionError('Nonregular secondary source was accepted')
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(source), json.dumps(manifest), str(secondary)],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert not (secondary / 'example' / manifest['run_id'] / 'manifest.json').exists()
+
+
+def test_source_symlink_swapped_after_validation_is_rejected(tmp_path, monkeypatch):
+    source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z')
+    outside = tmp_path / 'outside'
+    outside.write_bytes(b'{}')
+    original = RunStorage._read_source
+    def swap(path, **kwargs):
+        if path == 'a-result.json':
+            artifact = source / path
+            artifact.unlink()
+            artifact.symlink_to(outside)
+        return original(path, **kwargs)
+    monkeypatch.setattr(RunStorage, '_read_source', staticmethod(swap))
+    s3 = FakeS3()
+    with pytest.raises(StorageError):
+        RunStorage('bucket', client=s3).persist(source, manifest)
+    assert s3.objects == {}
+
+
+def test_source_directory_is_rejected_before_read(tmp_path):
+    with pytest.raises(StorageError, match='Could not persist Allure run'):
+        RunStorage._read_source(tmp_path)
+
+
+def test_source_root_swapped_before_open_is_rejected(tmp_path, monkeypatch):
+    import shutil
+    source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z')
+    outside = tmp_path / 'outside'
+    shutil.copytree(source, outside)
+    original_open = os.open
+    def swap(path, flags, *args, **kwargs):
+        if path == source:
+            source.rename(tmp_path / 'original')
+            source.symlink_to(outside, target_is_directory=True)
+        return original_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', swap)
+    s3 = FakeS3()
+    with pytest.raises(StorageError):
+        RunStorage('bucket', client=s3).persist(source, manifest)
+    assert s3.objects == {}
+
+
+def test_pinned_source_root_survives_swap_through_secondary_copy(tmp_path, monkeypatch):
+    import shutil
+    source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z')
+    outside = tmp_path / 'outside'
+    shutil.copytree(source, outside)
+    (outside / 'a-result.json').write_bytes(b'foreign staging bytes')
+    storage = RunStorage('bucket', client=FakeS3(), secondary_directory=tmp_path / 'copies')
+    original_client = storage._client
+    swapped = False
+    def swap():
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            source.rename(tmp_path / 'original')
+            source.symlink_to(outside, target_is_directory=True)
+        return original_client()
+    monkeypatch.setattr(storage, '_client', swap)
+    storage.persist(source, manifest)
+    key = storage._key('example', manifest['run_id'], 'a-result.json')
+    assert storage.client.objects[key] == b'{}'
+    target = tmp_path / 'copies/example' / manifest['run_id']
+    assert (target / 'a-result.json').read_bytes() == b'{}'
+    assert json.loads((target / 'manifest.json').read_bytes()) == manifest
+
+
+@pytest.mark.parametrize('failure', ['none', 'manifest', 'artifact', 'provider'])
+def test_source_descriptors_are_closed_on_success_and_failure(tmp_path, monkeypatch, failure):
+    source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z')
+    if failure == 'manifest':
+        (source / 'manifest.json').write_bytes(b'{}')
+    elif failure == 'artifact':
+        (source / 'a-result.json').unlink()
+        (source / 'a-result.json').mkdir()
+    s3 = FakeS3()
+    s3.fail = failure == 'provider'
+    storage = RunStorage('bucket', client=s3)
+    opened = set()
+    original_open, original_close = os.open, os.close
+    def track_open(*args, **kwargs):
+        descriptor = original_open(*args, **kwargs)
+        opened.add(descriptor)
+        return descriptor
+    def track_close(descriptor):
+        original_close(descriptor)
+        opened.remove(descriptor)
+    monkeypatch.setattr(os, 'open', track_open)
+    monkeypatch.setattr(os, 'close', track_close)
+    if failure == 'none':
+        storage.persist(source, manifest)
+    else:
+        with pytest.raises(StorageError):
+            storage.persist(source, manifest)
+    assert not opened

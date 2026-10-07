@@ -6,6 +6,8 @@
 
 ## Checklist
 
+- [x] Use physical filesystem identity for base/pack scope so alternate `/home` and `/var/home` aliases select the same stack, while different actual worktrees remain distinct. Detect known prior path-based projects/journals with actionable migration refusal; preserve their leases/containers instead of silently hiding, adopting, relabeling or stopping them. Planning and cleanup share this scope contract.
+
 - [x] Protect containers leased by active invocations during explicit TUI cleanup. Hold the acquisition lock across lease validation, fresh immutable-ID ownership reinspection and stop; uncertainty refuses cleanup. The TUI uses the same owner-root `artifacts/prerequisites/` journal as operation startup. Controlled tests cover active leases, stale process identities, lock ordering and fixed errors; actual retained-container cleanup remains a human integration check.
 
 - [x] Implement canonical base/pack `StackScope`, managed/scope/Compose-project discovery filters before inspection, explicit profile and service ownership checks, immutable-ID stop revalidation and independent hosting-Distrobox protection. The default TUI uses the selected checkout scope. Deterministic tests include unrelated projects and ownership mutation; actual profile lifecycle/active reuse leases and live cleanup remain below.

@@ -10,7 +10,7 @@ import tempfile
 
 from api_agent.telemetry.usage import SuiteUsage
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
-from .collection import TestIdentity
+from .collection import TestIdentity, repository_label
 from .contracts import TestResult
 from .integration import run_integration_tests
 from .recording import RunIdentity, RunRecorder
@@ -52,7 +52,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         raise ValueError('Cannot record an empty integration selection')
     if not config.get('ALLURE_S3_BUCKET'):
         raise ValueError('ALLURE_S3_BUCKET is required')
-    identity = RunIdentity.create(Path(context.owner_root).name, 'integration')
+    identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
     directory = Path(config['ALLURE_RESULTS_DIR']) / identity.repo / identity.run_id
     if evidence_boundary is None:
         evidence_boundary = EmissionBoundary(ContentPolicy(True))

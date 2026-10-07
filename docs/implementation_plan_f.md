@@ -10,7 +10,7 @@
   - [ ] Preserve provider/model, call count, session ID, input/output/total tokens, cache-read/cache-creation tokens, and reasoning tokens where returned by the provider. Track structured-output and streaming calls, including retries; distinguish unavailable metrics from measured zero usage.
   - [ ] Associate usage artifacts with the suite run identity and retain them with the persistent Allure results. Ensure the test runner enables recording from the first run.
 - [ ] Capture LLM provider quota/spend used immediately before and after the whole integration/E2E suite execution, and report both snapshots and `after - before` as a quota/spend used delta in the TUI suite results and persisted Allure run artifacts. Do this for successful, failed, and interrupted runs where a final snapshot can be obtained.
-  - [ ] Record quota-window resets, unavailable snapshots, and possible concurrent account usage explicitly rather than presenting an invalid delta as attributable suite consumption. This quota/spend metric is separate from per-call token counts.
+  - [ ] Record quota resets, unavailable snapshots and possible unrelated account usage explicitly. Parallel selected tests share one suite bracket. Quota snapshots remain separate from token counts and provider cost estimation.
 - [ ] After declarative config, LLM provider authentication, Allure, and usage tracking are ready, implement `GET /app/agent/models` as an early API/authentication milestone before any token-spending "Ok" test.
   - [ ] Establish the model-list schema and route/frontend contract. Preserve the response shape required for selecting a model.
   - [ ] Add a targeted integration test of authenticated LLM provider model discovery, plus deterministic tests of missing/invalid authentication handling. These model-list requests must not invoke LLM inference or generate a completion. Record the integration result in Allure and show its suite-wide quota delta in the TUI even when usage is unchanged.
@@ -29,6 +29,9 @@
 - [ ] Prove attended and unattended LLM provider authentication using the [test-authentication tasks](implementation_plan_a4.md). During authentication-only integration, forbid inference and leave quota unavailable when not queried. Verify authenticated model-list response separately; an authentication token alone does not prove discovery.
 
 - [ ] Verify request metadata within the selected provider. Public integration tests use synthetic metadata consumers and do not assert a private upstream header set.
+- [ ] Verify protocol-specific metadata validation and closed-operation behavior within the selected provider. Public core verifies cancellation and runtime ownership using synthetic adapters.
 
 - [ ] Supply application/resource-pack service identity to the selected provider through generic context. Provider-owned metadata configuration observes normal precedence; core tests verify identity selection independently of working directory or installed paths.
 - [ ] Wire selected provider transports to their own metadata builders, including their separately documented usage-read contract. Complete human configuration review and authentication proof before live inference.
+
+- [ ] Implement [provider session and operation usage reporting](implementation_plan_a7.md) with optional starting/final quota snapshots, provider-supplied cost estimates and one frozen stdout/TUI/report summary.

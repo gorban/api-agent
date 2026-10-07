@@ -11,7 +11,7 @@ from api_agent.runtime.dependencies import requirements
 @pytest.mark.parametrize('mode', ['run-local', 'integration', 'e2e'])
 def test_local_keys_and_public_ca_configuration(mode, tmp_path):
     result = resolve_config(load_shared_schema(), environ={
-        'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'CLIENT_CA_FILE': 'public-ca.pem',
+        'TUI_MODE': mode, 'UI_SOURCE_DIR': '/example/frontend', 'TRACE_MODE': 'LangFuse', 'CLIENT_CA_FILE': 'public-ca.pem',
         'ALLURE_S3_BUCKET': 'results'}, anchors={'owner_root': tmp_path})
     assert not result.errors and not result.missing
     assert result.values['LANGFUSE_PUBLIC_KEY'] == 'pk-lf-local-dev-0000000000'

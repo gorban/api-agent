@@ -183,6 +183,10 @@ class TraceRuntime:
     def _bounded(self, timeout):
         self._timeout(timeout)
         with self._work_lock:
+            # Check completion atomically with worker acquisition: another closer
+            # may finish between shutdown's initial check and this lock.
+            if self._shutdown_complete:
+                return self._result
             if self._worker is None or self._done.is_set():
                 self._done.clear()
                 def run():

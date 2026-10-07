@@ -6,8 +6,7 @@ from api_agent.runtime.bootstrap import generated_help
 def selected_schema():
     shared = load_shared_schema()
     extension = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
-        'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
-        'persist_default': False}}}, base_schema=shared, source='pack_default')
+        'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False}}}, base_schema=shared, source='pack_default')
     return compose_schema(shared, extension)
 
 def test_bare_core_does_not_expose_provider_selection():
@@ -24,7 +23,7 @@ def test_llm_only_declaration_exposes_generic_index_without_secondary_role():
     assert result.values['UNATTENDED_USER_INDEX'] == 1
     assert result.fields['UNATTENDED_USER_INDEX'].explicit
     assert resolve_config(schema, environ={'TUI_MODE': 'run-local'}).values.get('UNATTENDED_USER_INDEX') is None
-    assert not schema.fields['UNATTENDED_USER_INDEX'].persist_default
+    assert not schema.fields['UNATTENDED_USER_INDEX'].acknowledge_default
 
 @pytest.mark.parametrize('index', ['-1', 'invalid'])
 def test_invalid_declared_index_is_rejected(index):

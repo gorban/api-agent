@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from types import MappingProxyType
 from typing import Mapping, Protocol
 from urllib.parse import urlsplit
@@ -33,6 +34,7 @@ class ComposePlan:
     command: tuple[str, ...]
     directory: Path
     environment: Mapping[str, str] = field(repr=False)
+    assets: Mapping[str, bytes] = field(repr=False)
 
     @property
     def enabled(self):
@@ -110,11 +112,27 @@ def local_development_environment(scope):
 
 def validate_document(document, scope, profiles):
     """Reject unscoped labels, exposed dependencies, and incomplete profiles."""
+    if set(document) - {'services', 'volumes'}:
+        raise ComposeError('Unsupported controlled Compose document feature.')
+    for volume in document.get('volumes', {}).values():
+        if not isinstance(volume, dict) or set(volume) - {'labels'}:
+            raise ComposeError('Controlled Compose named volumes may contain only labels.')
+        labels = volume.get('labels', {})
+        profile = labels.get('api-agent.profile')
+        if profile not in {'langfuse', 'otel', 'localstack'}:
+            raise ComposeError('Controlled Compose volume ownership labels are required.')
+        expected = dict(scope.labels(profile))
+        expected['api-agent.scope'] = '${SA_SCOPE:?controlled local development value required}'
+        if labels != expected:
+            raise ComposeError('Compose volume ownership labels do not match its scope.')
     services = document.get('services', {})
     if not services:
         raise ComposeError('Compose services are required.')
     active = []
     for name, service in services.items():
+        if set(service) - {'command', 'depends_on', 'entrypoint', 'environment',
+                'healthcheck', 'image', 'labels', 'ports', 'profiles', 'user', 'volumes'}:
+            raise ComposeError('Compose contains an unsafe or unsupported service override.')
         service_profiles = service.get('profiles', [])
         if len(service_profiles) != 1 or service_profiles[0] not in {'langfuse', 'otel', 'localstack'}:
             raise ComposeError('Every service requires exactly one supported profile.')
@@ -126,8 +144,6 @@ def validate_document(document, scope, profiles):
         image = service.get('image', '')
         if ':' not in image.rsplit('/', 1)[-1] or image.endswith(':latest'):
             raise ComposeError('Compose images require a version pin.')
-        if 'container_name' in service or service.get('network_mode') or service.get('privileged') or service.get('env_file'):
-            raise ComposeError('Compose contains an unsafe service override.')
         for port in service.get('ports', []):
             if not isinstance(port, str) or not port.startswith('127.0.0.1:'):
                 raise ComposeError('Compose published ports must bind loopback.')
@@ -182,9 +198,11 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
     directory = (Path(compose_directory) if compose_directory else default_compose_directory()).resolve()
     profiles = selected_profiles(config)
     try:
-        document = json.loads((directory / 'compose.json').read_text())
+        compose_bytes = (directory / 'compose.json').read_bytes()
+        document = json.loads(compose_bytes)
         empty_env = directory / 'empty.env'
-        if any(line.strip() and not line.lstrip().startswith('#') for line in empty_env.read_text().splitlines()):
+        empty_bytes = empty_env.read_bytes()
+        if any(line.strip() and not line.lstrip().startswith('#') for line in empty_bytes.decode().splitlines()):
             raise ComposeError('Controlled Compose env file must be empty.')
         services = validate_document(document, scope, profiles)
     except (OSError, ValueError, TypeError, AttributeError) as error:
@@ -202,7 +220,8 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         if hook.is_symlink() or not hook.is_file():
             raise ComposeError('Controlled LocalStack ready hook is missing or symlinked.')
         environment['SA_LOCALSTACK_READY_HOOK'] = str(hook.resolve())
-        environment['SA_LOCALSTACK_READY_DIGEST'] = sha256(hook.read_bytes()).hexdigest()
+        hook_bytes = hook.read_bytes()
+        environment['SA_LOCALSTACK_READY_DIGEST'] = sha256(hook_bytes).hexdigest()
     except OSError as error:
         raise ComposeError('Cannot read controlled LocalStack ready hook.') from error
     bucket = config.get('ALLURE_S3_BUCKET')
@@ -225,7 +244,9 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
                 if not isinstance(value, str) or not value.strip() or value != value.strip() or '\x00' in value:
                     raise ComposeError('Local Langfuse project keys must be nonempty strings.')
                 environment['SA_' + key] = value
-    return ComposePlan(profiles, services, command, directory, MappingProxyType(environment))
+    return ComposePlan(profiles, services, command, directory, MappingProxyType(environment),
+        MappingProxyType({'compose.json': compose_bytes, 'empty.env': empty_bytes,
+                          'localstack-ready.sh': hook_bytes}))
 
 
 def validate_compose(plan, *, runner=subprocess.run):
@@ -233,10 +254,32 @@ def validate_compose(plan, *, runner=subprocess.run):
     if not plan.enabled:
         return False
     try:
-        result = runner(plan.validation_command, cwd=plan.directory, env=dict(plan.environment),
-                        capture_output=True, text=True, timeout=15, check=False)
+        with tempfile.TemporaryDirectory(prefix='api-agent-compose-') as directory:
+            command, environment = snapshot_compose(plan, Path(directory))
+            result = runner((*command, 'config', '--quiet'), cwd=directory, env=environment,
+                            capture_output=True, text=True, timeout=15, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ComposeError('Compose config validation unavailable.') from error
     if result.returncode:
         raise ComposeError(f'Compose config validation failed (exit {result.returncode}).')
     return True
+
+
+def snapshot_compose(plan, directory):
+    """Materialize only reviewed bytes; source assets are never reread.
+
+    Managers retain the directory while containers may use bind-mounted hooks. Config
+    validation can use a temporary directory because it creates no services.
+    """
+    for name, content in plan.assets.items():
+        path = directory / name
+        path.write_bytes(content)
+        path.chmod(0o755 if name == 'localstack-ready.sh' else 0o444)
+    command = tuple(str(directory / Path(arg).name) if arg in {
+        str(plan.directory / 'compose.json'), str(plan.directory / 'empty.env')} else arg
+        for arg in plan.command)
+    command = tuple(str(directory) if i and command[i - 1] == '--project-directory' else arg
+                    for i, arg in enumerate(command))
+    environment = dict(plan.environment)
+    environment['SA_LOCALSTACK_READY_HOOK'] = str(directory / 'localstack-ready.sh')
+    return command, environment
