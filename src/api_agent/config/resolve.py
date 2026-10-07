@@ -70,7 +70,9 @@ def convert_value(declaration, value, *, external, anchors):
     if type(value) is not expected:
         raise ValueError(f'expected {kind}')
     if kind == 'path' and not value.strip():
-        raise ValueError('expected nonempty path')
+        if not declaration.allow_empty:
+            raise ValueError('expected nonempty path')
+        value = ''
     if declaration.enum and value not in declaration.enum:
         raise ValueError('expected one of ' + format_enum_values(declaration.enum))
     if declaration.validation == 'nonnegative' and value < 0:
@@ -79,7 +81,7 @@ def convert_value(declaration, value, *, external, anchors):
         raise ValueError('expected positive integer')
     if declaration.validation == 'resolution' and not re.fullmatch(r'[1-9]\d*x[1-9]\d*', value):
         raise ValueError('expected positive WIDTHxHEIGHT')
-    if kind == 'path' and anchors is not None:
+    if kind == 'path' and value and anchors is not None:
         path = Path(value).expanduser()
         if not path.is_absolute():
             anchor = anchors.get(declaration.anchor)

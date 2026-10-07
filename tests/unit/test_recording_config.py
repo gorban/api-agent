@@ -12,6 +12,7 @@ def test_recording_requires_primary_s3_and_optional_secondary_does_not_replace_i
     assert result.missing == ('ALLURE_S3_BUCKET',)
     assert result.values['ALLURE_SECONDARY_DIR'] == tmp_path / 'extra'
     ready = resolve_config(schema, environ={'TUI_MODE': mode, 'UI_SOURCE_DIR': '/example/frontend', 'ALLURE_S3_BUCKET': 'test-results',
+                                           'TOKEN_USAGE_CSV_ENABLED': 'True',
                                            'TOKEN_USAGE_CSV': 'usage.csv'}, anchors={'owner_root': tmp_path})
     assert not ready.errors and not ready.missing
     assert ready.values['ALLURE_RESULTS_DIR'] == tmp_path / 'artifacts/allure'

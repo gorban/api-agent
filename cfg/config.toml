@@ -225,8 +225,9 @@ COLLECT_ONLY = false
 [fields.ALLURE_RESULTS_DIR]
 type = "path"
 anchor = "owner_root"
+allow_empty = true
 default = "artifacts/allure"
-help = "Local working directory for isolated recorded run artifacts and manifests."
+help = "Local working directory for isolated recorded run artifacts and manifests. Explicitly empty disables retained local working results; required S3 history uses temporary staging that is cleaned after the run. Relative paths resolve against the test-owner repository."
 [fields.ALLURE_RESULTS_DIR.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
@@ -234,17 +235,28 @@ COLLECT_ONLY = false
 [fields.ALLURE_SECONDARY_DIR]
 type = "path"
 anchor = "owner_root"
+allow_empty = true
 review_optional = true
-help = "Optional directory for an additional copy of finalized Allure artifacts and manifests, organized by repository/run ID. When unset, no additional copy is written; the normal local working artifacts and required S3 history remain. Relative paths resolve against the test-owner repository."
+help = "Optional directory for an additional copy of finalized Allure artifacts and manifests, organized by repository/run ID. When unset or explicitly empty, no additional copy is written; required S3 history remains. Relative paths resolve against the test-owner repository."
 [fields.ALLURE_SECONDARY_DIR.applies_when]
 TUI_MODE = ["integration", "e2e"]
+COLLECT_ONLY = false
+
+[fields.TOKEN_USAGE_CSV_ENABLED]
+type = "bool"
+default = false
+help = "Enable the cumulative token-usage CSV in TOKEN_USAGE_CSV. Default False disables this extra file, even if a path is configured; recorded suites retain their own token-usage artifacts. True defaults the path to token_usage.csv in the selected resource pack root, or api-agent root without a resource pack. An explicitly empty path still disables the file."
+[fields.TOKEN_USAGE_CSV_ENABLED.applies_when]
+TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
 
 [fields.TOKEN_USAGE_CSV]
 type = "path"
 anchor = "owner_root"
+allow_empty = true
 review_optional = true
-help = "Optional cumulative CSV file to which token-usage rows are appended across runs. When unset, no cumulative CSV is written; recorded suites still retain their own token-usage CSV and usage-summary artifacts in Allure/S3. Relative paths resolve against the operation-owner repository."
+conditional_defaults = [{when = {TOKEN_USAGE_CSV_ENABLED = true}, value = "token_usage.csv"}]
+help = "Optional cumulative CSV path, used only when TOKEN_USAGE_CSV_ENABLED=True. Its conditional default is token_usage.csv in the selected resource pack root, or api-agent root without a resource pack. When unset with the toggle off, or explicitly empty even with the toggle on, no cumulative CSV is written; recorded suites retain their own token-usage CSV and usage-summary artifacts in Allure/S3. Relative overrides resolve against the operation-owner repository."
 [fields.TOKEN_USAGE_CSV.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
