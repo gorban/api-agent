@@ -234,7 +234,8 @@ COLLECT_ONLY = false
 [fields.ALLURE_SECONDARY_DIR]
 type = "path"
 anchor = "owner_root"
-help = "Optional extra results copy; S3 persistence remains required."
+review_optional = true
+help = "Optional directory for an additional copy of finalized Allure artifacts and manifests, organized by repository/run ID. When unset, no additional copy is written; the normal local working artifacts and required S3 history remain. Relative paths resolve against the test-owner repository."
 [fields.ALLURE_SECONDARY_DIR.applies_when]
 TUI_MODE = ["integration", "e2e"]
 COLLECT_ONLY = false
@@ -242,7 +243,8 @@ COLLECT_ONLY = false
 [fields.TOKEN_USAGE_CSV]
 type = "path"
 anchor = "owner_root"
-help = "Optional additional token-usage CSV. Recorded suites always retain their own usage CSV artifact."
+review_optional = true
+help = "Optional cumulative CSV file to which token-usage rows are appended across runs. When unset, no cumulative CSV is written; recorded suites still retain their own token-usage CSV and usage-summary artifacts in Allure/S3. Relative paths resolve against the operation-owner repository."
 [fields.TOKEN_USAGE_CSV.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
