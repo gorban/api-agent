@@ -153,7 +153,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
     def compose(self) -> ComposeResult:
         app = self.app
         yield Static(app.identity_text(), id="identity", markup=False)
-        with VerticalScroll():
+        with VerticalScroll(id="workbench-content"):
             yield Static(self.heading, id="heading")
             if self.kind == "unit-results":
                 with VerticalScroll(id="unit-summary"):
@@ -169,14 +169,15 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                     from api_agent.config.resolve import format_enum_values
                     yield Static(f"Enum ({field.type}) — exact values: {format_enum_values(field.enum)}",
                                  id="enum-info", markup=False)
-            if self.kind != "cleanup":
+            if self.kind not in {"cleanup", "unit-results"}:
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions"):
                 if self.kind == "input" and len(app.session.target_paths) > 1:
                     yield Button("Switch target .env (s outside input)", id="switch-target")
                 for key, label in self.actions:
                     yield Button(label, id=key)
-            yield Static("", id="error", markup=False)
+            if self.kind != "unit-results":
+                yield Static("", id="error", markup=False)
         if self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
             with Vertical(id="menu-bottom-bar"):
                 yield Static("Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.",
@@ -215,9 +216,29 @@ class WorkbenchScreen(ButtonNavigation, Screen):
             self._bindings.bind("s", "skip_setup", "Skip setup")
         if self.kind == "containers":
             self._bindings.bind("s", "stop_selected", "Stop selected containers")
+        if self.kind == "tests":
+            self._bindings.bind("s", "start_selected", "Start selected tests")
+        if self.kind == "unit-results":
+            self.call_after_refresh(self.layout_unit_results)
         if self.kind == "defaults":
             self._bindings.bind("c", "close_view", "Next menu")
         self.refresh_bindings()
+
+    def on_resize(self, event):
+        if self.kind == "unit-results":
+            self.call_after_refresh(self.layout_unit_results)
+
+    def layout_unit_results(self):
+        if not self.is_mounted or not self.rows or self.app.screen is not self or not self.query("#workbench-content"):
+            return
+        viewport = self.query_one("#workbench-content", VerticalScroll)
+        available = viewport.size.height - self.query_one("#heading").outer_size.height - 2
+        summary_height = max(6, (available - 8) // 2)
+        self.query_one("#unit-summary").styles.height = summary_height
+        self.query_one(DataTable).styles.height = max(8, available - summary_height)
+
+    async def action_start_selected(self):
+        await self.app.choose("continue")
 
     def check_action(self, action, parameters):
         # Textual evaluates underlying screen bindings while a modal is open.
@@ -241,6 +262,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         if action == "switch_target":
             return (self.kind in {"defaults", "input"}
                     or self.kind == "unavailable" and self.app.mode in {None, "unattended-auth"}) and len(self.app.session.target_paths) > 1
+        if action == "start_selected":
+            return self.kind == "tests"
         if action == "stop_selected":
             return self.kind == "containers"
         if action == "skip_setup":
@@ -323,7 +346,7 @@ class ApiAgentApp(App[int]):
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
-    #unit-summary { height: 1fr; min-height: 6; }
+    #unit-summary { height: 1fr; min-height: 6; margin-bottom: 1; }
     #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
     Button:focus, Input:focus { border: heavy $accent; }
@@ -696,7 +719,7 @@ class ApiAgentApp(App[int]):
         self.collection_cancel = threading.Event()
         self.unit_result = None
         self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
-        self.show_unit_results("Running selected unit tests…")
+        self.show_unit_results(self.unit_progress())
         self.run_worker(self._run_units(), group="unit-run", exclusive=True)
 
     async def _run_units(self):
@@ -714,7 +737,7 @@ class ApiAgentApp(App[int]):
             if not self.selection.selected_tests:
                 raise ValueError("No selected tests remain after recollection")
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
-            self.show_unit_results("Running selected unit tests…")
+            self.show_unit_results(self.unit_progress())
             result = await asyncio.to_thread(
                 runner, self.context, self.selection.selected_tests,
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
@@ -731,6 +754,15 @@ class ApiAgentApp(App[int]):
             if not self.collection_cancel.is_set():
                 self.show("error", "Unit execution failed", str(error), (("menu", "Main menu"),))
 
+    def unit_progress(self):
+        statuses = [row[0] for row in self.unit_rows.values()]
+        passed = statuses.count("PASSED")
+        failed = sum(status in {"FAILED", "ERROR"} for status in statuses)
+        return Text.assemble("Running selected unit tests… ",
+                             (f"{passed} passed", "green"), " / ",
+                             (f"{failed} failed", "red" if failed else ""), " / ",
+                             f"{statuses.count('RUNNING')} running / {statuses.count('PENDING')} pending")
+
     def unit_event(self, event):
         if self.collection_cancel.is_set():
             return
@@ -738,8 +770,9 @@ class ApiAgentApp(App[int]):
             key = event.identity.id
             self.unit_rows[key] = ((event.status or "RUNNING").upper(), key,
                                    f"{event.duration:.3f}s" if event.kind == "test_finished" else "")
-            if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
+            if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results" and self.screen.query(DataTable) and self.screen.query("#body"):
                 table = self.screen.query_one(DataTable)
+                self.screen.query_one("#body", Static).update(self.unit_progress())
                 for column, value in zip(table.columns, self.unit_rows[key]):
                     table.update_cell(key, column, value)
 
@@ -770,7 +803,7 @@ class ApiAgentApp(App[int]):
 
     def show_selection(self):
         rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
-        self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Continue explicitly confirms the selection.", (("continue", "Continue"),), rows)
+        self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", (("continue", "(s) Start selected tests"),), rows)
 
     def show_cleanup(self):
         rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
@@ -877,7 +910,7 @@ class ApiAgentApp(App[int]):
                 if not self.selection.selected_ids:
                     raise ValueError("Select at least one test before continuing")
                 if self.mode == "e2e":
-                    self.show("acceptance", "E2E human acceptance", E2E_WARNING, (("accept", "Accept for this run"), ("decline", "Decline")))
+                    self.show("acceptance", "E2E human acceptance", f"{len(self.selection.selected_tests)} tests selected to run.\n\n" + E2E_WARNING, (("accept", "Accept for this run"), ("decline", "Decline")))
                 elif self.mode == "unit":
                     self.start_unit_run()
                 else:
