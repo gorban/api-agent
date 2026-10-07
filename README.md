@@ -9,9 +9,13 @@ Use Python 3.13 or newer and a project virtual environment. From this repository
 ```sh
 uv venv --python python3 .venv
 uv pip install --python .venv/bin/python -e '.[dev]'
+source .venv/bin/activate
+./launch.py --help
 .venv/bin/python -m pytest tests/unit
 .venv/bin/python -m build
 ```
+
+Activate `.venv` in each new shell before using `./launch.py`; its `#!/usr/bin/env python3` shebang selects Python from the active environment. Both launch scripts are executable in Git. If a file copy loses the executable permission, restore it with `chmod +x launch.py`. Without activation, use `.venv/bin/python launch.py --help` explicitly.
 
 This installs the current runtime checkout for development. Build artifacts and the environment are ignored. Unit tests make no live LLM calls. Source launchers use their own checkout, independently of the current directory; installed console entry points require the known editable source layout, and direct wheel execution reports an actionable source-launcher error instead of guessing a checkout.
 

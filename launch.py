@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Launch this checkout's shared foundation independently of the working directory."""
 from pathlib import Path
 import sys
