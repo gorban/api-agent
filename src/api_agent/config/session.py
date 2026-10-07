@@ -218,4 +218,5 @@ class ConfigSession:
                            name in pack, name in persisted)
                 for name, field in self.schema.fields.items()
                 if name != 'UNATTENDED_AUTH'
-                and (field.acknowledge_default and field.persist_default or name in persisted)]
+                and ((name != 'TUI_MODE' and field.acknowledge_default and field.persist_default)
+                     or name in persisted)]

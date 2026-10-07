@@ -342,3 +342,14 @@ def test_cleanup_hidden_fields_only_while_saved_in_either_dotenv(session):
         assert {'DEBUG', 'TRANSIENT'} <= names()
         session.delete_keys(['DEBUG', 'TRANSIENT'])
         assert not {'DEBUG', 'TRANSIENT'} & names()
+
+
+def test_cleanup_mode_hidden_unless_saved_in_dotenv(session):
+    session.environ['TUI_MODE'] = 'config-cleanup'
+    assert 'TUI_MODE' not in {row.name for row in session.cleanup_rows()}
+    for path in session.target_paths:
+        path.write_text('TUI_MODE=config-cleanup\n')
+        row = next(row for row in session.cleanup_rows() if row.name == 'TUI_MODE')
+        assert row.present
+        session.delete_keys(['TUI_MODE'])
+        assert 'TUI_MODE' not in {row.name for row in session.cleanup_rows()}
