@@ -525,3 +525,22 @@ def test_unset_from_other_dotenv_without_switching_back(tmp_path):
             await pilot.pause(0.4)
             assert app.session.saved_path("COUNT") == pack / ".env"
     asyncio.run(scenario())
+
+
+def test_identity_paths_include_checkout_branches(tmp_path):
+    from unittest.mock import patch
+    with patch('api_agent.runtime.worktrees.checkout_branch', return_value='feature/rewrite'):
+        app = fixture(tmp_path)
+    assert app.identity_summary() == (f"Base: {tmp_path} (feature/rewrite)\n"
+                                      f"Pack: fixture: {tmp_path} (feature/rewrite)")
+    with patch('api_agent.runtime.worktrees.checkout_branch', return_value='detached HEAD'):
+        app = fixture(tmp_path)
+    assert '(detached HEAD)' in app.identity_summary()
+
+
+def test_identity_omits_parentheses_when_git_branch_check_fails(tmp_path):
+    from unittest.mock import patch
+    from api_agent.runtime.worktrees import WorktreeGateError
+    with patch('api_agent.runtime.worktrees.checkout_branch', side_effect=WorktreeGateError('cannot check')):
+        app = fixture(tmp_path)
+    assert app.identity_summary() == f"Base: {tmp_path}\nPack: fixture: {tmp_path}"

@@ -76,6 +76,13 @@ def _git(root: Path, *args: str, allowed: tuple[int, ...] = (0,), input: bytes |
     return result.stdout
 
 
+def checkout_branch(root: Path) -> str:
+    """Read the checkout's branch independently of inherited Git overrides."""
+    branch = os.fsdecode(_git(root, 'symbolic-ref', '--quiet', '--short', 'HEAD',
+                             allowed=(0, 1))).strip()
+    return branch or 'detached HEAD'
+
+
 def _records(data: bytes) -> list[dict[bytes, bytes]]:
     records: list[dict[bytes, bytes]] = []
     current: dict[bytes, bytes] = {}

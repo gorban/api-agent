@@ -62,7 +62,7 @@ class WorkbenchScreen(Screen):
 
     def compose(self) -> ComposeResult:
         app = self.app
-        yield Static(f"Base: {app.context.base_root}\nPack: {app.context.pack_id} ({app.context.pack_root})", id="identity")
+        yield Static(app.identity_summary(), id="identity", markup=False)
         with VerticalScroll():
             yield Static(self.heading, id="heading")
             yield Static(self.body, id="body", markup=False)
@@ -196,6 +196,13 @@ class ApiAgentApp(App[int]):
         self.context, self.schema = context, schema
         self.session = session or ConfigSession(context, schema, argv, environ)
         self.collector = collector
+        from api_agent.runtime.worktrees import checkout_branch, WorktreeGateError
+        self.branches = {}
+        for root in dict.fromkeys((context.base_root, context.pack_root)):
+            try:
+                self.branches[root] = checkout_branch(root)
+            except WorktreeGateError:
+                self.branches[root] = None
         self.operation_status = 3
         self.marked = set()
         self.mode = None
@@ -203,6 +210,13 @@ class ApiAgentApp(App[int]):
         self.selection = None
         self.prompt_name = None
         self.collection_cancel = threading.Event()
+
+    def identity_summary(self):
+        def path_with_branch(root):
+            branch = self.branches.get(root)
+            return f"{root} ({branch})" if branch else str(root)
+        return (f"Base: {path_with_branch(self.context.base_root)}\n"
+                f"Pack: {self.context.pack_id}: {path_with_branch(self.context.pack_root)}")
 
     def target_summary(self):
         return "Target .env files:\n" + "\n".join(
