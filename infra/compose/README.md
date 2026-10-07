@@ -28,12 +28,17 @@ through final lease/ownership checks and immutable-ID stop. Named volumes remain
 The journal lives under the active test-owner repository's ignored
 `artifacts/prerequisites/`. Unverifiable leases refuse cleanup.
 
-Operation startup and TUI test execution wiring remain separate tasks. Unit
-tests use controlled engine processes; actual engine startup, provisioning,
-tracer export and retained history still require integration verification.
+Digest-pinned images are verified against the locally inspected repository
+digest and the running container's immutable image ID. Engines may normalize
+the displayed image name; that alone does not establish compatibility.
+
+Reusable operation startup is implemented; TUI execution consumers remain separate
+tasks. Unit tests use controlled engine processes. Scoped backend diagnostics
+verify S3 provisioning/restart history and actual traces from both exporters;
+interactive integration/E2E verification remains open.
 Config validation discards stdout/stderr to avoid exposing resolved secrets.
 
-## Version and upstream evidence (verified 2026-10-05)
+## Version and upstream evidence (verified 2026-10-06)
 
 - [Langfuse v3.163.0 compose](https://github.com/langfuse/langfuse/blob/v3.163.0/docker-compose.yml):
   the web/worker v3.163.0 pair deliberately preserves compatibility with the
@@ -48,11 +53,16 @@ Config validation discards stdout/stderr to avoid exposing resolved secrets.
   and [download](https://www.jaegertracing.io/download/): supported v2 image
   `cr.jaegertracing.io/jaegertracing/jaeger:2.21.0`, with OTLP HTTP port 4318
   and browser UI port 16686. No obsolete `all-in-one` v1 image is used.
-- [MinIO release history](https://github.com/minio/minio/releases): the dated
-  `RELEASE.2025-04-22T22-12-26Z` image is an explicit compatibility pin.
-- [LocalStack releases](https://github.com/localstack/localstack/releases/tag/v4.14.0):
-  explicit community-development compatibility pin 4.14.0 for S3 only; no host
-  Docker socket is mounted and no LocalStack account credentials are used.
+- Both the [v3.163.0 Langfuse compose](https://github.com/langfuse/langfuse/blob/v3.163.0/docker-compose.yml)
+  and current upstream compose select Chainguard MinIO. The controlled profile
+  pins its image digest and uses the included `mc ready local` health check.
+  The previous official MinIO release image is no longer reachable from the
+  tested registries.
+- [LocalStack-persist v4.14.0](https://github.com/GREsau/localstack-persist/releases/tag/v4.14.0):
+  Community-derived local S3 persistence, pinned by version and image digest.
+  No host Docker socket or LocalStack account credentials are used. Its maintainer
+  expects limited future updates after LocalStack's licensing changes; revisit
+  this selection if maintenance or compatibility requires it.
 
 The PostgreSQL 17.6, ClickHouse 25.3.6.56 and Redis 7.4.5 pins are conservative
 compatibility selections, not claims to be their newest releases. Container
@@ -77,9 +87,10 @@ compatibility, so an existing stack with different initialization must be
 reviewed instead of silently reused.
 
 The public hook is the only permitted bind mount. The planner resolves its source
-from checkout or installed package assets, mounts it read-only at the fixed
-`ready.d` path, disables automatic host-directory creation, and uses shared
-SELinux `z` labeling for the workstation's rootless Podman. No engine socket is
+from checkout or installed package assets, validates and snapshots a real file,
+and mounts it read-only at the fixed `ready.d` path using exact short `ro,z`
+syntax. This supplies shared SELinux labeling through Podman-backed Compose;
+the previously used long bind form did not relabel on that engine. No engine socket is
 mounted. Readiness waits for S3 and the controlled automatic hook to complete
 successfully; acquisition then executes the same idempotent hook inside the
 inspected immutable container ID, including for reused services. This also
@@ -87,6 +98,13 @@ checks that the selected bucket remains readable before result publication.
 
 The hook and mount contracts follow [LocalStack initialization hooks](https://docs.localstack.cloud/aws/customization/advanced/initialization-hooks/)
 and [Compose bind mount options](https://docs.docker.com/reference/compose-file/services/).
-Config-only validation accepts the long mount syntax. Unit tests execute the hook
-against a controlled fake `awslocal`; live engine startup and S3 provisioning
-remain integration checks.
+Config-only validation permits only this controlled hook bind. Unit tests execute
+the hook against a controlled fake `awslocal`; scoped live diagnostics also check
+engine provisioning. Interactive integration/E2E acceptance remains separate.
+
+The persistence image mounts `localstack-data` at `/persisted-data`, enables only
+S3 (`PERSIST_DEFAULT=0`, `PERSIST_S3=1`) and flushes changed state every second
+and on graceful shutdown. LocalStack Community's `PERSISTENCE=1` did not preserve
+S3 objects in the previous image. Retained history requires successful restart
+retrieval, not just successful upload; a force-kill cannot guarantee the latest
+unflushed write.

@@ -3,6 +3,7 @@
 ## Completed inventory slice
 
 - [x] Implement live host inventory/count, selected stop confirmation, bounded engine calls, error handling and refresh. No containers were stopped during implementation. Ownership/profile integration and live human review remain below.
+- [x] Repair multi-service graceful stop after a scoped LangFuse diagnostic exposed the inventory timeout being reused for shutdown. Keep inventory/inspection at five seconds, explicitly allow ten seconds of engine stop grace and use a finite selected-count command timeout capped at 120 seconds. Preserve immutable-ID, scope, lease and hosting-container checks before mutation. A real retained six-service stack stopped successfully; interactive TUI cleanup acceptance remains separate.
 
 ## Checklist
 

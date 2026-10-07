@@ -54,6 +54,7 @@ class ManagedService:
     id: str
     service: str
     image: str
+    image_id: str | None
     fingerprint: str
     running: bool
     health: str | None
@@ -370,18 +371,56 @@ class PrerequisiteManager:
                 if not self.scope.owns(labels):
                     raise PrerequisiteError('Compose project includes a container with foreign ownership.')
                 result[identifier] = ManagedService(identifier, labels['com.docker.compose.service'],
-                    config['Image'], labels.get(CONFIG_LABEL, ''), bool(state.get('Running')),
+                    config['Image'], record.get('Image'), labels.get(CONFIG_LABEL, ''), bool(state.get('Running')),
                     state.get('Health', {}).get('Status'), labels['api-agent.profile'])
             return result
         except (KeyError, TypeError, ValueError) as error:
             raise PrerequisiteError('Invalid prerequisite inspection response.') from error
 
-    def _compatible(self, inventory, *, allow_stopped=False):
+    def _verified_digest_image(self, expected, actual_id, deadline):
+        """Verify a container's immutable image against the locally resolved pin."""
+        if not isinstance(actual_id, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', actual_id):
+            return False
+        try:
+            inspected = json.loads(self._command((self.plan.command[0], 'image', 'inspect', expected), deadline))
+            if not isinstance(inspected, list) or len(inspected) != 1:
+                return False
+            image = inspected[0]
+            repository, digest = expected.rsplit('@', 1)
+            if repository.rfind(':') > repository.rfind('/'):
+                repository = repository[:repository.rfind(':')]
+            accepted = {f'{repository}@{digest}'}
+            if repository.startswith('docker.io/'):
+                familiar = repository[len('docker.io/'):]
+                if familiar.startswith('library/') and '/' not in familiar[len('library/'):]:
+                    familiar = familiar[len('library/'):]
+                accepted.add(f'{familiar}@{digest}')
+            repo_digests = image.get('RepoDigests')
+            return (image.get('Id') == actual_id and isinstance(repo_digests, list)
+                    and any(value in accepted for value in repo_digests))
+        except (ValueError, TypeError, AttributeError, KeyError):
+            return False
+
+    def _compatible(self, inventory, deadline, *, allow_stopped=False):
         desired = {}
+        verified = {}
         for item in inventory.values():
             if item.service not in self.specs:
                 continue
-            if (item.service in desired or item.image != self.specs[item.service]['image']
+            expected = self.specs[item.service]['image']
+            if '@sha256:' in expected:
+                if not isinstance(item.image_id, str):
+                    image_matches = False
+                else:
+                    image_key = (expected, item.image_id)
+                    if image_key not in verified:
+                        verified[image_key] = self._verified_digest_image(expected, item.image_id, deadline)
+                    # Engines may normalize Config.Image (including adding :latest).
+                    # The running image ID and the requested repo digest are proof.
+                    image_matches = verified[image_key]
+            else:
+                image_matches = item.image == expected
+            if (item.service in desired or not image_matches
                     or item.fingerprint != self.fingerprints[item.service] or (not item.running and not allow_stopped)
                     or item.profile != self.specs[item.service]['profiles'][0]):
                 raise PrerequisiteError('Existing prerequisite stack is incompatible; review it before replacement.')
@@ -418,7 +457,7 @@ class PrerequisiteManager:
                 self.lease = ServiceLease(invocation, self.scope.id, (), (), ())
                 return self.lease
             initial = self._inventory(deadline)
-            compatible = self._compatible(initial, allow_stopped=True)
+            compatible = self._compatible(initial, deadline, allow_stopped=True)
             existing = {name: item for name, item in compatible.items() if item.running}
             restarted = {item.id for item in compatible.values() if not item.running}
             protected = {item for record in journal.values() for item in record['ids']}
@@ -448,7 +487,7 @@ class PrerequisiteManager:
                     inventory = self._inventory(deadline)
                     newly = tuple(item for item in inventory if (item not in initial or item in restarted)
                         and inventory[item].service in missing)
-                    current = self._compatible(inventory)
+                    current = self._compatible(inventory, deadline)
                     if any(name not in current or current[name].id != item.id
                            for name, item in existing.items()):
                         raise PrerequisiteError('Existing prerequisite changed during acquisition.')

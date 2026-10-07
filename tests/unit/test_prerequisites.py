@@ -31,8 +31,9 @@ class Engine:
         self.health = None
         self.fail_stop = False
         self.fail_hook = False
+        self.image_inspections = {}
 
-    def add(self, name, *, fingerprint=None, image=None, running=True, foreign=False, profile=None):
+    def add(self, name, *, fingerprint=None, image=None, image_id=None, running=True, foreign=False, profile=None):
         self.counter += 1
         identifier = f'{self.counter:064x}'
         owner = self.owner
@@ -42,6 +43,7 @@ class Engine:
             p.CONFIG_LABEL: fingerprint or owner.fingerprints[name]}
         if foreign: labels['api-agent.scope'] = 'f' * 16
         record = {'Id': identifier, 'Config': {'Image': image or owner.specs[name]['image'], 'Labels': labels},
+                  'Image': image_id or 'sha256:' + '1' * 64,
                   'State': {'Running': running}}
         if self.health: record['State']['Health'] = {'Status': self.health}
         self.records[identifier] = record
@@ -51,6 +53,15 @@ class Engine:
         self.commands.append((command, kwargs))
         if command[1] == 'ps': return '\n'.join(self.records)
         if command[1] == 'inspect': return json.dumps([self.records[item] for item in command[2:]])
+        if command[1:3] == ('image', 'inspect'):
+            image_locator = command[3]
+            if image_locator in self.image_inspections:
+                return json.dumps(self.image_inspections[image_locator])
+            repository, digest = image_locator.rsplit('@', 1)
+            if repository.rfind(':') > repository.rfind('/'):
+                repository = repository[:repository.rfind(':')]
+            return json.dumps([{'Id': 'sha256:' + '1' * 64,
+                                'RepoDigests': [repository + '@' + digest]}])
         if command[1] == 'stop':
             if self.fail_stop: raise p.PrerequisiteError('stop failed')
             for identifier in command[4:]: self.records[identifier]['State']['Running'] = False
@@ -120,6 +131,166 @@ def test_reuse_exact_existing_and_retained_tests(setup):
     assert not any('up' in command for command, _ in engine.commands)
     assert manager.release(retain=True) == ()
     assert engine.records[identifier]['State']['Running']
+
+
+def test_digest_pin_reuses_normalized_container_only_when_image_identity_matches(setup):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    pin = manager.specs['localstack']['image']
+    assert '@sha256:' in pin
+    identifier = engine.add('localstack', image=pin.split('@', 1)[0])
+    lease = manager.acquire()
+    assert lease.reused_ids == (identifier,) and not lease.owned_ids
+    assert any(command[1:3] == ('image', 'inspect') and command[3] == pin
+               for command, _ in engine.commands)
+    manager.release()
+
+
+@pytest.mark.parametrize('pin,familiar', [
+    ('docker.io/gresau/localstack-persist:4.14.0@sha256:' + 'a' * 64,
+     'gresau/localstack-persist@sha256:' + 'a' * 64),
+    ('docker.io/library/postgres:17@sha256:' + 'b' * 64,
+     'postgres@sha256:' + 'b' * 64),
+])
+def test_docker_familiar_repo_digest_is_verified_with_container_image_id(setup, pin, familiar):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager.specs['localstack']['image'] = pin
+    identifier = engine.add('localstack', image=pin.split('@', 1)[0])
+    engine.image_inspections[pin] = [{'Id': 'sha256:' + '1' * 64,
+                                      'RepoDigests': [familiar]}]
+    assert manager.acquire().reused_ids == (identifier,)
+    manager.release()
+
+
+@pytest.mark.parametrize('reported', [
+    'other.example/gresau/localstack-persist',
+    'localhost:5000/gresau/localstack-persist',
+    'docker.io/other/localstack-persist',
+    'gresau/localstack-persist.evil',
+])
+def test_familiar_repo_alias_does_not_accept_foreign_registry_or_repository(setup, reported):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    pin = manager.specs['localstack']['image']
+    engine.add('localstack', image=pin.split('@', 1)[0])
+    digest = pin.rsplit('@', 1)[1]
+    engine.image_inspections[pin] = [{'Id': 'sha256:' + '1' * 64,
+                                      'RepoDigests': [reported + '@' + digest]}]
+    with pytest.raises(p.PrerequisiteError, match='incompatible'):
+        manager.acquire()
+    assert not any('up' in command or command[1] == 'stop' for command, _ in engine.commands)
+
+
+def test_non_docker_registry_pin_requires_its_exact_repository(setup):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    pin = 'registry.example:5000/team/localstack:4@sha256:' + 'c' * 64
+    manager.specs['localstack']['image'] = pin
+    identifier = engine.add('localstack', image='registry.example:5000/team/localstack:4')
+    engine.image_inspections[pin] = [{'Id': 'sha256:' + '1' * 64,
+                                      'RepoDigests': ['registry.example:5000/team/localstack@sha256:' + 'c' * 64]}]
+    assert manager.acquire().reused_ids == (identifier,)
+    manager.release()
+
+
+@pytest.mark.parametrize('reported,accepted', [
+    ('docker.io/library/team/image', True),
+    ('library/team/image', True),
+    ('team/image', False),
+])
+def test_nested_library_repository_keeps_library_namespace(setup, reported, accepted):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    pin = 'docker.io/library/team/image:1@sha256:' + 'd' * 64
+    manager.specs['localstack']['image'] = pin
+    identifier = engine.add('localstack', image='docker.io/library/team/image:1')
+    engine.image_inspections[pin] = [{'Id': 'sha256:' + '1' * 64,
+                                      'RepoDigests': [reported + '@sha256:' + 'd' * 64]}]
+    if accepted:
+        assert manager.acquire().reused_ids == (identifier,)
+        manager.release()
+    else:
+        with pytest.raises(p.PrerequisiteError, match='incompatible'):
+            manager.acquire()
+
+
+@pytest.mark.parametrize('wrong', ['container_id', 'repo_digest', 'inspected_id',
+                                   'missing_container_id', 'missing_repo_digests',
+                                   'string_repo_digests', 'invalid_inspect_shape',
+                                   'list_container_id', 'dict_container_id', 'malformed_container_id'])
+def test_digest_pin_rejects_unproved_or_wrong_running_image(setup, wrong):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    pin = manager.specs['localstack']['image']
+    identifier = engine.add('localstack', image=pin.split('@', 1)[0])
+    record = engine.records[identifier]
+    repository, digest = pin.rsplit('@', 1)
+    repository = repository[:repository.rfind(':')] if repository.rfind(':') > repository.rfind('/') else repository
+    inspected = {'Id': 'sha256:' + '1' * 64, 'RepoDigests': [repository + '@' + digest]}
+    if wrong == 'container_id': record['Image'] = 'sha256:' + '2' * 64
+    elif wrong == 'repo_digest': inspected['RepoDigests'] = [repository + '@sha256:' + '2' * 64]
+    elif wrong == 'inspected_id': inspected['Id'] = 'sha256:' + '2' * 64
+    elif wrong == 'missing_container_id': record.pop('Image')
+    elif wrong == 'list_container_id': record['Image'] = []
+    elif wrong == 'dict_container_id': record['Image'] = {}
+    elif wrong == 'malformed_container_id': record['Image'] = 'not-an-image-id'
+    elif wrong == 'missing_repo_digests': inspected.pop('RepoDigests')
+    elif wrong == 'string_repo_digests': inspected['RepoDigests'] = repository + '@' + digest
+    else: engine.image_inspections[pin] = []
+    if wrong not in ('missing_container_id', 'invalid_inspect_shape',
+                     'list_container_id', 'dict_container_id', 'malformed_container_id'):
+        engine.image_inspections[pin] = [inspected]
+    with pytest.raises(p.PrerequisiteError, match='incompatible'):
+        manager.acquire()
+    assert not any('up' in command or command[1] == 'stop' for command, _ in engine.commands)
+
+
+def test_same_digest_pin_checks_each_container_image_id(setup):
+    create, engine, _, _, _ = setup
+    manager = create({'TRACE_MODE': 'LangFuse'})
+    pin = 'docker.io/gresau/localstack-persist:4.14.0@sha256:' + 'a' * 64
+    first, second = 'langfuse-web', 'langfuse-worker'
+    manager.specs[first]['image'] = pin
+    manager.specs[second]['image'] = pin
+    inventory = {
+        name: p.ManagedService(f'{index:064x}', name, 'normalized:latest',
+                               'sha256:' + digit * 64, manager.fingerprints[name],
+                               True, None, manager.specs[name]['profiles'][0])
+        for index, (name, digit) in enumerate(((first, '1'), (second, '2')), 1)
+    }
+    with pytest.raises(p.PrerequisiteError, match='incompatible'):
+        manager._compatible(inventory, 30)
+    image_calls = [command for command, _ in engine.commands if command[1:3] == ('image', 'inspect')]
+    assert len(image_calls) == 2
+
+
+def test_digest_only_image_locator_and_same_image_id_cache_reuse(setup):
+    create, engine, _, _, _ = setup
+    manager = create({'TRACE_MODE': 'LangFuse'})
+    pin = 'docker.io/gresau/localstack-persist@sha256:' + 'a' * 64
+    names = ('langfuse-web', 'langfuse-worker')
+    for name in names:
+        manager.specs[name]['image'] = pin
+    inventory = {
+        name: p.ManagedService(f'{index:064x}', name, 'normalized:latest',
+                               'sha256:' + '1' * 64, manager.fingerprints[name],
+                               True, None, manager.specs[name]['profiles'][0])
+        for index, name in enumerate(names, 1)
+    }
+    assert set(manager._compatible(inventory, 30)) == set(names)
+    image_calls = [command for command, _ in engine.commands if command[1:3] == ('image', 'inspect')]
+    assert image_calls == [(manager.plan.command[0], 'image', 'inspect', pin)]
+
+
+def test_malformed_digest_inspection_is_incompatible(setup):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    pin = manager.specs['localstack']['image']
+    engine.add('localstack', image=pin.split('@', 1)[0])
+    engine.image_inspections[pin] = [None]
+    with pytest.raises(p.PrerequisiteError, match='incompatible'):
+        manager.acquire()
 
 
 def test_reused_services_never_stopped_on_local_release(setup):

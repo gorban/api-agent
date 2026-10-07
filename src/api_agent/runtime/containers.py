@@ -62,12 +62,12 @@ class ContainerRuntime:
         self.scope = scope
         self.ownership_directory = ownership_directory
 
-    def _run(self, arguments):
+    def _run(self, arguments, *, timeout=5):
         executable = self.executable or shutil.which("docker") or shutil.which("podman")
         if not executable:
             raise ContainerError("Container inventory unavailable: docker and podman are absent from PATH.")
         try:
-            result = subprocess.run([executable, *arguments], capture_output=True, text=True, timeout=5, check=False)
+            result = subprocess.run([executable, *arguments], capture_output=True, text=True, timeout=timeout, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ContainerError(f"Container engine unavailable: {type(error).__name__}.") from error
         if result.returncode:
@@ -139,6 +139,9 @@ class ContainerRuntime:
                         or {record["Id"] for record in records} != set(identifiers)
                         or not all(self._eligible(record, protected) for record in records)):
                     raise ContainerError("Selected containers are no longer owned by this stack scope.")
-                self._run(["stop", *identifiers])
+                # Engines may stop each selected service in sequence. Give each
+                # its normal graceful interval, with a finite batch ceiling.
+                self._run(["stop", "--time", "10", *identifiers],
+                          timeout=min(120, 5 + 12 * len(identifiers)))
         except PrerequisiteError:
             raise ContainerError("Cannot verify active prerequisite leases; cleanup refused.") from None

@@ -1,6 +1,11 @@
 # Allure reporting and persistent test results
 
 
+## Current backend boundary
+
+- [x] Verify the real LocalStack S3 API using synthetic recording artifacts: manifest-last publication, byte digest retrieval and history listing succeed with scoped ownership. Fix the controlled hook mount to exact short `ro,z` syntax so SELinux labeling works through Podman-backed Compose. Managed loopback LocalStack clients use synthetic SDK credentials without requiring AWS credentials.
+- [x] Resolve durable local history before the first actual integration: replace the Community image's ineffective `PERSISTENCE=1` with version/digest-pinned LocalStack-persist 4.14.0, S3-only persistence and `/persisted-data`. Production manager and RunStorage prove byte digest/history retrieval after stop/restart. Verify actual image ID and repo digest across engine name normalization. The fork's limited expected maintenance is documented in `infra/compose/README.md`; real interactive run history and viewer wiring remain below.
+
 ## Checklist
 
 - [ ] Establish Allure output before the first rewrite integration or E2E test, including the initial "Ok" milestone. Record integration and human-accepted E2E runs through the interactive TUI only, after explicit continuation from the test picker. Neither execution mode supports `NO_STD_IN`; collect-only is not a recorded test run. Unit tests must never be Allure-recorded: disable Allure collection/writers for unit mode, create no Allure result files or S3/secondary Allure uploads, and leave the latest integration/E2E run unchanged. Unit pass/coverage reports belong to local output and CI checks.

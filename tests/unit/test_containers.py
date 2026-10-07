@@ -157,8 +157,9 @@ def test_scoped_inventory_and_fresh_stop_use_inspect_and_full_ids():
         runtime = ContainerRuntime('/bin/docker', SCOPE)
         assert runtime.inventory() == (Container(item['Id'], 'api', 'api:dev', 'running'),)
         runtime.stop([item['Id'], item['Id']])
-        assert [call.args[0][1:] for call in run.call_args_list] == [['ps', '--quiet', '--no-trunc', '--filter', 'label=api-agent.managed=true'], ['inspect', item['Id']], ['inspect', item['Id']], ['stop', item['Id']]]
-        assert all(call.kwargs == dict(capture_output=True,text=True,timeout=5,check=False) for call in run.call_args_list)
+        assert [call.args[0][1:] for call in run.call_args_list] == [['ps', '--quiet', '--no-trunc', '--filter', 'label=api-agent.managed=true'], ['inspect', item['Id']], ['inspect', item['Id']], ['stop', '--time', '10', item['Id']]]
+        assert all(call.kwargs == dict(capture_output=True,text=True,timeout=5,check=False) for call in run.call_args_list[:-1])
+        assert run.call_args_list[-1].kwargs == dict(capture_output=True,text=True,timeout=17,check=False)
 
 
 def test_inventory_filters_unowned_stopped_session_and_distrobox():
@@ -207,13 +208,40 @@ def test_cleanup_holds_lease_guard_through_inspect_and_stop(tmp_path, monkeypatc
     monkeypatch.setattr(prerequisites, 'guarded_cleanup', guard)
     monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
     runtime = ContainerRuntime('docker', SCOPE, ownership_directory=tmp_path)
-    def run(arguments):
+    def run(arguments, **kwargs):
         events.append(arguments[0])
         assert events[0] == 'lock' and 'unlock' not in events
         return json.dumps([record()]) if arguments[0] == 'inspect' else ''
     monkeypatch.setattr(runtime, '_run', run)
     runtime.stop(['a' * 64])
     assert events == ['lock', 'inspect', 'stop', 'unlock']
+
+
+def test_six_service_stop_is_bounded_and_checks_all_before_mutation(monkeypatch):
+    ids = tuple(f'{index:064x}' for index in range(1, 7))
+    records = [record(identifier) for identifier in ids]
+    monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
+    runtime = ContainerRuntime('docker', SCOPE)
+    with patch('api_agent.runtime.containers.subprocess.run', side_effect=[
+            SimpleNamespace(returncode=0, stdout=json.dumps(records)),
+            SimpleNamespace(returncode=0, stdout='')]) as run:
+        runtime.stop(ids)
+    assert run.call_args_list[0].args[0] == ['docker', 'inspect', *ids]
+    assert run.call_args_list[1].args[0] == ['docker', 'stop', '--time', '10', *ids]
+    assert run.call_args_list[1].kwargs['timeout'] == 77
+
+
+def test_stop_timeout_reports_failure_after_full_reinspection(monkeypatch):
+    ids = ('a' * 64, 'b' * 64)
+    monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
+    runtime = ContainerRuntime('docker', SCOPE)
+    with patch('api_agent.runtime.containers.subprocess.run', side_effect=[
+            SimpleNamespace(returncode=0, stdout=json.dumps([record(identifier) for identifier in ids])),
+            subprocess.TimeoutExpired('docker stop', 29)]) as run:
+        with pytest.raises(ContainerError, match='TimeoutExpired'):
+            runtime.stop(ids)
+    assert run.call_args_list[1].args[0] == ['docker', 'stop', '--time', '10', *ids]
+    assert run.call_args_list[1].kwargs['timeout'] == 29
 
 
 @pytest.mark.parametrize('uncertain', [False, True])
