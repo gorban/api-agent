@@ -2,7 +2,7 @@
 
 ## Completed B1 review slice
 
-- [x] Implement configuration row-by-row default acceptance/typed edits and conditional revalidation, real `.env` cleanup, Textual mode/focus/footer controls, real pytest collection/selector filtering, overlapping All/tag/file/test selection, and prompt cancellation. Controlled execution and authentication setup remain explicitly unavailable; this does not complete the full runner/results/auth tasks below. Parent human checkpoint B1 is still awaiting acceptance.
+- [x] Implement configuration row-by-row default acceptance/typed edits and conditional revalidation, real `.env` cleanup, Textual mode/focus/footer controls, real pytest collection/selector filtering, overlapping All/tag/file/test selection, and prompt cancellation. Controlled execution and authentication setup remain explicitly unavailable; this does not complete the full runner/results/auth tasks below. Human checkpoint B1 accepted on 2026-10-04 after iterative user review and suite-discovery verification; future unavailable operations remain open.
 
 ## Checklist
 
@@ -62,6 +62,7 @@
   - [ ] When available, show starting and final quota percentage used, their difference, and the final quota reset datetime in UTC with its remaining hours/minutes/seconds. Obtain cost estimates through the LLM provider's cost-estimation function. Preserve unavailable/reset/concurrent-usage qualifications from the [usage plan](implementation_plan_f.md).
   - [ ] Display optional quota fields only when supplied by the LLM provider. Report unavailable cost estimates explicitly. Validate result formatting and cost-per-prompt arithmetic deterministically using provider fixtures.
 
+- [x] Verify suite discovery: mandatory nonempty base unit tests plus optional pack unit tests; no-pack demo integration/E2E use base suites, external-pack integration/E2E use only pack suites, and missing/empty required suites fail. Real execution/results/coverage tasks below remain open.
 - [ ] Resolve a launch context before selecting a test suite: selected resource-pack root, test-owner repository root/name, mode-specific test paths, and configuration/output roots. Have launchers supply their own roots explicitly rather than treating the process working directory as the suite identity.
   - [ ] An api-agent launch defaults to the demo resource pack. Unit mode always runs api-agent's `tests/unit` plus any demo-pack unit tests. Integration/E2E modes use the selected pack's declared suites, with the demo declaration pointing to the appropriate api-agent tests. Demo pack location and test-owner location are distinct.
   - [ ] A resource-pack launch passes its repository root as `--resource-pack-dir`. Unit mode runs api-agent's unit suite and the selected pack's unit suite if present; integration/E2E modes run only the suites declared by the selected pack. Declare pack paths relative to its pack/test-owner root, resolve them to absolute paths, and run each repository's tests with its own working directory and pytest configuration through the shared runner.

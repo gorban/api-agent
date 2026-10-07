@@ -32,11 +32,13 @@ def test_real_collection_combines_deduplicates_and_never_executes(tmp_path):
     assert len(collect_tests(context(base, pack, {'unit': (extras,)}), 'unit', ['base::tests/unit/test_tiny.py'])) == 2
 
 
-def test_integration_scoped_to_owner(tmp_path):
+@pytest.mark.parametrize("mode", ["integration", "e2e"])
+def test_integration_and_e2e_scoped_to_owner(tmp_path, mode):
     base, pack = tmp_path / 'base', tmp_path / 'pack'
     suite(base)
-    integration = suite(pack, 'integration')
-    assert {test.repo for test in collect_tests(context(base, pack, {'integration': (integration,)}), 'integration')} == {'pack'}
+    suite(base, mode)
+    selected = suite(pack, mode)
+    assert {test.repo for test in collect_tests(context(base, pack, {mode: (selected,)}), mode)} == {'pack'}
 
 
 def test_selectors_union_and_ambiguity():
@@ -131,3 +133,27 @@ def test_precancel_does_not_spawn_and_timeout_reaps(tmp_path, monkeypatch):
         _run_collection([sys.executable, '-c', 'pass'], tmp_path, os.environ.copy(), 'repo', cancel)
     with pytest.raises(CollectionError, match='exceeded'):
         _run_collection([sys.executable, '-c', 'import time; time.sleep(60)'], tmp_path, os.environ.copy(), 'repo', None, timeout=0.05)
+
+
+@pytest.mark.parametrize("mode", ["integration", "e2e"])
+def test_no_pack_suite_uses_base_and_missing_or_empty_owner_fails(tmp_path, mode):
+    base, pack = tmp_path / 'base', tmp_path / 'pack'
+    selected = suite(base, mode)
+    assert {test.repo for test in collect_tests(context(base, modes={mode: (selected,)}), mode)} == {'base'}
+    ctx = context(base, pack, {mode: (pack / 'tests' / mode,)})
+    with pytest.raises(CollectionError, match='does not exist'):
+        collect_tests(ctx, mode)
+    (pack / 'tests' / mode).mkdir(parents=True)
+    with pytest.raises(CollectionError):
+        collect_tests(ctx, mode)
+
+
+def test_empty_optional_pack_units_do_not_hide_missing_base(tmp_path):
+    base, pack = tmp_path / 'base', tmp_path / 'pack'
+    suite(base)
+    (pack / 'tests/unit').mkdir(parents=True)
+    ctx = context(base, pack, {'unit': (pack / 'tests/unit',)})
+    assert {test.repo for test in collect_tests(ctx, 'unit')} == {'base'}
+    (base / 'tests/unit/test_tiny.py').unlink()
+    with pytest.raises(CollectionError):
+        collect_tests(ctx, 'unit')
