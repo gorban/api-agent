@@ -150,3 +150,15 @@ def test_finished_pytest_reaps_child_holding_output_pipe(tmp_path, inherited_pip
     while running() and time.monotonic() < deadline:
         time.sleep(.01)
     assert not running()
+
+
+def test_summary_omits_complete_files_and_reports_one_full_coverage_line():
+    from api_agent.testing.runner import format_unit_summary, UnitRunResult
+    complete = CoverageArea('base', 'src/empty.py', 0, 0, 0, 0)
+    incomplete = CoverageArea('base', 'src/partial.py', 1, 2, 1, 2)
+    summary = format_unit_summary(UnitRunResult(1, (), (complete, incomplete), ''))
+    assert 'empty.py' not in summary
+    assert 'partial.py' in summary
+    summary = format_unit_summary(UnitRunResult(1, (), (complete, complete), ''))
+    assert summary.count('Production coverage: 100%') == 1
+    assert 'empty.py' not in summary

@@ -155,7 +155,11 @@ class WorkbenchScreen(ButtonNavigation, Screen):
         yield Static(app.identity_text(), id="identity", markup=False)
         with VerticalScroll():
             yield Static(self.heading, id="heading")
-            yield Static(self.body, id="body", markup=False)
+            if self.kind == "unit-results":
+                with VerticalScroll(id="unit-summary"):
+                    yield Static(self.body, id="body", markup=False)
+            else:
+                yield Static(self.body, id="body", markup=False)
             if self.rows:
                 yield DataTable(id="choices", cursor_type="row")
             if self.kind == "input":
@@ -319,6 +323,7 @@ class ApiAgentApp(App[int]):
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
+    #unit-summary { height: 1fr; min-height: 6; }
     #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
     Button:focus, Input:focus { border: heavy $accent; }
@@ -747,12 +752,21 @@ class ApiAgentApp(App[int]):
             # Python's stable sort preserves discovery order within each group.
             rows.sort(key=lambda row: row[1][0] not in {"FAILED", "ERROR"})
         self.show("unit-results", "Unit test results", summary, rows=rows)
-        if self.unit_result is not None and self.unit_result.exit_code:
+        if self.unit_result is not None:
             self.call_after_refresh(self.style_unit_summary)
 
     def style_unit_summary(self):
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "unit-results":
-            self.screen.query_one("#body", Static).styles.color = "red"
+            from rich.text import Text
+            body = self.screen.query_one("#body", Static)
+            summary = Text()
+            for index, line in enumerate(body.content.splitlines()):
+                if index:
+                    summary.append("\n")
+                style = "green" if line.startswith("Production coverage: 100%") else (
+                    "red" if self.unit_result.exit_code else "green")
+                summary.append(line, style=style)
+            body.update(summary)
 
     def show_selection(self):
         rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]

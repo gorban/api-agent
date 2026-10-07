@@ -300,7 +300,11 @@ def format_unit_summary(result):
     state = 'CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0 else 'FAIL'
     lines = [f'Unit results: {state} — {passed}/{len(result.tests)} passed; {len(result.tests) - passed} did not pass.',
              'Production coverage requires every measured file to reach 100% lines and branches.']
+    if result.coverage and all(area.complete for area in result.coverage):
+        lines.append('Production coverage: 100% lines and branches across all measured files.')
     for area in result.coverage:
+        if area.complete:
+            continue
         lines.append(f'{area.repo}::{area.file}: lines {area.line_percent:.2f}% ({area.covered_lines}/{area.num_statements}), branches {area.branch_percent:.2f}% ({area.covered_branches}/{area.num_branches})' + (' [below 100%]' if not area.complete else ''))
     for repo in dict.fromkeys(test.identity.repo for test in result.tests):
         if not any(area.repo == repo for area in result.coverage):
