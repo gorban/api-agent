@@ -105,12 +105,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print(generated_help(schema, pack_launcher=context.external_pack,
                                  declaration_paths=[context.base_root / 'src/api_agent/config/shared.toml',
                                                     context.config_path, context.pack_root / 'pack.toml']))
-            print('\nBootstrap: --resource-pack-dir PATH selects a resource pack independently of CWD.\n'
-                  'Foundation only: TUI, test collection/execution, servers, and reports are pending Segment B.')
+            print('\nBootstrap: --resource-pack-dir PATH selects a resource pack independently of CWD.')
             return 0
         print(f'Validated foundation configuration for {context.name} ({context.pack_root}).')
         operation = 'Test collection' if result.values.get('COLLECT_ONLY') else 'Requested operation'
-        print(f'{operation} is unavailable: pending Segment B. No tests or services were started.',
+        print(f'{operation} is not implemented yet. No tests or services were started.',
               file=sys.stderr)
         return 3
     except (ValueError, OSError, WorktreeGateError) as exc:
@@ -151,6 +150,5 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None):
                   '--collect-only validates collection requirements and skips execution acceptance.',
                   'NO_STD_IN=True requires TUI_MODE and rejects integration/E2E execution, except collection-only.',
                   'E2E execution requires human acceptance; E2E_RERUNS applies only to E2E; unit/integration never retry.',
-                  '',
-                  'These operation descriptions are contracts: all execution, collection, and UI operations remain pending Segment B.'])
+                  ])
     return '\n'.join(lines)

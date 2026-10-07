@@ -1,6 +1,6 @@
 # api-agent
 
-The shared Python runtime is being rebuilt. The foundation implements typed configuration, resource-pack discovery, source launchers, and a Git/worktree provenance gate. The interactive TUI, test runner, authentication, providers, and application API are the next implementation group. `--help` works; other operations currently return a clear nonzero "pending Segment B" result and start no tests or services.
+The shared Python runtime is being rebuilt. The foundation implements typed configuration, resource-pack discovery, source launchers, and a Git/worktree provenance gate. The interactive TUI, test runner, authentication, providers, and application API are the next implementation group. `--help` works; other operations currently return a clear nonzero "not implemented yet" result and start no tests or services.
 
 ## Prerequisites
 

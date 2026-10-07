@@ -45,7 +45,8 @@ class LaunchTests(unittest.TestCase):
                                      if k not in {'HELP', 'NO_STD_IN', 'TUI_MODE'}})
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn('--resource-pack-dir', result.stdout)
-        self.assertIn('pending Segment B', result.stdout)
+        self.assertNotIn('Segment B', result.stdout)
+        self.assertNotIn('Foundation only:', result.stdout)
 
     def test_collection_is_honestly_unavailable(self):
         with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
@@ -64,7 +65,7 @@ class LaunchTests(unittest.TestCase):
                 with self.subTest(mode=mode), patch('sys.stderr', new_callable=StringIO) as stderr:
                     self.assertEqual(main(['--tui-mode=' + mode, '--no-std-in'], base_root=ROOT), 2)
                     self.assertIn('incompatible', stderr.getvalue())
-                    self.assertNotIn('pending Segment B', stderr.getvalue())
+                    self.assertNotIn('not implemented yet', stderr.getvalue())
 
     def test_noninteractive_live_collection_remains_nonexecuting(self):
         with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
