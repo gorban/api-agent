@@ -23,3 +23,5 @@
 - [ ] Add targeted integration coverage for conditional routing, output-to-input and runner-provided bindings, independent group retries/exhaustion, ordered conditional prompts, and switching between demo and selected resource packs. Establish [Allure reporting](implementation_plan_d.md) before writing these tests.
 
 Implementation reference: [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api) provides programmatic nodes, conditional edges, graph state, and loops. The Layout format and loader are project features to build on that API.
+
+- [ ] Declare `TUI_MODE` as required when `NO_STD_IN=True`, and preserve whether its test-mode value came explicitly from `.env`/environment/CLI for picker bypass and positional selectors. Make `E2E_RERUNS` applicable only to E2E; unit/integration have no retries.
