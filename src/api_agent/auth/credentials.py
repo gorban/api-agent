@@ -161,7 +161,10 @@ def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeou
             raise CredentialError("1Password password output must contain exactly one CSV cell.")
         output = rows[0][0]
     else:
-        output = output.rstrip("\r\n")
+        # Keeper appends one line terminator to the credential it prints.
+        terminator = "\r\n" if os.name == "nt" else "\n"
+        if output.endswith(terminator):
+            output = output[:-len(terminator)]
     if not output:
         raise CredentialError("Credential CLI returned an empty credential.")
     return output

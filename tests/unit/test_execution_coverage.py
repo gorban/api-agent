@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 from api_agent.testing import collection, runner, TestIdentity, SelectionModel, CollectionError
+from api_agent.testing import processes
 
 
 def identity(repo='base', name='test_one'):
@@ -30,11 +31,84 @@ def test_nonposix_process_teardown_escalates_and_reaps(monkeypatch, module):
     process = Mock()
     process.communicate.side_effect = [subprocess.TimeoutExpired('pytest', .5), ('', '')]
     process.wait.side_effect = [subprocess.TimeoutExpired('pytest', .5), 0]
-    monkeypatch.setattr(module, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setattr(processes, 'os', SimpleNamespace(name='nt'))
     (module._stop_collection if module is collection else module._stop_execution)(process)
     process.terminate.assert_called_once()
     process.kill.assert_called_once()
     assert (process.communicate if module is collection else process.wait).call_count == 2
+
+
+def test_nonposix_teardown_does_not_require_sigkill(monkeypatch):
+    process = Mock()
+    process.wait.side_effect = [subprocess.TimeoutExpired('pytest', .5), 0]
+    monkeypatch.setattr(processes, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setattr(processes, 'signal', SimpleNamespace(SIGTERM=15))
+    processes.finalize(process)
+    process.terminate.assert_called_once()
+    process.kill.assert_called_once()
+
+
+@pytest.mark.parametrize('listing,running', [
+    (' 123 Z\n 456 S\n', False),
+    (' 123 S\n 456 Z\n', True),
+    ('', False),
+])
+def test_group_detection_without_proc_ignores_zombies(monkeypatch, listing, running):
+    monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
+    calls = []
+    def ps(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(stdout=listing)
+    monkeypatch.setattr(processes.subprocess, 'run', ps)
+    assert processes._group_running(123) is running
+    assert calls == [((['ps', '-A', '-o', 'pgid=', '-o', 'state='],),
+                      {'capture_output': True, 'text': True, 'check': True, 'timeout': .5})]
+
+
+@pytest.mark.parametrize('listing', ['bad row', '123', 'abc S'])
+def test_group_detection_rejects_malformed_ps(monkeypatch, listing):
+    monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
+    monkeypatch.setattr(processes.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(stdout=listing))
+    with pytest.raises(RuntimeError, match='invalid ps output'):
+        processes._group_running(123)
+
+
+@pytest.mark.parametrize('failure', [OSError('missing ps'), subprocess.CalledProcessError(1, 'ps'),
+                                      subprocess.TimeoutExpired('ps', .5)])
+def test_group_detection_rejects_ps_failure(monkeypatch, failure):
+    monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
+    def fail(*args, **kwargs):
+        raise failure
+    monkeypatch.setattr(processes.subprocess, 'run', fail)
+    with pytest.raises(RuntimeError, match='ps failed'):
+        processes._group_running(123)
+
+
+def test_group_detection_and_wait_for_live_descendant(monkeypatch, tmp_path):
+    process = tmp_path / '123' / 'stat'
+    process.parent.mkdir()
+    process.write_text('123 (pytest child) S 1 123 123 0\n')
+    real_path = Path
+    monkeypatch.setattr(processes, 'Path', lambda path: real_path(tmp_path) if path == '/proc' else real_path(path))
+    assert processes._group_running(123)
+    process.write_text('123 (pytest child) Z 1 123 123 0\n')
+    assert not processes._group_running(123)
+    alive = iter([True, False])
+    monkeypatch.setattr(processes, '_group_running', lambda group: next(alive))
+    monkeypatch.setattr(processes.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(processes.os, 'killpg', lambda *args: None)
+    fake = SimpleNamespace(pid=123, wait=lambda **kwargs: 0)
+    processes.finalize(fake)
+
+
+def test_finalization_reports_unstopped_process_group(monkeypatch):
+    monkeypatch.setattr(processes.os, 'killpg', lambda *args: None)
+    monkeypatch.setattr(processes, '_group_running', lambda group: True)
+    times = iter([0, 2])
+    monkeypatch.setattr(processes.time, 'monotonic', lambda: next(times))
+    fake = SimpleNamespace(pid=123, wait=lambda **kwargs: 0)
+    with pytest.raises(TimeoutError, match='did not stop after SIGKILL'):
+        processes.finalize(fake)
 
 
 def test_collection_start_failure_is_actionable_and_does_not_stop_unowned_process(monkeypatch, tmp_path):
@@ -93,7 +167,7 @@ def test_preselected_tag_and_all_scope(tmp_path):
     selection_state = SelectionModel([a,b]); selection_state.preselect(['tag:mutation'])
     assert selection_state.selected_scopes == {'tag:mutation'}
     selection_state.preselect(['a.py','b.py'])
-    assert 'all' in selection_state.selected_scopes
+    assert selection_state.selected_scopes == {'file:base::a.py', 'file:base::b.py'}
 
 
 def fake_execution(monkeypatch, ctx, *, reports=(), coverage='valid', exit_code=0, output='pytest output\n'):

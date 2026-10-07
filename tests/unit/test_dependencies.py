@@ -22,13 +22,13 @@ def test_prepare_once_reexec_and_preserve_arguments(tmp_path):
     context = SimpleNamespace(base_root=base, pack_root=base, external_pack=False)
     with patch('api_agent.runtime.dependencies.shutil.which', return_value='uv'), patch('api_agent.runtime.dependencies.subprocess.run') as install, patch('api_agent.runtime.dependencies._installed_requirements', return_value=()), patch('api_agent.runtime.dependencies.subprocess.call', return_value=3) as launch:
         assert ensure_environment(context, ['--tui-mode=config-cleanup']) == 3
-        assert install.call_count == 1
+        assert install.call_count == 0
         assert '_worktrees_verified=True' in launch.call_args.args[0][2]
         assert launch.call_args.args[0][-1] == '--tui-mode=config-cleanup'
         assert launch.call_args.args[0][-2] == str(base)
         assert '--_launcher-root' in launch.call_args.args[0]
         assert ensure_environment(context, ['--tui-mode=config-cleanup']) == 3
-        assert install.call_count == 1
+        assert install.call_count == 0
     with patch('api_agent.runtime.dependencies.sys.prefix', str(environment)), patch('api_agent.runtime.dependencies._installed_requirements', return_value=()), patch('api_agent.runtime.dependencies.subprocess.call') as launch:
         assert ensure_environment(context, []) is None
         launch.assert_not_called()
@@ -74,9 +74,9 @@ def test_removed_package_forces_reinstall_with_valid_marker(tmp_path):
     with patch('api_agent.runtime.dependencies.shutil.which', return_value='uv'), patch('api_agent.runtime.dependencies._installed_requirements', side_effect=[(), ('textual>=8,<9',), (), ()]), patch('api_agent.runtime.dependencies.subprocess.run') as install, patch('api_agent.runtime.dependencies.subprocess.call', return_value=0):
         ensure_environment(context, [])
         ensure_environment(context, [])
-        assert install.call_count == 2
+        assert install.call_count == 1
         ensure_environment(context, [])
-        assert install.call_count == 2
+        assert install.call_count == 1
 
 
 def test_target_interpreter_probe_checks_constraints_and_markers():
@@ -145,3 +145,34 @@ def test_direct_url_installation_fails_before_creating_environment(tmp_path):
             ensure_environment(context, [])
     run.assert_not_called()
     assert not (tmp_path / '.venv').exists()
+
+
+def test_ready_environment_group_switch_does_not_install_or_write_marker(tmp_path):
+    (tmp_path/'pyproject.toml').write_text('[project]\ndependencies=["base>=1"]\n[project.optional-dependencies]\nbrowser=["browser>=1"]\n')
+    environment=tmp_path/'.venv'
+    (environment/'bin').mkdir(parents=True)
+    (environment/'bin/python').touch()
+    context=SimpleNamespace(base_root=tmp_path,pack_root=tmp_path,external_pack=False)
+    with patch('api_agent.runtime.dependencies._installed_requirements',return_value=()) as probe, \
+         patch('api_agent.runtime.dependencies.sys.prefix',str(environment)), \
+         patch('api_agent.runtime.dependencies.subprocess.run') as install, \
+         patch.object(Path,'write_text',side_effect=PermissionError('read-only environment')) as write:
+        assert ensure_environment(context,[]) is None
+        assert ensure_environment(context,[],groups=('browser',)) is None
+        assert probe.call_args_list[0].args[1] == ('base>=1',)
+        assert probe.call_args_list[1].args[1] == ('base>=1','browser>=1')
+        install.assert_not_called(); write.assert_not_called()
+
+
+def test_empty_requirements_still_create_missing_environment(tmp_path):
+    context=SimpleNamespace(base_root=tmp_path,pack_root=tmp_path,external_pack=False)
+    environment=tmp_path/'.venv'
+    def create(*args,**kwargs):
+        (environment/'bin').mkdir(parents=True)
+        (environment/'bin/python').touch()
+    with patch('api_agent.runtime.dependencies.shutil.which',return_value=None), \
+         patch('api_agent.runtime.dependencies.subprocess.run',side_effect=create) as run, \
+         patch('api_agent.runtime.dependencies.sys.prefix',str(environment)):
+        assert ensure_environment(context,[]) is None
+        assert run.call_count == 1
+        assert (environment/'.api-agent-dependencies').is_file()

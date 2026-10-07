@@ -22,8 +22,9 @@ def serialize_value(value):
 def _quoted(text):
     if not isinstance(text, str) or '\n' in text or '\r' in text or '\x00' in text:
         raise ValueError('dotenv values must be single-line text')
-    # The literal reader strips only the outer quotes, with no escape decoding.
-    return '"' + text + '"'
+    # Standard dotenv quoting; mark new escapes to distinguish untouched legacy
+    # literal backslashes. Other dotenv readers treat this suffix as a comment.
+    return json.dumps(text, ensure_ascii=False) + ' # api-agent-escaped'
 
 
 class DotenvEditor:

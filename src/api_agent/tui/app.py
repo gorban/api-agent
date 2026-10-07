@@ -494,7 +494,7 @@ class ApiAgentApp(App[int]):
         elif kind == "input":
             self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
             self.screen.query_one("#body", Static).update(
-                f"Declared type: {self.schema.fields[self.prompt_name].type}. Use Tab to focus actions; s switches the target outside the value input.")
+                self.setting_description())
         elif kind == "defaults":
             self.show_configuration()
         else:
@@ -668,8 +668,7 @@ class ApiAgentApp(App[int]):
             return
         try:
             name = self.focused_setting()
-            candidate = next(item for item in self.session.default_candidates() if item.name == name)
-            self.session.set_value(name, display(candidate.value), persist=True)
+            self.session.save_defaults([name])
             self.operation_status = 0
             if self.session.result().values.get("NO_STD_IN"):
                 await self.enter_mode()
@@ -677,6 +676,20 @@ class ApiAgentApp(App[int]):
             self.show_configuration()
         except Exception as error:
             self.screen.query_one("#error", Static).update(str(error))
+
+    def setting_description(self):
+        from api_agent.config.resolve import _matches
+        field = self.schema.fields[self.prompt_name]
+        default = field.default
+        values = self.session.result(_review=True).values
+        for choice in field.conditional_defaults:
+            if _matches(choice['when'], values):
+                default = choice['value']
+                break
+        description = f"Declared type: {field.type}."
+        if default is not UNSET:
+            description += f" Default: {display(default)}."
+        return description + " Use Tab to focus actions; s switches the target outside the value input."
 
     def edit_setting(self):
         if self.screen.kind != "defaults":
@@ -687,7 +700,7 @@ class ApiAgentApp(App[int]):
         resolved = self.session.result(_review=True).fields.get(self.prompt_name)
         self.prompt_value = display(resolved.value) if resolved else ""
         self.show("input", f"Configure {self.prompt_name}",
-                  f"Declared type: {self.schema.fields[self.prompt_name].type}. Use Tab to focus actions; s switches the target outside the value input.",
+                  self.setting_description(),
                   (("submit", "Save value (Enter)"),))
 
     async def enter_mode(self, *, skip_defaults=False):
@@ -829,7 +842,7 @@ class ApiAgentApp(App[int]):
         try:
             from api_agent.testing.selection import SelectionModel
             tests = await self.discover_tests(cancel_event)
-            if cancel_event.is_set():
+            if cancel_event.is_set() or self.collection_cancel is not cancel_event:
                 return
             if self.session.result().values.get("COLLECT_ONLY"):
                 from api_agent.testing.collection import select_tests
@@ -843,23 +856,26 @@ class ApiAgentApp(App[int]):
                 raise ValueError("No tests matched the selected suite/selectors")
             self.show_selection()
         except Exception as error:
-            if cancel_event.is_set():
+            if cancel_event.is_set() or self.collection_cancel is not cancel_event:
                 return
             self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
 
     async def back_to_selection(self):
         if self.test_run_active() or self.selection is None:
             return
-        self.collection_cancel = threading.Event()
+        cancel_event = threading.Event()
+        selection = self.selection
+        self.collection_cancel = cancel_event
         self.show("collecting", "Refreshing test selection", "Collecting current tests while preserving your selection.")
         try:
-            tests = await self.discover_tests(self.collection_cancel)
-            if self.collection_cancel.is_set():
+            tests = await self.discover_tests(cancel_event)
+            if cancel_event.is_set() or self.collection_cancel is not cancel_event or self.selection is not selection:
                 return
-            self.selection.refresh_for_run(tests)
+            selection.refresh_for_run(tests)
             self.show_selection()
         except Exception as error:
-            if not self.collection_cancel.is_set():
+            if (not cancel_event.is_set() and self.collection_cancel is cancel_event
+                    and self.selection is selection):
                 self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
 
     def start_unit_run(self):

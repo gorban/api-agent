@@ -9,7 +9,8 @@ import tempfile
 from .declarations import ConfigSchema, FieldDeclaration
 from .dotenv import read_dotenv
 from .editor import DotenvEditor, serialize_value
-from .resolve import ConfigError, ResolvedValue, convert_value, resolve_config
+from .resolve import (ConfigError, ResolvedValue, convert_value, resolve_config,
+                      runtime_directory_overrides, retain_runtime_directory)
 from api_agent.auth.profiles import DEFAULT_PASSWORD_MANAGER, _canonical_shape, normalize_auth, validate_role_entries
 
 _CONTROLS = {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH'}
@@ -51,7 +52,6 @@ class ConfigSession:
         self.argv = tuple(argv)
         self.environ = dict(os.environ if environ is None else environ)
         self._choices = {}
-        self._auth_manager_reset = False
         launcher = getattr(context, 'launcher_root', None)
         self._dotenv_path = Path(launcher) / '.env' if launcher else Path(context.dotenv_path)
 
@@ -201,8 +201,7 @@ class ConfigSession:
             for path in reversed(changed):
                 self._restore(path, snapshots[path])
             raise
-        if not self._auth_manager_reset:
-            self._choices.pop('UNATTENDED_AUTH', None)
+        self._choices.pop('UNATTENDED_AUTH', None)
         return self.result(_review=True)
 
     def save_auth_manager(self, manager_dict):
@@ -226,19 +225,17 @@ class ConfigSession:
                 if isinstance(value, dict) and value and not _canonical_shape(value):
                     legacy_paths.append(path)
         self._write_auth_objects(objects, updated, target, force_paths=legacy_paths)
-        self._auth_manager_reset = False
         self._choices.pop('UNATTENDED_AUTH', None)
         return self.result(_review=True)
 
     def reset_auth_manager(self):
-        """Remove saved manager choices and use blank defaults this invocation."""
+        """Delete saved manager choices; retain environment and CLI precedence."""
         objects = {path: self._auth_object(path, chosen_manager=DEFAULT_PASSWORD_MANAGER)
                    for path in self.target_paths}
         updated = deepcopy(objects)
         for value in updated.values():
             value.pop('password_manager', None)
         self._write_auth_objects(objects, updated, self.dotenv_path)
-        self._auth_manager_reset = True
         self._choices.pop('UNATTENDED_AUTH', None)
         return self.result(_review=True)
 
@@ -305,6 +302,7 @@ class ConfigSession:
         # Re-evaluate UI choices without inventing duplicate CLI arguments.
         argv = self.argv
         choices = dict(self._choices)
+        choices.update(runtime_directory_overrides(self.context))
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
         # Pack scope remains enforced except in the explicit cleanup inventory.
@@ -314,20 +312,6 @@ class ConfigSession:
                                                  required=(field.required or bool(field.required_when)) if _review else field.required,
                                                  required_when={} if _review else field.required_when)
                                    for name, field in self.schema.fields.items()})
-        original_auth = None
-        if self._auth_manager_reset and 'UNATTENDED_AUTH' in schema.fields:
-            unmodified = resolve_config(schema, argv=argv, environ=self.environ,
-                                        dotenv=dotenv, anchors=self.context.anchors,
-                                        interactive=True, pack_launcher=self.context.external_pack)
-            current = unmodified.fields.get('UNATTENDED_AUTH')
-            original_auth = current
-            if current is not None:
-                try:
-                    normalized = normalize_auth(current.value)
-                    normalized['password_manager'] = dict(DEFAULT_PASSWORD_MANAGER)
-                    choices['UNATTENDED_AUTH'] = json.dumps(normalized, ensure_ascii=False, separators=(',', ':'))
-                except ValueError:
-                    pass
         if _cleanup and "HELP" in schema.fields:
             choices['HELP'] = 'False'
         result = resolve_config(schema, argv=argv, environ=self.environ,
@@ -337,8 +321,7 @@ class ConfigSession:
         fields = {name: replace(value, source='interactive' if name in choices
                                 else origins[name] if value.source == 'dotenv' else value.source)
                   for name, value in result.fields.items()}
-        auth = (original_auth if self._auth_manager_reset
-                else result.fields.get('UNATTENDED_AUTH'))
+        auth = result.fields.get('UNATTENDED_AUTH')
         if auth is not None and auth.source != 'dotenv':
             try:
                 raw = auth.value
@@ -349,9 +332,7 @@ class ConfigSession:
                                 'roles': {role: source for role in normalized['roles']}}
             except (TypeError, ValueError):
                 auth_sources = {'password_manager': 'Not provided', 'roles': {}}
-        if self._auth_manager_reset:
-            auth_sources['password_manager'] = 'Not provided'
-        return replace(result, fields=fields), auth_sources
+        return retain_runtime_directory(replace(result, fields=fields), self.context), auth_sources
 
     def default_candidates(self):
         result = self.result(_review=True)
@@ -374,6 +355,15 @@ class ConfigSession:
             self._choices[name] = text
         return self.result()
 
+    def external_value(self, name, value):
+        """Persist enum tokens rather than anchored display paths."""
+        field = self.schema.fields[name]
+        if field.enum:
+            for token in field.enum:
+                if convert_value(field, token, external=False, anchors=self.context.anchors) == value:
+                    return serialize_value(token)
+        return serialize_value(value)
+
     def save_defaults(self, names):
         candidates = {item.name: item for item in self.default_candidates()}
         names = tuple(dict.fromkeys(names))
@@ -381,7 +371,7 @@ class ConfigSession:
         for name in names:
             if name not in candidates or not candidates[name].field.persist_default:
                 raise ConfigError(f'{name}: default cannot be persisted through acknowledgement')
-            values[name] = serialize_value(candidates[name].value)
+            values[name] = self.external_value(name, candidates[name].value)
         if values:
             self._persist(values)
             for name in values:

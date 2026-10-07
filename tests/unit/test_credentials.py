@@ -36,6 +36,14 @@ def test_csv_preserves_comma_quotes_newline(tmp_path):
     assert get_password(source(path, "1password")) == 'a,b"c\nnext'
 
 
+@pytest.mark.parametrize('credential', ['password\n', 'password\r', 'password\r\n'])
+def test_keeper_removes_only_cli_terminator(tmp_path, credential):
+    import os
+    terminator = '\r\n' if os.name == 'nt' else '\n'
+    path = fake_cli(tmp_path, f"sys.stdout.buffer.write({(credential + terminator).encode()!r})")
+    assert get_password(source(path)) == credential
+
+
 @pytest.mark.parametrize("output", ["a,b\n", "a\nb\n", '"unclosed', "", '""\n'])
 def test_invalid_csv(tmp_path, output):
     path = fake_cli(tmp_path, f"sys.stdout.write({output!r})")

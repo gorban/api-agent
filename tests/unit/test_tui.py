@@ -39,7 +39,7 @@ def test_defaults_save_and_typed_prompt(tmp_path):
             await pilot.pause(0.4)
             assert app.session.result().values["COUNT"] == 8
             assert app.screen.kind == "defaults"
-            assert (tmp_path / ".env").read_text() == 'COUNT="8"\n'
+            assert (tmp_path / ".env").read_text() == 'COUNT="8" # api-agent-escaped\n'
             assert app.screen.query_one(DataTable).get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
     asyncio.run(scenario())
     (tmp_path / ".env").unlink()

@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import queue
-import signal
 import subprocess
 import sys
 import tempfile
@@ -13,6 +12,7 @@ import threading
 import time
 
 from .collection import CollectionError, TestIdentity, collect_tests
+from .processes import finalize
 
 
 @dataclass(frozen=True)
@@ -76,25 +76,7 @@ sys.exit(status)
 
 def _stop_execution(process):
     """Reap the owned leader without competing with the output reader."""
-    def send(sig):
-        try:
-            if os.name == 'posix':
-                os.killpg(process.pid, sig)
-            elif sig == signal.SIGTERM:
-                process.terminate()
-            else:
-                process.kill()
-        except ProcessLookupError:
-            pass
-    send(signal.SIGTERM)
-    try:
-        process.wait(timeout=.5)
-    except subprocess.TimeoutExpired:
-        send(signal.SIGKILL)
-        process.wait(timeout=5)
-    finally:
-        if os.name == 'posix':
-            send(signal.SIGKILL)
+    finalize(process)
 
 
 def _production_sources(context, root):

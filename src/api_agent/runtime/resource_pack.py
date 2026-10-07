@@ -29,6 +29,8 @@ class LaunchContext:
     identity_factory_path: Path | None = None
     identity_factory_name: str | None = None
     production_paths: tuple[Path, ...] = ()
+    bootstrap_source: str | None = None
+    bootstrap_explicit: bool = False
 
     @property
     def dotenv_path(self) -> Path:
