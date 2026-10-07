@@ -63,6 +63,7 @@ class UnitRunResult:
     coverage: tuple[CoverageArea, ...]
     output: str
     cancelled: bool = False
+    require_full_coverage: bool = True
 
 
 _PLUGIN = r'''
@@ -114,7 +115,7 @@ def _stop_execution(process):
             send(signal.SIGKILL)
 
 
-def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0):
+def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True):
     """Run selected collected identities once; preserve owner configs and full source scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
@@ -286,10 +287,10 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             raw(repo, f'Coverage report unavailable for unselected owner: {exc}\n')
     for test in tests:
         results.setdefault(test.id, TestResult(test, 'cancelled' if cancelled else 'error'))
-    failed |= cancelled or any(r.status != 'passed' for r in results.values()) or any(not a.complete for a in areas)
+    failed |= cancelled or any(r.status != 'passed' for r in results.values()) or (require_full_coverage and any(not a.complete for a in areas))
     for area in areas:
         raw(area.repo, f'{area.repo}::{area.file}: lines {area.line_percent:.2f}% ({area.covered_lines}/{area.num_statements}), branches {area.branch_percent:.2f}% ({area.covered_branches}/{area.num_branches})\n')
-    result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled)
+    result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled, require_full_coverage)
     emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))
     return result
 
@@ -299,7 +300,8 @@ def format_unit_summary(result):
     passed = sum(test.status == 'passed' for test in result.tests)
     state = 'CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0 else 'FAIL'
     lines = [f'Unit results: {state} — {passed}/{len(result.tests)} passed; {len(result.tests) - passed} did not pass.',
-             'Production coverage requires every measured file to reach 100% lines and branches.']
+             ('Production coverage requires every measured file to reach 100% lines and branches.'
+              if result.require_full_coverage else 'Partial selection: coverage is informational.')]
     if result.coverage and all(area.complete for area in result.coverage):
         lines.append('Production coverage: 100% lines and branches across all measured files.')
     for area in result.coverage:

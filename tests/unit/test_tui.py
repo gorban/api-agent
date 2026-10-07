@@ -1169,3 +1169,63 @@ def test_running_results_stay_mounted_and_horizontal_scroll_stays_inside_table(t
             assert table.region == position
             assert viewport.max_scroll_y == 0, (viewport.size, viewport.content_size, [(w.id, w.region, w.outer_size, w.display) for w in viewport.children])
     asyncio.run(scenario())
+
+
+def test_close_running_tests_confirms_and_waits_for_runner_stop(tmp_path):
+    import threading
+    import time
+    from api_agent.testing.runner import UnitRunResult
+    identity = Identity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one')
+    started, stopped = threading.Event(), threading.Event()
+    def runner(context, tests, **kwargs):
+        started.set()
+        assert kwargs['cancel_event'].wait(5)
+        time.sleep(.15)  # Simulate synchronous process-group teardown.
+        stopped.set()
+        return UnitRunResult(130, (), (), '', True)
+    async def scenario():
+        app = fixture(tmp_path, collector=lambda *args: [identity])
+        app.unit_runner = runner
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click('#mode-unit')
+            await pilot.pause()
+            await pilot.press('s')
+            for _ in range(20):
+                await pilot.pause(.02)
+                if started.is_set():
+                    break
+            assert started.is_set()
+            await pilot.press('c')
+            await pilot.pause()
+            assert 'Stop running tests' in str(app.screen.query_one(Static).content)
+            await pilot.press('escape')
+            await pilot.pause()
+            assert app.screen.kind == 'unit-results'
+            assert not app.collection_cancel.is_set()
+            await pilot.press('c', 'y', 'enter')
+            for _ in range(30):
+                await pilot.pause(.02)
+                if getattr(app.screen, 'kind', '') == 'menu':
+                    break
+            assert app.screen.kind == 'menu'
+            assert stopped.is_set() and app.unit_stopped.is_set()
+    asyncio.run(scenario())
+
+
+def test_partial_selection_coverage_is_neutral_and_pass_summary_green(tmp_path):
+    from api_agent.testing.runner import UnitRunResult, CoverageArea
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.unit_rows = {'one': ('PASSED', 'one', '1s')}
+            app.unit_result = UnitRunResult(0, (), (CoverageArea('base', 'partial.py', 1, 2, 0, 0),), '', require_full_coverage=False)
+            app.show_unit_results()
+            await pilot.pause()
+            text = app.screen.query_one('#body', Static).content
+            assert text.spans[0].style == 'green'
+            assert not any(span.style == 'red' for span in text.spans)
+            coverage_start = text.plain.index('base::partial.py')
+            assert not any(span.start <= coverage_start < span.end for span in text.spans)
+    asyncio.run(scenario())

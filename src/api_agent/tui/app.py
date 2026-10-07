@@ -82,11 +82,15 @@ class ButtonNavigation:
 class QuitDialog(ButtonNavigation, ModalScreen):
     BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
+    def __init__(self, message="Quit this operation? Enter literal y to confirm; every other response cancels."):
+        super().__init__()
+        self.message = message
+
     def action_cancel(self):
         self.dismiss(False)
 
     def compose(self) -> ComposeResult:
-        yield Static("Quit this operation? Enter literal y to confirm; every other response cancels.")
+        yield Static(self.message)
         yield Input(id="quit-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="quit-submit")
@@ -725,6 +729,7 @@ class ApiAgentApp(App[int]):
         self.operation_status = 3
         self.collection_cancel = threading.Event()
         self.unit_result = None
+        self.unit_stopped = asyncio.Event()
         self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
         self.show_unit_results(self.unit_progress())
         self.run_worker(self._run_units(), group="unit-run", exclusive=True)
@@ -749,7 +754,8 @@ class ApiAgentApp(App[int]):
                 runner, self.context, self.selection.selected_tests,
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
-                parallel_jobs=self.session.result().values.get("TEST_PARALLEL_JOBS", 8))
+                parallel_jobs=self.session.result().values.get("TEST_PARALLEL_JOBS", 8),
+                require_full_coverage="all" in self.selection.selected_scopes)
             self.unit_result = result
             for test in result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
@@ -760,6 +766,8 @@ class ApiAgentApp(App[int]):
             self.operation_status = 3
             if not self.collection_cancel.is_set():
                 self.show("error", "Unit execution failed", str(error), (("menu", "Main menu"),))
+        finally:
+            self.unit_stopped.set()
 
     def unit_progress(self):
         statuses = [row[0] for row in self.unit_rows.values()]
@@ -828,6 +836,7 @@ class ApiAgentApp(App[int]):
                 if index:
                     summary.append("\n")
                 style = "green" if line.startswith("Production coverage: 100%") else (
+                    "" if not self.unit_result.require_full_coverage and index > 0 else
                     "red" if self.unit_result.exit_code else "green")
                 summary.append(line, style=style)
             body.update(summary)
@@ -952,22 +961,42 @@ class ApiAgentApp(App[int]):
                 self.operation_status = 3
                 self.show_selection()
             elif key == "menu":
-                self.show_menu()
+                if self.unit_run_active():
+                    await self.close_view()
+                else:
+                    self.show_menu()
             elif key == "exit":
                 self.exit(self.operation_status)
         except Exception as error:
             self.screen.query_one("#error", Static).update(str(error))
 
-    def confirm_quit(self):
+    async def confirm_quit(self):
         if self.mode == "unit" and self.unit_rows and self.unit_result is None:
             self.operation_status = 130
         self.collection_cancel.set()
+        if self.unit_run_active():
+            await self.unit_stopped.wait()
         self.exit(self.operation_status)
 
     def on_unmount(self):
         self.collection_cancel.set()
 
+    def unit_run_active(self):
+        return self.mode == "unit" and hasattr(self, "unit_stopped") and not self.unit_stopped.is_set()
+
+    async def stop_tests_to_menu(self, accepted):
+        if not accepted:
+            return
+        self.collection_cancel.set()
+        await self.unit_stopped.wait()
+        self.operation_status = 130
+        self.show_menu()
+
     async def close_view(self):
+        if self.unit_run_active():
+            self.push_screen(QuitDialog("Stop running tests and return to the menu? Enter literal y to confirm; every other response cancels."),
+                             self.stop_tests_to_menu)
+            return
         if self.screen.kind == "collecting":
             self.collection_cancel.set()
         if self.screen.kind == "suggest" or self.screen.kind == "unavailable" and self.mode is None:
