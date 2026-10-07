@@ -7,7 +7,7 @@ from xml.etree import ElementTree
 import pytest
 from textual.app import App
 from textual.containers import VerticalScroll
-from textual.widgets import DataTable, Input, Select, Static
+from textual.widgets import Button, DataTable, Input, Select, Static
 
 from api_agent.config import schema_from_dict
 from api_agent.config.session import ConfigSession
@@ -120,6 +120,41 @@ def test_shared_manager_edit_default_path_custom_path_and_reset(tmp_path):
             assert profile(app)['password_manager'] == {'manager': '', 'cli_path': ''}
             assert 'password_manager' not in saved(app.session.dotenv_path)
             assert profile(app)['roles']['LLM User'] == [account()]
+    asyncio.run(scenario())
+
+
+def test_manager_confirmation_advances_path_enter_saves_cancel_does_not(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            app.screen.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.focused.id == 'auth-manager'
+            await pilot.press('enter', 'down', 'enter')
+            assert app.focused.id == 'auth-path'
+            assert app.screen.query_one('#auth-path', Input).value == 'op'
+            assert str(app.screen.query_one('#auth-save', Button).label) == 'Save value (Enter)'
+            await pilot.press('enter')
+            await pilot.pause()
+            assert profile(app)['password_manager'] == {'manager': '1password', 'cli_path': 'op'}
+            await pilot.press('e')
+            await pilot.pause()
+            await pilot.press('enter', 'enter')
+            assert app.focused.id == 'auth-path'
+            app.screen.query_one('#auth-path', Input).value = '/changed/op'
+            app.screen.query_one('#auth-cancel', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert profile(app)['password_manager']['cli_path'] == 'op'
+            await pilot.press('e')
+            await pilot.pause()
+            app.screen.query_one('#auth-path', Input).value = '/changed/op'
+            app.screen.query_one('#auth-save', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert profile(app)['password_manager']['cli_path'] == '/changed/op'
     asyncio.run(scenario())
 
 
