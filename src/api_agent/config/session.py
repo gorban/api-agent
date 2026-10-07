@@ -1,5 +1,6 @@
 """Editable launch configuration retaining original external provenance."""
 from dataclasses import dataclass, replace
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -8,6 +9,7 @@ from .declarations import ConfigSchema, FieldDeclaration
 from .dotenv import read_dotenv
 from .editor import DotenvEditor, serialize_value
 from .resolve import ConfigError, ResolvedValue, convert_value, resolve_config
+from api_agent.auth.profiles import parse_profiles
 
 _CONTROLS = {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH'}
 
@@ -81,7 +83,7 @@ class ConfigSession:
     @staticmethod
     def _restore(path, content):
         if content is None:
-            path.unlink()
+            path.unlink(missing_ok=True)
             return
         descriptor, temporary = tempfile.mkstemp(prefix='.env.rollback.', dir=path.parent)
         try:
@@ -113,10 +115,67 @@ class ConfigSession:
             self._restore(target, previous)
             raise
 
+    @staticmethod
+    def _auth_object(path):
+        raw = read_dotenv(path).get('UNATTENDED_AUTH')
+        if raw is None:
+            return {}
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            raise ConfigError('UNATTENDED_AUTH in .env must be a JSON object of role arrays.') from None
+        if not isinstance(value, dict):
+            raise ConfigError('UNATTENDED_AUTH in .env must be a JSON object of role arrays.')
+        return value
+
+    def save_auth_role(self, role, entries):
+        """Save one role, enforcing pack targets and removing older copies."""
+        try:
+            parse_profiles({role: entries}, (role,))
+        except ValueError as exc:
+            raise ConfigError(f'UNATTENDED_AUTH role is invalid: {exc}') from None
+        objects = {path: self._auth_object(path) for path in self.target_paths}
+        target = (self.context.pack_root / '.env'
+                  if self.context.external_pack and role != 'LLM User'
+                  else self.dotenv_path)
+        updated = {path: dict(value) for path, value in objects.items()}
+        updated[target][role] = entries
+        for path in updated:
+            if path != target:
+                updated[path].pop(role, None)
+        changed = [path for path in (target, *(path for path in self.target_paths if path != target))
+                   if updated[path] != objects[path]
+                   or path == target and 'UNATTENDED_AUTH' not in read_dotenv(path)]
+        for path in changed:
+            if path.is_symlink():
+                raise ValueError(f'Refusing to edit symlink: {path}')
+        snapshots = {path: path.read_bytes() if path.exists() else None for path in changed}
+        try:
+            for path in changed:
+                if updated[path]:
+                    DotenvEditor(path).update({'UNATTENDED_AUTH': json.dumps(updated[path], ensure_ascii=False, separators=(',', ':'))})
+                else:
+                    DotenvEditor(path).delete(['UNATTENDED_AUTH'])
+        except Exception:
+            # Include the failing path: an editor may mutate it before raising.
+            for path in reversed(changed):
+                self._restore(path, snapshots[path])
+            raise
+        self._choices.pop('UNATTENDED_AUTH', None)
+        return self.result(_review=True)
+
     def result(self, *, _cleanup=False, _review=False):
         dotenv, origins = {}, {}
         for path in self.target_paths:
             entries = read_dotenv(path)
+            if 'UNATTENDED_AUTH' in entries and 'UNATTENDED_AUTH' in dotenv:
+                try:
+                    earlier = json.loads(dotenv['UNATTENDED_AUTH'])
+                    later = json.loads(entries['UNATTENDED_AUTH'])
+                    if isinstance(earlier, dict) and isinstance(later, dict):
+                        entries['UNATTENDED_AUTH'] = json.dumps({**earlier, **later}, ensure_ascii=False, separators=(',', ':'))
+                except (TypeError, ValueError):
+                    pass  # The ordinary resolver reports malformed effective JSON.
             dotenv.update(entries)
             origins.update({name: self._source(path) for name in entries})
         # Put choices last as CLI options to re-evaluate conditional defaults and

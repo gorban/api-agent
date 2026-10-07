@@ -1,5 +1,6 @@
 """Credential setup UI uses temporary .env files and no password-manager process."""
 import asyncio
+import json
 from types import SimpleNamespace
 from xml.etree import ElementTree
 
@@ -8,6 +9,8 @@ from textual.widgets import DataTable, Input, Static
 
 from api_agent.config import schema_from_dict
 from api_agent.config.session import ConfigSession
+from api_agent.config.dotenv import read_dotenv
+from api_agent.config.editor import DotenvEditor
 from api_agent.tui.auth_setup import AuthSetupScreen
 from api_agent.tui.app import ApiAgentApp
 
@@ -53,7 +56,7 @@ def test_add_edit_remove_and_empty_role(tmp_path):
             app.screen.query_one("#auth-vault", Input).value = "Team [A]"
             await pilot.click("#auth-save")
             await pilot.pause()
-            assert _profile(app) == {"LLM User": [{"manager": "keeper", "cli_path": "/some path/keeper", "vault": "Team [A]", "user": "LLM User"}], "Partner": []}
+            assert _profile(app) == {"LLM User": [{"manager": "keeper", "cli_path": "/some path/keeper", "vault": "Team [A]", "user": "LLM User"}]}
             assert 'UNATTENDED_AUTH=' in (tmp_path / "base" / ".env").read_text()
             table.move_cursor(row=0)
             await pilot.press("e")
@@ -70,6 +73,11 @@ def test_add_edit_remove_and_empty_role(tmp_path):
             await pilot.press("r")
             await pilot.pause()
             assert len(_profile(app)["LLM User"]) == 1
+            assert "Partner" not in _profile(app)
+            table.move_cursor(row=1)
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
             assert _profile(app)["Partner"] == []
     asyncio.run(scenario())
 
@@ -110,7 +118,7 @@ def test_environment_override_is_explained(tmp_path):
         app = WizardApp(tmp_path, environ={"UNATTENDED_AUTH": value})
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause()
-            text = str(app.screen.query_one("#auth-source", Static).render())
+            text = str(app.screen.query_one("#auth-override", Static).render())
             assert "environment" in text
             assert "overrides" in text
     asyncio.run(scenario())
@@ -192,7 +200,7 @@ def test_cli_override_clear_and_close_quit_keys(tmp_path):
         app = WizardApp(tmp_path, argv=(f"--UNATTENDED_AUTH={external}",))
         async with app.run_test(size=(110, 60)) as pilot:
             await pilot.pause()
-            assert "cli" in str(app.screen.query_one("#auth-source", Static).render())
+            assert "cli" in str(app.screen.query_one("#auth-override", Static).render())
             await pilot.press("q")
             assert app.screen.query_one(Input).id == "quit-answer"
             app.screen.query_one(Input).value = "n"
@@ -216,7 +224,8 @@ def test_other_pack_role_is_preserved_without_validation_or_display(tmp_path):
     async def scenario():
         other = [{"manager": "unknown", "cli_path": "", "vault": "", "user": "hidden"}]
         raw = '{"Other pack":' + __import__("json").dumps(other) + ',"LLM User":[]}'
-        app = WizardApp(tmp_path, environ={"UNATTENDED_AUTH": raw})
+        app = WizardApp(tmp_path)
+        (tmp_path / "base" / ".env").write_text(f"UNATTENDED_AUTH='{raw}'\n")
         async with app.run_test(size=(110, 60)) as pilot:
             await pilot.pause()
             table = app.screen.query_one(DataTable)
@@ -279,9 +288,111 @@ def test_readonly_workflow_reflows_on_narrow_terminal(tmp_path):
             await pilot.pause()
             lines = str(guide.content).splitlines()
             assert len(lines) == (10 if external else 9)
-            assert lines[-1].endswith('c Close setup')
+            assert lines[-1].endswith('(c) Close setup')
             await pilot.resize_terminal(100, 35)
             await pilot.pause()
             assert len(str(guide.content).splitlines()) == 5
     asyncio.run(scenario(True))
     asyncio.run(scenario(False))
+
+
+def test_header_spacing_and_workflow_shortcut_styles(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path, external=True)
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            storage = screen.query_one('#auth-storage', Static)
+            help_text = screen.query_one('#auth-profile-help')
+            selection_help = screen.query_one('#auth-selection-help')
+            targets = screen.query_one('#auth-targets')
+            assert not screen.query('#auth-source')
+            assert str(storage.content) == 'Only a pointer to your password-manager entry is saved.'
+            assert storage.styles.text_align == 'right'
+            assert help_text.region.y == storage.region.bottom + 1
+            assert not screen.query_one('#auth-error').display
+            assert targets.region.y == selection_help.region.bottom + 1
+            workflow = screen.query_one('#auth-workflow', Static).content
+            assert [workflow.plain[span.start:span.end] for span in workflow.spans] == ['s', 'a', 'Enter', 'c']
+            assert all(span.style == f"bold {app.get_css_variables()['footer-key-foreground']}"
+                       for span in workflow.spans)
+            for span in workflow.spans:
+                assert workflow.plain[span.start - 1] == '('
+                assert workflow.plain[span.end] == ')'
+            screen._error('Example error')
+            await pilot.pause()
+            assert screen.query_one('#auth-error').display
+            screen._error('')
+            await pilot.pause()
+            assert not screen.query_one('#auth-error').display
+            assert targets.region.y == selection_help.region.bottom + 1
+    asyncio.run(scenario())
+
+
+def test_pack_role_target_is_temporary_and_form_only_saves_to_pack(tmp_path):
+    async def scenario(start_in_pack):
+        app = WizardApp(tmp_path / str(start_in_pack), external=True, roles=('LLM User', 'Partner'))
+        base, pack = app.session.context.base_root / '.env', app.session.context.pack_root / '.env'
+        previous = pack if start_in_pack else base
+        app.session.switch_target(previous)
+        async with app.run_test(size=(110, 55)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one(DataTable)
+            table.move_cursor(row=1)
+            await pilot.pause()
+            assert app.session.dotenv_path == pack
+            targets = str(screen.query_one('#auth-targets', Static).content)
+            assert targets.splitlines() == ['Target .env files:', f'✓ {pack}']
+            assert not screen.check_action('switch_target', ())
+            assert 'Choose .env target' not in str(screen.query_one('#auth-workflow').content)
+            screen.action_switch_target()
+            assert app.session.dotenv_path == pack
+            await pilot.press('a')
+            screen.query_one('#auth-vault', Input).value = 'Example vault'
+            assert str(screen.query_one('#auth-targets', Static).content) == targets
+            await pilot.click('#auth-save')
+            await pilot.pause()
+            assert table.cursor_row == 1
+            assert json.loads(read_dotenv(pack)['UNATTENDED_AUTH'])['Partner'][0]['vault'] == 'Example vault'
+            assert 'UNATTENDED_AUTH' not in read_dotenv(base)
+            table.move_cursor(row=0)
+            await pilot.pause()
+            assert app.session.dotenv_path == previous
+            assert str(base) in str(screen.query_one('#auth-targets', Static).content)
+            assert str(pack) in str(screen.query_one('#auth-targets', Static).content)
+            await pilot.press('a')
+            screen.query_one('#auth-vault', Input).value = 'LLM vault'
+            await pilot.click('#auth-save')
+            await pilot.pause()
+            profiles = app.session.result(_review=True).values['UNATTENDED_AUTH']
+            assert profiles['LLM User'][0]['vault'] == 'LLM vault'
+            assert profiles['Partner'][0]['vault'] == 'Example vault'
+            if not start_in_pack:
+                assert set(json.loads(read_dotenv(base)['UNATTENDED_AUTH'])) == {'LLM User'}
+                assert set(json.loads(read_dotenv(pack)['UNATTENDED_AUTH'])) == {'Partner'}
+    asyncio.run(scenario(False))
+    asyncio.run(scenario(True))
+
+
+def test_pack_role_saved_in_agent_file_can_still_be_read_and_removed(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path, external=True, roles=('LLM User', 'Partner'))
+        base, pack = app.session.context.base_root / '.env', app.session.context.pack_root / '.env'
+        llm_accounts = [{'manager': 'keeper', 'cli_path': 'keeper', 'vault': 'Example', 'user': 'LLM'}]
+        secondary = [{'manager': 'keeper', 'cli_path': 'keeper', 'vault': 'Example', 'user': 'Partner'}]
+        DotenvEditor(base).update({'UNATTENDED_AUTH': json.dumps({'LLM User': llm_accounts, 'Partner': secondary}),
+                                 'KEEP': 'unchanged'})
+        async with app.run_test(size=(110, 55)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert screen.entries['Partner'] == secondary
+            screen.query_one(DataTable).move_cursor(row=1)
+            await pilot.pause()
+            await pilot.press('r')
+            await pilot.pause()
+            assert json.loads(read_dotenv(base)['UNATTENDED_AUTH']) == {'LLM User': llm_accounts}
+            assert read_dotenv(base)['KEEP'] == 'unchanged'
+            assert json.loads(read_dotenv(pack)['UNATTENDED_AUTH']) == {'Partner': []}
+            assert screen.entries['Partner'] == []
+    asyncio.run(scenario())
