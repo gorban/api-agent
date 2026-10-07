@@ -1,7 +1,7 @@
 # Source-controlled configuration declarations and defaults.
 # Put your non-default values in ../.env, environment variables, or CLI options.
-# Values from ../.env are loaded first; a selected resource pack's root .env
-# overrides only the values it provides. Environment variables override both,
+# Values from ../.env are loaded first; if the selected resource pack has overlapping
+# .env values, it will override api-agent. Environment variables override both,
 # and CLI options override everything.
 
 version = 1
@@ -16,7 +16,7 @@ persist_default = false
 [fields.NO_STD_IN]
 type = "bool"
 default = false
-help = "Disable interactive input after the worktree provenance gate."
+help = "Disable interactive input; used for scripted access like from CI or Agents."
 
 [fields.COLLECT_ONLY]
 type = "bool"
@@ -42,25 +42,15 @@ type = "path"
 anchor = "owner_root"
 required = true
 [fields.UI_SOURCE_DIR.applies_when]
-TUI_MODE = ["run-local", "e2e"]
+any = [{TUI_MODE = "e2e"}, {TUI_MODE = "run-local", RUN_UI = true}]
 COLLECT_ONLY = false
-[[fields.UI_SOURCE_DIR.applies_when_any]]
-TUI_MODE = "e2e"
-[[fields.UI_SOURCE_DIR.applies_when_any]]
-TUI_MODE = "run-local"
-RUN_UI = true
 
 [fields.UI_NX_APP]
 type = "str"
 default = "agent"
 [fields.UI_NX_APP.applies_when]
-TUI_MODE = ["run-local", "e2e"]
+any = [{TUI_MODE = "e2e"}, {TUI_MODE = "run-local", RUN_UI = true}]
 COLLECT_ONLY = false
-[[fields.UI_NX_APP.applies_when_any]]
-TUI_MODE = "e2e"
-[[fields.UI_NX_APP.applies_when_any]]
-TUI_MODE = "run-local"
-RUN_UI = true
 
 [fields.RUN_LOG_SOURCE]
 type = "str"

@@ -37,3 +37,5 @@ api-agent/
 ```
 
 Implementation references: [Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) support selecting multiple profiles; [Langfuse's official Compose deployment](https://langfuse.com/self-hosting/deployment/docker-compose) supplies its supported stack and headless initialization guidance.
+
+- [ ] Always start the configured host UI for E2E execution, even with `RUN_UI=False`; use `RUN_UI` only for optional local-run UI. Integration tests require no UI and must not start it. Collection starts no services.

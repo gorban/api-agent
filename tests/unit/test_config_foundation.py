@@ -70,10 +70,10 @@ def test_dotenv_is_literal_and_missing_file_empty(tmp_path):
     path.write_text('# comment\nexport NAME="$(touch /tmp/no)"\nFLAG=True\n')
     assert read_dotenv(path) == {'NAME': '$(touch /tmp/no)', 'FLAG': 'True'}
 
-def test_json_resolution_index_validation_and_secret_diagnostics():
+def test_json_resolution_index_validation_and_secret_diagnostics(tmp_path):
     result = resolve_config(load_shared_schema(), environ={'TUI_MODE': 'e2e', 'UI_SOURCE_DIR': '/example/frontend',
                             'UNATTENDED_AUTH': 'secret-invalid', 'UNATTENDED_USER_INDEX': '-1',
-                            'E2E_BROWSER_RESOLUTION': '0x900'})
+                            'E2E_BROWSER_RESOLUTION': '0x900'}, anchors={'owner_root': tmp_path})
     assert len(result.errors) == 3
     assert 'secret-invalid' not in '\n'.join(result.errors)
 
@@ -193,3 +193,34 @@ def test_equals_preserves_option_like_literal():
     result = resolve_config(schema, argv=['--text=--literal=value'], environ={})
     result.raise_for_errors()
     assert result.values['TEXT'] == '--literal=value'
+
+
+@pytest.mark.parametrize('mode,run_ui,active', [
+    ('integration', 'False', False), ('integration', 'True', False),
+    ('run-local', 'False', False), ('run-local', 'True', True),
+    ('e2e', 'False', True), ('e2e', 'True', True)])
+def test_ui_applies_to_e2e_and_optional_local_only(tmp_path, mode, run_ui, active):
+    from pathlib import Path
+    base = Path(__file__).resolve().parents[2]
+    shared = load_shared_schema()
+    extension = schema_from_dict({'version': 1, 'fields': {'UI_NX_APP': {
+        'type': 'str', 'override': True, 'default': 'shell', 'applies_when': {
+            'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}],
+            'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
+    for schema, app in [(shared, 'agent'), (compose_schema(shared, extension), 'shell')]:
+        result = resolve_config(schema, environ={'TUI_MODE': mode, 'RUN_UI': run_ui, 'UI_SOURCE_DIR': 'frontend'},
+                                anchors={'owner_root': tmp_path})
+        result.raise_for_errors()
+        assert ('UI_NX_APP' in result.values) == active
+        assert ('UI_SOURCE_DIR' in result.values) == active
+        if active:
+            assert result.values['UI_NX_APP'] == app
+
+
+def test_explicit_field_override_validation():
+    shared = schema_from_dict({'version': 1, 'fields': {'APP': {'type': 'str'}}})
+    for spec, message in [({'type': 'str'}, 'requires override'),
+                          ({'type': 'int', 'override': True}, 'preserve the shared type')]:
+        extension = schema_from_dict({'version': 1, 'fields': {'APP': spec}})
+        with pytest.raises(ValueError, match=message):
+            compose_schema(shared, extension)

@@ -70,8 +70,18 @@ def convert_value(declaration, value, *, external, anchors):
     return value
 
 def _matches(predicate, values):
-    return all(values.get(name, UNSET) in expected if isinstance(expected, list)
-               else values.get(name, UNSET) == expected for name, expected in predicate.items())
+    return all(any(_matches(branch, values) for branch in expected) if name == 'any'
+               else (values.get(name, UNSET) in expected if isinstance(expected, list)
+                     else values.get(name, UNSET) == expected)
+               for name, expected in predicate.items())
+
+def _controllers(predicate):
+    for name, expected in predicate.items():
+        if name == 'any':
+            for branch in expected:
+                yield from _controllers(branch)
+        else:
+            yield name
 
 def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
                    interactive=False, pack_launcher=False):
@@ -114,7 +124,7 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
         declaration = schema.fields[name]
         if name not in raw or not raw[name][2]:
             for conditional in declaration.conditional_defaults:
-                for controller in conditional['when']:
+                for controller in _controllers(conditional['when']):
                     resolve_defaults(controller)
                 if _matches(conditional['when'], values):
                     raw[name] = (conditional['value'], declaration.default_source, False)
@@ -129,8 +139,7 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
     for name in schema.fields:
         resolve_defaults(name)
     active = {name for name, declaration in schema.fields.items()
-              if (not declaration.pack_only or pack_launcher) and _matches(declaration.applies_when, values)
-              and (not declaration.applies_when_any or any(_matches(p, values) for p in declaration.applies_when_any))}
+              if (not declaration.pack_only or pack_launcher) and _matches(declaration.applies_when, values)}
     for name in active:
         errors.extend(deferred_errors.get(name, ()))
     missing = tuple(name for name, declaration in schema.fields.items()

@@ -11,11 +11,11 @@ TYPES = {'bool', 'int', 'str', 'path', 'jsonobject'}
 class FieldDeclaration:
     name: str
     type: str
+    override: bool = False
     required: bool = False
     default: Any = UNSET
     enum: tuple = ()
     applies_when: Mapping[str, Any] = field(default_factory=dict)
-    applies_when_any: tuple = ()
     required_when: Mapping[str, Any] = field(default_factory=dict)
     conditional_defaults: tuple = ()
     anchor: str | None = None
@@ -45,7 +45,7 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         if set(spec) - allowed or spec.get('type') not in TYPES:
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
-        for flag in ('required', 'acknowledge_default', 'persist_default', 'pack_only'):
+        for flag in ('override', 'required', 'acknowledge_default', 'persist_default', 'pack_only'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
         if spec.get('anchor') not in (None, 'pack_root', 'owner_root', 'base_root'):
@@ -58,12 +58,11 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
             raise ValueError(f'{name}: nonnegative validation requires int type')
         if spec.get('validation') == 'resolution' and spec['type'] != 'str':
             raise ValueError(f'{name}: resolution validation requires str type')
-        for metadata in ('enum', 'conditional_defaults', 'applies_when_any'):
+        for metadata in ('enum', 'conditional_defaults'):
             if metadata in spec and not isinstance(spec[metadata], list):
                 raise ValueError(f'{name}: {metadata} must be an array')
         if 'help' in spec and not isinstance(spec['help'], str):
             raise ValueError(f'{name}: help must be text')
-        spec['applies_when_any'] = tuple(spec.get('applies_when_any', ()))
         spec['enum'] = tuple(spec.get('enum', ()))
         spec['conditional_defaults'] = tuple(spec.get('conditional_defaults', ()))
         declarations[name] = FieldDeclaration(name=name, default_source=source, **spec)
@@ -75,8 +74,6 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         for enum_value in declaration.enum:
             convert_value(replace(declaration, enum=()), enum_value, external=False, anchors=None)
         for predicate in (declaration.applies_when, declaration.required_when):
-            _validate_predicate(predicate, controlling_fields)
-        for predicate in declaration.applies_when_any:
             _validate_predicate(predicate, controlling_fields)
         defaults = [] if declaration.default is UNSET else [declaration.default]
         for conditional in declaration.conditional_defaults:
@@ -92,6 +89,12 @@ def _validate_predicate(predicate, fields):
     if not isinstance(predicate, dict):
         raise ValueError('Predicate must be a controlling-field equals table')
     for name, expected in predicate.items():
+        if name == 'any':
+            if not isinstance(expected, list) or not expected:
+                raise ValueError('Predicate any requires a nonempty array of tables')
+            for branch in expected:
+                _validate_predicate(branch, fields)
+            continue
         if name not in fields:
             raise ValueError(f'Unknown controlling field {name}')
         from .resolve import convert_value
@@ -120,10 +123,15 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                    overrides: Mapping[str, Any] | None = None) -> ConfigSchema:
     fields = dict(shared.fields)
     if extension:
-        duplicate = fields.keys() & extension.fields.keys()
-        if duplicate:
-            raise ValueError(f'Pack extensions redefine shared fields: {sorted(duplicate)}')
-        fields.update(extension.fields)
+        for name, declaration in extension.fields.items():
+            if name in fields:
+                if not declaration.override:
+                    raise ValueError(f'{name}: shared-field replacement requires override = true')
+                if declaration.type != fields[name].type:
+                    raise ValueError(f'{name}: override must preserve the shared type')
+            elif declaration.override:
+                raise ValueError(f'{name}: override has no shared field')
+            fields[name] = declaration
     from .resolve import convert_value
     for name, value in (overrides or {}).items():
         if name not in fields:
