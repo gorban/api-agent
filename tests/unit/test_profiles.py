@@ -9,13 +9,16 @@ def entry(user):
     return {'vault': 'vault', 'user': user}
 
 
+READY = {'manager': 'keeper', 'cli_path': 'keeper'}
+
+
 def canonical(roles, manager=None):
     return {'password_manager': manager or DEFAULT_PASSWORD_MANAGER, 'roles': roles}
 
 
 def test_default_and_shared_manager_composition():
     assert normalize_auth({'roles': {'LLM User': []}}) == canonical({'LLM User': []})
-    profiles = parse_profiles({'roles': {'LLM User': [entry('Ada')], 'Other': []}}, ('LLM User', 'Other'))
+    profiles = parse_profiles(canonical({'LLM User': [entry('Ada')], 'Other': []}, READY), ('LLM User', 'Other'))
     source = profiles.for_role('LLM User')[0]
     assert (source.manager, source.cli_path, source.vault, source.user) == ('keeper', 'keeper', 'vault', 'Ada')
     assert profiles.for_role('Other') == ()
@@ -33,7 +36,7 @@ def test_legacy_uniform_migration_and_conflict():
 
 
 def test_selection_and_index_bounds():
-    profiles = parse_profiles({'roles': {'LLM User': [entry('A'), entry('B')], 'Other': [entry('X'), entry('Y')]}}, ('LLM User', 'Other', 'Empty'))
+    profiles = parse_profiles(canonical({'LLM User': [entry('A'), entry('B')], 'Other': [entry('X'), entry('Y')]}, READY), ('LLM User', 'Other', 'Empty'))
     with pytest.raises(SelectionRequired):
         select_profiles(profiles, ('LLM User', 'Other'))
     chosen = select_profiles(profiles, ('LLM User', 'Other'), session_index=1)
@@ -60,20 +63,21 @@ def test_invalid(payload, message):
 def test_inactive_canonical_roles_are_preserved_without_validation():
     data = {'roles': {'LLM User': [entry('A')], 'Other': [{'unknown': 'kept'}]}}
     assert normalize_auth(data)['roles']['Other'] == [{'unknown': 'kept'}]
-    selected = {'roles': {'LLM User': normalize_auth(data)['roles']['LLM User']}}
+    selected = canonical({'LLM User': normalize_auth(data)['roles']['LLM User']}, READY)
     assert parse_profiles(selected, ('LLM User',)).for_role('LLM User')[0].user == 'A'
 
 
 def test_selection_zero_singleton_and_invalid_indices():
-    profiles = parse_profiles({'roles': {'LLM User': [entry('A'), entry('B')],
-                                        'Other': [entry('X')], 'Empty': []}},
+    profiles = parse_profiles(canonical({'LLM User': [entry('A'), entry('B')],
+                                        'Other': [entry('X')], 'Empty': []}, READY),
                               ('LLM User', 'Other', 'Empty'))
     assert select_profiles(profiles, ('Other',)).for_role('Other').user == 'X'
-    assert select_profiles(profiles, ('Empty',), configured_index=9).attended_roles == ('Empty',)
+    with pytest.raises(ValueError, match='no complete account pair'):
+        select_profiles(profiles, ('Empty',), configured_index=9)
     for invalid in (True, -1, 1.0, '1'):
         with pytest.raises(ValueError, match='nonnegative integer'):
             select_profiles(profiles, ('LLM User',), configured_index=invalid)
-    with pytest.raises(ValueError, match='Other'):
+    with pytest.raises(ValueError, match='complete account pair'):
         select_profiles(profiles, ('LLM User', 'Other'), configured_index=1)
     assert select_profiles(profiles, ('LLM User',), configured_index=0, session_index='stale').for_role('LLM User').user == 'A'
     with pytest.raises(ValueError, match='enabled'):
@@ -88,3 +92,25 @@ def test_legacy_reserved_role_names_are_not_envelope_fields():
     profiles = parse_profiles(legacy, ('roles', 'password_manager'))
     assert profiles.for_role('roles')[0].user == 'A'
     assert profiles.for_role('password_manager') == ()
+
+
+def test_blank_draft_manager_blocks_retrieval_but_not_normalization():
+    draft = canonical({'LLM User': [entry('A')]})
+    assert draft['password_manager'] == {'manager': '', 'cli_path': ''}
+    with pytest.raises(ValueError, match='Select a password manager and CLI path'):
+        parse_profiles(draft, ('LLM User',))
+    assert normalize_auth({'password_manager': {'manager': 'keeper', 'cli_path': ''}, 'roles': {}})['password_manager'] == {
+        'manager': 'keeper', 'cli_path': 'keeper'}
+    assert normalize_auth({'password_manager': {'manager': '1password', 'cli_path': ''}, 'roles': {}})['password_manager'] == {
+        'manager': '1password', 'cli_path': 'op'}
+
+
+def test_selection_uses_only_complete_shared_pairs():
+    profiles = parse_profiles(canonical({'LLM User': [entry('A'), entry('B')],
+                                         'Secondary': [entry('X')]}, READY), ('LLM User', 'Secondary'))
+    assert select_profiles(profiles, ('LLM User', 'Secondary')).index == 0
+    with pytest.raises(ValueError, match='complete account pair'):
+        select_profiles(profiles, ('LLM User', 'Secondary'), configured_index=1)
+    one_empty = parse_profiles(canonical({'LLM User': [entry('A')], 'Secondary': []}, READY), ('LLM User', 'Secondary'))
+    selection = select_profiles(one_empty, ('LLM User', 'Secondary'))
+    assert selection.index is None and selection.attended_roles == ('LLM User', 'Secondary')

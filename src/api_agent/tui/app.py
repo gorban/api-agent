@@ -538,13 +538,13 @@ class ApiAgentApp(App[int]):
         try:
             roles = self.credential_roles()
             canonical = normalize_auth(profile)
-            if any(role not in canonical['roles'] for role in roles):
+            if any(not canonical['roles'].get(role) for role in roles):
                 return True
             parse_profiles({'password_manager': canonical['password_manager'],
                             'roles': {role: canonical['roles'][role] for role in roles}}, roles)
         except ValueError:
             return True
-        # Explicit empty arrays are a completed attended-auth choice.
+        # Every enabled role needs an account and valid manager/path settings.
         return False
 
     def show_auth_setup(self, *, startup=False):
