@@ -3,6 +3,9 @@ import pytest
 from api_agent.config import (ConfigError, compose_schema, load_declarations, load_shared_schema,
                                  parse_options, read_dotenv, resolve_config, schema_from_dict)
 
+# Synthetic transport prerequisites isolate the unrelated configuration contracts below.
+AUTH = {"API_ENDPOINT": "https://api.example/graphql", "UI_SOURCE_DIR": "/example/frontend"}
+
 def test_precedence_and_explicit_mode_preserve_positionals():
     result = resolve_config(load_shared_schema(), argv=['--tui_mode=unit', 'one', '--no-std-in', 'False', 'two'],
                             dotenv={'TUI_MODE': 'e2e'}, environ={'TUI_MODE': 'integration'})
@@ -76,12 +79,12 @@ def test_active_required_and_collection_exemptions(tmp_path):
     run = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True'}, anchors={'owner_root': tmp_path})
     assert run.missing == ('UI_SOURCE_DIR',)
     assert run.errors
-    collect = resolve_config(schema, environ={'TUI_MODE': 'e2e', 'RUN_UI': 'True',
+    collect = resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'e2e', 'RUN_UI': 'True',
                             'COLLECT_ONLY': 'True', 'E2E_RERUNS': 'bad'})
     assert not collect.errors and 'E2E_RERUNS' not in collect.values
     assert 'RUN_UI' not in collect.values
     assert 'UI_SOURCE_DIR' not in collect.values and 'UI_NX_APP' not in collect.values
-    resolved = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True',
+    resolved = resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'run-local', 'RUN_UI': 'True',
                               'UI_SOURCE_DIR': 'web'}, anchors={'owner_root': tmp_path})
     assert resolved.values['UI_SOURCE_DIR'] == tmp_path / 'web'
 
@@ -130,7 +133,7 @@ def resource_pack_schema():
     return compose_schema(shared, extension)
 
 def test_json_resolution_index_validation_and_secret_diagnostics(tmp_path):
-    result = resolve_config(resource_pack_schema(), environ={'TUI_MODE': 'e2e', 'UI_SOURCE_DIR': '/example/frontend',
+    result = resolve_config(resource_pack_schema(), environ={**AUTH, 'TUI_MODE': 'e2e',
                             'UNATTENDED_AUTH': 'secret-invalid', 'UNATTENDED_USER_INDEX': '-1',
                             'E2E_BROWSER_RESOLUTION': '0x900', 'PACK_TEST_TOKEN': 'test-only'}, anchors={'owner_root': tmp_path})
     assert len(result.errors) == 3
@@ -177,8 +180,8 @@ def test_pack_extension_predicate_uses_shared_control():
     extension = schema_from_dict({'version': 1, 'fields': {'PACK_TOKEN': {
         'type': 'str', 'required': True, 'applies_when': {'TUI_MODE': 'run-local'}}}}, base_schema=shared)
     schema = compose_schema(shared, extension)
-    assert resolve_config(schema, environ={'TUI_MODE': 'unit'}).missing == ()
-    assert resolve_config(schema, environ={'TUI_MODE': 'run-local'}).missing == ('PACK_TOKEN',)
+    assert resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'unit'}).missing == ()
+    assert resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'run-local'}).missing == ('PACK_TOKEN',)
 
 def test_conditional_controllers_resolve_before_applicability():
     schema = schema_from_dict({'version': 1, 'fields': {
@@ -207,7 +210,7 @@ def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
                 'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
         extension = compose_schema(extension, selection)
     schema = compose_schema(shared, extension)
-    result = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True',
+    result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'run-local', 'RUN_UI': 'True',
                             'UNATTENDED_USER_INDEX': '1', 'PACK_TEST_TOKEN': 'synthetic-secret', 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors={'owner_root': tmp_path})
     result.raise_for_errors()
     assert result.values['UI_NX_APP'] == 'shell'
@@ -231,7 +234,7 @@ def test_safe_leading_hyphen_directory_and_literal_json_dotenv(tmp_path):
     path = tmp_path / '.env'
     credentials = '{"Resource Pack User":[{"password":"literal$secret","username":"person"}]}'
     path.write_text("TUI_MODE=run-local\nUNATTENDED_AUTH='" + credentials + "'\n")
-    result = resolve_config(load_shared_schema(), dotenv=read_dotenv(path), environ={},
+    result = resolve_config(load_shared_schema(), dotenv=read_dotenv(path), environ={**AUTH, },
                             argv=['--run-ui', '--ui-source-dir=./--name'], anchors={'owner_root': tmp_path})
     result.raise_for_errors()
     assert result.values['UI_SOURCE_DIR'] == tmp_path / '--name'
@@ -284,7 +287,7 @@ def test_ui_applies_to_e2e_and_optional_local_only(tmp_path, mode, run_ui, activ
             'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}],
             'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
     for schema, app in [(shared, 'agent'), (compose_schema(shared, extension), 'shell')]:
-        result = resolve_config(schema, environ={'TUI_MODE': mode, 'RUN_UI': run_ui, 'PACK_TEST_TOKEN': 'test-only', 'UI_SOURCE_DIR': str(tmp_path / 'ui')},
+        result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode, 'RUN_UI': run_ui, 'PACK_TEST_TOKEN': 'test-only'},
                                 anchors={'owner_root': tmp_path})
         result.raise_for_errors()
         assert ('RUN_UI' in result.values) == (mode in ('run-local', 'e2e'))
@@ -308,7 +311,7 @@ def test_explicit_field_override_validation():
 @pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
 def test_parallel_jobs_defaults_serial_and_validation(tmp_path, mode):
     schema = load_shared_schema()
-    options = {'TUI_MODE': mode, 'UI_SOURCE_DIR': str(tmp_path / 'frontend')}
+    options = {**AUTH, 'TUI_MODE': mode}
     result = resolve_config(schema, environ=options, anchors={'owner_root': tmp_path})
     result.raise_for_errors()
     assert result.values['TEST_PARALLEL_JOBS'] == 8
@@ -353,14 +356,14 @@ def test_resource_pack_token_required_for_api_and_test_execution(tmp_path):
     schema = resource_pack_schema()
     anchors = {'owner_root': tmp_path, 'pack_root': tmp_path}
     for mode in ('run-local', 'integration', 'e2e'):
-        missing = resolve_config(schema, environ={'TUI_MODE': mode, 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors=anchors, interactive=True)
+        missing = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode}, anchors=anchors, interactive=True)
         assert missing.missing == ('PACK_TEST_TOKEN',)
-        supplied = resolve_config(schema, environ={'TUI_MODE': mode, 'PACK_TEST_TOKEN': 'test-only', 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors=anchors)
+        supplied = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode, 'PACK_TEST_TOKEN': 'test-only'}, anchors=anchors)
         assert not supplied.errors
-        collected = resolve_config(schema, environ={'TUI_MODE': mode, 'COLLECT_ONLY': 'True'}, anchors=anchors)
+        collected = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode, 'COLLECT_ONLY': 'True'}, anchors=anchors)
         assert not collected.errors
     for mode in ('unit', 'config-cleanup', 'unattended-auth'):
-        result = resolve_config(schema, environ={'TUI_MODE': mode}, anchors=anchors)
+        result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode}, anchors=anchors)
         assert not result.errors
         assert 'PACK_TEST_TOKEN' not in result.values
 
@@ -375,7 +378,7 @@ def test_e2e_retains_browser_visibility_config_and_provenance(tmp_path,dotenv,en
     pack_schema=resource_pack_schema()
     for schema,app in ((shared,'agent'),(pack_schema,'shell')):
         result=resolve_config(schema,argv=['--tui-mode=e2e',*argv],dotenv=dotenv,
-                              environ={'PACK_TEST_TOKEN':'synthetic','UI_SOURCE_DIR':str(tmp_path/'ui'),**environ},
+                              environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic',**environ},
                               anchors={'owner_root':tmp_path})
         result.raise_for_errors()
         assert result.values['RUN_UI'] is expected

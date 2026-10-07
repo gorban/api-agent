@@ -147,3 +147,11 @@ help = "Compact JSON object with shared password_manager (manager and cli_path) 
 [fields.UNATTENDED_AUTH.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false
+
+# OAuth transport configuration; no provider calls occur during config review.
+
+
+[fields.LLM_PROVIDER]
+type = "str"
+review_optional = true
+help = "Required factory location (file.py:factory) for executable LLM operations; no default provider is selected."

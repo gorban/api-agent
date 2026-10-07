@@ -1,15 +1,30 @@
-"""Compose selected-pack identity and session owners without opening listeners."""
+"""Compose generic application owners without upstream authentication."""
+from types import MappingProxyType
+from collections.abc import Mapping
+
 from api_agent.auth.extensions import load_identity_adapter
 from api_agent.auth.session import SessionStore
+from api_agent.config.resolve import ConfigResult
+from api_agent.providers.loading import load_provider
+from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 from .application import Runtime
 
 
 def compose_runtime(context, values, *, callback_origin):
-    """Caller supplies runtime-resolved values and its approved HTTPS origin.
-
-    Provider transport and public authentication handlers are composed in later
-    steps; this foundation never initiates authentication or claims it succeeded.
-    """
-    adapter = load_identity_adapter(context, values)
+    result = values if isinstance(values, ConfigResult) else None
+    if result is not None:
+        if result.errors or result.missing:
+            raise ValueError('invalid_runtime_configuration')
+        values = result.values
+    if not isinstance(values, Mapping):
+        raise ValueError('invalid_runtime_configuration')
     sessions = SessionStore(context.pack_id, callback_origin)
-    return Runtime(context.pack_id, identity_adapter=adapter, sessions=sessions)
+    emissions = EmissionBoundary(ContentPolicy.from_config(result))
+    services = MappingProxyType({'sessions': sessions, 'emissions': emissions,
+                                 'callback_origin': callback_origin})
+    # Health/deferred application composition need not instantiate an LLM.
+    # Executable LLM operations must call require_llm_provider first.
+    owner = load_provider(values['LLM_PROVIDER'], values, services) if values.get('LLM_PROVIDER') else None
+    adapter = load_identity_adapter(context, values)
+    return Runtime(context.pack_id, identity_adapter=adapter, sessions=sessions,
+                   llm_provider=owner, emissions=emissions)

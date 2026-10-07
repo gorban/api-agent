@@ -75,6 +75,8 @@ def convert_value(declaration, value, *, external, anchors):
         raise ValueError('expected one of ' + format_enum_values(declaration.enum))
     if declaration.validation == 'nonnegative' and value < 0:
         raise ValueError('expected nonnegative integer')
+    if declaration.validation == 'positive' and value <= 0:
+        raise ValueError('expected positive integer')
     if declaration.validation == 'resolution' and not re.fullmatch(r'[1-9]\d*x[1-9]\d*', value):
         raise ValueError('expected positive WIDTHxHEIGHT')
     if kind == 'path' and anchors is not None:
