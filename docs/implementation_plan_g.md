@@ -125,4 +125,4 @@ Pack descriptions also select test-owner repository identity/root and per-mode t
 
 Extend this skeleton through the [conditional infrastructure/host UI plan](implementation_plan_h.md). Pack manifests declare their own API/database Compose fragments and may supply UI-project defaults.
 
-Use [strict Markdown Layout and prompt fragments](implementation_plan_b1.md) with genuine file-relative links. `<resource_pack>` selects dynamic pack fragments; links inside each fragment remain relative to that fragment for editor/GitHub navigation.
+Use [strict Markdown Layout](implementation_plan_b1.md) with genuine declaration-relative links for engine-local prompts. Pack prompt links retain `<resource_pack>` visibly and in their destination for runtime resolution; they do not resolve in editors/GitHub or point to a particular resource pack.
