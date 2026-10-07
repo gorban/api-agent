@@ -144,3 +144,32 @@ def test_session_container_metadata_is_parsed_without_shell_execution():
     from api_agent.runtime.containers import session_container_identity
     with patch.dict('os.environ', {'CONTAINER_ID': 'workbench-host', 'CONTAINER_NAME': ''}), patch('api_agent.runtime.containers.Path.read_text', return_value='id="abcdef123456"\nname="workbench-host"\nimage="ignored"\n'):
         assert session_container_identity() == {'workbench-host', 'abcdef123456'}
+
+
+def test_menu_container_button_empty_running_and_unavailable(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path)
+        items = []
+        def inventory():
+            if items is None:
+                raise ContainerError('Container inventory unavailable: fixture failure.')
+            return tuple(items)
+        app.container_runtime = SimpleNamespace(inventory=inventory)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            button = app.screen.query_one('#mode-cleanup-containers')
+            assert str(button.label) == 'No running containers to stop'
+            assert button.disabled
+            items.append(Container('abc', 'api', 'image', 'Up'))
+            app.refresh_container_inventory()
+            await pilot.pause()
+            assert str(button.label) == 'Stop running containers'
+            assert not button.disabled
+            assert 'Running containers: 1' in str(app.screen.query_one('#body', Static).content)
+            items = None
+            app.refresh_container_inventory()
+            await pilot.pause()
+            assert str(button.label) == 'Stop running containers'
+            assert not button.disabled
+            assert 'unavailable' in str(app.screen.query_one('#body', Static).content)
+    asyncio.run(scenario())

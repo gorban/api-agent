@@ -560,7 +560,10 @@ class ApiAgentApp(App[int]):
     def update_container_menu(self):
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "menu":
             self.screen.query_one("#body", Static).update(self.container_summary)
-            self.screen.query_one("#mode-cleanup-containers", Button).label = "Stop running containers — " + self.container_summary
+            button = self.screen.query_one("#mode-cleanup-containers", Button)
+            confirmed_empty = self.container_summary == "Running containers: 0"
+            button.label = "No running containers to stop" if confirmed_empty else "Stop running containers"
+            button.disabled = confirmed_empty
 
     def show_containers(self):
         rows = [(item.id, ("✓" if item.id in self.container_marked else "", item.id, item.name, item.image, item.status)) for item in self.containers]
