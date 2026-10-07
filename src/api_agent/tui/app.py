@@ -62,7 +62,6 @@ class WorkbenchScreen(Screen):
 
     def compose(self) -> ComposeResult:
         app = self.app
-        yield Static(self.app.target_summary(), id="dotenv-targets", markup=False)
         yield Static(f"Base: {app.context.base_root}\nPack: {app.context.pack_id} ({app.context.pack_root})", id="identity")
         with VerticalScroll():
             yield Static(self.heading, id="heading")
@@ -71,6 +70,7 @@ class WorkbenchScreen(Screen):
                 yield DataTable(id="choices", cursor_type="row")
             if self.kind == "input":
                 yield Input(id="config-value")
+            yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions"):
                 if self.kind == "input" and len(app.session.target_paths) > 1:
                     yield Button("Switch target .env (s outside input)", id="switch-target")
@@ -82,7 +82,9 @@ class WorkbenchScreen(Screen):
     def on_mount(self):
         if self.rows:
             table = self.query_one(DataTable)
-            if self.kind in {"defaults", "cleanup"}:
+            if self.kind == "defaults":
+                table.add_columns("Setting", "Effective value", "Source")
+            elif self.kind == "cleanup":
                 table.add_columns("Current .env", "Setting", "Effective value", "Source")
             else:
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
@@ -204,7 +206,7 @@ class ApiAgentApp(App[int]):
 
     def target_summary(self):
         return "Target .env files (read only):\n" + "\n".join(
-            f"{'✓ selected' if path == self.session.dotenv_path else '  unselected'} {path}"
+            f"{'✓' if path == self.session.dotenv_path else ' '} {path}"
             for path in self.session.target_paths)
 
     def switch_target(self):
@@ -281,13 +283,12 @@ class ApiAgentApp(App[int]):
             return
         active = set(result.fields) | set(result.missing)
         self.review_names.update(self.configuration_pending())
-        present = self.session.dotenv_keys()
         rows = []
         for name in self.schema.fields:
             if name not in self.review_names or name not in active:
                 continue
             resolved = result.fields.get(name)
-            rows.append((name, ("✓" if name in present else "", name,
+            rows.append((name, (name,
                         display(resolved.value) if resolved else "Required — no default",
                         resolved.source if resolved else "Not provided")))
         if not rows:
@@ -295,13 +296,13 @@ class ApiAgentApp(App[int]):
             return
         self.show("defaults", "Review configuration",
                   "Review each setting: a saves its default immediately; e edits its value, then Enter saves to .env. "
-                  "Checkmarks identify saved settings. c opens the next menu; required values still block execution.\n\n"
+                  "Source identifies where each value comes from. c opens the next menu; required values still block execution.\n\n"
                   "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
                   rows=rows)
 
     def focused_setting(self):
         table = self.screen.query_one(DataTable)
-        return str(table.get_row_at(table.cursor_row)[1]) if table.row_count else None
+        return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value if table.row_count else None
 
     def focused_default(self):
         name = self.focused_setting()

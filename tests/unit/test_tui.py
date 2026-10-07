@@ -39,7 +39,7 @@ def test_defaults_save_and_typed_prompt(tmp_path):
             assert app.session.result().values["COUNT"] == 8
             assert app.screen.kind == "defaults"
             assert (tmp_path / ".env").read_text() == 'COUNT="8"\n'
-            assert app.screen.query_one(DataTable).get_row_at(0)[0] == "✓"
+            assert app.screen.query_one(DataTable).get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
     asyncio.run(scenario())
     (tmp_path / ".env").unlink()
     async def save():
@@ -49,7 +49,7 @@ def test_defaults_save_and_typed_prompt(tmp_path):
             await pilot.press("a")
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
-            assert app.screen.query_one(DataTable).get_row_at(0)[0] == "✓"
+            assert app.screen.query_one(DataTable).get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
             assert app.session.result().values["COUNT"] == 4
             assert "COUNT=" in (tmp_path / ".env").read_text()
     asyncio.run(save())
@@ -128,7 +128,7 @@ def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0)[1] == "VALUE"
+            assert table.get_row_at(0)[0] == "VALUE"
             assert not app.focused_default()
             await pilot.press("c")
             await pilot.pause(0.4)
@@ -142,12 +142,12 @@ def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
             assert 'VALUE=""' in (tmp_path / ".env").read_text()
             assert app.session.result().values["VALUE"] == ""
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0)[0] == "✓"
+            assert table.get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
             table.move_cursor(row=1)
             await pilot.press("a")
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
-            assert app.screen.query_one(DataTable).get_row_at(1)[0] == "✓"
+            assert app.screen.query_one(DataTable).get_row_at(1)[2] == app.session._source(app.session.dotenv_path)
             await pilot.press("c")
             await pilot.pause(0.4)
             await pilot.click("#mode-run-local")
@@ -198,7 +198,7 @@ def test_conditional_default_is_acknowledged_again(tmp_path):
             await pilot.click("#mode-integration")
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
-            assert app.screen.query_one(DataTable).get_row_at(0)[2] == "2"
+            assert app.screen.query_one(DataTable).get_row_at(0)[1] == "2"
     asyncio.run(scenario())
 
 
@@ -283,7 +283,12 @@ def test_config_checklist_and_save_button_visible_at_terminal_sizes(tmp_path):
             app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
             async with app.run_test(size=size) as pilot:
                 await pilot.pause(0.4)
-                assert app.screen.query_one(DataTable).get_row_at(0)[1] == "COUNT"
+                table = app.screen.query_one(DataTable)
+                assert table.get_row_at(0)[0] == "COUNT"
+                targets = app.screen.query_one("#dotenv-targets", Static)
+                assert targets.region.y >= table.region.bottom
+                if size == (100, 35):
+                    assert targets.region.bottom <= app.screen.query_one("Footer").region.y
                 await pilot.press("e")
                 await pilot.pause(0.4)
                 button = app.screen.query_one("#submit", Button)
@@ -302,7 +307,7 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[1] for i in range(table.row_count)] == ["ENABLED", "DETAIL"]
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ["ENABLED", "DETAIL"]
             table.move_cursor(row=1)
             await pilot.press("e")
             await pilot.pause(0.4)
@@ -318,7 +323,7 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
             assert table.row_count == 1
-            assert table.get_row_at(0)[0:3] == ["✓", "ENABLED", "False"]
+            assert table.get_row_at(0)[0:3] == ["ENABLED", "False", app.session._source(app.session.dotenv_path)]
             await pilot.press("e")
             await pilot.pause(0.4)
             await pilot.press("escape")
@@ -331,7 +336,7 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
             assert table.row_count == 2
-            assert table.get_row_at(1)[0:3] == ["✓", "DETAIL", "saved detail"]
+            assert table.get_row_at(1)[0:3] == ["DETAIL", "saved detail", app.session._source(app.session.dotenv_path)]
     asyncio.run(scenario())
 
 
@@ -388,7 +393,7 @@ def test_unset_saved_default_and_required_value(tmp_path):
             await pilot.press("u")
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0)[0:3] == ["", "COUNT", "4"]
+            assert table.get_row_at(0)[0:3] == ["COUNT", "4", "shared_default"]
             assert "COUNT" not in app.session._choices
             assert "COUNT=" not in (tmp_path / ".env").read_text()
             assert not app.screen.check_action("unset_setting", ())
@@ -403,7 +408,7 @@ def test_unset_saved_default_and_required_value(tmp_path):
             await pilot.press("u")
             await pilot.pause(0.4)
             assert "VALUE" in app.session.result().missing
-            assert app.screen.query_one(DataTable).get_row_at(1)[0] == ""
+            assert app.screen.query_one(DataTable).get_row_at(1) == ["VALUE", "Required — no default", "Not provided"]
             app.screen.query_one(DataTable).move_cursor(row=1)
             assert not app.screen.check_action("accept_default", ())
     asyncio.run(scenario())
@@ -447,10 +452,17 @@ def test_switch_target_and_resave_prefilled_value(tmp_path):
             summary = str(app.screen.query_one("#dotenv-targets", Static).render())
             assert str(base / ".env") in summary
             assert str(pack / ".env") in summary
+            targets = app.screen.query_one("#dotenv-targets", Static)
+            table = app.screen.query_one(DataTable)
+            assert [str(column.label) for column in table.columns.values()] == ["Setting", "Effective value", "Source"]
+            assert len(table.get_row_at(0)) == 3
+            assert targets.parent == table.parent
+            assert targets.region.y >= table.region.bottom
+            assert summary.splitlines()[1:] == [f"  {base / '.env'}", f"✓ {pack / '.env'}"]
             await pilot.press("a")
             await pilot.pause(0.2)
             assert app.screen.kind == "defaults"
-            assert app.screen.query_one(DataTable).get_row_at(0)[0] == "✓"
+            assert app.screen.query_one(DataTable).get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
             await pilot.press("e")
             await pilot.pause(0.2)
             assert app.screen.query_one(Input).value == "4"
@@ -458,7 +470,13 @@ def test_switch_target_and_resave_prefilled_value(tmp_path):
             await pilot.click("#switch-target")
             await pilot.pause(0.2)
             assert app.session.dotenv_path == base / ".env"
-            assert app.screen.query_one(Input).value == "8"
+            targets = app.screen.query_one("#dotenv-targets", Static)
+            value_input = app.screen.query_one(Input)
+            assert targets.parent == value_input.parent
+            assert targets.region.y >= value_input.region.bottom
+            assert targets.region.bottom <= app.screen.query_one("#actions").region.y
+            assert str(targets.render()).splitlines()[1:] == [f"✓ {base / '.env'}", f"  {pack / '.env'}"]
+            assert value_input.value == "8"
             await pilot.press("s")
             await pilot.pause(0.2)
             assert app.session.dotenv_path == pack / ".env"
@@ -470,7 +488,7 @@ def test_switch_target_and_resave_prefilled_value(tmp_path):
             await pilot.press("s")
             await pilot.pause(0.2)
             assert app.session.dotenv_path == base / ".env"
-            assert app.screen.query_one(DataTable).get_row_at(0)[0] == ""
+            assert app.screen.query_one(DataTable).get_row_at(0)[2] == app.session._source(pack / ".env")
             await pilot.press("e")
             await pilot.pause(0.2)
             assert app.screen.query_one(Input).value == "8"
