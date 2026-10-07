@@ -226,6 +226,8 @@ class WorkbenchScreen(ButtonNavigation, Screen):
     def on_data_table_row_highlighted(self, event):
         if self.kind == "defaults" and self.app.screen is self:
             self.app.refresh_configuration_rows(self)
+        elif self.kind == "cleanup" and self.app.screen is self:
+            self.app.refresh_rows()
         self.refresh_bindings()
 
     def on_data_table_row_selected(self, event):
@@ -660,12 +662,21 @@ class ApiAgentApp(App[int]):
         else:
             rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
         if self.screen.kind == "cleanup":
+            # Rebuilding posts another highlight event; unchanged snapshots must
+            # not rebuild again. Preserve the focused setting when rows change.
+            current = [tuple(table.get_row_at(i)) for i in range(table.row_count)]
+            if current == [cells for _, cells in rows]:
+                self.screen.refresh_bindings()
+                return
             cursor = table.cursor_row
+            selected = current[cursor][1] if current else None
             table.clear()
             for key, cells in rows:
                 table.add_row(*cells, key=key)
             if rows:
-                table.move_cursor(row=min(cursor, len(rows) - 1))
+                row_index = next((i for i, (key, _) in enumerate(rows) if key == selected),
+                                 min(cursor, len(rows) - 1))
+                table.move_cursor(row=row_index)
             self.screen.refresh_bindings()
             return
         for key, cells in rows:

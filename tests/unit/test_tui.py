@@ -934,3 +934,42 @@ def test_cleanup_both_dotenvs_hidden_setting_and_default_review(tmp_path):
             assert 'COUNT' in names
             assert 'UI_NX_APP' not in names
     asyncio.run(scenario())
+
+
+def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
+    async def scenario():
+        dotenv = tmp_path / '.env'
+        dotenv.write_text('UI_NX_APP=agent\nCOUNT=6\n')
+        app = fixture(tmp_path, 'config-cleanup', fields={
+            'UI_NX_APP': {'type': 'str', 'default': 'agent',
+                          'acknowledge_default': False, 'persist_default': False},
+            'COUNT': {'type': 'int', 'default': 4}})
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            def rows():
+                return {table.get_row_at(i)[1]: table.get_row_at(i) for i in range(table.row_count)}
+            index = next(i for i in range(table.row_count) if table.get_row_at(i)[1] == 'UI_NX_APP')
+            table.move_cursor(row=index)
+            await pilot.pause()
+            await pilot.press('d')
+            await pilot.pause()
+            app.screen.query_one(Input).value = 'y'
+            await pilot.press('enter')
+            await pilot.pause()
+            assert 'UI_NX_APP' not in rows()
+            dotenv.write_text('UI_NX_APP=shell\nCOUNT=7\n')
+            await pilot.press('up')
+            await pilot.pause()
+            assert rows()['UI_NX_APP'][0:3] == ['✓', 'UI_NX_APP', 'shell']
+            assert rows()['UI_NX_APP'][3].endswith('/.env')
+            assert rows()['COUNT'][2] == '7'
+            index = next(i for i in range(table.row_count) if table.get_row_at(i)[1] == 'UI_NX_APP')
+            table.move_cursor(row=index)
+            await pilot.pause()
+            assert app.screen.check_action('delete_assignment', ())
+            dotenv.write_text('COUNT=7\n')
+            await pilot.press('down')
+            await pilot.pause()
+            assert 'UI_NX_APP' not in rows()
+    asyncio.run(scenario())
