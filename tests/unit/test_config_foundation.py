@@ -17,6 +17,30 @@ def test_help_skips_bad_execution_config_but_rejects_unknown_cli():
     assert result.help_requested and not result.errors
     assert resolve_config(load_shared_schema(), argv=['-h', '--typo'], environ={}).errors
 
+
+@pytest.mark.parametrize(('argv', 'option'), [
+    (['--tui-mode', 'unattended-auth', '--tui-mode', 'unit'], '--tui-mode'),
+    (['--tui-mode=unit', '--tui_mode=e2e'], '--tui-mode'),
+    (['--TUI_MODE=unit', '--tui-mode=unit'], '--tui-mode'),
+    (['--no-std-in', '--no_std_in=False'], '--no-std-in'),
+    (['-h', '--help'], '--help'),
+    (['--help=False', '-h'], '--help'),
+])
+def test_duplicate_options_are_errors_across_normalized_spellings(argv, option):
+    parsed = parse_options(load_shared_schema(), argv)
+    assert parsed.errors == (f'Duplicate option {option}',)
+
+
+def test_duplicate_detection_preserves_separator_and_first_value():
+    schema = load_shared_schema()
+    parsed = parse_options(schema, ['--tui-mode=unit', '--', '--tui-mode=e2e'])
+    assert parsed.values['TUI_MODE'] == 'unit' and not parsed.errors
+    assert parsed.positionals == ('--tui-mode=e2e',)
+    parsed = parse_options(schema, ['--tui-mode=unit', '--tui-mode=e2e'])
+    assert parsed.values['TUI_MODE'] == 'unit'
+    assert parsed.errors == ('Duplicate option --tui-mode',)
+    assert resolve_config(schema, argv=['-h', '--help'], environ={}).errors == ('Duplicate option --help',)
+
 def test_strict_booleans_and_types():
     schema = load_shared_schema()
     for value in ['true', 'false', '1', 'yes']:

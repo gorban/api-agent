@@ -58,6 +58,7 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
     AuthEditScreen #auth-form-actions Button { width: 100%; }
     """
     BINDINGS = [Binding('escape', 'cancel', 'Cancel'),
+                Binding('s', 'switch_target', 'Switch .env'),
                 Binding('c', 'cancel', 'Cancel'), Binding('q', 'quit_request', 'Quit')]
 
     def __init__(self, owner, title, values):
@@ -83,11 +84,11 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
                 yield Static('Login / item name', id='auth-login-label', classes='auth-next-field')
                 yield Input(value=self.values['user'], id='auth-user')
             yield Static('', id='auth-error', markup=False)
-            paths = self.owner._target_paths()
-            yield Static('Target .env files:\n' + '\n'.join(
-                f"{'✓' if path == self.app.session.dotenv_path else ' '} {path}" for path in paths),
-                id='auth-targets', markup=False)
-        with Horizontal(id='auth-form-actions'):
+            yield Static(self.owner.target_summary(), id='auth-targets', markup=False)
+        with Horizontal(id='auth-form-actions') as actions:
+            if len(self.owner._target_paths()) > 1:
+                actions.styles.grid_size_columns = 3
+                yield Button('Switch .env (s)', id='auth-switch-target')
             yield Button('Save value (Enter)', id='auth-save')
             yield Button('Cancel', id='auth-cancel')
         yield ButtonFooter()
@@ -116,6 +117,18 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
     def action_cancel(self):
         self.dismiss(False)
 
+    def check_action(self, action, parameters):
+        if self.app.screen is not self:
+            return False
+        if action == 'switch_target':
+            return len(self.owner._target_paths()) > 1
+        return True
+
+    def action_switch_target(self):
+        if self.check_action('switch_target', ()):
+            self.owner.switch_env_target()
+            self.query_one('#auth-targets', Static).update(self.owner.target_summary())
+
     def action_quit_request(self):
         self.app.push_screen(QuitDialog(), lambda yes: self.app.confirm_quit() if yes else None)
 
@@ -124,6 +137,8 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
             self.save_entry()
         elif event.button.id == 'auth-cancel':
             self.action_cancel()
+        elif event.button.id == 'auth-switch-target':
+            self.action_switch_target()
 
     def on_input_submitted(self, event):
         self.save_entry()
@@ -230,11 +245,15 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             return (self.app.context.pack_root / '.env',)
         return self.app.session.target_paths
 
+    def target_summary(self):
+        return 'Target .env files:\n' + '\n'.join(
+            f"{'✓' if path == self.app.session.dotenv_path else ' '} {path}"
+            for path in self._target_paths())
+
     def _refresh_target(self):
         paths = self._target_paths()
         self.app.session.switch_target(paths[0] if len(paths) == 1 else self.shared_target)
-        self.query_one('#auth-targets', Static).update('Target .env files:\n' + '\n'.join(
-            f"{'✓' if path == self.app.session.dotenv_path else ' '} {path}" for path in paths))
+        self.query_one('#auth-targets', Static).update(self.target_summary())
         field = self.app.session.result(_review=True).fields.get('UNATTENDED_AUTH')
         source = field.source if field else 'absent'
         override = self.query_one('#auth-override', Static)
@@ -445,13 +464,16 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def action_switch_target(self):
         if not self.check_action('switch_target', ()):
             return
+        self.switch_env_target()
+        self._refresh_target()
+
+    def switch_env_target(self):
         paths = self._target_paths()
         if len(paths) == 1:
             self.app.session.switch_target(paths[0])
         else:
             self.app.session.switch_target()
             self.shared_target = self.app.session.dotenv_path
-        self._refresh_target()
 
     def action_close_view(self):
         self.dismiss(self.changed)

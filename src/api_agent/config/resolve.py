@@ -87,10 +87,11 @@ def _controllers(predicate):
             yield name
 
 def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
-                   interactive=False, pack_launcher=False):
+                   interactive=False, pack_launcher=False, overrides=None):
     options = parse_options(schema, argv)
     environ = os.environ if environ is None else environ
     sources = [('dotenv', dotenv or {}), ('environment', environ), ('cli', options.values)]
+    sources.append(('interactive', overrides or {}))
     raw = {}
     for name, declaration in schema.fields.items():
         if declaration.default is not UNSET:

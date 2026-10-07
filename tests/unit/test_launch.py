@@ -78,6 +78,20 @@ class LaunchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _extract_option(['--resource-pack-dir='], {'--resource-pack-dir'})
 
+    def test_duplicate_options_fail_before_starting_operations(self):
+        stderr = StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch('sys.stderr', stderr), \
+                patch('api_agent.config.read_dotenv', return_value={}), \
+                patch('api_agent.runtime.worktrees.verify_worktrees'):
+            self.assertEqual(main(['--tui-mode', 'unattended-auth', '--tui-mode', 'unit'],
+                                  base_root=ROOT), 2)
+        self.assertEqual(stderr.getvalue(), 'Configuration error: Duplicate option --tui-mode\n')
+        for names in ({'--resource-pack-dir', '--resource_pack_dir'},
+                      {'--api-agent-dir', '--api_agent_dir'}):
+            first, second = sorted(names)
+            with self.assertRaisesRegex(ValueError, 'Duplicate option'):
+                _extract_option([first, '/one', second + '=/two'], names)
+
     def test_help_from_unrelated_cwd(self):
         result = subprocess.run([sys.executable, str(ROOT / 'launch.py'), '--help'],
                                 cwd='/', capture_output=True, text=True, input='y\n',

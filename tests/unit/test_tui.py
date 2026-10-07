@@ -1582,3 +1582,29 @@ def test_menu_directional_navigation_skips_disabled_container_button(tmp_path):
             await pilot.press('down')
             assert app.focused.id == 'mode-cleanup-containers'
     asyncio.run(scenario())
+
+
+def test_reopened_configuration_review_omits_previously_saved_rows(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'LOG_CONTENT': {'type': 'bool', 'default': False},
+                                        'RUN_UI': {'type': 'bool', 'default': False}})
+        async with app.run_test(size=(100, 45)) as pilot:
+            await pilot.pause()
+            await pilot.press('a')
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            assert [str(table.get_row_at(i)[0]) for i in range(table.row_count)] == ['LOG_CONTENT', 'RUN_UI']
+            await pilot.press('c')
+            await pilot.pause()
+            app.screen.query_one('#review-config', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            assert table.row_count == 1
+            assert str(table.get_row_at(0)[0]) == 'RUN_UI'
+            await pilot.press('a')
+            await pilot.pause()
+            await pilot.press('c')
+            await pilot.pause()
+            assert not app.screen.query('#review-config')
+    asyncio.run(scenario())

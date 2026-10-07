@@ -9,6 +9,7 @@ class ParsedOptions:
 
 def parse_options(schema, argv):
     values, positionals, errors = {}, [], []
+    seen = set()
     argv = list(argv)
     index = 0
     while index < len(argv):
@@ -18,7 +19,11 @@ def parse_options(schema, argv):
             positionals.extend(argv[index:])
             break
         if token == '-h':
-            values['HELP'] = 'True'
+            if 'HELP' in seen:
+                errors.append('Duplicate option --help')
+            else:
+                values['HELP'] = 'True'
+            seen.add('HELP')
             continue
         if not token.startswith('-'):
             positionals.append(token)
@@ -32,6 +37,10 @@ def parse_options(schema, argv):
         if declaration is None:
             errors.append(f'Unknown option --{key.lower().replace("_", "-")}')
             continue
+        duplicate = key in seen
+        if duplicate:
+            errors.append(f'Duplicate option --{key.lower().replace("_", "-")}')
+        seen.add(key)
         if not separator:
             if declaration.type == 'bool':
                 value = 'True'
@@ -44,5 +53,6 @@ def parse_options(schema, argv):
             else:
                 errors.append(f'{key}: option requires a value')
                 continue
-        values[key] = value
+        if not duplicate:
+            values[key] = value
     return ParsedOptions(values, tuple(positionals), tuple(errors))

@@ -725,6 +725,8 @@ class ApiAgentApp(App[int]):
             await self.configure_operation(skip_defaults=skip_defaults)
 
     def show_menu(self):
+        # Keep acknowledged rows only for the current review, not later visits.
+        self.review_names.clear()
         self.pending_test_selectors = ()
         self.active_test_selectors = ()
         if self.context.external_pack:

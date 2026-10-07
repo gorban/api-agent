@@ -48,6 +48,19 @@ def test_original_precedence_and_session_validation(session):
     assert session.environ == {'VALUE': '4'}
 
 
+def test_interactive_choices_override_cli_without_synthetic_duplicates(session):
+    session.argv = ('--tui-mode=unit', '--value=5', 'selector')
+    session.set_value('VALUE', '6')
+    session.set_value('TUI_MODE', 'run')
+    result = session.result()
+    assert not result.errors
+    assert result.values['VALUE'] == 6 and result.values['TUI_MODE'] == 'run'
+    assert result.fields['VALUE'].source == 'interactive'
+    assert result.positionals == ('selector',)
+    session.argv = ('--value=5', '--value=7')
+    assert 'Duplicate option --value' in session.result().errors
+
+
 def test_choices_recompute_conditional_defaults_and_missing(session):
     assert session.result().missing == ('TUI_MODE',)
     session.set_value('TUI_MODE', 'unit')

@@ -19,6 +19,8 @@ def _extract_option(argv, names):
         if name not in names:
             remaining.append(token)
             continue
+        if selected is not None:
+            raise ValueError(f'Duplicate option {sorted(names)[0]}')
         if not separator:
             if index == len(argv) or argv[index].startswith('--'):
                 raise ValueError(f'{name} requires a directory value')
