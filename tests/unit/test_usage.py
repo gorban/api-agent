@@ -47,12 +47,14 @@ def test_quota_delta_cost_reset_and_zero_prompts():
     assert report['pct_point_delta'] == 1.5
     assert report['estimated_cost_usd'] is None
     assert report['cost_per_prompt_usd'] is None
+    assert report['pct_used_per_prompt'] is None
     assert report['prompt_count'] == 0
     assert report['reset_countdown_hms'] == '02:00:00'
     assert report['concurrent_consumption_possible'] is True
     assert json.loads(json.dumps(report))['before']['captured_at'] == NOW.isoformat()
     usage.record_prompt(turn_id='one', prompt_id='first', kind='initial')
     assert usage.report(now=NOW)['cost_per_prompt_usd'] is None
+    assert usage.report(now=NOW)['pct_used_per_prompt'] == '1.500'
 
 
 @pytest.mark.parametrize('before,after,reason', [
@@ -70,6 +72,7 @@ def test_unavailable_boundaries(before, after, reason):
     assert report['quota_unavailable_reason'] == reason
     assert report['pct_point_delta'] is None
     assert report['estimated_cost_usd'] is None
+    assert report['pct_used_per_prompt'] is None
 
 
 def test_validation_and_capture_idempotence():
