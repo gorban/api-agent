@@ -279,7 +279,11 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
 def format_unit_summary(result):
     """The same precise final accounting for terminal and interactive views."""
     passed = sum(test.status == 'passed' for test in result.tests)
-    state = 'CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0 else 'FAIL'
+    coverage_only_failure = (bool(result.tests) and passed == len(result.tests)
+                             and result.require_full_coverage
+                             and any(not area.complete for area in result.coverage))
+    state = ('CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0
+             else 'Coverage FAIL' if coverage_only_failure else 'FAIL')
     lines = [f'Unit results: {state} — {passed}/{len(result.tests)} passed; {len(result.tests) - passed} did not pass.',
              ('Production coverage requires every measured file to reach 100% lines and branches.'
               if result.require_full_coverage else 'Partial selection: coverage is informational.')]

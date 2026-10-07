@@ -173,3 +173,19 @@ def test_partial_selection_reports_coverage_without_failing_passed_tests(tmp_pat
     assert any(not area.complete for area in result.coverage)
     from api_agent.testing.runner import format_unit_summary
     assert 'Unit results: PASS' in format_unit_summary(result)
+
+
+
+def test_summary_distinguishes_coverage_only_failure_from_test_failure():
+    from api_agent.testing.runner import format_unit_summary, UnitRunResult, TestResult
+    from api_agent.testing.collection import TestIdentity
+    one = TestIdentity('base::test.py::one', 'base', 'test.py', 'test.py::one')
+    two = TestIdentity('base::test.py::two', 'base', 'test.py', 'test.py::two')
+    coverage = (CoverageArea('base', 'src/partial.py', 1, 2, 0, 0),)
+    results = (TestResult(one, 'passed'), TestResult(two, 'passed'))
+    assert format_unit_summary(UnitRunResult(1, results, coverage, '')).splitlines()[0] == (
+        'Unit results: Coverage FAIL — 2/2 passed; 0 did not pass.')
+    results = (TestResult(one, 'passed'), TestResult(two, 'failed'))
+    assert format_unit_summary(UnitRunResult(1, results, coverage, '')).splitlines()[0] == (
+        'Unit results: FAIL — 1/2 passed; 1 did not pass.')
+    assert format_unit_summary(UnitRunResult(130, results, coverage, '', True)).startswith('Unit results: CANCELLED')
