@@ -24,6 +24,8 @@ Contract hardening and synthetic consumer proofs come first, then the included p
 
 Static API-key LLM providers require neither browser login nor credential-array selection. An absent or explicit no-op authentication hook is valid; configured keys are applied by that provider per request. API caller identity and unrelated LLM service credentials remain separate. Optional access adapters must not force selection of an inference provider just to test authentication/discovery.
 
+The included GPT provider contributes its own `GPT_AUTH_MODE`, `GPT_API_MODE`, key, endpoint and applicable OAuth settings through provider-local TOML. Its approved matrix accepts API-key/completions, API-key/responses and eligible subscription/responses; subscription/completions fails before side effects. Conditional credential requirements and wire-format translation stay inside that provider, not generic core. See [the concrete GPT tasks](implementation_plan_f2.md).
+
 ## Selection, configuration and routes
 
 `LLM_PROVIDER`, `API_PROVIDER` and `UI_PROVIDER` select Python-file factories (`path.py:factory`). The loader accepts synchronous factories returning an integer `version = 1`, exposes lifecycle/optional route hooks, and reads adjacent `cfg/config.toml` without importing the factory during schema discovery. Factories are instantiated at awaited runtime startup. The protocol and owner foundation does not complete external adapters or operation consumers.
