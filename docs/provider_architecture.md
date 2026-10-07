@@ -26,7 +26,7 @@ Core owns browser resources operationally. A provider exclusively uses its LLM s
 - [x] Resource packs may list ordered `providers.configs` declaration paths in pack.toml. Compatible provider declarations take precedence over pack defaults and appear as pack_default in the TUI; .env, ENV and CLI remain higher. Resolve these paths from the pack root without importing executable providers. Selected LLM file paths resolve against the configuration owner, and declared factory defaults participate in schema discovery.
 - [ ] Let providers/packs contribute credential roles and optional `UNATTENDED_USER_INDEX`, including an LLM-only role. Bare core/demo does not declare an account index. Share one index across the roles consumed by an operation; do not require every declared role for every mode.
 - [ ] Invoke optional `setup_routes(registrar, services)` once per runtime, after configuration and before serving. LLM and upstream API extensions may both supply it. Reject method/path collisions with core or another provider. Routes remain available without successful automatic login; route setup is separate from browser hooks and token retrieval.
-- [ ] Keep executable listener configuration (`API_LISTENER_URL`, HTTPS authority) independent of provider callback/registration settings. Supply a verified TLS context and generic lifecycle, authentication, credential and privacy services; never infer protocol endpoints in core.
+- [ ] Keep executable listener configuration (`AGENT_DJANGO_URL`, HTTPS authority) independent of provider callback/registration settings. Supply a verified TLS context and generic lifecycle, authentication, credential and privacy services; never infer protocol endpoints in core.
 
 ## Browser and authentication contracts
 

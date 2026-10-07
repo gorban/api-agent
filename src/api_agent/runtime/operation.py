@@ -19,7 +19,7 @@ class CallbackEndpoint:
 
 def callback_endpoint(config):
     """Use the independently configured HTTPS listener authority."""
-    raw = config.values.get('API_LISTENER_URL', '')
+    raw = config.values.get('AGENT_DJANGO_URL', '')
     if not isinstance(raw, str):
         raise ValueError('invalid_callback_uri')
     try:

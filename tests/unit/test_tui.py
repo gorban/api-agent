@@ -594,6 +594,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             assert rows['E2E_RERUNS'][1] == '2'
             assert rows['E2E_BROWSER_RESOLUTION'][1] == '1440x900'
             assert {'RUN_UI', 'RUN_LOG_SOURCE'} <= rows.keys()
+            assert rows['AGENT_DJANGO_URL'][1] == 'https://localhost:8443'
             assert not {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH', 'NO_STD_IN', 'COLLECT_ONLY',
                         'API_AGENT_DIR', 'UI_SOURCE_DIR', 'UI_NX_APP', 'E2E_DEBUG',
                         'AUTH_BROWSER_DEBUG', 'E2E_LOG_INDEX'} & rows.keys()
@@ -612,7 +613,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             await pilot.pause()
             assert relaunched.screen.kind == 'defaults'
             table = relaunched.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET', 'ALLURE_S3_BUCKET', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV', 'API_LISTENER_URL']
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET', 'ALLURE_S3_BUCKET', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV']
     asyncio.run(scenario())
 
 
