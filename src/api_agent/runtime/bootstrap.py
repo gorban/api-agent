@@ -190,7 +190,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return 0
         if result.values.get('NO_STD_IN') and mode == 'unit':
             from api_agent.runtime.dependencies import ensure_environment
-            status = ensure_environment(context, argv, collect=True)
+            status = ensure_environment(context, argv, collect=True, groups=('dev',))
             if status is not None:
                 return status
             from api_agent.testing.collection import collect_tests
@@ -208,7 +208,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise ValueError('Interactive modes require a terminal. Use --help or a configured test mode with --collect-only for noninteractive output.')
         from api_agent.runtime.dependencies import ensure_environment
-        status = ensure_environment(context, argv, collect=True)
+        status = ensure_environment(context, argv, collect=True, groups=('dev',))
         if status is not None:
             return status
         from api_agent.tui.app import run_tui

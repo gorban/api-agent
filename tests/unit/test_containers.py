@@ -194,6 +194,47 @@ def test_stop_protects_session_before_engine():
         run.assert_not_called()
 
 
+def test_cleanup_holds_lease_guard_through_inspect_and_stop(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from api_agent.runtime import prerequisites
+    events = []
+    @contextmanager
+    def guard(directory, scope):
+        assert directory == tmp_path and scope is SCOPE
+        events.append('lock')
+        yield frozenset()
+        events.append('unlock')
+    monkeypatch.setattr(prerequisites, 'guarded_cleanup', guard)
+    monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
+    runtime = ContainerRuntime('docker', SCOPE, ownership_directory=tmp_path)
+    def run(arguments):
+        events.append(arguments[0])
+        assert events[0] == 'lock' and 'unlock' not in events
+        return json.dumps([record()]) if arguments[0] == 'inspect' else ''
+    monkeypatch.setattr(runtime, '_run', run)
+    runtime.stop(['a' * 64])
+    assert events == ['lock', 'inspect', 'stop', 'unlock']
+
+
+@pytest.mark.parametrize('uncertain', [False, True])
+def test_cleanup_refuses_live_lease_or_unverifiable_journal(tmp_path, monkeypatch, uncertain):
+    from contextlib import contextmanager
+    from api_agent.runtime import prerequisites
+    @contextmanager
+    def guard(directory, scope):
+        if uncertain:
+            raise prerequisites.PrerequisiteError('private journal diagnostic')
+        yield frozenset({'a' * 64})
+    monkeypatch.setattr(prerequisites, 'guarded_cleanup', guard)
+    monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
+    runtime = ContainerRuntime('docker', SCOPE, ownership_directory=tmp_path)
+    with patch.object(runtime, '_run') as run:
+        with pytest.raises(ContainerError, match='cleanup refused' if uncertain else 'active invocation') as error:
+            runtime.stop(['a' * 64])
+        assert 'private' not in str(error.value)
+        run.assert_not_called()
+
+
 @pytest.mark.parametrize('response', ['bad', '{}', '[null]', '[{}]', json.dumps([record(Id='')]), json.dumps([record(Name=None)]), json.dumps([record(Config=None)]), json.dumps([record(State=None)])])
 def test_invalid_inspect_response(response):
     runtime=ContainerRuntime('docker',SCOPE)

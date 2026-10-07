@@ -6,6 +6,8 @@
 
 ## Checklist
 
+- [x] Protect containers leased by active invocations during explicit TUI cleanup. Hold the acquisition lock across lease validation, fresh immutable-ID ownership reinspection and stop; uncertainty refuses cleanup. The TUI uses the same owner-root `artifacts/prerequisites/` journal as operation startup. Controlled tests cover active leases, stale process identities, lock ordering and fixed errors; actual retained-container cleanup remains a human integration check.
+
 - [x] Implement canonical base/pack `StackScope`, managed/scope/Compose-project discovery filters before inspection, explicit profile and service ownership checks, immutable-ID stop revalidation and independent hosting-Distrobox protection. The default TUI uses the selected checkout scope. Deterministic tests include unrelated projects and ownership mutation; actual profile lifecycle/active reuse leases and live cleanup remain below.
 
 - [ ] **Gate the first app/test Compose stack on ownership-filtered cleanup.** Whichever service is implemented first—GoJQ/gVisor sidecar, upstream API, LangFuse, Jaeger/OTEL, seeded API database or LocalStack/S3 (and a Neo4j server only if that deferred backend is later introduced)—must introduce stable app ownership and checkout/resource-pack scope before its containers can be launched through the TUI. Include supporting stack services (for example LangFuse's PostgreSQL, Redis, ClickHouse and object storage), and future agent-service containers if introduced. Host Nx UI processes are not containers.

@@ -139,7 +139,22 @@ def default_compose_directory():
     return module.parents[1] / 'infra' / 'compose'
 
 
-def plan_compose(config, scope: Scope, *, compose_directory=None, executable='docker'):
+ENGINE_ENVIRONMENT_KEYS = frozenset({'PATH', 'DOCKER_HOST', 'CONTAINER_HOST',
+    'XDG_RUNTIME_DIR', 'HOME', 'DOCKER_CONFIG', 'API_AGENT_HOST_UID'})
+
+
+def controlled_engine_environment(environment):
+    """Accept only explicit engine transport/config paths, never provider env."""
+    result = dict(environment or {})
+    if (set(result) - ENGINE_ENVIRONMENT_KEYS or any(not isinstance(value, str)
+            or '\x00' in value for value in result.values())):
+        raise ComposeError('Unsupported engine environment override.')
+    if 'API_AGENT_HOST_UID' in result and not re.fullmatch('[0-9]+', result['API_AGENT_HOST_UID']):
+        raise ComposeError('Engine host UID must contain only ASCII digits.')
+    return result
+
+
+def plan_compose(config, scope: Scope, *, compose_directory=None, executable='docker', engine_environment=None):
     """Return reviewable arguments and a complete isolated child environment."""
     if not re.fullmatch('[0-9a-f]{16}', scope.id) or scope.project != 'sa-' + scope.id:
         raise ComposeError('Invalid Compose ownership scope.')
@@ -161,8 +176,16 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
                '-f', str(directory / 'compose.json'), '--env-file', str(empty_env))
     for profile in profiles:
         command += ('--profile', profile)
-    return ComposePlan(profiles, services, command, directory,
-                       MappingProxyType(local_development_environment(scope)))
+    environment = {**controlled_engine_environment(engine_environment),
+                   **local_development_environment(scope)}
+    if 'langfuse' in profiles:
+        for key in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
+            value = config.get(key)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip() or value != value.strip() or '\x00' in value:
+                    raise ComposeError('Local Langfuse project keys must be nonempty strings.')
+                environment['SA_' + key] = value
+    return ComposePlan(profiles, services, command, directory, MappingProxyType(environment))
 
 
 def validate_compose(plan, *, runner=subprocess.run):

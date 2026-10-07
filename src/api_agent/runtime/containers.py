@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -56,9 +57,10 @@ def is_session_container(identifier, names, identities):
 
 
 class ContainerRuntime:
-    def __init__(self, executable=None, scope=None):
+    def __init__(self, executable=None, scope=None, *, ownership_directory=None):
         self.executable = executable
         self.scope = scope
+        self.ownership_directory = ownership_directory
 
     def _run(self, arguments):
         executable = self.executable or shutil.which("docker") or shutil.which("podman")
@@ -124,9 +126,18 @@ class ContainerRuntime:
         protected = session_container_identity()
         if any(is_session_container(identifier, identifier, protected) for identifier in identifiers):
             raise ContainerError("Cannot stop the container hosting this session.")
-        records = self._inspect(identifiers)
-        if (len(records) != len(identifiers)
-                or {record["Id"] for record in records} != set(identifiers)
-                or not all(self._eligible(record, protected) for record in records)):
-            raise ContainerError("Selected containers are no longer owned by this stack scope.")
-        self._run(["stop", *identifiers])
+        from .prerequisites import guarded_cleanup, PrerequisiteError
+        guard = (guarded_cleanup(self.ownership_directory, self.scope)
+                 if self.ownership_directory is not None else nullcontext(frozenset()))
+        try:
+            with guard as leased:
+                if leased.intersection(identifiers):
+                    raise ContainerError("Selected containers are in use by an active invocation.")
+                records = self._inspect(identifiers)
+                if (len(records) != len(identifiers)
+                        or {record["Id"] for record in records} != set(identifiers)
+                        or not all(self._eligible(record, protected) for record in records)):
+                    raise ContainerError("Selected containers are no longer owned by this stack scope.")
+                self._run(["stop", *identifiers])
+        except PrerequisiteError:
+            raise ContainerError("Cannot verify active prerequisite leases; cleanup refused.") from None
