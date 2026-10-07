@@ -25,6 +25,7 @@ class LaunchContext:
     packaged_demo: bool = False
     launcher_root: Path | None = None
     show_pack_bootstrap: bool = False
+    credential_role_fields: tuple[str, ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -79,7 +80,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -101,6 +102,15 @@ def load_launch_context(
         raise ResourcePackError("Resource-pack defaults and tests must be TOML tables")
     if set(declared_tests) - {"unit", "integration", "e2e"}:
         raise ResourcePackError("Resource-pack tests contains an unknown test mode")
+    authentication = data.get("authentication", {})
+    if not isinstance(authentication, dict) or set(authentication) - {"credential_role_fields"}:
+        raise ResourcePackError("Resource-pack authentication contains unknown or invalid fields")
+    role_fields = authentication.get("credential_role_fields", [])
+    if (not isinstance(role_fields, list)
+            or any(not isinstance(name, str) or not name.isascii() or not name.isidentifier()
+                   for name in role_fields)
+            or len(set(role_fields)) != len(role_fields)):
+        raise ResourcePackError("authentication.credential_role_fields must list unique configuration field names")
     tests: dict[str, tuple[Path, ...]] = {}
     for mode, paths in declared_tests.items():
         if not isinstance(paths, list):
@@ -111,4 +121,5 @@ def load_launch_context(
         MappingProxyType(dict(defaults)), MappingProxyType(tests), packaged_demo,
         Path(launcher_root).resolve() if launcher_root is not None else base,
         resource_pack_dir is None and (launcher_root is None or Path(launcher_root).resolve() == base),
+        tuple(role_fields),
     )

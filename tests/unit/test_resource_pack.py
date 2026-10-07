@@ -104,3 +104,29 @@ def test_bootstrap_hint_only_without_explicit_pack(tmp_path):
     assert load_launch_context(base, launcher_root=base).show_pack_bootstrap
     assert not load_launch_context(base, demo).show_pack_bootstrap
     assert not load_launch_context(base, launcher_root=demo).show_pack_bootstrap
+
+
+def test_pack_declares_generic_credential_role_fields(tmp_path):
+    base, pack = tmp_path / 'base', tmp_path / 'pack'
+    base.mkdir()
+    make_pack(pack)
+    manifest = pack / 'pack.toml'
+    manifest.write_text(manifest.read_text() + '\n[authentication]\ncredential_role_fields=["PARTNER_ROLE"]\n')
+    assert load_launch_context(base, pack).credential_role_fields == ('PARTNER_ROLE',)
+
+
+@pytest.mark.parametrize('declaration', [
+    'authentication="invalid"',
+    '[authentication]\nunknown=true',
+    '[authentication]\ncredential_role_fields="PARTNER_ROLE"',
+    '[authentication]\ncredential_role_fields=["bad-key"]',
+    '[authentication]\ncredential_role_fields=[1]',
+    '[authentication]\ncredential_role_fields=["ROLE","ROLE"]',
+])
+def test_invalid_credential_role_declarations_fail_before_dispatch(tmp_path, declaration):
+    base, pack = tmp_path / 'base', tmp_path / 'pack'
+    base.mkdir()
+    make_pack(pack)
+    (pack / 'pack.toml').write_text('version=1\nid="fixture"\nconfig="config.toml"\n' + declaration + '\n')
+    with pytest.raises(ResourcePackError, match='authentication'):
+        load_launch_context(base, pack)
