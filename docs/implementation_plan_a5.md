@@ -1,5 +1,9 @@
 # Local-run authentication and provider contract
 
+## Provider authentication handler integration
+
+- [ ] Implement selected-provider authentication handlers through generic route registration. Providers own their authentication protocols, transactions, cookies and completion behavior; core owns runtime routing, generic request binding and lifecycle. Verify public integration with synthetic providers and establish UI contracts independently.
+
 ## Checklist
 
 - [ ] Verify generic authentication contracts independently: upstream API extensions own credential expiry and validation; the selected LLM provider owns its authentication configuration, sessions and routes. Public handlers and live flows remain to be verified.
@@ -54,4 +58,4 @@ The deterministic owner exposes async `aopen` for consumers that may retire acti
 
 - [x] Shield shared Runtime startup from cancellation of its awaiters; only owned shutdown cancels and drains startup. Repeated cancellation cannot interrupt an owner's awaited finally cleanup, and concurrent startup waiters share one startup task. Verify with gated asynchronous cleanup and substantive cancellation regressions.
 
-- [ ] Let the selected LLM provider validate its completion route configuration and own authorization transactions. Core binds requests and browser authentication to the initiating session without interpreting provider protocol state.
+- [ ] Let the selected LLM provider validate completion route configuration and own authorization transactions. Core binds requests and browser authentication to the initiating session without interpreting provider protocol state.
