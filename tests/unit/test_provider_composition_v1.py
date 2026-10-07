@@ -134,7 +134,7 @@ def test_all_owners_compose_with_immutable_services_and_close(tmp_path):
     ui = source(tmp_path / 'ui', body('ui', 'launch', 'astart'))
     upstream = source(tmp_path / 'upstream', body('upstream', 'validate', 'avalidate'))
     runtime = compose_runtime(SimpleNamespace(pack_id='synthetic', owner_root=tmp_path, identity_factory_path=None),
-                              {'API_PROVIDER': api, 'UI_PROVIDER': ui, 'UPSTREAM_API_PROVIDER': upstream}, callback_origin='https://example.test')
+                              {'API_PROVIDER': api, 'UI_PROVIDER': ui, 'UPSTREAM_API_PROVIDER': upstream}, callback_origin='https://example.test', required_kinds={'api', 'ui'})
     assert runtime.services['ssl_context'].check_hostname
     assert runtime.services['tls_material'] is None
     with pytest.raises(TypeError):
@@ -154,7 +154,7 @@ def test_async_composition_defers_factories_and_awaits_failed_start_cleanup(tmp_
     failing = source(tmp_path / 'ui', 'def create(config, services): raise RuntimeError("private")\n')
     async def scenario():
         runtime = compose_runtime(SimpleNamespace(pack_id='synthetic', identity_factory_path=None),
-                                  {'API_PROVIDER': api, 'UI_PROVIDER': failing}, callback_origin='https://example.test')
+                                  {'API_PROVIDER': api, 'UI_PROVIDER': failing}, callback_origin='https://example.test', required_kinds={'api', 'ui'})
         assert runtime.api_provider is None
         with pytest.raises(RuntimeLifecycleError, match='start_failed'):
             await runtime.astart()
@@ -166,14 +166,14 @@ def test_async_composition_success_and_factory_rollback(tmp_path):
     api = source(tmp_path / 'api', body('api', 'invoke', 'ainvoke'))
     context = SimpleNamespace(pack_id='synthetic', identity_factory_path=None)
     async def scenario():
-        runtime = compose_runtime(context, {'API_PROVIDER': api}, callback_origin='https://example.test')
+        runtime = compose_runtime(context, {'API_PROVIDER': api}, callback_origin='https://example.test', required_kinds={'api', 'ui'})
         await runtime.astart()
         assert runtime.require_provider('api', 'invoke')
         await runtime.aclose()
     asyncio.run(scenario())
     broken = source(tmp_path / 'broken', 'def create(config, services): raise RuntimeError()\n')
     before = set(sys.modules)
-    runtime = compose_runtime(context, {'API_PROVIDER': api, 'UI_PROVIDER': broken}, callback_origin='https://example.test')
+    runtime = compose_runtime(context, {'API_PROVIDER': api, 'UI_PROVIDER': broken}, callback_origin='https://example.test', required_kinds={'api', 'ui'})
     with pytest.raises(RuntimeLifecycleError):
         asyncio.run(runtime.astart())
     assert set(sys.modules) == before
@@ -197,7 +197,7 @@ def test_nested_upstream_routes_get_its_configuration_owner(tmp_path):
     upstream = source(tmp_path / 'api' / 'nested', body('upstream', 'validate', 'avalidate', routes='def setup_routes(self, registrar, services): self.root = services["owner_root"]'))
     api = source(tmp_path / 'api', body('api', 'invoke', 'ainvoke'))
     runtime = compose_runtime(SimpleNamespace(pack_id='synthetic', owner_root=tmp_path, identity_factory_path=None),
-                              {'API_PROVIDER': api, 'UPSTREAM_API_PROVIDER': 'nested/provider.py:create'}, callback_origin='https://example.test')
+                              {'API_PROVIDER': api, 'UPSTREAM_API_PROVIDER': 'nested/provider.py:create'}, callback_origin='https://example.test', required_kinds={'api', 'ui'})
     async def scenario():
         await runtime.astart()
         assert runtime.upstream_provider.implementation.root == tmp_path / 'api'
@@ -211,7 +211,7 @@ def test_provider_routes_collision_closes_all_started_and_unstarted_owners(tmp_p
     api = source(tmp_path / 'api', body('api', 'invoke', 'ainvoke', routes=setup))
     ui = source(tmp_path / 'ui', body('ui', 'launch', 'astart', routes=setup))
     runtime = compose_runtime(SimpleNamespace(pack_id='synthetic', identity_factory_path=None),
-                              {'API_PROVIDER': api, 'UI_PROVIDER': ui}, callback_origin='https://example.test')
+                              {'API_PROVIDER': api, 'UI_PROVIDER': ui}, callback_origin='https://example.test', required_kinds={'api', 'ui'})
     with pytest.raises(RuntimeLifecycleError, match='start_failed'):
         asyncio.run(runtime.astart())
     assert runtime.api_provider.closed and runtime.ui_provider.closed
@@ -272,7 +272,7 @@ def test_direct_sync_loader_rejects_running_loop_before_import_or_factory(tmp_pa
 def test_ui_launch_requires_advertised_capability(tmp_path):
     ui = source(tmp_path, 'class Adapter:\n    version=1\n    async def astart(self): self.launched = True\n    async def aclose(self): pass\ndef create(config, services): return Adapter()\n')
     runtime = compose_runtime(SimpleNamespace(pack_id='synthetic', identity_factory_path=None),
-                              {'UI_PROVIDER': ui}, callback_origin='https://example.test')
+                              {'UI_PROVIDER': ui}, callback_origin='https://example.test', required_kinds={'api', 'ui'})
     with pytest.raises(RuntimeLifecycleError, match='start_failed'):
         asyncio.run(runtime.astart())
     assert runtime.ui_provider.closed

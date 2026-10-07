@@ -150,7 +150,7 @@ def create(config, services): return Adapter(services)
 ''')
     context = SimpleNamespace(pack_id='synthetic', identity_factory_path=None)
     runtime = compose_runtime(context, {'LLM_PROVIDER': str(provider_file) + ':create'},
-        callback_origin='https://agent.example', tls_material=SimpleNamespace(ca_file=certificates[0]))
+        callback_origin='https://agent.example', tls_material=SimpleNamespace(ca_file=certificates[0]), required_kinds={'llm'})
     async def scenario():
         await runtime.astart()
         trust = runtime.llm_provider.implementation.services['ssl_context']

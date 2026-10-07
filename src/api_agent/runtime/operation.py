@@ -7,6 +7,8 @@ import sys
 from threading import Event
 from urllib.parse import urlsplit
 
+from api_agent.providers.control import CleanupPendingError
+
 from .tasks import settle as _settle, offload as _offload
 
 
@@ -46,6 +48,66 @@ class OperationSession:
     callback: CallbackEndpoint
 
 
+class OperationCleanup:
+    """Retain listener, runtime and prerequisite lease until confirmed disposal."""
+    def __init__(self, manager, runtime, listener, lease, retain, timeout, complete=lambda: None):
+        self.manager, self.runtime, self.listener = manager, runtime, listener
+        self.lease, self.retain, self.timeout = lease, retain, timeout
+        self.done = set()
+        self.tasks = {}
+        self.task = None
+        self.complete = complete
+
+    async def _run(self):
+        pending = []
+        # A live listener can still invoke runtime owners, so retains that subtree.
+        for name, owner, method in [('listener', self.listener, 'stop'),
+                                     ('runtime', self.runtime, 'aclose')]:
+            if owner is None or name in self.done:
+                continue
+            if pending:
+                pending.append(owner)
+                continue
+            if name not in self.tasks:
+                self.tasks[name] = asyncio.create_task(getattr(owner, method)())
+            task = self.tasks[name]
+            finished, _ = await asyncio.wait({task}, timeout=self.timeout)
+            if not finished:
+                pending.append(owner)
+                continue
+            try:
+                task.result()
+            except BaseException:
+                del self.tasks[name]
+                pending.append(owner)
+            else:
+                self.done.add(name)
+        if pending:
+            raise CleanupPendingError(tuple(pending) + ((self.lease,) if self.lease is not None else ()), self.retry)
+        if self.lease is not None and 'lease' not in self.done:
+            try:
+                await _offload(self.manager.release, retain=self.retain)
+            except BaseException:
+                raise CleanupPendingError((self.lease,), self.retry) from None
+            self.done.add('lease')
+        self.complete()
+
+    async def retry(self):
+        if self.task is None or self.task.done() and self.task.exception() is not None:
+            self.task = asyncio.create_task(self._run())
+        cancellations = asyncio.current_task().cancelling()
+        try:
+            await _settle(self.task)
+        except CleanupPendingError as pending:
+            if asyncio.current_task().cancelling() > cancellations:
+                error = asyncio.CancelledError()
+                error.cleanup_pending = pending
+                raise error
+            raise
+        if asyncio.current_task().cancelling() > cancellations:
+            raise asyncio.CancelledError
+
+
 class OperationRunner:
     """Inject side effects; creating this coordinator performs no I/O.
 
@@ -68,9 +130,25 @@ class OperationRunner:
         self.create_application = create_application
         self.listener = listener
         self.timeout = timeout
+        self.pending_cleanup = None
+        self._active = False
 
     @asynccontextmanager
     async def open(self, *, retain=False, validate=None):
+        """Own one operation across preparation, execution and cleanup."""
+        if self._active:
+            raise RuntimeError('operation_already_active')
+        if self.pending_cleanup is not None:
+            raise self.pending_cleanup
+        self._active = True
+        try:
+            async with self._open_owned(retain=retain, validate=validate) as session:
+                yield session
+        finally:
+            self._active = False
+
+    @asynccontextmanager
+    async def _open_owned(self, *, retain, validate):
         """Start in dependency order; release a test lease after the workload."""
         config = self.resolve()
         if config.errors or config.missing:
@@ -96,32 +174,28 @@ class OperationRunner:
             await owned_listener.wait_ready(self.timeout)
             yield OperationSession(config, tls, lease, runtime, application, owned_listener, endpoint)
         finally:
-            cleanup_cancellations = asyncio.current_task().cancelling()
-            # A start failure may have bound a socket before raising. Stop even
-            # then, and attempt every later cleanup when an earlier one fails.
-            failed = None
-            if owned_listener is not None:
-                try:
-                    await _settle(asyncio.create_task(owned_listener.stop()))
-                except BaseException as error:
-                    failed = error
-            if runtime is not None:
-                try:
-                    await _settle(asyncio.create_task(runtime.aclose()))
-                except BaseException as error:
-                    failed = failed or error
+            primary = sys.exc_info()[1]
             if lease is None:
                 lease = getattr(owned_manager, 'lease', None)
-            if lease is not None:
-                try:
-                    await _offload(owned_manager.release, retain=retain)
-                except BaseException as error:
-                    failed = failed or error
-            if failed is not None and sys.exc_info()[0] is None:
-                raise failed
-            if (sys.exc_info()[0] is None
-                    and asyncio.current_task().cancelling() > cleanup_cancellations):
-                raise asyncio.CancelledError
+            cleanup = OperationCleanup(owned_manager, runtime, owned_listener, lease, retain, self.timeout,
+                                       complete=lambda: setattr(self, 'pending_cleanup', None))
+            try:
+                await cleanup.retry()
+            except asyncio.CancelledError as cancellation:
+                pending = getattr(cancellation, 'cleanup_pending', None)
+                if pending is not None:
+                    self.pending_cleanup = pending
+                    if primary is not None:
+                        primary.cleanup_pending = pending
+                if primary is None:
+                    raise
+            except CleanupPendingError as pending:
+                self.pending_cleanup = pending
+                if primary is not None:
+                    primary.cleanup_pending = pending
+                else:
+                    raise
+
 
 
 def local_operation(context, *, resolve, argv, scope, ownership_directory,

@@ -53,7 +53,7 @@ def test_provider_config_is_combined_before_factory_import(tmp_path):
 
 def test_lifecycle_and_routes_are_runtime_owned(tmp_path):
     context = SimpleNamespace(pack_id='demo', identity_factory_path=None)
-    runtime = compose_runtime(context, {'LLM_PROVIDER': factory(tmp_path)}, callback_origin='https://agent.example')
+    runtime = compose_runtime(context, {'LLM_PROVIDER': factory(tmp_path)}, callback_origin='https://agent.example', required_kinds={'llm'})
     assert runtime.llm_provider is None
     async def scenario():
         await runtime.astart()
@@ -86,7 +86,7 @@ def test_registered_routes_dispatch_with_runtime_isolation(tmp_path):
     from api_agent.api import create_application
     from test_api_foundation import http
     context = SimpleNamespace(pack_id='demo', identity_factory_path=None)
-    first = compose_runtime(context, {'LLM_PROVIDER': factory(tmp_path)}, callback_origin='https://agent.example')
+    first = compose_runtime(context, {'LLM_PROVIDER': factory(tmp_path)}, callback_origin='https://agent.example', required_kinds={'llm'})
     second = compose_runtime(context, {}, callback_origin='https://agent.example')
     first_app, second_app = create_application(first), create_application(second)
     async def start():

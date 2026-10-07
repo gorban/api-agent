@@ -8,7 +8,7 @@ import inspect
 from pathlib import Path
 import sys
 from types import MappingProxyType, ModuleType
-from .contracts import ProviderCapabilities, OPERATION_METHODS
+from .contracts import ProviderCapabilities, OPERATION_METHODS, LLM_FEATURES, OperationalError
 import uuid
 
 
@@ -72,6 +72,8 @@ class _StreamView:
     def astream(self, request, *, auth=None):
         try:
             result = self._implementation.astream(request, auth=auth)
+        except OperationalError:
+            raise
         except Exception:
             raise ProviderError('provider_stream_invalid') from None
         if not callable(getattr(result, '__aiter__', None)) or not callable(getattr(result, '__anext__', None)):
@@ -202,14 +204,23 @@ def validate_capabilities(adapter, expected_kind=None):
         return
     if not isinstance(capabilities, ProviderCapabilities) or type(capabilities.version) is not int or capabilities.version != 1:
         raise ProviderError('provider_capability_invalid')
+    if type(capabilities.kind) is not str:
+        raise ProviderError('provider_capability_invalid')
     methods = OPERATION_METHODS.get(capabilities.kind)
     if methods is None or expected_kind is not None and capabilities.kind != expected_kind:
         raise ProviderError('provider_capability_invalid')
-    if not isinstance(capabilities.operations, tuple) or any(not isinstance(operation, str) for operation in capabilities.operations) or len(set(capabilities.operations)) != len(capabilities.operations):
+    if not isinstance(capabilities.operations, tuple) or any(type(operation) is not str for operation in capabilities.operations) or len(set(capabilities.operations)) != len(capabilities.operations):
         raise ProviderError('provider_capability_invalid')
-    if not isinstance(capabilities.credential_roles, tuple) or any(not isinstance(role, str) or not role for role in capabilities.credential_roles):
+    if not isinstance(capabilities.credential_roles, tuple) or any(type(role) is not str or not role for role in capabilities.credential_roles):
+        raise ProviderError('provider_capability_invalid')
+    if capabilities.llm_role is not None and type(capabilities.llm_role) is not str:
         raise ProviderError('provider_capability_invalid')
     if len(set(capabilities.credential_roles)) != len(capabilities.credential_roles) or capabilities.llm_role is not None and (capabilities.kind != 'llm' or capabilities.llm_role not in capabilities.credential_roles):
+        raise ProviderError('provider_capability_invalid')
+    if (not isinstance(capabilities.features, tuple)
+            or any(type(feature) is not str or feature not in LLM_FEATURES for feature in capabilities.features)
+            or len(set(capabilities.features)) != len(capabilities.features)
+            or capabilities.features and capabilities.kind != 'llm'):
         raise ProviderError('provider_capability_invalid')
     for operation in capabilities.operations:
         if operation not in methods:
@@ -323,7 +334,7 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
     from api_agent.config.options import parse_options
     from api_agent.config.declarations import UNSET
     schema = base_schema
-    owners = {name: owner_root for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER')}
+    owners = {name: owner_root for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER')}
     for path in configuration_paths:
         previous = set(schema.fields)
         schema = contribution_schema(path, schema)
@@ -335,7 +346,7 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
     while True:
         pending = False
         options = parse_options(schema, argv).values
-        for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'UPSTREAM_API_PROVIDER'):
+        for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER'):
             declaration = schema.fields.get(name)
             if declaration is None:
                 continue

@@ -1,10 +1,12 @@
 """Compose a Django ASGI application without opening listeners or loading secrets."""
 import asyncio
+from api_agent.runtime.tasks import settle
 import os
 import inspect
 from django.core.handlers.asgi import ASGIHandler
 from api_agent.providers.loading import ProviderError, _task
 from .routes import RouteRegistrar
+from api_agent.providers.control import CleanupPendingError, OperationalError
 
 from dataclasses import dataclass, field
 import re
@@ -33,6 +35,8 @@ class Runtime:
     llm_provider: object = field(default=None, repr=False)
     api_provider: object = field(default=None, repr=False)
     upstream_provider: object = field(default=None, repr=False)
+    access_provider: object = field(default=None, repr=False)
+    pending_cleanup: object = field(default=None, init=False, repr=False)
     ui_provider: object = field(default=None, repr=False)
     identity_plan: object = field(default=None, repr=False)
     factory_plan: object = field(default=None, repr=False)
@@ -52,6 +56,7 @@ class Runtime:
     _cleanup_tasks: dict = field(default_factory=dict, init=False, repr=False)
     _cleaned: set = field(default_factory=set, init=False, repr=False)
     _retained_owners: list = field(default_factory=list, init=False, repr=False)
+    _retained_kinds: dict = field(default_factory=dict, init=False, repr=False)
     _cancel_requested: set = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self):
@@ -111,7 +116,9 @@ class Runtime:
                 try:
                     owner = await aload_provider(location, config, services, kind=kind)
                 except BaseException as error:
-                    self._retained_owners.extend(getattr(error, 'retained_owners', ()))
+                    retained = getattr(error, 'retained_owners', ())
+                    self._retained_owners.extend(retained)
+                    self._retained_kinds.update((id(owner), kind) for owner in retained)
                     raise
                 setattr(self, kind + "_provider", owner)
                 if self._closed:
@@ -122,7 +129,7 @@ class Runtime:
             self.identity_plan = None
         from types import MappingProxyType
         services = self.services or MappingProxyType({'sessions': self.sessions, 'emissions': self.emissions})
-        for owner in (self.tracing, self.upstream_provider, self.api_provider, self.llm_provider, self.ui_provider, self.identity_adapter):
+        for owner in (self.tracing, self.upstream_provider, self.api_provider, self.llm_provider, self.access_provider, self.ui_provider, self.identity_adapter):
             if self._closed:
                 raise RuntimeLifecycleError('runtime_closed')
             setup = getattr(owner, 'setup_routes', None)
@@ -148,15 +155,16 @@ class Runtime:
             self._start_task = _task(self._start_owned())
         try:
             await asyncio.shield(self._start_task)
-        except asyncio.CancelledError:
+        except BaseException as primary:
             try:
-                await self.aclose()
-            except Exception:
-                pass
-            raise
-        except Exception:
-            await self.aclose()
-            raise RuntimeLifecycleError('runtime_start_failed') from None
+                await settle(_task(self.aclose()))
+            except CleanupPendingError as pending:
+                primary.cleanup_pending = pending
+            if isinstance(primary, (asyncio.CancelledError, OperationalError)):
+                raise
+            error = RuntimeLifecycleError('runtime_start_failed')
+            error.cleanup_pending = self.pending_cleanup
+            raise error from None
 
     async def _close_owned(self):
         from api_agent.providers.sessions import _drain
@@ -164,10 +172,28 @@ class Runtime:
             await _drain([self._start_task] if self._start_task is not None else [],
                          self.timeout, self._cancel_requested)
         except Exception:
-            raise RuntimeLifecycleError('runtime_cleanup_pending') from None
+            raise CleanupPendingError((self,), self.aclose) from None
         owners = (*self._retained_owners, self.sessions, self.identity_adapter, self.ui_provider,
-                  self.llm_provider, self.api_provider, self.upstream_provider, self.tracing)
+                  self.llm_provider, self.access_provider, self.api_provider, self.upstream_provider, self.tracing)
+        pending = []
+        # API owners require upstream clients; every unresolved child retains tracing.
         for owner in owners:
+            if owner is None:
+                continue
+            if any(child is self.sessions or child is self.ui_provider or child is self.identity_adapter
+                   or self._retained_kinds.get(id(child)) == 'ui'
+                   for child in pending) and (owner is self.api_provider or owner is self.upstream_provider):
+                pending.append(owner)
+                continue
+            if any(child is self.sessions for child in pending) and owner is not self.sessions:
+                pending.append(owner)
+                continue
+            if owner is self.upstream_provider and any(child is self.api_provider or self._retained_kinds.get(id(child)) == 'api' for child in pending):
+                pending.append(owner)
+                continue
+            if owner is self.tracing and pending:
+                pending.append(owner)
+                continue
             close = getattr(owner, 'aclose', None)
             key = id(owner)
             if close is None or key in self._cleaned:
@@ -179,13 +205,18 @@ class Runtime:
             task = self._cleanup_tasks[key]
             done, _ = await asyncio.wait({task}, timeout=self.timeout)
             if not done:
-                raise RuntimeLifecycleError('runtime_cleanup_pending') from None
+                pending.append(owner)
+                continue
             try:
                 task.result()
             except BaseException:
                 del self._cleanup_tasks[key]
-                raise RuntimeLifecycleError('runtime_cleanup_failed') from None
+                pending.append(owner)
+                continue
             self._cleaned.add(key)
+        if pending:
+            raise CleanupPendingError(tuple(pending), self.aclose)
+        self.pending_cleanup = None
 
     async def aclose(self):
         self._context()
@@ -193,7 +224,11 @@ class Runtime:
             self._closed = True
             self.stop()
             self._close_task = _task(self._close_owned())
-        await asyncio.shield(self._close_task)
+        try:
+            await asyncio.shield(self._close_task)
+        except CleanupPendingError as pending:
+            self.pending_cleanup = pending
+            raise
 
 
 class RuntimeHandler(ASGIHandler):

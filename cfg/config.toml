@@ -272,6 +272,12 @@ type = "str"
 review_optional = true
 help = "Optional frontend lifecycle factory location (file.py:factory), selected by the resource pack."
 
+[fields.ACCESS_PROVIDER]
+acknowledge_default = false
+type = "str"
+review_optional = true
+help = "Optional non-inference access adapter factory (file.py:factory); activated only for selected access checks, independently of the LLM provider."
+
 [fields.AGENT_DJANGO_URL]
 type = "str"
 default = "https://localhost:8443"
