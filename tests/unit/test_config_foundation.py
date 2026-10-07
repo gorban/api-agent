@@ -79,6 +79,8 @@ def test_active_required_and_collection_exemptions(tmp_path):
     collect = resolve_config(schema, environ={'TUI_MODE': 'e2e', 'RUN_UI': 'True',
                             'COLLECT_ONLY': 'True', 'E2E_RERUNS': 'bad'})
     assert not collect.errors and 'E2E_RERUNS' not in collect.values
+    assert 'RUN_UI' not in collect.values
+    assert 'UI_SOURCE_DIR' not in collect.values and 'UI_NX_APP' not in collect.values
     resolved = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True',
                               'UI_SOURCE_DIR': 'web'}, anchors={'owner_root': tmp_path})
     assert resolved.values['UI_SOURCE_DIR'] == tmp_path / 'web'
@@ -285,6 +287,9 @@ def test_ui_applies_to_e2e_and_optional_local_only(tmp_path, mode, run_ui, activ
         result = resolve_config(schema, environ={'TUI_MODE': mode, 'RUN_UI': run_ui, 'PACK_TEST_TOKEN': 'test-only', 'UI_SOURCE_DIR': str(tmp_path / 'ui')},
                                 anchors={'owner_root': tmp_path})
         result.raise_for_errors()
+        assert ('RUN_UI' in result.values) == (mode in ('run-local', 'e2e'))
+        if mode in ('run-local', 'e2e'):
+            assert result.values['RUN_UI'] is (run_ui == 'True')
         assert ('UI_NX_APP' in result.values) == active
         assert ('UI_SOURCE_DIR' in result.values) == active
         if active:
@@ -358,3 +363,23 @@ def test_resource_pack_token_required_for_api_and_test_execution(tmp_path):
         result = resolve_config(schema, environ={'TUI_MODE': mode}, anchors=anchors)
         assert not result.errors
         assert 'PACK_TEST_TOKEN' not in result.values
+
+
+@pytest.mark.parametrize('dotenv,environ,argv,expected,source', [
+    ({},{},[],False,'shared_default'),
+    ({'RUN_UI':'True'},{},[],True,'dotenv'),
+    ({'RUN_UI':'False'},{'RUN_UI':'True'},[],True,'environment'),
+    ({'RUN_UI':'True'},{'RUN_UI':'True'},['--run-ui=False'],False,'cli')])
+def test_e2e_retains_browser_visibility_config_and_provenance(tmp_path,dotenv,environ,argv,expected,source):
+    shared=load_shared_schema()
+    pack_schema=resource_pack_schema()
+    for schema,app in ((shared,'agent'),(pack_schema,'shell')):
+        result=resolve_config(schema,argv=['--tui-mode=e2e',*argv],dotenv=dotenv,
+                              environ={'PACK_TEST_TOKEN':'synthetic','UI_SOURCE_DIR':str(tmp_path/'ui'),**environ},
+                              anchors={'owner_root':tmp_path})
+        result.raise_for_errors()
+        assert result.values['RUN_UI'] is expected
+        assert result.fields['RUN_UI'].source == source
+        assert result.fields['RUN_UI'].explicit == (source != 'shared_default')
+        assert result.values['UI_NX_APP'] == app
+        assert result.values['UI_SOURCE_DIR'] == (tmp_path/'ui').resolve()
