@@ -57,6 +57,12 @@ async def models(request):
     return deferred("models")
 
 
+
+
+
+
+
+
 @methods("POST", "OPTIONS")
 async def chat(request):
     return deferred("chat")
