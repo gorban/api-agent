@@ -114,7 +114,7 @@ class WorkbenchScreen(Screen):
         if action == "accept_default":
             return self.kind == "defaults" and self.app.focused_default()
         if action == "unset_setting":
-            return self.kind == "defaults" and self.app.focused_setting() in self.app.session.dotenv_keys()
+            return self.kind == "defaults" and self.app.session.saved_path(self.app.focused_setting()) is not None
         if action == "edit_setting":
             return self.kind == "defaults"
         if action == "delete_marked":
@@ -163,8 +163,8 @@ class WorkbenchScreen(Screen):
     def action_unset_setting(self):
         try:
             name = self.app.focused_setting()
-            if name in self.app.session.dotenv_keys():
-                self.app.session.delete_keys([name])
+            if self.app.session.saved_path(name) is not None:
+                self.app.session.unset_saved(name)
                 self.app.show_configuration()
         except Exception as error:
             self.query_one("#error", Static).update(str(error))
@@ -205,7 +205,7 @@ class ApiAgentApp(App[int]):
         self.collection_cancel = threading.Event()
 
     def target_summary(self):
-        return "Target .env files (read only):\n" + "\n".join(
+        return "Target .env files:\n" + "\n".join(
             f"{'✓' if path == self.session.dotenv_path else ' '} {path}"
             for path in self.session.target_paths)
 

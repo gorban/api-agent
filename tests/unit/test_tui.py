@@ -497,3 +497,31 @@ def test_switch_target_and_resave_prefilled_value(tmp_path):
             assert 'COUNT="8"' in (base / ".env").read_text()
             assert "COUNT=" not in (pack / ".env").read_text()
     asyncio.run(scenario())
+
+
+def test_unset_from_other_dotenv_without_switching_back(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        app.context.pack_root = pack
+        app.context.external_pack = True
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause(0.4)
+            await pilot.press("a")
+            await pilot.pause(0.4)
+            assert app.session.saved_path("COUNT") == tmp_path / ".env"
+            await pilot.press("s")
+            await pilot.pause(0.4)
+            assert app.session.dotenv_path == pack / ".env"
+            assert app.screen.check_action("unset_setting", ())
+            await pilot.press("u")
+            await pilot.pause(0.4)
+            assert app.session.saved_path("COUNT") is None
+            assert app.session.dotenv_path == pack / ".env"
+            assert app.screen.query_one(DataTable).get_row_at(0) == ["COUNT", "4", "shared_default"]
+            assert app.screen.check_action("accept_default", ())
+            await pilot.press("a")
+            await pilot.pause(0.4)
+            assert app.session.saved_path("COUNT") == pack / ".env"
+    asyncio.run(scenario())

@@ -177,6 +177,20 @@ class ConfigSession:
     def dotenv_keys(self):
         return DotenvEditor(self.dotenv_path).keys()
 
+    def saved_path(self, name):
+        """Find the highest-precedence persisted assignment, independent of target."""
+        return next((path for path in reversed(self.target_paths)
+                     if name in DotenvEditor(path).keys()), None)
+
+    def unset_saved(self, name):
+        if name == 'UNATTENDED_AUTH':
+            raise ConfigError('UNATTENDED_AUTH is managed by authentication setup')
+        path = self.saved_path(name)
+        if path is not None:
+            DotenvEditor(path).delete([name])
+            self._choices.pop(name, None)
+        return self.result()
+
     def delete_keys(self, names):
         names = tuple(names)
         if 'UNATTENDED_AUTH' in names:

@@ -246,3 +246,21 @@ def test_second_source_failure_restores_all_previous_files(session, monkeypatch)
     with pytest.raises(OSError, match='second source failed'):
         launched.set_value('VALUE', '8', persist=True)
     assert all(path.read_bytes() == content for path, content in previous.items())
+
+
+def test_unset_source_independent_of_write_target_reveals_fallback(session):
+    base, pack = session.target_paths
+    base.write_text('VALUE=2\n')
+    pack.write_text('VALUE=8\n')
+    session.switch_target(base)
+    assert session.saved_path('VALUE') == pack
+    result = session.unset_saved('VALUE')
+    assert result.values['VALUE'] == 2
+    assert result.fields['VALUE'].source == '../base/.env'
+    assert session.dotenv_path == base
+    assert 'VALUE' not in read_dotenv(pack)
+    session.switch_target(pack)
+    session.unset_saved('VALUE')
+    assert 'VALUE' not in read_dotenv(base)
+    assert session.saved_path('VALUE') is None
+    assert session.dotenv_path == pack
