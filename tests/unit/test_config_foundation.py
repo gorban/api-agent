@@ -74,9 +74,12 @@ def resource_pack_schema():
     from pathlib import Path
     shared = load_shared_schema()
     extension = schema_from_dict({'version': 1, 'fields': {
-        'UI_NX_APP': {'type': 'str', 'override': True, 'default': 'shell',
+        'UI_SOURCE_DIR': {'type': 'path', 'anchor': 'owner_root', 'override': True, 'required': True,
+            'acknowledge_default': False, 'persist_default': False, 'applies_when': {
+                'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}], 'COLLECT_ONLY': False}},
+        'UI_NX_APP': {'type': 'str', 'override': True, 'default': 'shell', 'acknowledge_default': False, 'persist_default': False,
                      'applies_when': {'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}], 'COLLECT_ONLY': False}},
-        'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User',
+        'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User', 'acknowledge_default': False, 'persist_default': False,
                                     'applies_when': {'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'], 'COLLECT_ONLY': False}}}},
         base_schema=shared, source='pack_default')
     if 'UNATTENDED_USER_INDEX' not in extension.fields:
@@ -305,7 +308,14 @@ def test_shared_runtime_rejects_pack_only_account_index():
 
 def test_cli_and_bootstrap_defaults_skip_interactive_review():
     schema = load_shared_schema()
-    for name in ('NO_STD_IN', 'COLLECT_ONLY', 'API_AGENT_DIR'):
+    for name in ('NO_STD_IN', 'COLLECT_ONLY', 'API_AGENT_DIR', 'UI_SOURCE_DIR', 'UI_NX_APP'):
+        assert schema.fields[name].acknowledge_default is False
+        assert schema.fields[name].persist_default is False
+
+
+def test_resource_pack_internal_defaults_skip_interactive_review():
+    schema = resource_pack_schema()
+    for name in ('UI_SOURCE_DIR', 'UI_NX_APP', 'UNATTENDED_SECONDARY_USER'):
         assert schema.fields[name].acknowledge_default is False
         assert schema.fields[name].persist_default is False
 

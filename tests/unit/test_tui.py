@@ -566,10 +566,10 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             assert rows['TEST_PARALLEL_JOBS'][1] == '8'
             assert rows['E2E_RERUNS'][1] == '2'
             assert rows['E2E_BROWSER_RESOLUTION'][1] == '1440x900'
-            assert {'RUN_UI', 'UI_NX_APP', 'RUN_LOG_SOURCE'} <= rows.keys()
-            assert 'UI_SOURCE_DIR' not in rows
+            assert {'RUN_UI', 'RUN_LOG_SOURCE'} <= rows.keys()
             assert not {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH', 'NO_STD_IN', 'COLLECT_ONLY',
-                        'API_AGENT_DIR', 'E2E_DEBUG', 'AUTH_BROWSER_DEBUG', 'E2E_LOG_INDEX'} & rows.keys()
+                        'API_AGENT_DIR', 'UI_SOURCE_DIR', 'UI_NX_APP', 'E2E_DEBUG',
+                        'AUTH_BROWSER_DEBUG', 'E2E_LOG_INDEX'} & rows.keys()
             app.session.save_defaults(item.name for item in app.session.default_candidates()
                                       if item.field.persist_default)
             app.show_configuration()

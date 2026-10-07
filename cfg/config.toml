@@ -59,6 +59,8 @@ TUI_MODE = ["run-local", "e2e"]
 COLLECT_ONLY = false
 
 [fields.UI_SOURCE_DIR]
+acknowledge_default = false
+persist_default = false
 type = "path"
 anchor = "owner_root"
 required = true
@@ -67,6 +69,8 @@ any = [{TUI_MODE = "e2e"}, {TUI_MODE = "run-local", RUN_UI = true}]
 COLLECT_ONLY = false
 
 [fields.UI_NX_APP]
+acknowledge_default = false
+persist_default = false
 type = "str"
 default = "agent"
 [fields.UI_NX_APP.applies_when]
