@@ -179,7 +179,6 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self.query_one('#auth-content', VerticalScroll).can_focus = False
         self.query_one('#auth-table', DataTable).add_columns('Role', 'Index', 'Vault', 'Login / item')
         manager_table = self.query_one('#auth-manager-table', DataTable)
-        manager_table.add_columns('Password manager', 'CLI path')
         manager_table.styles.margin = (1, 0, 0, 0)
         self.query_one('#auth-table', DataTable).styles.margin = 0
         self._load()
@@ -278,8 +277,13 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
                     cursor = table.row_count - 1
         table.move_cursor(row=cursor)
         manager = self.query_one('#auth-manager-table', DataTable)
-        manager.clear()
-        manager.add_row(*(literal_cell(x) for x in (self.manager['manager'] or '-', self.manager['cli_path'] or '-')), key='manager')
+        cells = [Text(x) for x in (self.manager['manager'] or '-', self.manager['cli_path'] or '-')]
+        manager.clear(columns=True)
+        # Size the single row before drawing it: deferred auto-width measurement
+        # can leave a focused row cached at its previous, shorter column width.
+        for label, cell in zip(('Password manager', 'CLI path'), cells):
+            manager.add_column(label, width=max(Text(label).cell_len, cell.cell_len))
+        manager.add_row(*cells, key='manager')
         self._error(self.load_error)
         self._refresh_target()
 
