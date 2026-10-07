@@ -261,7 +261,15 @@ class ConfigSession:
             raise
 
     def result(self, *, _cleanup=False, _review=False):
+        return self._resolve(_cleanup=_cleanup, _review=_review)[0]
+
+    def auth_sources(self):
+        """Effective per-component provenance, independent of the write target."""
+        return self._resolve(_review=True)[1]
+
+    def _resolve(self, *, _cleanup=False, _review=False):
         dotenv, origins = {}, {}
+        auth_sources = {'password_manager': 'Not provided', 'roles': {}}
         explicit_manager = None
         auth_error = None
         for path in self.target_paths:
@@ -278,6 +286,8 @@ class ConfigSession:
                         if explicit_manager is not None and choice != explicit_manager:
                             auth_error = auth_error or 'manager_conflict'
                         explicit_manager = choice
+                        auth_sources['password_manager'] = self._source(path)
+                    auth_sources['roles'].update({role: self._source(path) for role in later['roles']})
                     if 'UNATTENDED_AUTH' in dotenv:
                         earlier = normalize_auth(json.loads(dotenv['UNATTENDED_AUTH']))
                         later = {'password_manager': later['password_manager'] if has_manager else earlier['password_manager'],
@@ -306,11 +316,13 @@ class ConfigSession:
                                                  required=(field.required or bool(field.required_when)) if _review else field.required,
                                                  required_when={} if _review else field.required_when)
                                    for name, field in self.schema.fields.items()})
+        original_auth = None
         if self._auth_manager_reset and 'UNATTENDED_AUTH' in schema.fields:
             unmodified = resolve_config(schema, argv=argv, environ=self.environ,
                                         dotenv=dotenv, anchors=self.context.anchors,
                                         interactive=True, pack_launcher=self.context.external_pack)
             current = unmodified.fields.get('UNATTENDED_AUTH')
+            original_auth = current
             if current is not None:
                 try:
                     normalized = normalize_auth(current.value)
@@ -329,7 +341,21 @@ class ConfigSession:
         fields = {name: replace(value, source='interactive' if name in choices
                                 else origins[name] if value.source == 'dotenv' else value.source)
                   for name, value in result.fields.items()}
-        return replace(result, fields=fields)
+        auth = (original_auth if self._auth_manager_reset
+                else result.fields.get('UNATTENDED_AUTH'))
+        if auth is not None and auth.source != 'dotenv':
+            try:
+                raw = auth.value
+                normalized = normalize_auth(raw)
+                has_manager = ('password_manager' in raw if _canonical_shape(raw) else any(raw.values()))
+                source = 'interactive' if 'UNATTENDED_AUTH' in self._choices else auth.source
+                auth_sources = {'password_manager': source if has_manager else 'Not provided',
+                                'roles': {role: source for role in normalized['roles']}}
+            except (TypeError, ValueError):
+                auth_sources = {'password_manager': 'Not provided', 'roles': {}}
+        if self._auth_manager_reset:
+            auth_sources['password_manager'] = 'Not provided'
+        return replace(result, fields=fields), auth_sources
 
     def default_candidates(self):
         result = self.result(_review=True)

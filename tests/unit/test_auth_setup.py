@@ -194,7 +194,7 @@ def test_new_manager_path_renders_fully_while_still_focused(tmp_path):
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause()
             table = app.screen.query_one('#auth-manager-table', DataTable)
-            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
+            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-', 'Not provided']
             table.focus()
             await pilot.press('enter')
             await pilot.pause()
@@ -207,6 +207,77 @@ def test_new_manager_path_renders_fully_while_still_focused(tmp_path):
             assert profile(app)['password_manager'] == {'manager': 'keeper', 'cli_path': path}
             rendered = ''.join(ElementTree.fromstring(app.export_screenshot()).itertext()).replace('\xa0', ' ')
             assert path in rendered
+    asyncio.run(scenario())
+
+
+def test_auth_tables_show_component_sources_independent_of_target(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path, external=True, roles=('LLM User', 'Partner'))
+        app.session.save_auth_role('LLM User', [account('First'), account('Second')])
+        app.session.save_auth_role('Partner', [account('Pack')])
+        app.session.save_auth_manager({'manager': 'keeper', 'cli_path': 'keeper'})
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            users = screen.query_one('#auth-table', DataTable)
+            manager = screen.query_one('#auth-manager-table', DataTable)
+            assert str(users.ordered_columns[-1].label) == 'Source'
+            assert str(manager.ordered_columns[-1].label) == 'Source'
+            assert [str(users.get_row_at(i)[-1]) for i in range(3)] == ['../base/.env', '../base/.env', '../pack/.env']
+            assert str(manager.get_row_at(0)[-1]) == '../base/.env'
+            before = {path: path.read_bytes() for path in app.session.target_paths}
+            await pilot.press('s')
+            assert app.session.dotenv_path == app.context.pack_root / '.env'
+            assert str(users.get_row_at(0)[-1]) == '../base/.env'
+            assert str(manager.get_row_at(0)[-1]) == '../base/.env'
+            assert before == {path: path.read_bytes() for path in app.session.target_paths}
+            manager.focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            app.screen.query_one('#auth-save', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            assert str(manager.get_row_at(0)[-1]) == '../pack/.env'
+            assert str(users.get_row_at(0)[-1]) == '../base/.env'
+    asyncio.run(scenario())
+
+
+def test_account_source_renders_fully_immediately_after_first_save(tmp_path):
+    async def scenario():
+        app = WizardApp(tmp_path)
+        root = tmp_path / 'api-agent'
+        root.mkdir()
+        app.context.base_root = app.context.pack_root = app.context.launcher_root = root
+        app.session.switch_target(root / '.env')
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press('enter')
+            await pilot.pause()
+            app.screen.query_one('#auth-vault', Input).value = 'vault'
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.focused.id == 'auth-table'
+            rendered = ''.join(ElementTree.fromstring(app.export_screenshot()).itertext()).replace('\xa0', ' ')
+            assert '../api-agent/.env' in rendered
+    asyncio.run(scenario())
+
+
+def test_auth_edit_keeps_displayed_values_aligned_with_override_source(tmp_path):
+    async def scenario():
+        value = json.dumps({'roles': {'LLM User': [account('Environment login')]}})
+        app = WizardApp(tmp_path, environ={'UNATTENDED_AUTH': value})
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press('enter')
+            await pilot.pause()
+            app.screen.query_one('#auth-user', Input).value = 'Saved login'
+            app.screen.query_one('#auth-user', Input).focus()
+            await pilot.press('enter')
+            await pilot.pause()
+            row = app.screen.query_one('#auth-table', DataTable).get_row_at(0)
+            assert str(row[3]) == 'Environment login'
+            assert str(row[4]) == 'environment'
+            assert saved(app.session.dotenv_path)['roles']['LLM User'][0]['user'] == 'Saved login'
     asyncio.run(scenario())
 
 
@@ -622,7 +693,7 @@ def test_manager_starts_unselected_and_path_defaults_follow_selection(tmp_path):
             await pilot.pause()
             screen = app.screen
             table = screen.query_one('#auth-manager-table', DataTable)
-            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
+            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-', 'Not provided']
             table.focus()
             await pilot.press('e')
             assert app.screen.query_one('#auth-manager', Select).value == ''
@@ -638,7 +709,7 @@ def test_manager_starts_unselected_and_path_defaults_follow_selection(tmp_path):
             assert app.screen.query_one('#auth-path', Input).value == ''
             app.screen.save_entry()
             await pilot.pause()
-            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-']
+            assert [str(cell) for cell in table.get_row_at(0)] == ['-', '-', '../base/.env']
     asyncio.run(scenario())
 
 
@@ -747,5 +818,5 @@ def test_manager_editor_cancel_and_dropdown_escape(tmp_path):
             await pilot.pause()
             assert app.screen is listing and app.focused is manager_table
             assert not (app.context.base_root / '.env').exists()
-            assert [str(cell) for cell in manager_table.get_row_at(0)] == ['-', '-']
+            assert [str(cell) for cell in manager_table.get_row_at(0)] == ['-', '-', 'Not provided']
     asyncio.run(scenario())
