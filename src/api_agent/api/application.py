@@ -5,6 +5,7 @@ from api_agent.providers.loading import ProviderError
 from .routes import RouteRegistrar
 """Compose a Django ASGI application without opening listeners or loading secrets."""
 
+import asyncio
 from dataclasses import dataclass, field
 import re
 from threading import Lock
@@ -133,10 +134,18 @@ class Application:
             while True:
                 event = await receive()
                 if event["type"] == "lifespan.startup":
-                    await self.runtime.astart()
+                    try:
+                        await self.runtime.astart()
+                    except Exception:
+                        await send({"type": "lifespan.startup.failed", "message": "runtime_start_failed"})
+                        return
                     await send({"type": "lifespan.startup.complete"})
                 elif event["type"] == "lifespan.shutdown":
-                    await self.runtime.aclose()
+                    try:
+                        await self.runtime.aclose()
+                    except Exception:
+                        await send({"type": "lifespan.shutdown.failed", "message": "runtime_cleanup_failed"})
+                        return
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         elif scope["type"] == "http":

@@ -412,6 +412,18 @@ class WorkbenchScreen(FocusNavigation, Screen):
 
 
 class ApiAgentApp(App[int]):
+    @property
+    def schema(self):
+        return getattr(self.session, "schema", self._initial_schema)
+
+    @schema.setter
+    def schema(self, value):
+        self._initial_schema = value
+        if hasattr(self, "session"):
+            self.session.schema = value
+            if hasattr(self.session, "_provider_base_schema"):
+                self.session._provider_base_schema = value
+
     CSS = """
     Screen { padding: 1 2; }
     #dotenv-targets { height: auto; margin-top: 1; margin-bottom: 1; }
@@ -438,7 +450,7 @@ class ApiAgentApp(App[int]):
     def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None, unit_runner=None):
         super().__init__()
         from api_agent.config.session import ConfigSession
-        self.context, self.schema = context, schema
+        self.context, self._initial_schema = context, schema
         self.session = session or ConfigSession(context, schema, argv, environ)
         self.collector = collector
         self.unit_runner = unit_runner
