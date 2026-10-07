@@ -768,7 +768,7 @@ def test_selected_bucket_and_hook_change_prevent_unsafe_reuse(setup, monkeypatch
     changed = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'other-results'})
     with pytest.raises(p.PrerequisiteError, match='incompatible'): changed.acquire()
     original = Path.read_bytes
-    monkeypatch.setattr(Path, 'read_bytes', lambda path: original(path) + b'\n# changed hook contract\n')
+    monkeypatch.setattr(Path, 'read_bytes', lambda path: original(path) + (b'\n# changed hook contract\n' if path.name == 'localstack-ready.sh' else b''))
     changed_hook = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'first-results'})
     with pytest.raises(p.PrerequisiteError, match='incompatible'): changed_hook.acquire()
 
@@ -860,3 +860,184 @@ def test_localstack_readiness_waits_for_automatic_selected_bucket_hook(monkeypat
     monkeypatch.setattr(p, 'urlopen', open_local)
     assert p._readiness('localstack', .1, {}) is expected
     assert urls == ['http://127.0.0.1:4566/_localstack/health', 'http://127.0.0.1:4566/_localstack/init/ready']
+
+
+@pytest.mark.parametrize('restart', [False, True])
+def test_failed_journal_write_rolls_back_only_new_invocation(setup, monkeypatch, restart):
+    create, engine, _, _, _ = setup
+    first = create({'TRACE_MODE': 'OTEL'})
+    prior = first.acquire()
+    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True})
+    restarted = engine.add('localstack', running=False) if restart else None
+    def fail(*args):
+        raise p.PrerequisiteError('journal persistence failed')
+    monkeypatch.setattr(p, '_write_journal', fail)
+    with pytest.raises(p.PrerequisiteError, match='journal persistence failed'):
+        manager.acquire()
+    assert manager.lease is None
+    assert all(engine.records[item]['State']['Running'] for item in prior.container_ids)
+    changed = [item for item in engine.records if item not in prior.container_ids]
+    assert changed and all(not engine.records[item]['State']['Running'] for item in changed)
+    if restart:
+        assert changed == [restarted]
+    journal = json.loads((first.directory / f'{first.scope.id}.json').read_text())
+    assert set(journal) == {prior.invocation_id}
+
+
+@pytest.mark.parametrize('change_at', ['plan', 'manager'])
+def test_execution_uses_reviewed_compose_and_hook_snapshot(setup, tmp_path, change_at):
+    create, engine, clock, scope, _ = setup
+    source = plan_compose({}, scope)
+    assets = tmp_path / 'assets'; assets.mkdir()
+    for name, content in source.assets.items():
+        (assets / name).write_bytes(content)
+    plan = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True, 'TRACE_MODE': 'OTEL'}, scope,
+                        compose_directory=assets)
+    def mutate():
+        document = json.loads((assets / 'compose.json').read_text())
+        document['services']['jaeger']['ports'] = ['0.0.0.0:4318:4318']
+        (assets / 'compose.json').write_text(json.dumps(document))
+        (assets / 'localstack-ready.sh').write_text('changed unsafe hook')
+        (assets / 'empty.env').write_text('SA_SCOPE=foreign')
+    if change_at == 'plan': mutate()
+    manager = p.PrerequisiteManager(plan, scope, tmp_path / 'ownership', command_runner=engine.run,
+        readiness_probe=lambda *args: True, now=clock.now, sleep=clock.sleep,
+        identity=lambda pid: 'boot:start')
+    engine.owner = manager
+    fingerprints = dict(manager.fingerprints)
+    if change_at == 'manager': mutate()
+    observed = []
+    original = engine.run
+    def run(command, **kwargs):
+        if 'up' in command:
+            path = Path(command[command.index('-f') + 1])
+            observed.append(path.read_bytes())
+            assert path.read_bytes() == plan.assets['compose.json']
+            hook = Path(kwargs['environment']['SA_LOCALSTACK_READY_HOOK'])
+            assert hook.read_bytes() == plan.assets['localstack-ready.sh']
+            assert hook.stat().st_mode & 0o111 == 0o111
+            assert Path(command[command.index('--env-file') + 1]).read_bytes() == plan.assets['empty.env']
+        return original(command, **kwargs)
+    manager.runner = run
+    manager.acquire()
+    assert observed and manager.fingerprints == fingerprints
+    manager.release(retain=True)
+    assert Path(manager.environment['SA_LOCALSTACK_READY_HOOK']).read_bytes() == plan.assets['localstack-ready.sh']
+    # A second manager can reuse the same reviewed plan despite a distinct snapshot path.
+    second = p.PrerequisiteManager(plan, scope, manager.directory, command_runner=engine.run,
+        readiness_probe=lambda *args: True, now=clock.now, sleep=clock.sleep, identity=lambda pid: 'boot:start')
+    engine.owner = second
+    assert second.acquire().reused_ids
+    second.release(retain=True)
+
+
+def test_previous_scope_journal_requires_explicit_migration(setup):
+    create, engine, _, scope, _ = setup
+    manager = create()
+    manager.directory.mkdir(parents=True)
+    journal = manager.directory / f'{scope.legacy_ids[0]}.json'
+    journal.write_text('{"old lease": "preserved"}')
+    with pytest.raises(p.PrerequisiteError, match='before migration'):
+        manager.acquire()
+    assert not engine.commands
+    assert journal.read_text() == '{"old lease": "preserved"}'
+
+
+def test_previous_scope_container_requires_explicit_migration(setup):
+    create, engine, _, scope, _ = setup
+    manager = create()
+    identifier = engine.add('jaeger')
+    labels = engine.records[identifier]['Config']['Labels']
+    labels['api-agent.scope'] = scope.legacy_ids[0]
+    labels['com.docker.compose.project'] = 'sa-' + scope.legacy_ids[0]
+    with pytest.raises(p.PrerequisiteError, match='before migration'):
+        manager.acquire()
+    assert engine.records[identifier]['State']['Running']
+    assert not any('up' in command or command[1] == 'stop' for command, _ in engine.commands)
+
+@pytest.mark.parametrize('response', ['-invalid', '{}'])
+def test_current_scope_invalid_inventory_independent_of_legacy(setup, response):
+    create, engine, _, _, _ = setup
+    manager = create()
+    manager.scope = StackScope(manager.scope.id)
+    engine.add('jaeger')
+    original = engine.run
+    def run(command, **kwargs):
+        if response == '-invalid' and command[1] == 'ps': return response
+        if response == '{}' and command[1] == 'inspect': return response
+        return original(command, **kwargs)
+    manager.runner = run
+    with pytest.raises(p.PrerequisiteError):
+        manager.acquire()
+
+
+def test_failed_start_retains_snapshot_for_stopped_definition(setup):
+    create, engine, _, _, _ = setup
+    manager = create()
+    engine.fail_up = True
+    with pytest.raises(p.PrerequisiteError, match='up failed'):
+        manager.acquire()
+    assert manager.snapshot_directory.is_dir()
+    assert list(manager.directory.glob('*-assets-*'))
+
+
+def test_final_owned_release_retains_snapshot_for_stopped_definition(setup):
+    create, _, _, _, _ = setup
+    manager = create()
+    manager.acquire()
+    directory = manager.snapshot_directory
+    assert directory.is_dir()
+    manager.release()
+    assert manager.snapshot_directory is None and directory.is_dir()
+
+
+def test_failed_command_without_created_definition_removes_unused_snapshot(setup):
+    create, engine, _, _, _ = setup
+    manager = create()
+    original = engine.run
+    def run(command, **kwargs):
+        if 'up' in command:
+            raise p.PrerequisiteError('before creation')
+        return original(command, **kwargs)
+    manager.runner = run
+    with pytest.raises(p.PrerequisiteError, match='before creation'):
+        manager.acquire()
+    assert manager.snapshot_directory is None
+    assert not list(manager.directory.glob('*-assets-*'))
+
+
+@pytest.mark.parametrize('failed_start', [False, True])
+def test_stopped_localstack_definition_restarts_with_original_hook(setup, failed_start):
+    create, engine, _, _, _ = setup
+    mounts = {}
+    original = engine.run
+    def run(command, **kwargs):
+        if 'up' not in command:
+            return original(command, **kwargs)
+        try:
+            return original(command, **kwargs)
+        finally:
+            for identifier, record in engine.records.items():
+                if record['Config']['Labels']['com.docker.compose.service'] == 'localstack':
+                    # Compose --no-recreate keeps the definition's first mount.
+                    mounts.setdefault(identifier, Path(kwargs['environment']['SA_LOCALSTACK_READY_HOOK']))
+                    assert mounts[identifier].is_file()
+                    assert mounts[identifier].stat().st_mode & 0o111 == 0o111
+    engine.run = run
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    if failed_start:
+        engine.fail_up = True
+        with pytest.raises(p.PrerequisiteError, match='up failed'):
+            manager.acquire()
+        engine.fail_up = False
+    else:
+        lease = manager.acquire()
+        manager.release()
+        assert all(not engine.records[item]['State']['Running'] for item in lease.container_ids)
+    assert mounts and all(path.is_file() for path in mounts.values())
+    original_mounts = dict(mounts)
+    retry = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    retry.acquire()
+    assert mounts == original_mounts
+    retry.release()
+    assert all(path.is_file() for path in mounts.values())

@@ -104,17 +104,17 @@ def resource_pack_schema():
     shared = load_shared_schema()
     extension = schema_from_dict({'version': 1, 'fields': {
         'UI_SOURCE_DIR': {'type': 'path', 'anchor': 'owner_root', 'override': True, 'required': True,
-            'acknowledge_default': False, 'persist_default': False, 'applies_when': {
+            'acknowledge_default': False, 'applies_when': {
                 'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}], 'COLLECT_ONLY': False}},
-        'UI_NX_APP': {'type': 'str', 'override': True, 'default': 'shell', 'acknowledge_default': False, 'persist_default': False,
+        'UI_NX_APP': {'type': 'str', 'override': True, 'default': 'shell', 'acknowledge_default': False, 
                      'applies_when': {'any': [{'TUI_MODE': 'e2e'}, {'TUI_MODE': 'run-local', 'RUN_UI': True}], 'COLLECT_ONLY': False}},
-        'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User', 'acknowledge_default': False, 'persist_default': False,
+        'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User', 'acknowledge_default': False, 
                                     'applies_when': {'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'], 'COLLECT_ONLY': False}}}},
         base_schema=shared, source='pack_default')
     if 'UNATTENDED_USER_INDEX' not in extension.fields:
         selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
             'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
-            'persist_default': False, 'applies_when': {
+            'applies_when': {
                 'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
                 'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
         extension = compose_schema(extension, selection)
@@ -125,7 +125,7 @@ def resource_pack_schema():
     if 'UNATTENDED_USER_INDEX' not in extension.fields:
         selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
             'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
-            'persist_default': False, 'applies_when': {
+            'applies_when': {
                 'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
                 'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
         extension = compose_schema(extension, selection)
@@ -203,7 +203,7 @@ def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
     if 'UNATTENDED_USER_INDEX' not in extension.fields:
         selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
             'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
-            'persist_default': False, 'applies_when': {
+            'applies_when': {
                 'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
                 'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
         extension = compose_schema(extension, selection)
@@ -374,7 +374,7 @@ def test_e2e_retains_browser_visibility_config_and_provenance(tmp_path,dotenv,en
     pack_schema=resource_pack_schema()
     for schema,app in ((shared,'agent'),(pack_schema,'shell')):
         result=resolve_config(schema,argv=['--tui-mode=e2e',*argv],dotenv=dotenv,
-                              environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic',**environ},
+                              environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic','UI_SOURCE_DIR':str(tmp_path/'ui'),**environ},
                               anchors={'owner_root':tmp_path})
         result.raise_for_errors()
         assert result.values['RUN_UI'] is expected

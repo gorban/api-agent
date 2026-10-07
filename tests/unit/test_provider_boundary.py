@@ -80,6 +80,31 @@ def test_route_collisions_do_not_replace_existing_handlers():
         registrar.add('/app/agent/chat', ('POST',), handler)
 
 
+def test_registered_routes_dispatch_with_runtime_isolation(tmp_path):
+    import json
+    from api_agent.api import create_application
+    from test_api_foundation import http
+    context = SimpleNamespace(pack_id='demo', identity_factory_path=None)
+    first = compose_runtime(context, {'LLM_PROVIDER': factory(tmp_path)}, callback_origin='https://agent.example')
+    second = compose_runtime(context, {}, callback_origin='https://agent.example')
+    first_app, second_app = create_application(first), create_application(second)
+    async def start():
+        await first.astart()
+        await second.astart()
+    asyncio.run(start())
+    try:
+        status, headers, body = http(first_app, '/provider/status')
+        assert status == 200 and json.loads(body) == {'ready': True}
+        assert http(second_app, '/provider/status')[0] == 404
+        status, headers, body = http(first_app, '/provider/status', method='POST')
+        assert status == 405 and headers[b'allow'] == b'GET'
+    finally:
+        async def close():
+            await first.aclose()
+            await second.aclose()
+        asyncio.run(close())
+
+
 def test_request_sessions_do_not_own_provider_token_state():
     now = [0]
     store = SessionStore('demo', 'https://agent.example', clock=lambda: now[0], session_ttl=3, max_sessions=1)

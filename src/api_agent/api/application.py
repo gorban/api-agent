@@ -87,7 +87,7 @@ class Runtime:
         if self._start_task is None:
             self._start_task = asyncio.create_task(self._start_owned())
         try:
-            await self._start_task
+            await asyncio.shield(self._start_task)
         except BaseException as error:
             await self.aclose()
             if isinstance(error, asyncio.CancelledError):

@@ -6,6 +6,8 @@
 
 ## Checklist
 
+- [x] Make exporter shutdown completion checking atomic with cleanup-worker acquisition. Direct concurrent close calls must flush/shut down the provider once; verify the former check/acquisition interleaving with gated scheduling, not only repeated sequential calls.
+
 - [x] Add lazy, lifespan-owned manual OTLP exporters for OTEL and LangFuse, sharing the runtime privacy boundary before SDK queuing. Disabled tracing imports no SDK; fixed internal service metadata, bounded flush/shutdown, streamed/discarded backend bodies and fixed diagnostics prevent content/credential leakage. SDK allocation, sanitized payloads and shutdown failure are deterministically verified; live export and graph/provider instrumentation remain below.
 - [x] Declare LangFuse public/secret keys, using conditional local development defaults and requiring explicit keys for remote targets. The same resolved pair supplies local headless provisioning, authenticated readiness and trace export. Add an optional tracing dependency group; development test dependencies are prepared automatically by the launcher.
 - [x] Implement prerequisite leases and bounded readiness/reuse/rollback with exact image/configuration matching, cross-process ownership and restarted-owned versus reused-running tracking. Local release stops newly started/restarted services only when no active lease remains; test release retains services. Actual operation hooks and live profile verification remain open.

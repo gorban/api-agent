@@ -157,7 +157,7 @@ def test_scoped_inventory_and_fresh_stop_use_inspect_and_full_ids():
         runtime = ContainerRuntime('/bin/docker', SCOPE)
         assert runtime.inventory() == (Container(item['Id'], 'api', 'api:dev', 'running'),)
         runtime.stop([item['Id'], item['Id']])
-        assert [call.args[0][1:] for call in run.call_args_list] == [['ps', '--quiet', '--no-trunc', '--filter', 'label=api-agent.managed=true', '--filter', f'label=api-agent.scope={SCOPE.id}', '--filter', f'label=com.docker.compose.project={SCOPE.project}'], ['inspect', item['Id']], ['inspect', item['Id']], ['stop', item['Id']]]
+        assert [call.args[0][1:] for call in run.call_args_list] == [['ps', '--quiet', '--no-trunc', '--filter', 'label=api-agent.managed=true'], ['inspect', item['Id']], ['inspect', item['Id']], ['stop', item['Id']]]
         assert all(call.kwargs == dict(capture_output=True,text=True,timeout=5,check=False) for call in run.call_args_list)
 
 
@@ -266,3 +266,17 @@ def test_metadata_errors_and_identity_matches():
     assert is_session_container('abcdef', 'api', {'abc'})
     assert is_session_container('other', '/api', {'api'})
     assert not is_session_container('other','api', {'different'})
+
+
+def test_previous_scope_inventory_refuses_migration_without_stopping():
+    legacy = 'b' * 16
+    scope = StackScope(SCOPE.id, (legacy,))
+    item = record()
+    item['Config']['Labels']['api-agent.scope'] = legacy
+    item['Config']['Labels']['com.docker.compose.project'] = 'sa-' + legacy
+    with patch('api_agent.runtime.containers.subprocess.run', side_effect=[
+        SimpleNamespace(returncode=0, stdout=item['Id']),
+        SimpleNamespace(returncode=0, stdout=json.dumps([item]))]) as run:
+        with pytest.raises(ContainerError, match='before migration'):
+            ContainerRuntime('/bin/docker', scope).inventory()
+        assert len(run.call_args_list) == 2

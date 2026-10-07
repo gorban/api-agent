@@ -44,6 +44,15 @@ sys.exit(pytest.main(sys.argv[2:], plugins=[Collector()]))
 '''
 
 
+def repository_label(context, root):
+    """Use the same repository identity for collection and recording."""
+    base, owner, root = (Path(path).resolve() for path in
+                         (context.base_root, context.owner_root, root))
+    if base != owner and base.name == owner.name:
+        return 'base' if root == base else 'pack'
+    return root.name
+
+
 def select_tests(tests, selectors=()):
     """Resolve a de-duplicated union of repository-qualified or bare selectors."""
     tests = list(tests)
@@ -138,9 +147,7 @@ def collect_tests(context, mode, selectors=(), cancel_event=None):
     child_env["PYTHONPATH"] = os.pathsep.join(source_paths)
     collected = {}
     for root, paths in suites.items():
-        repo = root.name
-        if base != owner and base.name == owner.name:
-            repo = "base" if root == base else "pack"
+        repo = repository_label(context, root)
         with tempfile.TemporaryDirectory(prefix="api-agent-collect-") as temporary:
             output = Path(temporary) / "collection.json"
             args = [sys.executable, "-c", _PLUGIN, str(output), "--collect-only", "-q", "-o", "addopts=", "--rootdir", str(root)]

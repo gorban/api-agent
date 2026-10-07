@@ -44,6 +44,15 @@ class CleanupRow:
 
 
 class ConfigSession:
+    @property
+    def schema(self):
+        return self._schema
+
+    @schema.setter
+    def schema(self, value):
+        self._schema = value
+        self._provider_base_schema = value
+
     def __init__(self, context, schema, argv=(), environ=None):
         self.context = context
         self.schema = schema
@@ -57,7 +66,7 @@ class ConfigSession:
         provider_dotenv = {}
         for path in self.target_paths:
             provider_dotenv.update(read_dotenv(path))
-        self.schema = bootstrap_schema(schema, self.argv, self.environ, provider_dotenv)
+        self._schema = bootstrap_schema(schema, self.argv, self.environ, provider_dotenv)
 
     @property
     def dotenv_path(self):
@@ -308,7 +317,7 @@ class ConfigSession:
         choices = dict(self._choices)
         choices.update(runtime_directory_overrides(self.context))
         from api_agent.providers.loading import bootstrap_schema
-        self.schema = bootstrap_schema(self._provider_base_schema, argv, self.environ, dotenv, choices)
+        self._schema = bootstrap_schema(self._provider_base_schema, argv, self.environ, dotenv, choices)
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
         # Pack scope remains enforced except in the explicit cleanup inventory.

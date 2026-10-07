@@ -11,15 +11,17 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import subprocess
 import sys
 import time
+import tempfile
 from types import MappingProxyType
 from urllib.error import URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import uuid4
 
-from api_agent.runtime.compose import controlled_engine_environment
+from api_agent.runtime.compose import controlled_engine_environment, snapshot_compose
 from api_agent.testing.processes import finalize
 
 CONFIG_LABEL = 'api-agent.config'
@@ -314,11 +316,15 @@ class PrerequisiteManager:
             **controlled_engine_environment(engine_environment)})
         self.runner, self.cancelled, self.probe = command_runner, cancelled, readiness_probe
         self.timeout, self.now, self.sleep, self.identity = deadline_seconds, now, sleep, identity
-        document = json.loads((plan.directory / 'compose.json').read_text())
+        document = json.loads(plan.assets['compose.json'])
         self.specs = {name: _interpolate(document['services'][name], self.environment) for name in plan.services}
-        self.fingerprints = {name: sha256(json.dumps(spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        fingerprint_environment = {**self.environment, 'SA_LOCALSTACK_READY_HOOK':
+            'sha256:' + self.environment['SA_LOCALSTACK_READY_DIGEST']}
+        self.fingerprints = {name: sha256(json.dumps(_interpolate(document['services'][name],
+            fingerprint_environment), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
                              for name, spec in self.specs.items()}
         self.lease = None
+        self.snapshot_directory = None
 
     def _command(self, args, deadline, *, cleanup=False):
         return self.runner(tuple(args), environment=self.environment, directory=self.plan.directory,
@@ -328,6 +334,22 @@ class PrerequisiteManager:
         executable = self.plan.command[0]
         output = self._command((executable, 'ps', '-a', '--no-trunc', '--filter',
             f'label=com.docker.compose.project={self.scope.project}', '--format', '{{.ID}}'), deadline, cleanup=cleanup)
+        for legacy in self.scope.legacy_ids:
+            old = self._command((executable, 'ps', '-a', '--no-trunc', '--filter',
+                f'label=com.docker.compose.project=sa-{legacy}', '--format', '{{.ID}}'), deadline, cleanup=cleanup)
+            old_ids = old.split()
+            if any(not _ID.fullmatch(item) for item in old_ids):
+                raise PrerequisiteError('Invalid prerequisite container identifiers.')
+            if old_ids:
+                try:
+                    records = json.loads(self._command((executable, 'inspect', *old_ids), deadline, cleanup=cleanup))
+                    if not isinstance(records, list) or len(records) != len(old_ids):
+                        raise ValueError()
+                    legacy_present = any(self.scope.is_legacy(record['Config'].get('Labels')) for record in records)
+                except (KeyError, TypeError, ValueError) as error:
+                    raise PrerequisiteError('Invalid prerequisite inspection response.') from error
+                if legacy_present:
+                    raise PrerequisiteError(f'Previous path-based stack scope sa-{legacy} exists; review and release its leases and containers before migration.')
         ids = tuple(line.strip() for line in output.splitlines() if line.strip())
         if any(not _ID.fullmatch(item) for item in ids):
             raise PrerequisiteError('Invalid prerequisite container identifiers.')
@@ -383,6 +405,9 @@ class PrerequisiteManager:
         deadline = self.now() + self.timeout
         with _locked(self.directory, self.scope, deadline=deadline, cancelled=self.cancelled,
                      now=self.now, sleep=self.sleep):
+            for legacy in self.scope.legacy_ids:
+                if (self.directory / f'{legacy}.json').exists():
+                    raise PrerequisiteError(f'Previous path-based ownership journal {legacy}.json exists; review and release its leases before migration.')
             journal = _read_journal(self.directory, self.scope, self.identity)
             invocation = uuid4().hex
             pid = os.getpid()
@@ -400,6 +425,7 @@ class PrerequisiteManager:
             if restarted & protected:
                 raise PrerequisiteError('Stopped prerequisite has an active invocation lease.')
             newly = ()
+            snapshot = None
             missing = tuple(name for name in self.plan.services if name not in existing)
             try:
                 if missing:
@@ -408,7 +434,14 @@ class PrerequisiteManager:
                         raise PrerequisiteError('Compose ownership override may not be a symlink.')
                     override.write_text(json.dumps({'services': {name: {'labels': {
                         CONFIG_LABEL: fingerprint}} for name, fingerprint in self.fingerprints.items()}}))
-                    self._command((*self.plan.command, '-f', str(override), 'up', '-d',
+                    # Private snapshot paths remain available for retained bind
+                    # mounts. No mutable source asset reaches Compose execution.
+                    snapshot = Path(tempfile.mkdtemp(prefix=f'{self.scope.id}-assets-', dir=self.directory))
+                    self.snapshot_directory = snapshot
+                    command, environment = snapshot_compose(self.plan, snapshot)
+                    self.environment = MappingProxyType({**self.environment,
+                        'SA_LOCALSTACK_READY_HOOK': environment['SA_LOCALSTACK_READY_HOOK']})
+                    self._command((*command, '-f', str(override), 'up', '-d',
                         '--no-recreate', *missing), deadline)
                 while True:
                     _check(deadline, self.cancelled, self.now)
@@ -432,9 +465,10 @@ class PrerequisiteManager:
                     self.sleep(.1)
                 reused = tuple(item.id for item in existing.values())
                 lease = ServiceLease(invocation, self.scope.id, self.plan.profiles, newly, reused)
-                journal[invocation] = {'pid': pid, 'identity': identity, 'ids': list(lease.container_ids),
+                pending_journal = dict(journal)
+                pending_journal[invocation] = {'pid': pid, 'identity': identity, 'ids': list(lease.container_ids),
                     'owned_ids': list(newly), 'reused_ids': list(reused), 'fingerprints': self.fingerprints}
-                _write_journal(self.directory, self.scope, journal)
+                _write_journal(self.directory, self.scope, pending_journal)
                 self.lease = lease
                 return lease
             except BaseException:
@@ -444,6 +478,12 @@ class PrerequisiteManager:
                 newly = tuple(item for item in inventory if (item not in initial or item in restarted)
                     and inventory[item].service in missing)
                 self._stop_new(newly, journal, rollback_deadline)
+                if snapshot is not None and not newly:
+                    # stop preserves container definitions and their bind sources.
+                    # Only a snapshot unused by any created/restarted definition
+                    # is safe to remove without an explicit engine removal.
+                    shutil.rmtree(snapshot)
+                    self.snapshot_directory = None
                 raise
 
     def release(self, *, retain=False):
@@ -456,5 +496,10 @@ class PrerequisiteManager:
             journal.pop(self.lease.invocation_id, None)
             stopped = () if retain else self._stop_new(self.lease.owned_ids, journal, deadline)
             _write_journal(self.directory, self.scope, journal)
+            # Both running and stopped container definitions keep their original
+            # bind source. Removal/asset garbage collection requires an explicit
+            # inventory of those definitions, beyond this stop-only lifecycle.
+            # Forget local cleanup ownership after the lease is relinquished.
+            self.snapshot_directory = None
             self.lease = None
             return stopped

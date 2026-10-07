@@ -119,7 +119,7 @@ def test_validation_never_starts_engine_and_discards_secrets():
         return SimpleNamespace(returncode=0, stdout='private', stderr='private')
     assert validate_compose(plan, runner=run)
     assert calls[0][0][-2:] == ('config', '--quiet')
-    assert calls[0][1]['env'] == plan.environment
+    assert {k: v for k, v in calls[0][1]['env'].items() if k != 'SA_LOCALSTACK_READY_HOOK'} == {k: v for k, v in plan.environment.items() if k != 'SA_LOCALSTACK_READY_HOOK'}
     assert calls[0][1]['capture_output'] is True
     assert not validate_compose(plan_compose({}, Scope()), runner=run)
     assert len(calls) == 1
@@ -382,3 +382,68 @@ def test_resolved_localstack_toggle_and_selected_bucket_feed_provisioning_plan(e
     assert plan.environment['SA_ALLURE_S3_BUCKET'] == ('explicit-results' if explicit else 'allure-results')
     assert plan.environment['SA_ALLURE_S3_REGION'] == ('eu-west-1' if explicit else 'us-east-1')
     assert result.values['ALLURE_S3_ENDPOINT'] == 'http://localhost:4566'
+
+
+def test_validation_consumes_snapshot_after_source_changes(tmp_path):
+    original = plan_compose({}, Scope())
+    for name, content in original.assets.items():
+        (tmp_path / name).write_bytes(content)
+    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=tmp_path)
+    for name in plan.assets:
+        (tmp_path / name).write_bytes(b'changed after review')
+    consumed = []
+    def run(command, **kwargs):
+        file = Path(command[command.index('-f') + 1])
+        consumed.append(file.read_bytes())
+        assert consumed[-1] == plan.assets['compose.json']
+        assert Path(kwargs['env']['SA_LOCALSTACK_READY_HOOK']).read_bytes() == plan.assets['localstack-ready.sh']
+        assert Path(command[command.index('--env-file') + 1]).read_bytes() == plan.assets['empty.env']
+        return SimpleNamespace(returncode=0)
+    assert validate_compose(plan, runner=run)
+    assert consumed
+
+
+@pytest.mark.parametrize('level,key,value', [
+    ('document', 'include', [{'path': '/live/external.json'}]),
+    ('document', 'configs', {'external': {'file': '/live/config'}}),
+    ('document', 'secrets', {'external': {'file': '/live/secret'}}),
+    ('document', 'future_extension', {'file': '/live/future'}),
+    ('service', 'extends', {'file': '/live/external.json', 'service': 'base'}),
+    ('service', 'build', {'context': '/live/build'}),
+    ('service', 'configs', ['external']),
+    ('service', 'secrets', ['external']),
+    ('service', 'credential_spec', {'file': '/live/credentials'}),
+    ('service', 'label_file', '/live/labels'),
+    ('service', 'develop', {'watch': [{'path': '/live/source'}]}),
+    ('service', 'future_extension', {'file': '/live/future'}),
+    ('volume', 'driver_opts', {'type': 'none', 'o': 'bind', 'device': '/live/data'}),
+    ('volume', 'external', True),
+])
+def test_planning_rejects_unsnapshotted_external_asset_features(tmp_path, level, key, value):
+    plan = plan_compose({}, Scope())
+    document = json.loads(plan.assets['compose.json'])
+    if level == 'document': target = document
+    elif level == 'service': target = document['services']['jaeger']
+    else: target = document['volumes']['localstack-data']
+    target[key] = value
+    for name, content in plan.assets.items():
+        (tmp_path / name).write_bytes(content)
+    (tmp_path / 'compose.json').write_text(json.dumps(document))
+    with pytest.raises(ComposeError, match='unsupported|Unsupported|only labels'):
+        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=tmp_path)
+
+
+def test_nonmapping_named_volume_is_rejected():
+    document = json.loads(plan_compose({}, Scope()).assets['compose.json'])
+    document['volumes']['localstack-data'] = '/live/data'
+    with pytest.raises(ComposeError, match='only labels'):
+        validate_document(document, Scope(), ())
+
+
+@pytest.mark.parametrize('labels', [{}, {'api-agent.profile': 'otel'},
+    {'api-agent.profile': 'foreign'}])
+def test_named_volume_labels_are_fixed_controlled_ownership(labels):
+    document = json.loads(plan_compose({}, Scope()).assets['compose.json'])
+    document['volumes']['localstack-data'] = {'labels': labels}
+    with pytest.raises(ComposeError, match='ownership labels'):
+        validate_document(document, Scope(), ())

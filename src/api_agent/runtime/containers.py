@@ -105,16 +105,17 @@ class ContainerRuntime:
         identifiers = self._run([
             "ps", "--quiet", "--no-trunc",
             "--filter", "label=api-agent.managed=true",
-            "--filter", f"label=api-agent.scope={self.scope.id}",
-            "--filter", f"label=com.docker.compose.project={self.scope.project}",
         ]).split()
         if not identifiers:
             return ()
+        records = self._inspect(identifiers)
+        if any(self.scope.is_legacy(record['Config'].get('Labels')) for record in records):
+            raise ContainerError('Previous path-based stack scope exists; review and release its leases and containers before migration.')
         protected = session_container_identity()
         return tuple(Container(record["Id"], record["Name"].lstrip("/"),
                                str(record["Config"].get("Image", "")),
                                str(record["State"].get("Status", "")))
-                     for record in self._inspect(identifiers)
+                     for record in records
                      if self._eligible(record, protected) and record["State"].get("Running") is True)
 
     def stop(self, identifiers):

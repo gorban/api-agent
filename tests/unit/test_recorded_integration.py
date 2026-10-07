@@ -25,7 +25,7 @@ class Storage:
 
 
 def fixture(tmp_path):
-    context = SimpleNamespace(owner_root=tmp_path / 'pack')
+    context = SimpleNamespace(base_root=tmp_path / 'base', owner_root=tmp_path / 'pack')
     test = TestIdentity('pack::tests/integration/test_api.py::test_listing', 'pack',
                         'tests/integration/test_api.py', 'tests/integration/test_api.py::test_listing')
     config = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
@@ -205,3 +205,27 @@ def test_real_runner_setup_failure_persists_failed_run_without_starting_pytest(t
     row = json.loads(next(result.directory.glob('*-result.json')).read_text())
     assert row['status'] == 'broken'
     assert 'private-setup-password' not in json.dumps(row)
+
+
+def test_real_recorded_collision_and_parameter_name_join(tmp_path):
+    from api_agent.testing.collection import collect_tests
+    base, owner = tmp_path / 'a/same', tmp_path / 'b/same'
+    base.mkdir(parents=True)
+    suite = owner / 'tests/integration'
+    suite.mkdir(parents=True)
+    (suite / 'test_param.py').write_text(
+        "import pytest\n@pytest.mark.parametrize('value', [1], ids=['value::nested'])\n"
+        "def test_value(value): assert value == 1\n")
+    context = SimpleNamespace(base_root=base, owner_root=owner,
+                              suite_paths=lambda mode: [suite])
+    tests = collect_tests(context, 'integration')
+    assert tests[0].repo == 'pack'
+    config = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
+              'ALLURE_RESULTS_DIR': tmp_path / 'results', 'TEST_PARALLEL_JOBS': 0}
+    storage = Storage()
+    result = recorded.run_recorded_integration(context, tests, config, accepted=True, storage=storage)
+    assert result.exit_code == 0 and result.persisted and len(storage.calls) == 1
+    assert result.identity.repo == result.execution.tests[0].identity.repo == 'pack'
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    assert row['name'] == 'test_value[value::nested]'
+    assert row['fullName'] == tests[0].node_id
