@@ -75,6 +75,8 @@ class WorkbenchScreen(Screen):
         super().__init__()
         self.kind, self.heading, self.body = kind, title, text
         self.actions, self.rows = actions, rows
+        self.config_saved = set()
+        self.config_defaults = set()
 
     def compose(self) -> ComposeResult:
         app = self.app
@@ -113,6 +115,8 @@ class WorkbenchScreen(Screen):
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
             for key, cells in self.rows:
                 table.add_row(*cells, key=key)
+            if self.kind == "defaults":
+                self.app.refresh_configuration_rows(self)
             table.focus()
         elif self.kind == "input":
             self.query_one(Input).value = self.app.prompt_value
@@ -137,7 +141,7 @@ class WorkbenchScreen(Screen):
         if action == "accept_default":
             return self.kind == "defaults" and self.app.focused_default()
         if action == "unset_setting":
-            return self.kind == "defaults" and self.app.session.saved_path(self.app.focused_setting()) is not None
+            return self.kind == "defaults" and self.app.focused_setting() in self.config_saved
         if action == "edit_setting":
             return self.kind == "defaults"
         if action == "delete_marked":
@@ -150,6 +154,8 @@ class WorkbenchScreen(Screen):
         return True
 
     def on_data_table_row_highlighted(self, event):
+        if self.kind == "defaults" and self.app.screen is self:
+            self.app.refresh_configuration_rows(self)
         self.refresh_bindings()
 
     def on_data_table_row_selected(self, event):
@@ -186,9 +192,8 @@ class WorkbenchScreen(Screen):
     def action_unset_setting(self):
         try:
             name = self.app.focused_setting()
-            if self.app.session.saved_path(name) is not None:
-                self.app.session.unset_saved(name)
-                self.app.show_configuration()
+            self.app.session.unset_saved(name)
+            self.app.show_configuration()
         except Exception as error:
             self.query_one("#error", Static).update(str(error))
 
@@ -354,14 +359,33 @@ class ApiAgentApp(App[int]):
                   "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
                   rows=rows)
 
+    def refresh_configuration_rows(self, screen):
+        """Refresh displayed values and contextual actions as one UI snapshot."""
+        result = self.session.result(_review=True)
+        table = screen.query_one(DataTable)
+        saved, defaults = set(), set()
+        for row in table.ordered_rows:
+            name = row.key.value
+            resolved = result.fields.get(name)
+            field = self.schema.fields[name]
+            if self.session.saved_path(name) is not None:
+                saved.add(name)
+            if resolved and not resolved.explicit and field.acknowledge_default and field.persist_default:
+                defaults.add(name)
+            cells = (name, display(resolved.value) if resolved else
+                     Text("Required", justify="right") if name in result.missing else "",
+                     resolved.source if resolved else "Not provided")
+            for column, value in zip(table.columns, cells):
+                table.update_cell(row.key, column, value)
+        screen.config_saved, screen.config_defaults = saved, defaults
+
     def focused_setting(self):
         table = self.screen.query_one(DataTable)
         return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value if table.row_count else None
 
     def focused_default(self):
         name = self.focused_setting()
-        return any(item.name == name and item.field.persist_default
-                   for item in self.session.default_candidates())
+        return name in self.screen.config_defaults
 
     async def accept_default(self):
         if self.screen.kind != "defaults" or not self.focused_default():

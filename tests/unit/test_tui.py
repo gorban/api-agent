@@ -720,3 +720,28 @@ def test_enum_edit_lists_blank_choice_and_spaces_target_section(tmp_path):
             await pilot.pause()
             assert 'expected one of <blank>, LangFuse, OTEL' in str(app.screen.query_one('#error', Static).content)
     asyncio.run(scenario())
+
+
+def test_external_dotenv_removal_refreshes_source_and_unset_together(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path, fields={'TRACE_MODE': {'type': 'str', 'review_optional': True},
+                                       'OTHER': {'type': 'str', 'review_optional': True}})
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press('e')
+            await pilot.pause()
+            app.screen.query_one(Input).value = ''
+            await pilot.press('enter')
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            assert table.get_row_at(0)[2].endswith('/.env')
+            assert app.screen.check_action('unset_setting', ())
+            (tmp_path / '.env').write_text('')
+            # Nothing re-reads just the shortcut state behind the displayed row.
+            assert app.screen.check_action('unset_setting', ())
+            assert table.get_row_at(0)[2].endswith('/.env')
+            await pilot.press('down', 'up')
+            await pilot.pause()
+            assert table.get_row_at(0) == ['TRACE_MODE', '', 'Not provided']
+            assert not app.screen.check_action('unset_setting', ())
+    asyncio.run(scenario())
