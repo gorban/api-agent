@@ -28,7 +28,8 @@ def compose_runtime(context, values, *, callback_origin, tls_material=None):
     sessions = SessionStore(context.pack_id, callback_origin)
     emissions = EmissionBoundary(ContentPolicy.from_config(result))
     services = MappingProxyType({'sessions': sessions, 'emissions': emissions,
-                                 'callback_origin': callback_origin, 'ssl_context': ssl_context})
+                                 'callback_origin': callback_origin, 'ssl_context': ssl_context,
+                                 'owner_root': getattr(context, 'owner_root', None)})
     for key in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
         if values.get(key): emissions.register_secret(values[key])
     trace_config = replace(result, values=values) if result is not None else ConfigResult(values, {}, (), (), ())

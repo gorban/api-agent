@@ -140,6 +140,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                   (context.launcher_root or context.base_root) / '.env',
                                   context.dotenv_path)):
             dotenv.update(read_dotenv(path))
+        foundation_schema = schema
+        from api_agent.providers.loading import bootstrap_schema
+        schema = bootstrap_schema(schema, argv, os.environ, dotenv,
+                                  owner_root=context.owner_root,
+                                  configuration_paths=context.provider_config_paths)
         result = resolve_config(schema, argv=argv, environ=os.environ,
                                 dotenv=dotenv, anchors=context.anchors,
                                 interactive=True, pack_launcher=context.external_pack,
@@ -219,7 +224,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if status is not None:
             return status
         from api_agent.tui.app import run_tui
-        return run_tui(context, schema, argv, os.environ.copy())
+        return run_tui(context, foundation_schema, argv, os.environ.copy())
     except (ValueError, OSError, WorktreeGateError, subprocess.CalledProcessError) as exc:
         print(f'Launch error: {exc}', file=sys.stderr)
         return 2

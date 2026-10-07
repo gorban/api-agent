@@ -32,6 +32,7 @@ class LaunchContext:
     bootstrap_source: str | None = None
     bootstrap_explicit: bool = False
     service_name: str = "api-agent"
+    provider_config_paths: tuple[Path, ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -86,7 +87,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -107,6 +108,18 @@ def load_launch_context(
     if not config.is_file():
         raise ResourcePackError(f"Resource-pack configuration does not exist: {config}")
     defaults = data.get("defaults", {})
+    providers = data.get('providers', {})
+    if not isinstance(providers, dict) or set(providers) - {'configs'}:
+        raise ResourcePackError('providers must contain only a configs array')
+    configs = providers.get('configs', [])
+    if not isinstance(configs, list):
+        raise ResourcePackError('providers.configs must be an array of declaration paths')
+    provider_configs = []
+    for entry in configs:
+        source = _relative_path(entry, pack, 'providers.configs')
+        if source.suffix != '.toml' or not source.is_file():
+            raise ResourcePackError('providers.configs must name existing TOML declarations')
+        provider_configs.append(source)
     declared_tests = data.get("tests", {})
     if not isinstance(defaults, dict) or not isinstance(declared_tests, dict):
         raise ResourcePackError("Resource-pack defaults and tests must be TOML tables")
@@ -164,4 +177,5 @@ def load_launch_context(
         factory_path, factory_name,
         tuple(dict.fromkeys(production_paths)),
         service_name=service_name,
+        provider_config_paths=tuple(dict.fromkeys(provider_configs)),
     )

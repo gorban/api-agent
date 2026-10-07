@@ -62,11 +62,16 @@ class ConfigSession:
         self._choices = {}
         launcher = getattr(context, 'launcher_root', None)
         self._dotenv_path = Path(launcher) / '.env' if launcher else Path(context.dotenv_path)
-        from api_agent.providers.loading import bootstrap_schema
         provider_dotenv = {}
         for path in self.target_paths:
             provider_dotenv.update(read_dotenv(path))
-        self._schema = bootstrap_schema(schema, self.argv, self.environ, provider_dotenv)
+        self._schema = self._bootstrap_schema(schema, provider_dotenv)
+
+    def _bootstrap_schema(self, schema, dotenv, choices=None):
+        from api_agent.providers.loading import bootstrap_schema
+        return bootstrap_schema(schema, self.argv, self.environ, dotenv, choices,
+            owner_root=getattr(self.context, 'owner_root', self.context.pack_root),
+            configuration_paths=getattr(self.context, 'provider_config_paths', ()))
 
     @property
     def dotenv_path(self):
@@ -316,8 +321,7 @@ class ConfigSession:
         argv = self.argv
         choices = dict(self._choices)
         choices.update(runtime_directory_overrides(self.context))
-        from api_agent.providers.loading import bootstrap_schema
-        self._schema = bootstrap_schema(self._provider_base_schema, argv, self.environ, dotenv, choices)
+        self._schema = self._bootstrap_schema(self._provider_base_schema, dotenv, choices)
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
         # Pack scope remains enforced except in the explicit cleanup inventory.

@@ -6,6 +6,7 @@ Follow [provider architecture](provider_architecture.md) for ownership and the a
 
 - [x] Provide explicit `LLM_PROVIDER` Python-file factory loading, integer version-1 validation, optional lifecycle/route hooks and neutral initialization errors in `src/api_agent/providers/loading.py`.
 - [x] Discover the selected LLM provider's adjacent `cfg/config.toml` without importing its factory, and combine typed declarations before operation configuration. Keep help/configuration free of authentication/inference.
+- [x] Honor pack-declared LLM factory defaults, owner-root-relative factory paths and ordered declarative `providers.configs` contributions. Present provider defaults as effective pack settings; preserve explicit value precedence and schema refresh after saves. API/upstream factory loading, capability/role contracts and executable UI composition remain below.
 
 These completed primitives do not complete the contracts or consumers below.
 
