@@ -24,6 +24,7 @@ class LaunchContext:
     tests: Mapping[str, tuple[Path, ...]]
     packaged_demo: bool = False
     launcher_root: Path | None = None
+    show_pack_bootstrap: bool = False
 
     @property
     def dotenv_path(self) -> Path:
@@ -109,4 +110,5 @@ def load_launch_context(
         base, pack, owner, owner.name, pack_id, config,
         MappingProxyType(dict(defaults)), MappingProxyType(tests), packaged_demo,
         Path(launcher_root).resolve() if launcher_root is not None else base,
+        resource_pack_dir is None and (launcher_root is None or Path(launcher_root).resolve() == base),
     )
