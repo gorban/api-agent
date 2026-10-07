@@ -1,5 +1,11 @@
 # api-agent checklist
 
+## Testing during implementation
+
+Write deterministic unit tests covering each task's requirements as it is implemented, preferably red-to-green where possible: demonstrate the missing behavior with a failing test, then implement it and make the test pass. Maintain a 100% unit-test pass rate for every commit. Do not pursue or require 100% code coverage at each implementation step; coverage completion is an explicit later task, before final documentation archival and cleanup.
+
+The TUI's fixed 100% coverage threshold, red summary, and nonzero exit below that threshold remain as planned. During implementation, that coverage result identifies remaining work and does not block committing a step whose unit tests all pass. Use targeted tests to verify the current requirements. The final E2E acceptance pass-rate gate is also a separate root-plan task, with its threshold and measurement rules still to be established with the user.
+
 ## Checklist
 
 - [ ] Establish the fresh runtime skeleton and resource-pack structure, organized by responsibility, node, and prompt files. See [skeleton grouping plan](implementation_plan_g.md).
