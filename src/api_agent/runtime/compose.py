@@ -56,6 +56,11 @@ def _endpoint(value):
     return parsed, port
 
 
+def _local_s3_endpoint(parsed, port):
+    return (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1'}
+            and port == 4566 and not parsed.path.rstrip('/') and not parsed.query)
+
+
 def selected_profiles(config):
     """Only conventional loopback endpoints request managed local dependencies."""
     mode = config.get('TRACE_MODE', '')
@@ -71,11 +76,18 @@ def selected_profiles(config):
                 and port == (3000 if mode == 'LangFuse' else 4318)
                 and parsed.path.rstrip('/') == path and not parsed.query):
             profiles.append('langfuse' if mode == 'LangFuse' else 'otel')
+    localstack = config.get('ALLURE_S3_USE_LOCALSTACK', False)
+    if type(localstack) is not bool:
+        raise ComposeError('ALLURE_S3_USE_LOCALSTACK must be a boolean.')
     endpoint = config.get('ALLURE_S3_ENDPOINT')
-    if endpoint:
+    if localstack and endpoint is None:
+        endpoint = 'http://localhost:4566'
+    if endpoint or localstack:
         parsed, port = _endpoint(endpoint)
-        if (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1'}
-                and port == 4566 and not parsed.path.rstrip('/') and not parsed.query):
+        is_local = _local_s3_endpoint(parsed, port)
+        if localstack and not is_local:
+            raise ComposeError('LocalStack selection requires its loopback S3 endpoint.')
+        if is_local:
             profiles.append('localstack')
     return tuple(profiles)
 
@@ -123,6 +135,13 @@ def validate_document(document, scope, profiles):
             if dependency not in services or services[dependency].get('profiles') != service_profiles:
                 raise ComposeError('Compose dependency must belong to the same profile.')
         for volume in service.get('volumes', []):
+            if isinstance(volume, dict):
+                if (name != 'localstack' or volume != {'type': 'bind',
+                        'source': '${SA_LOCALSTACK_READY_HOOK:?controlled local development value required}',
+                        'target': '/etc/localstack/init/ready.d/10-api-agent-s3.sh', 'read_only': True,
+                        'bind': {'create_host_path': False, 'selinux': 'z'}}):
+                    raise ComposeError('Compose bind mounts require the controlled LocalStack hook.')
+                continue
             if not isinstance(volume, str) or volume.split(':')[0] not in document.get('volumes', {}):
                 raise ComposeError('Compose service data requires declared named volumes.')
         if profile in profiles:
@@ -178,6 +197,27 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         command += ('--profile', profile)
     environment = {**controlled_engine_environment(engine_environment),
                    **local_development_environment(scope)}
+    hook = directory / 'localstack-ready.sh'
+    try:
+        if hook.is_symlink() or not hook.is_file():
+            raise ComposeError('Controlled LocalStack ready hook is missing or symlinked.')
+        environment['SA_LOCALSTACK_READY_HOOK'] = str(hook.resolve())
+        environment['SA_LOCALSTACK_READY_DIGEST'] = sha256(hook.read_bytes()).hexdigest()
+    except OSError as error:
+        raise ComposeError('Cannot read controlled LocalStack ready hook.') from error
+    bucket = config.get('ALLURE_S3_BUCKET')
+    region = config.get('ALLURE_S3_REGION')
+    bucket = 'allure-results' if bucket is None else bucket
+    region = 'us-east-1' if region is None else region
+    if 'localstack' in profiles:
+        if (not isinstance(bucket, str) or not re.fullmatch('[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]', bucket)
+                or '..' in bucket or re.fullmatch(r'\d+\.\d+\.\d+\.\d+', bucket)):
+            raise ComposeError('LocalStack requires a valid selected S3 bucket name.')
+        if not isinstance(region, str) or not re.fullmatch('[a-z0-9]+(?:-[a-z0-9]+)+', region):
+            raise ComposeError('LocalStack requires a valid selected region.')
+    # Inactive profiles still need controlled interpolation for config validation.
+    environment['SA_ALLURE_S3_BUCKET'] = bucket if 'localstack' in profiles else 'allure-results'
+    environment['SA_ALLURE_S3_REGION'] = region if 'localstack' in profiles else 'us-east-1'
     if 'langfuse' in profiles:
         for key in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
             value = config.get(key)

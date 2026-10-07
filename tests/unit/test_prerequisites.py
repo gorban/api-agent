@@ -30,6 +30,7 @@ class Engine:
         self.counter = 0
         self.health = None
         self.fail_stop = False
+        self.fail_hook = False
 
     def add(self, name, *, fingerprint=None, image=None, running=True, foreign=False, profile=None):
         self.counter += 1
@@ -53,6 +54,9 @@ class Engine:
         if command[1] == 'stop':
             if self.fail_stop: raise p.PrerequisiteError('stop failed')
             for identifier in command[4:]: self.records[identifier]['State']['Running'] = False
+            return ''
+        if command[1] == 'exec':
+            if self.fail_hook: raise p.PrerequisiteError('bucket hook failed')
             return ''
         if 'up' in command:
             names = command[command.index('--no-recreate') + 1:]
@@ -442,6 +446,14 @@ def test_readiness_authenticates_headless_project_and_actual_endpoints(monkeypat
     response.status = status
     def open_url(request, **kwargs):
         calls.append((request, kwargs))
+        if request.full_url.endswith('/init/ready'):
+            class Ready(Response):
+                status = 200
+                def read(self, limit):
+                    assert limit == 65536
+                    return json.dumps({'completed': True, 'scripts': [
+                        {'name': '10-api-agent-s3.sh', 'state': 'SUCCESSFUL'}]}).encode()
+            return Ready()
         return response
     monkeypatch.setattr(p, 'urlopen', open_url)
     environment = {'SA_SCOPE': 'testscope', 'SA_LANGFUSE_PUBLIC_KEY': 'pk-local', 'SA_LANGFUSE_SECRET_KEY': 'sk-local'}
@@ -721,3 +733,130 @@ def test_owned_readiness_transport_ignores_proxy_and_refuses_local_redirect(tmp_
             server.shutdown()
             server.server_close()
         for thread in threads: thread.join(timeout=1)
+
+
+def test_localstack_selected_bucket_is_provisioned_on_new_and_reused_stack(setup):
+    create, engine, _, _, _ = setup
+    config = {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'selected-results', 'ALLURE_S3_REGION': 'eu-west-1'}
+    manager = create(config)
+    lease = manager.acquire()
+    hook = next(command for command, _ in engine.commands if command[1] == 'exec')
+    assert hook == ('docker', 'exec', lease.owned_ids[0], '/bin/sh', '/etc/localstack/init/ready.d/10-api-agent-s3.sh')
+    assert manager.environment['SA_ALLURE_S3_BUCKET'] == 'selected-results'
+    manager.release(retain=True)
+    reused = create(config)
+    assert reused.acquire().reused_ids == lease.owned_ids
+    assert len([command for command, _ in engine.commands if command[1] == 'exec']) == 2
+
+
+def test_bucket_provision_failure_rolls_back_only_new_services(setup):
+    create, engine, _, _, _ = setup
+    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True})
+    existing = engine.add('jaeger')
+    engine.fail_hook = True
+    with pytest.raises(p.PrerequisiteError, match='bucket hook failed'): manager.acquire()
+    stop = next(command for command, _ in engine.commands if command[1] == 'stop')
+    assert existing not in stop
+    assert engine.records[existing]['State']['Running']
+
+
+def test_selected_bucket_and_hook_change_prevent_unsafe_reuse(setup, monkeypatch):
+    create, engine, _, _, _ = setup
+    first = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'first-results'})
+    first.acquire()
+    first.release(retain=True)
+    changed = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'other-results'})
+    with pytest.raises(p.PrerequisiteError, match='incompatible'): changed.acquire()
+    original = Path.read_bytes
+    monkeypatch.setattr(Path, 'read_bytes', lambda path: original(path) + b'\n# changed hook contract\n')
+    changed_hook = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'first-results'})
+    with pytest.raises(p.PrerequisiteError, match='incompatible'): changed_hook.acquire()
+
+
+@pytest.mark.parametrize('exists,region', [(False, 'us-east-1'), (True, 'us-east-1'), (False, 'eu-west-1')])
+def test_ready_hook_idempotently_creates_exact_bucket_with_controlled_awslocal(tmp_path, exists, region):
+    _exercise_ready_hook(tmp_path, exists=exists, region=region)
+
+
+def _exercise_ready_hook(tmp_path, *, exists=False, region='us-east-1', failure=None):
+    state, log = tmp_path / 'bucket-state.json', tmp_path / 'awslocal-calls.json'
+    state.write_text(json.dumps({'exists': exists}))
+    log.write_text('[]')
+    fake = tmp_path / 'awslocal'
+    fake.write_text('#!' + sys.executable + '\n' + '''import json,os,sys
+from pathlib import Path
+state=Path(STATE)
+log=Path(LOG)
+failure=FAILURE
+current=json.loads(state.read_text())
+calls=json.loads(log.read_text())
+args=sys.argv[1:]
+calls.append({'args':args,'access':os.environ['AWS_ACCESS_KEY_ID'],'secret':os.environ['AWS_SECRET_ACCESS_KEY'],
+              'token':os.environ['AWS_SESSION_TOKEN']})
+log.write_text(json.dumps(calls))
+if 'head-bucket' in args:
+ sys.exit(0 if current['exists'] and failure!='head-after-create' else 1)
+if 'create-bucket' in args:
+ if failure=='create':
+  current['exists']=True
+  state.write_text(json.dumps(current))
+  sys.exit(5)
+ current['exists']=True
+ state.write_text(json.dumps(current))
+ sys.exit(0)
+sys.exit(9)
+'''.replace('STATE', repr(str(state))).replace('LOG', repr(str(log))).replace('FAILURE', repr(failure)))
+    fake.chmod(0o755)
+    hook = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True}, StackScope('a' * 16)).directory / 'localstack-ready.sh'
+    environment = {'PATH': str(tmp_path) + ':/usr/bin:/bin', 'SA_ALLURE_S3_BUCKET': 'chosen-results',
+                   'SA_ALLURE_S3_REGION': region, 'AWS_ACCESS_KEY_ID': 'ambient', 'AWS_SECRET_ACCESS_KEY': 'ambient',
+                   'AWS_SESSION_TOKEN': 'ambient'}
+    result = subprocess.run(('/bin/sh', str(hook)), env=environment, capture_output=True, text=True, timeout=5)
+    calls = json.loads(log.read_text())
+    assert calls
+    assert all(call['args'][:4] == ['--endpoint-url', 'http://127.0.0.1:4566', '--region', region] for call in calls)
+    assert all(call['args'][call['args'].index('--bucket') + 1] == 'chosen-results' for call in calls)
+    assert all((call['access'], call['secret'], call['token']) == ('test', 'test', '') for call in calls)
+    creates = [call['args'] for call in calls if 'create-bucket' in call['args']]
+    if failure:
+        assert result.returncode != 0
+        if failure == 'create': assert len(calls) == 2
+        else: assert len(calls) == 3
+        return
+    assert result.returncode == 0
+    assert len(creates) == (0 if exists else 1)
+    if creates:
+        assert ('--create-bucket-configuration' in creates[0]) == (region != 'us-east-1')
+        if region != 'us-east-1': assert creates[0][-1] == 'LocationConstraint=' + region
+    repeated = subprocess.run(('/bin/sh', str(hook)), env=environment, capture_output=True, text=True, timeout=5)
+    assert repeated.returncode == 0
+    assert len([call for call in json.loads(log.read_text()) if 'create-bucket' in call['args']]) == len(creates)
+
+
+@pytest.mark.parametrize('failure', ['create', 'head-after-create'])
+def test_ready_hook_propagates_create_and_final_readability_failures(tmp_path, failure):
+    _exercise_ready_hook(tmp_path, failure=failure)
+
+
+@pytest.mark.parametrize('status,stage,expected', [(200, {'completed': False}, False),
+    (503, {}, False), (200, {'completed': True, 'scripts': []}, False),
+    (200, {'completed': True, 'scripts': [{'name': '10-api-agent-s3.sh', 'state': 'ERROR'}]}, False),
+    (200, {'completed': True, 'scripts': [{'name': 'other.sh', 'state': 'SUCCESSFUL'}]}, False),
+    (200, {'completed': True, 'scripts': [{'name': '10-api-agent-s3.sh', 'state': 'SUCCESSFUL'}]}, True)])
+def test_localstack_readiness_waits_for_automatic_selected_bucket_hook(monkeypatch, status, stage, expected):
+    urls = []
+    class Response:
+        def __init__(self, status, body): self.status, self.body = status, body
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, bound):
+            assert bound == 65536
+            return json.dumps(self.body).encode()
+    def open_local(request, **kwargs):
+        urls.append(request.full_url)
+        if request.full_url.endswith('/health'):
+            return Response(200, {'services': {'s3': 'available'}})
+        return Response(status, stage)
+    monkeypatch.setattr(p, 'urlopen', open_local)
+    assert p._readiness('localstack', .1, {}) is expected
+    assert urls == ['http://127.0.0.1:4566/_localstack/health', 'http://127.0.0.1:4566/_localstack/init/ready']

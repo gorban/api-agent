@@ -283,7 +283,17 @@ def _readiness(profile, timeout, environment):
                            for project in data.get('data', []))
             if profile == 'localstack':
                 data = json.loads(response.read(65536))
-                return data.get('services', {}).get('s3') in {'running', 'available'}
+                if data.get('services', {}).get('s3') not in {'running', 'available'}:
+                    return False
+                # ready.d runs after S3 begins serving. Wait for the controlled
+                # hook to finish before an idempotent exec, avoiding a create race.
+                with urlopen(Request('http://127.0.0.1:4566/_localstack/init/ready'), timeout=timeout) as ready:
+                    if ready.status != 200:
+                        return False
+                    stage = json.loads(ready.read(65536))
+                return (stage.get('completed') is True and any(
+                    script.get('name') == '10-api-agent-s3.sh' and script.get('state') == 'SUCCESSFUL'
+                    for script in stage.get('scripts', [])))
             return True
     except (OSError, URLError, ValueError, AttributeError, TypeError):
         return False
@@ -414,6 +424,10 @@ class PrerequisiteManager:
                             and all(self.probe(profile, min(1, max(.001, deadline - self.now())),
                                     self.environment) for profile in self.plan.profiles)):
                         _check(deadline, self.cancelled, self.now)
+                        if 'localstack' in current:
+                            self._command((self.plan.command[0], 'exec', current['localstack'].id,
+                                '/bin/sh', '/etc/localstack/init/ready.d/10-api-agent-s3.sh'), deadline)
+                            _check(deadline, self.cancelled, self.now)
                         break
                     self.sleep(.1)
                 reused = tuple(item.id for item in existing.values())

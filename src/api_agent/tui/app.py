@@ -542,13 +542,12 @@ class ApiAgentApp(App[int]):
             await self.start_configuration()
 
     def configuration_pending(self, *, include_optional=True):
-        candidates = [item.name for item in self.session.default_candidates()
-                      if item.field.persist_default]
+        candidates = [item.name for item in self.session.default_candidates()]
         missing = [name for name in self.session.result(_review=True).missing
-                   if name != "TUI_MODE"]
+                   if self.schema.fields[name].acknowledge_default]
         review = self.session.result(_review=True)
         optional = [name for name, field in self.schema.fields.items()
-                    if include_optional and field.review_optional
+                    if include_optional and field.review_optional and field.acknowledge_default
                     and (not field.pack_only or self.context.external_pack)
                     and (name not in review.fields or not review.fields[name].explicit)]
         return set(candidates + missing + optional)
@@ -633,7 +632,8 @@ class ApiAgentApp(App[int]):
         self.review_names.update(self.configuration_pending())
         rows = []
         for name in self.schema.fields:
-            if name not in self.review_names or (name not in active and name not in default_names):
+            if (not self.schema.fields[name].acknowledge_default or name not in self.review_names
+                    or (name not in active and name not in default_names)):
                 continue
             resolved = review.fields.get(name) if name in default_names else result.fields.get(name)
             if name in default_names and resolved is None and name not in result.missing and not self.schema.fields[name].review_optional:
@@ -661,7 +661,7 @@ class ApiAgentApp(App[int]):
             field = self.schema.fields[name]
             if self.session.saved_path(name) is not None:
                 saved.add(name)
-            if resolved and not resolved.explicit and field.acknowledge_default and field.persist_default:
+            if resolved and not resolved.explicit and field.acknowledge_default:
                 defaults.add(name)
             cells = (name, display(resolved.value) if resolved else
                      Text("Required", justify="right") if name in result.missing else "",
@@ -830,6 +830,18 @@ class ApiAgentApp(App[int]):
         if result.errors:
             self.operation_status = 3
             self.show("error", "Configuration error", "\n".join(result.errors), (("menu", "Main menu"),))
+            return
+        hidden_missing = [name for name in result.missing
+                          if not self.schema.fields[name].acknowledge_default]
+        if hidden_missing:
+            self.operation_status = 3
+            if "UNATTENDED_AUTH" in hidden_missing:
+                self.show_required_auth()
+                return
+            self.show("error", "Missing configuration",
+                      "Required settings must be provided explicitly:\n" + "\n".join(
+                          f"{name}: .env / environment {name} or --{name.lower().replace('_', '-')} VALUE"
+                          for name in result.missing), (("menu", "Main menu"),))
             return
         if result.missing or (not skip_defaults and self.configuration_pending(include_optional=False)):
             await self.start_configuration()

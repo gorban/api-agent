@@ -19,8 +19,8 @@ def app_fixture(tmp_path, *, extra=False, argv=(), environ=None):
                               pack_id='fixture', dotenv_path=base / '.env',
                               anchors={}, external_pack=extra,
                               credential_role_fields=('SECONDARY_ROLE',) if extra else ())
-    fields = {'TUI_MODE': {'type': 'str'},
-              'UNATTENDED_AUTH': {'type': 'jsonobject', 'default': {}},
+    fields = {'TUI_MODE': {'type': 'str', 'acknowledge_default': False},
+              'UNATTENDED_AUTH': {'type': 'jsonobject', 'default': {}, 'acknowledge_default': False},
               'SECONDARY_ROLE': {'type': 'str', 'default': 'Partner',
                                  'acknowledge_default': False},
               'NO_STD_IN': {'type': 'bool', 'default': False, 'acknowledge_default': False}}

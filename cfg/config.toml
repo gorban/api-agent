@@ -4,6 +4,8 @@
 # .env values, it will override api-agent. Environment variables override both,
 # and CLI options override everything.
 
+# acknowledge_default defaults to true. False hides a field from Review
+# configuration; explicit .env, environment and CLI assignments still work.
 version = 1
 
 [fields.TRACE_MODE]
@@ -24,6 +26,7 @@ default = false
 help = "Only explicitly setting LOG_CONTENT=True enables message and tool content logging; tracing does not enable content logging."
 
 [fields.CLIENT_CA_FILE]
+acknowledge_default = false
 type = "path"
 anchor = "owner_root"
 review_optional = true
@@ -33,6 +36,7 @@ TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
 
 [fields.LANGFUSE_PUBLIC_KEY]
+acknowledge_default = false
 type = "str"
 conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "pk-lf-local-dev-0000000000"}]
 help = "LangFuse public API key. The local Compose service provisions the local development pair; provide your project's keys for a remote target."
@@ -44,6 +48,7 @@ COLLECT_ONLY = false
 TRACE_MODE = "LangFuse"
 
 [fields.LANGFUSE_SECRET_KEY]
+acknowledge_default = false
 type = "str"
 conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "sk-lf-local-dev-0000000000"}]
 help = "LangFuse secret API key. The local default is only a development credential; remote targets require an explicit project secret."
@@ -59,23 +64,21 @@ type = "bool"
 default = false
 help = "Print help and exit before execution configuration validation (-h)."
 acknowledge_default = false
-persist_default = false
 
 [fields.NO_STD_IN]
 type = "bool"
 default = false
 acknowledge_default = false
-persist_default = false
 help = "Disable interactive input; used for scripted access like from CI or Agents."
 
 [fields.COLLECT_ONLY]
 type = "bool"
 default = false
 acknowledge_default = false
-persist_default = false
 help = "Collect test identities without executing tests or prerequisites."
 
 [fields.TUI_MODE]
+acknowledge_default = false
 type = "str"
 enum = ["run-local", "unit", "integration", "e2e", "allure", "deployment-logs", "config-cleanup", "cleanup-containers", "unattended-auth"]
 help = "Select an operation; positional test selectors require an explicit test mode."
@@ -92,7 +95,6 @@ COLLECT_ONLY = false
 
 [fields.UI_SOURCE_DIR]
 acknowledge_default = false
-persist_default = false
 type = "path"
 anchor = "owner_root"
 required = true
@@ -102,7 +104,6 @@ COLLECT_ONLY = false
 
 [fields.UI_NX_APP]
 acknowledge_default = false
-persist_default = false
 type = "str"
 default = "agent"
 [fields.UI_NX_APP.applies_when]
@@ -120,7 +121,6 @@ COLLECT_ONLY = false
 
 [fields.API_AGENT_DIR]
 acknowledge_default = false
-persist_default = false
 type = "path"
 anchor = "pack_root"
 default = "../api-agent"
@@ -149,7 +149,6 @@ COLLECT_ONLY = false
 type = "bool"
 default = false
 acknowledge_default = false
-persist_default = false
 [fields.E2E_DEBUG.applies_when]
 TUI_MODE = "e2e"
 COLLECT_ONLY = false
@@ -158,7 +157,6 @@ COLLECT_ONLY = false
 type = "bool"
 default = false
 acknowledge_default = false
-persist_default = false
 [fields.AUTH_BROWSER_DEBUG.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e", "unattended-auth"]
 COLLECT_ONLY = false
@@ -172,6 +170,7 @@ TUI_MODE = "e2e"
 COLLECT_ONLY = false
 
 [fields.UNATTENDED_AUTH]
+acknowledge_default = false
 type = "jsonobject"
 default = {}
 help = "Compact JSON object with shared password_manager (manager and cli_path) and roles (account arrays with vault and user). The selected LLM provider declares its primary role key. A selected resource pack may declare additional role keys. Selected accounts are validated by authentication setup."
@@ -181,8 +180,17 @@ COLLECT_ONLY = false
 
 # OAuth transport configuration; no provider calls occur during config review.
 
+[fields.ALLURE_S3_USE_LOCALSTACK]
+type = "bool"
+default = false
+help = "Use managed local S3 for result history. True defaults the bucket to allure-results and endpoint to http://localhost:4566, and provisions the selected bucket idempotently. Remote S3 requires False and an explicit bucket."
+[fields.ALLURE_S3_USE_LOCALSTACK.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
 [fields.ALLURE_S3_BUCKET]
 type = "str"
+conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "allure-results"}]
 help = "Required S3 bucket for integration/E2E result history. LocalStack may provide local S3."
 [fields.ALLURE_S3_BUCKET.required_when]
 TUI_MODE = ["integration", "e2e"]
@@ -200,6 +208,7 @@ COLLECT_ONLY = false
 
 [fields.ALLURE_S3_ENDPOINT]
 type = "str"
+conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "http://localhost:4566"}]
 help = "Optional S3-compatible endpoint, such as LocalStack; omitted uses AWS S3."
 [fields.ALLURE_S3_ENDPOINT.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]

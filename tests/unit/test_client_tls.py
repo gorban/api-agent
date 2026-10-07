@@ -139,7 +139,6 @@ def test_strict_context_validation_and_disabled_verification_rejected():
         require_verified_context(verified)
 
 
-
 def test_configured_provider_receives_verified_context(certificates, tmp_path):
     from types import SimpleNamespace
     from api_agent.api.composition import compose_runtime

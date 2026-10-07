@@ -1,4 +1,5 @@
 version = 1
+service_name = "api-agent"
 id = "demo"
 owner = ".."
 config = "cfg/config.toml"

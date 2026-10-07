@@ -309,15 +309,28 @@
       "environment": {
         "SERVICES": "s3",
         "PERSISTENCE": "1",
-        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "${SA_ALLURE_S3_REGION:?controlled local development value required}",
         "AWS_ACCESS_KEY_ID": "test",
-        "AWS_SECRET_ACCESS_KEY": "test"
+        "AWS_SECRET_ACCESS_KEY": "test",
+        "SA_ALLURE_S3_BUCKET": "${SA_ALLURE_S3_BUCKET:?controlled local development value required}",
+        "SA_ALLURE_S3_REGION": "${SA_ALLURE_S3_REGION:?controlled local development value required}",
+        "SA_LOCALSTACK_READY_DIGEST": "${SA_LOCALSTACK_READY_DIGEST:?controlled local development value required}"
       },
       "ports": [
         "127.0.0.1:4566:4566"
       ],
       "volumes": [
-        "localstack-data:/var/lib/localstack"
+        "localstack-data:/var/lib/localstack",
+        {
+          "type": "bind",
+          "source": "${SA_LOCALSTACK_READY_HOOK:?controlled local development value required}",
+          "target": "/etc/localstack/init/ready.d/10-api-agent-s3.sh",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false,
+            "selinux": "z"
+          }
+        }
       ]
     }
   },
