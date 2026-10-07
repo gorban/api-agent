@@ -1,0 +1,26 @@
+# Local-run authentication and provider contract
+
+## Checklist
+
+- [ ] Keep local-run startup from executing the test-suite authentication preflight. Whenever a UI session is created, call the selected resource pack authentication hook or its normalized no-op before handing over that session. Initialize unattended LLM provider authentication lazily when an authenticated provider operation first needs it, using a separate headless browser session.
+- [ ] Define the authentication contract with the selected LLM provider and UI renderer using independently authored requirements and public upstream documentation. The provider supplies its authentication implementations, configuration declarations, and optional `cfg/config.toml`; combine them with api-agent configuration through the shared type, applicability, precedence, and documentation pipeline. Bootstrap the required provider location before resolving the combined configuration.
+- [ ] Define generic provider setup hooks for authentication operations and route registration. After resolving configuration, call the provider to register any required start/status/callback handlers on the main agent through a shared route registrar. Provider implementations own their handler logic and protocol details. Define generic authentication challenge responses and stream events with the UI renderer, and reject incompatible configuration declarations or conflicting method/path registrations.
+- [ ] When a configured unattended "LLM User" source is available, ask the selected LLM provider to establish or renew authentication before returning the initial unauthenticated result. Apply this gate to status and model discovery when the UI opens, prompt submission, clarification answers, and mutation-approval actions, including streaming requests. It is lazy request-time authentication, not automatic local-startup login.
+  - [ ] Ask the provider to reuse or refresh a valid session first. When browser login is required, let the provider initiate its documented authorization/callback flow and drive the observed sign-in branches using shared credential helpers. Verify completion and usable authentication state before continuing the request. Follow the implementation-time [Playwright MCP walkthrough](implementation_plan_a4.md) for browser-based flows.
+  - [ ] Keep authorization state, cookies, and token/session ownership bound to the initiating identity. Coalesce concurrent login needs for the same session rather than creating a browser for every status poll/request; do not share tokens across users. Never mix the pack's UI login cookies with LLM provider session state.
+  - [ ] Bound login/refresh attempts and preserve the attended frontend contract when credentials are absent/cleared or the automatic attempt fails. Successful automatic authentication proceeds without first emitting a frontend auth challenge. Resume/retry only operations that have not executed; never blindly replay an already applied mutation/approval after a late authentication failure.
+- [ ] Declare `AUTH_BROWSER_DEBUG=False` for the shared authentication browser. Default to headless login; an explicit debug configuration uses a headed browser and retains it after completion for inspection. Do not launch a browser merely because debug is configured. Reuse the browser lifetime/error-evidence machinery without conflating local auth debugging with E2E's subset-only test debug.
+- [ ] Expose an optional pack-declared "Authenticated UI" action in the interactive local-run browser menu. Shared code dispatches the pack's handler and supplies resolved UI URL/credential helpers; pack-specific login URLs, locators, cookie handling, and application behavior stay in the pack. Do not invoke this action at startup or when the user chooses the ordinary UI link.
+  - [ ] The handler logs in and then navigates to the configured agent UI in the same authenticated browser context, leaving a visible browser under user control. Do not hand off by opening a different default-browser profile that lacks the established cookies. Keep the normal browser-menu destinations opening the host's default browser.
+- [ ] Capture current-state all-tab diagnostics on local authentication errors through the shared browser-evidence handler before cleanup. Local-run artifacts/logs stay outside executed-test Allure results; test authentication errors continue to attach to Allure. No credentials are written into diagnostics.
+- [ ] Add deterministic/controlled-page tests for the public provider authentication contract, lazy discovery/action login, concurrent requests, refresh success/failure, attended fallback, identity isolation, and prevention of mutation replay. Verify pack browser handoff and explicit headed retention without requiring a live LLM or a full E2E suite.
+
+## Shared implementation destinations
+
+```text
+src/api_agent/
+├── auth/
+│   ├── provider_auth.py          # Provider-neutral authentication orchestration
+│   └── browser_login.py          # Reusable observed login steps; no product-specific pages
+└── runtime/resource_pack.py      # Optional authenticated-UI handler declaration
+```

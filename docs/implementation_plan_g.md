@@ -35,7 +35,7 @@ api-agent/
 │   │   ├── prerequisites.py                # Conditional service/profile selection
 │   │   └── processes.py                    # Compose + host UI lifecycle
 │   ├── auth/                             # Generic credential retrieval
-│   │   ├── browser_login.py                # Integration/E2E-only conditional browser login
+│   │   ├── browser_login.py                # Provider-neutral browser-login test support
 │   │   ├── credential_sources.py           # Named profiles and retrieval orchestration
 │   │   └── password_managers/
 │   │       ├── keeper.py

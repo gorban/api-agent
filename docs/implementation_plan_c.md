@@ -21,4 +21,6 @@
 
 - [ ] Document Playwright E2E evidence, configurable `E2E_BROWSER_RESOLUTION=1440x900`, and headless default. Explain the `d` subset-only Debug start and optional `E2E_DEBUG`, its silent default, retained headed browsers, and explicit debug-session cleanup.
 
-- [ ] Document test-only unattended browser login, required implementation-time Playwright MCP walkthrough, conditional sign-in methods/password-only completion checks, and all-tab current-state Playwright failure evidence. Normal local-run authentication remains attended.
+- [ ] Document provider-required test-only unattended browser login, implementation-time Playwright MCP walkthrough, conditional sign-in methods/password-only completion checks, and all-tab current-state Playwright failure evidence. Local startup does not run this preflight; configured provider authentication can occur lazily on API requests, and packs may offer an explicit authenticated UI launcher.
+
+- [ ] Document local-run's optional pack-owned authenticated UI launcher, on-demand LLM provider authentication through the public provider contract, attended fallback, and explicit `AUTH_BROWSER_DEBUG` browser retention. Explain that authenticated handoff retains the same browser context and startup does not run a test login preflight.
