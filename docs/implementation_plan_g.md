@@ -31,7 +31,9 @@ api-agent/
 │   ├── runtime/
 │   │   ├── resource_pack.py                # Discover selected pack and declared sources
 │   │   ├── runner.py                       # Session inputs and execution lifecycle
-│   │   └── layout.py                       # Later: build LangGraph from Layout
+│   │   ├── layout.py                       # Later: build LangGraph from Layout
+│   │   ├── prerequisites.py                # Conditional service/profile selection
+│   │   └── processes.py                    # Compose + host UI lifecycle
 │   ├── providers/
 │   │   ├── llm.py                          # Public LLM provider contract
 │   │   └── load.py                         # Required provider location and config integration
@@ -89,6 +91,10 @@ api-agent/
 │   │   └── getting_started.yaml             # Meaningful demo knowledge sources
 │   └── navigation/
 │       └── routes.json                      # Preserve external generation contract
+├── infrastructure/compose/                 # Independent reusable prerequisite stacks
+│   ├── langfuse.yaml
+│   ├── neo4j.yaml
+│   └── localstack.yaml
 ├── tests/
 │   ├── unit/                                # Deterministic; coverage; no Allure/retries
 │   ├── integration/                         # Authenticated discovery, then chat/SSE
@@ -107,3 +113,5 @@ Knowledge sources contain stable IDs, titles, aliases/user wording, entity names
 Each resource pack documents its navigation data format, stable identifiers, route templates, and optional metadata. Preserve that documented contract during ingestion rather than requiring fields from a particular upstream application. Navigation hints can become graph relationships while the original generated files remain intact.
 
 Pack descriptions also select test-owner repository identity/root and per-mode test paths. Unit mode always runs api-agent's unit suite plus any selected-pack unit tests, de-duplicating shared paths. Integration/E2E use only the selected pack's declared suites: the default demo points to api-agent tests, while selected resource packs use their own declared tests. The shared TUI/runner consumes that launch context; changing directories does not change which repository a launcher represents. Pack launchers locate the base runtime through the conditional `API_AGENT_DIR` setting documented in the [configuration plan](implementation_plan_b.md).
+
+Extend this skeleton through the [conditional infrastructure/host UI plan](implementation_plan_h.md). Pack manifests declare their own API/database Compose fragments and may supply UI-project defaults.
