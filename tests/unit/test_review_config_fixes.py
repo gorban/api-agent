@@ -169,3 +169,39 @@ def test_editor_description_tracks_conditional_default_and_no_default(tmp_path):
     assert 'Default: two.' in app.setting_description()
     app.session.set_value('MODE','first')
     assert 'Default: one.' in app.setting_description()
+
+
+def test_bootstrap_accepts_same_checkout_filesystem_alias(tmp_path):
+    from dataclasses import replace
+    context = make_context(tmp_path, launcher_pack=False)
+    alias = tmp_path/'alias'
+    alias.mkdir()
+    assert alias.resolve() != context.base_root
+    # Bind mounts retain different resolved path strings; simulate their shared inode.
+    with patch('api_agent.runtime.worktrees.os.path.samefile',return_value=True) as same:
+        bound = _bind_runtime_directory(context,['--api-agent-dir',str(alias)],{})
+        assert bound.bootstrap_source == 'cli' and bound.base_root == context.base_root
+        same.assert_called_with(alias.resolve(), context.base_root)
+        same_launcher = replace(context,launcher_root=alias)
+        bound = _bind_runtime_directory(same_launcher,[],{'API_AGENT_DIR':'/ignored'})
+        assert bound.bootstrap_source == 'source_checkout'
+    with patch('api_agent.runtime.worktrees.os.path.samefile',side_effect=OSError('inaccessible')):
+        with pytest.raises(ValueError,match='running checkout'):
+            _bind_runtime_directory(context,['--api-agent-dir',str(alias)],{})
+        assert _bind_runtime_directory(context,['--api-agent-dir',str(context.base_root)],{}).base_root == context.base_root
+
+
+@pytest.mark.parametrize('separator',['\x85','\u2028','\u2029'])
+def test_unicode_line_separators_survive_dotenv_reload_and_later_edits(tmp_path,separator):
+    path=tmp_path/'.env'
+    editor=DotenvEditor(path)
+    value='début'+separator+'end "quoted"'
+    editor.update({'VALUE':value})
+    saved=path.read_text()
+    assert len(saved.splitlines()) == 1
+    assert separator not in saved and 'début' in saved
+    assert read_dotenv(path) == {'VALUE':value}
+    editor.update({'OTHER':'kept'})
+    assert read_dotenv(path) == {'VALUE':value,'OTHER':'kept'}
+    editor.delete(['OTHER'])
+    assert path.read_text() == saved

@@ -36,8 +36,9 @@ def _bind_runtime_directory(context, argv, environ):
     """Only a pack launcher selects code through API_AGENT_DIR."""
     from dataclasses import replace
     from api_agent.config.dotenv import read_dotenv
+    from api_agent.runtime.worktrees import _same_directory
     _, explicit = _extract_option(list(argv), {'--api-agent-dir', '--api_agent_dir'})
-    pack_launcher = context.external_pack and context.launcher_root != context.base_root
+    pack_launcher = context.external_pack and not _same_directory(context.launcher_root, context.base_root)
     if pack_launcher:
         saved = read_dotenv(context.pack_root / '.env')
         if explicit is not None:
@@ -57,7 +58,7 @@ def _bind_runtime_directory(context, argv, environ):
             raise ValueError('API_AGENT_DIR requires a nonempty directory value')
         selected = Path(raw).expanduser()
         selected = (selected if selected.is_absolute() else context.pack_root / selected).resolve()
-        if selected != context.base_root:
+        if not _same_directory(selected, context.base_root):
             raise ValueError('API_AGENT_DIR does not match the running checkout. '
                              'Use the resource-pack launcher to select another api-agent checkout.')
     return replace(context, bootstrap_source=source, bootstrap_explicit=provided)

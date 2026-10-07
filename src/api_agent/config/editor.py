@@ -24,7 +24,11 @@ def _quoted(text):
         raise ValueError('dotenv values must be single-line text')
     # Standard dotenv quoting; mark new escapes to distinguish untouched legacy
     # literal backslashes. Other dotenv readers treat this suffix as a comment.
-    return json.dumps(text, ensure_ascii=False) + ' # api-agent-escaped'
+    # Escape Unicode separators that splitlines() treats as record boundaries,
+    # while retaining readable ordinary Unicode in saved values.
+    quoted = (json.dumps(text, ensure_ascii=False).replace('\x85', r'\u0085')
+              .replace('\u2028', r'\u2028').replace('\u2029', r'\u2029'))
+    return quoted + ' # api-agent-escaped'
 
 
 class DotenvEditor:

@@ -762,25 +762,67 @@ def test_reorder_hidden_for_singleton_and_failed_save_preserves_selection(tmp_pa
 
 
 @pytest.mark.parametrize('source', ['environment', 'cli'])
-def test_reorder_override_keeps_account_identity_for_following_remove(tmp_path, source):
+@pytest.mark.parametrize(('names', 'index', 'key', 'reordered'), [
+    (['A', 'B'], 0, ']', ['B', 'A']),
+    (['A', 'B'], 1, '[', ['B', 'A']),
+    (['A', 'B', 'A'], 2, '[', ['A', 'A', 'B']),
+    (['A', 'B', 'A'], 0, ']', ['B', 'A', 'A']),
+])
+def test_reorder_override_keeps_account_identity_for_following_remove(tmp_path, source, names, index, key, reordered):
     async def scenario():
-        external = json.dumps({'roles': {'LLM User': [account('A'), account('B')]}})
+        entries = [account(name) for name in names]
+        external = json.dumps({'roles': {'LLM User': entries}})
         app = WizardApp(tmp_path, environ={'UNATTENDED_AUTH': external} if source == 'environment' else None,
                         argv=(f'--unattended-auth={external}',) if source == 'cli' else ())
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause()
             screen = app.screen
             table = screen.query_one('#auth-table', DataTable)
-            assert str(table.get_row_at(table.cursor_row)[3]) == 'A'
-            await pilot.press(']')
+            table.move_cursor(row=index)
             await pilot.pause()
-            assert saved(app.session.dotenv_path)['roles']['LLM User'] == [account('B'), account('A')]
-            assert screen.entries['LLM User'] == [account('A'), account('B')]
-            assert str(table.get_row_at(table.cursor_row)[3]) == 'A'
+            await pilot.press(key)
+            await pilot.pause()
+            assert saved(app.session.dotenv_path)['roles']['LLM User'] == [account(name) for name in reordered]
+            assert screen.entries['LLM User'] == entries
+            assert screen._selected() == ('LLM User', index)
+            assert str(table.get_row_at(table.cursor_row)[3]) == names[index]
             await pilot.press('r')
             await pilot.pause()
-            assert saved(app.session.dotenv_path)['roles']['LLM User'] == [account('B')]
-            assert screen.entries['LLM User'] == [account('A'), account('B')]
+            assert saved(app.session.dotenv_path)['roles']['LLM User'] == entries[:index] + entries[index + 1:]
+            assert screen.entries['LLM User'] == entries
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('source', ['saved', 'environment', 'cli'])
+@pytest.mark.parametrize(('index', 'key', 'destination'), [(1, '[', 0), (0, ']', 1)])
+def test_reorder_adjacent_identical_accounts_preserves_effective_selection(tmp_path, source, index, key, destination):
+    async def scenario():
+        entries = [account('A'), account('A'), account('B')]
+        external = json.dumps({'roles': {'LLM User': entries}})
+        app = WizardApp(tmp_path, environ={'UNATTENDED_AUTH': external} if source == 'environment' else None,
+                        argv=(f'--unattended-auth={external}',) if source == 'cli' else ())
+        app.session.save_auth_role('LLM User', entries)
+        before = app.session.dotenv_path.read_bytes()
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one('#auth-table', DataTable)
+            table.move_cursor(row=index)
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+            expected_index = destination if source == 'saved' else index
+            assert table.cursor_row == expected_index
+            assert screen._selected() == ('LLM User', expected_index)
+            assert screen.entries['LLM User'][expected_index] == account('A')
+            assert profile(app)['roles']['LLM User'] == entries
+            assert saved(app.session.dotenv_path)['roles']['LLM User'] == entries
+            assert app.session.dotenv_path.read_bytes() == before
+            await pilot.press('r')
+            await pilot.pause()
+            assert saved(app.session.dotenv_path)['roles']['LLM User'] == [account('A'), account('B')]
+            assert app.session.dotenv_path.read_bytes() != before
+            assert profile(app)['roles']['LLM User'] == ([account('A'), account('B')] if source == 'saved' else entries)
     asyncio.run(scenario())
 
 
