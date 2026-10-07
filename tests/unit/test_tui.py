@@ -852,3 +852,24 @@ def test_main_menu_resets_target_to_active_pack_for_either_launcher(tmp_path):
             assert app.session.dotenv_path == pack / ".env"
     for launcher_is_pack in (False, True):
         asyncio.run(scenario(launcher_is_pack))
+
+
+def test_button_footer_tab_hint_precedes_shortcuts_without_binding(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.show_menu()
+            await pilot.pause()
+            footer = app.screen.query_one("Footer")
+            assert footer.children[0].id == "tab-select-hint"
+            assert str(footer.children[0].render()) == " Tab select "
+            assert all(binding.action == "app.focus_next" and not binding.show
+                       for binding in app.screen._bindings.key_to_bindings["tab"])
+            assert app.focused.id == "mode-run-local"
+            await pilot.press("tab")
+            assert app.focused.id == "mode-unit"
+            app.show("list", "Settings", rows=(("VALUE", ("VALUE", "", "Not provided")),))
+            await pilot.pause()
+            assert not app.screen.query("#tab-select-hint")
+    asyncio.run(scenario())

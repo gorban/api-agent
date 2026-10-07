@@ -29,6 +29,17 @@ def display(value):
     return str(value)
 
 
+class ButtonFooter(Footer):
+    def compose(self) -> ComposeResult:
+        if self._bindings_ready and self.screen.query(Button):
+            yield Static(Text.assemble((" Tab", "bold yellow"), " select "),
+                         id="tab-select-hint")
+            yield from super().compose()
+            self.styles.grid_size_columns += 1
+        else:
+            yield from super().compose()
+
+
 class ButtonNavigation:
     """Move among buttons by their rendered positions without wrapping at edges."""
 
@@ -80,6 +91,7 @@ class QuitDialog(ButtonNavigation, ModalScreen):
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="quit-submit")
             yield Button("Cancel", id="quit-cancel")
+        yield ButtonFooter()
 
     def on_input_submitted(self, event: Input.Submitted):
         self.dismiss(event.value == "y")
@@ -95,6 +107,7 @@ class DeleteDialog(QuitDialog):
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="delete-submit")
             yield Button("Cancel", id="delete-cancel")
+        yield ButtonFooter()
 
 
 class StopContainersDialog(QuitDialog):
@@ -110,6 +123,7 @@ class StopContainersDialog(QuitDialog):
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="stop-submit")
             yield Button("Cancel", id="stop-cancel")
+        yield ButtonFooter()
 
 
 class WorkbenchScreen(ButtonNavigation, Screen):
@@ -150,7 +164,7 @@ class WorkbenchScreen(ButtonNavigation, Screen):
                 for key, label in self.actions:
                     yield Button(label, id=key)
             yield Static("", id="error", markup=False)
-        yield Footer()
+        yield ButtonFooter()
 
     def on_mount(self):
         if self.rows:
@@ -268,7 +282,8 @@ class ApiAgentApp(App[int]):
     QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
     .confirmation-actions { height: auto; }
     .confirmation-actions Button { width: 1fr; }
-    Footer { dock: bottom; }
+    #tab-select-hint { width: auto; height: 1; }
+    Footer { dock: bottom; width: 100%; }
     """
 
     def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None):
