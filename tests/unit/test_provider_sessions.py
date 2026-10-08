@@ -7,7 +7,7 @@ import pytest
 from api_agent.providers.contracts import ContractError, SessionClosedError, OperationalError, CleanupPendingError
 from api_agent.providers.sessions import (
     BrowserOwner, InspectionOwner, LLMSessionOwner, ScopedLLMCredentials,
-    ScopedRoleCredentials, ui_session_policy,
+    ScopedRoleCredentials, ui_session_policy, wait_browser_result,
 )
 
 
@@ -25,6 +25,46 @@ def browser(**kwargs):
 
 def credentials():
     return ScopedLLMCredentials("llm-user", ScopedRoleCredentials(["llm-user"], 0, AsyncMock(return_value="opaque")))
+
+
+@pytest.mark.parametrize('closed', ['page', 'browser'])
+def test_browser_wait_stops_on_closure_without_canceling_caller_work(closed):
+    async def scenario():
+        result = asyncio.get_running_loop().create_future()
+        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: closed == 'page'),
+                                  browser=SimpleNamespace(is_connected=lambda: closed != 'browser'))
+        with pytest.raises(SessionClosedError, match='^Browser closed before operation completed$'):
+            await wait_browser_result(result, session)
+        assert not result.done()
+        result.cancel()  # The caller owns and disposes its pending result.
+    run(scenario())
+
+
+def test_browser_wait_completed_result_wins_over_later_closure():
+    async def scenario():
+        result = asyncio.get_running_loop().create_future()
+        result.set_result('accepted')
+        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: True))
+        assert await wait_browser_result(result, session) == 'accepted'
+    run(scenario())
+
+
+def test_browser_wait_cancellation_leaves_result_owned_and_no_monitor_task():
+    async def scenario():
+        result = asyncio.get_running_loop().create_future()
+        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: False),
+                                  browser=SimpleNamespace(is_connected=lambda: True))
+        waiting = asyncio.create_task(wait_browser_result(result, session))
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert not result.done()
+        result.cancel()
+        assert not [task for task in asyncio.all_tasks()
+                    if task is not asyncio.current_task() and not task.done()]
+    run(scenario())
 
 
 def test_credentials():
