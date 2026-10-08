@@ -19,7 +19,8 @@ def test_saved_subscription_setup_without_transport(tmp_path, monkeypatch):
         ("chatgpt.tokens.use.direct",), time.time() + 3600))
     monkeypatch.setattr(module.httpx, "AsyncClient", lambda: pytest.fail("cached setup started transport"))
     async def scenario():
-        provider = factory({"GPT_STATE_DIR": store.root}, None)
+        provider = factory({"GPT_AUTH_MODE": "subscription", "GPT_API_MODE": "responses",
+                                "GPT_STATE_DIR": store.root, "GPT_PROFILE": profile}, None)
         try:
             session = await provider.asetup(interactive=False, user_index=None, credentials=None)
             assert session.profile_id == profile
@@ -30,13 +31,13 @@ def test_saved_subscription_setup_without_transport(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("config", [{"GPT_AUTH_MODE": "api_key"}, {"GPT_API_MODE": "completions"}])
-def test_unsupported_auth_route_has_no_state_io(config, tmp_path):
+def test_invalid_subscription_completions_has_no_state_io(tmp_path):
     state = tmp_path / "not-created"
-    provider = factory({**config, "GPT_STATE_DIR": state}, None)
+    provider = factory({"GPT_AUTH_MODE": "subscription", "GPT_API_MODE": "completions",
+                        "GPT_STATE_DIR": state}, None)
     async def scenario():
         try:
-            with pytest.raises(ContractError):
+            with pytest.raises(ContractError, match="requires responses"):
                 await provider.asetup(interactive=False, user_index=None, credentials=None)
         finally:
             await provider.aclose()
