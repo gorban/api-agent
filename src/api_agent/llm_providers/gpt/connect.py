@@ -2,9 +2,6 @@
 import argparse
 import asyncio
 import math
-import os
-import signal
-import sys
 import re
 import time
 from pathlib import Path
@@ -26,20 +23,6 @@ async def _dispose(awaitable):
     if cancelled:
         raise asyncio.CancelledError
     return task.result()
-
-
-async def _open_browser(url):
-    process = await asyncio.create_subprocess_exec(
-        sys.executable, "-c", "import sys,webbrowser;sys.exit(0 if webbrowser.open(sys.stdin.readline().rstrip()) else 1)",
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True)
-    try:
-        await process.communicate((url + "\n").encode())
-        return process.returncode == 0
-    finally:
-        if process.returncode is None:
-            os.killpg(process.pid, signal.SIGKILL)
-            await _dispose(process.wait())
 
 
 class CallbackListener:
@@ -114,7 +97,7 @@ class CallbackListener:
 
 
 async def connect_account(store, *, registration=None, open_browser=None,
-                          client=None, timeout=180, clock=time.time, profile=None):
+                          client=None, timeout=180, clock=time.time, profile=None, browser_owner=None):
     """Persist only a fully verified connection; clean up on every exit."""
     from .oauth import begin_authorization, finish_authorization
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 600 or not math.isfinite(timeout):
@@ -129,8 +112,18 @@ async def connect_account(store, *, registration=None, open_browser=None,
                 async with CallbackListener() as listener:
                     attempt = begin_authorization(store.host_id(), listener.redirect_uri, registration=registration)
                     listener.expected_state = attempt.state
-                    opened = await _open_browser(attempt.authorization_url) if open_browser is None else open_browser(attempt.authorization_url)
-                    if not opened:
+                    if open_browser is None:
+                        if browser_owner is None:
+                            from .browser import subscription_browser
+                            browser_owner = subscription_browser()
+                        try:
+                            session = await browser_owner.start()
+                            await session.page.goto(attempt.authorization_url, wait_until="domcontentloaded")
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            raise AuthError("browser_unavailable") from None
+                    elif not open_browser(attempt.authorization_url):
                         raise AuthError("browser_unavailable")
                     parameters = await listener.result
                     connection = await finish_authorization(attempt, parameters, client=client, now=clock())
@@ -140,8 +133,12 @@ async def connect_account(store, *, registration=None, open_browser=None,
         except TimeoutError:
             raise AuthError("callback_timeout") from None
     finally:
-        if owned:
-            await _dispose(client.aclose())
+        try:
+            if browser_owner is not None:
+                await _dispose(browser_owner.aclose())
+        finally:
+            if owned:
+                await _dispose(client.aclose())
 
 
 def main(argv=None):

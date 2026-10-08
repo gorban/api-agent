@@ -10,6 +10,7 @@ from api_agent.llm_providers.gpt import factory as module
 from api_agent.llm_providers.gpt.connections import ConnectionStore
 from api_agent.llm_providers.gpt.contracts import Connection
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, SetupPrerequisiteError
+from api_agent.providers.control import CleanupPendingError
 
 
 def run(awaitable):
@@ -91,6 +92,40 @@ def test_select_and_close(config, entries, interactive, expected, store, monkeyp
             await setup(provider)
     run(scenario())
     assert connect.await_count == int(len(entries) != 1)
+
+
+def test_cached_setup_never_allocates_a_browser(store, monkeypatch):
+    store.entries = ('single',)
+    monkeypatch.setattr(module, 'subscription_browser', lambda: pytest.fail('browser allocated for cached setup'))
+    async def scenario():
+        provider = module.factory({}, None)
+        session = await setup(provider)
+        assert session.profile_id == 'single' and not provider.browsers
+        await provider.aclose()
+    run(scenario())
+
+
+@pytest.mark.parametrize('run_ui', [False, True])
+def test_failed_attended_setup_keeps_browser_until_cleanup_confirmed(store, monkeypatch, run_ui):
+    browser = SimpleNamespace(aclose=AsyncMock())
+    browser.aclose.side_effect = [CleanupPendingError((browser,), browser.aclose), None]
+    monkeypatch.setattr(module, 'subscription_browser', lambda: browser)
+    connect = AsyncMock(side_effect=RuntimeError('consent failed'))
+    monkeypatch.setattr(module, 'connect_account', connect)
+    async def scenario():
+        provider = module.factory({'RUN_UI': run_ui}, None)
+        with pytest.raises(RuntimeError, match='consent failed'):
+            await setup(provider, interactive=True)
+        assert provider.browsers == [browser] and not provider.sessions
+        assert connect.await_args.kwargs['browser_owner'] is browser
+        with pytest.raises(CleanupPendingError):
+            await provider.aclose()
+        assert provider.browsers == [browser]
+        await provider.aclose()
+        assert not provider.browsers
+        browser.aclose.assert_awaited()
+        assert browser.aclose.await_count == 2
+    run(scenario())
 
 
 @pytest.mark.parametrize("username,entries,expected", [
