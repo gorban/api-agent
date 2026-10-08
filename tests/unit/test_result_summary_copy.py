@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from textual.geometry import Offset
 from textual.selection import Selection
-from textual.widgets import Static
+from textual.widgets import DataTable, Static
+from textual.widgets._footer import FooterKey
 
 from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import TestResult, format_test_summary
@@ -134,6 +135,144 @@ def test_mouse_selected_summary_is_copied_and_visibly_deselected(tmp_path, monke
             await pilot.press('ctrl+c')
             copy.assert_awaited_once_with(app, expected)
             assert screen.get_selected_text() is None
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('kind', ['test-results', 'test-failure'])
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('darwin', 'super+c', '⌘c')])
+def test_result_copy_footer_and_test_name_fallback(tmp_path, monkeypatch, kind, mode, platform, key, label):
+    async def scenario():
+        app = fixture(tmp_path)
+        copy = AsyncMock(return_value=True)
+        monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
+        async with app.run_test(size=(140, 35)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr('api_agent.tui.app.sys.platform', platform)
+            app.mode = mode
+            name = 'base::tests/' + 'long_nested_path/' * 10 + 'test_example.py::test_full_name[param]'
+            if kind == 'test-results':
+                tests = (TestResult(TestIdentity(name, 'base', 'test_example.py', name), 'passed'),)
+                app.unit_rows = {name: ('PASSED', name, '0.001s')}
+                app.unit_result = (UnitRunResult(0, tests, (), '', require_full_coverage=False)
+                                   if mode == 'unit' else IntegrationRunResult(0, tests, ''))
+                app.operation_status = 0
+                app.show_unit_results()
+            else:
+                app.show(kind, 'Test failure', name + '\n\nSynthetic assertion details')
+            await pilot.pause()
+            screen = app.screen
+
+            def copy_hint():
+                hints = [hint for hint in screen.query(FooterKey)
+                         if hint.description == 'Copy value']
+                assert len(hints) == 1
+                hint = hints[0]
+                assert hint.key == key and hint.key_display == label
+                assert hint.region.width and hint.region.right <= screen.size.width
+                assert hint.render().plain.strip() == f'{label} Copy value'
+                shortcuts = [hint for hint in screen.query(FooterKey)
+                             if not hint.has_class('-command-palette')]
+                assert shortcuts[-1] is hint
+                return hint
+
+            assert not copy_hint().has_class('-disabled')
+            await pilot.press(key)
+            copy.assert_awaited_once_with(app, name)
+            copy.reset_mock()
+            await pilot.mouse_down('#body', offset=(0, 0))
+            await pilot.hover('#body', offset=(8, 0))
+            await pilot.mouse_up('#body', offset=(8, 0))
+            await pilot.pause()
+            expected = screen.query_one('#body', Static).content
+            expected = (expected.plain if hasattr(expected, 'plain') else expected)[:9]
+            assert screen.get_selected_text() == expected
+            assert not copy_hint().has_class('-disabled')
+            await pilot.press(key)
+            await pilot.pause()
+            copy.assert_awaited_once_with(app, expected)
+            assert screen.get_selected_text() is None
+            assert not copy_hint().has_class('-disabled')
+            await pilot.press(key)
+            copy.assert_awaited_with(app, name)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+@pytest.mark.parametrize('completed', [False, True])
+def test_results_tab_only_visits_test_list(tmp_path, monkeypatch, mode, completed):
+    async def scenario():
+        app = fixture(tmp_path)
+        copy = AsyncMock(return_value=True)
+        monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.mode = mode
+            tests = outcomes(('passed', 'failed'))
+            app.unit_rows = {test.identity.id: (test.status.upper(), test.identity.id, '')
+                             for test in tests}
+            if completed:
+                app.unit_result = (UnitRunResult(1, tests, (), '', require_full_coverage=False)
+                                   if mode == 'unit' else IntegrationRunResult(1, tests, ''))
+            app.show_unit_results('Synthetic summary\n' * 40)
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one(DataTable)
+            assert screen.focus_chain == [table]
+            for key in ('tab', 'tab', 'shift+tab', 'shift+tab'):
+                await pilot.press(key)
+                assert table.has_focus
+            table.move_cursor(row=1)
+            await pilot.press('tab')
+            assert table.cursor_row == 1 and table.has_focus
+            await pilot.press('ctrl+c')
+            copy.assert_awaited_once_with(app, str(table.get_row_at(1)[1]))
+            # The scrollable summary is still interactive by mouse, without a Tab stop.
+            await pilot.click('#body')
+            await pilot.pause()
+            summary = screen.query_one('#unit-summary')
+            assert summary.has_focus
+            await pilot.press('down')
+            await pilot.pause()
+            assert summary.scroll_y > 0
+            await pilot.press('tab')
+            assert table.has_focus
+    asyncio.run(scenario())
+
+
+def test_empty_results_copy_only_highlighted_summary(tmp_path, monkeypatch):
+    async def scenario():
+        app = fixture(tmp_path)
+        copy = AsyncMock(return_value=True)
+        monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
+        async with app.run_test(size=(140, 35)) as pilot:
+            await pilot.pause()
+            app.show('test-results', 'Test results', 'Synthetic summary',
+                     rows=[('base::test_a', ('PASSED', 'base::test_a', ''))])
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one(DataTable).clear()
+            screen.refresh_bindings()
+            await pilot.pause()
+            assert screen.selected_test_name() is None
+            assert not screen.check_action('copy_value', ())
+            assert not [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
+            await screen.action_copy_value()
+            copy.assert_not_awaited()
+            await pilot.mouse_down('#body', offset=(0, 0))
+            await pilot.hover('#body', offset=(8, 0))
+            await pilot.mouse_up('#body', offset=(8, 0))
+            await pilot.pause()
+            hints = [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
+            assert len(hints) == 1 and not hints[0].has_class('-disabled')
+            await pilot.press('ctrl+c')
+            copy.assert_awaited_once_with(app, 'Synthetic')
+            await pilot.pause()
+            assert not [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
+            app.show('test-failure', 'No selected test', '')
+            await pilot.pause()
+            assert app.screen.selected_test_name() is None
+            assert not app.screen.check_action('copy_value', ())
     asyncio.run(scenario())
 
 
