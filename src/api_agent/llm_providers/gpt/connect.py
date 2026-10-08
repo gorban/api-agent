@@ -9,6 +9,8 @@ from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
+from api_agent.providers.contracts import SessionClosedError
+from api_agent.providers.sessions import wait_browser_result
 from .contracts import AuthError
 
 
@@ -114,6 +116,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
                     attempt = begin_authorization(store.host_id(), listener.redirect_uri,
                                                   registration=registration, app_name=app_name)
                     listener.expected_state = attempt.state
+                    session = None
                     if open_browser is None:
                         if browser_owner is None:
                             from .browser import subscription_browser
@@ -127,7 +130,13 @@ async def connect_account(store, *, registration=None, open_browser=None,
                             raise AuthError("browser_unavailable") from None
                     elif not open_browser(attempt.authorization_url):
                         raise AuthError("browser_unavailable")
-                    parameters = await listener.result
+                    if session is None:
+                        parameters = await listener.result
+                    else:
+                        try:
+                            parameters = await wait_browser_result(listener.result, session)
+                        except SessionClosedError:
+                            raise AuthError("browser_closed") from None
                     connection = await finish_authorization(attempt, parameters, client=client, now=clock())
                     if profile is not None and store.profile_id(connection) != profile:
                         raise AuthError("account_mismatch")

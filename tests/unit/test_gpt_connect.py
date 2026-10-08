@@ -300,6 +300,64 @@ def test_managed_browser_is_default_and_handles_callback(lane, monkeypatch, supp
     owner.aclose.assert_awaited_once()
 
 
+@pytest.mark.parametrize('closed', ['page', 'browser'])
+def test_closing_login_without_callback_ends_promptly_and_disposes(lane, closed):
+    from unittest.mock import AsyncMock
+    async def scenario():
+        navigated = asyncio.Event()
+        state = {'page': False, 'browser': False}
+        urls = []
+        async def goto(url, **kwargs):
+            urls.append(url)
+            navigated.set()
+        page = SimpleNamespace(goto=goto, is_closed=lambda: state['page'])
+        browser = SimpleNamespace(is_connected=lambda: not state['browser'])
+        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page, browser=browser)),
+                                aclose=AsyncMock())
+        client = SimpleNamespace(aclose=AsyncMock())
+        lane.finish_authorization = AsyncMock()
+        store = Store()
+        task = asyncio.create_task(c.connect_account(store, browser_owner=owner, client=client))
+        await navigated.wait()
+        await asyncio.sleep(0)
+        state[closed] = True
+        with pytest.raises(c.AuthError, match='^browser_closed$'):
+            await asyncio.wait_for(task, .5)
+        assert not store.saved
+        lane.finish_authorization.assert_not_awaited()
+        owner.aclose.assert_awaited_once()
+        client.aclose.assert_not_awaited()
+        parsed = urlsplit(urls[0])
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.open_connection(parsed.hostname, parsed.port)
+        assert not [other for other in asyncio.all_tasks()
+                    if other is not asyncio.current_task() and not other.done()]
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('close_after_callback', [False, True])
+def test_managed_browser_wait_accepts_callback_before_closure(lane, close_after_callback):
+    from unittest.mock import AsyncMock
+    async def scenario():
+        state = {'closed': False}
+        requests = []
+        async def callback(url):
+            await asyncio.sleep(.02)
+            assert b'200 OK' in await request(url)
+            state['closed'] = close_after_callback
+        async def goto(url, **kwargs):
+            requests.append(asyncio.create_task(callback(url)))
+        session = SimpleNamespace(page=SimpleNamespace(goto=goto, is_closed=lambda: state['closed']),
+                                  browser=SimpleNamespace(is_connected=lambda: not state['closed']))
+        owner = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
+        store = Store()
+        assert await c.connect_account(store, browser_owner=owner, client=object()) == 'account'
+        await asyncio.gather(*requests)
+        assert len(store.saved) == 1
+        owner.aclose.assert_awaited_once()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('stage', ['start', 'navigation'])
 def test_managed_browser_failure_is_safe_and_disposes_owner(lane, monkeypatch, stage):
     from unittest.mock import AsyncMock

@@ -58,6 +58,20 @@ async def _invoke(resource: Any, method: str) -> None:
     await getattr(resource, method)()
 
 
+async def wait_browser_result(result: asyncio.Future, session: BrowserSession) -> Any:
+    """Stop a pending browser wait when its page or browser closes.
+
+    A completed result wins over closure, so closing after an accepted callback
+    does not undo it. The caller retains ownership of the result and must cancel
+    or drain its underlying work in cleanup; this wait creates no background task.
+    """
+    while not result.done():
+        if session.page.is_closed() or not session.browser.is_connected():
+            raise SessionClosedError("Browser closed before operation completed")
+        await asyncio.wait({result}, timeout=.1)
+    return result.result()
+
+
 def _consume(task: asyncio.Future) -> None:
     if not task.cancelled():
         task.exception()
