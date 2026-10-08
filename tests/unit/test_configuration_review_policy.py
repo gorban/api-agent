@@ -11,7 +11,7 @@ from test_tui import fixture
 
 
 HIDDEN = {'HELP', 'NO_STD_IN', 'COLLECT_ONLY', 'TUI_MODE', 'API_AGENT_DIR',
-          'UI_SOURCE_DIR', 'UI_NX_APP', 'E2E_DEBUG', 'UNATTENDED_AUTH', 'LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER',
+          'UI_SOURCE_DIR', 'UI_NX_APP', 'E2E_DEBUG', 'UNATTENDED_AUTH', 'API_PROVIDER', 'UI_PROVIDER',
           'CLIENT_CA_FILE', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'}
 
 
@@ -25,6 +25,7 @@ def test_declarations_have_one_visibility_flag_and_pack_override():
         assert combined.fields[name].acknowledge_default is False
         assert not hasattr(combined.fields[name], 'persist_default')
     assert combined.fields['LOG_CONTENT'].acknowledge_default is True
+    assert combined.fields['LLM_PROVIDER'].acknowledge_default is True
     for mode in ('run-local', 'integration', 'e2e'):
         env = {'TUI_MODE': mode, 'ALLURE_S3_USE_LOCALSTACK': 'True',
                'API_ENDPOINT': 'https://api.example/graphql', 'UI_SOURCE_DIR': '/example/frontend'}

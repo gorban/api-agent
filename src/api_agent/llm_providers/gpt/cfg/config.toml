@@ -4,7 +4,7 @@ version = 1
 type = "str"
 enum = ["subscription", "api_key"]
 default = "subscription"
-help = "Personal subscription sign-in. API-key authentication is pending implementation."
+help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key authentication is pending implementation."
 
 [fields.GPT_API_MODE]
 type = "str"
