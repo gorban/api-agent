@@ -12,7 +12,7 @@ from test_tui import fixture
 
 HIDDEN = {'HELP', 'NO_STD_IN', 'COLLECT_ONLY', 'TUI_MODE', 'API_AGENT_DIR',
           'UI_SOURCE_DIR', 'UI_NX_APP', 'E2E_DEBUG', 'DEBUG', 'UNATTENDED_AUTH', 'API_PROVIDER', 'UI_PROVIDER',
-          'CLIENT_CA_FILE', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'}
+          'CLIENT_CA_FILE', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY', 'SKIP_UNATTENDED_SETUP'}
 
 
 def test_declarations_have_one_visibility_flag_and_pack_override():

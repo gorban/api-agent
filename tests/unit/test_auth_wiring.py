@@ -4,22 +4,23 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import Input, Static
+from textual.widgets import Checkbox, Input, Static
 
 from api_agent.config import schema_from_dict
 from api_agent.tui.app import ApiAgentApp
 from api_agent.tui.auth_setup import AuthSetupScreen
 
 
-def app_fixture(tmp_path, *, extra=False, argv=(), environ=None):
+def app_fixture(tmp_path, *, extra=False, argv=(), environ=None, launcher_pack=False):
     base, pack = tmp_path / 'base', tmp_path / 'pack'
     base.mkdir(exist_ok=True)
     pack.mkdir(exist_ok=True)
-    context = SimpleNamespace(base_root=base, pack_root=pack, launcher_root=base,
+    context = SimpleNamespace(base_root=base, pack_root=pack, launcher_root=pack if launcher_pack else base,
                               pack_id='fixture', dotenv_path=base / '.env',
                               anchors={}, external_pack=extra,
                               credential_role_fields=('SECONDARY_ROLE',) if extra else ())
     fields = {'TUI_MODE': {'type': 'str', 'acknowledge_default': False},
+              'SKIP_UNATTENDED_SETUP': {'type': 'bool', 'default': False, 'acknowledge_default': False},
               'UNATTENDED_AUTH': {'type': 'jsonobject', 'default': {}, 'acknowledge_default': False},
               'SECONDARY_ROLE': {'type': 'str', 'default': 'Partner',
                                  'acknowledge_default': False},
@@ -64,6 +65,79 @@ def test_startup_suggestion_closes_to_defaults_then_empty_array_still_suggests_i
             await pilot.pause()
             assert app.screen.kind == 'menu'
         app = app_fixture(tmp_path, environ={'UNATTENDED_AUTH': '{"LLM User":[]}'})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'suggest'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('remember,trigger', [(False, 'button'), (True, 'button'), (True, 'shortcut')])
+@pytest.mark.parametrize('launcher_pack', [False, True])
+def test_skip_remember_choice_persists_only_when_checked_and_restores_on_delete(tmp_path, remember, trigger, launcher_pack):
+    async def scenario():
+        app = app_fixture(tmp_path, extra=True, launcher_pack=launcher_pack)
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'suggest'
+            checkbox = app.screen.query_one('#remember-skip', Checkbox)
+            skip = app.screen.query_one('#skip')
+            assert not checkbox.value
+            assert checkbox.region.y >= skip.region.bottom
+            assert checkbox.region.x == skip.region.x
+            assert checkbox in app.screen.focus_chain
+            checkbox.value = remember
+            if trigger == 'button':
+                await pilot.click('#skip')
+            else:
+                await pilot.press('s')
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+            assert app.auth_setup_needed()  # Remembered Skip does not configure credentials.
+            saved = app.session.saved_path('SKIP_UNATTENDED_SETUP')
+            assert saved == (app.context.launcher_root / '.env' if remember else None)
+            other = app.context.base_root if launcher_pack else app.context.pack_root
+            assert not (other / '.env').exists()
+            assert 'SKIP_UNATTENDED_SETUP' not in app.configuration_pending()
+
+        restarted = app_fixture(tmp_path, extra=True)
+        async with restarted.run_test() as pilot:
+            await pilot.pause()
+            assert restarted.screen.kind == ('menu' if remember else 'suggest')
+            rows = {row.name: row for row in restarted.session.cleanup_rows()}
+            assert ('SKIP_UNATTENDED_SETUP' in rows) is remember
+            if remember:
+                assert rows['SKIP_UNATTENDED_SETUP'].value is True
+                assert rows['SKIP_UNATTENDED_SETUP'].base_present is not launcher_pack
+                assert rows['SKIP_UNATTENDED_SETUP'].pack_present is launcher_pack
+                restarted.show_auth_setup(startup=False)
+                await pilot.pause()
+                assert isinstance(restarted.screen, AuthSetupScreen)
+                restarted.session.delete_keys(['SKIP_UNATTENDED_SETUP'])
+
+        restored = app_fixture(tmp_path, extra=True)
+        async with restored.run_test() as pilot:
+            await pilot.pause()
+            assert restored.screen.kind == 'suggest'
+    asyncio.run(scenario())
+
+
+def test_remember_checkbox_does_not_apply_to_setup(tmp_path):
+    async def scenario():
+        app = app_fixture(tmp_path)
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            app.screen.query_one('#remember-skip', Checkbox).value = True
+            await pilot.click('#setup')
+            await pilot.pause()
+            assert isinstance(app.screen, AuthSetupScreen)
+            assert app.session.saved_path('SKIP_UNATTENDED_SETUP') is None
+    asyncio.run(scenario())
+
+
+def test_saved_false_still_suggests_setup(tmp_path):
+    async def scenario():
+        app = app_fixture(tmp_path)
+        app.session.set_value('SKIP_UNATTENDED_SETUP', 'False', persist=True)
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app.screen.kind == 'suggest'
