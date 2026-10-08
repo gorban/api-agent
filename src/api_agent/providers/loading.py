@@ -272,7 +272,7 @@ def load_provider(location, config, services, *, kind=None, _failed_owners=None)
             raise ProviderError('provider_factory_must_be_synchronous')
         if adapter is None or getattr(adapter, 'version', None) != 1 or type(adapter.version) is not int:
             raise ProviderError('provider_version_invalid')
-        for capability in ('authenticate', 'astart', 'aclose', 'setup_routes'):
+        for capability in ('authenticate', 'asetup', 'astart', 'aclose', 'setup_routes'):
             hook = getattr(adapter, capability, None)
             if hook is None:
                 continue
@@ -283,6 +283,8 @@ def load_provider(location, config, services, *, kind=None, _failed_owners=None)
             args, kwargs = (), {}
             if capability == 'setup_routes':
                 args = (object(), object())
+            elif capability == 'asetup':
+                kwargs = dict(interactive=True, user_index=None, credentials=None)
             elif capability == 'authenticate':
                 kwargs = dict(session=object(), user_index=0, credentials=object())
                 if getattr(getattr(adapter, 'capabilities', None), 'kind', kind) == 'ui':

@@ -47,7 +47,7 @@ class LaunchContext:
         return self.pack_root != self.base_root / "demo" and not self.packaged_demo
 
     def suite_paths(self, mode: str) -> tuple[Path, ...]:
-        """Base units always participate; integration/E2E belong to the pack."""
+        """Return pack suite paths; collection also adds shared/provider integrations."""
         if mode not in {"unit", "integration", "e2e"}:
             raise ResourcePackError(f"Unknown test mode: {mode}")
         paths = self.tests.get(mode, ())

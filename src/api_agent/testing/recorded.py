@@ -1,7 +1,7 @@
 """Join integration accounting and durable recording through owned runner hooks.
 
-The TUI consumer is deferred until live backend prerequisites are ready. This
-adapter never supplies interactive acceptance or starts services on its own.
+The TUI supplies interactive acceptance. This adapter records execution and
+never supplies acceptance or starts services on its own.
 """
 from dataclasses import dataclass
 from contextlib import ExitStack
@@ -153,7 +153,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if external_failed or cleanup_failed or output_failed:
                 raise RuntimeError('Recording finalization failed')
 
-        execution = runner(context, tests, accepted=True, no_std_in=False,
+        execution = runner(context, tests, accepted=True, no_std_in=False, config=config,
                            parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
                            before_run=before, on_result=record, after_run=after,
                            on_event=on_event, output=output, cancel_event=cancel_event)

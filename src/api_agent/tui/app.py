@@ -315,6 +315,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             self._bindings.bind("s", "stop_selected", "Stop selected containers")
         if self.kind == "tests":
             self._bindings.bind("s", "start_selected", "Start selected tests")
+            if self.app.mode == 'integration' and self.app.session.result().values.get('UNATTENDED_USER_INDEX') is not None:
+                self._bindings.bind('u', 'start_unattended', 'Start unattended tests')
         if self.kind == "test-results":
             self.call_after_refresh(self.layout_test_results)
         if self.kind == "defaults":
@@ -350,6 +352,9 @@ class WorkbenchScreen(FocusNavigation, Screen):
     async def action_start_selected(self):
         await self.app.choose("continue")
 
+    async def action_start_unattended(self):
+        await self.app.choose('start-unattended')
+
     def check_action(self, action, parameters):
         # Textual evaluates underlying screen bindings while a modal is open.
         # Their contextual actions must not inspect the modal as this screen.
@@ -384,6 +389,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
                     or self.kind == "unavailable" and self.app.mode in {None, "unattended-auth"}) and len(self.app.session.target_paths) > 1
         if action == "start_selected":
             return self.kind == "tests"
+        if action == 'start_unattended':
+            return self.kind == 'tests' and self.app.mode == 'integration' and self.app.session.result().values.get('UNATTENDED_USER_INDEX') is not None
         if action == "stop_selected":
             return self.kind == "containers"
         if action == "skip_setup":
@@ -551,13 +558,15 @@ class ApiAgentApp(App[int]):
     #pack-bootstrap { height: auto; color: red; }
     """
 
-    def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None, unit_runner=None):
+    def __init__(self, context, schema, argv=(), environ=None, *, session=None, collector=None, container_runtime=None, unit_runner=None, integration_runner=None):
         super().__init__()
         from api_agent.config.session import ConfigSession
         self.context, self._initial_schema = context, schema
         self.session = session or ConfigSession(context, schema, argv, environ)
         self.collector = collector
         self.unit_runner = unit_runner
+        self.integration_runner = integration_runner
+        self.integration_unattended = False
         self.unit_result = None
         self.test_run = None
         self.unit_rows = {}
@@ -658,8 +667,9 @@ class ApiAgentApp(App[int]):
 
     def credential_roles(self):
         """Read generic pack-declared role labels from executable configuration."""
-        roles = ["LLM User"]
         result = self.session.result(_review=True)
+        primary = result.values.get('LLM_CREDENTIAL_ROLE', 'LLM User')
+        roles = [primary] if primary else []
         for name in getattr(self.context, 'credential_role_fields', ()):
             field = self.schema.fields.get(name)
             if field is None or field.type != 'str':
@@ -677,6 +687,8 @@ class ApiAgentApp(App[int]):
         profile = self.session.result(_review=True).values.get('UNATTENDED_AUTH')
         try:
             roles = self.credential_roles()
+            if not roles:
+                return False
             canonical = normalize_auth(profile)
             if any(not canonical['roles'].get(role) for role in roles):
                 return True
@@ -988,7 +1000,8 @@ class ApiAgentApp(App[int]):
         collector = self.collector or collect_tests
         arguments = (self.context, self.mode, ())
         return await asyncio.to_thread(
-            collector, *arguments, **({} if self.collector else {"cancel_event": cancel_event}))
+            collector, *arguments, **({} if self.collector else {"cancel_event": cancel_event,
+                                                               "config": self.session.result().values}))
 
     async def collect_tests(self):
         self.active_test_selectors = self.pending_test_selectors
@@ -1078,6 +1091,40 @@ class ApiAgentApp(App[int]):
         finally:
             self.test_run.finish()
 
+    async def _run_integrations(self):
+        from api_agent.testing.recorded import run_recorded_integration
+        runner = self.integration_runner or run_recorded_integration
+        try:
+            fresh = await self.discover_tests(self.collection_cancel)
+            if self.collection_cancel.is_set():
+                return
+            self.selection.refresh_for_run(fresh)
+            if not self.selection.selected_tests:
+                raise ValueError("No selected tests remain after recollection")
+            self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
+            self.show_unit_results(self.unit_progress())
+            active = dict(self.session.result().values)
+            if not self.integration_unattended:
+                active['UNATTENDED_USER_INDEX'] = None
+            recorded = await asyncio.to_thread(runner, self.context, self.selection.selected_tests,
+                active, accepted=True,
+                on_event=lambda event: self.call_from_thread(self.unit_event, event),
+                cancel_event=self.collection_cancel)
+            self.unit_result = recorded.execution
+            for test in self.unit_result.tests:
+                self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
+            self.operation_status = recorded.exit_code
+            if not self.collection_cancel.is_set():
+                self.show_unit_results()
+        except Exception:
+            self.operation_status = 3
+            if not self.collection_cancel.is_set():
+                self.show("error", "Integration execution failed",
+                          "Integration setup or recording failed. Check configuration and the selected provider.",
+                          (("menu", "Main menu"),))
+        finally:
+            self.test_run.finish()
+
     def unit_progress(self):
         return progress_summary(self.mode or "unit", self.unit_rows)
 
@@ -1096,15 +1143,20 @@ class ApiAgentApp(App[int]):
 
     def show_unit_results(self, summary=None):
         if summary is None:
-            from api_agent.testing.runner import format_unit_summary
-            summary = format_unit_summary(self.unit_result)
+            if self.mode == 'integration':
+                passed = sum(test.status == 'passed' for test in self.unit_result.tests)
+                total = len(self.unit_result.tests)
+                summary = f'Integration results: {"PASS" if self.operation_status == 0 else "FAIL"} — {passed}/{total} passed ({100 * passed / total if total else 0:.2f}%).'
+            else:
+                from api_agent.testing.runner import format_unit_summary
+                summary = format_unit_summary(self.unit_result)
         rows = ordered_result_rows(self.unit_rows, completed=self.unit_result is not None)
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             screen = self.screen
             screen.body, screen.rows = summary, rows
             self.call_after_refresh(self.update_test_results, screen)
         else:
-            self.show("test-results", "Unit test results", summary, rows=rows)
+            self.show("test-results", "Integration test results" if self.mode == 'integration' else "Unit test results", summary, rows=rows)
         self.screen.test_run_complete = self.unit_result is not None
         self.screen.style_results = self.style_unit_summary
         if self.unit_result is not None:
@@ -1124,13 +1176,18 @@ class ApiAgentApp(App[int]):
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             body = self.screen.query_one("#body", Static)
             body.update(styled_summary(
-                body.content, failed=bool(self.unit_result.exit_code),
-                neutral_details=not self.unit_result.require_full_coverage,
+                body.content, failed=bool(self.operation_status if self.mode == 'integration' else self.unit_result.exit_code),
+                neutral_details=self.mode == 'integration' or not self.unit_result.require_full_coverage,
                 green_prefixes=("Production coverage: 100%",)))
 
     def show_selection(self):
         rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
-        self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", (("continue", "(s) Start selected tests"),), rows)
+        actions = (("continue", "(s) Start selected tests"),)
+        if self.mode == 'integration':
+            actions = (("continue", "(s) Start attended tests"),)
+            if self.session.result().values.get('UNATTENDED_USER_INDEX') is not None:
+                actions += (('start-unattended', '(u) Start unattended tests'),)
+        self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows)
 
     def show_cleanup(self):
         rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
@@ -1244,7 +1301,7 @@ class ApiAgentApp(App[int]):
                 await self.enter_mode()
             elif key == "setup":
                 self.show_auth_setup(startup=self.mode is None)
-            elif key == "continue":
+            elif key in {"continue", 'start-unattended'}:
                 if not self.selection.selected_ids:
                     raise ValueError("Select at least one test before continuing")
                 if self.mode == "e2e":
@@ -1252,9 +1309,18 @@ class ApiAgentApp(App[int]):
                 elif self.mode == "unit":
                     self.start_unit_run()
                 else:
+                    if key == 'start-unattended' and self.session.result().values.get('UNATTENDED_USER_INDEX') is None:
+                        raise ValueError('Select UNATTENDED_USER_INDEX before unattended execution.')
                     if not self.check_operation_start():
                         return
-                    self.unavailable("Integration execution is not implemented yet. Your selection was collected but no tests were run.")
+                    self.integration_unattended = key == 'start-unattended'
+                    self.operation_status = 3
+                    self.test_run = TestRunLifecycle()
+                    self.collection_cancel = self.test_run.cancel_event
+                    self.unit_result = None
+                    self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
+                    self.show_unit_results(self.unit_progress())
+                    self.run_worker(self._run_integrations(), group='integration-run', exclusive=True)
             elif key == "accept":
                 if not self.check_operation_start():
                     return
@@ -1273,7 +1339,7 @@ class ApiAgentApp(App[int]):
             self.screen.query_one("#error", Static).update(str(error))
 
     async def confirm_quit(self):
-        if self.mode == "unit" and self.unit_rows and self.unit_result is None:
+        if self.mode in {"unit", "integration"} and self.unit_rows and self.unit_result is None:
             self.operation_status = 130
         self.collection_cancel.set()
         if self.test_run_active():

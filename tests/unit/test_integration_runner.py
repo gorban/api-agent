@@ -110,9 +110,9 @@ def test_pack_owns_integration_suite(tmp_path):
     pack = fixture_repo(tmp_path / 'pack', 'def test_pack():\n    pass\n')
     ctx = context(base, pack)
     selected = collect_tests(ctx, 'integration')
-    assert len(selected) == 1 and selected[0].repo == 'pack'
+    assert len(selected) == 2 and {test.repo for test in selected} == {'base', 'pack'}
     result = run_integration_tests(ctx, selected, accepted=True)
-    assert result.exit_code == 0 and result.tests[0].identity.repo == 'pack'
+    assert result.exit_code == 0 and {test.identity.repo for test in result.tests} == {'base', 'pack'}
 
 @pytest.mark.parametrize('jobs', [-1, True, 1.5])
 def test_invalid_worker_count(tmp_path, jobs):
@@ -262,7 +262,7 @@ def test_same_named_repositories_use_pack_root(tmp_path):
     pack = fixture_repo(tmp_path / 'b' / 'same')
     ctx = context(base, pack)
     selected = collect_tests(ctx, 'integration')
-    assert selected[0].repo == 'pack'
+    assert {test.repo for test in selected} == {'base', 'pack'}
     result = run_integration_tests(ctx, selected, accepted=True)
     assert result.exit_code == 0
 

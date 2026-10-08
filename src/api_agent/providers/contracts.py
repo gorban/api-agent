@@ -10,6 +10,10 @@ class ContractError(ValueError):
     """A neutral boundary failure, without payload or credential diagnostics."""
 
 
+class InteractionRequiredError(ContractError):
+    """A safe, actionable message requesting attended provider setup."""
+
+
 class SessionClosedError(RuntimeError):
     """An authentication/session owner has finished disposal."""
 
@@ -60,6 +64,11 @@ class LLMAuthSession(Protocol):
 class LLMAuthenticator(Protocol):
     async def authenticate(self, *, session: BrowserSession, user_index: int,
                            credentials: LLMCredentialReader) -> LLMAuthSession: ...
+
+
+class LLMSetup(Protocol):
+    async def asetup(self, *, interactive: bool, user_index: int | None,
+                     credentials: LLMCredentialReader | None) -> LLMAuthSession: ...
 
 
 class ResourcePackAuthenticator(Protocol):

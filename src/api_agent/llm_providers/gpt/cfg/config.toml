@@ -1,0 +1,38 @@
+version = 1
+
+[fields.GPT_AUTH_MODE]
+type = "str"
+enum = ["subscription", "api_key"]
+default = "subscription"
+help = "Personal subscription sign-in. API-key authentication is pending implementation."
+
+[fields.GPT_API_MODE]
+type = "str"
+enum = ["responses", "completions"]
+conditional_defaults = [{when = {GPT_AUTH_MODE = "subscription"}, value = "responses"}, {when = {GPT_AUTH_MODE = "api_key"}, value = "completions"}]
+help = "Subscription authentication requires responses mode."
+
+[fields.GPT_PROFILE]
+type = "str"
+default = ""
+help = "Saved GPT profile identifier. Empty selects only a single saved connection; multiple profiles require explicit selection."
+
+[fields.GPT_STATE_DIR]
+type = "path"
+anchor = "owner_root"
+allow_empty = true
+default = ""
+help = "Protected GPT connection directory. Empty uses ~/.config/api-agent/gpt; saved credentials require owner-only permissions."
+
+[fields.LLM_CREDENTIAL_ROLE]
+type = "str"
+acknowledge_default = false
+default = ""
+conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key"}, value = "GPT API Key"}]
+help = "Subscription setup uses provider-owned saved connections; the pending API-key route has its own credential role."
+
+[fields.UNATTENDED_USER_INDEX]
+type = "int"
+validation = "nonnegative"
+acknowledge_default = false
+help = "Enable the unattended integration start option for the selected account pair. GPT subscription identity is selected separately by GPT_PROFILE; this index never silently chooses a different saved subscription."

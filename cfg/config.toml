@@ -258,7 +258,13 @@ COLLECT_ONLY = false
 acknowledge_default = false
 type = "str"
 review_optional = true
-help = "Replaceable LLMProvider version-1 factory (file.py:factory). The planned bundled gpt-provider supports personal GPT access and may be replaced by any adapter implementing that interface; its default is enabled when its factory is implemented."
+help = "Replaceable LLMProvider version-1 factory (file.py:factory). The bundled GPT provider currently supports lazy personal subscription setup; inference is a later capability. Any adapter implementing that interface may replace it."
+
+[fields.LLM_CREDENTIAL_ROLE]
+type = "str"
+default = "LLM User"
+acknowledge_default = false
+help = "The selected LLM provider's password-manager role. Providers override this to empty when no vault login is needed, or supply their own role label."
 
 [fields.API_PROVIDER]
 acknowledge_default = false
