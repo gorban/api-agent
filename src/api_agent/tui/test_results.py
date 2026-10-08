@@ -14,7 +14,7 @@ def progress_summary(mode, rows):
     return Text.assemble(f'Running selected {mode} tests… ',
                          (f'{passed} passed', 'green'), ' / ',
                          (f'{failed} failed', 'red' if failed else ''), ' / ',
-                         f"{statuses.count('SKIPPED')} skipped / ",
+                         (f"{statuses.count('SKIPPED')} skipped", 'dark_orange' if 'SKIPPED' in statuses else ''), ' / ',
                          f"{statuses.count('RUNNING')} running / {statuses.count('PENDING')} pending")
 
 
@@ -41,7 +41,7 @@ def reconcile_results_table(table, rows, *, completed):
         table.move_cursor(row=0)
 
 
-def styled_summary(content, *, failed, neutral_details=False, green_prefixes=()):
+def styled_summary(content, *, failed, skipped=False, neutral_details=False, green_prefixes=(), red_prefixes=()):
     """Mode-specific accounting supplies text; shared rendering applies colors."""
     summary = Text()
     plain = content.plain if isinstance(content, Text) else content
@@ -49,7 +49,8 @@ def styled_summary(content, *, failed, neutral_details=False, green_prefixes=())
         if index:
             summary.append('\n')
         style = ('green' if any(line.startswith(prefix) for prefix in green_prefixes)
+                 else 'red' if any(line.startswith(prefix) for prefix in red_prefixes)
                  else '' if neutral_details and index > 0
-                 else 'red' if failed else 'green')
+                 else 'red' if failed else 'dark_orange' if skipped else 'green')
         summary.append(line, style=style)
     return summary

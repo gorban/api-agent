@@ -199,7 +199,7 @@ def test_summary_distinguishes_coverage_only_failure_from_test_failure():
     coverage = (CoverageArea('base', 'src/partial.py', 1, 2, 0, 0),)
     results = (TestResult(one, 'passed'), TestResult(two, 'passed'))
     assert format_unit_summary(UnitRunResult(1, results, coverage, '')).splitlines()[0] == (
-        'Unit results: Coverage FAIL — 2/2 passed; 0 did not pass.')
+        'Unit results: Coverage FAIL — 2/2 passed.')
     results = (TestResult(one, 'passed'), TestResult(two, 'failed'))
     assert format_unit_summary(UnitRunResult(1, results, coverage, '')).splitlines()[0] == (
         'Unit results: FAIL — 1/2 passed; 1 did not pass.')

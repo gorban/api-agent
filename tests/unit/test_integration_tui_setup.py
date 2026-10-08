@@ -12,7 +12,7 @@ from api_agent.testing.integration import IntegrationRunResult
 from test_tui import fixture
 
 
-def test_skipped_results_are_neutral_and_enter_opens_selected_reason(tmp_path):
+def test_skipped_results_are_orange_and_enter_opens_selected_reason(tmp_path):
     identities = [TestIdentity(f'base::t.py::{name}', 'base', 't.py', f't.py::{name}')
                   for name in ('pass', 'skip_first', 'skip_second')]
     results = (TestResult(identities[0], 'passed'),
@@ -27,9 +27,9 @@ def test_skipped_results_are_neutral_and_enter_opens_selected_reason(tmp_path):
             await pilot.press('s')
             await pilot.pause(.4)
             body = app.screen.query_one('#body', Static).content
-            assert 'PASS' in body.plain and '1 passed / 0 failed / 2 skipped' in body.plain
-            skip_offset = body.plain.index('2 skipped')
-            assert not any(span.start <= skip_offset < span.end and span.style in {'red', 'green'}
+            assert 'PASS' in body.plain and '1/3 passed (33.33%), 2/3 skipped (66.67%).' in body.plain
+            skip_offset = body.plain.index('2/3 skipped')
+            assert any(span.start <= skip_offset < span.end and span.style == 'dark_orange'
                            for span in body.spans)
             table = app.screen.query_one(DataTable)
             assert [str(table.get_row_at(i)[1]) for i in range(3)] == [
