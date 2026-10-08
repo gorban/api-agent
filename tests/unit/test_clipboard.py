@@ -71,7 +71,11 @@ def test_terminal_only_without_native_tools(monkeypatch, error):
 
 
 @pytest.mark.parametrize('mode', [None, 'config-cleanup'])
-def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize('platform,key,action,label', [
+    ('linux', 'ctrl+c', 'copy_value', '^c'),
+    ('darwin', 'super+c', 'copy_selected_text', '⌘c'),
+])
+def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch, mode, platform, key, action, label):
     async def scenario():
         fields = {
             'FLAG': {'type': 'bool', 'default': False},
@@ -105,6 +109,7 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
                 screen = app.screen
                 table = screen.query_one(DataTable)
             before = dotenv.read_bytes()
+            monkeypatch.setattr('api_agent.tui.app.sys.platform', platform)
             setting_column = 0 if mode is None else 1
             for name, expected in [('FLAG', 'False'), ('COUNT', '0'),
                                     ('TEXT', '[literal] π'), ('EMPTY', ''),
@@ -114,11 +119,11 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
                            if str(table.get_row_at(i)[setting_column]) == name)
                 table.move_cursor(row=row)
                 await pilot.pause()
-                assert screen.check_action('copy_value', ())
+                assert screen.check_action(action, ())
                 visible = [b.binding for b in screen.active_bindings.values() if b.binding.show]
-                assert visible[-1].action == 'copy_value'
-                assert visible[-1].key_display == '^c'
-                await pilot.press('ctrl+c')
+                assert visible[-1].action == action
+                assert visible[-1].key_display == label
+                await pilot.press(key)
                 copy.assert_awaited_with(app, expected)
                 assert table.cursor_row == row and table.has_focus
                 assert app.screen is screen
@@ -128,14 +133,35 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
                 table.move_cursor(row=row)
                 await pilot.pause()
                 assert screen.selected_effective_value() is None
-                assert not screen.check_action('copy_value', ())
+                assert not screen.check_action(action, ())
                 count = copy.await_count
-                await pilot.press('ctrl+c')
+                await pilot.press(key)
                 await screen.action_copy_value()
                 assert copy.await_count == count
             table.clear()
             assert screen.selected_effective_value() is None
             assert dotenv.read_bytes() == before
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', [None, 'config-cleanup'])
+def test_mac_config_control_c_warns_instead_of_copying(tmp_path, monkeypatch, mode):
+    async def scenario():
+        app = fixture(tmp_path, mode, fields={'VALUE': {'type': 'str', 'default': 'synthetic'}})
+        copy = AsyncMock()
+        monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr('api_agent.tui.app.sys.platform', 'darwin')
+            notify = Mock()
+            monkeypatch.setattr(app, 'notify', notify)
+            assert not app.screen.check_action('copy_value', ())
+            assert app.screen.check_action('copy_selected_text', ())
+            await pilot.press('ctrl+c')
+            copy.assert_not_awaited()
+            assert any(call.kwargs.get('title') == 'Do you want to quit?' for call in notify.call_args_list)
+            await pilot.press('super+c')
+            copy.assert_awaited_once_with(app, 'synthetic')
     asyncio.run(scenario())
 
 
