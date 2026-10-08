@@ -6,6 +6,7 @@ import httpx
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, ProviderCapabilities, SetupPrerequisiteError
 from .connect import _dispose, connect_account
 from .connections import ConnectionStore, SubscriptionSession
+from .browser import subscription_browser
 from .oauth import refresh_connection
 
 
@@ -37,6 +38,7 @@ class GPTProvider:
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
+        self.browsers = []
         self.closed = False
 
     async def asetup(self, *, interactive, user_index, credentials):
@@ -64,7 +66,9 @@ class GPTProvider:
             profile = store.profile_id(connections[0])
         elif interactive:
             # Let the verified OAuth result identify the account instead of a manual ID.
-            profile = await connect_account(store)
+            browser = subscription_browser()
+            self.browsers.append(browser)
+            profile = await connect_account(store, browser_owner=browser)
         else:
             raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
         session = OwnedSubscriptionSession(store, profile)
@@ -76,6 +80,9 @@ class GPTProvider:
         for session in self.sessions:
             await _dispose(session.aclose())
         self.sessions.clear()
+        for browser in self.browsers:
+            await _dispose(browser.aclose())
+        self.browsers.clear()
 
 
 def factory(config, services):

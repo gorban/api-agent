@@ -272,35 +272,60 @@ def test_exchange_deadline(lane, monkeypatch):
     asyncio.run(run())
 
 
-def test_browser_helper_success_and_failure(tmp_path, monkeypatch):
-    helper = tmp_path / 'browser'
-    helper.write_text('#!/bin/sh\nexit 0\n')
-    helper.chmod(0o700)
-    monkeypatch.setenv('BROWSER', str(helper))
-    assert asyncio.run(c._open_browser('http://127.0.0.1/'))
-    class Process:
-        returncode = 1
-        async def communicate(self, value): pass
-    async def spawn(*args, **kwargs): return Process()
-    monkeypatch.setattr(c.asyncio, 'create_subprocess_exec', spawn)
-    assert not asyncio.run(c._open_browser('http://127.0.0.1/'))
+@pytest.mark.parametrize('supplied', [False, True])
+def test_managed_browser_is_default_and_handles_callback(lane, monkeypatch, supplied):
+    from unittest.mock import AsyncMock
+    owner = SimpleNamespace(aclose=AsyncMock())
+    async def goto(url, **kwargs):
+        assert kwargs == {'wait_until': 'domcontentloaded'}
+        assert b'200 OK' in await request(url)
+    owner.start = AsyncMock(return_value=SimpleNamespace(page=SimpleNamespace(goto=goto)))
+    create = lambda: owner
+    monkeypatch.setattr('api_agent.llm_providers.gpt.browser.subscription_browser', create)
+    options = {'browser_owner': owner} if supplied else {}
+    assert asyncio.run(c.connect_account(Store(), client=object(), **options)) == 'account'
+    owner.start.assert_awaited_once()
+    owner.aclose.assert_awaited_once()
 
 
-def test_blocked_browser_disposed(tmp_path, monkeypatch, lane):
-    helper = tmp_path / 'browser'
-    pidfile = tmp_path / 'pid'
-    helper.write_text(f'#!/bin/sh\necho $$ > "{pidfile}"\nexec sleep 30\n')
-    helper.chmod(0o700)
-    monkeypatch.setenv('BROWSER', str(helper))
-    original = c.asyncio.timeout
-    monkeypatch.setattr(c.asyncio, 'timeout', lambda _: original(.2))
-    with pytest.raises(c.AuthError, match='callback_timeout'):
-        asyncio.run(c.connect_account(Store()))
-    pid = int(pidfile.read_text())
-    # A killed descendant can remain a zombie until the host reaps it.
-    import os
-    path = f'/proc/{pid}/stat'
-    assert not os.path.exists(path) or open(path).read().split()[2] == 'Z'
+@pytest.mark.parametrize('stage', ['start', 'navigation'])
+def test_managed_browser_failure_is_safe_and_disposes_owner(lane, monkeypatch, stage):
+    from unittest.mock import AsyncMock
+    error = RuntimeError('private authorization URL')
+    page = SimpleNamespace(goto=AsyncMock(side_effect=error if stage == 'navigation' else None))
+    owner = SimpleNamespace(start=AsyncMock(side_effect=error if stage == 'start' else None,
+                                          return_value=SimpleNamespace(page=page)), aclose=AsyncMock())
+    client = SimpleNamespace(aclose=AsyncMock())
+    monkeypatch.setattr(c.httpx, 'AsyncClient', lambda: client)
+    with pytest.raises(c.AuthError, match='^browser_unavailable$'):
+        asyncio.run(c.connect_account(Store(), browser_owner=owner))
+    owner.aclose.assert_awaited_once()
+    client.aclose.assert_awaited_once()
+
+
+@pytest.mark.parametrize('end', ['cancel', 'timeout'])
+def test_blocked_managed_browser_is_disposed(lane, monkeypatch, end):
+    from unittest.mock import AsyncMock
+    async def scenario():
+        entered = asyncio.Event()
+        async def goto(*args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=SimpleNamespace(goto=goto))),
+                                aclose=AsyncMock())
+        original = c.asyncio.timeout
+        monkeypatch.setattr(c.asyncio, 'timeout', lambda _: original(.05))
+        task = asyncio.create_task(c.connect_account(Store(), client=object(), browser_owner=owner))
+        await entered.wait()
+        if end == 'cancel':
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(c.AuthError, match='callback_timeout'):
+                await task
+        owner.aclose.assert_awaited_once()
+    asyncio.run(scenario())
 
 
 def test_repeated_cancel_disposal():
