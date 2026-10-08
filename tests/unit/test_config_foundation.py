@@ -288,9 +288,8 @@ def test_ui_applies_to_e2e_and_optional_local_only(tmp_path, mode, run_ui, activ
         result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode, 'RUN_UI': run_ui, 'PACK_TEST_TOKEN': 'test-only'},
                                 anchors={'owner_root': tmp_path})
         result.raise_for_errors()
-        assert ('RUN_UI' in result.values) == (mode in ('run-local', 'e2e'))
-        if mode in ('run-local', 'e2e'):
-            assert result.values['RUN_UI'] is (run_ui == 'True')
+        assert 'RUN_UI' in result.values
+        assert result.values['RUN_UI'] is (run_ui == 'True')
         assert ('UI_NX_APP' in result.values) == active
         assert ('UI_SOURCE_DIR' in result.values) == active
         if active:

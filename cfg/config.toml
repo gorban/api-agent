@@ -88,9 +88,9 @@ NO_STD_IN = true
 [fields.RUN_UI]
 type = "bool"
 default = false
-help = "Start the UI in local runs; in E2E, show the browser while tests run. E2E always starts its UI, and E2E_DEBUG also shows and retains the browser."
+help = "Start the UI in local runs; in integration, show unattended provider-login browsers; in E2E, show the browser while tests run. False keeps unattended login headless; attended login is always visible. Integration DEBUG or E2E_DEBUG also shows and retains the relevant browser. E2E always starts its UI."
 [fields.RUN_UI.applies_when]
-TUI_MODE = ["run-local", "e2e"]
+TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
 
 [fields.UI_SOURCE_DIR]

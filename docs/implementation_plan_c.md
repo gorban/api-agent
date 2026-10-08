@@ -25,7 +25,7 @@
 
 - [ ] Document lazy provider-owned unattended login, provider/pack-owned observed login branches, optional browser preparation and all-tab credential-safe error evidence. Core uses synthetic public fixtures; operational protocol details stay in the owning adapter documentation.
 
-- [ ] Document automatic pack authenticate dispatch for each created UI session and same-context user handoff. RUN_UI=False local-run creates no UI; integration creates no frontend. LLM login is separately lazy and always headless; explain debug retention, supervised driver ownership and explicit inspection cleanup from [browser contracts](provider_architecture.md).
+- [ ] Document automatic pack authenticate dispatch for each created UI session and same-context user handoff. RUN_UI=False local-run creates no UI; integration creates no frontend. LLM login is separately lazy: unattended login is headless unless RUN_UI or DEBUG makes it visible, and attended login is always visible; explain debug retention, supervised driver ownership and explicit inspection cleanup from [browser contracts](provider_architecture.md).
 
 - [ ] Document role-to-array unattended configuration, zero-entry attended fallback, automatic single-entry selection, and one shared zero-based `UNATTENDED_USER_INDEX` for needed credential arrays. Show `<vault>/<user>` choices and session-only interactive selection; explain the `NO_STD_IN` ambiguity error. Explain default acknowledgement as a chance to override new settings or preserve point-in-time configuration, with debug/index exclusions from automatic default saving.
 

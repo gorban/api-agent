@@ -45,7 +45,7 @@
 UNATTENDED_AUTH='{"password_manager":{"manager":"keeper","cli_path":"/path/to/keeper"},"roles":{"LLM User":[{"vault":"my-vault","user":"LLM User"}]}}'
 ```
 
-When a secondary role is enabled, include another array within `roles` under that role's label, using only `vault` and `user` per entry. The shared manager serves all accounts. An empty array (`"LLM User":[]`) selects attended login. Multiple complete selectable indexes require an explicit zero-based index or interactive choice at authentication time. Local-run pairing stops at the shortest active role array; integration/E2E require complete enabled-role pairs for unattended eligibility but retrieve LLM-user credentials through the LLM provider callback; resource-pack authentication owns any additional test identity setup.
+When a secondary role is enabled, include another array within `roles` under that role's label, using only `vault` and `user` per entry. The shared manager serves all accounts. An empty array (`"LLM User":[]`) selects attended login. Multiple complete selectable indexes require an explicit zero-based index or interactive choice at authentication time. Local-run pairing stops at the shortest active role array; integration/E2E require only the primary LLM account for unattended eligibility and retrieve its credentials through the LLM provider callback; resource-pack authentication owns any additional test identity setup.
 
 ## Exact retrieval commands
 

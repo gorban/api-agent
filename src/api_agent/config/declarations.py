@@ -56,8 +56,8 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
             raise ValueError(f'{name}: invalid path anchor')
         if spec['type'] == 'path' and not spec.get('anchor'):
             raise ValueError(f'{name}: path requires an explicit anchor')
-        if spec.get('allow_empty') and spec['type'] != 'path':
-            raise ValueError(f'{name}: allow_empty requires path type')
+        if spec.get('allow_empty') and spec['type'] not in {'path', 'int'}:
+            raise ValueError(f'{name}: allow_empty requires path or int type')
         if spec.get('validation') not in (None, 'nonnegative', 'positive', 'resolution'):
             raise ValueError(f'{name}: unknown validation rule')
         if spec.get('validation') == 'nonnegative' and spec['type'] != 'int':
