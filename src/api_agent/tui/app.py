@@ -18,7 +18,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen, ModalScreen
-from textual.widgets import Button, DataTable, Footer, Input, Select, Static
+from textual.widgets import Button, Checkbox, DataTable, Footer, Input, Select, Static
 
 MODES = (("run-local", "Run local"), ("unit", "Unit tests w/ coverage"),
          ("integration", "Integration tests"), ("e2e", "E2E tests"),
@@ -277,6 +277,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             if self.kind not in {"cleanup", "test-results"}:
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions") as actions:
+                if self.kind == "suggest":
+                    actions.add_class("auth-suggestion")
                 if self.kind == "test-results":
                     actions.display = False
                 elif self.kind == "input":
@@ -284,7 +286,12 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 if self.kind == "input" and len(app.session.target_paths) > 1:
                     yield Button("Switch target .env (s outside input)", id="switch-target")
                 for key, label in self.actions:
-                    yield Button(label, id=key)
+                    if self.kind == "suggest" and key == "skip":
+                        with Vertical(id="skip-choice"):
+                            yield Button(label, id=key)
+                            yield Checkbox("Remember my selection", id="remember-skip")
+                    else:
+                        yield Button(label, id=key)
             if self.kind != "test-results":
                 yield Static("", id="error", markup=False)
         if self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
@@ -564,7 +571,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
         await self.app.choose("stop-containers")
 
     async def action_skip_setup(self):
-        await self.app.start_configuration()
+        await self.app.choose("skip")
 
 
 class ApiAgentApp(App[int]):
@@ -589,6 +596,10 @@ class ApiAgentApp(App[int]):
     #config-description { height: auto; margin: 1 0; }
     #unit-summary { height: 1fr; min-height: 6; margin-bottom: 1; }
     #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
+    #actions.auth-suggestion { layout: horizontal; }
+    #actions.auth-suggestion > Button { width: 1fr; }
+    #skip-choice { width: 1fr; height: auto; }
+    #remember-skip { width: 100%; height: auto; }
     Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
     Button:focus, Input:focus { border: heavy $accent; }
     DataTable { height: 1fr; min-height: 8; max-height: 100vh; margin-bottom: 1; }
@@ -704,7 +715,7 @@ class ApiAgentApp(App[int]):
             self.show_menu()
             return
         incomplete = self.auth_setup_needed()
-        if incomplete and self.mode != "unattended-auth":
+        if incomplete and not result.values.get("SKIP_UNATTENDED_SETUP", False):
             self.show("suggest", "Unattended authentication", "Credential profiles are absent or incomplete. Configure account sources, or skip to continue with attended authentication.", (("setup", "Setup authentication"), ("skip", "Skip (s)")))
         else:
             await self.start_configuration()
@@ -1358,6 +1369,8 @@ class ApiAgentApp(App[int]):
             elif key == "switch-target":
                 self.switch_target()
             elif key == "skip":
+                if self.screen.query_one("#remember-skip", Checkbox).value:
+                    self.session.set_value("SKIP_UNATTENDED_SETUP", "True", persist=True)
                 await self.start_configuration()
             elif key == 'review-config':
                 self.show_configuration()

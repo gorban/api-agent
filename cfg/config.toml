@@ -170,6 +170,12 @@ validation = "resolution"
 TUI_MODE = "e2e"
 COLLECT_ONLY = false
 
+[fields.SKIP_UNATTENDED_SETUP]
+type = "bool"
+default = false
+acknowledge_default = false
+help = "Remember Skip on the startup unattended-authentication suggestion. True suppresses that suggestion for attended login; it does not configure unattended credentials or prevent opening Setup unattended authentication from the menu. Delete its .env assignment to restore the suggestion."
+
 [fields.UNATTENDED_AUTH]
 acknowledge_default = false
 type = "jsonobject"
