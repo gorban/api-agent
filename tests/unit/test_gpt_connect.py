@@ -217,13 +217,25 @@ def test_verification_failure_preserves_store(lane):
 
 def test_reconnect_uses_saved_record(lane):
     observed = []
-    def begin(host, uri, registration=None):
+    def begin(host, uri, registration=None, app_name=None):
         observed.append(registration)
+        assert app_name == 'api-agent'
         return SimpleNamespace(authorization_url=uri, state="s")
     lane.begin_authorization = begin
     with pytest.raises(c.AuthError, match='browser_unavailable'):
         asyncio.run(c.connect_account(Store(), profile='account', open_browser=lambda _: False))
     assert observed[0].email == 'person@example.org'
+
+
+def test_connection_passes_application_name_to_authorization(lane):
+    observed = []
+    def begin(host, uri, **kwargs):
+        observed.append(kwargs)
+        return SimpleNamespace(authorization_url=uri, state='s')
+    lane.begin_authorization = begin
+    with pytest.raises(c.AuthError, match='browser_unavailable'):
+        asyncio.run(c.connect_account(Store(), app_name='My Agent', open_browser=lambda _: False))
+    assert observed == [{'registration': None, 'app_name': 'My Agent'}]
 
 
 @pytest.mark.parametrize('host', [None, 'foreign', 'duplicate'])

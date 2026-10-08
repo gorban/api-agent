@@ -69,6 +69,22 @@ def test_begin_and_returning():
     assert run(data={'earliest_refresh_at':1050})[0].earliest_refresh_at == 1050
 
 
+def test_application_display_hint_is_only_for_initial_registration():
+    query = parse_qs(urlsplit(o.begin_authorization(HOST, URI, app_name='My Agent & Tools').authorization_url).query)
+    assert query['agent_name_hint'] == ['My Agent & Tools']
+    assert query['client_id'] == [o.INITIAL_CLIENT]
+    connection = run()[0]
+    returning = parse_qs(urlsplit(o.begin_authorization(HOST, URI, connection, app_name='A New Name').authorization_url).query)
+    assert 'agent_name_hint' not in returning
+    assert returning['client_id'] == [connection.client_id]
+
+
+@pytest.mark.parametrize('name', ['', ' ', None, False, 42])
+def test_initial_application_name_requires_nonblank_text(name):
+    with pytest.raises(AuthError, match='invalid_attempt'):
+        o.begin_authorization(HOST, URI, app_name=name)
+
+
 @pytest.mark.parametrize('host,uri', [('bad',URI), ('urn:uuid:bad',URI), (HOST,'http://localhost:1455/auth/callback'), (HOST,'http://127.0.0.1/auth/callback'), (HOST,'http://user@127.0.0.1:2/auth/callback'), (HOST,URI+'?x=1'), (HOST,URI+'#x'), (HOST,'http://127.0.0.1:bad/auth/callback')])
 def test_invalid_begin(host, uri):
     with pytest.raises(AuthError, match='invalid_attempt'):

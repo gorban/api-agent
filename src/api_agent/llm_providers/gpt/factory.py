@@ -36,6 +36,7 @@ class GPTProvider:
     def __init__(self, config):
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
+        self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
         self.browsers = []
@@ -68,7 +69,7 @@ class GPTProvider:
             # Let the verified OAuth result identify the account instead of a manual ID.
             browser = subscription_browser()
             self.browsers.append(browser)
-            profile = await connect_account(store, browser_owner=browser)
+            profile = await connect_account(store, browser_owner=browser, app_name=self.app_name)
         else:
             raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
         session = OwnedSubscriptionSession(store, profile)

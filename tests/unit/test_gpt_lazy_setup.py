@@ -105,6 +105,18 @@ def test_cached_setup_never_allocates_a_browser(store, monkeypatch):
     run(scenario())
 
 
+@pytest.mark.parametrize('config,expected', [({}, 'api-agent'), ({'GPT_APP_NAME': 'My Agent'}, 'My Agent')])
+def test_application_name_reaches_attended_connection(config, expected, store, monkeypatch):
+    connect = AsyncMock(return_value='new')
+    monkeypatch.setattr(module, 'connect_account', connect)
+    async def scenario():
+        provider = module.factory(config, None)
+        await setup(provider, interactive=True)
+        assert connect.await_args.kwargs['app_name'] == expected
+        await provider.aclose()
+    run(scenario())
+
+
 @pytest.mark.parametrize('run_ui', [False, True])
 def test_failed_attended_setup_keeps_browser_until_cleanup_confirmed(store, monkeypatch, run_ui):
     browser = SimpleNamespace(aclose=AsyncMock())

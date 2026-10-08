@@ -152,6 +152,9 @@ def test_bootstrap_selection_obeys_each_precedence_layer(tmp_path):
     location = factory(tmp_path)
     bundled = loading.bootstrap_schema(schema, [], {}, {})
     assert bundled.fields['GPT_AUTH_MODE'].default == 'subscription'
+    assert bundled.fields['GPT_APP_NAME'].default == 'api-agent'
+    assert bundled.fields['GPT_APP_NAME'].type == 'str'
+    assert bundled.fields['GPT_APP_NAME'].help
     assert bundled.fields['LLM_CREDENTIAL_ROLE'].default == 'LLM User'
     assert bundled.fields['LLM_CREDENTIAL_ROLE'].credential_role_optional
     assert 'GPT_PROFILE' not in bundled.fields
