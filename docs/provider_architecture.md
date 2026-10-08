@@ -120,7 +120,7 @@ Allure records integration/E2E, including authentication/setup failures, from th
 
 - [ ] Remove the unused legacy `src/api_agent/config/shared.toml` snapshot in final cleanup. Runtime and wheel packaging use `cfg/config.toml`; do not maintain a second declaration source.
 
-Optional credential-role declarations may set `credential_role_optional = true`: the role remains available in credential setup, but an absent descriptor does not trigger the startup suggestion. A configured incomplete descriptor still needs attention, and executable provider operations enforce their actual credential requirements. This is declaration metadata, not another user configuration setting. Subscription cache matching retrieves only the selected descriptor username; CLI retrieval stays lazy, bounded and owned until shutdown.
+Enabled credential roles require account descriptors and a valid shared password manager/CLI for unattended operations. Plain startup offers Setup / Skip for incomplete profiles; explicit TUI_MODE bypasses that startup suggestion and Skip preserves attended use. Remove the superseded credential_role_optional metadata rather than exempting empty role arrays from setup checks. Subscription cache matching retrieves only the selected descriptor username; CLI retrieval stays lazy, bounded and owned until shutdown.
 
 ## Development inspection follow-up
 

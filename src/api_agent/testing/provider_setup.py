@@ -82,12 +82,16 @@ class IntegrationLLM:
                 return None
             validate_role_entries(role, entries)
             if not entries:
-                return None
+                raise SetupPrerequisiteError(f'{role}: configure an account in unattended authentication setup.')
+            if not canonical['password_manager']['manager']:
+                raise SetupPrerequisiteError('Configure the shared password manager before unattended authentication.')
             profiles = parse_profiles({'password_manager': canonical['password_manager'],
                                        'roles': {role: entries}}, (role,))
             if type(index) is not int or index < 0 or index >= len(profiles.for_role(role)):
                 raise ValueError
             source = profiles.for_role(role)[index]
+        except SetupPrerequisiteError:
+            raise
         except (ValueError, TypeError):
             raise ContractError('The selected unattended login descriptor is incomplete or invalid.') from None
 

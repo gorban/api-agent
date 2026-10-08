@@ -24,7 +24,6 @@ class FieldDeclaration:
     anchor: str | None = None
     help: str = ''
     acknowledge_default: bool = True
-    credential_role_optional: bool = False
     pack_only: bool = False
     validation: str | None = None
     default_source: str = 'shared_default'
@@ -48,11 +47,9 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         if set(spec) - allowed or spec.get('type') not in TYPES:
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
-        for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'credential_role_optional', 'pack_only'):
+        for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
-        if spec.get('credential_role_optional') and spec['type'] != 'str':
-            raise ValueError(f'{name}: credential_role_optional requires str type')
         if spec.get('override_if_present') and not spec.get('override'):
             raise ValueError(f'{name}: override_if_present requires override = true')
         if spec.get('anchor') not in (None, 'pack_root', 'owner_root', 'base_root'):

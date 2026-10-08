@@ -31,12 +31,15 @@ def test_bundled_provider_is_reviewable_and_switching_refreshes_tables(tmp_path)
     async def scenario():
         async with app.run_test(size=(120, 45)) as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'suggest'
+            await pilot.press('s')
+            await pilot.pause()
             assert app.screen.kind == 'defaults'
             assert 'LLM_PROVIDER' in names()
             assert 'GPT_AUTH_MODE' in names()
             assert 'GPT_PROFILE' not in app.schema.fields
             assert 'GPT_STATE_DIR' not in names()
-            assert app.credential_roles() == ('LLM User',) and not app.auth_setup_needed()
+            assert app.credential_roles() == ('LLM User',) and app.auth_setup_needed()
             table = app.screen.query_one(DataTable)
             index = names().index('LLM_PROVIDER')
             assert str(table.get_row_at(index)[1]) == expected
@@ -65,4 +68,38 @@ def test_bundled_provider_is_reviewable_and_switching_refreshes_tables(tmp_path)
             assert 'ALTERNATE_ENDPOINT' not in names()
             assert app.session.result().values['LLM_PROVIDER'] == expected
 
+    asyncio.run(scenario())
+
+
+def test_actual_gpt_declaration_suggests_setup_until_account_and_manager_complete(tmp_path):
+    import json
+    from api_agent.tui.auth_setup import AuthSetupScreen
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path,
+        pack_id='fixture', external_pack=False, dotenv_path=tmp_path / '.env',
+        anchors={name: tmp_path for name in ('base_root', 'pack_root', 'owner_root')})
+    account = {'vault': 'fixture', 'user': 'login'}
+    cases = [({}, True),
+             ({'roles': {'LLM User': []}}, True),
+             ({'roles': {'LLM User': [account]}}, True),
+             ({'roles': {'LLM User': [account]}, 'password_manager': {'manager': '1password', 'cli_path': ''}}, False),
+             ({'roles': {'LLM User': [account]}, 'password_manager': {'manager': '1password', 'cli_path': 'op'}}, False)]
+    async def scenario():
+        for profile, needed in cases:
+            app = ApiAgentApp(context, load_shared_schema(), environ={'UNATTENDED_AUTH': json.dumps(profile)},
+                container_runtime=SimpleNamespace(inventory=lambda: ()))
+            async with app.run_test(size=(110, 40)) as pilot:
+                await pilot.pause()
+                assert app.credential_roles() == ('LLM User',)
+                assert app.auth_setup_needed() is needed
+                assert (app.screen.kind == 'suggest') is needed
+                if needed:
+                    assert 'skip' in {key for key, label in app.screen.actions}
+                    await pilot.press('enter')
+                    await pilot.pause()
+                    assert isinstance(app.screen, AuthSetupScreen)
+                    await pilot.press('c')
+                    await pilot.pause()
+                    assert app.screen.kind == 'defaults'
+                else:
+                    assert app.screen.kind == 'defaults'
     asyncio.run(scenario())
