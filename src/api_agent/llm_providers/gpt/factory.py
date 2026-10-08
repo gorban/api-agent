@@ -33,7 +33,8 @@ class GPTProvider:
     version = 1
     capabilities = ProviderCapabilities(kind="llm", operations=())
 
-    def __init__(self, config):
+    def __init__(self, config, *, inspection=None):
+        self.inspection = inspection
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
@@ -67,7 +68,8 @@ class GPTProvider:
             profile = store.profile_id(connections[0])
         elif interactive:
             # Let the verified OAuth result identify the account instead of a manual ID.
-            browser = subscription_browser()
+            browser = (subscription_browser() if self.inspection is None else
+                       subscription_browser(inspection=self.inspection))
             self.browsers.append(browser)
             profile = await connect_account(store, browser_owner=browser, app_name=self.app_name)
         else:
@@ -88,4 +90,5 @@ class GPTProvider:
 
 def factory(config, services):
     """Create without reading saved state or starting transport/browser work."""
-    return GPTProvider(config)
+    from collections.abc import Mapping
+    return GPTProvider(config, inspection=services.get('browser_inspection') if isinstance(services, Mapping) else None)

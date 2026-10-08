@@ -146,8 +146,23 @@ class _Owner:
 
 class InspectionOwner(_Owner):
     """Retains browsers and drivers until explicit bounded inspection cleanup."""
-    def __init__(self, *, timeout: float = 5):
+    def __init__(self, *, timeout: float = 5, on_session=None):
         super().__init__(timeout)
+        self.sessions: list[BrowserSession] = []
+        self._on_session = on_session
+
+    def observe(self, session: BrowserSession) -> None:
+        self._check()
+        self.sessions.append(session)
+        if self._on_session is not None:
+            self._on_session(session)
+
+    async def wait_closed(self) -> None:
+        """Drive the creating loop while a retained browser still has windows."""
+        self._check()
+        while any(session.browser.is_connected() and session.context.pages
+                  for session in self.sessions):
+            await asyncio.sleep(.1)
 
     def retain(self, resources: list[tuple[Any, str]]) -> None:
         self._check()
@@ -155,6 +170,7 @@ class InspectionOwner(_Owner):
 
     async def _dispose(self) -> None:
         await self._release()
+        self.sessions.clear()
 
 
 class BrowserOwner(_Owner):
@@ -181,7 +197,10 @@ class BrowserOwner(_Owner):
             self._check()
             page = await context.new_page()
             self._check()
-            self.session = BrowserSession(browser, context, page)
+            self.session = BrowserSession(browser, context, page,
+                                          getattr(driver, 'inspection_endpoint', None))
+            if self._inspection is not None:
+                self._inspection.observe(self.session)
             return self.session
         except (asyncio.CancelledError, OperationalError, ContractError, SessionClosedError, CleanupPendingError):
             raise

@@ -77,9 +77,8 @@ def test_browser_identity_retention_and_partial_failure():
         with pytest.raises(SessionClosedError):
             inspection.retain([])
         owner, driver, instance, context = browser(inspection=inspection)
-        await owner.start()
         with pytest.raises(SessionClosedError):
-            await owner.aclose()
+            await owner.start()
         driver.stop.assert_awaited_once()
         owner, driver, instance, context = browser()
         context.new_page.side_effect = RuntimeError("setup")
@@ -786,4 +785,40 @@ def test_plain_future_finalizer_is_cancelled_and_retry_disposes_safely():
         driver.stop.assert_awaited_once()
         await llm.aclose()
         driver.stop.assert_awaited_once()
+    run(scenario())
+
+
+def test_inspection_observation_waits_for_windows_without_disposing_driver():
+    async def scenario():
+        observed = []
+        inspection = InspectionOwner(on_session=observed.append)
+        owner, driver, instance, context = browser(inspection=inspection)
+        context.pages = [object()]
+        instance.is_connected = lambda: True
+        driver.inspection_endpoint = 'http://127.0.0.1:12345'
+        session = await owner.start()
+        assert observed == [session] and session.inspection_endpoint == driver.inspection_endpoint
+        await owner.aclose()
+        waiting = asyncio.create_task(inspection.wait_closed())
+        await asyncio.sleep(.02)
+        assert not waiting.done()
+        driver.stop.assert_not_awaited()
+        context.pages.clear()
+        await waiting
+        await inspection.aclose()
+        assert not inspection.sessions
+        driver.stop.assert_awaited_once()
+        with pytest.raises(SessionClosedError):
+            inspection.observe(session)
+    run(scenario())
+
+
+def test_inspection_disconnect_and_empty_sessions_finish_without_wait():
+    async def scenario():
+        inspection = InspectionOwner()
+        await inspection.wait_closed()
+        from api_agent.providers.contracts import BrowserSession
+        inspection.observe(BrowserSession(SimpleNamespace(is_connected=lambda: False), SimpleNamespace(pages=[object()]), object()))
+        await inspection.wait_closed()
+        await inspection.aclose()
     run(scenario())

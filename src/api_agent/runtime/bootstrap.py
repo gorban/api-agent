@@ -160,7 +160,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             if result.values.get('COLLECT_ONLY') and mode_field and mode_field.explicit and not result.values.get('NO_STD_IN'):
                 errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}'
                               for name in result.missing)
-            if result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'} and not result.values.get('COLLECT_ONLY'):
+            if (result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'}
+                    and not result.values.get('COLLECT_ONLY')
+                    and not (mode == 'integration' and result.values.get('DEBUG'))):
                 errors.append('NO_STD_IN=True is incompatible with integration/E2E execution; collection-only is allowed.')
             if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'cleanup-containers', 'unattended-auth'}:
                 errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')
@@ -207,6 +209,18 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print()
             print(format_unit_summary(execution))
             return execution.exit_code
+        if result.values.get('NO_STD_IN') and mode == 'integration' and result.values.get('DEBUG'):
+            from api_agent.runtime.dependencies import ensure_environment
+            status = ensure_environment(context, argv, collect=True, groups=('dev',))
+            if status is not None:
+                return status
+            from api_agent.testing.collection import collect_tests
+            from api_agent.testing.recorded import run_recorded_integration
+            tests = collect_tests(context, 'integration', result.positionals, config=result.values)
+            print('Integration debug: serial execution; provider login may require browser interaction.', flush=True)
+            execution = run_recorded_integration(context, tests, result.values, accepted=True,
+                output=lambda chunk: print(chunk, end='', flush=True))
+            return execution.exit_code
         if result.values.get('NO_STD_IN'):
             if mode == 'run-local':
                 from api_agent.auth.extensions import validate_operation
@@ -225,6 +239,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return status
         from api_agent.tui.app import run_tui
         return run_tui(context, foundation_schema, argv, os.environ.copy())
+    except KeyboardInterrupt:
+        print('Run interrupted.', file=sys.stderr)
+        return 130
     except (ValueError, OSError, WorktreeGateError, subprocess.CalledProcessError) as exc:
         print(f'Launch error: {exc}', file=sys.stderr)
         return 2
@@ -249,6 +266,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'COLLECT_ONLY': '--collect-only: list selected tests without running them.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
+        'DEBUG': '--debug: retain integration login browsers; allows serial --no-std-in integration debugging.',
         'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select the same zero-based entry in needed credential arrays.',
     }
     for name, description in callouts.items():

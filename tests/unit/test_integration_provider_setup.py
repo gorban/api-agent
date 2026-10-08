@@ -273,3 +273,46 @@ def test_pack_requirement_marker_registered_for_worker():
     config = Mock()
     p.pytest_configure(config)
     config.addinivalue_line.assert_called_once_with("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
+
+
+@pytest.mark.parametrize('endpoint', [None, 'http://127.0.0.1:12345'])
+def test_debug_worker_retains_browser_and_drives_loop_after_auth_close(tmp_path, monkeypatch, capsys, endpoint):
+    from api_agent.providers.contracts import BrowserSession
+    events = []
+    provider = p.IntegrationLLM({'LLM_PROVIDER': 'selected', 'DEBUG': True, 'NO_STD_IN': True}, tmp_path)
+    class Auth:
+        async def __call__(self): return object()
+        async def aclose(self): events.append('auth-close')
+    class Adapter:
+        async def asetup(self, **kwargs):
+            assert kwargs['interactive'] is True
+            session = BrowserSession(SimpleNamespace(is_connected=lambda: True), SimpleNamespace(pages=[object()]), object(), endpoint)
+            provider.inspection.observe(session)
+            async def close_window():
+                await asyncio.sleep(.02)
+                session.context.pages.clear()
+            asyncio.create_task(close_window())
+            return Auth()
+    loaded = SimpleNamespace(implementation=Adapter(), aclose=AsyncMock(side_effect=lambda: events.append('provider-close')))
+    load = AsyncMock(return_value=loaded)
+    monkeypatch.setattr(p, 'aload_provider', load)
+    provider.ensure_ready()
+    assert load.await_args.args[2]['browser_inspection'] is provider.inspection
+    provider.close()
+    assert events == ['auth-close', 'provider-close'] and provider.loop.is_closed()
+    output = capsys.readouterr().out
+    assert 'Debug browser retained' in output
+    assert ('Provider browser inspection:' in output) == (endpoint is not None)
+
+
+def test_debug_empty_inspector_and_interrupted_inspection_cleanup(tmp_path, monkeypatch):
+    provider = p.IntegrationLLM({'DEBUG': True}, tmp_path)
+    provider.close()
+    assert provider.loop.is_closed()
+    provider = p.IntegrationLLM({'DEBUG': True}, tmp_path)
+    monkeypatch.setattr(provider.inspection, 'wait_closed', AsyncMock(side_effect=KeyboardInterrupt))
+    with pytest.raises(KeyboardInterrupt):
+        provider.close()
+    assert provider.inspection._closed
+    provider.close()
+    assert provider.loop.is_closed()

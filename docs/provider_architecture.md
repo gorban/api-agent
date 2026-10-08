@@ -110,7 +110,7 @@ All loaded, non-skipped integrations should be runnable with valid supported com
 
 Core aggregates token counts, optional quota/reset snapshots and provider-returned finite nonnegative currency estimates. Pricing and quota-to-currency conversion belong to the provider. Missing values remain unavailable rather than measured zero; per-prompt currency requires a nonzero prompt count. Bracket the selected parallel workload once, count user turns rather than internal nodes, and disclose possible unrelated account consumption. See [session/usage lifecycle](implementation_plan_a7.md).
 
-Allure records integration/E2E, including authentication/setup failures, from the first run. Unit tests remain excluded. Capture all-tab current-state browser failure evidence before teardown, with credential-safe attachments; successful response evidence follows the maximized/top-first rules. Human E2E acceptance and interactive integration/E2E selection remain mandatory.
+Allure records integration/E2E, including authentication/setup failures, from the first run. Unit tests remain excluded. Capture all-tab current-state browser failure evidence before teardown, with credential-safe attachments; successful response evidence follows the maximized/top-first rules. Human E2E acceptance remains mandatory. Ordinary integration requires interactive Start; an explicit integration DEBUG invocation permits serial NO_STD_IN execution with browser interaction and retained inspection. This exception does not authorize noninteractive E2E execution.
 
 ## Acceptance
 
@@ -121,3 +121,10 @@ Allure records integration/E2E, including authentication/setup failures, from th
 - [ ] Remove the unused legacy `src/api_agent/config/shared.toml` snapshot in final cleanup. Runtime and wheel packaging use `cfg/config.toml`; do not maintain a second declaration source.
 
 Optional credential-role declarations may set `credential_role_optional = true`: the role remains available in credential setup, but an absent descriptor does not trigger the startup suggestion. A configured incomplete descriptor still needs attention, and executable provider operations enforce their actual credential requirements. This is declaration metadata, not another user configuration setting. Subscription cache matching retrieves only the selected descriptor username; CLI retrieval stays lazy, bounded and owned until shutdown.
+
+## Development inspection follow-up
+
+Integration DEBUG contributes `browser_inspection` through factory services. Providers may pass that owner to BrowserOwner; BrowserSession carries an optional non-repr inspection_endpoint. The owner observes original sessions, keeps driver/context/browser resources after provider disposal, and drives the creating loop until retained windows close. The bundled provider currently offers loopback CDP only in this opted-in debug path; private adapters must use the same generic seam. Normal timeout/completion closes browsers. Current integration debug is serial per worker, not a shared cross-process authentication owner. Final pytest teardown and report publication wait for window closure.
+
+- [ ] Establish one backend-owned suite authentication session before restoring parallel debug execution; concurrent requests coalesce and use the same selected account/session without multiple login windows. Workers receive generic operation/credential IPC, never browser objects or raw provider tokens.
+- [ ] Separate browser attachability from retention. An explicitly inspection-enabled operation can expose the same original page without DEBUG; it may close normally when its purpose ends. DEBUG retains it beyond setup/test completion. Unattended visibility and automation remain provider-owned, with headed retention for explicit debug; attended consent is always headed. Apply this policy uniformly to included and private LLM providers, and to E2E/local-run UI sessions.

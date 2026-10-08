@@ -249,3 +249,18 @@ def test_cancelled_cleanup_waits_for_refresh_before_transport_close(tmp_path, mo
         await provider.aclose()
 
     run(scenario())
+
+
+def test_factory_contributes_common_browser_inspector(store, monkeypatch):
+    inspection = object()
+    browser = SimpleNamespace(aclose=AsyncMock())
+    create = lambda **kwargs: browser if kwargs == {'inspection': inspection} else pytest.fail('wrong inspector')
+    monkeypatch.setattr(module, 'subscription_browser', create)
+    monkeypatch.setattr(module, 'connect_account', AsyncMock(return_value='new'))
+    async def scenario():
+        provider = module.factory({}, {'browser_inspection': inspection})
+        await setup(provider, interactive=True)
+        assert provider.inspection is inspection
+        await provider.aclose()
+        browser.aclose.assert_awaited_once()
+    run(scenario())

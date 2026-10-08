@@ -253,3 +253,20 @@ def test_foreign_base_and_provider_results_record_without_identity_collisions(tm
         assert str(tmp_path) not in json.dumps(rows)
         histories.append({row['fullName']: row['historyId'] for row in rows})
     assert histories[0] == histories[1]
+
+
+def test_debug_allows_explicit_noninteractive_integration_and_disables_parallel_workers(tmp_path):
+    context, test, config = fixture(tmp_path)
+    config.update(DEBUG=True, NO_STD_IN=True, TEST_PARALLEL_JOBS=8)
+    base_runner = fake_runner()
+    def runner(*args, **kwargs):
+        assert kwargs['parallel_jobs'] == 0
+        return base_runner(*args, **kwargs)
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+        no_std_in=True, storage=Storage(), runner=runner)
+    assert result.exit_code == 0 and result.persisted
+    for overrides in ({'TUI_MODE': 'e2e'}, {'COLLECT_ONLY': True}):
+        with pytest.raises(PermissionError):
+            recorded.validate_recorded_integration([test], config | overrides, accepted=True)
+    with pytest.raises(PermissionError):
+        recorded.validate_recorded_integration([test], config, accepted=False)
