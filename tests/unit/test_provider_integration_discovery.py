@@ -57,6 +57,22 @@ def test_empty_absent_and_invalid_selection(tmp_path):
         provider_integration_suites(ctx, {'LLM_PROVIDER': 'missing.py:create'})
 
 
+@pytest.mark.parametrize('ancestor', ['', 'tests'])
+def test_ancestor_package_initializer_escape_is_rejected_before_pytest(tmp_path, monkeypatch, ancestor):
+    selected = make_provider(tmp_path / 'provider')
+    marker = tmp_path / 'executed'
+    outside = tmp_path / 'outside.py'
+    outside.write_text(f'from pathlib import Path\nPath({str(marker)!r}).touch()\n')
+    (tmp_path / 'provider' / ancestor / '__init__.py').symlink_to(outside)
+    from unittest.mock import Mock
+    child = Mock(side_effect=AssertionError('pytest must not start'))
+    monkeypatch.setattr('api_agent.testing.collection.subprocess.Popen', child)
+    with pytest.raises(CollectionError, match='content escapes its root'):
+        collect_tests(context(tmp_path), 'integration', config={'LLM_PROVIDER': selected})
+    child.assert_not_called()
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize('target', ['manifest', 'suite'])
 def test_symlink_escape(tmp_path, target):
     selected = make_provider(tmp_path / 'provider')

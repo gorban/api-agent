@@ -1168,6 +1168,9 @@ class ApiAgentApp(App[int]):
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
             self.show_unit_results(self.unit_progress())
             active = dict(self.session.result().values)
+            from api_agent.testing.requirements import plan_integration_requirements
+            if plan_integration_requirements(self.selection.selected_tests).requires_pack_api and not self.check_operation_start():
+                return
             if not self.integration_unattended:
                 active['UNATTENDED_USER_INDEX'] = None
             recorded = await asyncio.to_thread(runner, self.context, self.selection.selected_tests,
@@ -1387,8 +1390,6 @@ class ApiAgentApp(App[int]):
                 else:
                     if key == 'start-unattended' and self.session.result().values.get('UNATTENDED_USER_INDEX') is None:
                         raise ValueError('Select UNATTENDED_USER_INDEX before unattended execution.')
-                    if not self.check_operation_start():
-                        return
                     self.integration_unattended = key == 'start-unattended'
                     self.operation_status = 3
                     self.test_run = TestRunLifecycle()

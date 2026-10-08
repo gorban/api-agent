@@ -381,3 +381,20 @@ def test_after_run_failure_emits_failed_finished_event(tmp_path):
     assert events[-1].kind == 'finished' and events[-1].status == 'failed'
     assert 'private storage key' not in result.output
     assert 'after_run callback failed; details withheld' in result.output
+
+
+def test_api_marker_survives_collection_and_blocks_runner_before_side_effects(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    base = fixture_repo(tmp_path / 'base', 'import pytest\n@pytest.mark.requires_pack_api\ndef test_api():\n    assert True\n')
+    ctx = context(base)
+    tests = collect_tests(ctx, 'integration')
+    assert 'requires_pack_api' in tests[0].tags
+    check = Mock(side_effect=ValueError('unavailable'))
+    monkeypatch.setattr('api_agent.auth.extensions.validate_operation', check)
+    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', lambda *a, **k: pytest.fail('started'))
+    monkeypatch.setattr('api_agent.testing.integration.collect_tests', lambda *a, **k: tests)
+    calls = []
+    result = run_integration_tests(ctx, tests, accepted=True, config={'TUI_MODE': 'integration'}, before_run=lambda: calls.append('before'))
+    assert result.exit_code != 0 and result.tests[0].status == 'error'
+    assert calls == []
+    check.assert_called_once_with(ctx, {'TUI_MODE': 'integration'})

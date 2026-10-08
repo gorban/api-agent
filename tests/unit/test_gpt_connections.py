@@ -491,3 +491,78 @@ def test_cleanup_fault_closes_directory(store, record, monkeypatch, rotation_fai
         assert len(tuple(store.root.glob('.*'))) == 1
     else:
         assert not tuple(store.root.glob('.*'))
+
+
+def test_reordered_scopes_preserve_valid_rotation(store, record):
+    original = replace(record, scopes=('one', 'two'))
+    key = store.save(original)
+    rotated = replace(original, scopes=('two', 'one'), access_token='next',
+                      refresh_token='rotated', expires_at=200)
+    async def refresh(value, now):
+        assert value == original and now == 50
+        return rotated
+    async def scenario():
+        session = SubscriptionSession(store, key, refresh, clock=lambda: 50)
+        try:
+            assert await session() == 'next'
+            assert store.load(key) == rotated
+        finally:
+            await session.aclose()
+    run(scenario())
+
+
+def test_serialized_reconnect_waits_for_refresh_and_wins(store, record):
+    key = store.save(record)
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        async def refresh(value, now):
+            started.set()
+            await release.wait()
+            return replace(value, access_token='refreshed', expires_at=200)
+        session = SubscriptionSession(store, key, refresh, clock=lambda: 50)
+        refreshing = asyncio.create_task(session())
+        await started.wait()
+        reconnect = asyncio.create_task(store.save_serialized(replace(record, access_token='reconnected')))
+        try:
+            # The refresh lock remains held, but unrelated event-loop work runs.
+            await asyncio.sleep(.03)
+            assert not reconnect.done()
+            assert store.load(key) == record
+            release.set()
+            assert await refreshing == 'refreshed'
+            assert await reconnect == key
+            assert store.load(key).access_token == 'reconnected'
+        finally:
+            release.set()
+            await asyncio.gather(refreshing, reconnect, return_exceptions=True)
+            await session.aclose()
+    run(scenario())
+
+
+@pytest.mark.parametrize('end', ['cancel', 'timeout'])
+def test_serialized_reconnect_wait_is_bounded_and_releases_lock(store, record, end):
+    key = store.save(record)
+    async def scenario():
+        with store.lock(key):
+            waiting = asyncio.create_task(store.save_serialized(replace(record, access_token='new')))
+            await asyncio.sleep(.02)
+            assert not waiting.done()
+            if end == 'cancel':
+                waiting.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiting
+            else:
+                with pytest.raises(TimeoutError):
+                    async with asyncio.timeout(.02):
+                        await waiting
+            assert store.load(key) == record
+        assert await store.save_serialized(replace(record, access_token='after')) == key
+        assert store.load(key).access_token == 'after'
+    run(scenario())
+
+
+def test_serialized_initial_save_and_host_mismatch(store, record):
+    assert run(store.save_serialized(record)) == store.profile_id(record)
+    with pytest.raises(AuthError, match='invalid_connection'):
+        run(store.save_serialized(replace(record, host_id='different-host')))
+    assert store.load(store.profile_id(record)) == record

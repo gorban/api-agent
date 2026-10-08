@@ -136,7 +136,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
                     connection = await finish_authorization(attempt, parameters, client=client, now=clock())
                     if profile is not None and store.profile_id(connection) != profile:
                         raise AuthError("account_mismatch")
-                    return store.save(connection)
+                    return await store.save_serialized(connection)
         except TimeoutError:
             raise AuthError("callback_timeout") from None
     finally:

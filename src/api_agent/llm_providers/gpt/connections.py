@@ -1,6 +1,6 @@
 """Private local credential persistence and serialized rotation."""
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager
 from dataclasses import asdict
 import fcntl
 import hashlib
@@ -180,6 +180,30 @@ class ConnectionStore:
             self._write(path, {"version": 1, "host_id": value})
             return value
 
+    @asynccontextmanager
+    async def async_lock(self, profile_id):
+        """Share the refresh lock without blocking the callback event loop."""
+        fd = self._open(self._path(profile_id).with_suffix('.lock'), os.O_RDWR | os.O_CREAT)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(.01)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    async def save_serialized(self, connection):
+        key = self.profile_id(connection)
+        async with self.async_lock(key):
+            path = self._path(key)
+            if (path.exists() or path.is_symlink()) and self.load(key).host_id != connection.host_id:
+                _fail()
+            return self.save(connection)
+
     def save(self, connection):
         key = self.profile_id(connection)
         data = asdict(connection)
@@ -240,7 +264,7 @@ class SubscriptionSession:
             if now < value.expires_at and (now < threshold or now < value.earliest_refresh_at):
                 return value.access_token
             updated = _validate(await self.refresh(value, now))
-            if (updated.subject, updated.client_id, updated.host_id, updated.scopes) != (value.subject, value.client_id, value.host_id, value.scopes) or updated.expires_at <= _number(self.clock()):
+            if (updated.subject, updated.client_id, updated.host_id) != (value.subject, value.client_id, value.host_id) or frozenset(updated.scopes) != frozenset(value.scopes) or updated.expires_at <= _number(self.clock()):
                 _fail()
             self.store.save(updated)
             return updated.access_token

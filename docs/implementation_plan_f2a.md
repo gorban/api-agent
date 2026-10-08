@@ -5,7 +5,7 @@ This is the first part of the [GPT provider](implementation_plan_f2.md). Connect
 ## Checklist
 
 - [x] Generate fresh state, nonce and PKCE for each loopback sign-in attempt. Validate the callback and issued client before exchanging a code; verify signed identity and granted plan permission before saving a connection.
-- [x] Store a stable per-installation host ID and separate protected account/client records. Preserve the previous connection on failed reconnect. Replace rotating credentials atomically and serialize refresh across processes.
+- [x] Store a stable per-installation host ID and separate protected account/client records. Preserve the previous connection on failed reconnect. Replace rotating credentials atomically and serialize refresh and reconnect writes across processes with the same profile lock; browser waiting stays outside that lock, and reconnect lock acquisition remains asynchronous and bounded. Treat scopes as a permission set while preserving identity/host/expiry validation.
 - [x] Provide a connection command that opens the system browser after starting its callback listener. Offer list and explicit reconnect without exposing tokens. Close listener/client resources on completion, failure, timeout and cancellation.
 - [x] Verify these boundaries with synthetic signed credentials and fake network/browser dependencies, including focused rejection mutations and exact unit coverage. Independent adversarial review precedes human sign-in acceptance.
 - [ ] Review and complete one actual sign-in with the user. Confirm the account and plan permission without making an inference call. Record actual eligibility and callback behavior separately from deterministic evidence.

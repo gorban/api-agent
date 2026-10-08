@@ -2,7 +2,7 @@
 import asyncio
 
 from .contracts import ContractError, SessionClosedError, StreamEvent
-from .control import OperationalError, CleanupPendingError
+from .control import OperationalError, CleanupPendingError, _cancel_once
 from .sessions import _drain, _spawn
 
 
@@ -70,8 +70,7 @@ class ManagedStream:
             raise
         except (asyncio.CancelledError, OperationalError, ContractError, SessionClosedError):
             if not self._next.done():
-                self._cancel_requested.add(self._next)
-                self._next.cancel()
+                _cancel_once(self._next, self._cancel_requested)
             raise
         except Exception:
             raise OperationalError("unknown", execution="possibly_executed") from None

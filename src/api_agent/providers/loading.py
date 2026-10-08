@@ -172,16 +172,20 @@ def provider_location(location, *, owner_root=None):
     return path, factory
 
 
-def contribution_schema(declaration, base_schema):
+def contribution_schema(declaration, base_schema, *, deferred=None):
     """Expose compatible provider defaults as effective pack declarations."""
     from api_agent.config.declarations import ConfigSchema, load_declarations, compose_schema
     contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default')
+    if deferred is not None:
+        deferred.extend(value for value in contributed.fields.values() if value.override_if_present)
+        contributed = ConfigSchema({name: value for name, value in contributed.fields.items()
+                                    if not value.override_if_present})
     fields = {name: replace(value, override=True) if name in base_schema.fields else value
               for name, value in contributed.fields.items()}
     return compose_schema(base_schema, ConfigSchema(fields))
 
 
-def provider_schema(location, base_schema, *, owner_root=None):
+def provider_schema(location, base_schema, *, owner_root=None, deferred=None):
     """Resolve contributed declarations before creating executable adapters."""
     path, _ = provider_location(location, owner_root=owner_root)
     declaration = path.parent / 'cfg/config.toml'
@@ -189,7 +193,7 @@ def provider_schema(location, base_schema, *, owner_root=None):
         return base_schema
     if not declaration.resolve().is_relative_to(path.parent):
         raise ProviderError('provider_configuration_escape')
-    return contribution_schema(declaration, base_schema)
+    return contribution_schema(declaration, base_schema, deferred=deferred)
 
 
 def release_modules(name):
@@ -336,10 +340,11 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
     from api_agent.config.options import parse_options
     from api_agent.config.declarations import UNSET
     schema = base_schema
+    deferred = []
     owners = {name: owner_root for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER')}
     for path in configuration_paths:
         previous = set(schema.fields)
-        schema = contribution_schema(path, schema)
+        schema = contribution_schema(path, schema, deferred=deferred)
         for name in set(schema.fields) - previous:
             if name.endswith('_PROVIDER'):
                 owners[name] = owner_root
@@ -369,7 +374,7 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
             paths.add((path, factory))
             processed[name] = selected
             previous = dict(schema.fields)
-            schema = provider_schema(str(path) + ':' + factory, schema)
+            schema = provider_schema(str(path) + ':' + factory, schema, deferred=deferred)
             for added, field in schema.fields.items():
                 if previous.get(added) == field:
                     continue
@@ -384,4 +389,14 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
             options = parse_options(schema, argv).values
             pending = True
         if not pending:
+            from api_agent.config.declarations import ConfigSchema, compose_schema
+            for declaration in deferred:
+                schema = compose_schema(schema, ConfigSchema({declaration.name: declaration}))
+            options = parse_options(schema, argv).values
+            for name, selected in processed.items():
+                effective = schema.fields[name].default
+                for values in (dotenv, environ, options, overrides or {}):
+                    effective = values.get(name, effective)
+                if effective != selected:
+                    raise ProviderError('provider_selection_cycle')
             return schema

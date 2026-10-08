@@ -19,6 +19,44 @@ def owner(**kwargs):
     return result, auth, driver
 
 
+def test_read_cancellation_during_close_retains_awaited_generator_disposal():
+    async def scenario():
+        started, cleaning, release, disposed = [asyncio.Event() for _ in range(4)]
+        async def events(**kwargs):
+            try:
+                started.set()
+                await asyncio.Event().wait()
+                yield StreamEvent(TextContent('unused'))
+            finally:
+                cleaning.set()
+                await release.wait()
+                disposed.set()
+        llm = LLMSessionOwner(SimpleNamespace(), timeout=.01)
+        cm = llm.stream(events)
+        stream = await cm.__aenter__()
+        read = asyncio.create_task(anext(stream))
+        await started.wait()
+        close = asyncio.create_task(stream.aclose())
+        try:
+            await cleaning.wait()
+            read.cancel()
+            await asyncio.gather(read, return_exceptions=True)
+            with pytest.raises(CleanupPendingError) as pending:
+                await close
+            assert stream._next.cancelling() == 1
+            assert not disposed.is_set() and stream in llm._streams
+            assert not stream._next.done()
+            release.set()
+            await pending.value.retry()
+            assert disposed.is_set() and stream not in llm._streams
+        finally:
+            release.set()
+            await asyncio.gather(read, close, return_exceptions=True)
+            await cm.__aexit__(None, None, None)
+            await llm.aclose()
+    run(scenario())
+
+
 def test_stream_exhaustion_early_close_async_factory_and_terminal_once():
     async def scenario():
         llm, auth, driver = owner(finalizer=AsyncMock())

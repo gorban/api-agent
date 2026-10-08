@@ -110,3 +110,44 @@ def test_unloading_last_review_field_returns_to_menu(tmp_path):
             assert not app.configuration_pending()
             assert 'FIRST_REQUIRED' not in app.schema.fields
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('selector', ['LLM_PROVIDER', 'ACCESS_PROVIDER'])
+@pytest.mark.parametrize('source', ['defaults', 'dotenv', 'environment', 'cli'])
+def test_optional_override_waits_for_full_selected_graph(tmp_path, selector, source):
+    ui = adapter(tmp_path, 'ui', 'IGNORED', 1)
+    (tmp_path / 'ui/cfg/config.toml').write_text('version=1\n[fields.CALLBACK]\ntype="str"\noverride=true\noverride_if_present=true\ndefault="pack-origin"\n')
+    target = adapter(tmp_path, 'target', 'IGNORED', 2)
+    (tmp_path / 'target/cfg/config.toml').write_text('version=1\n[fields.CALLBACK]\ntype="str"\ndefault="provider-origin"\n')
+    base = schema_from_dict({'version': 1, 'fields': {
+        'UI_PROVIDER': {'type': 'str', 'default': ui}, selector: {'type': 'str', 'default': target}}})
+    args = ['--callback=cli-origin'] if source == 'cli' else []
+    env = {'CALLBACK': 'environment-origin'} if source == 'environment' else {}
+    dotenv = {'CALLBACK': 'dotenv-origin'} if source == 'dotenv' else {}
+    schema = bootstrap_schema(base, args, env, dotenv)
+    assert schema.fields['CALLBACK'].default == 'pack-origin'
+    from api_agent.config import resolve_config
+    resolved = resolve_config(schema, argv=args, environ=env, dotenv=dotenv)
+    assert resolved.values['CALLBACK'] == ('pack-origin' if source == 'defaults' else source + '-origin')
+
+
+def test_optional_override_rejects_late_incompatible_target(tmp_path):
+    ui = adapter(tmp_path, 'ui', 'IGNORED', 1)
+    (tmp_path / 'ui/cfg/config.toml').write_text('version=1\n[fields.CALLBACK]\ntype="str"\noverride=true\noverride_if_present=true\ndefault="pack-origin"\n')
+    access = adapter(tmp_path, 'access', 'IGNORED', 2)
+    (tmp_path / 'access/cfg/config.toml').write_text('version=1\n[fields.CALLBACK]\ntype="int"\ndefault=2\n')
+    base = schema_from_dict({'version': 1, 'fields': {
+        'UI_PROVIDER': {'type': 'str', 'default': ui}, 'ACCESS_PROVIDER': {'type': 'str', 'default': access}}})
+    with pytest.raises(ValueError, match='preserve the shared type'):
+        bootstrap_schema(base, [], {}, {})
+
+
+def test_deferred_override_cannot_silently_change_already_loaded_selector(tmp_path):
+    ui = adapter(tmp_path, 'ui', 'IGNORED', 1)
+    (tmp_path / 'ui/cfg/config.toml').write_text('version=1\n[fields.ACCESS_PROVIDER]\ntype="str"\noverride=true\noverride_if_present=true\ndefault=""\n')
+    access = adapter(tmp_path, 'access', 'IGNORED', 2)
+    base = schema_from_dict({'version': 1, 'fields': {
+        'UI_PROVIDER': {'type': 'str', 'default': ui}, 'ACCESS_PROVIDER': {'type': 'str', 'default': access}}})
+    from api_agent.providers.loading import ProviderError
+    with pytest.raises(ProviderError, match='provider_selection_cycle'):
+        bootstrap_schema(base, [], {}, {})
