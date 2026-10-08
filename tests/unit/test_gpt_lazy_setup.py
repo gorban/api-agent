@@ -242,6 +242,7 @@ def test_username_cli_failure_falls_back_only_with_attended_permission(store, mo
 @pytest.mark.parametrize('code,expected', [
     ('browser_closed', 'browser closed'), ('browser_unavailable', 'could not open'),
     ('callback_timeout', 'timed out'), ('username_submission_failed', 'submit the configured username'),
+    ('login_interaction_required', 'needs browser interaction'),
     ('account_mismatch', 'different account'), ('private upstream text', 'retry authentication'),
 ])
 def test_browser_auth_failure_crosses_provider_boundary_safely(store, monkeypatch, code, expected):
@@ -355,3 +356,65 @@ def test_factory_contributes_common_browser_inspector(store, monkeypatch):
         await provider.aclose()
         browser.aclose.assert_awaited_once()
     run(scenario())
+
+
+@pytest.mark.parametrize('retry_failure', [False, True])
+def test_headless_blocker_hands_off_once_to_headed_with_same_expected_account(store, monkeypatch, capsys, retry_failure):
+    from api_agent.llm_providers.gpt.contracts import AuthError
+    created = []
+    def create(**kwargs):
+        browser = SimpleNamespace(aclose=AsyncMock())
+        created.append((kwargs, browser))
+        return browser
+    monkeypatch.setattr(module, 'subscription_browser', create)
+    connect = AsyncMock(side_effect=[AuthError('login_interaction_required'),
+                        AuthError('account_mismatch') if retry_failure else 'new'])
+    monkeypatch.setattr(module, 'connect_account', connect)
+    async def scenario():
+        provider = module.factory({'NO_STD_IN': False, 'RUN_UI': False}, None)
+        reader = AsyncMock(return_value='person@example.test')
+        try:
+            if retry_failure:
+                with pytest.raises(InteractionRequiredError, match='different account'):
+                    await provider.asetup(interactive=False, user_index=0, credentials=reader)
+                assert not provider.sessions
+            else:
+                session = await provider.asetup(interactive=False, user_index=0, credentials=reader)
+                assert session.profile_id == 'new'
+            assert [options for options, _ in created] == [{'headless': True}, {}]
+            assert connect.await_count == 2
+            first, retry = connect.await_args_list
+            assert first.kwargs['allow_interaction'] is False
+            assert retry.kwargs['allow_interaction'] is True
+            assert first.kwargs['login_username'] == retry.kwargs['login_username'] == 'person@example.test'
+            reader.assert_awaited_once_with(0, 'username')
+        finally:
+            await provider.aclose()
+        for _, browser in created:
+            browser.aclose.assert_awaited_once()
+    run(scenario())
+    assert capsys.readouterr().out.count('Opening visible Chromium') == 1
+
+
+def test_headless_blocker_never_opens_an_interactive_fallback_without_permission(store, monkeypatch, capsys):
+    from api_agent.llm_providers.gpt.contracts import AuthError
+    browser = SimpleNamespace(aclose=AsyncMock())
+    # A synchronous browser factory must be called only once.
+    from unittest.mock import Mock
+    create = Mock(return_value=browser)
+    monkeypatch.setattr(module, 'subscription_browser', create)
+    connect = AsyncMock(side_effect=AuthError('login_interaction_required'))
+    monkeypatch.setattr(module, 'connect_account', connect)
+    async def scenario():
+        provider = module.factory({'NO_STD_IN': True, 'RUN_UI': False}, None)
+        try:
+            with pytest.raises(InteractionRequiredError, match='needs browser interaction'):
+                await provider.asetup(interactive=False, user_index=0,
+                                      credentials=AsyncMock(return_value='person@example.test'))
+            create.assert_called_once_with(headless=True)
+            connect.assert_awaited_once()
+            assert not provider.sessions
+        finally:
+            await provider.aclose()
+    run(scenario())
+    assert not capsys.readouterr().out

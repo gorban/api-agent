@@ -46,6 +46,18 @@ class GPTProvider:
         self.browsers = []
         self.closed = False
 
+    @staticmethod
+    def _login_error(error):
+        message = {
+            'browser_closed': 'GPT login browser closed before authentication completed.',
+            'browser_unavailable': 'GPT login browser could not open or navigate.',
+            'callback_timeout': 'GPT sign-in timed out before authentication completed.',
+            'username_submission_failed': 'GPT could not submit the configured username on the login page.',
+            'login_interaction_required': 'GPT login needs browser interaction; start attended or show the browser with RUN_UI=True or DEBUG.',
+            'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
+        }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
+        return InteractionRequiredError(message)
+
     async def asetup(self, *, interactive, user_index, credentials):
         if self.closed:
             raise ContractError("GPT provider is closed.")
@@ -89,18 +101,25 @@ class GPTProvider:
                 browser_options['headless'] = not (self.run_ui or self.inspection is not None)
             browser = subscription_browser(**browser_options)
             self.browsers.append(browser)
-            login_options = {'login_username': username} if username is not None else {}
+            login_options = ({'login_username': username,
+                              'allow_interaction': not browser_options.get('headless', False)}
+                             if username is not None else {})
             try:
                 profile = await connect_account(store, browser_owner=browser, app_name=self.app_name, **login_options)
             except AuthError as error:
-                message = {
-                    'browser_closed': 'GPT login browser closed before authentication completed.',
-                    'browser_unavailable': 'GPT login browser could not open or navigate.',
-                    'callback_timeout': 'GPT sign-in timed out before authentication completed.',
-                    'username_submission_failed': 'GPT could not submit the configured username on the login page.',
-                    'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
-                }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
-                raise InteractionRequiredError(message) from None
+                if (str(error) == 'login_interaction_required' and browser_options.get('headless')
+                        and (interactive or self.attended_fallback)):
+                    print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
+                    visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
+                    visible = subscription_browser(**visible_options)
+                    self.browsers.append(visible)
+                    try:
+                        profile = await connect_account(store, browser_owner=visible, app_name=self.app_name,
+                                                        login_username=username, allow_interaction=True)
+                    except AuthError as retry_error:
+                        raise self._login_error(retry_error) from None
+                else:
+                    raise self._login_error(error) from None
         else:
             raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
         session = OwnedSubscriptionSession(store, profile)

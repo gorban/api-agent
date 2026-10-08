@@ -98,22 +98,57 @@ class CallbackListener:
             self.tasks.discard(task)
 
 
-async def submit_login_username(page, username):
-    """Submit only the observed email step, without logging credential values."""
+class LoginPageGuard:
+    """Report observed login blockers without reading page text or credentials."""
+    def __init__(self, page, *, allow_interaction):
+        self.page = page
+        self.allow_interaction = allow_interaction
+        self.notified = False
+
+    async def check(self):
+        blocked = self.page.get_by_role('heading', name=re.compile(
+            r'^(Oops, an error occurred!|Performing security verification)$')).first
+        try:
+            visible = await blocked.is_visible()
+        except Exception:
+            code = 'browser_closed' if self.page.is_closed() else 'browser_unavailable'
+            raise AuthError(code) from None
+        if visible:
+            if not self.allow_interaction:
+                raise AuthError('login_interaction_required')
+            if not self.notified:
+                print('GPT login shows an error or security-verification page. Retry or complete sign-in in the visible browser.', flush=True)
+                self.notified = True
+
+
+async def submit_login_username(session, username, *, guard):
+    """Own submission while monitoring visible blockers and browser closure."""
+    async def submit():
+        await session.page.get_by_role("textbox", name="Email address", exact=True).fill(username, timeout=0)
+        await session.page.get_by_role("button", name="Continue", exact=True).click(timeout=0)
+    task = asyncio.create_task(submit())
     try:
-        await page.get_by_role("textbox", name="Email address", exact=True).fill(username)
-        await page.get_by_role("button", name="Continue", exact=True).click()
-    except asyncio.CancelledError:
+        await wait_browser_result(task, session, on_wait=guard.check)
+    except (asyncio.CancelledError, AuthError):
         raise
+    except SessionClosedError:
+        raise AuthError('browser_closed') from None
     except Exception:
         raise AuthError("username_submission_failed") from None
+    finally:
+        task.cancel()
+        async def drain():
+            await asyncio.gather(task, return_exceptions=True)
+        await _dispose(drain())
 
 
 async def connect_account(store, *, registration=None, open_browser=None,
                           client=None, timeout=180, clock=time.time, profile=None, browser_owner=None,
-                          app_name="api-agent", login_username=None):
+                          app_name="api-agent", login_username=None, allow_interaction=True):
     """Persist only a fully verified connection; clean up on every exit."""
     from .oauth import begin_authorization, finish_authorization
+    if type(allow_interaction) is not bool:
+        raise AuthError('invalid_interaction_policy')
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 600 or not math.isfinite(timeout):
         raise AuthError("invalid_timeout")
     if login_username is not None:
@@ -132,6 +167,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
                                                   registration=registration, app_name=app_name)
                     listener.expected_state = attempt.state
                     session = None
+                    guard = None
                     if open_browser is None:
                         if browser_owner is None:
                             from .browser import subscription_browser
@@ -144,14 +180,16 @@ async def connect_account(store, *, registration=None, open_browser=None,
                         except Exception:
                             raise AuthError("browser_unavailable") from None
                         if login_username is not None:
-                            await submit_login_username(session.page, login_username)
+                            guard = LoginPageGuard(session.page, allow_interaction=allow_interaction)
+                            await submit_login_username(session, login_username, guard=guard)
                     elif not open_browser(attempt.authorization_url):
                         raise AuthError("browser_unavailable")
                     if session is None:
                         parameters = await listener.result
                     else:
                         try:
-                            parameters = await wait_browser_result(listener.result, session)
+                            parameters = await wait_browser_result(listener.result, session,
+                                on_wait=guard.check if guard is not None else None)
                         except SessionClosedError:
                             raise AuthError("browser_closed") from None
                     connection = await finish_authorization(attempt, parameters, client=client, now=clock())
