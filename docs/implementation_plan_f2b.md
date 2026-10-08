@@ -4,6 +4,7 @@ Normal user operations run through launch.py. No separate connection command is 
 
 ## Checklist
 
+- [x] Use the shared runtime managed_browser factory for real Playwright sessions. Apply pinned Playwright Stealth during driver setup before launch, so every context/page receives the same launch, header and initialization policy. GPT delegates to that factory; browser/dev dependency groups install it automatically. Preserve lazy acquisition, visibility, inspection retention and cancellation-safe cleanup, including failure during Stealth initialization. Remaining UI/E2E/local-run browser wiring must use the same factory.
 - [x] Add the optional async provider `asetup` contract and lazy session-owner integration for attended and unattended setup. Preserve opaque tokens, coalesced initialization, deadlines and retained cleanup ownership. Validate hooks before execution.
 - [x] Load the bundled GPT authentication-only factory through normal configuration contributions and overrides. Declare subscription settings adjacent to the provider; attended subscription requires no password-manager role; unattended setup requires the selected LLM role and shared manager. Keep unsupported inference/API-key capabilities explicit.
 - [x] Add a shared `test_llm_setup` integration using `llm_provider.ensure_ready()`. Requesting the fixture is inert; its first setup request resolves the selected provider and invokes the common contract. Each worker owns its loop and auth resources until teardown.

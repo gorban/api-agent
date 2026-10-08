@@ -11,20 +11,8 @@ import httpx
 
 from api_agent.providers.contracts import SessionClosedError
 from api_agent.providers.sessions import wait_browser_result
+from api_agent.runtime.managed_browser import _dispose
 from .contracts import AuthError
-
-
-async def _dispose(awaitable):
-    task = asyncio.create_task(awaitable)
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        raise asyncio.CancelledError
-    return task.result()
 
 
 class CallbackListener:

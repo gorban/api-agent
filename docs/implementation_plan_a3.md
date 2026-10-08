@@ -2,6 +2,8 @@
 
 ## Checklist
 
+- [ ] Use api_agent.runtime.managed_browser.managed_browser for E2E and local-run UI browser allocation, with the shared Stealth setup enabled before any context/page or navigation. Preserve the existing attempt isolation, resolution, headed/headless and inspection/retention requirements; do not introduce a separate browser-launch policy in these runners or provider adapters.
+
 - [ ] Run every E2E test through Playwright against the actual UI, including the initial "Ok" test. API-only behavior checks belong in integration tests, not as substitutes for UI E2E execution. Preserve the interactive test picker, explicit Continue, and E2E human-acceptance requirements; headless browser operation does not mean unattended TUI execution.
 - [ ] Capture both `response_text` and `response_html` when present, including responses containing both, and attach their original values and rendered evidence to Allure under the test/attempt identity. Capture relevant conversation rounds, not only the final response, so clarification and approval flows can be reviewed.
   - [ ] Before taking rendered-response screenshots, use the agent modal's maximize control and scroll the conversation/response content to the top. Account for independently scrollable HTML frames/containers. Wait for rendering/layout to settle before capture; the initial image must not start at the bottom and cut off the answer.
