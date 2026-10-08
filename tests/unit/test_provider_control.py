@@ -206,17 +206,22 @@ def test_canonical_classifications_and_cleanup_budgets():
 def test_cleanup_does_not_interrupt_awaited_finally():
     async def scenario():
         release = asyncio.Event()
+        started = asyncio.Event()
         cleaning = asyncio.Event()
         closed = asyncio.Event()
         async def child():
             try:
+                started.set()
                 await asyncio.Future()
             finally:
                 cleaning.set()
                 await release.wait()
                 closed.set()
-        context = OperationContext('id', time.monotonic() + .001)
         task = asyncio.create_task(child())
+        # Cancellation before the first step cannot run the child's finally.
+        # Establish that step independently of wall-clock scheduling/load.
+        await started.wait()
+        context = OperationContext('id', time.monotonic() + .001)
         with pytest.raises(OperationalError):
             await context.run(task)
         await cleaning.wait()
@@ -231,10 +236,11 @@ def test_cleanup_does_not_interrupt_awaited_finally():
         assert closed.is_set() and not context.retained_tasks
         # Respect a cancellation already requested by an outside owner, too.
         release.clear()
+        started.clear()
         cleaning.clear()
         closed.clear()
         task = asyncio.create_task(child())
-        await asyncio.sleep(0)
+        await started.wait()
         task.cancel()
         await cleaning.wait()
         context = OperationContext('id', 0)
