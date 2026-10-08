@@ -12,12 +12,8 @@ enum = ["responses", "completions"]
 conditional_defaults = [{when = {GPT_AUTH_MODE = "subscription"}, value = "responses"}, {when = {GPT_AUTH_MODE = "api_key"}, value = "completions"}]
 help = "Subscription authentication requires responses mode."
 
-[fields.GPT_PROFILE]
-type = "str"
-default = ""
-help = "Saved GPT profile identifier. Empty selects only a single saved connection; multiple profiles require explicit selection."
-
 [fields.GPT_STATE_DIR]
+acknowledge_default = false
 type = "path"
 anchor = "owner_root"
 allow_empty = true
@@ -27,12 +23,13 @@ help = "Protected GPT connection directory. Empty uses ~/.config/api-agent/gpt; 
 [fields.LLM_CREDENTIAL_ROLE]
 type = "str"
 acknowledge_default = false
-default = ""
+default = "LLM User"
+credential_role_optional = true
 conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key"}, value = "GPT API Key"}]
-help = "Subscription setup uses provider-owned saved connections; the pending API-key route has its own credential role."
+help = "Optional subscription login descriptor for matching a cached OAuth account by its vault username. Attended subscription login needs no descriptor. The pending API-key route uses the entry password as its key."
 
 [fields.UNATTENDED_USER_INDEX]
 type = "int"
 validation = "nonnegative"
 acknowledge_default = false
-help = "Enable the unattended integration start option for the selected account pair. GPT subscription identity is selected separately by GPT_PROFILE; this index never silently chooses a different saved subscription."
+help = "Enable the unattended integration start option for the selected account pair. For GPT subscription reuse, a configured login username selects the matching cached OAuth account. Without a descriptor, only an unambiguous cached account can be reused."
