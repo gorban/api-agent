@@ -351,11 +351,17 @@ def test_username_submission_and_verified_account_binding(lane, outcome):
         urls = []
         async def goto(url, **kwargs):
             urls.append(url)
-        async def click():
+        async def click(**kwargs):
+            assert kwargs == {'timeout': 0}
             assert b'200 OK' in await request(urls[0])
         button = SimpleNamespace(click=AsyncMock(side_effect=click))
-        page = SimpleNamespace(goto=goto, get_by_role=Mock(side_effect=[field, button]))
-        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page)), aclose=AsyncMock())
+        blocked = SimpleNamespace(is_visible=AsyncMock(return_value=False))
+        blocked.first = blocked
+        def locator(role, **kwargs):
+            return blocked if role == 'heading' else field if role == 'textbox' else button
+        page = SimpleNamespace(goto=goto, get_by_role=Mock(side_effect=locator), is_closed=lambda: False)
+        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page,
+                                browser=SimpleNamespace(is_connected=lambda: True))), aclose=AsyncMock())
         email = 'different@example.test' if outcome == 'wrong_account' else 'PERSON@example.test'
         lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email=email))
         if outcome == 'field_error':
@@ -373,11 +379,12 @@ def test_username_submission_and_verified_account_binding(lane, outcome):
             with pytest.raises(error, match=None if outcome == 'cancel' else '^' + code + '$'):
                 await c.connect_account(store, **options)
             assert not store.saved
-        field.fill.assert_awaited_once_with('person@example.test')
-        assert page.get_by_role.call_args_list[0].args == ('textbox',)
-        assert page.get_by_role.call_args_list[0].kwargs == {'name': 'Email address', 'exact': True}
+        field.fill.assert_awaited_once_with('person@example.test', timeout=0)
+        textbox_call = next(call for call in page.get_by_role.call_args_list if call.args == ('textbox',))
+        assert textbox_call.kwargs == {'name': 'Email address', 'exact': True}
         if outcome in {'success', 'wrong_account'}:
-            assert page.get_by_role.call_args_list[1].kwargs == {'name': 'Continue', 'exact': True}
+            button_call = next(call for call in page.get_by_role.call_args_list if call.args == ('button',))
+            assert button_call.kwargs == {'name': 'Continue', 'exact': True}
             button.click.assert_awaited_once()
             lane.finish_authorization.assert_awaited_once()
         else:
@@ -518,4 +525,159 @@ def test_real_connect_serializes_with_active_refresh(lane, tmp_path, outcome):
             release.set()
             await asyncio.gather(refreshing, reconnect, *requests, return_exceptions=True)
             await session.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('interactive', [False, True])
+def test_observed_login_blocker_requires_human_without_logging_page_contents(interactive, capsys):
+    from unittest.mock import AsyncMock, Mock
+    blocked = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+    blocked.first = blocked
+    page = SimpleNamespace(get_by_role=Mock(return_value=blocked))
+    guard = c.LoginPageGuard(page, allow_interaction=interactive)
+    if interactive:
+        asyncio.run(guard.check())
+        asyncio.run(guard.check())
+        assert guard.notified
+        assert capsys.readouterr().out.count('visible browser') == 1
+    else:
+        with pytest.raises(c.AuthError, match='^login_interaction_required$'):
+            asyncio.run(guard.check())
+        assert not capsys.readouterr().out
+    call = page.get_by_role.call_args
+    assert call.args == ('heading',)
+    assert call.kwargs['name'].fullmatch('Oops, an error occurred!')
+    assert call.kwargs['name'].fullmatch('Performing security verification')
+    assert not call.kwargs['name'].fullmatch('Welcome back')
+
+
+@pytest.mark.parametrize('closed', [False, True])
+def test_login_guard_disconnect_is_safe(closed):
+    from unittest.mock import AsyncMock, Mock
+    blocked = SimpleNamespace(is_visible=AsyncMock(side_effect=RuntimeError('private page text')))
+    blocked.first = blocked
+    page = SimpleNamespace(get_by_role=Mock(return_value=blocked), is_closed=lambda: closed)
+    guard = c.LoginPageGuard(page, allow_interaction=True)
+    with pytest.raises(c.AuthError, match='^' + ('browser_closed' if closed else 'browser_unavailable') + '$'):
+        asyncio.run(guard.check())
+
+
+@pytest.mark.parametrize('value', [None, 1, 'True'])
+def test_invalid_interaction_policy_allocates_nothing(value, monkeypatch):
+    monkeypatch.setattr(c.httpx, 'AsyncClient', lambda: pytest.fail('transport allocated'))
+    with pytest.raises(c.AuthError, match='^invalid_interaction_policy$'):
+        asyncio.run(c.connect_account(Store(), allow_interaction=value))
+
+
+@pytest.mark.parametrize('closed', ['page', 'browser'])
+def test_username_pending_browser_closure_cancels_submission(closed):
+    from unittest.mock import AsyncMock, Mock
+    async def scenario():
+        started, stopped = asyncio.Event(), asyncio.Event()
+        state = {'page': False, 'browser': False}
+        async def fill(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+        field = SimpleNamespace(fill=AsyncMock(side_effect=fill))
+        page = SimpleNamespace(get_by_role=Mock(return_value=field), is_closed=lambda: state['page'])
+        session = SimpleNamespace(page=page, browser=SimpleNamespace(is_connected=lambda: not state['browser']))
+        task = asyncio.create_task(c.submit_login_username(session, 'person@example.test',
+                                  guard=SimpleNamespace(check=AsyncMock())))
+        await started.wait()
+        state[closed] = True
+        with pytest.raises(c.AuthError, match='^browser_closed$'):
+            await asyncio.wait_for(task, .5)
+        assert stopped.is_set()
+        assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+    asyncio.run(scenario())
+
+
+def test_headed_verification_resolution_resumes_owned_username_submission(capsys):
+    from unittest.mock import AsyncMock, Mock
+    async def scenario():
+        resolved, started = asyncio.Event(), asyncio.Event()
+        state = {'blocked': True}
+        async def fill(value, **kwargs):
+            started.set()
+            await resolved.wait()
+            assert value == 'person@example.test'
+            assert kwargs == {'timeout': 0}
+        field = SimpleNamespace(fill=AsyncMock(side_effect=fill))
+        button = SimpleNamespace(click=AsyncMock())
+        blocked = SimpleNamespace(is_visible=AsyncMock(side_effect=lambda: state['blocked']))
+        blocked.first = blocked
+        page = SimpleNamespace(get_by_role=Mock(side_effect=lambda role, **kwargs:
+                               blocked if role == 'heading' else field if role == 'textbox' else button),
+                               is_closed=lambda: False)
+        session = SimpleNamespace(page=page, browser=SimpleNamespace(is_connected=lambda: True))
+        guard = c.LoginPageGuard(page, allow_interaction=True)
+        task = asyncio.create_task(c.submit_login_username(session, 'person@example.test', guard=guard))
+        await started.wait()
+        assert not task.done()
+        state['blocked'] = False
+        resolved.set()
+        await asyncio.wait_for(task, .5)
+        button.click.assert_awaited_once_with(timeout=0)
+        assert guard.notified
+    asyncio.run(scenario())
+    assert capsys.readouterr().out.count('visible browser') == 1
+
+
+@pytest.mark.parametrize('stage', ['before_email', 'after_continue'])
+def test_headless_blocked_flow_fails_before_token_exchange_and_drains_all_work(lane, stage):
+    from unittest.mock import AsyncMock, Mock
+    async def scenario():
+        state = {'blocked': stage == 'before_email'}
+        field = SimpleNamespace(fill=AsyncMock())
+        async def click(**kwargs):
+            state['blocked'] = True
+        button = SimpleNamespace(click=AsyncMock(side_effect=click))
+        blocked = SimpleNamespace(is_visible=AsyncMock(side_effect=lambda: state['blocked']))
+        blocked.first = blocked
+        page = SimpleNamespace(goto=AsyncMock(), is_closed=lambda: False,
+            get_by_role=Mock(side_effect=lambda role, **kwargs:
+                blocked if role == 'heading' else field if role == 'textbox' else button))
+        session = SimpleNamespace(page=page, browser=SimpleNamespace(is_connected=lambda: True))
+        owner = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
+        store = Store()
+        lane.finish_authorization = AsyncMock()
+        with pytest.raises(c.AuthError, match='^login_interaction_required$'):
+            await asyncio.wait_for(c.connect_account(store, client=object(), browser_owner=owner,
+                login_username='person@example.test', allow_interaction=False), 1)
+        lane.finish_authorization.assert_not_awaited()
+        assert not store.saved
+        owner.aclose.assert_awaited_once()
+        if stage == 'before_email':
+            field.fill.assert_not_awaited()
+            button.click.assert_not_awaited()
+        else:
+            field.fill.assert_awaited_once_with('person@example.test', timeout=0)
+            button.click.assert_awaited_once_with(timeout=0)
+        assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('outcome', ['completed', 'pending', 'cancelled'])
+def test_browser_guard_cannot_overturn_completed_callback_but_preserves_cancellation(outcome):
+    from api_agent.providers.sessions import wait_browser_result
+    async def scenario():
+        result = asyncio.get_running_loop().create_future()
+        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: False),
+                                  browser=SimpleNamespace(is_connected=lambda: True))
+        async def guard():
+            if outcome != 'pending':
+                result.set_result('accepted')
+            if outcome == 'cancelled':
+                raise asyncio.CancelledError()
+            raise c.AuthError('login_interaction_required')
+        if outcome == 'completed':
+            assert await wait_browser_result(result, session, on_wait=guard) == 'accepted'
+        else:
+            error = asyncio.CancelledError if outcome == 'cancelled' else c.AuthError
+            with pytest.raises(error):
+                await wait_browser_result(result, session, on_wait=guard)
+        result.cancel()
     asyncio.run(scenario())
