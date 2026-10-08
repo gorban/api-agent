@@ -70,6 +70,7 @@ class Store:
     def save(self, connection):
         self.saved.append(connection)
         return 'account'
+    async def save_serialized(self, connection): return self.save(connection)
     def list(self): return (self.load('account'),)
 
 
@@ -317,3 +318,57 @@ def test_repeated_cancel_disposal():
             await task
         assert release.is_set()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('outcome', ['complete', 'cancel', 'timeout'])
+def test_real_connect_serializes_with_active_refresh(lane, tmp_path, outcome):
+    from dataclasses import replace
+    from api_agent.llm_providers.gpt.connections import ConnectionStore, SubscriptionSession
+    from api_agent.llm_providers.gpt.contracts import Connection
+    store = ConnectionStore(tmp_path / 'private')
+    record = Connection('subject', 'client', store.host_id(), '', 'old', 'refresh', 'id', ('one',), 100)
+    key = store.save(record)
+    async def scenario():
+        started, release, authorized = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        requests = []
+        async def refresh(value, now):
+            started.set()
+            await release.wait()
+            return replace(value, access_token='refreshed', expires_at=200)
+        async def finish(*args, **kwargs):
+            authorized.set()
+            return replace(record, access_token='reconnected', expires_at=300)
+        lane.finish_authorization = finish
+        def browser(uri):
+            requests.append(asyncio.create_task(request(uri)))
+            return True
+        session = SubscriptionSession(store, key, refresh, clock=lambda: 50)
+        refreshing = asyncio.create_task(session())
+        await started.wait()
+        reconnect = asyncio.create_task(c.connect_account(store, open_browser=browser,
+                                                          profile=key, client=object(), timeout=1))
+        try:
+            await authorized.wait()
+            await asyncio.sleep(.03)
+            assert not reconnect.done()
+            if outcome == 'cancel':
+                reconnect.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await reconnect
+            elif outcome == 'timeout':
+                with pytest.raises(c.AuthError, match='callback_timeout'):
+                    await reconnect
+            release.set()
+            assert await refreshing == 'refreshed'
+            if outcome == 'complete':
+                assert await reconnect == key
+                assert store.load(key).access_token == 'reconnected'
+            else:
+                assert store.load(key).access_token == 'refreshed'
+            # A canceled/timed-out waiter cannot retain the profile lock.
+            assert await store.save_serialized(replace(record, access_token='after')) == key
+        finally:
+            release.set()
+            await asyncio.gather(refreshing, reconnect, *requests, return_exceptions=True)
+            await session.aclose()
+    asyncio.run(scenario())

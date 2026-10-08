@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from .contracts import BrowserSession, ContractError, SessionClosedError, LLMCredentialReader
-from .control import OperationalError, OperationContext, CleanupPendingError
+from .control import OperationalError, OperationContext, CleanupPendingError, _cancel_once
 
 
 class ScopedRoleCredentials:
@@ -77,10 +77,7 @@ async def _drain(tasks: Iterable[asyncio.Future], timeout: float,
     pending = {task for task in tasks if not task.done()}
     if pending:
         for task in pending:
-            if task not in cancel_requested:
-                cancel_requested.add(task)
-                if not isinstance(task, asyncio.Task) or not task.cancelling():
-                    task.cancel()
+            _cancel_once(task, cancel_requested)
         _, surviving = await asyncio.wait(pending, timeout=timeout)
         surviving = {task for task in surviving if active is None or active(task)}
         if surviving:

@@ -6,6 +6,12 @@ from textual.widgets import DataTable
 class TestTable(DataTable):
     __test__ = False
     BINDINGS = [
+        Binding('pageup', "move_plain('page_up')", show=False),
+        Binding('pagedown', "move_plain('page_down')", show=False),
+        Binding('ctrl+home', "move_plain('scroll_top')", show=False),
+        Binding('ctrl+end', "move_plain('scroll_bottom')", show=False),
+        Binding('home', "move_plain('scroll_home')", show=False),
+        Binding('end', "move_plain('scroll_end')", show=False),
         Binding('shift+up', 'extend_range(-1)', show=False),
         Binding('shift+down', 'extend_range(1)', show=False),
         Binding('shift+pageup', 'extend_page(-1)', show=False),
@@ -69,6 +75,17 @@ class TestTable(DataTable):
     def reset_moved_range(self):
         if self.range_end is not None and self.cursor_row != self.range_end:
             self.action_clear_range()
+
+    def action_cursor_up(self):
+        self.action_move_plain("cursor_up")
+
+    def action_cursor_down(self):
+        self.action_move_plain("cursor_down")
+
+    def action_move_plain(self, action):
+        # Bind before DataTable consumes the key, including clamped movement.
+        self.action_clear_range()
+        getattr(super(), 'action_' + action)()
 
     def clear(self, columns=False):
         self.action_clear_range()

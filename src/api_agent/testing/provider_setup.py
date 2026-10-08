@@ -179,3 +179,7 @@ class IntegrationRequirements:
 def integration_config():
     """Require only settings used by this test, not unrelated suite settings."""
     return IntegrationRequirements(_read_snapshot()['config'])
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")

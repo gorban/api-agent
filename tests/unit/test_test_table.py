@@ -152,6 +152,10 @@ def test_range_rendering_clear_and_empty_table(tmp_path):
             style0 = next(segment.style for segment in table.render_line(1) if 'PASSED' in segment.text)
             style1 = next(segment.style for segment in table.render_line(2) if 'PASSED' in segment.text)
             assert style0.bgcolor == style1.bgcolor
+            # Mouse/programmatic cursor changes also clear a stale range.
+            table.move_cursor(row=7)
+            await pilot.pause()
+            assert table.range_anchor is None and table.selected_row_indices == (7,)
             table.clear()
             assert table.range_anchor is None and table.selected_row_indices == ()
             assert table.selected_row_keys == ()
@@ -161,4 +165,32 @@ def test_range_rendering_clear_and_empty_table(tmp_path):
             await pilot.pause()
             table.action_extend_page(1)
             assert table.selected_row_indices == ()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('key,edge', [('up', 0), ('k', 0), ('pageup', 0), ('ctrl+home', 0),
+                                    ('home', 0), ('down', -1), ('j', -1), ('pagedown', -1),
+                                    ('ctrl+end', -1), ('end', -1)])
+def test_plain_navigation_clears_range_even_when_clamped(tmp_path, key, edge):
+    async def scenario():
+        tests = identities(5)
+        app = fixture(tmp_path, 'unit', collector=lambda *a: tests)
+        async with app.run_test(size=(140, 40)) as pilot:
+            table = await show_table(app, pilot, 'tests', 5)
+            await pilot.press('ctrl+a')
+            if edge == 0:
+                await pilot.press('escape', 'ctrl+shift+up')
+            await pilot.pause()
+            assert len(table.selected_row_indices) == table.row_count
+            await pilot.press(key)
+            await pilot.pause()
+            assert table.range_anchor is None
+            expected = tests[0].id if edge == 0 else tests[-1].id
+            if edge == 0:
+                # All tests is the first picker row; verify the single-row range.
+                assert table.selected_row_keys == ('all',)
+            else:
+                assert table.selected_row_keys == (expected,)
+                await pilot.press('enter')
+                assert app.selection.selected_ids == {test.id for test in tests[:-1]}
     asyncio.run(scenario())

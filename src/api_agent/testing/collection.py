@@ -40,6 +40,9 @@ except ImportError:
     print("Collection requires pytest; install the api-agent dev dependencies in this Python environment.", file=sys.stderr)
     sys.exit(2)
 class Collector:
+    def pytest_configure(self, config):
+        config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
+
     def pytest_collection_finish(self, session):
         rows = [{"node_id": item.nodeid, "tags": sorted({mark.name for mark in item.iter_markers()})} for item in session.items]
         with open(sys.argv[1], "w", encoding="utf-8") as stream:
@@ -127,6 +130,7 @@ def _validate_provider_suite(root, suite):
     while parent != root:
         parent = parent.parent
         pending.append(parent / 'conftest.py')
+        pending.append(parent / '__init__.py')
     visited = set()
     try:
         while pending:

@@ -23,7 +23,7 @@ def test_optional_execution_hook_and_standalone_remain_compatible(tmp_path):
 def test_tui_checks_dependency_at_start_not_during_collection(tmp_path, monkeypatch, mode):
     check = Mock(side_effect=ValueError(TODO))
     monkeypatch.setattr('api_agent.auth.extensions.validate_operation', check)
-    identity = Identity('base::test.py::test_one','base','test.py','test.py::test_one')
+    identity = Identity('base::test.py::test_one','base','test.py','test.py::test_one', ('requires_pack_api',))
     async def scenario():
         app=fixture(tmp_path, mode, collector=lambda *args:[identity])
         async with app.run_test() as pilot:
@@ -129,3 +129,40 @@ def test_pack_validator_failure_never_displays_secret(tmp_path, monkeypatch, cap
         output=capsys.readouterr().err
         assert output.strip()==message
         assert secret not in output and 'backend failed' not in output
+
+
+def test_provider_only_integration_start_does_not_initialize_pack_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    check = Mock(side_effect=AssertionError('Unrelated pack API was initialized'))
+    monkeypatch.setattr('api_agent.auth.extensions.validate_operation', check)
+    identity = Identity('base::test.py::test_one', 'base', 'test.py', 'test.py::test_one')
+    async def scenario():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: [identity])
+        execution = SimpleNamespace(tests=(), exit_code=0, cancelled=False)
+        runner = Mock(return_value=SimpleNamespace(execution=execution, exit_code=0, persisted=True))
+        app.integration_runner = runner
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.choose('continue')
+            await app.workers.wait_for_complete()
+            assert runner.call_count == 1
+            assert app.operation_status == 0
+            check.assert_not_called()
+    asyncio.run(scenario())
+
+
+def test_requirement_plan_is_selection_local_and_shared(tmp_path, monkeypatch):
+    from api_agent.testing.requirements import plan_integration_requirements
+    check = Mock()
+    monkeypatch.setattr('api_agent.auth.extensions.validate_operation', check)
+    api = Identity('base::test.py::test_api', 'base', 'test.py', 'test.py::test_api', ('requires_pack_api',))
+    llm = Identity('base::test.py::test_llm', 'base', 'test.py', 'test.py::test_llm')
+    ctx, config = object(), {'setting': 'value'}
+    independent = plan_integration_requirements([llm])
+    assert not independent.requires_pack_api
+    independent.validate(ctx, config)
+    check.assert_not_called()
+    dependent = plan_integration_requirements([api, llm])
+    assert dependent.requires_pack_api
+    dependent.validate(ctx, config)
+    check.assert_called_once_with(ctx, config)

@@ -266,3 +266,10 @@ def test_real_launch_worker_setup_and_allure_without_inference(tmp_path, cached,
     assert 'synthetic-secret' not in recorded.execution.output
     results = list(recorded.directory.glob('*-result.json'))
     assert len(results) == 1 and json.loads(results[0].read_text())['status'] == ('passed' if cached else 'failed')
+
+
+def test_pack_requirement_marker_registered_for_worker():
+    from unittest.mock import Mock
+    config = Mock()
+    p.pytest_configure(config)
+    config.addinivalue_line.assert_called_once_with("markers", "requires_pack_api: selected integration requires pack API/identity preflight")

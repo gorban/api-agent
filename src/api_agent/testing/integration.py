@@ -120,6 +120,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         if available is not None:
             if any(available.get(test.id) != test for test in tests):
                 raise CollectionError('Integration selection contains identities outside the freshly collected integration suites')
+            from .requirements import plan_integration_requirements
+            plan_integration_requirements(tests).validate(context, config or {})
             base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
             roots = {base.name: base, owner.name: owner}
             if base != owner and base.name == owner.name:

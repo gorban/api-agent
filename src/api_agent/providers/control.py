@@ -11,6 +11,14 @@ KINDS = frozenset({"authentication", "authorization", "unavailable", "rate_limit
 EXECUTIONS = frozenset({"not_started", "possibly_executed", "completed"})
 
 
+def _cancel_once(task, requested):
+    """Never interrupt awaited disposal with a second cancellation request."""
+    if task not in requested:
+        requested.add(task)
+        if not isinstance(task, asyncio.Task) or not task.cancelling():
+            task.cancel()
+
+
 class OperationalError(RuntimeError):
     """Safe classification; retry decisions belong solely to the operation owner."""
     def __init__(self, kind: str, execution: str = "not_started", retry_after: float | None = None):
@@ -60,12 +68,7 @@ class OperationContext:
             task.exception()
 
     def _cancel(self, task: asyncio.Future) -> None:
-        if task in self._cancel_requested:
-            return
-        self._cancel_requested.add(task)
-        if isinstance(task, asyncio.Task) and task.cancelling():
-            return
-        task.cancel()
+        _cancel_once(task, self._cancel_requested)
 
     async def aclose(self, timeout: float = 1.0) -> None:
         if type(timeout) not in {int, float} or not math.isfinite(timeout) or timeout < 0:
@@ -80,15 +83,22 @@ class OperationContext:
             raise CleanupPendingError((self,), self.aclose)
 
     async def run(self, awaitable: Awaitable[T]) -> T:
+        """Own scheduled handles, not hidden delegates inside opaque awaitables.
+
+        An expired opaque input is not started or inspected here; its external
+        owner must dispose any existing delegated work. Only a fresh native
+        coroutine establishes not_started, never an opaque or suspended input.
+        """
         remaining = self.remaining()
         if remaining == 0:
-            if inspect.iscoroutine(awaitable):
+            fresh = inspect.iscoroutine(awaitable) and inspect.getcoroutinestate(awaitable) == inspect.CORO_CREATED
+            if fresh:
                 awaitable.close()
             elif isinstance(awaitable, asyncio.Future):
                 self._tasks.add(awaitable)
                 awaitable.add_done_callback(self._finished)
                 self._cancel(awaitable)
-            raise OperationalError("deadline", execution="possibly_executed" if isinstance(awaitable, asyncio.Future) else "not_started")
+            raise OperationalError("deadline", execution="not_started" if fresh else "possibly_executed")
         task = asyncio.ensure_future(awaitable)
         self._tasks.add(task)
         task.add_done_callback(self._finished)

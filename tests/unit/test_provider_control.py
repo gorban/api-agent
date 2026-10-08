@@ -25,6 +25,42 @@ def test_context_validation():
         OperationContext('id').deadline = 1
 
 
+def test_expired_opaque_delegate_and_suspended_coroutine_are_possibly_executed():
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        applied = []
+        async def mutation():
+            started.set()
+            await release.wait()
+            applied.append(True)
+        task = asyncio.create_task(mutation())
+        await started.wait()
+        class Delegate:
+            def __await__(self):
+                return task.__await__()
+        context = OperationContext('expired', 0)
+        try:
+            with pytest.raises(OperationalError) as caught:
+                await context.run(Delegate())
+            assert caught.value.execution == 'possibly_executed'
+            await context.aclose(timeout=0)
+            assert not task.done()  # Hidden task is still owned by its caller.
+        finally:
+            release.set()
+            await task
+        assert applied == [True]
+        coroutine = mutation()
+        # Started, suspended coroutines also cannot promise not_started.
+        release.clear()
+        coroutine.send(None)
+        with pytest.raises(OperationalError) as caught:
+            await context.run(coroutine)
+        assert caught.value.execution == 'possibly_executed'
+        assert coroutine.cr_frame is not None
+        coroutine.close()
+    asyncio.run(scenario())
+
+
 def test_budget_and_cancellation():
     async def scenario():
         async def value():
