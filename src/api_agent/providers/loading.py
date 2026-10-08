@@ -341,7 +341,8 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
     from api_agent.config.declarations import UNSET
     schema = base_schema
     deferred = []
-    owners = {name: owner_root for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER')}
+    selectors = ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER')
+    owners = {name: owner_root for name in selectors}
     for path in configuration_paths:
         previous = set(schema.fields)
         schema = contribution_schema(path, schema, deferred=deferred)
@@ -353,7 +354,7 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
     while True:
         pending = False
         options = parse_options(schema, argv).values
-        for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER'):
+        for name in selectors:
             declaration = schema.fields.get(name)
             if declaration is None:
                 continue
@@ -393,10 +394,15 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
             for declaration in deferred:
                 schema = compose_schema(schema, ConfigSchema({declaration.name: declaration}))
             options = parse_options(schema, argv).values
-            for name, selected in processed.items():
-                effective = schema.fields[name].default
+            # Deferred defaults must not change the discovered graph, including
+            # enabling a selector that was empty/unset throughout discovery.
+            for name in selectors:
+                declaration = schema.fields.get(name)
+                if declaration is None:
+                    continue
+                effective = declaration.default if declaration.default is not UNSET else None
                 for values in (dotenv, environ, options, overrides or {}):
                     effective = values.get(name, effective)
-                if effective != selected:
+                if (effective or name in processed) and effective != processed.get(name):
                     raise ProviderError('provider_selection_cycle')
             return schema
