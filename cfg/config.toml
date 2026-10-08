@@ -153,6 +153,15 @@ acknowledge_default = false
 TUI_MODE = "e2e"
 COLLECT_ONLY = false
 
+[fields.DEBUG]
+type = "bool"
+default = false
+acknowledge_default = false
+help = "Integration authentication debug: run serially and retain provider login browsers until their windows are closed. With NO_STD_IN, selected integration tests can start without terminal input; browser login can still require human interaction. E2E execution retains its human acceptance requirement."
+[fields.DEBUG.applies_when]
+TUI_MODE = "integration"
+COLLECT_ONLY = false
+
 [fields.E2E_BROWSER_RESOLUTION]
 type = "str"
 default = "1440x900"

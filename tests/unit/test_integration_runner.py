@@ -398,3 +398,15 @@ def test_api_marker_survives_collection_and_blocks_runner_before_side_effects(tm
     assert result.exit_code != 0 and result.tests[0].status == 'error'
     assert calls == []
     check.assert_called_once_with(ctx, {'TUI_MODE': 'integration'})
+
+
+def test_debug_is_serial_and_streams_inspection_output(tmp_path):
+    base = fixture_repo(tmp_path / 'base', 'def test_ok():\n    print("inspection-ready")\n')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    result = run_integration_tests(ctx, selected, accepted=True, parallel_jobs=8,
+        config={'DEBUG': True})
+    assert result.exit_code == 0 and result.tests[0].status == 'passed'
+    assert 'inspection-ready' in result.output
+    assert 'collected 1 item' in result.output
+    assert 'workers [' not in result.output

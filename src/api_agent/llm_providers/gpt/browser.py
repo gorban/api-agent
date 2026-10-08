@@ -1,6 +1,7 @@
 """Owned Chromium for attended subscription consent and loopback callbacks."""
 import asyncio
 import threading
+from pathlib import Path
 
 from api_agent.providers.sessions import BrowserOwner
 from api_agent.runtime.browser import ensure_chromium_ready
@@ -9,10 +10,12 @@ from .connect import _dispose
 
 class _Driver:
     """Retain in-flight acquisitions until browser-owner cleanup confirms disposal."""
-    def __init__(self):
+    def __init__(self, *, inspectable=False):
         self.cancelled = threading.Event()
         self.preparing = self.starting = self.launching = None
         self.handed_browser = False
+        self.inspectable = inspectable
+        self.inspection_endpoint = None
 
     async def launch(self, *, headless):
         self.preparing = asyncio.create_task(asyncio.to_thread(
@@ -21,8 +24,22 @@ class _Driver:
         from playwright.async_api import async_playwright
         self.starting = asyncio.create_task(async_playwright().start())
         playwright = await asyncio.shield(self.starting)
-        self.launching = asyncio.create_task(playwright.chromium.launch(headless=headless))
+        options = {'headless': headless}
+        if self.inspectable:
+            options['args'] = ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--enable-automation']
+        self.launching = asyncio.create_task(playwright.chromium.launch(**options))
         browser = await asyncio.shield(self.launching)
+        if self.inspectable:
+            session = await browser.new_browser_cdp_session()
+            try:
+                arguments = (await session.send('Browser.getBrowserCommandLine'))['arguments']
+                directory = next(arg.split('=', 1)[1] for arg in arguments if arg.startswith('--user-data-dir='))
+                port = int((Path(directory) / 'DevToolsActivePort').read_text().splitlines()[0])
+                if not 0 < port < 65536:
+                    raise ValueError('Invalid inspection port')
+                self.inspection_endpoint = f'http://127.0.0.1:{port}'
+            finally:
+                await _dispose(session.detach())
         self.handed_browser = True
         return browser
 
@@ -52,8 +69,8 @@ class _Driver:
         await _dispose(self._close())
 
 
-def subscription_browser():
+def subscription_browser(*, inspection=None):
     """Attended consent is always visible, independently of app UI visibility."""
     async def driver():
-        return _Driver()
-    return BrowserOwner(driver, headless=False)
+        return _Driver(inspectable=inspection is not None)
+    return BrowserOwner(driver, headless=False, inspection=inspection)

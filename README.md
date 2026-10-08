@@ -95,4 +95,29 @@ Run `./launch.py --tui-mode integration api-agent::tests/integration/test_llm_se
 
 `GPT_APP_NAME` defaults to `api-agent` even with a resource pack. Override it through normal configuration to supply your application's display-name hint for first ChatGPT registration. Keep the name consistent across installations. Changing it does not rename a saved registration; later sign-ins reuse the issued client ID without resending the hint.
 
+For retained subscription-login debugging, use:
+
+```bash
+./launch.py --no-std-in --tui-mode integration --debug \
+  api-agent::tests/integration/test_llm_setup.py::test_llm_setup
+```
+
+This explicit integration debug exception starts selected tests without terminal input, but sign-in/consent can still require human interaction in Chromium. It runs serially even when TEST_PARALLEL_JOBS is higher, sharing lazy setup within each worker session. If a login browser is created, its loopback inspection endpoint is printed immediately. The original browser stays open after setup success or failure, including callback timeout; close its windows to let pytest teardown and Allure publication finish. Ctrl+C stops the run. The interactive integration TUI also honors DEBUG, but its final summary waits for retained windows to close. Cached setup may complete without a window. Ordinary runs close login browsers normally. E2E retains its explicit human acceptance; this integration exception does not enable noninteractive E2E.
+
+Inspection clients can attach to the printed CDP endpoint and select the existing context/page; attachment must not create a replacement login context. This development endpoint exposes the browser session to local clients and disappears when the owning browser closes. Cross-worker shared authentication, final results before inspection ends, E2E/local-run attachment actions and inspection without debug are planned follow-ups.
+
+With Playwright MCP, `browser_run_code_unsafe` can attach through the existing MCP browser's browser type:
+
+```javascript
+async (page) => {
+  const browser = await page.context().browser().browserType().connectOverCDP(endpoint);
+  const originalPages = browser.contexts().flatMap(context => context.pages());
+  // Select the operation's existing page; do not create a new context/page.
+  return originalPages.map(tab => new URL(tab.url()).origin);
+}
+```
+
+Replace `endpoint` with the launcher's printed loopback URL. The MCP extension connection/permission page is separate from the application login window. Keep URLs containing OAuth parameters, cookies, credentials and browser storage out of diagnostics; report only the minimum page identity needed to select it.
+
+
 An explicit `UNATTENDED_USER_INDEX` enables **u Start unattended tests**. Unattended GPT may reuse a saved subscription connection; missing initial consent reports an actionable error without opening a browser or waiting for input. **s** remains attended for that run and does not rewrite the saved index. There is no manual GPT profile setting. An optional LLM User login descriptor selects a cached subscription by its retrieved username; without one, only a unique cached connection is reused unattended. Attended OAuth identifies the signed-in account when the cache is empty or ambiguous. GPT_STATE_DIR remains a hidden advanced storage override. See [the lazy setup checklist](docs/implementation_plan_f2b.md) for supported behavior and follow-ups.

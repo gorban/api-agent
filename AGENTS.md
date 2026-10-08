@@ -11,3 +11,5 @@
    - Bad: test an expired JWT with an invalid signature; the test still passes with expiry validation disabled, proving only signature rejection.
 
 5. Before committing code changes, require all applicable unit tests to pass with 100% line and branch coverage.
+
+6. When inspecting a browser started by launch.py, attach to its printed loopback CDP endpoint and use the existing context/page. Playwright MCP’s extension connection page is a separate browser; do not inspect it as the application session. launch.py owns cleanup.

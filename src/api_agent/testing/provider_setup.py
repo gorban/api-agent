@@ -9,7 +9,7 @@ import pytest
 
 from api_agent.providers.contracts import ContractError, SetupPrerequisiteError
 from api_agent.providers.loading import aload_provider
-from api_agent.providers.sessions import LLMSessionOwner
+from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
 
 
 def write_launch_snapshot(directory, context, config):
@@ -58,6 +58,12 @@ class IntegrationLLM:
         self._retained_owners = []
         self._credential_tasks = set()
         self.closed = False
+        self.inspection = InspectionOwner(on_session=self._show_browser) if self.config.get('DEBUG', False) else None
+
+    @staticmethod
+    def _show_browser(session):
+        if session.inspection_endpoint:
+            print('Provider browser inspection: ' + session.inspection_endpoint, flush=True)
 
     async def _release_retained(self):
         while self._retained_owners:
@@ -100,8 +106,10 @@ class IntegrationLLM:
             raise SetupPrerequisiteError('Select LLM_PROVIDER before requesting LLM setup.')
         if self.provider is None:
             try:
-                self.provider = await aload_provider(location, self.config,
-                                                    {'owner_root': self.owner_root}, kind='llm')
+                services = {'owner_root': self.owner_root}
+                if self.inspection is not None:
+                    services['browser_inspection'] = self.inspection
+                self.provider = await aload_provider(location, self.config, services, kind='llm')
             except BaseException as error:
                 self._retained_owners.extend(getattr(error, 'retained_owners', ()))
                 raise
@@ -112,7 +120,7 @@ class IntegrationLLM:
             index = self.config.get('UNATTENDED_USER_INDEX')
             self.owner = LLMSessionOwner(implementation, user_index=index,
                                          credentials=self._credentials(index) if index is not None else None,
-                                         interactive=index is None and not self.config.get('NO_STD_IN', False))
+                                         interactive=index is None and (self.inspection is not None or not self.config.get('NO_STD_IN', False)))
 
         async def checkpoint(*, auth):
             if auth is None:
@@ -140,6 +148,13 @@ class IntegrationLLM:
     def close(self):
         if not self.closed:
             self.loop.run_until_complete(self._close())
+            if self.inspection is not None and not self.inspection._closed:
+                try:
+                    if self.inspection.sessions:
+                        print('Debug browser retained. Close its windows to finish inspection; Ctrl+C stops the run.', flush=True)
+                    self.loop.run_until_complete(self.inspection.wait_closed())
+                finally:
+                    self.loop.run_until_complete(self.inspection.aclose())
             self.closed = True
             self.loop.close()
 

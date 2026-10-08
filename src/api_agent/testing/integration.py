@@ -154,7 +154,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
                     args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-o', 'addopts=', '--rootdir', str(root)]
-                    if parallel_jobs:
+                    if config is not None and config.get('DEBUG'):
+                        args.append('-s')
+                    elif parallel_jobs:
                         args += ['-n', str(parallel_jobs)]
                     args.extend(selected)
                     try:

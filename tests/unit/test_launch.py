@@ -224,3 +224,33 @@ class LaunchTests(unittest.TestCase):
                         self.assertEqual(kwargs['overrides']['API_AGENT_DIR'], str(ROOT.resolve()))
                         self.assertEqual(resolved.values['API_AGENT_DIR'], ROOT.resolve())
                         self.assertEqual(gate.call_args.args[0], [ROOT.resolve(), pack.resolve(), owner.resolve()])
+
+
+def test_noninteractive_debug_integration_dispatch_and_prepare_failure(monkeypatch, capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *a, **k: None)
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *a, **k: ['selected'])
+    monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **k: None)
+    calls = []
+    def run(context, tests, config, **kwargs):
+        assert tests == ['selected'] and config['DEBUG'] and config['NO_STD_IN']
+        assert kwargs['accepted'] is True
+        kwargs['output']('raw evidence\n')
+        calls.append('run')
+        return SimpleNamespace(exit_code=1)
+    monkeypatch.setattr('api_agent.testing.recorded.run_recorded_integration', run)
+    monkeypatch.setattr(os, 'environ', {})
+    args = ['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic']
+    assert main(args, base_root=ROOT) == 1
+    assert calls == ['run'] and 'raw evidence' in capsys.readouterr().out
+    monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **k: 3)
+    assert main(args, base_root=ROOT) == 3
+    assert calls == ['run']
+
+
+def test_launch_keyboard_interrupt_has_clean_exit(monkeypatch, capsys):
+    def interrupted(*args, **kwargs): raise KeyboardInterrupt
+    monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', interrupted)
+    assert main(['--help'], base_root=ROOT) == 130
+    assert capsys.readouterr().err == 'Run interrupted.\n'

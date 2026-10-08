@@ -177,3 +177,41 @@ def test_driver_retains_late_resources_after_close_failure(chromium, stage):
         assert chromium.browser.close.await_count == (2 if stage == 'browser' else 1)
         assert chromium.playwright.stop.await_count == (2 if stage == 'driver' else 1)
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('port', ['32123', '0', '65536', 'not-a-port'])
+def test_debug_endpoint_is_loopback_and_cdp_session_is_disposed(chromium, tmp_path, port):
+    (tmp_path / 'DevToolsActivePort').write_text(port + '\n/browser/path\n')
+    cdp = SimpleNamespace(send=AsyncMock(return_value={'arguments': ['chromium', '--user-data-dir=' + str(tmp_path)]}), detach=AsyncMock())
+    chromium.browser.new_browser_cdp_session = AsyncMock(return_value=cdp)
+    async def scenario():
+        driver = module._Driver(inspectable=True)
+        if port == '32123':
+            assert await driver.launch(headless=False) is chromium.browser
+            assert driver.inspection_endpoint == 'http://127.0.0.1:32123'
+        else:
+            with pytest.raises(ValueError):
+                await driver.launch(headless=False)
+            assert driver.inspection_endpoint is None
+        chromium.playwright.chromium.launch.assert_awaited_once_with(headless=False,
+            args=['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--enable-automation'])
+        cdp.detach.assert_awaited_once()
+        await driver.stop()
+        assert chromium.browser.close.await_count == int(port != '32123')
+    asyncio.run(scenario())
+
+
+def test_debug_browser_hands_resources_to_common_inspector(chromium, monkeypatch):
+    from api_agent.providers.sessions import InspectionOwner
+    monkeypatch.setattr(module._Driver, 'launch', AsyncMock(return_value=chromium.browser))
+    async def scenario():
+        inspection = InspectionOwner()
+        owner = module.subscription_browser(inspection=inspection)
+        session = await owner.start()
+        assert inspection.sessions == [session]
+        await owner.aclose()
+        chromium.browser.close.assert_not_awaited()
+        await inspection.aclose()
+        chromium.browser.close.assert_awaited_once()
+        assert not inspection.sessions
+    asyncio.run(scenario())

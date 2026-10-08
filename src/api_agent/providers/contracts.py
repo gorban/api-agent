@@ -54,6 +54,7 @@ class BrowserSession:
     browser: object = field(repr=False)
     context: object = field(repr=False)
     page: object = field(repr=False)
+    inspection_endpoint: str | None = field(default=None, repr=False)
 
 
 class RoleCredentialReader(Protocol):
