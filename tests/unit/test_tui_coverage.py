@@ -327,7 +327,8 @@ def test_navigation_setup_acceptance_and_menu_routes(tmp_path):
             await pilot.pause()
             await app.choose('continue')
             await pilot.pause()
-            assert 'Integration execution' in str(app.screen.query_one('#body', Static).render())
+            assert app.screen.heading == 'Integration execution failed'
+            assert 'setup or recording failed' in str(app.screen.query_one('#body', Static).render())
             app.mode = 'e2e'
             app.show_selection()
             await pilot.pause()

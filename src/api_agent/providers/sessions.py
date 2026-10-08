@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from .contracts import BrowserSession, ContractError, SessionClosedError
+from .contracts import BrowserSession, ContractError, SessionClosedError, LLMCredentialReader
 from .control import OperationalError, OperationContext, CleanupPendingError
 
 
@@ -255,18 +255,21 @@ class BrowserOwner(_Owner):
 
 class LLMSessionOwner(_Owner):
     """Lazy auth bound to one account; timed-out work retains its dependencies."""
-    def __init__(self, provider: Any, browser_factory: Callable[[], BrowserOwner], *,
-                 user_index: int | None, credentials: ScopedLLMCredentials,
+    def __init__(self, provider: Any, browser_factory: Callable[[], BrowserOwner] | None = None, *,
+                 user_index: int | None = None, credentials: LLMCredentialReader | None = None,
+                 interactive: bool = True,
                  finalizer: Callable[[Any], Awaitable[None]] | None = None, timeout: float = 5):
         super().__init__(timeout)
         if user_index is not None and (
-            type(user_index) is not int or user_index != credentials._reader._index
+            type(user_index) is not int or user_index < 0
+            or isinstance(credentials, ScopedLLMCredentials) and user_index != credentials._reader._index
         ):
             raise ContractError("LLM account is outside credential binding")
         self.provider = provider
         self._browser_factory = browser_factory
         self._index = user_index
         self._credentials = credentials
+        self._interactive = interactive
         self._finalizer = finalizer
         self._browser = None
         self._auth = None
@@ -288,13 +291,20 @@ class LLMSessionOwner(_Owner):
             if self._browser is not None:
                 await self._browser.aclose()
                 self._browser = None
-            browser = self._browser_factory()
-            self._browser = browser
-            if not browser._headless:
-                raise ContractError("LLM authentication browser must be headless")
-            session = await browser.start()
-            auth = await self.provider.authenticate(session=session, user_index=self._index,
-                                                    credentials=self._credentials)
+            setup = getattr(self.provider, "asetup", None)
+            if setup is not None:
+                auth = await setup(interactive=self._interactive, user_index=self._index,
+                                   credentials=self._credentials)
+            else:
+                if self._browser_factory is None or self._credentials is None:
+                    raise ContractError("LLM authentication requires browser and credentials")
+                browser = self._browser_factory()
+                self._browser = browser
+                if not browser._headless:
+                    raise ContractError("LLM authentication browser must be headless")
+                session = await browser.start()
+                auth = await self.provider.authenticate(session=session, user_index=self._index,
+                                                        credentials=self._credentials)
             if not callable(auth) or not callable(getattr(auth, "aclose", None)):
                 if callable(getattr(auth, "aclose", None)):
                     self._resources.append((auth, "aclose"))
@@ -332,7 +342,8 @@ class LLMSessionOwner(_Owner):
             raise
 
     async def _authenticate(self, context):
-        if getattr(self.provider, "authenticate", None) is not None and self._index is not None:
+        if (getattr(self.provider, "asetup", None) is not None
+                or getattr(self.provider, "authenticate", None) is not None and self._index is not None):
             if self._auth is None:
                 if self._initializing is None or self._initializing.done():
                     self._initializing = _spawn(self._initialize())
@@ -415,7 +426,8 @@ class LLMSessionOwner(_Owner):
             raise ContractError("Final usage failed") from None
 
     async def rebind(self, provider: Any, *, user_index: int | None,
-                     credentials: ScopedLLMCredentials) -> "LLMSessionOwner":
+                     credentials: LLMCredentialReader | None) -> "LLMSessionOwner":
         await self.aclose()
         return LLMSessionOwner(provider, self._browser_factory, user_index=user_index,
-                               credentials=credentials, finalizer=self._finalizer, timeout=self._timeout)
+                               credentials=credentials, interactive=self._interactive,
+                               finalizer=self._finalizer, timeout=self._timeout)

@@ -18,9 +18,11 @@ The supported flow is Continue with ChatGPT, followed by user sign-in and permis
 
 The initial command uses the operating system browser. No additional executable is required for this connection foundation: HTTP and signed-token libraries already belong to the managed Python environment. Automated login-page assistance and the complete TUI connection manager remain separate tasks.
 
-The provider-specific code lives in `src/api_agent/llm_providers/gpt/`; shared core carries opaque sessions and does not interpret this provider's tokens. Inference transports, concrete factory selection, bundled default activation and API-key vault acquisition remain in the parent checklist.
+The provider-specific code lives in `src/api_agent/llm_providers/gpt/`; shared core carries opaque sessions and does not interpret this provider's tokens. The auth-only factory and its lazy launch path are covered by [the next checklist](implementation_plan_f2b.md). Inference transports and API-key vault acquisition remain in the parent checklist.
 
-## Connection command
+## Internal connection diagnostic
+
+Normal user setup occurs lazily from launch.py when a selected integration requests provider setup. The module commands below are optional development diagnostics, not user prerequisites.
 
 From the repository root with its Python environment prepared:
 

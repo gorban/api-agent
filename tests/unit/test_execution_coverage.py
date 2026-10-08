@@ -309,8 +309,9 @@ def test_unselected_production_owner_report_is_measured_or_fails_explicitly(monk
         def set_option(self,*args):calls.append('configure')
         def start(self):calls.append('start')
         def stop(self):calls.append('stop')
-        def json_report(self,*,morfs,outfile):
+        def json_report(self,*,morfs,outfile,omit):
             assert morfs==[str(pack/'src/uncovered.py')]
+            assert omit == ['*/tests/*']
             if failure:raise OSError('report unavailable')
             Path(outfile).write_text(json.dumps({'files':{'src/uncovered.py':{'summary':{'covered_lines':0,'num_statements':1,'covered_branches':0,'num_branches':2}}}}))
     monkeypatch.setattr(coverage,'Coverage',Coverage)

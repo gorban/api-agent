@@ -125,7 +125,11 @@ def shared_declaration_path(base_root: Path | None = None) -> Path:
 
 
 def load_shared_schema(base_root: Path | None = None) -> ConfigSchema:
-    return load_declarations(shared_declaration_path(base_root))
+    schema = load_declarations(shared_declaration_path(base_root))
+    fields = dict(schema.fields)
+    factory = Path(__file__).resolve().parent.parent / 'llm_providers/gpt/factory.py'
+    fields['LLM_PROVIDER'] = replace(fields['LLM_PROVIDER'], default=str(factory) + ':factory')
+    return ConfigSchema(fields)
 
 def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                    overrides: Mapping[str, Any] | None = None) -> ConfigSchema:

@@ -50,7 +50,7 @@ sys.exit(pytest.main(sys.argv[2:], plugins=[Events()]))
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None):
+                          after_run=None, config=None):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -110,7 +110,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     emit(RunnerEvent('started'))
     try:
         try:
-            available = {test.id: test for test in collect_tests(context, 'integration', cancel_event=cancel_event)}
+            available = {test.id: test for test in collect_tests(context, 'integration', cancel_event=cancel_event, **({'config': config} if config is not None else {}))}
         except Exception:
             raw('', 'Integration collection failed; details withheld.\n')
             failed = True
@@ -127,7 +127,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             env['PYTHONUNBUFFERED'] = '1'
             for repo in dict.fromkeys(test.repo for test in tests):
                 selected = {test.node_id: test for test in tests if test.repo == repo}
-                root = roots.get(repo)
+                root = next(iter(selected.values())).root or roots.get(repo)
                 if root is None:
                     failed = True
                     break
@@ -144,9 +144,12 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     cancelled = True
                     break
                 with tempfile.TemporaryDirectory(prefix='api-agent-integration-') as temporary:
+                    if config is not None:
+                        from .provider_setup import write_launch_snapshot
+                        env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
-                    args = [sys.executable, '-c', _PLUGIN, str(event_file), '-o', 'addopts=', '--rootdir', str(root)]
+                    args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-o', 'addopts=', '--rootdir', str(root)]
                     if parallel_jobs:
                         args += ['-n', str(parallel_jobs)]
                     args.extend(selected)

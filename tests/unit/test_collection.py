@@ -38,7 +38,8 @@ def test_integration_and_e2e_scoped_to_owner(tmp_path, mode):
     suite(base)
     suite(base, mode)
     selected = suite(pack, mode)
-    assert {test.repo for test in collect_tests(context(base, pack, {mode: (selected,)}), mode)} == {'pack'}
+    expected = {'base', 'pack'} if mode == 'integration' else {'pack'}
+    assert {test.repo for test in collect_tests(context(base, pack, {mode: (selected,)}), mode)} == expected
 
 
 def test_selectors_union_and_ambiguity():

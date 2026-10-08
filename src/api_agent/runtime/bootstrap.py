@@ -190,7 +190,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             if status is not None:
                 return status
             from api_agent.testing.collection import collect_tests
-            for test in collect_tests(context, mode, result.positionals):
+            for test in collect_tests(context, mode, result.positionals, config=result.values):
                 print(test.id)
             return 0
         if result.values.get('NO_STD_IN') and mode == 'unit':

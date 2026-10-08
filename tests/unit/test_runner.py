@@ -68,10 +68,15 @@ def test_full_coverage_success_and_optional_missing_pack(tmp_path, monkeypatch):
     latest = tmp_path / 'latest-integration-manifest.json'
     latest.write_text('{"run_id": "prior-integration"}')
     base = fixture_repo(tmp_path / 'base')
+    # Distributed provider integration checks are test code, not production.
+    contributed = base / 'src/provider/tests/integration'
+    contributed.mkdir(parents=True)
+    (contributed / 'test_remote.py').write_text('def test_remote():\n    assert False\n')
     ctx = context(base, tmp_path / 'absent')
     result = run_unit_tests(ctx, collect_tests(ctx, 'unit'))
     assert result.exit_code == 0
     assert all(a.complete for a in result.coverage)
+    assert all('test_remote.py' not in area.file for area in result.coverage)
     assert latest.read_text() == '{"run_id": "prior-integration"}'
     assert not list(base.rglob('*-result.json'))
     assert not (base / 'artifacts/allure').exists()

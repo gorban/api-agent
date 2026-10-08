@@ -69,6 +69,7 @@ if os.environ.get('API_AGENT_COVERAGE_OUTPUT'):
     coverage.load()
     coverage.json_report(morfs=[str(path) for source in json.loads(os.environ['API_AGENT_COVERAGE_SOURCE'])
                                for path in Path(source).rglob('*.py')],
+                         omit=['*/tests/*'],
                          outfile=os.environ['API_AGENT_COVERAGE_OUTPUT'])
 sys.exit(status)
 '''
@@ -141,7 +142,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             env.pop('API_AGENT_COVERAGE_SOURCE', None)
             if has_code:
                 config = Path(temporary) / 'coverage.ini'
-                config.write_text('[run]\nbranch = true\n[report]\ninclude_namespace_packages = true\n')
+                config.write_text('[run]\nbranch = true\nomit = */tests/*\n[report]\ninclude_namespace_packages = true\n')
                 env['API_AGENT_COVERAGE_OUTPUT'] = str(coverage)
                 env['API_AGENT_COVERAGE_SOURCE'] = json.dumps([str(source) for source in sources])
                 args += ['--cov-config=' + str(config)]
@@ -250,7 +251,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                 coverage.start()
                 coverage.stop()
                 report = Path(temporary) / 'coverage.json'
-                coverage.json_report(morfs=[str(path) for source in sources for path in source.rglob('*.py')], outfile=str(report))
+                coverage.json_report(morfs=[str(path) for source in sources for path in source.rglob('*.py')], omit=['*/tests/*'], outfile=str(report))
                 data = json.loads(report.read_text())
                 for file, row in sorted(data['files'].items()):
                     summary = row['summary']

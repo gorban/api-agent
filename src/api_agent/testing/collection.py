@@ -7,6 +7,7 @@ import subprocess
 import time
 import sys
 import tempfile
+import tomllib
 from .processes import finalize
 
 
@@ -23,9 +24,12 @@ class TestIdentity:
     file: str
     node_id: str
     tags: frozenset[str] = frozenset()
+    root: Path | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "tags", frozenset(self.tags))
+        if self.root is not None:
+            object.__setattr__(self, "root", Path(self.root).resolve())
 
 
 _PLUGIN = '''
@@ -116,26 +120,91 @@ def _run_collection(args, root, env, repo, cancel_event, timeout=120):
         raise
 
 
-def collect_tests(context, mode, selectors=(), cancel_event=None):
+def _validate_provider_suite(root, suite):
+    """Reject symlink escapes before pytest can import suite or conftest code."""
+    pending = [suite]
+    parent = suite
+    while parent != root:
+        parent = parent.parent
+        pending.append(parent / 'conftest.py')
+    visited = set()
+    try:
+        while pending:
+            path = pending.pop().resolve()
+            if not path.is_relative_to(root):
+                raise CollectionError(f'Provider integration suite content escapes its root: {path}')
+            if path.is_dir() and path not in visited:
+                visited.add(path)
+                pending.extend(path.iterdir())
+    except (OSError, RuntimeError) as exc:
+        raise CollectionError(f'Cannot inspect provider integration suite: {suite}') from exc
+
+
+def provider_integration_suites(context, config):
+    """Read selected providers' declarative suites without loading their factories."""
+    from api_agent.providers.loading import provider_location, ProviderError
+    suites = {}
+    for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER'):
+        selected = config.get(name)
+        selected = getattr(selected, 'value', selected)
+        if not selected:
+            continue
+        try:
+            factory, unused = provider_location(selected, owner_root=context.owner_root)
+        except ProviderError as exc:
+            raise CollectionError(f'Invalid selected provider: {name}') from exc
+        root = factory.parent
+        manifest = root / 'cfg/tests.toml'
+        if not manifest.exists():
+            continue
+        if not manifest.resolve().is_relative_to(root):
+            raise CollectionError(f'Provider test declaration escapes its root: {manifest}')
+        try:
+            data = tomllib.loads(manifest.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            raise CollectionError(f'Cannot read provider test declaration: {manifest}') from exc
+        tests = data.get('tests')
+        if (set(data) != {'version', 'tests'} or type(data.get('version')) is not int
+                or data['version'] != 1 or not isinstance(tests, dict)
+                or set(tests) != {'integration'} or not isinstance(tests['integration'], list)):
+            raise CollectionError(f'Invalid provider test declaration: {manifest}')
+        for entry in tests['integration']:
+            if not isinstance(entry, str) or not entry.strip() or Path(entry).is_absolute():
+                raise CollectionError(f'Provider integration suites require relative paths: {manifest}')
+            path = (root / entry).resolve()
+            if not path.is_relative_to(root) or not path.is_dir():
+                raise CollectionError(f'Provider integration suite must exist inside its root: {path}')
+            _validate_provider_suite(root, path)
+            suites.setdefault(root, []).append(path)
+    return suites
+
+
+def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None):
     """Collect each owner's suites using its working directory and pytest config."""
     if mode not in {"unit", "integration", "e2e"}:
         raise CollectionError(f"Collection requires unit, integration, or e2e mode; got {mode!r}")
     base = Path(context.base_root).resolve()
     owner = Path(context.owner_root).resolve()
     suites = {}
-    for raw_path in context.suite_paths(mode):
+    declared = list(context.suite_paths(mode))
+    if mode == 'integration' and (base / 'tests/integration').exists():
+        declared.insert(0, base / 'tests/integration')
+    for raw_path in declared:
         path = Path(raw_path).resolve()
         if not path.exists():
             if mode == "unit" and path != base / "tests/unit":
                 continue
             raise CollectionError(f"Declared {mode} suite does not exist: {path}")
-        if mode == 'unit' and path == base / 'tests/unit':
+        if path == base / f'tests/{mode}':
             root = base
         else:
             root = owner if path.is_relative_to(owner) else base
         if not path.is_relative_to(root):
             raise CollectionError(f"Suite is outside its repository owner: {path}")
         suites.setdefault(root, []).append(path)
+    if mode == 'integration':
+        for root, paths in provider_integration_suites(context, config if config is not None else getattr(context, 'defaults', {})).items():
+            suites.setdefault(root, []).extend(paths)
     if not suites:
         raise CollectionError(f"No {mode} suites are declared")
     child_env = os.environ.copy()
@@ -145,9 +214,13 @@ def collect_tests(context, mode, selectors=(), cancel_event=None):
     if child_env.get("PYTHONPATH"):
         source_paths.append(child_env["PYTHONPATH"])
     child_env["PYTHONPATH"] = os.pathsep.join(source_paths)
+    labels = {root: repository_label(context, root) for root in suites}
+    for root in suites:
+        if root not in {base, owner}:
+            labels[root] = 'provider:' + str(root)
     collected = {}
     for root, paths in suites.items():
-        repo = repository_label(context, root)
+        repo = labels[root]
         with tempfile.TemporaryDirectory(prefix="api-agent-collect-") as temporary:
             output = Path(temporary) / "collection.json"
             args = [sys.executable, "-c", _PLUGIN, str(output), "--collect-only", "-q", "-o", "addopts=", "--rootdir", str(root)]
@@ -164,8 +237,9 @@ def collect_tests(context, mode, selectors=(), cancel_event=None):
                     raise CollectionError(f"No tests collected in base unit suite: {base / 'tests/unit'}")
                 for row in rows:
                     node = row["node_id"]
-                    identity = TestIdentity(f"{repo}::{node}", repo, node.split("::", 1)[0], node, frozenset(row["tags"]))
-                    collected.setdefault(identity.id, identity)
+                    identity = TestIdentity(f"{repo}::{node}", repo, node.split("::", 1)[0], node, frozenset(row["tags"]), root if root not in {base, owner} else None)
+                    file, _, suffix = node.partition('::')
+                    collected.setdefault(((root / file).resolve(), suffix), identity)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 raise CollectionError(f"Pytest returned invalid collection data for {repo}: {exc}") from exc
     if not collected:

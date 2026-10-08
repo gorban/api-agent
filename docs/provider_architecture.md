@@ -16,7 +16,7 @@ This is the authoritative boundary and browser-session requirements document. It
 
 Core is independent of the API type. A provider at a different path may implement REST or another API without accepting GraphQL queries. The included GraphQL package is `graphql_api_provider`; it requires a separately selected upstream extension. Product-specific code and examples belong to their external owners. Public tests use synthetic adapters, identities and API data.
 
-Core owns browser resources operationally. A provider exclusively uses its LLM session until disposal finishes; a pack exclusively prepares its UI session before handing it to the test/user. Login pages, selectors, signing, cookie contents, protocol transactions and token interpretation remain outside core. Core request-session storage contains opaque request ownership, not provider tokens.
+Core owns shared UI browser resources operationally. A lazy setup provider may own its authentication browser/client and must dispose them through its session owner. A provider exclusively uses its LLM session until disposal finishes; a pack exclusively prepares its UI session before handing it to the test/user. Login pages, selectors, signing, cookie contents, protocol transactions and token interpretation remain outside core. Core request-session storage contains opaque request ownership, not provider tokens.
 
 ## Implementation phases
 
@@ -63,6 +63,12 @@ class LLMAuthenticator(Protocol):
         self, *, session: BrowserSession, user_index: int,
         credentials: LLMCredentialReader,
     ) -> LLMAuthSession: ...
+
+class LLMSetup(Protocol):
+    async def asetup(
+        self, *, interactive: bool, user_index: int | None,
+        credentials: LLMCredentialReader | None,
+    ) -> LLMAuthSession: ...
 ```
 
 Version and validate optional capability contracts. An absent UI hook or explicit async no-op is valid; a present malformed hook errors. Absence/no-op does not claim verified login. `user_index=None` means attended UI use, never unresolved unattended selection. There is no extra scenario or identity-mode argument: the pack chooses its strategy from ordinary mode and account selection.
@@ -84,6 +90,8 @@ The role reader accepts declared role, index and credential kind; the LLM reader
 - [ ] Ordinary completion/cancellation closes all browser resources, including partial setup. Explicit inspection cleanup closes retained contexts, browsers and drivers. Retention never keeps provider refresh tasks or a disposed token getter active.
 
 ### Shared LLM session policy
+
+The optional `asetup` hook supports provider-owned attended setup and unattended cache reuse. Factories, help and collection remain inert; tests request setup explicitly through `llm_provider.ensure_ready()`. The [lazy setup checkpoint](implementation_plan_f2b.md) owns one loop/session per pytest worker; backend-wide shared authentication and inference consumers remain subsequent work.
 
 - [ ] Initialize unattended LLM authentication lazily at the first authenticated provider call, only if the optional capability exists. Coalesce concurrent initialization. Factory validation, config/capability inspection and local cost arithmetic do not authenticate. Authenticated discovery/status/usage reads use the same mechanism without inference.
 - [ ] Before every authenticated provider call, await the returned session's getter and pass its opaque value unchanged. The provider owns freshness, expiry, refresh and any persistent cache; core does not parse token claims or cache token values.
