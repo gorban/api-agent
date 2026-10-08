@@ -11,9 +11,9 @@ dependencies = ["textual>=8.2.8,<9", "Django>=5.2.17,<5.3", "uvicorn>=0.53,<0.54
 
 [project.optional-dependencies]
 reports = ["boto3>=1.37.32,<2"]
-browser = ["playwright>=1.63,<1.64"]
+browser = ["playwright>=1.63,<1.64", "playwright-stealth==2.0.3"]
 tracing = ["opentelemetry-sdk==1.45.0", "opentelemetry-exporter-otlp-proto-http==1.45.0", "requests==2.34.2"]
-dev = ["Authlib>=1.7.2,<1.8", "pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist>=3,<4", "build>=1.2,<2", "playwright>=1.63,<1.64", "opentelemetry-sdk==1.45.0", "opentelemetry-exporter-otlp-proto-http==1.45.0", "requests==2.34.2"]
+dev = ["Authlib>=1.7.2,<1.8", "pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist>=3,<4", "build>=1.2,<2", "playwright>=1.63,<1.64", "playwright-stealth==2.0.3", "opentelemetry-sdk==1.45.0", "opentelemetry-exporter-otlp-proto-http==1.45.0", "requests==2.34.2"]
 
 [project.scripts]
 api-agent = "api_agent.runtime.bootstrap:main"
