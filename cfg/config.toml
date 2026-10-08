@@ -258,25 +258,25 @@ COLLECT_ONLY = false
 acknowledge_default = false
 type = "str"
 review_optional = true
-help = "Required factory location (file.py:factory) for executable LLM operations; no default provider is selected."
+help = "Replaceable LLMProvider version-1 factory (file.py:factory). The planned bundled gpt-provider supports personal GPT access and may be replaced by any adapter implementing that interface; its default is enabled when its factory is implemented."
 
 [fields.API_PROVIDER]
 acknowledge_default = false
 type = "str"
 review_optional = true
-help = "Optional API adapter factory location (file.py:factory), required when an operation invokes an upstream API."
+help = "Replaceable APIProvider version-1 factory (file.py:factory), required when an operation invokes an upstream API. Any adapter implementing that interface may be selected, including GraphQL or REST."
 
 [fields.UI_PROVIDER]
 acknowledge_default = false
 type = "str"
 review_optional = true
-help = "Optional frontend lifecycle factory location (file.py:factory), selected by the resource pack."
+help = "Replaceable UIProvider version-1 frontend lifecycle factory (file.py:factory), selected by the resource pack or an explicit override. Any adapter implementing that interface may replace it."
 
 [fields.ACCESS_PROVIDER]
 acknowledge_default = false
 type = "str"
 review_optional = true
-help = "Optional non-inference access adapter factory (file.py:factory); activated only for selected access checks, independently of the LLM provider."
+help = "Replaceable AccessProvider version-1 factory (file.py:factory), independently selected for non-inference checks. Any adapter implementing discovery/usage access capabilities may replace it; it cannot advertise inference."
 
 [fields.AGENT_DJANGO_URL]
 type = "str"

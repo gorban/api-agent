@@ -730,15 +730,28 @@ class ApiAgentApp(App[int]):
                 selected_row = self.focused_setting()
             elif self.screen.kind == "input":
                 selected_row = self.prompt_name
-        result = self.session.result(_review=True)
-        if "UNATTENDED_AUTH" in result.missing:
+        rows = self.configuration_rows()
+        if "UNATTENDED_AUTH" in self.session.result(_review=True).missing:
             self.show_required_auth()
             return
+        if not rows:
+            self.show_menu()
+            return
+        self.show("defaults", "Review configuration",
+                  "Review each setting: a saves its default immediately; e edits its value, then Enter saves to .env. "
+                  "Source identifies where each value comes from. c opens the next menu; required values still block execution.\n\n"
+                  "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
+                  rows=rows, selected_row=selected_row)
+
+    def configuration_rows(self):
+        """Rebuild review membership from the current effective declaration set."""
+        result = self.session.result(_review=True)
         active = set(result.fields) | set(result.missing) | {
             name for name, field in self.schema.fields.items() if field.review_optional}
         review = self.session.result(_review=True)
         default_names = {name for name, field in self.schema.fields.items()
                          if field.default is not UNSET or field.conditional_defaults}
+        self.review_names.intersection_update(self.schema.fields)
         self.review_names.update(self.configuration_pending())
         rows = []
         for name in self.schema.fields:
@@ -751,19 +764,26 @@ class ApiAgentApp(App[int]):
             rows.append((name, (name,
                         display(resolved.value) if resolved else Text("Required", justify="right") if name in result.missing else "",
                         resolved.source if resolved else "Not provided")))
-        if not rows:
-            self.show_menu()
-            return
-        self.show("defaults", "Review configuration",
-                  "Review each setting: a saves its default immediately; e edits its value, then Enter saves to .env. "
-                  "Source identifies where each value comes from. c opens the next menu; required values still block execution.\n\n"
-                  "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
-                  rows=rows, selected_row=selected_row)
+        return rows
 
     def refresh_configuration_rows(self, screen):
         """Refresh displayed values and contextual actions as one UI snapshot."""
+        rows = self.configuration_rows()
+        if not rows:
+            self.show_menu()
+            return
         result = self.session.result(_review=True)
         table = screen.query_one(DataTable)
+        names = [row.key.value for row in table.ordered_rows]
+        if names != [name for name, _ in rows]:
+            cursor = table.cursor_row
+            selected = names[cursor] if names else None
+            table.clear()
+            for name, cells in rows:
+                table.add_row(*(literal_cell(cell) for cell in cells), key=name)
+            index = next((i for i, (name, _) in enumerate(rows) if name == selected),
+                         min(cursor, len(rows) - 1))
+            table.move_cursor(row=index)
         saved, defaults = set(), set()
         for row in table.ordered_rows:
             name = row.key.value

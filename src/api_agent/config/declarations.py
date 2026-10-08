@@ -12,6 +12,7 @@ class FieldDeclaration:
     name: str
     type: str
     override: bool = False
+    override_if_present: bool = False
     required: bool = False
     review_optional: bool = False
     allow_empty: bool = False
@@ -46,9 +47,11 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         if set(spec) - allowed or spec.get('type') not in TYPES:
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
-        for flag in ('override', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only'):
+        for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
+        if spec.get('override_if_present') and not spec.get('override'):
+            raise ValueError(f'{name}: override_if_present requires override = true')
         if spec.get('anchor') not in (None, 'pack_root', 'owner_root', 'base_root'):
             raise ValueError(f'{name}: invalid path anchor')
         if spec['type'] == 'path' and not spec.get('anchor'):
@@ -129,6 +132,8 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
     fields = dict(shared.fields)
     if extension:
         for name, declaration in extension.fields.items():
+            if declaration.override_if_present and name not in fields:
+                continue
             if name in fields:
                 if not declaration.override:
                     raise ValueError(f'{name}: shared-field replacement requires override = true')
