@@ -24,15 +24,16 @@ def chromium(monkeypatch):
                            manager=manager, ready=ready)
 
 
-def test_owner_is_lazy_visible_and_closes_in_order(chromium):
+@pytest.mark.parametrize('headless', [False, True])
+def test_owner_is_lazy_visible_and_closes_in_order(chromium, headless):
     async def scenario():
-        owner = module.subscription_browser()
+        owner = module.subscription_browser(headless=headless)
         assert not chromium.ready and not chromium.manager.start.called
         session = await owner.start()
         assert session.page is chromium.page
-        assert chromium.ready[0]['headed'] is True
+        assert chromium.ready[0]['headed'] is not headless
         assert not chromium.ready[0]['cancelled']()
-        chromium.playwright.chromium.launch.assert_awaited_once_with(headless=False)
+        chromium.playwright.chromium.launch.assert_awaited_once_with(headless=headless)
         await owner.aclose()
         await owner.aclose()
         chromium.context.close.assert_awaited_once()

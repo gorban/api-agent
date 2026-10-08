@@ -98,13 +98,28 @@ class CallbackListener:
             self.tasks.discard(task)
 
 
+async def submit_login_username(page, username):
+    """Submit only the observed email step, without logging credential values."""
+    try:
+        await page.get_by_role("textbox", name="Email address", exact=True).fill(username)
+        await page.get_by_role("button", name="Continue", exact=True).click()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        raise AuthError("username_submission_failed") from None
+
+
 async def connect_account(store, *, registration=None, open_browser=None,
                           client=None, timeout=180, clock=time.time, profile=None, browser_owner=None,
-                          app_name="api-agent"):
+                          app_name="api-agent", login_username=None):
     """Persist only a fully verified connection; clean up on every exit."""
     from .oauth import begin_authorization, finish_authorization
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 600 or not math.isfinite(timeout):
         raise AuthError("invalid_timeout")
+    if login_username is not None:
+        if not isinstance(login_username, str) or not login_username.strip() or open_browser is not None:
+            raise AuthError("invalid_login_username")
+        login_username = login_username.strip()
     if profile is not None:
         registration = store.load(profile)
     owned = client is None
@@ -128,6 +143,8 @@ async def connect_account(store, *, registration=None, open_browser=None,
                             raise
                         except Exception:
                             raise AuthError("browser_unavailable") from None
+                        if login_username is not None:
+                            await submit_login_username(session.page, login_username)
                     elif not open_browser(attempt.authorization_url):
                         raise AuthError("browser_unavailable")
                     if session is None:
@@ -138,6 +155,8 @@ async def connect_account(store, *, registration=None, open_browser=None,
                         except SessionClosedError:
                             raise AuthError("browser_closed") from None
                     connection = await finish_authorization(attempt, parameters, client=client, now=clock())
+                    if login_username is not None and connection.email.strip().casefold() != login_username.casefold():
+                        raise AuthError("account_mismatch")
                     if profile is not None and store.profile_id(connection) != profile:
                         raise AuthError("account_mismatch")
                     return await store.save_serialized(connection)

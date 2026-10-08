@@ -69,8 +69,8 @@ class _Driver:
         await _dispose(self._close())
 
 
-def subscription_browser(*, inspection=None):
-    """Attended consent is always visible, independently of app UI visibility."""
+def subscription_browser(*, inspection=None, headless=False):
+    """Attended consent is visible; unattended callers select browser visibility."""
     async def driver():
         return _Driver(inspectable=inspection is not None)
-    return BrowserOwner(driver, headless=False, inspection=inspection)
+    return BrowserOwner(driver, headless=headless, inspection=inspection)

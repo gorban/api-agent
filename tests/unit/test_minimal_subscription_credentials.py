@@ -109,8 +109,16 @@ def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_pa
     from api_agent.llm_providers.gpt.connections import ConnectionStore
     from api_agent.llm_providers.gpt.contracts import Connection
     from api_agent.llm_providers.gpt import factory as gpt
-    from api_agent.providers.contracts import InteractionRequiredError
-    monkeypatch.setattr(gpt, 'connect_account', lambda *args: pytest.fail('unexpected attended browser'))
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    async def connect(selected_store, **kwargs):
+        from dataclasses import replace
+        assert kwargs['login_username'] == 'person@example.test'
+        return await selected_store.save_serialized(replace(selected_store.list()[0],
+            subject='new-subject', email='person@example.test', access_token='new-token'))
+    connection = AsyncMock(side_effect=connect)
+    monkeypatch.setattr(gpt, 'connect_account', connection)
+    monkeypatch.setattr(gpt, 'subscription_browser', lambda **kwargs: SimpleNamespace(aclose=AsyncMock()))
     monkeypatch.setattr(credentials, 'get_username', lambda source: 'person@example.test')
     store = ConnectionStore(tmp_path / 'state')
     store.save(Connection('subject', 'client', store.host_id(),
@@ -120,15 +128,34 @@ def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_pa
                       'GPT_STATE_DIR': store.root, 'UNATTENDED_USER_INDEX': 0}
     owner = IntegrationLLM(data, tmp_path)
     try:
-        if matches:
-            assert owner.ensure_ready() is None
-            assert owner.owner._credentials is not None
-        else:
-            with pytest.raises(InteractionRequiredError, match='no unique cached OAuth'):
-                owner.ensure_ready()
+        from api_agent.providers.loading import aload_provider
+        owner.provider = owner.loop.run_until_complete(aload_provider(
+            data['LLM_PROVIDER'], data, {'owner_root': tmp_path}, kind='llm'))
+        loaded_globals = owner.provider.implementation.asetup.__func__.__globals__
+        monkeypatch.setitem(loaded_globals, 'connect_account', connection)
+        monkeypatch.setitem(loaded_globals, 'subscription_browser', lambda **kwargs: SimpleNamespace(aclose=AsyncMock()))
+        assert owner.ensure_ready() is None
+        assert owner.owner._credentials is not None
+        assert connection.await_count == int(not matches)
     finally:
         owner.close()
     assert owner.loop.is_closed()
+
+
+def test_cli_retrieval_failure_is_actionable_and_private_output_is_sanitized(tmp_path, monkeypatch):
+    from api_agent.providers.contracts import InteractionRequiredError
+    def failed(source):
+        raise credentials.CredentialError('private CLI identity/output')
+    monkeypatch.setattr(credentials, 'get_username', failed)
+    owner = IntegrationLLM(config(), tmp_path)
+    try:
+        reader = owner._credentials(0)
+        with pytest.raises(InteractionRequiredError, match='Sign in to the configured CLI') as error:
+            owner.loop.run_until_complete(reader(0, 'username'))
+        assert 'private CLI identity/output' not in str(error.value)
+    finally:
+        owner.close()
+    assert not owner._credential_tasks and owner.loop.is_closed()
 
 
 @pytest.mark.parametrize('entries', [None, '', 0, False, {}])

@@ -6,6 +6,7 @@ import httpx
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, ProviderCapabilities, SetupPrerequisiteError
 from .connect import _dispose, connect_account
 from .connections import ConnectionStore, SubscriptionSession
+from .contracts import AuthError
 from .browser import subscription_browser
 from .oauth import refresh_connection
 
@@ -38,6 +39,8 @@ class GPTProvider:
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
+        self.run_ui = config.get("RUN_UI", False)
+        self.attended_fallback = config.get("NO_STD_IN") is False or inspection is not None
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
         self.browsers = []
@@ -56,22 +59,48 @@ class GPTProvider:
             raise SetupPrerequisiteError("GPT subscription authentication requires responses mode; set GPT_API_MODE=responses.")
         store = ConnectionStore(self.state_dir)
         connections = store.list()
+        username = None
+        fallback = False
         if user_index is not None and credentials is not None:
-            username = await credentials(user_index, "username")
+            try:
+                username = await credentials(user_index, "username")
+            except InteractionRequiredError:
+                if not (interactive or self.attended_fallback):
+                    raise InteractionRequiredError("Password-manager username retrieval needs attention. Sign in to the configured CLI or start attended login; noninteractive execution cannot fall back.") from None
+                print("Password-manager username retrieval is unavailable. Sign in to the configured CLI and check the login entry; continuing with attended browser login.", flush=True)
+                fallback = True
+                connections = ()
+        if user_index is not None and credentials is not None and not fallback:
             if not isinstance(username, str) or not username.strip():
                 raise ContractError("The selected login must supply a nonempty username.")
             connections = tuple(connection for connection in connections
                                 if connection.email.strip().casefold() == username.strip().casefold())
-            if len(connections) != 1:
+            username = username.strip()
+            if len(connections) > 1:
                 raise InteractionRequiredError("The selected login has no unique cached OAuth connection; use attended sign-in first.")
         if len(connections) == 1:
             profile = store.profile_id(connections[0])
-        elif interactive:
+        elif interactive or username is not None or fallback:
             # Let the verified OAuth result identify the account instead of a manual ID.
-            browser = (subscription_browser() if self.inspection is None else
-                       subscription_browser(inspection=self.inspection))
+            browser_options = {}
+            if self.inspection is not None:
+                browser_options['inspection'] = self.inspection
+            if not interactive and not fallback:
+                browser_options['headless'] = not (self.run_ui or self.inspection is not None)
+            browser = subscription_browser(**browser_options)
             self.browsers.append(browser)
-            profile = await connect_account(store, browser_owner=browser, app_name=self.app_name)
+            login_options = {'login_username': username} if username is not None else {}
+            try:
+                profile = await connect_account(store, browser_owner=browser, app_name=self.app_name, **login_options)
+            except AuthError as error:
+                message = {
+                    'browser_closed': 'GPT login browser closed before authentication completed.',
+                    'browser_unavailable': 'GPT login browser could not open or navigate.',
+                    'callback_timeout': 'GPT sign-in timed out before authentication completed.',
+                    'username_submission_failed': 'GPT could not submit the configured username on the login page.',
+                    'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
+                }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
+                raise InteractionRequiredError(message) from None
         else:
             raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
         session = OwnedSubscriptionSession(store, profile)

@@ -142,7 +142,7 @@ def test_failed_attended_setup_keeps_browser_until_cleanup_confirmed(store, monk
 
 @pytest.mark.parametrize("username,entries,expected", [
     (" Person@example.test ", ("person@example.test", "other@example.test"), "0"),
-    ("missing@example.test", ("other@example.test",), None),
+    ("missing@example.test", ("other@example.test",), "new"),
     ("person@example.test", ("person@example.test", "person@example.test"), None),
     ("", (), "invalid"), (None, (), "invalid"),
 ])
@@ -150,7 +150,7 @@ def test_optional_username_selects_only_unique_matching_cache(username, entries,
     store.entries = tuple(SimpleNamespace(email=email, profile=str(index))
                           for index, email in enumerate(entries))
     reader = AsyncMock(return_value=username)
-    connect = AsyncMock(side_effect=AssertionError("unexpected browser"))
+    connect = AsyncMock(return_value='new')
     monkeypatch.setattr(module, "connect_account", connect)
     async def scenario():
         provider = module.factory({}, None)
@@ -168,7 +168,98 @@ def test_optional_username_selects_only_unique_matching_cache(username, entries,
             await provider.aclose()
     run(scenario())
     reader.assert_awaited_once_with(1, "username")
-    connect.assert_not_awaited()
+    assert connect.await_count == int(expected == 'new')
+    if expected == 'new':
+        assert connect.await_args.kwargs['login_username'] == username.strip()
+
+
+@pytest.mark.parametrize('run_ui', [False, True])
+@pytest.mark.parametrize('debug', [False, True])
+def test_uncached_selected_username_drives_browser_visibility(store, monkeypatch, run_ui, debug):
+    inspection = object() if debug else None
+    browser = SimpleNamespace(aclose=AsyncMock())
+    options = []
+    def create(**kwargs):
+        options.append(kwargs)
+        return browser
+    monkeypatch.setattr(module, 'subscription_browser', create)
+    connect = AsyncMock(return_value='new')
+    monkeypatch.setattr(module, 'connect_account', connect)
+    async def scenario():
+        provider = module.factory({'RUN_UI': run_ui}, {'browser_inspection': inspection})
+        reader = AsyncMock(return_value=' person@example.test ')
+        session = await provider.asetup(interactive=False, user_index=0, credentials=reader)
+        assert session.profile_id == 'new'
+        reader.assert_awaited_once_with(0, 'username')
+        assert connect.await_args.kwargs['login_username'] == 'person@example.test'
+        assert options == [({'inspection': inspection} if debug else {}) | {'headless': not (run_ui or debug)}]
+        await provider.aclose()
+        browser.aclose.assert_awaited_once()
+    run(scenario())
+
+
+@pytest.mark.parametrize('interactive,no_std_in,debug,allowed', [
+    (True, True, False, True), (False, False, False, True),
+    (False, True, True, True), (False, True, False, False),
+    (False, None, False, False),
+])
+def test_username_cli_failure_falls_back_only_with_attended_permission(store, monkeypatch, capsys, interactive, no_std_in, debug, allowed):
+    store.entries = (SimpleNamespace(email='unbound@example.test', profile='unbound'),)
+    browser = SimpleNamespace(aclose=AsyncMock())
+    created = []
+    def create(**kwargs):
+        created.append(kwargs)
+        return browser
+    monkeypatch.setattr(module, 'subscription_browser', create)
+    connect = AsyncMock(return_value='verified-attended')
+    monkeypatch.setattr(module, 'connect_account', connect)
+    inspection = object() if debug else None
+    async def scenario():
+        config = {} if no_std_in is None else {'NO_STD_IN': no_std_in}
+        provider = module.factory(config, {'browser_inspection': inspection})
+        reader = AsyncMock(side_effect=InteractionRequiredError('private CLI output'))
+        try:
+            if allowed:
+                auth = await provider.asetup(interactive=interactive, user_index=0, credentials=reader)
+                assert auth.profile_id == 'verified-attended'
+                assert created == ([{'inspection': inspection}] if debug else [{}])
+                assert 'login_username' not in connect.await_args.kwargs
+            else:
+                with pytest.raises(InteractionRequiredError, match='noninteractive execution cannot fall back') as error:
+                    await provider.asetup(interactive=interactive, user_index=0, credentials=reader)
+                assert 'private CLI output' not in str(error.value)
+                assert not created
+                connect.assert_not_awaited()
+            reader.assert_awaited_once_with(0, 'username')
+        finally:
+            await provider.aclose()
+    run(scenario())
+    output = capsys.readouterr().out
+    assert ('continuing with attended browser login' in output) is allowed
+    assert 'private CLI output' not in output
+
+
+@pytest.mark.parametrize('code,expected', [
+    ('browser_closed', 'browser closed'), ('browser_unavailable', 'could not open'),
+    ('callback_timeout', 'timed out'), ('username_submission_failed', 'submit the configured username'),
+    ('account_mismatch', 'different account'), ('private upstream text', 'retry authentication'),
+])
+def test_browser_auth_failure_crosses_provider_boundary_safely(store, monkeypatch, code, expected):
+    from api_agent.llm_providers.gpt.contracts import AuthError
+    browser = SimpleNamespace(aclose=AsyncMock())
+    monkeypatch.setattr(module, 'subscription_browser', lambda: browser)
+    monkeypatch.setattr(module, 'connect_account', AsyncMock(side_effect=AuthError(code)))
+    async def scenario():
+        provider = module.factory({}, None)
+        try:
+            with pytest.raises(InteractionRequiredError, match=expected) as error:
+                await setup(provider, interactive=True)
+            assert 'private upstream text' not in str(error.value)
+            assert not provider.sessions
+        finally:
+            await provider.aclose()
+        browser.aclose.assert_awaited_once()
+    run(scenario())
 
 
 def test_refresh_transport_lifetime(store, monkeypatch):
