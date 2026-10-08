@@ -113,11 +113,100 @@ def test_setup_failures_are_not_success(tmp_path, monkeypatch, problem):
     monkeypatch.setattr(p, 'aload_provider', AsyncMock(return_value=loaded))
     owner = p.IntegrationLLM({} if problem == 'missing' else {'LLM_PROVIDER': 'selected'}, tmp_path)
     try:
-        with pytest.raises(ContractError):
+        with pytest.raises(pytest.skip.Exception if problem in {'missing', 'unsupported'} else ContractError):
             owner.ensure_ready()
     finally:
         owner.close()
     assert owner.loop.is_closed()
+
+
+@pytest.mark.parametrize('values', [{}, {'FIRST': None, 'SECOND': ''}])
+def test_required_configuration_lists_missing_names_without_values(values):
+    requirement = p.IntegrationRequirements(values)
+    with pytest.raises(pytest.skip.Exception, match='Missing required configuration: FIRST, SECOND'):
+        requirement.require('FIRST', 'SECOND')
+    requirement.require()
+    assert values == requirement.values
+
+
+def test_requirement_fixture_is_inert_and_false_zero_are_provided(tmp_path, monkeypatch):
+    snapshot(tmp_path, monkeypatch, {'BOOL': False, 'NUMBER': 0, 'VALUE': 'configured'})
+    requirement = p.integration_config.__wrapped__()
+    requirement.require('BOOL', 'NUMBER', 'VALUE')
+    requirement.require_combination(True, 'not relevant')
+    with pytest.raises(pytest.skip.Exception, match='This operation requires the supported combination'):
+        requirement.require_combination(False, 'This operation requires the supported combination')
+
+
+@pytest.mark.parametrize('problem', ['configuration', 'authentication', 'transport'])
+def test_only_explicit_prerequisites_become_skips(tmp_path, monkeypatch, problem):
+    from api_agent.providers.contracts import SetupPrerequisiteError
+    from api_agent.providers.control import OperationalError
+    errors = {'configuration': SetupPrerequisiteError('Unsupported selected combination'),
+              'authentication': InteractionRequiredError('Sign-in is required'),
+              'transport': OSError('transport failed')}
+    adapter = SimpleNamespace(asetup=AsyncMock(side_effect=errors[problem]))
+    provider = SimpleNamespace(implementation=adapter, aclose=AsyncMock())
+    monkeypatch.setattr(p, 'aload_provider', AsyncMock(return_value=provider))
+    owner = p.IntegrationLLM({'LLM_PROVIDER': 'selected'}, tmp_path)
+    try:
+        expected = pytest.skip.Exception if problem == 'configuration' else OperationalError if problem == 'transport' else InteractionRequiredError
+        try:
+            owner.ensure_ready()
+        except BaseException as error:
+            observed = error
+        else:
+            pytest.fail('Expected setup rejection')
+        assert isinstance(observed, expected)
+        assert ('unknown' if problem == 'transport' else str(errors[problem])) in str(observed)
+    finally:
+        owner.close()
+    provider.aclose.assert_awaited_once()
+
+
+@pytest.mark.parametrize('value', [False, 0, [], 'malformed'])
+def test_malformed_provider_selection_is_not_a_skip(tmp_path, value):
+    from api_agent.providers.loading import ProviderError
+    owner = p.IntegrationLLM({'LLM_PROVIDER': value}, tmp_path)
+    try:
+        try:
+            owner.ensure_ready()
+        except BaseException as error:
+            observed = error
+        else:
+            pytest.fail('Expected invalid provider rejection')
+        assert isinstance(observed, ProviderError)
+        assert not isinstance(observed, pytest.skip.Exception)
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize('jobs', [0, 2])
+def test_selected_invalid_combination_skips_shared_setup_but_runs_isolated_checks(tmp_path, jobs):
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.recorded import run_recorded_integration
+    base = tmp_path / 'base'
+    suite = base / 'tests/integration'
+    suite.mkdir(parents=True)
+    (suite / 'test_ready.py').write_text('def test_ready(llm_provider):\n    llm_provider.ensure_ready()\n')
+    context = SimpleNamespace(base_root=base, owner_root=base, suite_paths=lambda mode: [suite])
+    state = tmp_path / 'never-created'
+    config = {'LLM_PROVIDER': str(Path(p.__file__).parents[1] / 'llm_providers/gpt/factory.py') + ':factory',
+              'GPT_AUTH_MODE': 'subscription', 'GPT_API_MODE': 'completions', 'GPT_STATE_DIR': state,
+              'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
+              'ALLURE_RESULTS_DIR': tmp_path / 'allure', 'TEST_PARALLEL_JOBS': jobs}
+    selected = collect_tests(context, 'integration', config=config)
+    assert len(selected) == 3
+    recorded = run_recorded_integration(context, selected, config, accepted=True,
+        storage=SimpleNamespace(persist=lambda *args: None))
+    assert recorded.exit_code == 0 and recorded.persisted
+    assert [test.status for test in recorded.execution.tests] == ['skipped', 'passed', 'passed']
+    reason = 'GPT subscription authentication requires responses mode; set GPT_API_MODE=responses.'
+    assert recorded.execution.tests[0].traceback == reason
+    assert not state.exists()
+    rows = [json.loads(path.read_text()) for path in recorded.directory.glob('*-result.json')]
+    assert sorted(row['status'] for row in rows) == ['passed', 'passed', 'skipped']
+    assert next(row for row in rows if row['status'] == 'skipped')['statusDetails']['message'] == reason
 
 
 def test_fixture_does_not_setup_and_always_closes(tmp_path, monkeypatch):

@@ -70,6 +70,25 @@ def test_failure_skip_and_setup_error_never_pass(tmp_path):
     assert 'secret' in result.tests[0].traceback
 
 
+@pytest.mark.parametrize('jobs', [0, 2])
+@pytest.mark.parametrize('all_skipped', [False, True])
+def test_intentional_skips_are_neutral_and_preserve_each_reason(tmp_path, jobs, all_skipped):
+    source = 'import pytest\n@pytest.mark.skip(reason="first requirement unavailable")\ndef test_first():\n    pass\n'
+    source += 'def test_second():\n    pytest.skip("second requirement unavailable")\n'
+    if not all_skipped:
+        source += 'def test_success():\n    assert True\n'
+    base = fixture_repo(tmp_path / 'base', source)
+    ctx = context(base)
+    events = []
+    run = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+                                parallel_jobs=jobs, on_event=events.append)
+    assert run.exit_code == 0 and not run.cancelled
+    assert [test.status for test in run.tests] == ['skipped', 'skipped'] + ([] if all_skipped else ['passed'])
+    assert [test.traceback for test in run.tests[:2]] == ['first requirement unavailable', 'second requirement unavailable']
+    assert sorted(event.traceback for event in events if event.kind == 'test_finished' and event.status == 'skipped') == ['first requirement unavailable', 'second requirement unavailable']
+    assert events[-1].status == 'passed'
+
+
 def test_cancellation_reaps_child_before_after_hook(tmp_path):
     base = fixture_repo(tmp_path / 'base', 'import subprocess, sys, time\nfrom pathlib import Path\ndef test_wait():\n    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n    Path("child.pid").write_text(str(child.pid))\n    time.sleep(60)\n')
     ctx = context(base)

@@ -14,13 +14,15 @@ def progress_summary(mode, rows):
     return Text.assemble(f'Running selected {mode} tests… ',
                          (f'{passed} passed', 'green'), ' / ',
                          (f'{failed} failed', 'red' if failed else ''), ' / ',
+                         f"{statuses.count('SKIPPED')} skipped / ",
                          f"{statuses.count('RUNNING')} running / {statuses.count('PENDING')} pending")
 
 
 def ordered_result_rows(rows, *, completed):
     result = list(rows.items())
     if completed:
-        result.sort(key=lambda row: row[1][0] not in {'FAILED', 'ERROR'})
+        result.sort(key=lambda row: 0 if row[1][0] in {'FAILED', 'ERROR'}
+                    else 1 if row[1][0] == 'SKIPPED' else 2)
     return result
 
 

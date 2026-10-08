@@ -37,7 +37,7 @@ def fake_runner(status='passed', *, deliver=True):
     def run(context, tests, **hooks):
         assert hooks['accepted'] is True and hooks['no_std_in'] is False
         outcomes = tuple(TestResult(test, status, .25) for test in tests)
-        result = IntegrationRunResult(130 if status == 'cancelled' else int(status != 'passed'),
+        result = IntegrationRunResult(130 if status == 'cancelled' else int(status not in {'passed', 'skipped'}),
                                       outcomes, '', status == 'cancelled')
         try:
             hooks['before_run']()
@@ -231,3 +231,25 @@ def test_real_recorded_collision_and_parameter_name_join(tmp_path):
     row = json.loads(next(result.directory.glob('*-result.json')).read_text())
     assert row['name'] == 'test_value[value::nested]'
     assert row['fullName'] == tests[0].node_id
+
+
+def test_foreign_base_and_provider_results_record_without_identity_collisions(tmp_path):
+    histories = []
+    for checkout in ('original', 'relocated'):
+        context, pack_test, config = fixture(tmp_path / checkout)
+        provider_root = context.base_root / 'providers/gpt'
+        base_test = TestIdentity('base::test.py::test_same', 'base', 'test.py', 'test.py::test_same')
+        provider_test = TestIdentity('provider:test', 'provider:' + str(provider_root),
+                                     'test.py', 'test.py::test_same', root=provider_root)
+        result = recorded.run_recorded_integration(context, [pack_test, base_test, provider_test], config,
+            accepted=True, storage=Storage(), runner=fake_runner('skipped'))
+        assert result.exit_code == 0 and result.persisted and result.manifest['status'] == 'completed'
+        rows = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]
+        assert len(rows) == 3
+        assert {row['fullName'] for row in rows} == {
+            pack_test.node_id, 'base::test.py::test_same', 'provider:providers/gpt::test.py::test_same'}
+        assert len({row['historyId'] for row in rows}) == 3
+        assert all(row['status'] == 'skipped' and row['statusDetails']['message'] == 'Test skipped' for row in rows)
+        assert str(tmp_path) not in json.dumps(rows)
+        histories.append({row['fullName']: row['historyId'] for row in rows})
+    assert histories[0] == histories[1]

@@ -4,12 +4,45 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from textual.widgets import Static
+from textual.widgets import DataTable, Static
 
 from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import TestResult
 from api_agent.testing.integration import IntegrationRunResult
 from test_tui import fixture
+
+
+def test_skipped_results_are_neutral_and_enter_opens_selected_reason(tmp_path):
+    identities = [TestIdentity(f'base::t.py::{name}', 'base', 't.py', f't.py::{name}')
+                  for name in ('pass', 'skip_first', 'skip_second')]
+    results = (TestResult(identities[0], 'passed'),
+               TestResult(identities[1], 'skipped', traceback='First unavailable prerequisite'),
+               TestResult(identities[2], 'skipped', traceback='Second unavailable prerequisite'))
+    async def scenario():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: identities)
+        app.integration_runner = lambda *args, **kwargs: SimpleNamespace(
+            execution=IntegrationRunResult(0, results, ''), exit_code=0)
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause(.2)
+            await pilot.press('s')
+            await pilot.pause(.4)
+            body = app.screen.query_one('#body', Static).content
+            assert 'PASS' in body.plain and '1 passed / 0 failed / 2 skipped' in body.plain
+            skip_offset = body.plain.index('2 skipped')
+            assert not any(span.start <= skip_offset < span.end and span.style in {'red', 'green'}
+                           for span in body.spans)
+            table = app.screen.query_one(DataTable)
+            assert [str(table.get_row_at(i)[1]) for i in range(3)] == [
+                identities[1].id, identities[2].id, identities[0].id]
+            table.move_cursor(row=1)
+            table.focus()
+            await pilot.press('enter')
+            await pilot.pause(.2)
+            assert app.screen.heading == 'Integration test skipped'
+            assert 'Second unavailable prerequisite' in app.screen.body
+            assert 'First unavailable prerequisite' not in app.screen.body
+            assert app.operation_status == 0
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('status,persisted', [('passed', True), ('failed', True), ('passed', False)])

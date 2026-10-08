@@ -42,7 +42,9 @@ class Events:
     def pytest_runtest_logreport(self, report):
         self.send(kind='report', node=report.nodeid, phase=report.when,
                   status=report.outcome, duration=report.duration,
-                  traceback=str(report.longrepr) if report.failed else '')
+                  traceback=(str(report.longrepr[2]).removeprefix('Skipped: ')
+                             if report.skipped and isinstance(report.longrepr, tuple)
+                             else str(report.longrepr) if report.failed or report.skipped else ''))
 sys.exit(pytest.main(sys.argv[2:], plugins=[Events()]))
 '''
 
@@ -229,7 +231,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         for test in tests:
             if test.id not in results:
                 finish(test.repo, test, [], 'cancelled' if cancelled else 'error')
-        failed |= callback_failed or any(test.status != 'passed' for test in results.values())
+        failed |= callback_failed or any(test.status not in {'passed', 'skipped'} for test in results.values())
         result = IntegrationRunResult(130 if cancelled else int(failed),
                                       tuple(results[test.id] for test in tests), ''.join(chunks), cancelled)
         # After-run occurs after synchronous cleanup. Its failure is reflected

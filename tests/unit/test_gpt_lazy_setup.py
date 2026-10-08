@@ -9,7 +9,7 @@ import pytest
 from api_agent.llm_providers.gpt import factory as module
 from api_agent.llm_providers.gpt.connections import ConnectionStore
 from api_agent.llm_providers.gpt.contracts import Connection
-from api_agent.providers.contracts import ContractError, InteractionRequiredError
+from api_agent.providers.contracts import ContractError, InteractionRequiredError, SetupPrerequisiteError
 
 
 def run(awaitable):
@@ -51,8 +51,17 @@ def test_factory_no_io(monkeypatch):
 @pytest.mark.parametrize("config,message", [({"GPT_AUTH_MODE": "api_key"}, "pending"), ({"GPT_API_MODE": "completions"}, "requires responses")])
 def test_route_rejected_before_io(config, message, monkeypatch):
     monkeypatch.setattr(module, "ConnectionStore", lambda *_: pytest.fail("storage"))
-    with pytest.raises(ContractError, match=message):
+    with pytest.raises(SetupPrerequisiteError, match=message):
         run(setup(module.factory(config, None)))
+
+
+@pytest.mark.parametrize('name', ['GPT_AUTH_MODE', 'GPT_API_MODE'])
+@pytest.mark.parametrize('value', [None, False, 42, [], 'malformed'])
+def test_malformed_modes_are_errors_not_missing_prerequisites(name, value, monkeypatch):
+    monkeypatch.setattr(module, 'ConnectionStore', lambda *_: pytest.fail('unexpected storage'))
+    with pytest.raises(ContractError, match=name) as error:
+        run(setup(module.factory({name: value}, None)))
+    assert not isinstance(error.value, SetupPrerequisiteError)
 
 
 def test_uncached_and_ambiguous(store, monkeypatch):

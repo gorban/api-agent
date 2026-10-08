@@ -151,3 +151,5 @@
 - [x] Separate checked checkbox membership from future-test selection intent. Only initial unfiltered selection or explicitly selecting All grants All scope; preserve file/tag scopes and repository-qualified tags across recollection.
 - [x] Accept enum defaults through declaration tokens, including anchored path enums, and display the declared/conditional default while editing.
 - [x] Finalize successfully completed collectors and test runners as well as canceled/failed ones; do not leave owned live descendants after reporting completion. Keep collection output when a finished leader's descendant held its capture pipes open.
+
+- [x] Shared completed-result ordering groups failures/errors, skipped, then other tests stably; select the first row after sorting. Enter on a skipped integration opens that test’s reason. Running/final integration summaries report skips separately and neutrally, with Allure propagation and ordinary integration skips excluded from failure exit status. Unit pass/coverage strictness is unchanged.

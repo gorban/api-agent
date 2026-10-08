@@ -3,9 +3,10 @@
 The TUI supplies interactive acceptance. This adapter records execution and
 never supplies acceptance or starts services on its own.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from contextlib import ExitStack
 import json
+import os
 from pathlib import Path
 import tempfile
 
@@ -101,7 +102,12 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 usage_output(starting_usage_line(usage.report()))
 
         def record(result):
-            recorder.record_test(result)
+            test = result.identity
+            if test.repo != identity.repo:
+                label = ('provider:' + os.path.relpath(test.root, context.base_root)
+                         if test.root is not None else test.repo)
+                test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
+            recorder.record_test(replace(result, identity=test))
             seen.add(result.identity.id)
 
         def after(result):

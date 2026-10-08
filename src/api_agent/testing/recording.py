@@ -124,6 +124,8 @@ class RunRecorder:
             row['statusDetails'] = {'message': 'Test interrupted'}
         elif status in {'failed', 'broken'}:
             row['statusDetails'] = {'message': 'Test failed' if status == 'failed' else 'Test setup or execution failed'}
+        elif status == 'skipped':
+            row['statusDetails'] = {'message': self._safe_text(result.traceback) if result.traceback else 'Test skipped'}
         if result.traceback and self._include_trace:
             row.setdefault('statusDetails', {})['trace'] = self._safe_text(result.traceback)
         filename = self._write(f'{row["uuid"]}-result.json', json.dumps(row, sort_keys=True).encode())
