@@ -209,16 +209,17 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 Binding("pageup", "failure_page_up", "Page up"),
                 Binding("pagedown", "failure_page_down", "Page down"),
                 Binding("ctrl+c", "copy_value", "Copy value", key_display="^c", priority=True)]
-    BINDINGS += [Binding('super+c', 'copy_selected_text', 'Copy selected text', show=False, priority=True)]
+    BINDINGS += [Binding('super+c', 'copy_selected_text', 'Copy value', key_display='⌘c', priority=True)]
 
     @property
     def active_bindings(self):
         bindings = super().active_bindings
-        # Replacing App's Ctrl+C binding retains its earlier insertion position.
+        # Replacing an inherited copy binding retains its earlier insertion position.
         # Present our contextual copy action after the other screen shortcuts.
-        if "ctrl+c" in bindings and bindings["ctrl+c"].binding.action == "copy_value":
-            copy = bindings.pop("ctrl+c")
-            bindings["ctrl+c"] = copy
+        for key in ('ctrl+c', 'super+c'):
+            if key in bindings and bindings[key].binding.action in {'copy_value', 'copy_selected_text'}:
+                copy = bindings.pop(key)
+                bindings[key] = copy
         return bindings
 
     def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
@@ -382,11 +383,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return self.kind == "defaults"
         if action == "setting_help":
             return self.selected_setting_help() is not None
-        if action == "copy_value":
-            return (self.selected_effective_value() is not None or
-                    sys.platform != 'darwin' and self.selected_result_text() is not None)
-        if action == 'copy_selected_text':
-            return sys.platform == 'darwin' and self.selected_result_text() is not None
+        if action in {'copy_value', 'copy_selected_text'}:
+            platform_matches = (sys.platform == 'darwin') == (action == 'copy_selected_text')
+            return platform_matches and (self.selected_effective_value() is not None or
+                                         self.selected_result_text() is not None)
         if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
