@@ -335,6 +335,58 @@ def test_closing_login_without_callback_ends_promptly_and_disposes(lane, closed)
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('username,external', [('', False), (' ', False), (42, False), ('person@example.test', True)])
+def test_invalid_login_username_has_no_transport_or_browser(lane, monkeypatch, username, external):
+    monkeypatch.setattr(c.httpx, 'AsyncClient', lambda: pytest.fail('transport allocated'))
+    with pytest.raises(c.AuthError, match='^invalid_login_username$'):
+        asyncio.run(c.connect_account(Store(), login_username=username,
+                                      open_browser=(lambda _: True) if external else None))
+
+
+@pytest.mark.parametrize('outcome', ['success', 'wrong_account', 'field_error', 'cancel'])
+def test_username_submission_and_verified_account_binding(lane, outcome):
+    from unittest.mock import AsyncMock, Mock
+    async def scenario():
+        field = SimpleNamespace(fill=AsyncMock())
+        urls = []
+        async def goto(url, **kwargs):
+            urls.append(url)
+        async def click():
+            assert b'200 OK' in await request(urls[0])
+        button = SimpleNamespace(click=AsyncMock(side_effect=click))
+        page = SimpleNamespace(goto=goto, get_by_role=Mock(side_effect=[field, button]))
+        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page)), aclose=AsyncMock())
+        email = 'different@example.test' if outcome == 'wrong_account' else 'PERSON@example.test'
+        lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email=email))
+        if outcome == 'field_error':
+            field.fill.side_effect = RuntimeError('private username / upstream page text')
+        elif outcome == 'cancel':
+            field.fill.side_effect = asyncio.CancelledError()
+        store = Store()
+        options = dict(browser_owner=owner, client=object(), login_username=' person@example.test ')
+        if outcome == 'success':
+            assert await c.connect_account(store, **options) == 'account'
+            assert len(store.saved) == 1
+        else:
+            error = asyncio.CancelledError if outcome == 'cancel' else c.AuthError
+            code = 'account_mismatch' if outcome == 'wrong_account' else 'username_submission_failed'
+            with pytest.raises(error, match=None if outcome == 'cancel' else '^' + code + '$'):
+                await c.connect_account(store, **options)
+            assert not store.saved
+        field.fill.assert_awaited_once_with('person@example.test')
+        assert page.get_by_role.call_args_list[0].args == ('textbox',)
+        assert page.get_by_role.call_args_list[0].kwargs == {'name': 'Email address', 'exact': True}
+        if outcome in {'success', 'wrong_account'}:
+            assert page.get_by_role.call_args_list[1].kwargs == {'name': 'Continue', 'exact': True}
+            button.click.assert_awaited_once()
+            lane.finish_authorization.assert_awaited_once()
+        else:
+            button.click.assert_not_awaited()
+            lane.finish_authorization.assert_not_awaited()
+        owner.aclose.assert_awaited_once()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('close_after_callback', [False, True])
 def test_managed_browser_wait_accepts_callback_before_closure(lane, close_after_callback):
     from unittest.mock import AsyncMock

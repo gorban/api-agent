@@ -30,10 +30,10 @@ type = "str"
 acknowledge_default = false
 default = "LLM User"
 conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key"}, value = "GPT API Key"}]
-help = "Subscription login role for unattended authentication. Configure its account and the shared password manager; the entry username binds reuse to the matching cached OAuth account. Attended login remains available through Skip. The pending API-key route uses the entry password as its key."
+help = "Subscription login role for unattended authentication. Configure its account and the shared password manager; the entry username binds reuse to the matching cached OAuth account and fills the observed Email address / Continue step for a new connection. Attended login remains available through Skip. The pending API-key route uses the entry password as its key."
 
 [fields.UNATTENDED_USER_INDEX]
 type = "int"
 validation = "nonnegative"
 acknowledge_default = false
-help = "Enable the unattended integration start option for the selected account pair. For GPT subscription reuse, a configured login username selects the matching cached OAuth account. Without a descriptor, only an unambiguous cached account can be reused."
+help = "Enable the unattended integration start option for the selected account pair. For GPT subscription setup, the configured login username selects a matching cached OAuth account or fills the initial email step. The account descriptor and password manager are required; this setting does not select unattended merely because accounts exist. Start attended overrides it for that run. Password-manager retrieval failure falls back to attended only when interactive execution or integration DEBUG allows it."

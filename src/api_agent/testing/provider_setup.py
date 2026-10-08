@@ -7,7 +7,7 @@ import stat
 
 import pytest
 
-from api_agent.providers.contracts import ContractError, SetupPrerequisiteError
+from api_agent.providers.contracts import ContractError, InteractionRequiredError, SetupPrerequisiteError
 from api_agent.providers.loading import aload_provider
 from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
 
@@ -100,7 +100,10 @@ class IntegrationLLM:
                       'totp': helpers.get_totp}[kind]
             task = asyncio.create_task(asyncio.to_thread(helper, source))
             self._credential_tasks.add(task)
-            return await asyncio.shield(task)
+            try:
+                return await asyncio.shield(task)
+            except helpers.CredentialError:
+                raise InteractionRequiredError("Password-manager retrieval is unavailable. Sign in to the configured CLI and check the login entry.") from None
         return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve))
 
     async def _ensure(self):
