@@ -39,6 +39,27 @@ def test_allure_hierarchy_and_attachments(tmp_path):
         run.record_test(result())
 
 
+@pytest.mark.parametrize('reason', ['', 'Missing required configuration: ACCESS_KEY'])
+def test_allure_skips_keep_reason_without_failing_run(tmp_path, reason):
+    from dataclasses import replace
+    recorder = RunRecorder(tmp_path, identity())
+    outcome = replace(result('skipped'), traceback=reason)
+    row = json.loads((tmp_path / recorder.record_test(outcome)).read_text())
+    assert row['status'] == 'skipped'
+    assert row['statusDetails']['message'] == (reason or 'Test skipped')
+    assert recorder.finalize()['status'] == 'completed'
+
+
+def test_skip_reason_redacts_registered_secrets(tmp_path):
+    from dataclasses import replace
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=('PRIVATE',))
+    recorder = RunRecorder(tmp_path, identity(), evidence_boundary=boundary)
+    outcome = replace(result('skipped'), traceback='Requirement unavailable: PRIVATE')
+    row = json.loads((tmp_path / recorder.record_test(outcome)).read_text())
+    assert row['statusDetails']['message'] == 'Requirement unavailable: [REDACTED]'
+    assert 'PRIVATE' not in json.dumps(row)
+
+
 @pytest.mark.parametrize('status,expected', [('failed', 'failed'), ('broken', 'failed'),
                                               ('interrupted', 'interrupted'), ('cancelled', 'interrupted')])
 def test_nonpassing_outcomes_are_honest(tmp_path, status, expected):

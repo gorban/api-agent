@@ -10,6 +10,14 @@ class ContractError(ValueError):
     """A neutral boundary failure, without payload or credential diagnostics."""
 
 
+class SetupPrerequisiteError(ContractError):
+    """A safe reason that required setup configuration/capability is unavailable.
+
+    Operational integrations skip this condition; rejection tests may assert it.
+    Authentication, transport and implementation failures must use other errors.
+    """
+
+
 class InteractionRequiredError(ContractError):
     """A safe, actionable message requesting attended provider setup."""
 

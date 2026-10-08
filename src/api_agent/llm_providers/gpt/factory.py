@@ -3,7 +3,7 @@ from pathlib import Path
 
 import httpx
 
-from api_agent.providers.contracts import ContractError, InteractionRequiredError, ProviderCapabilities
+from api_agent.providers.contracts import ContractError, InteractionRequiredError, ProviderCapabilities, SetupPrerequisiteError
 from .connect import _dispose, connect_account
 from .connections import ConnectionStore, SubscriptionSession
 from .oauth import refresh_connection
@@ -42,10 +42,14 @@ class GPTProvider:
     async def asetup(self, *, interactive, user_index, credentials):
         if self.closed:
             raise ContractError("GPT provider is closed.")
+        if not isinstance(self.auth_mode, str) or self.auth_mode not in {"subscription", "api_key"}:
+            raise ContractError("GPT_AUTH_MODE must be subscription or api_key.")
+        if not isinstance(self.api_mode, str) or self.api_mode not in {"responses", "completions"}:
+            raise ContractError("GPT_API_MODE must be responses or completions.")
         if self.auth_mode != "subscription":
-            raise ContractError("GPT API-key authentication is pending implementation; select subscription authentication.")
+            raise SetupPrerequisiteError("GPT API-key authentication is pending implementation; select subscription authentication.")
         if self.api_mode != "responses":
-            raise ContractError("GPT subscription authentication requires responses mode; set GPT_API_MODE=responses.")
+            raise SetupPrerequisiteError("GPT subscription authentication requires responses mode; set GPT_API_MODE=responses.")
         store = ConnectionStore(self.state_dir)
         connections = store.list()
         if user_index is not None and credentials is not None:

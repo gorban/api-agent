@@ -7,7 +7,7 @@ import stat
 
 import pytest
 
-from api_agent.providers.contracts import ContractError
+from api_agent.providers.contracts import ContractError, SetupPrerequisiteError
 from api_agent.providers.loading import aload_provider
 from api_agent.providers.sessions import LLMSessionOwner
 
@@ -96,8 +96,8 @@ class IntegrationLLM:
     async def _ensure(self):
         await self._release_retained()
         location = self.config.get('LLM_PROVIDER')
-        if not location:
-            raise ContractError('Select LLM_PROVIDER before requesting LLM setup.')
+        if location is None or location == '':
+            raise SetupPrerequisiteError('Select LLM_PROVIDER before requesting LLM setup.')
         if self.provider is None:
             try:
                 self.provider = await aload_provider(location, self.config,
@@ -107,7 +107,7 @@ class IntegrationLLM:
                 raise
         implementation = self.provider.implementation
         if not callable(getattr(implementation, 'asetup', None)):
-            raise ContractError('The selected LLM provider has no setup capability.')
+            raise SetupPrerequisiteError('The selected LLM provider has no setup capability.')
         if self.owner is None:
             index = self.config.get('UNATTENDED_USER_INDEX')
             self.owner = LLMSessionOwner(implementation, user_index=index,
@@ -122,7 +122,10 @@ class IntegrationLLM:
     def ensure_ready(self):
         if self.closed:
             raise ContractError('Integration provider setup is closed.')
-        self.loop.run_until_complete(self._ensure())
+        try:
+            self.loop.run_until_complete(self._ensure())
+        except SetupPrerequisiteError as error:
+            pytest.skip(str(error))
 
     async def _close(self):
         await self._release_retained()
@@ -150,3 +153,29 @@ def llm_provider():
         yield provider
     finally:
         provider.close()
+
+
+class IntegrationRequirements:
+    """Test-local configuration prerequisites, checked before side effects.
+
+    Tests with isolated configuration should pass that resolved mapping instead
+    of the launch mapping. False and zero are provided values, not missing ones.
+    Reasons name settings/requirements, never their potentially secret values.
+    """
+    def __init__(self, values):
+        self.values = dict(values)
+
+    def require(self, *names):
+        missing = [name for name in names if self.values.get(name) is None or self.values.get(name) == '']
+        if missing:
+            pytest.skip('Missing required configuration: ' + ', '.join(missing))
+
+    def require_combination(self, valid, reason):
+        if not valid:
+            pytest.skip(reason)
+
+
+@pytest.fixture(scope='session')
+def integration_config():
+    """Require only settings used by this test, not unrelated suite settings."""
+    return IntegrationRequirements(_read_snapshot()['config'])

@@ -1144,7 +1144,7 @@ def test_unit_progress_counts_and_colors(tmp_path):
     app.unit_rows = {str(i): (status, str(i), '') for i, status in enumerate(
         ['PASSED', 'FAILED', 'ERROR', 'RUNNING', 'PENDING', 'PENDING'])}
     text = app.unit_progress()
-    assert text.plain.endswith('1 passed / 2 failed / 1 running / 2 pending')
+    assert text.plain.endswith('1 passed / 2 failed / 0 skipped / 1 running / 2 pending')
     assert any(text.plain[span.start:span.end] == '1 passed' and span.style == 'green' for span in text.spans)
     assert any(text.plain[span.start:span.end] == '2 failed' and span.style == 'red' for span in text.spans)
     app.unit_rows = {'pending': ('PENDING', 'pending', '')}

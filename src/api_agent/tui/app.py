@@ -1153,8 +1153,11 @@ class ApiAgentApp(App[int]):
         if summary is None:
             if self.mode == 'integration':
                 passed = sum(test.status == 'passed' for test in self.unit_result.tests)
+                failed = sum(test.status in {'failed', 'error'} for test in self.unit_result.tests)
+                skipped = sum(test.status == 'skipped' for test in self.unit_result.tests)
                 total = len(self.unit_result.tests)
                 summary = f'Integration results: {"PASS" if self.operation_status == 0 else "FAIL"} — {passed}/{total} passed ({100 * passed / total if total else 0:.2f}%).'
+                summary += f'\n{passed} passed / {failed} failed / {skipped} skipped.'
             else:
                 from api_agent.testing.runner import format_unit_summary
                 summary = format_unit_summary(self.unit_result)
@@ -1214,9 +1217,11 @@ class ApiAgentApp(App[int]):
 
     def toggle_row(self, key):
         if self.screen.kind == "test-results" and self.unit_result is not None:
-            failed = next((test for test in self.unit_result.tests if test.identity.id == key and test.traceback), None)
-            if failed:
-                self.show("test-failure", "Unit test failure", key + "\n\n" + failed.traceback)
+            result = next((test for test in self.unit_result.tests if test.identity.id == key and test.traceback), None)
+            if result:
+                mode = "Integration" if self.mode == 'integration' else "Unit"
+                title = f"{mode} test skipped" if result.status == 'skipped' else f"{mode} test failure"
+                self.show("test-failure", title, key + "\n\n" + result.traceback)
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
         elif self.screen.kind == "tests":
             self.selection.toggle(key)
