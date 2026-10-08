@@ -1,5 +1,5 @@
 """Owned pytest unit execution and fixed, per-file production coverage gates."""
-from .contracts import TestResult, RunnerEvent
+from .contracts import TestResult, RunnerEvent, format_test_summary
 from dataclasses import dataclass
 import json
 import os
@@ -278,7 +278,7 @@ def format_unit_summary(result):
                              and any(not area.complete for area in result.coverage))
     state = ('CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0
              else 'Coverage FAIL' if coverage_only_failure else 'FAIL')
-    lines = [f'Unit results: {state} — {passed}/{len(result.tests)} passed; {len(result.tests) - passed} did not pass.',
+    lines = [format_test_summary('unit', result.tests, state=state),
              ('Production coverage requires every measured file to reach 100% lines and branches.'
               if result.require_full_coverage else 'Partial selection: coverage is informational.')]
     if result.coverage and all(area.complete for area in result.coverage):

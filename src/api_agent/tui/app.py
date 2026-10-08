@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from rich.text import Text
 from api_agent.config.declarations import UNSET
@@ -208,6 +209,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 Binding("pageup", "failure_page_up", "Page up"),
                 Binding("pagedown", "failure_page_down", "Page down"),
                 Binding("ctrl+c", "copy_value", "Copy value", key_display="^c", priority=True)]
+    BINDINGS += [Binding('super+c', 'copy_selected_text', 'Copy selected text', show=False, priority=True)]
 
     @property
     def active_bindings(self):
@@ -381,7 +383,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
         if action == "setting_help":
             return self.selected_setting_help() is not None
         if action == "copy_value":
-            return self.selected_effective_value() is not None
+            return (self.selected_effective_value() is not None or
+                    sys.platform != 'darwin' and self.selected_result_text() is not None)
+        if action == 'copy_selected_text':
+            return sys.platform == 'darwin' and self.selected_result_text() is not None
         if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
@@ -478,13 +483,26 @@ class WorkbenchScreen(FocusNavigation, Screen):
 
     async def action_copy_value(self):
         value = self.selected_effective_value()
+        selected = value is None
+        if selected:
+            value = self.selected_result_text()
         if value is None:
             return
         try:
             native = await copy_text(self.app, value)
+            if selected:
+                self.clear_selection()
             self.app.notify("Value copied." if native else "Value sent to terminal clipboard.", timeout=2)
         except ClipboardError:
             self.app.notify("Could not copy the value.", severity="error", timeout=2)
+
+    def selected_result_text(self):
+        if self.kind not in {'test-results', 'test-failure'}:
+            return None
+        return self.get_selected_text()
+
+    async def action_copy_selected_text(self):
+        await self.action_copy_value()
 
     def action_unset_setting(self):
         try:
@@ -567,6 +585,7 @@ class ApiAgentApp(App[int]):
         self.unit_runner = unit_runner
         self.integration_runner = integration_runner
         self.integration_unattended = False
+        self.integration_persisted = None
         self.unit_result = None
         self.test_run = None
         self.unit_rows = {}
@@ -1102,6 +1121,7 @@ class ApiAgentApp(App[int]):
     async def _run_integrations(self):
         from api_agent.testing.recorded import run_recorded_integration
         runner = self.integration_runner or run_recorded_integration
+        self.integration_persisted = None
         try:
             fresh = await self.discover_tests(self.collection_cancel)
             if self.collection_cancel.is_set():
@@ -1119,6 +1139,7 @@ class ApiAgentApp(App[int]):
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel)
             self.unit_result = recorded.execution
+            self.integration_persisted = getattr(recorded, 'persisted', True)
             for test in self.unit_result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
             self.operation_status = recorded.exit_code
@@ -1151,13 +1172,14 @@ class ApiAgentApp(App[int]):
 
     def show_unit_results(self, summary=None):
         if summary is None:
-            if self.mode == 'integration':
-                passed = sum(test.status == 'passed' for test in self.unit_result.tests)
-                failed = sum(test.status in {'failed', 'error'} for test in self.unit_result.tests)
-                skipped = sum(test.status == 'skipped' for test in self.unit_result.tests)
-                total = len(self.unit_result.tests)
-                summary = f'Integration results: {"PASS" if self.operation_status == 0 else "FAIL"} — {passed}/{total} passed ({100 * passed / total if total else 0:.2f}%).'
-                summary += f'\n{passed} passed / {failed} failed / {skipped} skipped.'
+            if self.mode in {'integration', 'e2e'}:
+                from api_agent.testing.contracts import format_test_summary
+                summary = format_test_summary(self.mode, self.unit_result.tests,
+                                              state='CANCELLED' if self.unit_result.cancelled else None)
+                if self.integration_persisted is False:
+                    summary += '\nAllure publication: FAIL — could not save the run to all configured history destinations. Check reporting dependencies and storage availability.'
+                elif self.operation_status and not self.unit_result.cancelled and all(test.status in {'passed', 'skipped'} for test in self.unit_result.tests):
+                    summary += f'\nTest operation: FAIL — runner or reporting failed outside individual test outcomes (exit status {self.operation_status}).'
             else:
                 from api_agent.testing.runner import format_unit_summary
                 summary = format_unit_summary(self.unit_result)
@@ -1167,7 +1189,7 @@ class ApiAgentApp(App[int]):
             screen.body, screen.rows = summary, rows
             self.call_after_refresh(self.update_test_results, screen)
         else:
-            self.show("test-results", "Integration test results" if self.mode == 'integration' else "Unit test results", summary, rows=rows)
+            self.show("test-results", f"{(self.mode or 'unit').capitalize()} test results", summary, rows=rows)
         self.screen.test_run_complete = self.unit_result is not None
         self.screen.style_results = self.style_unit_summary
         if self.unit_result is not None:
@@ -1186,10 +1208,15 @@ class ApiAgentApp(App[int]):
     def style_unit_summary(self):
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             body = self.screen.query_one("#body", Static)
+            non_unit = self.mode in {'integration', 'e2e'}
             body.update(styled_summary(
-                body.content, failed=bool(self.operation_status if self.mode == 'integration' else self.unit_result.exit_code),
-                neutral_details=self.mode == 'integration' or not self.unit_result.require_full_coverage,
-                green_prefixes=("Production coverage: 100%",)))
+                body.content, failed=(self.unit_result.cancelled or not self.unit_result.tests
+                                     or any(test.status not in {'passed', 'skipped'} for test in self.unit_result.tests))
+                                     if non_unit else bool(self.unit_result.exit_code),
+                skipped=non_unit and any(test.status == 'skipped' for test in self.unit_result.tests),
+                neutral_details=non_unit or not self.unit_result.require_full_coverage,
+                green_prefixes=("Production coverage: 100%",),
+                red_prefixes=('Allure publication: FAIL', 'Test operation: FAIL')))
 
     def show_selection(self):
         rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
@@ -1219,7 +1246,7 @@ class ApiAgentApp(App[int]):
         if self.screen.kind == "test-results" and self.unit_result is not None:
             result = next((test for test in self.unit_result.tests if test.identity.id == key and test.traceback), None)
             if result:
-                mode = "Integration" if self.mode == 'integration' else "Unit"
+                mode = (self.mode or 'unit').capitalize()
                 title = f"{mode} test skipped" if result.status == 'skipped' else f"{mode} test failure"
                 self.show("test-failure", title, key + "\n\n" + result.traceback)
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
