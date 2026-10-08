@@ -20,6 +20,11 @@ allow_empty = true
 default = ""
 help = "Protected GPT connection directory. Empty uses ~/.config/api-agent/gpt; saved credentials require owner-only permissions."
 
+[fields.GPT_APP_NAME]
+type = "str"
+default = "api-agent"
+help = "Application display-name hint for first ChatGPT subscription registration. Defaults to api-agent even with a resource pack; override here or in the pack's configuration to name your application, consistently across its installations. Existing registrations keep their issued client ID; changing this value does not rename them."
+
 [fields.LLM_CREDENTIAL_ROLE]
 type = "str"
 acknowledge_default = false

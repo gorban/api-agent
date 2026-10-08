@@ -50,6 +50,8 @@ def begin_authorization(host_id: str, redirect_uri: str,
             raise ValueError
         if registration is not None and (registration.host_id != host_id or registration.client_id == INITIAL_CLIENT):
             raise ValueError
+        if registration is None and (not isinstance(app_name, str) or not app_name.strip()):
+            raise ValueError
     except (ValueError, TypeError, AttributeError):
         pass
     else:

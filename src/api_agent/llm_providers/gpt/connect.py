@@ -97,7 +97,8 @@ class CallbackListener:
 
 
 async def connect_account(store, *, registration=None, open_browser=None,
-                          client=None, timeout=180, clock=time.time, profile=None, browser_owner=None):
+                          client=None, timeout=180, clock=time.time, profile=None, browser_owner=None,
+                          app_name="api-agent"):
     """Persist only a fully verified connection; clean up on every exit."""
     from .oauth import begin_authorization, finish_authorization
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 600 or not math.isfinite(timeout):
@@ -110,7 +111,8 @@ async def connect_account(store, *, registration=None, open_browser=None,
         try:
             async with asyncio.timeout(timeout):
                 async with CallbackListener() as listener:
-                    attempt = begin_authorization(store.host_id(), listener.redirect_uri, registration=registration)
+                    attempt = begin_authorization(store.host_id(), listener.redirect_uri,
+                                                  registration=registration, app_name=app_name)
                     listener.expected_state = attempt.state
                     if open_browser is None:
                         if browser_owner is None:

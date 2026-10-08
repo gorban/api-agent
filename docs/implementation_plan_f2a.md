@@ -10,12 +10,15 @@ This is the first part of the [GPT provider](implementation_plan_f2.md). Connect
 - [x] Verify these boundaries with synthetic signed credentials and fake network/browser dependencies, including focused rejection mutations and exact unit coverage. Independent adversarial review precedes human sign-in acceptance.
 - [ ] Review and complete one actual sign-in with the user. Confirm the account and plan permission without making an inference call. Record actual eligibility and callback behavior separately from deterministic evidence.
 - [x] Integrate minimal account identification into provider setup: a unique saved OAuth connection is reused, an optional subscription login username binds unattended reuse, and attended OAuth identifies an account when needed. Keep cached profile IDs internal and subscription descriptors optional.
+- [x] Declare provider-owned GPT_APP_NAME, default api-agent independently of resource-pack naming, and pass it through lazy setup to initial registration's display-name hint. Allow ordinary pack/config overrides; require nonblank text for initial registration. Reauthorization reuses the issued client ID without resending the display hint, and changing the setting does not rename an existing grant.
 - [ ] Add optional vault password/TOTP assistance only for an observed supported login page; it cannot replace consent or make a connection complete by itself. Add an explicit cached-account picker/reconnect only when observed interactions require it.
 - [ ] Integrate the connection getter/refresh owner with the eventual LLM factory, preserving explicit account selection and disposal. Add explicit sign-out/revocation and returning-account recovery before claiming the full session lifecycle.
 
 ## Setup contract
 
 The supported flow is Continue with ChatGPT, followed by user sign-in and permission approval. A valid signed identity alone is insufficient: the token grant must allow ChatGPT plan usage. Subsequent runs reuse the provider's own protected credential record and refresh it when necessary. Reauthorization preserves the registered client and host; changing accounts must not overwrite another registration.
+
+GPT_APP_NAME supplies the initial application display-name hint and defaults to api-agent, including when a resource pack selects this provider. It is not an account/client identifier or an automatic copy of the pack name. Keep the chosen application name consistent across installations; an existing registration retains its issued client ID and is not renamed by a configuration change.
 
 Attended consent uses managed Playwright Chromium in a visible window, independently of RUN_UI. The launcher prepares the Python browser dependency through its development group; immediately before browser work, prepare the version-matched Chromium binary if missing. Run the browser alongside the loopback listener rather than relying on the system-default browser's loopback permissions. Cached-account reuse does not allocate a browser. Automated login-page assistance and the complete TUI connection manager remain separate tasks.
 
