@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from textual.widgets import DataTable, Input
+from textual.widgets._footer import FooterKey
 
 from api_agent.tui import clipboard
 from api_agent.tui.app import WorkbenchScreen
@@ -110,6 +111,9 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
                 table = screen.query_one(DataTable)
             before = dotenv.read_bytes()
             monkeypatch.setattr('api_agent.tui.app.sys.platform', platform)
+            # Simulated platform change happens after mounting; actual hosts do not change.
+            screen.refresh_bindings()
+            await pilot.pause()
             setting_column = 0 if mode is None else 1
             for name, expected in [('FLAG', 'False'), ('COUNT', '0'),
                                     ('TEXT', '[literal] π'), ('EMPTY', ''),
@@ -123,6 +127,12 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
                 visible = [b.binding for b in screen.active_bindings.values() if b.binding.show]
                 assert visible[-1].action == action
                 assert visible[-1].key_display == label
+                hints = [hint for hint in screen.query(FooterKey)
+                         if hint.description == 'Copy value']
+                assert len(hints) == 1
+                assert hints[0].key == key and hints[0].key_display == label
+                assert hints[0].render().plain.strip() == f'{label} Copy value'
+                assert not hints[0].has_class('-disabled')
                 await pilot.press(key)
                 copy.assert_awaited_with(app, expected)
                 assert table.cursor_row == row and table.has_focus

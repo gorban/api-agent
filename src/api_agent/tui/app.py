@@ -222,6 +222,15 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 bindings[key] = copy
         return bindings
 
+    @property
+    def focus_chain(self):
+        chain = super().focus_chain
+        if self.kind == 'test-results':
+            # Summary panes remain mouse-focusable for scrolling and selection,
+            # but Tab only visits the actual test list.
+            return [widget for widget in chain if isinstance(widget, DataTable)]
+        return chain
+
     def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
         super().__init__()
         self.kind, self.heading, self.body = kind, title, text
@@ -330,6 +339,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
         if self.kind == "test-results":
             self.call_after_refresh(self.layout_test_results)
 
+    def watch_selections(self):
+        # Textual updates highlighted text without refreshing contextual bindings.
+        self.refresh_bindings()
+
     def layout_test_results(self):
         if not self.is_mounted or not self.rows or self.app.screen is not self or not self.query("#workbench-content"):
             return
@@ -385,8 +398,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return self.selected_setting_help() is not None
         if action in {'copy_value', 'copy_selected_text'}:
             platform_matches = (sys.platform == 'darwin') == (action == 'copy_selected_text')
-            return platform_matches and (self.selected_effective_value() is not None or
-                                         self.selected_result_text() is not None)
+            return platform_matches and self.copy_target()[0] is not None
         if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
@@ -481,11 +493,25 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return None
         return str(cells[1 if self.kind == "defaults" else 2])
 
-    async def action_copy_value(self):
+    def copy_target(self):
+        """One source for copy availability, full value and deselection policy."""
         value = self.selected_effective_value()
-        selected = value is None
-        if selected:
-            value = self.selected_result_text()
+        if value is not None:
+            return value, False
+        selected = self.selected_result_text()
+        return (selected, True) if selected is not None else (self.selected_test_name(), False)
+
+    def selected_test_name(self):
+        if self.kind == 'test-results' and self.query(DataTable):
+            table = self.query_one(DataTable)
+            if table.row_count:
+                return str(table.get_row_at(table.cursor_row)[1])
+        if self.kind == 'test-failure' and self.body:
+            return self.body.splitlines()[0]
+        return None
+
+    async def action_copy_value(self):
+        value, selected = self.copy_target()
         if value is None:
             return
         try:
