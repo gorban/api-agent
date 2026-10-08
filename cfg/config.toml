@@ -255,7 +255,6 @@ COLLECT_ONLY = false
 
 
 [fields.LLM_PROVIDER]
-acknowledge_default = false
 type = "str"
 review_optional = true
 help = "Replaceable LLMProvider version-1 factory (file.py:factory). The bundled GPT provider currently supports lazy personal subscription setup; inference is a later capability. Any adapter implementing that interface may replace it."
