@@ -156,7 +156,7 @@ def test_bootstrap_selection_obeys_each_precedence_layer(tmp_path):
     assert bundled.fields['GPT_APP_NAME'].type == 'str'
     assert bundled.fields['GPT_APP_NAME'].help
     assert bundled.fields['LLM_CREDENTIAL_ROLE'].default == 'LLM User'
-    assert bundled.fields['LLM_CREDENTIAL_ROLE'].credential_role_optional
+    assert not hasattr(bundled.fields['LLM_CREDENTIAL_ROLE'], 'credential_role_optional')
     assert 'GPT_PROFILE' not in bundled.fields
     # Higher-precedence explicit empty selections disable the lower selection.
     assert loading.bootstrap_schema(schema, [], {'LLM_PROVIDER': ''}, {'LLM_PROVIDER': '/missing.py:create'}) is schema

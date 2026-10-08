@@ -29,9 +29,8 @@ help = "Application display-name hint for first ChatGPT subscription registratio
 type = "str"
 acknowledge_default = false
 default = "LLM User"
-credential_role_optional = true
 conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key"}, value = "GPT API Key"}]
-help = "Optional subscription login descriptor for matching a cached OAuth account by its vault username. Attended subscription login needs no descriptor. The pending API-key route uses the entry password as its key."
+help = "Subscription login role for unattended authentication. Configure its account and the shared password manager; the entry username binds reuse to the matching cached OAuth account. Attended login remains available through Skip. The pending API-key route uses the entry password as its key."
 
 [fields.UNATTENDED_USER_INDEX]
 type = "int"

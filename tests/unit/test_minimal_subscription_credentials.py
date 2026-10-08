@@ -1,4 +1,4 @@
-"""Optional vault identity retrieval stays scoped, lazy and owned until shutdown."""
+"""Required unattended vault identity retrieval stays scoped, lazy and owned until shutdown."""
 import asyncio
 import threading
 
@@ -39,9 +39,8 @@ def test_selected_descriptor_retrieval_is_lazy_and_scoped(tmp_path, monkeypatch,
     assert owner.loop.is_closed() and not owner._credential_tasks
 
 
-@pytest.mark.parametrize('value,index', [(None, 0), ({}, 0), ({'UNATTENDED_AUTH': {}}, 0),
-    ({'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': {'roles': {'LLM User': []}}}, 0)])
-def test_absent_optional_descriptor_needs_no_helper(tmp_path, value, index):
+@pytest.mark.parametrize('value,index', [(None, 0), ({}, 0), ({'UNATTENDED_AUTH': {}}, 0)])
+def test_provider_without_a_credential_role_needs_no_helper(tmp_path, value, index):
     owner = IntegrationLLM(value or {}, tmp_path)
     try:
         assert owner._credentials(index) is None
@@ -65,7 +64,7 @@ def test_configured_invalid_descriptor_fails_without_retrieval(tmp_path, problem
         index = 2
     owner = IntegrationLLM(data, tmp_path)
     try:
-        with pytest.raises(ContractError, match='descriptor is incomplete or invalid'):
+        with pytest.raises(ContractError, match='shared password manager' if problem == 'manager' else 'descriptor is incomplete or invalid'):
             owner._credentials(index)
     finally:
         owner.close()
@@ -103,12 +102,6 @@ def test_cancelled_read_is_retained_and_close_waits_for_worker(tmp_path, monkeyp
         owner.close()
 
 
-def test_optional_role_metadata_must_be_boolean():
-    with pytest.raises(ValueError, match='credential_role_optional must be boolean'):
-        schema_from_dict({'version': 1, 'fields': {'ROLE': {
-            'type': 'str', 'credential_role_optional': 'yes'}}})
-
-
 @pytest.mark.parametrize('matches', [True, False])
 def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_path, monkeypatch, matches):
     import time
@@ -139,7 +132,7 @@ def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_pa
 
 
 @pytest.mark.parametrize('entries', [None, '', 0, False, {}])
-def test_falsy_malformed_optional_role_never_bypasses_account_binding(tmp_path, entries):
+def test_falsy_malformed_role_never_bypasses_account_binding(tmp_path, entries):
     data = config()
     data['UNATTENDED_AUTH']['roles']['LLM User'] = entries
     owner = IntegrationLLM(data, tmp_path)
@@ -151,12 +144,37 @@ def test_falsy_malformed_optional_role_never_bypasses_account_binding(tmp_path, 
     from test_tui import fixture
     import json
     app = fixture(tmp_path, fields={'LLM_CREDENTIAL_ROLE': {
-        'type': 'str', 'default': 'LLM User', 'credential_role_optional': True}})
+        'type': 'str', 'default': 'LLM User'}})
     app.session.environ['UNATTENDED_AUTH'] = json.dumps(data['UNATTENDED_AUTH'])
     assert app.auth_setup_needed()
 
 
-def test_optional_role_metadata_requires_a_role_label_type():
-    with pytest.raises(ValueError, match='credential_role_optional requires str type'):
+@pytest.mark.parametrize('field_type,value', [('str', True), ('str', False), ('str', 'yes'), ('jsonobject', True)])
+def test_removed_optional_role_metadata_is_rejected(field_type, value):
+    with pytest.raises(ValueError, match='unknown metadata'):
         schema_from_dict({'version': 1, 'fields': {'ROLE': {
-            'type': 'jsonobject', 'credential_role_optional': True}}})
+            'type': field_type, 'credential_role_optional': value}}})
+
+
+@pytest.mark.parametrize('profile', [{}, {'roles': {'LLM User': []}}])
+def test_missing_declared_unattended_account_is_a_prerequisite(tmp_path, monkeypatch, profile):
+    from api_agent.providers.contracts import SetupPrerequisiteError
+    monkeypatch.setattr(credentials, 'get_username', lambda *args: pytest.fail('missing account retrieved'))
+    owner = IntegrationLLM({'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': profile}, tmp_path)
+    try:
+        with pytest.raises(SetupPrerequisiteError, match='LLM User.*account'):
+            owner._credentials(0)
+    finally:
+        owner.close()
+
+
+def test_missing_shared_manager_is_an_unattended_prerequisite(tmp_path, monkeypatch):
+    from api_agent.providers.contracts import SetupPrerequisiteError
+    monkeypatch.setattr(credentials, 'get_username', lambda *args: pytest.fail('unconfigured manager used'))
+    owner = IntegrationLLM({'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': {
+        'roles': {'LLM User': [{'vault': 'fixture', 'user': 'login'}]}}}, tmp_path)
+    try:
+        with pytest.raises(SetupPrerequisiteError, match='shared password manager'):
+            owner._credentials(0)
+    finally:
+        owner.close()
