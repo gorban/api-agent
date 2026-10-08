@@ -275,6 +275,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 else:
                     yield Input(id="config-value")
             if self.kind not in {"cleanup", "test-results"}:
+                if self.kind == 'tests' and app.mode == 'integration' and 'UNATTENDED_USER_INDEX' in app.schema.fields:
+                    yield Static(app.account_summary(), id='account-selection', markup=False)
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions") as actions:
                 if self.kind == "suggest":
@@ -336,8 +338,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             self._bindings.bind("s", "stop_selected", "Stop selected containers")
         if self.kind == "tests":
             self._bindings.bind("s", "start_selected", "Start selected tests")
-            if self.app.mode == 'integration' and self.app.session.result().values.get('UNATTENDED_USER_INDEX') is not None:
-                self._bindings.bind('u', 'start_unattended', 'Start unattended tests')
+            self._bindings.bind('left_square_bracket', 'previous_account', 'Previous user', key_display='[')
+            self._bindings.bind('right_square_bracket', 'next_account', 'Next user', key_display=']')
         if self.kind == "test-results":
             self.call_after_refresh(self.layout_test_results)
         if self.kind == "defaults":
@@ -377,8 +379,11 @@ class WorkbenchScreen(FocusNavigation, Screen):
     async def action_start_selected(self):
         await self.app.choose("continue")
 
-    async def action_start_unattended(self):
-        await self.app.choose('start-unattended')
+    def action_previous_account(self):
+        self.app.cycle_account(-1)
+
+    def action_next_account(self):
+        self.app.cycle_account(1)
 
     def check_action(self, action, parameters):
         # Textual evaluates underlying screen bindings while a modal is open.
@@ -415,8 +420,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
                     or self.kind == "unavailable" and self.app.mode in {None, "unattended-auth"}) and len(self.app.session.target_paths) > 1
         if action == "start_selected":
             return self.kind == "tests"
-        if action == 'start_unattended':
-            return self.kind == 'tests' and self.app.mode == 'integration' and self.app.session.result().values.get('UNATTENDED_USER_INDEX') is not None
+        if action in {'previous_account', 'next_account'}:
+            return (self.kind == 'tests' and self.app.mode == 'integration'
+                    and (bool(self.app.account_options())
+                         or self.app.session.result().values.get('UNATTENDED_USER_INDEX') is not None))
         if action == "stop_selected":
             return self.kind == "containers"
         if action == "skip_setup":
@@ -590,6 +597,7 @@ class ApiAgentApp(App[int]):
     CSS = """
     Screen { padding: 1 2; }
     #dotenv-targets { height: auto; margin-top: 1; margin-bottom: 1; }
+    #account-selection { height: auto; margin-top: 1; }
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
@@ -1262,13 +1270,45 @@ class ApiAgentApp(App[int]):
                 green_prefixes=("Production coverage: 100%",),
                 red_prefixes=('Allure publication: FAIL', 'Test operation: FAIL')))
 
+    def account_options(self):
+        if 'UNATTENDED_USER_INDEX' not in self.schema.fields:
+            return ()
+        from .accounts import account_options
+        try:
+            roles = self.credential_roles()
+            return account_options(self.session.result(_review=True).values.get('UNATTENDED_AUTH') or {},
+                                   roles, paired=self.mode == 'run-local')
+        except ValueError:
+            return ()
+
+    def account_summary(self):
+        index = self.session.result().values.get('UNATTENDED_USER_INDEX')
+        if index is None:
+            return 'No unattended user set — logins must be done manually'
+        label = dict(self.account_options()).get(index)
+        if label is None:
+            return f'Unattended user #{index} is unavailable; configure accounts or choose manual login.'
+        return f'Use unattended user #{index}: {label}'
+
+    def cycle_account(self, direction):
+        try:
+            choices = (None,) + tuple(index for index, _ in self.account_options())
+            current = self.session.result().values.get('UNATTENDED_USER_INDEX')
+            position = choices.index(current) if current in choices else 0
+            selected = choices[(position + direction) % len(choices)]
+            self.session.set_value('UNATTENDED_USER_INDEX', '' if selected is None else str(selected), persist=True)
+            self.screen.query_one('#account-selection', Static).update(self.account_summary())
+            self.screen.refresh_bindings()
+            actual = self.session.result().fields['UNATTENDED_USER_INDEX']
+            message = (f'Saved to {self.session._source(self.session.dotenv_path)}, but {actual.source} overrides the saved choice.'
+                       if actual.value != selected else '')
+            self.screen.query_one('#error', Static).update(message)
+        except (ValueError, OSError) as error:
+            self.screen.query_one('#error', Static).update(str(error))
+
     def show_selection(self):
         rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
         actions = (("continue", "(s) Start selected tests"),)
-        if self.mode == 'integration':
-            actions = (("continue", "(s) Start attended tests"),)
-            if self.session.result().values.get('UNATTENDED_USER_INDEX') is not None:
-                actions += (('start-unattended', '(u) Start unattended tests'),)
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows)
 
     def show_cleanup(self):
@@ -1387,7 +1427,7 @@ class ApiAgentApp(App[int]):
                 await self.enter_mode()
             elif key == "setup":
                 self.show_auth_setup(startup=self.mode is None)
-            elif key in {"continue", 'start-unattended'}:
+            elif key == "continue":
                 if not self.selection.selected_ids:
                     raise ValueError("Select at least one test before continuing")
                 if self.mode == "e2e":
@@ -1395,9 +1435,10 @@ class ApiAgentApp(App[int]):
                 elif self.mode == "unit":
                     self.start_unit_run()
                 else:
-                    if key == 'start-unattended' and self.session.result().values.get('UNATTENDED_USER_INDEX') is None:
-                        raise ValueError('Select UNATTENDED_USER_INDEX before unattended execution.')
-                    self.integration_unattended = key == 'start-unattended'
+                    index = self.session.result().values.get('UNATTENDED_USER_INDEX')
+                    if index is not None and index not in dict(self.account_options()):
+                        raise ValueError('UNATTENDED_USER_INDEX has no eligible configured account; choose a user or manual login.')
+                    self.integration_unattended = index is not None
                     self.operation_status = 3
                     self.test_run = TestRunLifecycle()
                     self.collection_cancel = self.test_run.cancel_event

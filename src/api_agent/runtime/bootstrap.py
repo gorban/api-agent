@@ -267,7 +267,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
         'DEBUG': '--debug: retain integration login browsers; allows serial --no-std-in integration debugging.',
-        'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select the same zero-based entry in needed credential arrays.',
+        'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select a zero-based account; --unattended-user-index= uses manual login for this run.',
     }
     for name, description in callouts.items():
         if name in schema.fields:

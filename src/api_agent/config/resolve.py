@@ -50,6 +50,8 @@ def format_enum_values(values):
 
 def convert_value(declaration, value, *, external, anchors):
     kind = declaration.type
+    if kind == 'int' and declaration.allow_empty and value == '':
+        return None
     if external:
         if not isinstance(value, str):
             raise ValueError('external values must be strings')

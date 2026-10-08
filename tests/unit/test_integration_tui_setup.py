@@ -100,34 +100,44 @@ def test_subscription_with_no_vault_role_skips_auth_suggestion(tmp_path):
 
 
 @pytest.mark.parametrize('unattended', [False, True])
-def test_start_options_choose_interactivity_without_rewriting_saved_index(tmp_path, unattended):
+def test_single_start_uses_effective_account_choice(tmp_path, unattended):
     test = TestIdentity('base::t.py::test_setup', 'base', 't.py', 't.py::test_setup')
     calls = []
     def run(context, selected, config, **kwargs):
         calls.append(config)
-        execution = IntegrationRunResult(0, (TestResult(test, 'passed'),), '')
-        return SimpleNamespace(execution=execution, exit_code=0)
+        return SimpleNamespace(execution=IntegrationRunResult(0, (TestResult(test, 'passed'),), ''), exit_code=0)
     async def scenario():
-        app = fixture(tmp_path, 'integration', fields={'UNATTENDED_USER_INDEX': {'type': 'int', 'default': 0}}, collector=lambda *args: [test])
+        app = fixture(tmp_path, 'integration', fields={'UNATTENDED_USER_INDEX': {
+            'type': 'int', 'allow_empty': True}}, collector=lambda *args: [test],
+            argv=['--unattended-user-index=' + ('0' if unattended else '')])
         app.integration_runner = run
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause(.2)
-            assert app.screen.check_action('start_unattended', ())
-            await pilot.press('u' if unattended else 's')
+            assert app.screen.actions == (('continue', '(s) Start selected tests'),)
+            await pilot.press('u')
+            assert not calls
+            await pilot.press('s')
             await pilot.pause(.3)
             assert calls[0]['UNATTENDED_USER_INDEX'] == (0 if unattended else None)
-            assert app.session.result().values['UNATTENDED_USER_INDEX'] == 0
+            assert app.session.result().values['UNATTENDED_USER_INDEX'] == (0 if unattended else None)
+            assert not (tmp_path / '.env').exists()
     asyncio.run(scenario())
 
 
-def test_unattended_start_requires_selected_index(tmp_path):
+def test_start_rejects_unavailable_selected_account(tmp_path):
     test = TestIdentity('base::t.py::test_setup', 'base', 't.py', 't.py::test_setup')
     async def scenario():
-        app = fixture(tmp_path, 'integration', collector=lambda *args: [test])
+        app = fixture(tmp_path, 'integration', fields={'UNATTENDED_USER_INDEX': {
+            'type': 'int', 'allow_empty': True}}, argv=['--unattended-user-index=3'],
+            collector=lambda *args: [test])
+        runner = Mock()
+        app.integration_runner = runner
         async with app.run_test() as pilot:
             await pilot.pause(.2)
-            await app.choose('start-unattended')
-            assert 'UNATTENDED_USER_INDEX' in str(app.screen.query_one('#error', Static).render())
+            await pilot.press('s')
+            await pilot.pause(.2)
+            assert 'no eligible configured account' in str(app.screen.query_one('#error', Static).render())
+            runner.assert_not_called()
             assert not app.test_run_active()
     asyncio.run(scenario())
 

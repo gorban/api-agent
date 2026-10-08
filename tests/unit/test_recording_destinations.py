@@ -70,7 +70,7 @@ def test_empty_path_support_is_opt_in_and_does_not_bypass_enum_validation(tmp_pa
                                              environ={'P': ''}).errors[0]
     for metadata, message in [({'type': 'path', 'anchor': 'owner_root', 'allow_empty': 'true'},
                                'allow_empty must be boolean'),
-                              ({'type': 'str', 'allow_empty': True}, 'allow_empty requires path type')]:
+                              ({'type': 'str', 'allow_empty': True}, 'allow_empty requires path or int type')]:
         with pytest.raises(ValueError, match=message):
             schema_from_dict({'version': 1, 'fields': {'P': metadata}})
 
