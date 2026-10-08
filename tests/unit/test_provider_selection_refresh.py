@@ -151,3 +151,60 @@ def test_deferred_override_cannot_silently_change_already_loaded_selector(tmp_pa
     from api_agent.providers.loading import ProviderError
     with pytest.raises(ProviderError, match='provider_selection_cycle'):
         bootstrap_schema(base, [], {}, {})
+
+
+@pytest.mark.parametrize('selector', ['LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER'])
+@pytest.mark.parametrize('initial', ['empty', 'unset'])
+@pytest.mark.parametrize('target_kind', ['required', 'missing', 'relative'])
+def test_deferred_override_cannot_enable_an_undiscovered_selector(tmp_path, selector, initial, target_kind):
+    target = adapter(tmp_path, 'target', 'REQUIRED_VALUE', 1)
+    if target_kind == 'missing':
+        target = str(tmp_path / 'absent.py') + ':create'
+    elif target_kind == 'relative':
+        target = 'target/provider.py:create'
+    contribution = tmp_path / 'overrides.toml'
+    contribution.write_text(f'version=1\n[fields.{selector}]\ntype="str"\noverride=true\noverride_if_present=true\ndefault="{target}"\n')
+    field = {'type': 'str'}
+    if initial == 'empty':
+        field['default'] = ''
+    base = schema_from_dict({'version': 1, 'fields': {selector: field}})
+    from api_agent.providers.loading import ProviderError
+    with pytest.raises(ProviderError, match='^provider_selection_cycle$'):
+        bootstrap_schema(base, [], {}, {}, owner_root=tmp_path,
+                         configuration_paths=(contribution,))
+
+
+def test_deferred_override_cannot_enable_a_duplicate_provider(tmp_path):
+    ui = adapter(tmp_path, 'ui', 'IGNORED', 1)
+    (tmp_path / 'ui/cfg/config.toml').write_text(f'version=1\n[fields.ACCESS_PROVIDER]\ntype="str"\noverride=true\noverride_if_present=true\ndefault="{ui}"\n')
+    base = schema_from_dict({'version': 1, 'fields': {
+        'UI_PROVIDER': {'type': 'str', 'default': ui},
+        'ACCESS_PROVIDER': {'type': 'str', 'default': ''}}})
+    from api_agent.providers.loading import ProviderError
+    with pytest.raises(ProviderError, match='^provider_selection_cycle$'):
+        bootstrap_schema(base, [], {}, {})
+
+
+@pytest.mark.parametrize('source', ['dotenv', 'environment', 'cli', 'override'])
+def test_explicit_selection_still_loads_required_fields_despite_deferred_default(tmp_path, source):
+    from api_agent.config import resolve_config
+    target = adapter(tmp_path, 'target', 'REQUIRED_VALUE', 1)
+    contribution = tmp_path / 'overrides.toml'
+    # Explicit selection wins even over an unusable optional default.
+    contribution.write_text('version=1\n[fields.ACCESS_PROVIDER]\ntype="str"\noverride=true\noverride_if_present=true\ndefault="missing.py:create"\n')
+    base = schema_from_dict({'version': 1, 'fields': {'ACCESS_PROVIDER': {'type': 'str', 'default': ''}}})
+    dotenv = {'ACCESS_PROVIDER': target} if source == 'dotenv' else {}
+    env = {'ACCESS_PROVIDER': target} if source == 'environment' else {}
+    args = ['--access-provider=' + target] if source == 'cli' else []
+    overrides = {'ACCESS_PROVIDER': target} if source == 'override' else {}
+    schema = bootstrap_schema(base, args, env, dotenv, overrides,
+                              configuration_paths=(contribution,))
+    assert schema.fields['REQUIRED_VALUE'].required
+    resolution_env = dict(env, **overrides)
+    result = resolve_config(schema, argv=args, environ=resolution_env, dotenv=dotenv)
+    assert 'REQUIRED_VALUE' in result.missing
+    assert result.errors == ('REQUIRED_VALUE: required; provide REQUIRED_VALUE or --required-value',)
+    supplied = resolve_config(schema, argv=[*args, '--required-value=provided'],
+                              environ=resolution_env, dotenv=dotenv)
+    assert not supplied.errors and 'REQUIRED_VALUE' not in supplied.missing
+    assert supplied.values['REQUIRED_VALUE'] == 'provided'
