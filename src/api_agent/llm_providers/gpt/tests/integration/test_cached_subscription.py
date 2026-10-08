@@ -20,7 +20,7 @@ def test_saved_subscription_setup_without_transport(tmp_path, monkeypatch):
     monkeypatch.setattr(module.httpx, "AsyncClient", lambda: pytest.fail("cached setup started transport"))
     async def scenario():
         provider = factory({"GPT_AUTH_MODE": "subscription", "GPT_API_MODE": "responses",
-                                "GPT_STATE_DIR": store.root, "GPT_PROFILE": profile}, None)
+                                "GPT_STATE_DIR": store.root}, None)
         try:
             session = await provider.asetup(interactive=False, user_index=None, credentials=None)
             assert session.profile_id == profile

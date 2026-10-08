@@ -9,7 +9,8 @@ This is the first part of the [GPT provider](implementation_plan_f2.md). Connect
 - [x] Provide a connection command that opens the system browser after starting its callback listener. Offer list and explicit reconnect without exposing tokens. Close listener/client resources on completion, failure, timeout and cancellation.
 - [x] Verify these boundaries with synthetic signed credentials and fake network/browser dependencies, including focused rejection mutations and exact unit coverage. Independent adversarial review precedes human sign-in acceptance.
 - [ ] Review and complete one actual sign-in with the user. Confirm the account and plan permission without making an inference call. Record actual eligibility and callback behavior separately from deterministic evidence.
-- [ ] Integrate saved-account selection into provider/TUI setup. Subscription mode should acknowledge a saved OAuth connection instead of requiring a vault API-key login. Optional vault username/password/TOTP may assist a supported login page, but cannot replace permission consent or make a connection complete by themselves.
+- [x] Integrate minimal account identification into provider setup: a unique saved OAuth connection is reused, an optional subscription login username binds unattended reuse, and attended OAuth identifies an account when needed. Keep cached profile IDs internal and subscription descriptors optional.
+- [ ] Add optional vault password/TOTP assistance only for an observed supported login page; it cannot replace consent or make a connection complete by itself. Add an explicit cached-account picker/reconnect only when observed interactions require it.
 - [ ] Integrate the connection getter/refresh owner with the eventual LLM factory, preserving explicit account selection and disposal. Add explicit sign-out/revocation and returning-account recovery before claiming the full session lifecycle.
 
 ## Setup contract

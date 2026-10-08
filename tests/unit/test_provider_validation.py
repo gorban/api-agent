@@ -152,7 +152,9 @@ def test_bootstrap_selection_obeys_each_precedence_layer(tmp_path):
     location = factory(tmp_path)
     bundled = loading.bootstrap_schema(schema, [], {}, {})
     assert bundled.fields['GPT_AUTH_MODE'].default == 'subscription'
-    assert bundled.fields['LLM_CREDENTIAL_ROLE'].default == ''
+    assert bundled.fields['LLM_CREDENTIAL_ROLE'].default == 'LLM User'
+    assert bundled.fields['LLM_CREDENTIAL_ROLE'].credential_role_optional
+    assert 'GPT_PROFILE' not in bundled.fields
     # Higher-precedence explicit empty selections disable the lower selection.
     assert loading.bootstrap_schema(schema, [], {'LLM_PROVIDER': ''}, {'LLM_PROVIDER': '/missing.py:create'}) is schema
     assert loading.bootstrap_schema(schema, ['--llm-provider='], {}, {'LLM_PROVIDER': '/missing.py:create'}) is schema

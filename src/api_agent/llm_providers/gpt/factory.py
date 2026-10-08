@@ -35,7 +35,6 @@ class GPTProvider:
     def __init__(self, config):
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
-        self.profile = config.get("GPT_PROFILE", "")
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
         self.closed = False
@@ -48,19 +47,22 @@ class GPTProvider:
         if self.api_mode != "responses":
             raise ContractError("GPT subscription authentication requires responses mode; set GPT_API_MODE=responses.")
         store = ConnectionStore(self.state_dir)
-        profile = self.profile
-        if profile:
-            store.load(profile)
+        connections = store.list()
+        if user_index is not None and credentials is not None:
+            username = await credentials(user_index, "username")
+            if not isinstance(username, str) or not username.strip():
+                raise ContractError("The selected login must supply a nonempty username.")
+            connections = tuple(connection for connection in connections
+                                if connection.email.strip().casefold() == username.strip().casefold())
+            if len(connections) != 1:
+                raise InteractionRequiredError("The selected login has no unique cached OAuth connection; use attended sign-in first.")
+        if len(connections) == 1:
+            profile = store.profile_id(connections[0])
+        elif interactive:
+            # Let the verified OAuth result identify the account instead of a manual ID.
+            profile = await connect_account(store)
         else:
-            connections = store.list()
-            if len(connections) > 1:
-                raise InteractionRequiredError("Multiple saved GPT connections exist; set GPT_PROFILE to the selected saved profile.")
-            if connections:
-                profile = store.profile_id(connections[0])
-            elif not interactive:
-                raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect your account.")
-            else:
-                profile = await connect_account(store)
+            raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
         session = OwnedSubscriptionSession(store, profile)
         self.sessions.append(session)
         return session

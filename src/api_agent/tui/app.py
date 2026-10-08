@@ -683,13 +683,21 @@ class ApiAgentApp(App[int]):
         return tuple(roles)
 
     def auth_setup_needed(self):
-        from api_agent.auth.profiles import normalize_auth, parse_profiles
+        from api_agent.auth.profiles import normalize_auth, parse_profiles, validate_role_entries
         profile = self.session.result(_review=True).values.get('UNATTENDED_AUTH')
         try:
             roles = self.credential_roles()
             if not roles:
                 return False
             canonical = normalize_auth(profile)
+            for role in roles:
+                validate_role_entries(role, canonical['roles'].get(role, []))
+            optional = {self.session.result(_review=True).values.get(name) for name, field in self.schema.fields.items()
+                        if field.credential_role_optional}
+            roles = tuple(role for role in roles
+                          if role not in optional or canonical['roles'].get(role))
+            if not roles:
+                return False
             if any(not canonical['roles'].get(role) for role in roles):
                 return True
             parse_profiles({'password_manager': canonical['password_manager'],

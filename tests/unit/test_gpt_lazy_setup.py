@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,7 +28,7 @@ def store(monkeypatch):
         def load(self, profile):
             self.loaded.append(profile)
         def profile_id(self, connection):
-            return connection
+            return connection if isinstance(connection, str) else connection.profile
     monkeypatch.setattr(module, "ConnectionStore", Store)
     return Store
 
@@ -60,11 +61,11 @@ def test_uncached_and_ambiguous(store, monkeypatch):
     with pytest.raises(InteractionRequiredError, match="attended sign-in.*start attended"):
         run(setup(provider))
     store.entries = ("one", "two")
-    with pytest.raises(InteractionRequiredError, match="GPT_PROFILE"):
-        run(setup(provider, True))
+    with pytest.raises(InteractionRequiredError, match="attended sign-in"):
+        run(setup(provider))
 
 
-@pytest.mark.parametrize("config,entries,interactive,expected", [({}, ("single",), False, "single"), ({"GPT_PROFILE": "explicit"}, ("other",), False, "explicit"), ({}, (), True, "new")])
+@pytest.mark.parametrize("config,entries,interactive,expected", [({}, ("single",), False, "single"), ({}, ("one", "two"), True, "new"), ({}, (), True, "new")])
 def test_select_and_close(config, entries, interactive, expected, store, monkeypatch):
     store.entries = entries
     connect = AsyncMock(return_value="new")
@@ -80,16 +81,38 @@ def test_select_and_close(config, entries, interactive, expected, store, monkeyp
         with pytest.raises(ContractError, match="closed"):
             await setup(provider)
     run(scenario())
-    assert connect.await_count == int(not entries)
+    assert connect.await_count == int(len(entries) != 1)
 
 
-def test_explicit_profile_error_does_not_connect(store, monkeypatch):
-    def fail(*_):
-        raise ContractError("missing")
-    monkeypatch.setattr(store, "load", fail)
-    monkeypatch.setattr(module, "connect_account", AsyncMock(side_effect=AssertionError("browser")))
-    with pytest.raises(ContractError, match="missing"):
-        run(setup(module.factory({"GPT_PROFILE": "missing"}, None), True))
+@pytest.mark.parametrize("username,entries,expected", [
+    (" Person@example.test ", ("person@example.test", "other@example.test"), "0"),
+    ("missing@example.test", ("other@example.test",), None),
+    ("person@example.test", ("person@example.test", "person@example.test"), None),
+    ("", (), "invalid"), (None, (), "invalid"),
+])
+def test_optional_username_selects_only_unique_matching_cache(username, entries, expected, store, monkeypatch):
+    store.entries = tuple(SimpleNamespace(email=email, profile=str(index))
+                          for index, email in enumerate(entries))
+    reader = AsyncMock(return_value=username)
+    connect = AsyncMock(side_effect=AssertionError("unexpected browser"))
+    monkeypatch.setattr(module, "connect_account", connect)
+    async def scenario():
+        provider = module.factory({}, None)
+        try:
+            if expected == "invalid":
+                with pytest.raises(ContractError, match="nonempty username"):
+                    await provider.asetup(interactive=False, user_index=1, credentials=reader)
+            elif expected is None:
+                with pytest.raises(InteractionRequiredError, match="no unique cached"):
+                    await provider.asetup(interactive=False, user_index=1, credentials=reader)
+            else:
+                auth = await provider.asetup(interactive=False, user_index=1, credentials=reader)
+                assert auth.profile_id == expected
+        finally:
+            await provider.aclose()
+    run(scenario())
+    reader.assert_awaited_once_with(1, "username")
+    connect.assert_not_awaited()
 
 
 def test_refresh_transport_lifetime(store, monkeypatch):
@@ -146,7 +169,7 @@ def test_cancelled_cleanup_waits_for_refresh_before_transport_close(tmp_path, mo
             return replace(connection, expires_at=200)
 
         monkeypatch.setattr(module, "refresh_connection", refresh)
-        provider = module.factory({"GPT_STATE_DIR": store.root, "GPT_PROFILE": profile}, None)
+        provider = module.factory({"GPT_STATE_DIR": store.root}, None)
         session = await setup(provider)
         session.clock = lambda: 100
         reader = asyncio.create_task(session())

@@ -56,12 +56,42 @@ class IntegrationLLM:
         self.loop = asyncio.new_event_loop()
         self.provider = self.owner = None
         self._retained_owners = []
+        self._credential_tasks = set()
         self.closed = False
 
     async def _release_retained(self):
         while self._retained_owners:
             await self._retained_owners[-1].aclose()
             self._retained_owners.pop()
+
+    def _credentials(self, index):
+        from api_agent.auth.profiles import normalize_auth, parse_profiles, validate_role_entries
+        from api_agent.auth import credentials as helpers
+        from api_agent.providers.sessions import ScopedRoleCredentials, ScopedLLMCredentials
+        role = self.config.get('LLM_CREDENTIAL_ROLE')
+        try:
+            canonical = normalize_auth(self.config.get('UNATTENDED_AUTH', {}))
+            entries = canonical['roles'].get(role, [])
+            if not role:
+                return None
+            validate_role_entries(role, entries)
+            if not entries:
+                return None
+            profiles = parse_profiles({'password_manager': canonical['password_manager'],
+                                       'roles': {role: entries}}, (role,))
+            if type(index) is not int or index < 0 or index >= len(profiles.for_role(role)):
+                raise ValueError
+            source = profiles.for_role(role)[index]
+        except (ValueError, TypeError):
+            raise ContractError('The selected unattended login descriptor is incomplete or invalid.') from None
+
+        async def retrieve(selected_role, selected_index, kind):
+            helper = {'username': helpers.get_username, 'password': helpers.get_password,
+                      'totp': helpers.get_totp}[kind]
+            task = asyncio.create_task(asyncio.to_thread(helper, source))
+            self._credential_tasks.add(task)
+            return await asyncio.shield(task)
+        return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve))
 
     async def _ensure(self):
         await self._release_retained()
@@ -81,6 +111,7 @@ class IntegrationLLM:
         if self.owner is None:
             index = self.config.get('UNATTENDED_USER_INDEX')
             self.owner = LLMSessionOwner(implementation, user_index=index,
+                                         credentials=self._credentials(index) if index is not None else None,
                                          interactive=index is None and not self.config.get('NO_STD_IN', False))
 
         async def checkpoint(*, auth):
@@ -99,6 +130,9 @@ class IntegrationLLM:
             await self.owner.aclose()
         if self.provider is not None:
             await self.provider.aclose()
+        if self._credential_tasks:
+            await asyncio.shield(asyncio.gather(*self._credential_tasks, return_exceptions=True))
+            self._credential_tasks.clear()
 
     def close(self):
         if not self.closed:
