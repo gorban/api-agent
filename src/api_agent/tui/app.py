@@ -12,6 +12,7 @@ from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
                                           reconcile_results_table, styled_summary)
 from api_agent.tui.select import AdvancingSelect
+from api_agent.tui.test_table import TestTable
 from api_agent.tui.clipboard import ClipboardError, copy_text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -258,7 +259,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             else:
                 yield Static(self.body, id="body", markup=False)
             if self.rows:
-                yield DataTable(id="choices", cursor_type="row")
+                table_type = TestTable if self.kind in {'tests', 'test-results'} else DataTable
+                yield table_type(id="choices", cursor_type="row")
             if self.kind == "input":
                 field = app.schema.fields[app.prompt_name]
                 choices = field.enum or ((True, False) if field.type == 'bool' else ())
@@ -415,6 +417,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
         return True
 
     def on_data_table_row_highlighted(self, event):
+        if isinstance(event.data_table, TestTable):
+            event.data_table.reset_moved_range()
         if self.kind == "defaults" and self.app.screen is self:
             self.app.refresh_configuration_rows(self)
         elif self.kind == "cleanup" and self.app.screen is self:
@@ -427,6 +431,9 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 await self.app.accept_default()
             else:
                 self.app.edit_setting()
+        elif self.kind == 'tests':
+            self.app.selection.toggle_many(event.data_table.selected_row_keys)
+            self.app.refresh_rows()
         else:
             self.app.toggle_row(str(event.row_key.value))
 
@@ -502,10 +509,13 @@ class WorkbenchScreen(FocusNavigation, Screen):
         return (selected, True) if selected is not None else (self.selected_test_name(), False)
 
     def selected_test_name(self):
-        if self.kind == 'test-results' and self.query(DataTable):
+        if self.kind == 'tests' and not isinstance(self.app.focused, DataTable):
+            return None
+        if self.kind in {'tests', 'test-results'} and self.query(DataTable):
             table = self.query_one(DataTable)
             if table.row_count:
-                return str(table.get_row_at(table.cursor_row)[1])
+                return '\n'.join(str(table.get_row_at(index)[1])
+                                 for index in table.selected_row_indices)
         if self.kind == 'test-failure' and self.body:
             return self.body.splitlines()[0]
         return None

@@ -1,0 +1,75 @@
+"""Shared keyboard ranges for test pickers and result lists."""
+from textual.binding import Binding
+from textual.widgets import DataTable
+
+
+class TestTable(DataTable):
+    __test__ = False
+    BINDINGS = [
+        Binding('shift+up', 'extend_range(-1)', show=False),
+        Binding('shift+down', 'extend_range(1)', show=False),
+        Binding('shift+pageup', 'extend_page(-1)', show=False),
+        Binding('shift+pagedown', 'extend_page(1)', show=False),
+        Binding('ctrl+shift+up,super+shift+up,shift+home', 'extend_range(-1, True)', show=False),
+        Binding('ctrl+shift+down,super+shift+down,shift+end', 'extend_range(1, True)', show=False),
+        Binding('ctrl+a,super+a', 'select_all_rows', show=False),
+        Binding('escape', 'clear_range', show=False),
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.range_anchor = None
+        self.range_end = None
+
+    @property
+    def selected_row_indices(self):
+        if not self.row_count:
+            return ()
+        if self.range_anchor is None:
+            return (self.cursor_row,)
+        return tuple(range(min(self.range_anchor, self.range_end),
+                           max(self.range_anchor, self.range_end) + 1))
+
+    @property
+    def selected_row_keys(self):
+        return tuple(self.ordered_rows[index].key.value for index in self.selected_row_indices)
+
+    def _should_highlight(self, cursor, target_cell, type_of_cursor):
+        if type_of_cursor == 'row' and self.range_anchor is not None:
+            return target_cell.row in self.selected_row_indices
+        return super()._should_highlight(cursor, target_cell, type_of_cursor)
+
+    def action_extend_range(self, direction, to_edge=False):
+        if not self.row_count:
+            return
+        if self.range_anchor is None:
+            self.range_anchor = self.cursor_row
+        destination = (0 if direction < 0 else self.row_count - 1) if to_edge else (
+            max(0, min(self.row_count - 1, self.cursor_row + direction)))
+        self.range_end = destination
+        self.move_cursor(row=destination)
+        self._clear_caches()
+        self.refresh()
+
+    def action_select_all_rows(self):
+        if self.row_count:
+            self.range_anchor = 0
+            self.action_extend_range(1, True)
+
+    def action_extend_page(self, direction):
+        visible_rows = max(1, self.scrollable_content_region.height -
+                           (self.header_height if self.show_header else 0))
+        self.action_extend_range(direction * visible_rows)
+
+    def action_clear_range(self):
+        self.range_anchor = self.range_end = None
+        self._clear_caches()
+        self.refresh()
+
+    def reset_moved_range(self):
+        if self.range_end is not None and self.cursor_row != self.range_end:
+            self.action_clear_range()
+
+    def clear(self, columns=False):
+        self.action_clear_range()
+        return super().clear(columns=columns)

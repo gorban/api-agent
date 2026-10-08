@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from textual.geometry import Offset
 from textual.selection import Selection
-from textual.widgets import DataTable, Static
+from textual.widgets import Button, DataTable, Static
 from textual.widgets._footer import FooterKey
 
 from api_agent.testing.collection import TestIdentity
@@ -273,6 +273,44 @@ def test_empty_results_copy_only_highlighted_summary(tmp_path, monkeypatch):
             await pilot.pause()
             assert app.screen.selected_test_name() is None
             assert not app.screen.check_action('copy_value', ())
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'super+c')])
+def test_initial_picker_copy_only_while_table_focused(tmp_path, monkeypatch, mode, platform, key):
+    async def scenario():
+        tests = tuple(test.identity for test in outcomes(('passed', 'passed')))
+        app = fixture(tmp_path, mode, collector=lambda *a: tests)
+        copy = AsyncMock(return_value=True)
+        monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
+        async with app.run_test(size=(140, 35)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr('api_agent.tui.app.sys.platform', platform)
+            screen = app.screen
+            assert screen.kind == 'tests'
+            table = screen.query_one(DataTable)
+            table.move_cursor(row=table.row_count - 1)
+            screen.refresh_bindings()
+            await pilot.pause()
+            checked = app.selection.selected_ids.copy()
+            hints = [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
+            assert len(hints) == 1 and hints[0].key == key
+            await pilot.press(key)
+            copy.assert_awaited_once_with(app, tests[-1].id)
+            assert app.selection.selected_ids == checked
+            await pilot.press('tab')
+            await pilot.pause()
+            assert isinstance(app.focused, Button)
+            assert screen.selected_test_name() is None
+            assert not [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
+            copy.reset_mock()
+            await screen.action_copy_value()
+            copy.assert_not_awaited()
+            await pilot.press('shift+tab')
+            await pilot.pause()
+            assert table.has_focus
+            assert [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
     asyncio.run(scenario())
 
 

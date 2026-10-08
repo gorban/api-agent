@@ -35,6 +35,32 @@ def test_unknown_and_empty_selection():
         selection_state.toggle('missing')
 
 
+def test_range_toggle_uses_union_of_overlapping_groups_and_preserves_scope():
+    state = SelectionModel(identities())
+    keys = ['tag:shared', 'file:repo::a.py', identities()[0].id]
+    state.toggle_many(keys)
+    assert state.selected_ids == set()
+    state.toggle(identities()[0].id)
+    state.toggle_many(keys)
+    assert state.selected_ids == {test.id for test in identities()}
+    assert {'tag:shared', 'file:repo::a.py'} <= state.selected_scopes
+    new = TestIdentity('new', 'repo', 'a.py', 'a.py::new')
+    state.refresh_for_run(identities() + [new])
+    assert new.id in state.selected_ids
+    state.toggle_many(keys)
+    assert not state.selected_ids
+
+
+def test_range_toggle_empty_and_invalid_keys_are_atomic():
+    state = SelectionModel(identities())
+    before = state.selected_ids.copy()
+    state.toggle_many(())
+    assert state.selected_ids == before
+    with pytest.raises(CollectionError, match='Unknown selection group or test: missing'):
+        state.toggle_many((identities()[0].id, 'missing'))
+    assert state.selected_ids == before
+
+
 @pytest.mark.parametrize('selection,expected', [
     ('all', {'new-a', 'new-b', 'new-file'}),
     ('file:repo::a.py', {'new-a'}),
