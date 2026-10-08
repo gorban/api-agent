@@ -48,15 +48,24 @@ class SelectionModel:
 
     def toggle(self, group_or_id):
         key = group_or_id.id if isinstance(group_or_id, SelectionRow) else group_or_id
-        row = next((row for row in self.groups() if row.id == key), None)
-        if row is None:
-            raise CollectionError(f"Unknown selection group or test: {key}")
-        if row.selected:
-            self.selected_ids.difference_update(row.members)
+        self.toggle_many((key,))
+
+    def toggle_many(self, keys):
+        """Toggle the union once, so overlapping groups never toggle twice."""
+        rows_by_key = {row.id: row for row in self.groups()}
+        rows = []
+        for key in keys:
+            if key not in rows_by_key:
+                raise CollectionError(f"Unknown selection group or test: {key}")
+            rows.append(rows_by_key[key])
+        if not rows:
+            return
+        members = frozenset().union(*(row.members for row in rows))
+        if members <= self.selected_ids:
+            self.selected_ids.difference_update(members)
         else:
-            self.selected_ids.update(row.members)
-            if row.kind != "test":
-                self.selected_scopes.add(row.id)
+            self.selected_ids.update(members)
+            self.selected_scopes.update(row.id for row in rows if row.kind != 'test')
         checked = {group.id for group in self.groups() if group.selected}
         self.selected_scopes = {scope for scope in self.selected_scopes if scope in checked or (
             "::tag:" in scope and any(test.repo == scope.split("::tag:", 1)[0]
