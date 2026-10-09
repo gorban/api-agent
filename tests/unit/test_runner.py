@@ -38,6 +38,18 @@ def test_real_owner_execution_results_output_and_coverage(tmp_path):
     assert {e.kind for e in events} >= {'started', 'test_started', 'test_finished', 'output', 'finished'}
 
 
+def test_cli_test_cannot_redirect_runner_events_by_changing_argv(tmp_path):
+    base = fixture_repo(tmp_path / 'base', test='import sys\nfrom tiny import VALUE\n'
+        'def test_cli(monkeypatch):\n'
+        '    monkeypatch.setattr(sys, "argv", ["app", "unexpected-events.jsonl"])\n'
+        '    assert VALUE == 1\n')
+    ctx = context(base)
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'))
+    assert result.exit_code == 0 and [test.status for test in result.tests] == ['passed']
+    assert all(area.complete for area in result.coverage)
+    assert not (base / 'unexpected-events.jsonl').exists()
+
+
 def test_fixed_branch_gate_and_subset_keeps_unimported_files(tmp_path):
     base = fixture_repo(tmp_path / 'base', 'def choose(value):\n    if value:\n        return 1\n    return 2\n', 'from tiny import choose\ndef test_ok():\n    assert choose(True) == 1\n')
     (base / 'src/unused.py').write_text('UNUSED = 1\n')

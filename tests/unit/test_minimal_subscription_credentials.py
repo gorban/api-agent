@@ -20,7 +20,8 @@ def config():
 @pytest.mark.parametrize('kind', ['username', 'password', 'totp'])
 def test_selected_descriptor_retrieval_is_lazy_and_scoped(tmp_path, monkeypatch, kind):
     calls = []
-    def fetch(source):
+    def fetch(source, *, timeout):
+        assert 0 < timeout <= credentials.DEFAULT_TIMEOUT
         calls.append(source)
         return 'synthetic-value'
     monkeypatch.setattr(credentials, 'get_' + kind, fetch)
@@ -72,7 +73,8 @@ def test_configured_invalid_descriptor_fails_without_retrieval(tmp_path, problem
 
 def test_cancelled_read_is_retained_and_close_waits_for_worker(tmp_path, monkeypatch):
     entered, release = threading.Event(), threading.Event()
-    def fetch(source):
+    def fetch(source, *, timeout):
+        assert 0 < timeout <= credentials.DEFAULT_TIMEOUT
         entered.set()
         assert release.wait(5)
         return 'synthetic-user'
@@ -102,6 +104,55 @@ def test_cancelled_read_is_retained_and_close_waits_for_worker(tmp_path, monkeyp
         owner.close()
 
 
+def test_helper_receives_ancestor_remaining_budget(tmp_path, monkeypatch):
+    from api_agent.providers import progress
+    now, timeouts, rows = [0.0], [], []
+    monkeypatch.setattr(progress, '_clock', lambda: now[0])
+    original_to_thread = asyncio.to_thread
+    async def delayed_to_thread(function, *args, **kwargs):
+        now[0] = 4  # Time spent waiting for the worker counts against the budget.
+        return await original_to_thread(function, *args, **kwargs)
+    monkeypatch.setattr(asyncio, 'to_thread', delayed_to_thread)
+    def fetch(source, *, timeout):
+        timeouts.append(timeout)
+        return 'synthetic-value'
+    monkeypatch.setattr(credentials, 'get_password', fetch)
+    owner = IntegrationLLM(config(), tmp_path)
+    async def run():
+        with progress.progress_sink(rows.append):
+            async with progress.report_timeout('Login', 5):
+                now[0] = 3
+                assert await owner._credentials(0)(0, 'password') == 'synthetic-value'
+        assert timeouts == [1]
+        child = [row for row in rows if row.name == 'Password-manager password']
+        assert len(child) == 2 and all(row.timeout == 2 for row in child)
+    try:
+        owner.loop.run_until_complete(run())
+    finally:
+        owner.close()
+    assert not owner._credential_tasks and owner.loop.is_closed()
+
+
+def test_real_helper_stops_on_parent_budget_and_remains_owned_until_reaped(tmp_path):
+    from api_agent.providers.progress import report_timeout
+    from api_agent.providers.contracts import InteractionRequiredError
+    from test_credentials import fake_cli
+    cli = fake_cli(tmp_path, 'time.sleep(60)')
+    data = config()
+    data['UNATTENDED_AUTH']['password_manager'] = {'manager': 'keeper', 'cli_path': str(cli)}
+    owner = IntegrationLLM(data, tmp_path)
+    async def run():
+        async with report_timeout('Login', .05):
+            with pytest.raises(InteractionRequiredError, match='Sign in to the configured CLI'):
+                await asyncio.wait_for(owner._credentials(0)(0, 'password'), .8)
+        await owner._close()
+        assert not owner._credential_tasks
+    try:
+        owner.loop.run_until_complete(run())
+    finally:
+        owner.close()
+
+
 @pytest.mark.parametrize('matches', [True, False])
 def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_path, monkeypatch, matches):
     import time
@@ -119,7 +170,7 @@ def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_pa
     connection = AsyncMock(side_effect=connect)
     monkeypatch.setattr(gpt, 'connect_account', connection)
     monkeypatch.setattr(gpt, 'subscription_browser', lambda **kwargs: SimpleNamespace(aclose=AsyncMock()))
-    monkeypatch.setattr(credentials, 'get_username', lambda source: 'person@example.test')
+    monkeypatch.setattr(credentials, 'get_username', lambda source, **kwargs: 'person@example.test')
     store = ConnectionStore(tmp_path / 'state')
     store.save(Connection('subject', 'client', store.host_id(),
                           'person@example.test' if matches else 'another@example.test',
@@ -144,7 +195,8 @@ def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_pa
 
 def test_cli_retrieval_failure_is_actionable_and_private_output_is_sanitized(tmp_path, monkeypatch):
     from api_agent.providers.contracts import InteractionRequiredError
-    def failed(source):
+    def failed(source, *, timeout):
+        assert 0 < timeout <= credentials.DEFAULT_TIMEOUT
         raise credentials.CredentialError('private CLI identity/output')
     monkeypatch.setattr(credentials, 'get_username', failed)
     owner = IntegrationLLM(config(), tmp_path)

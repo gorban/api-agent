@@ -155,7 +155,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
     try:
         try:
             from api_agent.providers.progress import report_timeout
-            async with report_timeout('GPT login', timeout), asyncio.timeout(timeout):
+            async with report_timeout('GPT login', timeout) as budget, asyncio.timeout(budget.remaining):
                 async with CallbackListener() as listener:
                     attempt = begin_authorization(store.host_id(), listener.redirect_uri,
                                                   registration=registration, app_name=app_name)

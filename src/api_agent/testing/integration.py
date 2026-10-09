@@ -49,7 +49,7 @@ if os.name == 'posix' and 'API_AGENT_LAUNCHER_LIVENESS_FD' in os.environ:
     threading.Thread(target=parent_liveness, daemon=True).start()
 class Events:
     def send(self, **row):
-        with open(sys.argv[1], 'a', encoding='utf-8') as stream:
+        with open(event_path, 'a', encoding='utf-8') as stream:
             stream.write(json.dumps(row) + '\n')
     def pytest_runtest_logstart(self, nodeid, location):
         self.send(kind='test_started', node=nodeid)
@@ -59,6 +59,7 @@ class Events:
                   traceback=(str(report.longrepr[2]).removeprefix('Skipped: ')
                              if report.skipped and isinstance(report.longrepr, tuple)
                              else str(report.longrepr) if report.failed or report.skipped else ''))
+event_path = sys.argv[1]
 events = Events()
 code = pytest.main(sys.argv[2:], plugins=[events])
 events.send(kind='run_complete', exit_code=int(code))

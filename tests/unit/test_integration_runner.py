@@ -28,12 +28,13 @@ def test_component_progress_is_bound_to_test_in_serial_and_parallel_workers(tmp_
     base = fixture_repo(tmp_path / 'base', '''
 import asyncio
 import pytest
-from api_agent.providers.progress import report_timeout
+from api_agent.providers.progress import report_timeout, component_timeout
 @pytest.mark.parametrize('n', [0, 1])
 def test_timed(n):
     async def run():
-        async with report_timeout('Synthetic component', .02), asyncio.timeout(.02):
-            await asyncio.sleep(60)
+        async with report_timeout('Parent component', 5):
+            async with component_timeout('Synthetic component', .02):
+                await asyncio.sleep(60)
     asyncio.run(run())
 ''')
     ctx = context(base)
@@ -42,11 +43,26 @@ def test_timed(n):
     result = run_integration_tests(ctx, tests, accepted=True, parallel_jobs=jobs, on_event=events.append)
     assert result.exit_code == 1 and all(test.status == 'failed' for test in result.tests)
     for test in tests:
-        rows = [event.component for event in events
+        scopes = [event.component for event in events
                 if event.kind == 'component_progress' and event.identity == test]
+        rows = [scope for scope in scopes if scope.name == 'Synthetic component']
+        parents = [scope for scope in scopes if scope.name == 'Parent component']
+        assert len(parents) == 2 and parents[0].active and not parents[-1].active
+        assert parents[0].timeout == 5 and parents[0].parent_id is None
         assert len(rows) == 2 and rows[0].active and not rows[-1].active
         assert rows[0].id == rows[-1].id and rows[0].timeout == .02
+        assert rows[0].parent_id == rows[-1].parent_id == parents[0].id
         assert rows[-1].elapsed >= .02
+
+
+def test_cli_test_cannot_redirect_integration_outcomes_by_changing_argv(tmp_path):
+    base = fixture_repo(tmp_path / 'base', 'import sys\n'
+        'def test_cli(monkeypatch):\n'
+        '    monkeypatch.setattr(sys, "argv", ["app", "unexpected-events.jsonl"])\n')
+    ctx = context(base)
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True)
+    assert result.exit_code == 0 and [test.status for test in result.tests] == ['passed']
+    assert not (base / 'unexpected-events.jsonl').exists()
 
 
 def test_refusal_happens_before_collection_and_callbacks(tmp_path, monkeypatch):

@@ -15,7 +15,7 @@ from test_tui_coverage import identity
 
 @pytest.mark.parametrize('changes', [
     {'id': ''}, {'id': 1}, {'id': 'x' * 101}, {'name': ''}, {'name': 1},
-    {'name': 'x' * 101}, {'name': '\n'}, {'timeout': 0}, {'timeout': True},
+    {'name': 'x' * 101}, {'name': '\n'}, {'timeout': -1}, {'timeout': True},
     {'timeout': float('inf')}, {'elapsed': -1}, {'elapsed': float('nan')},
     {'active': 1},
 ])
@@ -90,7 +90,7 @@ def test_nested_component_display_and_late_events(tmp_path):
         app = fixture(tmp_path)
         test = identity()
         parent = ComponentProgress('p', 'GPT login', 180, 59, True)
-        child = ComponentProgress('c', 'Password-manager password', 15, 2, True)
+        child = ComponentProgress('c', 'Password-manager password', 15, 2, True, parent_id='p')
         async with app.run_test(size=(130, 40)) as pilot:
             await pilot.pause()
             app.unit_event(RunnerEvent('component_progress', identity=test, component=parent))
@@ -105,8 +105,14 @@ def test_nested_component_display_and_late_events(tmp_path):
             assert table.get_row_at(0)[2] == 'GPT login: 59s elapsed; timeout 3m'
             assert 'GPT login: 59s elapsed; timeout 3m' in app.screen.query_one('#body', Static).content.plain
             app.unit_event(RunnerEvent('component_progress', identity=test, component=child))
-            assert table.get_row_at(0)[2] == component_timing((parent, child))
+            assert table.get_row_at(0)[2] == 'Password-manager password: 2s elapsed; timeout 15s'
             assert table.has_focus
+            app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(child, timeout=None)))
+            assert table.get_row_at(0)[2] == 'GPT login: 59s elapsed; timeout 3m'
+            app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(parent, timeout=None)))
+            assert table.get_row_at(0)[2] == 'Password-manager password: 2s elapsed'
+            assert 'Password-manager password: 2s elapsed' in app.screen.query_one('#body', Static).content.plain
+            app.unit_event(RunnerEvent('component_progress', identity=test, component=parent))
             app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(child, active=False)))
             assert table.get_row_at(0)[2] == component_timing((parent,))
             app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(parent, elapsed=120)))

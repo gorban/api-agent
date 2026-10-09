@@ -108,11 +108,14 @@ class IntegrationLLM:
         async def retrieve(selected_role, selected_index, kind):
             helper = {'username': helpers.get_username, 'password': helpers.get_password,
                       'totp': helpers.get_totp}[kind]
-            task = asyncio.create_task(asyncio.to_thread(helper, source))
-            self._credential_tasks.add(task)
             try:
                 from api_agent.providers.progress import report_timeout
-                async with report_timeout('Password-manager ' + kind, helpers.DEFAULT_TIMEOUT):
+                async with report_timeout('Password-manager ' + kind, helpers.DEFAULT_TIMEOUT) as budget:
+                    def call_helper():
+                        # A queued worker must not restart the captured budget.
+                        return helper(source, timeout=budget.remaining)
+                    task = asyncio.create_task(asyncio.to_thread(call_helper))
+                    self._credential_tasks.add(task)
                     return await asyncio.shield(task)
             except helpers.CredentialError:
                 raise InteractionRequiredError("Password-manager retrieval is unavailable. Sign in to the configured CLI and check the login entry.") from None
