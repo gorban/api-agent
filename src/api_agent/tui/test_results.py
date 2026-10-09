@@ -3,15 +3,28 @@ from rich.text import Text
 
 
 def component_timing(components):
-    """Each active component keeps its own elapsed clock and timeout."""
+    """Show leaf clocks, or their nearest timed ancestor for untimed work."""
     def duration(seconds):
         if 0 < seconds < 1:
             return f'{seconds:.2g}s'
         seconds = int(seconds)
         minutes, seconds = divmod(seconds, 60)
         return (f'{minutes}m' + (f' {seconds}s' if seconds else '')) if minutes else f'{seconds}s'
-    return '; '.join(f'{component.name}: {duration(int(component.elapsed))} elapsed; '
-                     f'timeout {duration(component.timeout)}' for component in components)
+    components = tuple(components)
+    by_id = {component.id: component for component in components}
+    parents = {component.parent_id for component in components}
+    leaves = [component for component in components if component.id not in parents]
+    visible = {}
+    for leaf in leaves or components:
+        component, visited = leaf, set()
+        while component.timeout is None and component.parent_id in by_id and component.id not in visited:
+            visited.add(component.id)
+            component = by_id[component.parent_id]
+        displayed = component if component.timeout is not None else leaf
+        visible[displayed.id] = displayed
+    return '; '.join(f'{component.name}: {duration(int(component.elapsed))} elapsed'
+                     + (f'; timeout {duration(component.timeout)}' if component.timeout is not None else '')
+                     for component in visible.values())
 
 
 def literal_cell(value):

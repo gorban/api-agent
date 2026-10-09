@@ -132,6 +132,24 @@ def test_login_reports_its_actual_component_limit_until_timeout(lane, monkeypatc
     assert rows[0].id == rows[-1].id and all(row.timeout == 180 and row.name == 'GPT login' for row in rows)
 
 
+def test_login_enforces_remaining_parent_budget_without_changing_configured_limit(lane):
+    from api_agent.providers.progress import progress_sink, report_timeout
+    async def run():
+        rows = []
+        with progress_sink(rows.append):
+            async with report_timeout('Parent operation', .2):
+                with pytest.raises(c.AuthError, match='callback_timeout'):
+                    # The independent guard prevents a broken clamp from hanging.
+                    await asyncio.wait_for(c.connect_account(Store(), open_browser=lambda _: True), 1)
+        login = [row for row in rows if row.name == 'GPT login']
+        assert len(login) == 2 and 0 < login[0].timeout < .2
+        assert 0 <= login[0].elapsed < login[0].timeout
+        assert login[-1].elapsed >= login[0].timeout
+        assert login[-1].timeout == login[0].timeout
+        assert len(asyncio.all_tasks()) == 1
+    asyncio.run(run())
+
+
 def test_cancel(lane):
     async def run():
         ready = asyncio.Event()

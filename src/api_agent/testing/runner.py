@@ -50,9 +50,10 @@ class UnitRunResult:
 _PLUGIN = r'''
 import json, sys
 import pytest
+event_path = sys.argv[1]
 class Events:
     def send(self, **row):
-        with open(sys.argv[1], 'a', encoding='utf-8') as stream:
+        with open(event_path, 'a', encoding='utf-8') as stream:
             stream.write(json.dumps(row) + '\n')
     def pytest_runtest_logstart(self, nodeid, location):
         self.send(kind='test_started', node=nodeid)
