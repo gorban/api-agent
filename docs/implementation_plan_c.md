@@ -2,7 +2,7 @@
 
 ## Checklist
 
-- [ ] Start `README.md` with application and TUI usage documentation, deriving configuration details from the declarative executable descriptions.
+- [x] Start `README.md` with application and TUI usage documentation, pointing detailed settings to declarative executable descriptions and focused guides.
 - [ ] Document repo-local `.venv` creation/activation and `./launch.py` as the application setup path. The launcher installs needed declared application/test dependencies and prepares matching browsers automatically; user instructions must not require separate pip/dev-extra or browser-install commands for TUI operations. Distinguish external host tools from managed environment setup; verify this behavior before documenting it as complete. See [automatic setup tasks](implementation_plan_i.md).
 - [x] Document equivalent environment/CLI names, `.env` < environment < CLI precedence, strict `True`/`False` boolean values, bare boolean flags, and both `--key=value` and `--key value` forms.
 - [x] Add the TUI parser caveat: space-separated values starting with `--` are treated as another option key (preceding boolean becomes `True`; nonboolean reports a missing value). `--key=value` preserves literal values.
@@ -41,3 +41,10 @@
 - [x] Add a later README Testing section covering configured test modes, positional preselection, suite ownership, unit-only noninteractive execution, collection-only, fixed full-unit coverage and the intended GPT authentication/API matrix. Distinguish implemented setup from pending API-key transports/discovery/inference and preserve integration/E2E human gates.
 - [ ] Verify the documented three valid GPT scenarios after API-key setup and both transports are implemented. Run the generic setup/conformance tests unchanged for each applicable provider, use named pytest parameters for provider-specific isolated combinations and always retain invalid-combination rejection tests. Record skipped scenarios as unverified, not covered.
 - [ ] Define named CI configuration jobs/report identities after an explicit decision on integration execution gates; do not use the DEBUG inspection exception as a general CI bypass. Keep human E2E acceptance.
+
+
+## Executive README and focused guides
+
+- [x] Replace review-history prose with a concise benefits/quick-start README, Run local onboarding and links to workbench, connections, resource-pack and development guides. Put password-manager automation last in the feature list. Keep Testing last, use hierarchical GPT mode bullets and one full integration run plus targeted setup/conformance repeats; preserve separate transport coverage obligations.
+- [x] Coordinate UI/upstream controls with the infrastructure plan: RUN_UI for the frontend; API_ENDPOINT URL versus explicit blank for pack-owned hosting; AGENT_DJANGO_URL for the agent listener. Update inbound guide links and retain actual execution limitations in the detailed development guide.
+- [ ] Recheck ordinary terminal integration examples once their execution policy/wiring is resolved; no DEBUG workaround should become the default full-coverage recipe.

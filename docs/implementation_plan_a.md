@@ -170,3 +170,8 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 - [x] Use shared `TestTable` keyboard ranges in initial and running/completed test tables: Shift+Up/Down extends/shrinks, Shift+PageUp/PageDown extends by visible rows (excluding header/scrollbar), Ctrl/Cmd+Shift+Up/Down or Shift+Home/End extends to the edge, Ctrl/Cmd+A highlights all rows, and Escape/plain vertical movement clears the range. Copy full row labels/identities in displayed order separated by newlines, keeping ranges after copying and mouse-selected summary/trace text precedence. In the picker, Enter/Space selects the union of all range members when any are unchecked, otherwise deselects the union; overlapping all/tag/file/test groups toggle once and retain checked-group recollection intent. Completed results Enter retains the focused details action. Clear ranges when rebuilding/reordering the table; verify visible highlighting, boundaries, resizing and empty tables.
 
 - [x] Clear keyboard ranges on unmodified vertical/page/edge navigation even when the cursor is clamped at the first or last row; modified range-extension keys preserve their range. Regression checks cover arrows, Vim keys, pages and edge keys.
+
+
+## Terminal integration automation
+
+- [ ] Resolve the ordinary NO_STD_IN integration execution policy and wire the documented raw-output path without requiring DEBUG. Keep strict missing-configuration/authentication diagnostics, synchronous runner cleanup and recording failure exit status; E2E retains mandatory human acceptance. The README testing examples specify the target command shape; the development guide describes the current interactive restriction.
