@@ -32,7 +32,7 @@ Local API here means the pack's upstream API; the api-agent chat API remains the
 ## Provider-owned prerequisites
 
 - [ ] Let selected API providers/packs declare any deferred local upstream API/database stack, endpoint/seeding configuration and readiness needs. Keep specific database engines, signing settings and service definitions in their owners. Integrate active fragments with shared ownership labels, leases, inventory and stop-time validation; collection starts nothing and no undeclared stack is inferred.
-- [ ] Follow [browser-session policy](provider_architecture.md) after UI readiness: automatic pack authentication uses the owned session, while a separate provider LLM session is created lazily. Run local prerequisites shut down on quit; retained test services remain scoped/observable through container cleanup.
+- [ ] Follow [browser-session policy](../architecture/provider_architecture.md) after UI readiness: automatic pack authentication uses the owned session, while a separate provider LLM session is created lazily. Run local prerequisites shut down on quit; retained test services remain scoped/observable through container cleanup.
 
 ## Skeleton additions
 

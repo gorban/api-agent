@@ -7,7 +7,7 @@ UI provider as a host process. Packs/providers declare any managed upstream API
 and database prerequisites; an explicit blank API_ENDPOINT requests that local
 API, while a remote URL starts no local API stack. AGENT_DJANGO_URL addresses the
 agent itself. The current launcher does not yet execute local-run; the service/log controls
-below describe its planned contract. See [the infrastructure plan](implementation_plan_h.md).
+below describe its planned contract. See [the infrastructure plan](prds/implementation_plan_h.md).
 
 Use **b** for browser destinations and **l** for available log sources; **\***
 selects interleaved, labeled logs. `RUN_LOG_SOURCE` selects the initial source
@@ -55,7 +55,7 @@ dependent integrations with a reason; malformed values and execution failures
 fail. Authentication that needs human interaction cannot be called unattended.
 
 Ordinary integration currently requires its interactive picker. The
-[automation task](implementation_plan_a.md#terminal-integration-automation) tracks
+[automation task](prds/implementation_plan_a.md#terminal-integration-automation) tracks
 noninteractive execution; `--no-std-in --debug` is reserved for
 browser investigation and can permit attended browser interaction. E2E always
 requires explicit human acceptance and cannot use that exception. A confirmed
@@ -106,7 +106,7 @@ E2E_DEBUG selects retained headed E2E browsers for focused tests.
 Attach agent tooling to the printed loopback CDP endpoint and use its existing
 context/page. The MCP extension connection page is a separate browser. The
 launcher owns cleanup; keep callback parameters, credentials, cookies and
-storage out of diagnostic output. See [inspection contracts](provider_architecture.md).
+storage out of diagnostic output. See [inspection contracts](architecture/provider_architecture.md).
 
 ## Developer environment and builds
 

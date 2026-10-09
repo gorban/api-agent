@@ -1,6 +1,6 @@
 # Unattended provider sessions and operation usage
 
-Follow the exact [session and browser contracts](provider_architecture.md); protocol/cache implementation belongs to the [external LLM adapter](implementation_plan_f1.md). Core provides generic orchestration rather than interpreting persistent authentication files.
+Follow the exact [session and browser contracts](../architecture/provider_architecture.md); protocol/cache implementation belongs to the [external LLM adapter](implementation_plan_f1.md). Core provides generic orchestration rather than interpreting persistent authentication files.
 
 ## Checklist
 

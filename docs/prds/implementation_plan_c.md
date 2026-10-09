@@ -25,7 +25,7 @@
 
 - [ ] Document lazy provider-owned unattended login, provider/pack-owned observed login branches, optional browser preparation and all-tab credential-safe error evidence. Core uses synthetic public fixtures; operational protocol details stay in the owning adapter documentation.
 
-- [ ] Document automatic pack authenticate dispatch for each created UI session and same-context user handoff. RUN_UI=False local-run creates no UI; integration creates no frontend. LLM login is separately lazy: unattended login is headless unless RUN_UI or DEBUG makes it visible, and attended login is always visible; explain debug retention, supervised driver ownership and explicit inspection cleanup from [browser contracts](provider_architecture.md).
+- [ ] Document automatic pack authenticate dispatch for each created UI session and same-context user handoff. RUN_UI=False local-run creates no UI; integration creates no frontend. LLM login is separately lazy: unattended login is headless unless RUN_UI or DEBUG makes it visible, and attended login is always visible; explain debug retention, supervised driver ownership and explicit inspection cleanup from [browser contracts](../architecture/provider_architecture.md).
 
 - [ ] Document role-to-array unattended configuration, zero-entry attended fallback, automatic single-entry selection, and one shared zero-based `UNATTENDED_USER_INDEX` for needed credential arrays. Show `<vault>/<user>` choices, explicit test-picker persistence and session-only request-time ambiguity choices; explain the `NO_STD_IN` ambiguity error. Explain default acknowledgement as a chance to override new settings or preserve point-in-time configuration, with debug/index exclusions from automatic default saving.
 
@@ -48,3 +48,9 @@
 - [x] Replace review-history prose with a concise benefits/quick-start README, Run local onboarding and links to workbench, connections, resource-pack and development guides. Put password-manager automation last in the feature list. Keep Testing last, use hierarchical GPT mode bullets and one full integration run plus targeted setup/conformance repeats; preserve separate transport coverage obligations.
 - [x] Coordinate UI/upstream controls with the infrastructure plan: RUN_UI for the frontend; API_ENDPOINT URL versus explicit blank for pack-owned hosting; AGENT_DJANGO_URL for the agent listener. Update inbound guide links and retain actual execution limitations in the detailed development guide.
 - [ ] Recheck ordinary terminal integration examples once their execution policy/wiring is resolved; no DEBUG workaround should become the default full-coverage recipe.
+
+
+## Documentation organization
+
+- [x] Keep the four README-linked user guides directly under docs/. Move implementation requirements/checklists to docs/prds/ and provider architecture/contracts to docs/architecture/. Update outgoing declaration links, guide links and active inbound pack/parent review links.
+- [x] Preserve uncommitted user wording/spacing edits separately from the relocation commit. Carry existing exact-content public scan exemptions to the relocated paths without widening their scope.

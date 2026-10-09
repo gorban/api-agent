@@ -11,7 +11,7 @@ GPT offers subscription authentication with Responses, or API-key authentication
 with a supporting configured endpoint. Subscription plus Chat Completions is
 unsupported. API-key credentials are stored as a password-manager entry's
 password, without a separate secret-bearing API-key configuration field.
-API-key setup/transports are tracked in [the GPT plan](implementation_plan_f2.md).
+API-key setup/transports are tracked in [the GPT plan](prds/implementation_plan_f2.md).
 
 Authentication starts when an operation needs it. Help, collection and choosing
 tests do not sign in or send inference requests. The shared `test_llm_setup`
@@ -73,5 +73,5 @@ it does not rename an existing issued registration. No manual GPT_PROFILE is
 required. Unrecognized pages/security challenges may still require intervention.
 
 See [browser debugging](development.md#browser-debugging) for retained sessions
-and agent inspection, and [session contracts](provider_architecture.md) for
+and agent inspection, and [session contracts](architecture/provider_architecture.md) for
 ownership and cleanup.

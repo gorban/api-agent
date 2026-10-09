@@ -1,6 +1,6 @@
 # Provider contracts, version 1
 
-The executable declarations are in [contracts.py](../src/api_agent/providers/contracts.py), [LLM data](../src/api_agent/providers/llm.py) and [operation control](../src/api_agent/providers/control.py). This document records the implemented foundation. Distribution, declaration authority, worker inspection and credential IPC remain open in [consumer hardening](implementation_plan_m3.md); human acceptance of the concrete consumer contract is pending. API payloads remain adapter-defined. Core does not parse external authentication tokens.
+The executable declarations are in [contracts.py](../../src/api_agent/providers/contracts.py), [LLM data](../../src/api_agent/providers/llm.py) and [operation control](../../src/api_agent/providers/control.py). This document records the implemented foundation. Distribution, declaration authority, worker inspection and credential IPC remain open in [consumer hardening](../prds/implementation_plan_m3.md); human acceptance of the concrete consumer contract is pending. API payloads remain adapter-defined. Core does not parse external authentication tokens.
 
 ## Factory and capabilities
 
