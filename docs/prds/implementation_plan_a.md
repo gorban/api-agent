@@ -187,4 +187,5 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 
 ## Error message copying
 
+- [x] Show the original exception message, chained causes and traceback when integration setup/recording fails before completed results exist. Use the existing scrollable, copyable local error screen; do not capture frame locals or send this diagnostic to telemetry. Keep nonzero operation status, synchronous ownership cleanup and completed test/publication results intact. Verify filesystem recording failures and chained permission errors without live authentication or storage services.
 - [x] Reuse selected-text copy for generic error screens, including integration setup/recording failures. Show the normal platform copy hint (Ctrl+C off macOS; Cmd+C on macOS), copy the full body when nothing is highlighted, and deselect successful highlighted copies. Preserve the error screen and publication-failure behavior. Verify actual mouse selection and keyboard dispatch on both platforms.
