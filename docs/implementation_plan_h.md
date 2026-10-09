@@ -52,3 +52,9 @@ api-agent/
 Implementation references: [Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) support selecting multiple profiles; [Langfuse's official Compose deployment](https://langfuse.com/self-hosting/deployment/docker-compose) supplies its supported stack and headless initialization guidance.
 
 - [ ] Always start the configured host UI for E2E execution, even with `RUN_UI=False`; use `RUN_UI` for optional local-run UI and, in E2E, whether the Playwright browser is visible. Explicit `E2E_DEBUG=True` always makes that browser visible and retained; headless runs still capture real UI screenshots. Integration tests require no frontend and must not start it; RUN_UI controls only unattended provider-login browser visibility there. Attended login is always visible and DEBUG overrides headless behavior. Collection starts no services.
+
+
+## Local-run onboarding controls
+
+- [x] Coordinate the user-guide naming with pack-owned hosting selection: RUN_UI enables the connected frontend; API_ENDPOINT uses a remote URL or an explicit blank for the pack's managed local upstream API. AGENT_DJANGO_URL selects the agent listener and must not trigger upstream provisioning. Do not introduce a competing shared RUN_API/API_MODE control. An unset endpoint retains its owning declaration's default, which can be remote.
+- [ ] On local-run wiring, verify the README Get started path: configure RUN_UI and the selected pack/provider's API_ENDPOINT in Review configuration, choose Run local, acquire only declared enabled services, wait for readiness, and display their resolved endpoints/logs. Never infer an undeclared upstream API stack.

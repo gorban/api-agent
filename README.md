@@ -1,211 +1,78 @@
 # api-agent
 
-The shared Python runtime is being rebuilt. Configuration, credential setup, pytest selection, unit execution and fixed coverage checks use an interactive Textual workbench. Integration Start runs selected tests with Allure recording. The bundled GPT provider supports lazy subscription setup; inference, application services and E2E execution remain separate work.
+Build and run API-connected agents from one guided terminal interface.
 
-## Prerequisites
+- Review settings and save reusable configuration.
+- Adapt applications through resource packs and replaceable providers.
+- Run locally with connected UI/API services, logs and optional tracing.
+- Select tests, inspect failures and browse recorded results.
+- Even allows hooking up a password manager for automated login to UI and LLM
+  provider.
 
-Use Python 3.13 or newer, Git on PATH (required by the launcher's provenance gate), and `uv` for the development setup below. The workbench uses Textual. `./launch.py` prepares the repository-local `.venv` and declared external tools automatically when an interactive operation or collection needs them; it loads source directly without an editable installation. `--help` needs only Python and Git. Development commands below install the full test/build tools explicitly.
+## Get started
 
-## Development setup
+Use Python 3.13 or newer, then run from the `api-agent` directory:
 
-Run these commands from `api-agent`:
-
-```sh
-uv venv --python python3 .venv
-uv pip install --python .venv/bin/python -e '.[dev]'
-source .venv/bin/activate
-./launch.py --help
-.venv/bin/python -m pytest tests/unit
-.venv/bin/python -m build
-```
-
-For development tools, activate `.venv` in each new shell; its `#!/usr/bin/env python3` shebang selects Python from the active environment. Both launch scripts are executable in Git. If a file copy loses the executable permission, restore it with `chmod +x launch.py`. Without activation, use `.venv/bin/python launch.py --help` explicitly.
-
-The source launchers load the selected shared checkout directly; neither needs an editable package installation to launch. With Python 3.13 or newer on PATH, `./launch.py --help` works without a virtual environment; interactive launch and collection prepare the local environment when needed. The development install above supplies pytest and build tools. Build artifacts and the environment are ignored. Unit tests make no live LLM calls. Source launchers use their own checkout, independently of the current directory; installed console entry points require the known editable source layout, and direct wheel execution reports an actionable source-launcher error instead of guessing a checkout.
-
-## Foundation review
-
-```sh
-.venv/bin/python launch.py --help
-.venv/bin/python launch.py --no-std-in
-.venv/bin/python launch.py --no_std_in=True --tui-mode unit
-.venv/bin/python launch.py --no-std-in=True --tui-mode integration
-```
-
-The missing-mode example returns configuration error status `2`. Unit execution returns `0` when selected tests pass; All tests additionally requires every measured production coverage area to reach 100%. Partial selections report coverage informationally; coverage or test failures return nonzero. Ordinary integration/E2E execution rejects `NO_STD_IN=True`; integration DEBUG has an explicit investigation-only exception. Help returns `0` after the worktree check and any required stale-checkout approval. Git/pack/schema/bootstrap/collection errors return `2`. Configured test collection returns `0` only when valid nonempty matches are listed, without opening the TUI or executing tests.
-
-## Configuration and discovery workbench review
-
-```sh
+```bash
 ./launch.py
-./launch.py --tui-mode=config-cleanup
-./launch.py --tui-mode=unit --collect-only
-./launch.py --tui-mode=unit --collect-only api-agent::tests/unit/test_selection.py
 ```
 
-The launcher creates/updates local external tools on first use; subsequent launches reuse them. It does not install the shared source package. Every launch attempts to check worktree recency; missing Git or unavailable worktree metadata silently skips this check. If a requested checkout is older than another registered worktree, the warning requires literal `y` followed by Enter, even for help, collection and `NO_STD_IN`; Enter, refusal or EOF stops startup. Current/newest checkouts proceed without displaying approval or reading stdin. `q` opens a quit confirmation; enter literal `y` to confirm. `c` returns to the main menu where available. Buttons and tables show focus, and the bottom bar lists contextual shortcuts.
+The launcher prepares its local environment and dependencies. Follow the prompts
+and select **Run local** in the main menu to start the app.
 
-Startup configuration review automatically lists every unsupplied declared default across all modes, plus missing settings that can be required by any mode in the selected agent/resource-pack combination. New defaults join the list without maintaining a separate registry. Select a row, press **a** to save its default immediately, or **e** to edit its effective value and Enter to save; Source identifies the file where a value was saved. **u Unset** removes the selected saved setting from its source `.env`, even when another save target is selected, and restores its fallback. Required settings without defaults allow only editing, including an explicit empty string when its declared type permits it. Press **c** for **Next menu**, or Escape while editing to return without saving. Controlling changes revalidate conditional settings. Missing required settings are shown before mode selection, even when their runtime condition is not currently active.
+In **Review configuration**, set `RUN_UI=True` to launch the connected UI too.
+For packs offering a managed upstream API, set `API_ENDPOINT` to a remote URL,
+or save an explicit blank to launch that API locally alongside the agent.
+`AGENT_DJANGO_URL` is the agent's own address, not the upstream API setting.
+See [setup and configuration](docs/workbench.md#getting-started).
 
-The save target defaults to the directory of the launcher used, even when a resource pack is selected. Below the configuration table, a read-only list aligns the full `.env` target paths with a checkmark for the selected target and a blank for others; **s Switch target .env** changes the target when a pack is active. Resaving a setting moves its assignment to the selected file. Source shows the owning `.env` as a `../` relative path. Saving preserves unrelated assignments/comments and skips `NO_STD_IN`, `COLLECT_ONLY`, `API_AGENT_DIR`, `UI_SOURCE_DIR`, `UI_NX_APP`, `UNATTENDED_SECONDARY_USER`, and debug/index defaults according to metadata.
+## Guides
 
-From the main menu, select unit tests to review discovery and selection: All tests comes first, then tag/file groups, then individual identities. Enter toggles the focused group/test and counts update across overlapping groups. Tables and focused scroll panes support arrow keys and `h/j/k/l` for left/down/up/right; text inputs retain ordinary typing. `s` starts selected unit tests and shows their status/duration, failure details, and line/branch coverage by production file. After completion, `b` returns to a freshly collected picker with your selection retained. Select a failed test to inspect its traceback; use arrow/Vim keys or Page Up/Down to scroll and `c` to return. Confirmed Quit cancels an active run with nonzero status. An explicitly configured interactive unit mode opens the full-suite picker with only startup selector matches preselected; All tests remains unchecked for a subset. Returning through the main menu discards those selectors and initially selects all tests. `NO_STD_IN=True` uses raw pytest output plus the final summary and forwards the result status. Unit mode fails if any test does not pass; All tests additionally requires every measured production file to reach 100% line/branch coverage, including unimported files. Partial selections report coverage without enforcing that threshold; all measured production files currently meet the exact coverage gate. Packs without production `src/` code have no pack-code percentage. Integration Start records selected tests in Allure; E2E execution remains unavailable.
-
-Cleanup lists a narrow unnamed deletion indicator, Setting, Effective value, and Source. The indicator shows a checkmark for deletable `.env` rows. Settings hidden from startup review appear here only while saved in a relevant `.env`. Select a row whose source is an agent/resource-pack `.env`; **d Delete .env assignment** asks for confirmation to delete that setting from all relevant `.env` files, preserving unrelated content. Delete one setting at a time. Cleanup has no save-target controls. Closing with **c** returns to configuration review if deleted settings need acknowledgement again. `UNATTENDED_AUTH` remains excluded because its separate setup mode owns it.
-
-Selectors are a de-duplicated union of `tests/unit/file.py`, full pytest node IDs, or `tag:NAME`. Prefix file/node/tag selectors with `api-agent::` or the selected owner repository name to disambiguate combined units. Unknown/ambiguous selectors and empty matches are errors. Collection uses each repository's cwd/config and does not run tests or prerequisites. Missing optional pack unit suites are skipped; missing/empty base units are errors. Integration/E2E suites not yet created report missing-suite errors.
-
-The worktree gate asks only when a newer checkout is confirmed. Application services, actual inference and E2E execution remain unfinished tasks.
-
-## Executable declarations
-
-- [Shared configuration](cfg/config.toml) declares a version and each field's type, defaults, conditions, path anchor, help, and presentation metadata.
-- [Demo pack](demo/pack.toml) selects the [demo extensions](demo/cfg/config.toml), test owner, suite paths, and default overrides. The included demo is also bundled in the wheel.
-- Resource packs may provide their own root `pack.toml` and `cfg/config.toml`, app defaults, and authentication declarations. Authentication is lazy: a selected integration requests provider setup through the common interface.
-
-Selected providers may declare integration directories in adjacent `cfg/tests.toml` using `version = 1` and `[tests] integration = ["tests/integration"]`. Discovery combines shared, pack, and selected-provider suites without loading provider factories. Declared directories and their symlinked contents must stay inside the provider root. The same physical test file and function/parameter identity is collected once, retaining its first shared, pack, or provider identity. Put selection-dependent provider suites outside shared and pack suite directories, since those directories are collected regardless of the selected provider.
-
-Values resolve as shared defaults, then pack defaults, then api-agent's root `.env`, the selected resource pack's root `.env`, environment variables, and CLI options. Pack `.env` values override only the keys they provide; missing keys retain the base `.env` values. The bundled demo uses the base repository's `.env`. External pack overrides are independent of where its tests are owned. Resolution retains whether a value is explicit and its source. An extension can refer to shared controls in its conditions; inactive requirements do not block an operation.
-
-Types currently include `bool`, `int`, `str`, `path`, and compact JSON objects. CLI/environment booleans are exactly `True` or `False`; bare boolean flags mean `True`. `--field-name` and `--field_name` are equivalent, as are `--field=value` and `--field value`. `-h` sets `HELP=True`. With space-separated values, a value beginning with `--` starts another option: a preceding boolean becomes `True`, while a nonboolean reports its missing value. Use `--field=VALUE` to preserve such a literal value. `--` ends option parsing, and positional selectors require an explicitly configured test mode. The literal `.env` reader accepts `KEY=value`, quoted values, comments on their own lines, and optional `export`; it performs no shell expansion or command execution.
-
-Directory values use declared `base_root`, `pack_root`, or `owner_root` anchors rather than the process working directory. Configure `UI_SOURCE_DIR` explicitly relative to the test-owner repository root when UI execution is required. A resource pack's `API_AGENT_DIR` defaults to `../api-agent` relative to its pack root and may be overridden through its `.env`, environment, or CLI.
-
-The general LangGraph Markdown Layout and prompt interpreter are later work. No empty workflow, provider, knowledge, or navigation files have been created to imply those features already exist.
-
-## Worktree provenance
-
-Before help, collection, or any future TUI operation, the gate requires Git and checks the selected base, resource-pack source, and test-owner repositories, deduplicating nested roots. It compares registered checkouts independently by the newer of HEAD's committer timestamp and the newest nonignored unstaged/untracked file's modification time. Staged-only changes do not count; missing/deleted files have no invented modification time. Ties are accepted. It preserves host Git configuration while removing inherited variables that could redirect repository discovery or the index.
-
-If a selected checkout is stale, the gate lists all relevant roots, branches/SHAs, dates, reasons, selected checkouts, and newest checkouts, then requires explicit `y` on stdin. This intentionally applies even with `NO_STD_IN=True`, help, or collect-only. Decline/EOF/unavailable stdin stops with a nonzero status; there is no bypass option. Inaccessible or unrelated registered checkouts also fail verification. The gate never creates, switches, repairs, or deletes worktrees.
-
-Select an explicit resource pack with `--resource-pack-dir PATH` or `RESOURCE_PACK_DIR=PATH` (CLI takes precedence). Relative explicit pack paths resolve from the calling directory. Resource-pack launchers default to their own pack; api-agent defaults to its demo and shows a bootstrap hint only when no pack was explicitly selected.
-
-Human-edited declarations and future workflow Layout/prompt files live under `cfg/`, organized by responsibility and node. Python parsers remain under `src/api_agent/config/`. Each resource pack has its own `cfg/` tree, selected by its root `pack.toml`.
-
-Tracing configuration uses optional `TRACE_MODE` (empty/omitted, `LangFuse`, or `OTEL`) and `TRACE_TARGET`. The target defaults conditionally to `http://localhost:3000` for LangFuse or `http://localhost:4318/v1/traces` for OTEL. Changes to the mode update a defaulted target; explicit targets keep their value. `LOG_CONTENT` defaults to `False`. Exporter wiring, Compose tracer profiles, retention/reuse, and content scrubbing are scheduled before the first Ok run; declaring these fields does not enable an exporter yet.
-
-The main menu shows the live host running-container count. **Stop running containers** (`--tui-mode=cleanup-containers`) lists containers, lets Enter select them, and requires literal `y` before stopping selected containers. Inventory uses the Docker-compatible host CLI (including the local remote-Podman wrapper), with Podman as fallback when Docker is absent. Inventory failures are shown explicitly. Discovery lists running containers from the host engine, excluding the container hosting this session using `/run/.containerenv` and Distrobox identity variables. Stop requests also reject that container by name or full/abbreviated ID. The menu count includes only listed, stoppable containers. This mode stops containers without removing containers or volumes.
-
-Credential retrieval helpers accept configurable executable paths from each `UNATTENDED_AUTH` entry. Choose the Keeper Commander executable or use `op` on PATH for 1Password; version checks were verified with Keeper Commander 18.1.6 and 1Password CLI 2.40.0. Helpers close stdin, use bounded supervision and never print successful credentials. Stderr login prompts fail promptly; stdout-only prompts fail on a nonzero command result or timeout, because successful raw stdout must not be interpreted as a login message. The credential setup wizard is available; subscription browser consent begins lazily through launch-managed integration setup. Automated login-page assistance remains pending.
-
-## Lazy subscription setup
-
-Run `./launch.py --tui-mode integration api-agent::tests/integration/test_llm_setup.py`, then **s Start selected tests**. The test requests the selected provider’s setup capability; the bundled GPT provider reuses a saved connection or opens managed Playwright Chromium for initial consent. Attended sign-in always shows a window, independently of RUN_UI, so you can sign in and approve access. Chromium runs alongside the loopback callback listener and closes after setup, failure or cancellation. Its matching browser binary is prepared lazily if missing. Help, collection and selection never sign in. No inference is performed by this test. Allure storage configuration is required for recorded integration execution. Automatic storage-prerequisite acquisition is still a follow-up task; unavailable storage makes recording fail rather than claiming successful history publication.
-
-`GPT_APP_NAME` defaults to `api-agent` even with a resource pack. Override it through normal configuration to supply your application's display-name hint for first ChatGPT registration. Keep the name consistent across installations. Changing it does not rename a saved registration; later sign-ins reuse the issued client ID without resending the hint.
-
-For retained subscription-login debugging, use:
-
-```bash
-./launch.py --no-std-in --tui-mode integration --debug \
-  api-agent::tests/integration/test_llm_setup.py::test_llm_setup
-```
-
-This explicit integration debug exception starts selected tests without terminal input, but sign-in/consent can still require human interaction in Chromium. It runs serially even when TEST_PARALLEL_JOBS is higher, sharing lazy setup within each worker session. If a login browser is created, its loopback inspection endpoint is printed immediately. The original browser stays open after setup success or failure, including callback timeout; close its windows to let pytest teardown and Allure publication finish. Ctrl+C stops the run. The interactive integration TUI also honors DEBUG, but its final summary waits for retained windows to close. Cached setup may complete without a window. Closing the login page or browser before its callback arrives ends setup promptly as a failed authentication attempt; closing after an accepted callback does not undo it. Ordinary runs close login browsers normally. E2E retains its explicit human acceptance; this integration exception does not enable noninteractive E2E.
-
-Inspection clients can attach to the printed CDP endpoint and select the existing context/page; attachment must not create a replacement login context. This development endpoint exposes the browser session to local clients and disappears when the owning browser closes. Cross-worker shared authentication, final results before inspection ends, E2E/local-run attachment actions and inspection without debug are planned follow-ups.
-
-With Playwright MCP, `browser_run_code_unsafe` can attach through the existing MCP browser's browser type:
-
-```javascript
-async (page) => {
-  const browser = await page.context().browser().browserType().connectOverCDP(endpoint);
-  const originalPages = browser.contexts().flatMap(context => context.pages());
-  // Select the operation's existing page; do not create a new context/page.
-  return originalPages.map(tab => new URL(tab.url()).origin);
-}
-```
-
-Replace `endpoint` with the launcher's printed loopback URL. The MCP extension connection/permission page is separate from the application login window. Keep URLs containing OAuth parameters, cookies, credentials and browser storage out of diagnostics; report only the minimum page identity needed to select it.
-
-
-The integration picker shows the effective `UNATTENDED_USER_INDEX` and the selected account login/item labels. Use **[ Previous user** / **] Next user** to cycle eligible accounts and **No unattended user set — logins must be done manually**; the choice saves immediately to the displayed .env target. **s Start selected tests** uses that effective choice. Integration needs only its LLM account; available same-index pack account labels are also shown. `--unattended-user-index=` overrides a saved choice with attended login for one run without editing .env. ENV/CLI overrides still take precedence over a saved picker choice and are reported when they prevent it taking effect. Unattended GPT retrieves the configured entry username for account selection; password and optional TOTP are retrieved only when the login page requests them. It reuses a uniquely matching saved subscription or fills **Email address** and clicks **Continue** for a new connection. Observed password, optional TOTP and consent steps are automated; unfamiliar pages or security challenges can still require human intervention. The login browser starts headless unless RUN_UI or integration DEBUG makes it visible. If headless login reaches an observed error/security-verification page, interactive execution may retry once in visible Chromium and wait for you to resolve it; the selected account binding remains enforced. Strict noninteractive execution reports that browser interaction is required. Verification can still loop upstream; opening a visible browser does not guarantee acceptance. A password-manager CLI/session failure prints a safe explanation and starts attended login when interactive execution or integration DEBUG allows it; strict noninteractive execution reports that authentication needs attention without an attended fallback. No passwords, codes or usernames are printed. There is no manual GPT profile setting. Unattended GPT requires the selected LLM User account descriptor and a configured shared password manager/CLI; its retrieved username selects the matching cached subscription. Plain startup offers Setup / Skip whenever an enabled role or manager is incomplete. Skip keeps attended login available. Check **Remember my selection** under Skip to save `SKIP_UNATTENDED_SETUP=True` to the displayed .env target and suppress future startup suggestions. This setting defaults to False and is hidden from Review configuration; delete it in Clear .env configuration to restore the suggestion. Setup unattended authentication remains available from the menu. An explicitly selected TUI_MODE still bypasses the startup suggestion. Attended OAuth identifies the signed-in account when the cache is empty or ambiguous. GPT_STATE_DIR appears in Review configuration with its expanded default path. See [the lazy setup checklist](docs/implementation_plan_f2b.md) for supported behavior and follow-ups.
-
-To inspect a logged-out password-manager failure without terminal input, select its configured account explicitly:
-
-```bash
-./launch.py --no-std-in --tui-mode integration --debug --unattended-user-index=0 api-agent::tests/integration/test_llm_setup.py::test_llm_setup
-```
-
-This integration DEBUG exception permits attended browser fallback: failed username retrieval explains that the CLI needs sign-in or the entry needs checking, then opens visible Chromium for manual login. Close the browser to end the pending login. Ordinary integration execution without DEBUG still requires its interactive picker; this command does not demonstrate strict unattended failure without fallback. With valid CLI retrieval, RUN_UI=False keeps unattended login headless unless DEBUG is enabled; attended login is always visible.
-
+- [Settings and TUI controls](docs/workbench.md)
+- [Credentials and LLM connections](docs/connections.md)
+- [Resource packs and providers](docs/resource-packs.md)
+- [Running, debugging and testing](docs/development.md)
 
 ## Testing
 
-Choose `unit`, `integration`, or `e2e` as the test type:
+Choose `unit`, `integration`, or `e2e` as `<tests_type>`:
 
 ```bash
 ./launch.py --tui-mode "<tests_type>"
 ```
 
-- All tests of that type are initially selected. Positional selectors preselect matching tests; the interactive picker still displays the full collection so you can adjust the selection. Select by file, full pytest node ID, or `tag:NAME`. Multiple selectors select their union.
-- Press **s** to start unit or integration tests. E2E execution will additionally require explicit human acceptance; its runner remains unimplemented.
-- Unit tests combine the base suite and any selected resource pack's units. Integration discovery combines generic api-agent tests, the selected pack's tests and selected providers' declared suites. E2E uses the selected pack's declared suite. Missing declared integration/E2E suites are collection errors.
-
-For example, preselect one shared integration:
-
-```bash
-./launch.py --tui-mode integration api-agent::tests/integration/test_llm_setup.py
-```
-
-This setup test authenticates the selected LLM provider through its common contract and sends no inference request. Provider-specific tests belong with their provider; pack-specific tests belong with their pack.
-
-### Noninteractive execution and collection
-
-Run unit tests without the TUI or terminal-input confirmation:
-
-```bash
-./launch.py --tui-mode unit --no-std-in
-```
-
-For several commands, set the equivalent environment variable once:
-
-```bash
-export NO_STD_IN=True
-./launch.py --tui-mode unit
-./launch.py --tui-mode integration --collect-only
-unset NO_STD_IN
-```
-
-`--collect-only` lists matching test identities without executing them or authenticating. It supports every test type and positional selectors:
-
-```bash
-./launch.py --tui-mode integration --collect-only api-agent::tests/integration/test_llm_setup.py
-```
-
-Ordinary integration and E2E execution require the interactive start/acceptance flow; `--no-std-in` is not a general CI execution switch for them. Integration's explicit `--debug` exception permits noninteractive terminal execution for browser investigation and retains its login windows; it does not bypass E2E acceptance. A confirmed newer worktree can still require stdin approval before any of these commands.
+All tests start selected. Add positional selectors to preselect tests, or adjust
+selection in the TUI. Append `--no-std-in` for terminal automation, or export
+`NO_STD_IN=True` for multiple commands. E2E acceptance remains a human step.
+See [test controls and automation](docs/development.md#testing).
 
 ### For full coverage
 
-Run **All tests** in unit mode, without positional selectors. Every applicable unit must pass and every measured production file must have **100% line and branch coverage**. Partial selections report coverage but do not enforce that threshold. Unit tests are deterministic and never use live LLMs or publish Allure results.
+Run all unit tests without selectors; require every test to pass and 100% line
+and branch coverage. Some integrations also need every valid configuration:
 
-Code coverage does not establish that every supported provider/configuration combination works. Repeat the integration conformance suite for each implemented supported combination, with its required credentials and endpoint supplied. A skipped scenario is unverified, even when the overall run reports PASS.
+- `GPT_API_MODE`
+  - `responses`
+  - `completions`
+- `GPT_AUTH_MODE`
+  - `api_key`
+  - `subscription`
+    - `GPT_API_MODE=completions` is unsupported.
 
-For the bundled GPT provider, the target matrix is:
-
-| GPT_AUTH_MODE | GPT_API_MODE | Expected coverage |
-| --- | --- | --- |
-| `subscription` | `responses` | Setup, then discovery/inference contracts as implemented |
-| `api_key` | `completions` | Browser-free key setup and Chat Completions contracts |
-| `api_key` | `responses` | Browser-free key setup and Responses contracts |
-| `subscription` | `completions` | Isolated rejection test; no authentication or request side effects |
-
-**Implementation status:** subscription/responses setup is implemented. API-key setup, both API-key transports, discovery and inference remain planned; dependent integrations currently skip where these capabilities are unavailable. The commands below describe the intended full-matrix procedure once those implementations land, rather than certify current support.
-
-With the bundled GPT provider selected, run the integration suite once per valid combination:
+Run the full integration suite once with your valid effective settings:
 
 ```bash
-./launch.py --tui-mode integration --no-std-in=False \
-  --gpt-auth-mode subscription --gpt-api-mode responses
-./launch.py --tui-mode integration --no-std-in=False \
-  --gpt-auth-mode api_key --gpt-api-mode completions
-./launch.py --tui-mode integration --no-std-in=False \
-  --gpt-auth-mode api_key --gpt-api-mode responses
+./launch.py --tui-mode integration --no-std-in
 ```
 
-CLI overrides apply to that launch without editing .env. Subscription tests need an eligible signed-in account; API-key tests will need the provider's configured endpoint and selected password-manager entry containing the key. The configured endpoint and selected GPT variant must support the API being tested. A resource pack may select another LLM provider: override `LLM_PROVIDER` with the GPT factory's `file.py:factory` location when testing this matrix. GPT settings are contributed only while that provider is selected; see [its declaration](src/api_agent/llm_providers/gpt/cfg/config.toml).
+Then repeat only the LLM setup tests for the other valid combinations—two more
+runs for GPT. For example, when this differs from your first run:
 
-The shared setup test runs unchanged for each provider's supported setup configurations. Provider-owned tests should use explicit pytest parameter IDs for isolated scenarios and override their test-local configuration without changing .env. For example, the subscription/completions rejection test must still run under a valid launch configuration, overriding only its own inputs to assert rejection.
+```bash
+./launch.py --tui-mode integration --no-std-in \
+  --gpt-auth-mode=subscription --gpt-api-mode=responses \
+  api-agent::tests/integration/test_llm_setup.py
+```
 
-A future CI matrix should name each provider/configuration scenario, launch each with a separately resolved configuration and owned session, and preserve that scenario name in its report identity. Passing one configuration must not stand in for another, and expected skips must remain visible. Automated integration execution still needs an explicit decision about the interactive gate. E2E acceptance remains a human-run step; authentication-only setup does not replace inference, UI or E2E coverage.
+Change the overrides for each remaining combination; do not repeat the baseline.
+Setup checks authentication. API-specific transport tests also need coverage under each applicable mode. Skipped scenarios remain unverified.
