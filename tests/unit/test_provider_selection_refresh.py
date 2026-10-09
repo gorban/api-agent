@@ -208,3 +208,25 @@ def test_explicit_selection_still_loads_required_fields_despite_deferred_default
                               environ=resolution_env, dotenv=dotenv)
     assert not supplied.errors and 'REQUIRED_VALUE' not in supplied.missing
     assert supplied.values['REQUIRED_VALUE'] == 'provided'
+
+
+@pytest.mark.parametrize('selector', ['LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER',
+                                      'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER'])
+@pytest.mark.parametrize('initial', ['empty', 'unset', 'active'])
+def test_conditional_deferred_selector_cannot_escape_discovery(tmp_path, selector, initial):
+    from api_agent.providers.loading import ProviderError
+    target = adapter(tmp_path, 'conditional', 'CONDITIONAL_REQUIRED', 1)
+    field = {'type': 'str'}
+    if initial == 'active':
+        field['default'] = adapter(tmp_path, 'original', 'ORIGINAL_REQUIRED', 2)
+    elif initial == 'empty':
+        field['default'] = ''
+    base = schema_from_dict({'version': 1, 'fields': {
+        selector: field, 'ENABLE': {'type': 'bool', 'default': True}}})
+    contribution = tmp_path / 'optional.toml'
+    raw = field.get('default', '')
+    contribution.write_text(f'version=1\n[fields.{selector}]\ntype="str"\n'
+        f'override=true\noverride_if_present=true\ndefault="{raw}"\n'
+        f'conditional_defaults=[{{when={{ENABLE=true}},value="{target}"}}]\n')
+    with pytest.raises(ProviderError, match='^provider_selection_cycle$'):
+        bootstrap_schema(base, [], {}, {}, owner_root=tmp_path, configuration_paths=(contribution,))

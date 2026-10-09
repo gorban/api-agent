@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from .contracts import BrowserSession, ContractError, SessionClosedError, LLMCredentialReader
-from .control import OperationalError, OperationContext, CleanupPendingError, _cancel_once
+from .control import OperationalError, OperationContext, CleanupPendingError, _cancel_once, finish_cleanup
 
 
 class ScopedRoleCredentials:
@@ -59,27 +59,36 @@ async def _invoke(resource: Any, method: str) -> None:
 
 
 async def wait_browser_result(result: asyncio.Future, session: BrowserSession, *, on_wait=None) -> Any:
-    """Stop a pending browser wait when its page or browser closes.
+    """Race completion/closure against one owned asynchronous assistance task.
 
-    A completed result wins over closure, so closing after an accepted callback
-    does not undo it. The caller retains ownership of the result and must cancel
-    or drain its underlying work in cleanup; this wait creates no background task.
-    An optional async on_wait guard can report provider-specific visible blockers.
+    Accepted completion wins over closure or a failed guard. The caller still
+    owns result; this wait cancels and drains only the assistance it starts.
     """
-    while not result.done():
-        if session.page.is_closed() or not session.browser.is_connected():
-            raise SessionClosedError("Browser closed before operation completed")
-        if on_wait is not None:
-            try:
-                await on_wait()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                if result.done():
-                    return result.result()
-                raise
-        await asyncio.wait({result}, timeout=.1)
-    return result.result()
+    assistance = None
+    try:
+        while not result.done():
+            if session.page.is_closed() or not session.browser.is_connected():
+                raise SessionClosedError("Browser closed before operation completed")
+            if on_wait is not None and assistance is None:
+                assistance = asyncio.create_task(on_wait())
+            await asyncio.wait({result} if assistance is None else {result, assistance}, timeout=.1)
+            if assistance is not None and assistance.cancelled():
+                assistance.result()
+            if result.done():
+                break
+            if assistance is not None and assistance.done():
+                assistance.result()
+                assistance = None
+                # A cheap guard must not spin; keep completion responsive while
+                # retaining the original bounded observation cadence.
+                await asyncio.wait({result}, timeout=.1)
+        return result.result()
+    finally:
+        if assistance is not None:
+            _cancel_once(assistance, set())
+            async def drain():
+                await asyncio.gather(assistance, return_exceptions=True)
+            await finish_cleanup(drain())
 
 
 def _consume(task: asyncio.Future) -> None:

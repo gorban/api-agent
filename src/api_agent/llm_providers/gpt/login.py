@@ -74,20 +74,46 @@ class LoginWorkflow:
         button = self.page.get_by_role('button', name='Continue', exact=True)
         if not await button.is_visible():
             return
-        if field is not None:
-            try:
-                value = self.username if kind == 'username' else await self._credential(kind)
-            except InteractionRequiredError:
-                self._interaction('Password-manager credential retrieval is unavailable. Sign in to the configured CLI or complete GPT login in the visible browser.')
+        # Pin actual elements before retrieving secrets. Unlike Locators, these
+        # handles cannot resolve to matching elements in a replacement document.
+        handles = []
+        try:
+            bound_button = await button.element_handle(timeout=1000)
+            handles.append(bound_button)
+            bound_field = await field.element_handle(timeout=1000) if field is not None else None
+            handles.append(bound_field)
+            if bound_button is None or (field is not None and bound_field is None):
                 return
-            if not isinstance(value, str) or not value.strip():
-                self._interaction('The selected login does not provide the credential requested by GPT. Complete login in the visible browser or update its password-manager entry.')
+            if field is not None:
+                try:
+                    value = self.username if kind == 'username' else await self._credential(kind)
+                except InteractionRequiredError:
+                    self._interaction('Password-manager credential retrieval is unavailable. Sign in to the configured CLI or complete GPT login in the visible browser.')
+                    return
+                if not isinstance(value, str) or not value.strip():
+                    self._interaction('The selected login does not provide the credential requested by GPT. Complete login in the visible browser or update its password-manager entry.')
+                    return
+                if not await self._bound(bound_field, bound_button, location.geturl()):
+                    return
+                await bound_field.fill(value, timeout=1000)
+                del value
+            if not await self._bound(bound_button, bound_button, location.geturl()):
                 return
-            # Navigation during a CLI lookup invalidates this page action. Never
-            # fill a credential into a different page reached in the meantime.
-            if self.page.url != location.geturl():
-                return
-            await field.fill(value, timeout=1000)
-            del value
-        await button.click(timeout=1000)
-        self.last_action = key
+            await bound_button.click(timeout=1000)
+            self.last_action = key
+        finally:
+            async def release():
+                await asyncio.gather(*(handle.dispose() for handle in handles if handle is not None),
+                                     return_exceptions=True)
+            await _dispose(release())
+
+    async def _bound(self, element, button, expected_url):
+        try:
+            return await element.evaluate(
+                "(element, binding) => element.ownerDocument === document && "
+                "binding.button.ownerDocument === document && location.href === binding.url",
+                {'button': button, 'url': expected_url})
+        except Exception:
+            # Navigation may destroy the bound execution context. Never resolve
+            # a replacement element, and never forward its identity-bearing error.
+            return False

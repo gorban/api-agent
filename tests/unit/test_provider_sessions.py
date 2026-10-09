@@ -862,3 +862,48 @@ def test_inspection_disconnect_and_empty_sessions_finish_without_wait():
         await inspection.wait_closed()
         await inspection.aclose()
     run(scenario())
+
+
+def test_accepted_callback_interrupts_pending_assistance_and_drains_it():
+    async def scenario():
+        entered, drained = asyncio.Event(), asyncio.Event()
+        result = asyncio.get_running_loop().create_future()
+        async def assistance():
+            entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                drained.set()
+        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: False),
+                                  browser=SimpleNamespace(is_connected=lambda: True))
+        task = asyncio.create_task(wait_browser_result(result, session, on_wait=assistance))
+        await entered.wait()
+        result.set_result('accepted')
+        try:
+            assert await asyncio.wait_for(asyncio.shield(task), .3) == 'accepted'
+            assert drained.is_set()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        assert not [other for other in asyncio.all_tasks() if other is not asyncio.current_task() and not other.done()]
+    run(scenario())
+
+
+def test_fast_assistance_does_not_busy_poll_or_delay_accepted_result():
+    async def scenario():
+        calls = 0
+        entered = asyncio.Event()
+        async def assistance():
+            nonlocal calls
+            calls += 1
+            entered.set()
+        result = asyncio.get_running_loop().create_future()
+        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: False),
+                                  browser=SimpleNamespace(is_connected=lambda: True))
+        task = asyncio.create_task(wait_browser_result(result, session, on_wait=assistance))
+        await entered.wait()
+        await asyncio.sleep(.01)
+        assert calls == 1
+        result.set_result('accepted')
+        assert await asyncio.wait_for(task, .05) == 'accepted'
+    run(scenario())
