@@ -95,6 +95,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
 
         def before():
             nonlocal prepared
+            if prepared:
+                return
             if prepare is not None:
                 prepare(usage)
             prepared = True

@@ -410,3 +410,178 @@ def test_debug_is_serial_and_streams_inspection_output(tmp_path):
     assert 'inspection-ready' in result.output
     assert 'collected 1 item' in result.output
     assert 'workers [' not in result.output
+
+
+def test_run_complete_transfers_live_worker_before_publication(tmp_path, monkeypatch):
+    """A real pytest process retains its driver loop after auth is disposed."""
+    base = fixture_repo(tmp_path / 'base', '''
+import asyncio
+from types import SimpleNamespace
+from api_agent.testing.provider_setup import IntegrationLLM, _inspection_providers
+
+def test_retained():
+    owner = IntegrationLLM({'DEBUG': True}, '.')
+    async def observe():
+        owner.inspection.observe(SimpleNamespace(inspection_endpoint='http://127.0.0.1:1234',
+        browser=SimpleNamespace(is_connected=lambda: True), context=SimpleNamespace(pages=[object()])))
+    owner.loop.run_until_complete(observe())
+    owner.finish_run()
+''')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    events, publication = [], []
+    result = run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True},
+        on_event=events.append, after_run=lambda run: publication.append(
+            (run.tests[0].status, run.inspections[0].process.poll(), run.inspections[0].closed)))
+    assert result.exit_code == 0
+    assert publication == [('passed', None, False)]
+    assert len(result.inspections) == 1
+    handle = result.inspections[0]
+    assert any(event.kind == 'inspection_open' and event.text == 'http://127.0.0.1:1234' for event in events)
+    assert handle.end_inspection(timeout=5)
+    assert handle.wait_closed(timeout=1)
+    assert handle.closed and handle.process.poll() == 0
+    assert any(event.kind == 'inspection_closed' for event in events)
+    assert not Path(handle.directory.temporary.name).exists()
+
+
+def test_retained_worker_abrupt_exit_cleans_registered_group(tmp_path):
+    base = fixture_repo(tmp_path / 'base', '''
+from types import SimpleNamespace
+from api_agent.testing.provider_setup import IntegrationLLM
+
+def test_retained():
+    owner = IntegrationLLM({'DEBUG': True}, '.')
+    async def observe():
+        owner.inspection.observe(SimpleNamespace(inspection_endpoint=None,
+        browser=SimpleNamespace(is_connected=lambda: True), context=SimpleNamespace(pages=[object()])))
+    owner.loop.run_until_complete(observe())
+    owner.finish_run()
+''')
+    ctx = context(base)
+    events = []
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+        config={'DEBUG': True}, on_event=events.append)
+    handle = result.inspections[0]
+    handle.process.kill()
+    assert handle.wait_closed(timeout=5)
+    assert any(event.kind == 'inspection_lost' for event in events)
+
+
+def test_real_offline_browser_driver_survives_published_results(tmp_path):
+    pytest.importorskip('playwright.async_api')
+    from api_agent.runtime.browser import _default_paths
+    if not all(path.exists() for path in _default_paths(False)):
+        pytest.skip('Installed offline Chromium is required')
+    base = fixture_repo(tmp_path / 'base', '''
+from playwright.async_api import async_playwright
+from api_agent.testing.provider_setup import IntegrationLLM
+from api_agent.providers.contracts import BrowserSession
+
+def test_browser():
+    owner = IntegrationLLM({'DEBUG': True}, '.')
+    async def create():
+        driver = await async_playwright().start()
+        browser = await driver.chromium.launch(headless=True)
+        context = await browser.new_context()
+        page = await context.new_page()
+        await page.set_content('<title>Offline inspection</title>')
+        owner.inspection.retain([(driver, 'stop'), (browser, 'close'), (context, 'close')])
+        owner.inspection.observe(BrowserSession(browser, context, page, None))
+    owner.loop.run_until_complete(create())
+    owner.finish_run()
+''')
+    ctx = context(base)
+    published = []
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+        config={'DEBUG': True}, after_run=lambda row: published.append(row.tests[0].status))
+    assert published == ['passed'], result.output
+    handle = result.inspections[0]
+    try:
+        assert not handle.closed and handle.process.poll() is None
+        assert handle.end_inspection(timeout=10)
+        assert handle.process.poll() == 0
+    finally:
+        handle.abort()
+
+
+def test_worker_cleanup_pending_requires_explicit_retry(tmp_path):
+    base = fixture_repo(tmp_path / 'base', '''
+from types import SimpleNamespace
+from api_agent.testing.provider_setup import IntegrationLLM
+
+def test_browser():
+    owner = IntegrationLLM({'DEBUG': True}, '.')
+    class Resource:
+        attempts = 0
+        async def aclose(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError('private cleanup detail')
+    async def create():
+        owner.inspection.retain([(Resource(), 'aclose')])
+        owner.inspection.observe(SimpleNamespace(inspection_endpoint=None,
+            browser=SimpleNamespace(is_connected=lambda: True), context=SimpleNamespace(pages=[object()])))
+    owner.loop.run_until_complete(create())
+    owner.finish_run()
+''')
+    ctx = context(base)
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True, config={'DEBUG': True})
+    handle = result.inspections[0]
+    try:
+        assert handle.end_inspection(timeout=5) is False
+        assert handle.pending and not handle.closed
+        assert handle.process.poll() is None
+        assert handle.end_inspection(timeout=5) is True
+        assert handle.closed and handle.process.poll() == 0
+    finally:
+        handle.abort()
+
+
+def test_launcher_liveness_eof_stops_only_registered_worker_group(tmp_path):
+    import os
+    if os.name != 'posix':
+        pytest.skip('POSIX worker group ownership')
+    base = fixture_repo(tmp_path / 'base', '''
+from types import SimpleNamespace
+from api_agent.testing.provider_setup import IntegrationLLM
+
+def test_browser():
+    owner = IntegrationLLM({'DEBUG': True}, '.')
+    async def create():
+        owner.inspection.observe(SimpleNamespace(inspection_endpoint=None,
+            browser=SimpleNamespace(is_connected=lambda: True), context=SimpleNamespace(pages=[object()])))
+    owner.loop.run_until_complete(create())
+    owner.finish_run()
+''')
+    ctx = context(base)
+    events = []
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+        config={'DEBUG': True}, on_event=events.append)
+    handle = result.inspections[0]
+    # Closing the sole writer produces the same EOF as abrupt launcher exit.
+    os.close(handle.liveness_fd)
+    handle.liveness_fd = None
+    assert handle.wait_closed(timeout=5)
+    assert handle.process.poll() < 0
+    assert any(event.kind == 'inspection_lost' for event in events)
+
+
+def test_browser_already_closed_at_run_complete_is_not_protocol_error(tmp_path):
+    base = fixture_repo(tmp_path / 'base', '''
+from types import SimpleNamespace
+from api_agent.testing.provider_setup import IntegrationLLM
+
+def test_browser():
+    owner = IntegrationLLM({'DEBUG': True}, '.')
+    async def create():
+        owner.inspection.observe(SimpleNamespace(inspection_endpoint=None,
+            browser=SimpleNamespace(is_connected=lambda: False), context=SimpleNamespace(pages=[])))
+    owner.loop.run_until_complete(create())
+    owner.finish_run()
+''')
+    ctx = context(base)
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True, config={'DEBUG': True})
+    assert result.exit_code == 0, result.output
+    for handle in result.inspections:
+        assert handle.wait_closed(timeout=5)

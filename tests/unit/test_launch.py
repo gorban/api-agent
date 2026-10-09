@@ -234,7 +234,7 @@ def test_noninteractive_debug_integration_dispatch_and_prepare_failure(monkeypat
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **k: None)
     calls = []
     def run(context, tests, config, **kwargs):
-        assert tests == ['selected'] and config['DEBUG'] and config['NO_STD_IN']
+        assert tuple(tests) == ('selected',) and config['DEBUG'] and config['NO_STD_IN']
         assert kwargs['accepted'] is True
         kwargs['output']('raw evidence\n')
         calls.append('run')

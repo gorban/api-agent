@@ -341,6 +341,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
             self._bindings.bind('left_square_bracket', 'previous_account', 'Previous user', key_display='[')
             self._bindings.bind('right_square_bracket', 'next_account', 'Next user', key_display=']')
         if self.kind == "test-results":
+            self._bindings.bind("e", "end_inspection", "End inspection")
             self.call_after_refresh(self.layout_test_results)
         if self.kind == "defaults":
             self._bindings.bind("c", "close_view", "Next menu")
@@ -376,6 +377,9 @@ class WorkbenchScreen(FocusNavigation, Screen):
     async def action_back_to_selection(self):
         self.app.run_worker(self.app.back_to_selection(), group="collection", exclusive=True)
 
+    async def action_end_inspection(self):
+        await self.app.end_inspection()
+
     async def action_start_selected(self):
         await self.app.choose("continue")
 
@@ -394,6 +398,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return isinstance(self.app.focused, DataTable)
         if action == "close_view" and self.kind == "menu":
             return False
+        if action == "end_inspection":
+            return self.kind == 'test-results' and self.app.inspection_cleanup_active()
         if action == "back_to_selection":
             return self.kind == "test-results" and self.test_run_complete and not self.app.test_run_active()
         if action.startswith("failure_"):
@@ -644,6 +650,15 @@ class ApiAgentApp(App[int]):
         self.integration_runner = integration_runner
         self.integration_unattended = False
         self.integration_persisted = None
+        from api_agent.testing.inspection_controls import InspectionGroup
+        self.inspections = InspectionGroup()
+        self.inspection_failed = False
+        self.inspection_lost = False
+        self._inspection_generation = object()
+        self._inspection_shutdown = False
+        self.pending_inspection_cleanup = None
+        self.integration_exit_status = None
+        self.recording_cleanup = None
         self.unit_result = None
         self.test_run = None
         self.unit_rows = {}
@@ -974,6 +989,9 @@ class ApiAgentApp(App[int]):
             await self.configure_operation(skip_defaults=skip_defaults)
 
     def show_menu(self):
+        if self.inspection_cleanup_active():
+            return
+        self.discard_finished_inspection()
         # Keep acknowledged rows only for the current review, not later visits.
         self.review_names.clear()
         self.pending_test_selectors = ()
@@ -1114,6 +1132,8 @@ class ApiAgentApp(App[int]):
     async def back_to_selection(self):
         if self.test_run_active() or self.selection is None:
             return
+        if not await self.end_inspection():
+            return
         cancel_event = threading.Event()
         selection = self.selection
         self.collection_cancel = cancel_event
@@ -1130,6 +1150,9 @@ class ApiAgentApp(App[int]):
                 self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
 
     def start_unit_run(self):
+        if self.inspection_cleanup_active():
+            return
+        self.discard_finished_inspection()
         self.operation_status = 3
         self.test_run = TestRunLifecycle()
         self.collection_cancel = self.test_run.cancel_event
@@ -1171,10 +1194,16 @@ class ApiAgentApp(App[int]):
             self.test_run.finish()
 
     async def _run_integrations(self):
-        from api_agent.testing.recorded import run_recorded_integration
-        runner = self.integration_runner or run_recorded_integration
+        from api_agent.testing.launched import run_launched_integration
+        runner = self.integration_runner or run_launched_integration
+        self.discard_finished_inspection()
+        generation = self._inspection_generation
         self.integration_persisted = None
+        self.integration_exit_status = None
+        outcome = {}
         try:
+            if self.inspection_cleanup_active():
+                raise ValueError('End retained inspection before starting another operation.')
             fresh = await self.discover_tests(self.collection_cancel)
             if self.collection_cancel.is_set():
                 return
@@ -1189,30 +1218,191 @@ class ApiAgentApp(App[int]):
                 return
             if not self.integration_unattended:
                 active['UNATTENDED_USER_INDEX'] = None
-            recorded = await asyncio.to_thread(runner, self.context, self.selection.selected_tests,
-                active, accepted=True,
-                on_event=lambda event: self.call_from_thread(self.unit_event, event),
-                cancel_event=self.collection_cancel)
+            def execute():
+                try:
+                    outcome['recorded'] = runner(self.context, self.selection.selected_tests,
+                        active, accepted=True,
+                        on_event=lambda event: self.call_from_thread(self.integration_event, event, generation),
+                        cancel_event=self.collection_cancel)
+                    return outcome['recorded']
+                except BaseException as error:
+                    outcome['error'] = error
+                    raise
+            from api_agent.runtime.tasks import offload
+            recorded = await offload(execute, cancellation=self.collection_cancel)
+            from api_agent.testing.inspection_controls import InspectionGroup
+            self.inspections = InspectionGroup(getattr(recorded.execution, 'inspections', ()))
+            self.inspection_lost |= self.inspections.lost
+            self.inspection_failed = self.inspection_lost or any(getattr(handle, 'pending', False) for handle in self.inspections.handles if not handle.closed)
             self.unit_result = recorded.execution
             self.integration_persisted = getattr(recorded, 'persisted', True)
             for test in self.unit_result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
-            self.operation_status = recorded.exit_code
+            self.integration_exit_status = recorded.exit_code
+            self.operation_status = 3 if self.inspection_failed else recorded.exit_code
             if not self.collection_cancel.is_set():
                 self.show_unit_results()
-        except Exception:
+        except asyncio.CancelledError as interruption:
+            self.collection_cancel.set()
+            error = outcome.get('error')
+            self.recording_cleanup = getattr(error, 'recording_prerequisites', self.recording_cleanup)
+            recorded = outcome.get('recorded', getattr(error, 'recorded_result', None))
+            from api_agent.testing.inspection_controls import InspectionGroup
+            handles = list(getattr(error, 'inspections', ()))
+            if recorded is not None:
+                handles.extend(getattr(recorded.execution, 'inspections', ()))
+                self.unit_result = recorded.execution
+                self.integration_persisted = getattr(recorded, 'persisted', True)
+                self.integration_exit_status = recorded.exit_code
+            # The cancelled executor await must transfer every late owner before
+            # the run lifecycle acknowledges teardown to menu/quit consumers.
+            unique = []
+            for handle in (*self.inspections.handles, *handles):
+                if not any(handle is existing for existing in unique):
+                    unique.append(handle)
+            self.inspections = InspectionGroup(unique)
+            self.inspection_lost |= self.inspections.lost
+            self.integration_exit_status = 130
+            self.operation_status = 130
+            interruption.inspection_group = self.inspections
+            interruption.inspections = self.inspections.handles
+            if self.inspection_cleanup_active():
+                interruption.cleanup_pending = self.inspection_cleanup_receipt()
+            raise
+        except Exception as error:
             self.operation_status = 3
-            if not self.collection_cancel.is_set():
+            self.recording_cleanup = getattr(error, 'recording_prerequisites', self.recording_cleanup)
+            from api_agent.testing.inspection_controls import InspectionGroup
+            handles = list(self.inspections.handles)
+            for handle in getattr(error, 'inspections', ()):
+                if not any(handle is existing for existing in handles):
+                    handles.append(handle)
+            self.inspections = InspectionGroup(handles)
+            self.inspection_lost |= self.inspections.lost
+            recorded = getattr(error, 'recorded_result', None)
+            if recorded is not None:
+                for handle in getattr(recorded.execution, 'inspections', ()):
+                    if not any(handle is existing for existing in handles):
+                        handles.append(handle)
+                self.inspections = InspectionGroup(handles)
+                self.inspection_lost |= self.inspections.lost
+                self.unit_result = recorded.execution
+                self.integration_exit_status = recorded.exit_code
+                self.integration_persisted = recorded.persisted
+                self.inspection_failed = True
+                if not self.collection_cancel.is_set():
+                    self.show_unit_results()
+            elif not self.collection_cancel.is_set():
                 self.show("error", "Integration execution failed",
                           "Integration setup or recording failed. Check configuration and the selected provider.",
                           (("menu", "Main menu"),))
         finally:
             self.test_run.finish()
 
+    def inspection_cleanup_active(self):
+        return self.inspections.active or self.recording_cleanup is not None
+
+    def discard_finished_inspection(self):
+        if not self.inspection_cleanup_active():
+            from api_agent.testing.inspection_controls import InspectionGroup
+            self.inspections = InspectionGroup()
+            self.inspection_failed = self.inspection_lost = False
+            self.pending_inspection_cleanup = None
+            self._inspection_generation = object()
+
+    def integration_event(self, event, generation):
+        if generation is self._inspection_generation:
+            self.unit_event(event)
+
+    def inspection_cleanup_receipt(self):
+        from api_agent.providers.control import CleanupPendingError
+        from api_agent.runtime.tasks import offload
+        group = self.inspections
+        recording = self.recording_cleanup
+        pending = recording.pending_cleanup if recording is not None else None
+        generation = self._inspection_generation
+        async def retry():
+            cleaned = True
+            if pending is not None:
+                try:
+                    await pending.retry()
+                except Exception:
+                    cleaned = False
+            closed = await offload(group.close, force=True)
+            if not closed or not cleaned:
+                raise error from None
+            if (generation is self._inspection_generation and self.inspections is group
+                    and self.recording_cleanup is recording):
+                self.recording_cleanup = None
+                self.pending_inspection_cleanup = None
+                self.inspection_lost |= group.lost
+                self.inspection_failed = self.inspection_lost
+                if self.inspection_lost:
+                    self.operation_status = 3
+                elif self.integration_exit_status is not None:
+                    self.operation_status = self.integration_exit_status
+        owners = (group,)
+        if recording is not None:
+            owners += (recording,)
+        error = CleanupPendingError(owners, retry)
+        error.inspection_group = group
+        error.inspections = group.handles
+        error.recording_prerequisites = recording
+        return error
+
+    async def end_inspection(self, *, force=False):
+        self.inspection_lost |= self.inspections.lost
+        if self.inspection_lost:
+            self.inspection_failed = True
+            self.operation_status = 3
+        if not self.inspection_cleanup_active():
+            return True
+        cleaned = True
+        if self.recording_cleanup is not None:
+            try:
+                await self.recording_cleanup.pending_cleanup.retry()
+            except Exception:
+                cleaned = False
+            else:
+                self.recording_cleanup = None
+        from api_agent.runtime.tasks import offload
+        closed = await offload(self.inspections.close, force=force)
+        self.inspection_lost |= self.inspections.lost
+        if not closed or not cleaned:
+            self.operation_status = 3
+            self.inspection_failed = True
+        else:
+            self.inspection_failed = self.inspection_lost
+            if self.inspection_lost:
+                self.operation_status = 3
+            elif self.integration_exit_status is not None:
+                self.operation_status = self.integration_exit_status
+        if not self._inspection_shutdown and self.screen_stack and self.unit_result is not None and isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'test-results':
+            self.show_unit_results()
+            self.screen.refresh_bindings()
+        return closed and cleaned
+
     def unit_progress(self):
         return progress_summary(self.mode or "unit", self.unit_rows)
 
     def unit_event(self, event):
+        if event.kind in {'inspection_closed', 'inspection_lost', 'inspection_cleanup_pending'}:
+            if event.kind != 'inspection_closed':
+                self.inspection_failed = True
+                self.inspection_lost |= event.kind == 'inspection_lost'
+                self.operation_status = 3
+            self.inspection_lost |= self.inspections.lost
+            if self.inspection_lost:
+                self.inspection_failed = True
+                self.operation_status = 3
+            if event.kind == 'inspection_closed' and not self.inspection_cleanup_active() and not self.inspection_lost:
+                self.inspection_failed = False
+                if self.integration_exit_status is not None:
+                    self.operation_status = self.integration_exit_status
+            if self.screen_stack and self.unit_result is not None and isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'test-results':
+                self.show_unit_results()
+                self.screen.refresh_bindings()
+            return
         if self.collection_cancel.is_set():
             return
         if event.identity is not None and event.kind in {"test_started", "test_finished"}:
@@ -1233,11 +1423,19 @@ class ApiAgentApp(App[int]):
                                               state='CANCELLED' if self.unit_result.cancelled else None)
                 if self.integration_persisted is False:
                     summary += '\nAllure publication: FAIL — could not save the run to all configured history destinations. Check reporting dependencies and storage availability.'
-                elif self.operation_status and not self.unit_result.cancelled and all(test.status in {'passed', 'skipped'} for test in self.unit_result.tests):
-                    summary += f'\nTest operation: FAIL — runner or reporting failed outside individual test outcomes (exit status {self.operation_status}).'
+                elif self.integration_persisted is True:
+                    summary += '\nAllure publication: PASS'
+                runner_status = self.integration_exit_status if self.integration_exit_status is not None else self.operation_status
+                if self.integration_persisted is not False and runner_status and not self.unit_result.cancelled and all(test.status in {'passed', 'skipped'} for test in self.unit_result.tests):
+                    summary += f'\nTest operation: FAIL — runner or reporting failed outside individual test outcomes (exit status {runner_status}).'
             else:
                 from api_agent.testing.runner import format_unit_summary
                 summary = format_unit_summary(self.unit_result)
+        if self.unit_result is not None and self.mode == 'integration':
+            if self.inspections.active:
+                summary += '\nDebug inspection: open — tests and publication have finished. Press e to end inspection.'
+            if self.inspection_failed or self.recording_cleanup is not None:
+                summary += '\nInspection cleanup: FAIL — worker lost or cleanup pending; press e to retry cleanup.'
         rows = ordered_result_rows(self.unit_rows, completed=self.unit_result is not None)
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             screen = self.screen
@@ -1270,8 +1468,8 @@ class ApiAgentApp(App[int]):
                                      if non_unit else bool(self.unit_result.exit_code),
                 skipped=non_unit and any(test.status == 'skipped' for test in self.unit_result.tests),
                 neutral_details=non_unit or not self.unit_result.require_full_coverage,
-                green_prefixes=("Production coverage: 100%",),
-                red_prefixes=('Allure publication: FAIL', 'Test operation: FAIL')))
+                green_prefixes=("Production coverage: 100%", "Allure publication: PASS"),
+                red_prefixes=('Allure publication: FAIL', 'Test operation: FAIL', 'Inspection cleanup: FAIL')))
 
     def account_options(self):
         if 'UNATTENDED_USER_INDEX' not in self.schema.fields:
@@ -1431,6 +1629,9 @@ class ApiAgentApp(App[int]):
             elif key == "setup":
                 self.show_auth_setup(startup=self.mode is None)
             elif key == "continue":
+                if self.inspection_cleanup_active():
+                    await self.close_view()
+                    return
                 if not self.selection.selected_ids:
                     raise ValueError("Select at least one test before continuing")
                 if self.mode == "e2e":
@@ -1457,12 +1658,12 @@ class ApiAgentApp(App[int]):
                 self.operation_status = 3
                 self.show_selection()
             elif key == "menu":
-                if self.test_run_active():
+                if self.test_run_active() or self.inspection_cleanup_active():
                     await self.close_view()
                 else:
                     self.show_menu()
             elif key == "exit":
-                self.exit(self.operation_status)
+                await self.confirm_quit()
         except Exception as error:
             self.screen.query_one("#error", Static).update(str(error))
 
@@ -1472,10 +1673,20 @@ class ApiAgentApp(App[int]):
         self.collection_cancel.set()
         if self.test_run_active():
             await self.test_run.stop_and_wait()
+        if not await self.end_inspection(force=True):
+            return
         self.exit(self.operation_status)
 
-    def on_unmount(self):
+    async def on_unmount(self):
+        self._inspection_shutdown = True
         self.collection_cancel.set()
+        if self.test_run_active():
+            await self.test_run.stop_and_wait()
+        try:
+            await self.end_inspection(force=True)
+        finally:
+            if self.inspection_cleanup_active():
+                self.pending_inspection_cleanup = self.inspection_cleanup_receipt()
 
     def test_run_active(self):
         return self.test_run is not None and self.test_run.active
@@ -1485,9 +1696,18 @@ class ApiAgentApp(App[int]):
             return
         await self.test_run.stop_and_wait()
         self.operation_status = 130
-        self.show_menu()
+        if await self.end_inspection(force=True):
+            self.show_menu()
+
+    async def end_inspection_to_menu(self, accepted):
+        if accepted and await self.end_inspection():
+            self.show_menu()
 
     async def close_view(self):
+        if self.inspection_cleanup_active() and not self.test_run_active():
+            self.push_screen(QuitDialog("End browser inspection and return to the menu? Enter literal y to confirm; every other response cancels."),
+                             self.end_inspection_to_menu)
+            return
         if self.test_run_active():
             self.push_screen(QuitDialog("Stop running tests and return to the menu? Enter literal y to confirm; every other response cancels."),
                              self.stop_tests_to_menu)
@@ -1513,7 +1733,18 @@ class ApiAgentApp(App[int]):
 def run_tui(context, schema, argv=(), environ=None) -> int:
     """Run the interactive workbench and preserve operation status on shutdown."""
     app = ApiAgentApp(context, schema, argv, environ)
-    result = app.run()
+    try:
+        result = app.run()
+    except BaseException as error:
+        pending = getattr(app, 'pending_inspection_cleanup', None)
+        if pending is not None:
+            error.cleanup_pending = pending
+            error.inspections = pending.inspections
+            error.inspection_group = pending.inspection_group
+        raise
+    pending = getattr(app, 'pending_inspection_cleanup', None)
+    if pending is not None:
+        raise pending from None
     if getattr(app, "console_error", None):
         import sys
         print(app.console_error, file=sys.stderr)
