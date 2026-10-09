@@ -230,3 +230,80 @@ def test_conditional_deferred_selector_cannot_escape_discovery(tmp_path, selecto
         f'conditional_defaults=[{{when={{ENABLE=true}},value="{target}"}}]\n')
     with pytest.raises(ProviderError, match='^provider_selection_cycle$'):
         bootstrap_schema(base, [], {}, {}, owner_root=tmp_path, configuration_paths=(contribution,))
+
+
+@pytest.mark.parametrize('active', [False, True])
+@pytest.mark.parametrize('unknown', [False, True])
+def test_help_ignores_unrelated_execution_cycle_but_validates_options(tmp_path, active, unknown):
+    from io import StringIO
+    from unittest.mock import patch
+    from api_agent.runtime.bootstrap import main
+    location = adapter(tmp_path, 'inert', 'REQUIRED_VALUE', 1) if active else ''
+    (tmp_path / 'cfg').mkdir()
+    (tmp_path / 'demo').mkdir()
+    (tmp_path / 'demo/pack.toml').write_text('version=1\nid="fixture"\nowner=".."\nconfig="config.toml"\n')
+    (tmp_path / 'demo/config.toml').write_text('version=1\n')
+    (tmp_path / 'cfg/config.toml').write_text(f'''version=1
+[fields.HELP]
+type="bool"
+default=false
+[fields.LLM_PROVIDER]
+type="str"
+default="{location}"
+[fields.A]
+type="str"
+conditional_defaults=[{{when={{B="b"}},value="a"}}]
+[fields.B]
+type="str"
+conditional_defaults=[{{when={{A="a"}},value="b"}}]
+''')
+    stdout, stderr = StringIO(), StringIO()
+    args = ['--help'] + (['--unknown'] if unknown else [])
+    with patch.dict('os.environ', {}, clear=True), patch('sys.stdout', stdout), patch('sys.stderr', stderr):
+        status = main(args, base_root=tmp_path, _worktrees_verified=True)
+    assert status == (2 if unknown else 0)
+    assert ('Usage:' in stdout.getvalue()) is not unknown
+    assert ('Unknown option --unknown' in stderr.getvalue()) is unknown
+    assert 'cyclic conditional defaults' not in stderr.getvalue()
+    # Help bypasses this execution-only error; a real execution still rejects it.
+    from api_agent.config import resolve_config
+    from api_agent.config.resolve import ConfigError
+    schema = bootstrap_schema(schema_from_dict({'version': 1}), [], {}, {},
+                              configuration_paths=(tmp_path / 'cfg/config.toml',))
+    with pytest.raises(ConfigError, match='cyclic conditional defaults'):
+        resolve_config(schema)
+
+
+@pytest.mark.parametrize('source', ['defaults', 'dotenv', 'environment', 'cli', 'interactive'])
+def test_selector_guard_resolves_transitive_any_controllers_with_precedence(tmp_path, source):
+    from api_agent.providers.loading import ProviderError
+    location = adapter(tmp_path, 'target', 'REQUIRED_VALUE', 1)
+    base = schema_from_dict({'version': 1, 'fields': {
+        'HELP': {'type': 'bool', 'default': False},
+        'LLM_PROVIDER': {'type': 'str', 'default': '', 'conditional_defaults': [
+            {'when': {'any': [{'ENABLED': True}, {'OTHER': True}]}, 'value': location}]},
+        'ENABLED': {'type': 'bool', 'conditional_defaults': [
+            {'when': {'SWITCH': True}, 'value': True}]},
+        'SWITCH': {'type': 'bool', 'default': source == 'defaults'},
+        'OTHER': {'type': 'bool', 'default': False}}})
+    args = ['--help'] + (['--switch=True'] if source == 'cli' else [])
+    env = {'SWITCH': 'True'} if source == 'environment' else {}
+    dotenv = {'SWITCH': 'True'} if source == 'dotenv' else {}
+    overrides = {'SWITCH': 'True'} if source == 'interactive' else {}
+    with pytest.raises(ProviderError, match='^provider_selection_cycle$'):
+        bootstrap_schema(base, args, env, dotenv, overrides=overrides)
+    # Explicit selector overrides retain precedence over every conditional default.
+    schema = bootstrap_schema(base, args + ['--llm-provider='], env, dotenv, overrides=overrides)
+    assert 'REQUIRED_VALUE' not in schema.fields
+
+
+def test_help_still_rejects_selector_dependent_conditional_cycle():
+    from api_agent.config.resolve import ConfigError
+    base = schema_from_dict({'version': 1, 'fields': {
+        'HELP': {'type': 'bool', 'default': False},
+        'LLM_PROVIDER': {'type': 'str', 'default': '', 'conditional_defaults': [
+            {'when': {'A': 'a'}, 'value': 'unreachable.py:create'}]},
+        'A': {'type': 'str', 'conditional_defaults': [{'when': {'B': 'b'}, 'value': 'a'}]},
+        'B': {'type': 'str', 'conditional_defaults': [{'when': {'A': 'a'}, 'value': 'b'}]}}})
+    with pytest.raises(ConfigError, match='cyclic conditional defaults'):
+        bootstrap_schema(base, ['--help'], {}, {})
