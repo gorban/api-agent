@@ -13,3 +13,5 @@
 5. Before committing code changes, require all applicable unit tests to pass with 100% line and branch coverage.
 
 6. When inspecting a browser started by launch.py, attach to its printed loopback CDP endpoint and use the existing context/page. Playwright MCP’s extension connection page is a separate browser; do not inspect it as the application session. launch.py owns cleanup.
+
+7. Wrap every component’s timed execution body in the shared timeout/progress interface so nested deadlines and elapsed-time reporting stay consistent.

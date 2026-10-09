@@ -310,7 +310,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
             if self.kind == "defaults":
                 table.add_columns("Setting", "Effective value", "Source")
             elif self.kind == "test-results":
-                table.add_columns("Status", "Test", "Execution time / component")
+                table.add_columns("Status", "Test", "Execution time")
             elif self.kind == "containers":
                 table.add_columns("Selected", "ID", "Name", "Image", "Status")
             elif self.kind == "cleanup":
@@ -1387,11 +1387,7 @@ class ApiAgentApp(App[int]):
         return closed and cleaned
 
     def unit_progress(self):
-        summary = progress_summary(self.mode or "unit", self.unit_rows)
-        for key, components in self.test_components.items():
-            if components and self.unit_rows.get(key, ('',))[0] == 'RUNNING':
-                summary.append('\n' + key + '\n' + component_timing(components.values()))
-        return summary
+        return progress_summary(self.mode or "unit", self.unit_rows)
 
     def unit_event(self, event):
         if event.kind in {'inspection_closed', 'inspection_lost', 'inspection_cleanup_pending'}:
