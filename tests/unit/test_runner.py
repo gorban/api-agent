@@ -204,3 +204,25 @@ def test_summary_distinguishes_coverage_only_failure_from_test_failure():
     assert format_unit_summary(UnitRunResult(1, results, coverage, '')).splitlines()[0] == (
         'Unit results: FAIL — 1/2 passed; 1 did not pass.')
     assert format_unit_summary(UnitRunResult(130, results, coverage, '', True)).startswith('Unit results: CANCELLED')
+
+
+def test_unit_worker_delivers_component_progress(tmp_path):
+    base = fixture_repo(tmp_path / 'base', test="""
+import asyncio
+from tiny import VALUE
+from api_agent.providers.progress import report_timeout
+def test_component():
+    async def run():
+        async with report_timeout('Synthetic wait', 3):
+            await asyncio.sleep(.01)
+    asyncio.run(run())
+    assert VALUE == 1
+""")
+    ctx = context(base)
+    events = []
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'), on_event=events.append)
+    assert result.exit_code == 0
+    progress = [event for event in events if event.kind == 'component_progress']
+    assert len(progress) == 2 and progress[0].component.active and not progress[-1].component.active
+    assert progress[0].identity == result.tests[0].identity
+    assert progress[0].component.id == progress[-1].component.id

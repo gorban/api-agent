@@ -51,7 +51,8 @@ def test_bracket_cycle_wraps_and_persists_without_changing_test_selection(tmp_pa
             table = app.screen.query_one(DataTable)
             table.move_cursor(row=2)
             selected = set(app.selection.selected_ids)
-            assert 'No unattended user set' in app.screen.query_one('#account-selection', Static).content
+            assert 'No unattended user set' in str(app.screen.query_one('#account-selection', Static).content)
+            assert app.screen.query_one('#account-selection', Static).content.style == 'red'
             for key, index, text in [('right_square_bracket', 0, 'first / partner'),
                                      ('right_square_bracket', 1, 'second'),
                                      ('right_square_bracket', None, 'logins must be done manually'),
@@ -59,7 +60,8 @@ def test_bracket_cycle_wraps_and_persists_without_changing_test_selection(tmp_pa
                 await pilot.press(key)
                 await pilot.pause()
                 assert app.session.result().values['UNATTENDED_USER_INDEX'] == index
-                assert text in app.screen.query_one('#account-selection', Static).content
+                assert text in str(app.screen.query_one('#account-selection', Static).content)
+                assert app.screen.query_one('#account-selection', Static).content.style == ('red' if index is None else 'green')
                 assert app.screen.query_one(DataTable) is table
                 assert table.cursor_row == 2 and table.has_focus
                 assert set(app.selection.selected_ids) == selected
@@ -100,7 +102,7 @@ def test_higher_cli_selection_remains_effective_with_clear_warning(tmp_path):
             await pilot.press('right_square_bracket')
             assert app.session.result().values['UNATTENDED_USER_INDEX'] == 0
             assert 'cli overrides the saved choice' in app.screen.query_one('#error', Static).content
-            assert 'first / partner' in app.screen.query_one('#account-selection', Static).content
+            assert 'first / partner' in str(app.screen.query_one('#account-selection', Static).content)
             assert 'UNATTENDED_USER_INDEX="1"' in (tmp_path / '.env').read_text()
     asyncio.run(scenario())
 
@@ -111,7 +113,8 @@ def test_invalid_account_can_cycle_back_to_valid_and_save_errors_are_visible(tmp
         (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=9\n')
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
-            assert 'unavailable' in app.screen.query_one('#account-selection', Static).content
+            assert 'unavailable' in str(app.screen.query_one('#account-selection', Static).content)
+            assert app.screen.query_one('#account-selection', Static).content.style == 'red'
             await pilot.press('right_square_bracket')
             assert app.session.result().values['UNATTENDED_USER_INDEX'] == 0
             app.session.set_value = Mock(side_effect=OSError('Synthetic save failure'))
@@ -151,9 +154,10 @@ def test_stale_index_with_no_eligible_accounts_can_switch_to_manual(tmp_path):
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
             assert app.screen.check_action('next_account', ())
-            assert 'unavailable' in app.screen.query_one('#account-selection', Static).content
+            assert 'unavailable' in str(app.screen.query_one('#account-selection', Static).content)
+            assert app.screen.query_one('#account-selection', Static).content.style == 'red'
             await pilot.press('right_square_bracket')
             assert app.session.result().values['UNATTENDED_USER_INDEX'] is None
-            assert 'logins must be done manually' in app.screen.query_one('#account-selection', Static).content
+            assert 'logins must be done manually' in str(app.screen.query_one('#account-selection', Static).content)
             assert not app.screen.check_action('next_account', ())
     asyncio.run(scenario())

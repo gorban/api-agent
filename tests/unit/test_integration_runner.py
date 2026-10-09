@@ -23,6 +23,32 @@ def context(base, owner=None):
                            suite_paths=lambda mode: (owner / 'tests/integration',) if mode == 'integration' else (base / 'tests/unit',))
 
 
+@pytest.mark.parametrize('jobs', [0, 2])
+def test_component_progress_is_bound_to_test_in_serial_and_parallel_workers(tmp_path, jobs):
+    base = fixture_repo(tmp_path / 'base', '''
+import asyncio
+import pytest
+from api_agent.providers.progress import report_timeout
+@pytest.mark.parametrize('n', [0, 1])
+def test_timed(n):
+    async def run():
+        async with report_timeout('Synthetic component', .02), asyncio.timeout(.02):
+            await asyncio.sleep(60)
+    asyncio.run(run())
+''')
+    ctx = context(base)
+    tests = collect_tests(ctx, 'integration')
+    events = []
+    result = run_integration_tests(ctx, tests, accepted=True, parallel_jobs=jobs, on_event=events.append)
+    assert result.exit_code == 1 and all(test.status == 'failed' for test in result.tests)
+    for test in tests:
+        rows = [event.component for event in events
+                if event.kind == 'component_progress' and event.identity == test]
+        assert len(rows) == 2 and rows[0].active and not rows[-1].active
+        assert rows[0].id == rows[-1].id and rows[0].timeout == .02
+        assert rows[-1].elapsed >= .02
+
+
 def test_refusal_happens_before_collection_and_callbacks(tmp_path, monkeypatch):
     base = fixture_repo(tmp_path / 'base')
     selected = collect_tests(context(base), 'integration')

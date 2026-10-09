@@ -2,6 +2,18 @@
 from rich.text import Text
 
 
+def component_timing(components):
+    """Each active component keeps its own elapsed clock and timeout."""
+    def duration(seconds):
+        if 0 < seconds < 1:
+            return f'{seconds:.2g}s'
+        seconds = int(seconds)
+        minutes, seconds = divmod(seconds, 60)
+        return (f'{minutes}m' + (f' {seconds}s' if seconds else '')) if minutes else f'{seconds}s'
+    return '; '.join(f'{component.name}: {duration(int(component.elapsed))} elapsed; '
+                     f'timeout {duration(component.timeout)}' for component in components)
+
+
 def literal_cell(value):
     """Bracket-bearing data is literal text, never Rich markup."""
     return Text(value) if isinstance(value, str) and "[" in value else value

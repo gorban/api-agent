@@ -1,6 +1,7 @@
 """Mode-independent per-test outcomes and runner events."""
 from dataclasses import dataclass
 from .collection import TestIdentity
+from api_agent.providers.progress import ComponentProgress
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class RunnerEvent:
     duration: float = 0
     traceback: str = ''
     text: str = ''
+    component: ComponentProgress | None = None
 
 
 def format_test_summary(mode, tests, *, state=None):
@@ -39,4 +41,3 @@ def format_test_summary(mode, tests, *, state=None):
         if skipped:
             summary += f', {skipped}/{total} skipped ({100 * skipped / total:.2f}%)'
     return summary + '.'
-

@@ -22,6 +22,9 @@ class CredentialError(RuntimeError):
     exit_code = 1
 
 
+DEFAULT_TIMEOUT = 15.0
+
+
 @dataclass(frozen=True)
 class CredentialSource:
     manager: str
@@ -181,11 +184,11 @@ def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeou
     return output
 
 
-def get_password(source: CredentialSource | Mapping[str, object], *, timeout: float = 15.0) -> str:
+def get_password(source: CredentialSource | Mapping[str, object], *, timeout: float = DEFAULT_TIMEOUT) -> str:
     return _retrieve(source, "password", timeout)
 
 
-def get_username(source: CredentialSource | Mapping[str, object], *, timeout: float = 15.0) -> str:
+def get_username(source: CredentialSource | Mapping[str, object], *, timeout: float = DEFAULT_TIMEOUT) -> str:
     """Fetch the login identity, distinct from its stored vault entry label."""
     try:
         return _retrieve(source, "username", timeout)
@@ -194,5 +197,5 @@ def get_username(source: CredentialSource | Mapping[str, object], *, timeout: fl
         raise CredentialError("Username retrieval failed. Check the configured CLI session and login entry.") from None
 
 
-def get_totp(source: CredentialSource | Mapping[str, object], *, timeout: float = 15.0) -> str:
+def get_totp(source: CredentialSource | Mapping[str, object], *, timeout: float = DEFAULT_TIMEOUT) -> str:
     return _retrieve(source, "totp", timeout)

@@ -135,7 +135,10 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             events = Path(temporary) / 'events.jsonl'
             coverage = Path(temporary) / 'coverage.json'
             events.touch()
-            args = [sys.executable, '-c', _PLUGIN, str(events), '-o', 'addopts=', '--rootdir', str(root)]
+            env['API_AGENT_COMPONENT_EVENTS'] = str(events)
+            from .progress import write_lazy_plugin
+            plugin = write_lazy_plugin(Path(temporary))
+            args = [sys.executable, '-c', _PLUGIN, str(events), '-p', plugin, '-o', 'addopts=', '--rootdir', str(root)]
             sources = _production_sources(context, root)
             has_code = bool(sources)
             env.pop('API_AGENT_COVERAGE_OUTPUT', None)
@@ -153,7 +156,9 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                 args += ['-n', str(parallel_jobs)]
             args.extend(selected)
             try:
-                process = subprocess.Popen(args, cwd=root, env=env, stdout=subprocess.PIPE,
+                child_env = dict(env)
+                child_env['PYTHONPATH'] = temporary + os.pathsep + env['PYTHONPATH']
+                process = subprocess.Popen(args, cwd=root, env=child_env, stdout=subprocess.PIPE,
                                            stderr=subprocess.STDOUT, text=True, start_new_session=os.name == 'posix')
             except OSError as exc:
                 raw(repo, f'Cannot start pytest: {exc}\n')
@@ -185,6 +190,10 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                             continue
                         if row['kind'] == 'test_started':
                             emit(RunnerEvent('test_started', repo, identity))
+                        elif row['kind'] == 'component_progress':
+                            from api_agent.providers.progress import ComponentProgress
+                            emit(RunnerEvent('component_progress', repo, identity,
+                                             component=ComponentProgress(**row['component'])))
                         else:
                             reports.setdefault(identity.id, []).append(row)
                             if row['phase'] == 'teardown':

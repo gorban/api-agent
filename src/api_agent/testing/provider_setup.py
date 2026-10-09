@@ -111,7 +111,9 @@ class IntegrationLLM:
             task = asyncio.create_task(asyncio.to_thread(helper, source))
             self._credential_tasks.add(task)
             try:
-                return await asyncio.shield(task)
+                from api_agent.providers.progress import report_timeout
+                async with report_timeout('Password-manager ' + kind, helpers.DEFAULT_TIMEOUT):
+                    return await asyncio.shield(task)
             except helpers.CredentialError:
                 raise InteractionRequiredError("Password-manager retrieval is unavailable. Sign in to the configured CLI and check the login entry.") from None
         return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve))
