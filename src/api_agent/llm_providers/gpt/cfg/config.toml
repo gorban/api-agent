@@ -13,7 +13,6 @@ conditional_defaults = [{when = {GPT_AUTH_MODE = "subscription"}, value = "respo
 help = "Subscription authentication requires responses mode."
 
 [fields.GPT_STATE_DIR]
-acknowledge_default = false
 type = "path"
 anchor = "owner_root"
 allow_empty = true
