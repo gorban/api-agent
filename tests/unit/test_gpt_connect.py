@@ -343,6 +343,64 @@ def test_invalid_login_username_has_no_transport_or_browser(lane, monkeypatch, u
                                       open_browser=(lambda _: True) if external else None))
 
 
+@pytest.mark.parametrize('username,reader', [(None, lambda _: None), ('person@example.test', 1)])
+def test_invalid_login_credentials_before_allocation(lane, monkeypatch, username, reader):
+    monkeypatch.setattr(c.httpx, 'AsyncClient', lambda: pytest.fail('transport allocated'))
+    with pytest.raises(c.AuthError, match='^invalid_login_credentials$'):
+        asyncio.run(c.connect_account(Store(), login_username=username, login_credentials=reader))
+
+
+@pytest.mark.parametrize('outcome', ['success', 'interaction', 'page_error', 'cancel'])
+def test_full_login_workflow_callback_and_safe_failure_cleanup(lane, monkeypatch, outcome):
+    from unittest.mock import AsyncMock, Mock
+    async def run():
+        urls = []
+        async def goto(url, **kwargs):
+            urls.append(url)
+        session = SimpleNamespace(page=SimpleNamespace(goto=goto, is_closed=lambda: False),
+                                  browser=SimpleNamespace(is_connected=lambda: True))
+        owner = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
+        reader = AsyncMock()
+        async def advance():
+            if outcome == 'success':
+                assert b'200 OK' in await request(urls[0])
+            elif outcome == 'interaction':
+                raise c.AuthError('login_interaction_required')
+            elif outcome == 'cancel':
+                raise asyncio.CancelledError()
+            else:
+                raise RuntimeError('private page and credential content')
+        workflow = SimpleNamespace(advance=AsyncMock(side_effect=advance))
+        create = Mock(return_value=workflow)
+        monkeypatch.setattr(c, 'LoginWorkflow', create)
+        lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email='PERSON@example.test'))
+        store = Store()
+        options = dict(browser_owner=owner, client=object(), app_name='named-app',
+                       login_username='person@example.test', login_credentials=reader, allow_interaction=False)
+        if outcome == 'success':
+            assert await c.connect_account(store, **options) == 'account'
+            assert len(store.saved) == 1
+            lane.finish_authorization.assert_awaited_once()
+        else:
+            error = asyncio.CancelledError if outcome == 'cancel' else c.AuthError
+            code = 'login_interaction_required' if outcome == 'interaction' else 'login_step_failed'
+            with pytest.raises(error, match=None if outcome == 'cancel' else '^' + code + '$'):
+                await c.connect_account(store, **options)
+            assert not store.saved
+            lane.finish_authorization.assert_not_awaited()
+        args, kwargs = create.call_args
+        assert args[:4] == (session, 'person@example.test', reader, 'named-app')
+        assert isinstance(args[4], c.LoginPageGuard)
+        assert kwargs == {'allow_interaction': False}
+        workflow.advance.assert_awaited_once()
+        owner.aclose.assert_awaited_once()
+        parsed = urlsplit(urls[0])
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.open_connection(parsed.hostname, parsed.port)
+        assert not [task for task in asyncio.all_tasks() if task is not asyncio.current_task() and not task.done()]
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('outcome', ['success', 'wrong_account', 'field_error', 'cancel'])
 def test_username_submission_and_verified_account_binding(lane, outcome):
     from unittest.mock import AsyncMock, Mock

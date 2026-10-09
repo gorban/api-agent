@@ -193,6 +193,11 @@ def test_uncached_selected_username_drives_browser_visibility(store, monkeypatch
         reader.assert_awaited_once_with(0, 'username')
         assert connect.await_args.kwargs['login_username'] == 'person@example.test'
         assert options == [({'inspection': inspection} if debug else {}) | {'headless': not (run_ui or debug)}]
+        assert connect.await_args.kwargs['allow_interaction'] is (run_ui or debug)
+        credential_reader = connect.await_args.kwargs['login_credentials']
+        assert await credential_reader('password') == ' person@example.test '
+        assert await credential_reader('totp') == ' person@example.test '
+        assert [call.args for call in reader.await_args_list] == [(0, 'username'), (0, 'password'), (0, 'totp')]
         await provider.aclose()
         browser.aclose.assert_awaited_once()
     run(scenario())
@@ -242,6 +247,7 @@ def test_username_cli_failure_falls_back_only_with_attended_permission(store, mo
 @pytest.mark.parametrize('code,expected', [
     ('browser_closed', 'browser closed'), ('browser_unavailable', 'could not open'),
     ('callback_timeout', 'timed out'), ('username_submission_failed', 'submit the configured username'),
+    ('login_step_failed', 'current login page action'),
     ('login_interaction_required', 'needs browser interaction'),
     ('account_mismatch', 'different account'), ('private upstream text', 'retry authentication'),
 ])
@@ -387,6 +393,7 @@ def test_headless_blocker_hands_off_once_to_headed_with_same_expected_account(st
             assert first.kwargs['allow_interaction'] is False
             assert retry.kwargs['allow_interaction'] is True
             assert first.kwargs['login_username'] == retry.kwargs['login_username'] == 'person@example.test'
+            assert first.kwargs['login_credentials'] is retry.kwargs['login_credentials']
             reader.assert_awaited_once_with(0, 'username')
         finally:
             await provider.aclose()

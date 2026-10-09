@@ -29,7 +29,7 @@ type = "str"
 acknowledge_default = false
 default = "LLM User"
 conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key"}, value = "GPT API Key"}]
-help = "Subscription login role for unattended authentication. Configure its account and the shared password manager; the entry username binds reuse to the matching cached OAuth account and fills the observed Email address / Continue step for a new connection. Attended login remains available through Skip. The pending API-key route uses the entry password as its key."
+help = "Subscription login role for unattended authentication. Configure its account and the shared password manager; the entry username binds reuse to the matching cached OAuth account and drives observed email, password, optional TOTP and application-consent pages for a new connection. Password and TOTP are retrieved only when requested by the current page; unsupported challenges require browser interaction. Attended login remains available through Skip. The pending API-key route uses the entry password as its key."
 
 [fields.UNATTENDED_USER_INDEX]
 type = "int"

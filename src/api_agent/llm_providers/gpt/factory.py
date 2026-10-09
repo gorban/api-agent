@@ -53,6 +53,7 @@ class GPTProvider:
             'browser_unavailable': 'GPT login browser could not open or navigate.',
             'callback_timeout': 'GPT sign-in timed out before authentication completed.',
             'username_submission_failed': 'GPT could not submit the configured username on the login page.',
+            'login_step_failed': 'GPT could not complete the current login page action; retry or complete login in the visible browser.',
             'login_interaction_required': 'GPT login needs browser interaction; start attended or show the browser with RUN_UI=True or DEBUG.',
             'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
         }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
@@ -101,7 +102,9 @@ class GPTProvider:
                 browser_options['headless'] = not (self.run_ui or self.inspection is not None)
             browser = subscription_browser(**browser_options)
             self.browsers.append(browser)
-            login_options = ({'login_username': username,
+            async def login_credentials(kind):
+                return await credentials(user_index, kind)
+            login_options = ({'login_username': username, 'login_credentials': login_credentials,
                               'allow_interaction': not browser_options.get('headless', False)}
                              if username is not None else {})
             try:
@@ -115,7 +118,8 @@ class GPTProvider:
                     self.browsers.append(visible)
                     try:
                         profile = await connect_account(store, browser_owner=visible, app_name=self.app_name,
-                                                        login_username=username, allow_interaction=True)
+                                                        login_username=username, login_credentials=login_credentials,
+                                                        allow_interaction=True)
                     except AuthError as retry_error:
                         raise self._login_error(retry_error) from None
                 else:

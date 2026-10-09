@@ -13,6 +13,7 @@ from api_agent.providers.contracts import SessionClosedError
 from api_agent.providers.sessions import wait_browser_result
 from api_agent.runtime.managed_browser import _dispose
 from .contracts import AuthError
+from .login import LoginWorkflow
 
 
 class CallbackListener:
@@ -132,7 +133,8 @@ async def submit_login_username(session, username, *, guard):
 
 async def connect_account(store, *, registration=None, open_browser=None,
                           client=None, timeout=180, clock=time.time, profile=None, browser_owner=None,
-                          app_name="api-agent", login_username=None, allow_interaction=True):
+                          app_name="api-agent", login_username=None, login_credentials=None,
+                          allow_interaction=True):
     """Persist only a fully verified connection; clean up on every exit."""
     from .oauth import begin_authorization, finish_authorization
     if type(allow_interaction) is not bool:
@@ -143,6 +145,8 @@ async def connect_account(store, *, registration=None, open_browser=None,
         if not isinstance(login_username, str) or not login_username.strip() or open_browser is not None:
             raise AuthError("invalid_login_username")
         login_username = login_username.strip()
+    if login_credentials is not None and (not callable(login_credentials) or login_username is None):
+        raise AuthError('invalid_login_credentials')
     if profile is not None:
         registration = store.load(profile)
     owned = client is None
@@ -156,6 +160,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
                     listener.expected_state = attempt.state
                     session = None
                     guard = None
+                    workflow = None
                     if open_browser is None:
                         if browser_owner is None:
                             from .browser import subscription_browser
@@ -169,7 +174,11 @@ async def connect_account(store, *, registration=None, open_browser=None,
                             raise AuthError("browser_unavailable") from None
                         if login_username is not None:
                             guard = LoginPageGuard(session.page, allow_interaction=allow_interaction)
-                            await submit_login_username(session, login_username, guard=guard)
+                            if login_credentials is None:
+                                await submit_login_username(session, login_username, guard=guard)
+                            else:
+                                workflow = LoginWorkflow(session, login_username, login_credentials,
+                                                         app_name, guard, allow_interaction=allow_interaction)
                     elif not open_browser(attempt.authorization_url):
                         raise AuthError("browser_unavailable")
                     if session is None:
@@ -177,9 +186,13 @@ async def connect_account(store, *, registration=None, open_browser=None,
                     else:
                         try:
                             parameters = await wait_browser_result(listener.result, session,
-                                on_wait=guard.check if guard is not None else None)
+                                on_wait=workflow.advance if workflow is not None else guard.check if guard is not None else None)
                         except SessionClosedError:
                             raise AuthError("browser_closed") from None
+                        except (AuthError, asyncio.CancelledError):
+                            raise
+                        except Exception:
+                            raise AuthError('login_step_failed') from None
                     connection = await finish_authorization(attempt, parameters, client=client, now=clock())
                     if login_username is not None and connection.email.strip().casefold() != login_username.casefold():
                         raise AuthError("account_mismatch")
