@@ -118,6 +118,20 @@ def test_timeout(lane, monkeypatch):
         asyncio.run(c.connect_account(Store(), open_browser=lambda _: True))
 
 
+def test_login_reports_its_actual_component_limit_until_timeout(lane, monkeypatch):
+    from api_agent.providers.progress import progress_sink
+    original = c.asyncio.timeout
+    monkeypatch.setattr(c.asyncio, 'timeout', lambda _: original(.02))
+    rows = []
+    async def run():
+        with progress_sink(rows.append):
+            with pytest.raises(c.AuthError, match='callback_timeout'):
+                await c.connect_account(Store(), open_browser=lambda _: True, timeout=180)
+    asyncio.run(run())
+    assert len(rows) == 2 and rows[0].active and not rows[-1].active
+    assert rows[0].id == rows[-1].id and all(row.timeout == 180 and row.name == 'GPT login' for row in rows)
+
+
 def test_cancel(lane):
     async def run():
         ready = asyncio.Event()

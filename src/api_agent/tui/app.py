@@ -10,7 +10,7 @@ from api_agent.config.declarations import UNSET
 from api_agent.config.resolve import ConfigError, convert_value
 from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
-                                          reconcile_results_table, styled_summary)
+                                          reconcile_results_table, styled_summary, component_timing)
 from api_agent.tui.select import AdvancingSelect
 from api_agent.tui.test_table import TestTable
 from api_agent.tui.clipboard import ClipboardError, copy_text
@@ -310,7 +310,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
             if self.kind == "defaults":
                 table.add_columns("Setting", "Effective value", "Source")
             elif self.kind == "test-results":
-                table.add_columns("Status", "Test", "Execution time")
+                table.add_columns("Status", "Test", "Execution time / component")
             elif self.kind == "containers":
                 table.add_columns("Selected", "ID", "Name", "Image", "Status")
             elif self.kind == "cleanup":
@@ -662,6 +662,7 @@ class ApiAgentApp(App[int]):
         self.unit_result = None
         self.test_run = None
         self.unit_rows = {}
+        self.test_components = {}
         from api_agent.runtime.containers import ContainerRuntime
         from api_agent.runtime.ownership import StackScope
         self.container_runtime = container_runtime or ContainerRuntime(
@@ -1383,7 +1384,11 @@ class ApiAgentApp(App[int]):
         return closed and cleaned
 
     def unit_progress(self):
-        return progress_summary(self.mode or "unit", self.unit_rows)
+        summary = progress_summary(self.mode or "unit", self.unit_rows)
+        for key, components in self.test_components.items():
+            if components and self.unit_rows.get(key, ('',))[0] == 'RUNNING':
+                summary.append('\n' + key + '\n' + component_timing(components.values()))
+        return summary
 
     def unit_event(self, event):
         if event.kind in {'inspection_closed', 'inspection_lost', 'inspection_cleanup_pending'}:
@@ -1405,15 +1410,26 @@ class ApiAgentApp(App[int]):
             return
         if self.collection_cancel.is_set():
             return
-        if event.identity is not None and event.kind in {"test_started", "test_finished"}:
+        if event.identity is not None and event.kind in {"test_started", "test_finished", "component_progress"}:
             key = event.identity.id
-            self.unit_rows[key] = ((event.status or "RUNNING").upper(), key,
-                                   f"{event.duration:.3f}s" if event.kind == "test_finished" else "")
+            if event.kind == 'component_progress':
+                if event.component is None or self.unit_rows.get(key, ('',))[0] != 'RUNNING':
+                    return
+                components = self.test_components.setdefault(key, {})
+                if event.component.active:
+                    components[event.component.id] = event.component
+                else:
+                    components.pop(event.component.id, None)
+                self.unit_rows[key] = ('RUNNING', key, component_timing(components.values()))
+            else:
+                self.test_components.pop(key, None)
+                self.unit_rows[key] = ((event.status or "RUNNING").upper(), key,
+                                       f"{event.duration:.3f}s" if event.kind == "test_finished" else "")
             if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results" and self.screen.query(DataTable) and self.screen.query("#body"):
                 table = self.screen.query_one(DataTable)
                 self.screen.query_one("#body", Static).update(self.unit_progress())
                 for column, value in zip(table.columns, self.unit_rows[key]):
-                    table.update_cell(key, column, literal_cell(value))
+                    table.update_cell(key, column, literal_cell(value), update_width=True)
 
     def show_unit_results(self, summary=None):
         if summary is None:
@@ -1485,11 +1501,11 @@ class ApiAgentApp(App[int]):
     def account_summary(self):
         index = self.session.result().values.get('UNATTENDED_USER_INDEX')
         if index is None:
-            return 'No unattended user set — logins must be done manually'
+            return Text('No unattended user set — logins must be done manually', style='red')
         label = dict(self.account_options()).get(index)
         if label is None:
-            return f'Unattended user #{index} is unavailable; configure accounts or choose manual login.'
-        return f'Use unattended user #{index}: {label}'
+            return Text(f'Unattended user #{index} is unavailable; configure accounts or choose manual login.', style='red')
+        return Text(f'Use unattended user #{index}: {label}', style='green')
 
     def cycle_account(self, direction):
         try:

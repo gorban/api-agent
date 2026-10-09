@@ -192,7 +192,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
-                    args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-o', 'addopts=', '--rootdir', str(root)]
+                    env['API_AGENT_COMPONENT_EVENTS'] = str(event_file)
+                    args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
                     if config is not None and config.get('DEBUG'):
                         args.append('-s')
                     elif parallel_jobs:
@@ -282,6 +283,10 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         continue
                                     if row['kind'] == 'test_started':
                                         emit(RunnerEvent('test_started', repo, identity))
+                                    elif row['kind'] == 'component_progress':
+                                        from api_agent.providers.progress import ComponentProgress
+                                        component = ComponentProgress(**row['component'])
+                                        emit(RunnerEvent('component_progress', repo, identity, component=component))
                                     elif row['kind'] == 'report':
                                         reports.setdefault(identity.id, []).append(row)
                                         if row['phase'] == 'teardown':
