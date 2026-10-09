@@ -1,6 +1,6 @@
 # Provider contract hardening before real consumers
 
-The version-1 exports and synthetic owners exist, but their consumer contract is provisional. Complete the following before parallel concrete adapters or operation consumers depend on it. Keep upstream protocols outside core; use independently authored synthetic fixtures for public proofs.
+The version-1 exports and synthetic owners exist, but their consumer contract is provisional. Complete remaining entries before extending consumers or declaring the surface stable. The authentication-only GPT consumer already exercises the implemented subset. Keep upstream protocols outside core; use independently authored synthetic fixtures for public proofs.
 
 ## Ordered checklist
 
@@ -29,9 +29,15 @@ The [included personal GPT adapter](implementation_plan_f2.md) is early work. Re
 
 Shared inference data, safe operational classifications/context, managed stream leases and independently selected access adapters are implemented. Units use two distinct synthetic transport mappings through the same consumer. Username helpers and strict in-process kind/index binding are implemented. Runtime/operation cleanup and explicit capability activation are covered by synthetic parent-ownership proofs. Human review of this concrete chunk remains pending.
 
-This does not complete selected-provider dependency manifests, relocated installed packs, declaration authority, worker IPC/debug survival, live-operation credential revocation, concrete adapters or runner/browser integration. Base/pack dependency installation still uses their project manifests; provider-specific preparation must adopt the activation matrix when those manifests are implemented. Keep the larger activation/distribution/credential checklist entries open until then.
+This does not complete selected-provider dependency manifests, relocated installed packs, declaration authority, worker IPC/debug survival, live-operation credential revocation, complete concrete inference/API adapters or full runner/browser integration. The authentication-only GPT integration and its retained browser seam are implemented under [lazy setup](implementation_plan_f2b.md). Base/pack dependency installation still uses their project manifests; provider-specific preparation must adopt the activation matrix when those manifests are implemented. Keep the larger activation/distribution/credential checklist entries open until then.
 
 ## Selected configuration and credential follow-through
 
 - [ ] Add browser-free scoped credential acquisition for API-key providers before the included GPT consumer. Derive active credential role labels from selected provider declarations, including mode predicates; do not hardcode an intermediary LLM User. Retrieve the selected entry password only, register it with the emission boundary, own its in-memory lifetime, reject late/revoked replies, and allocate no browser for that acquisition. No separate plaintext API-key setting is needed for the included GPT adapter.
-- [ ] Reverify bundled provider defaults relative to base root/package, explicit pack overrides and installed relocation once the bundled factory exists. Help/configuration discovery must not execute its factory.
+- [x] Verify the implemented bundled authentication factory defaults relative to base root/package, explicit pack/provider overrides and inert help/configuration discovery; source and narrow wheel factory/declaration checks pass.
+- [ ] Complete whole relocated installed-pack manifests, schemas and dependency acceptance; narrow bundled-wheel checks do not close this distribution requirement.
+
+## Authentication consumer already joined
+
+- [x] Use the shared browser-closure guard for GPT callback waits and in-flight credential retrieval, synchronously drain owned work, preserve accepted callbacks and stop closed-browser tests promptly. Apply the same guard to future provider/UI/E2E consumers through the open debug/browser tasks above.
+- [x] Keep scoped username/password/TOTP helpers and auth-only worker-session reuse active without exporting token getters or browser objects across processes. Current debug is serial/per-worker; backend-wide session ownership, IPC revocation and independent run-complete/inspection-open state remain open.

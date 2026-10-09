@@ -41,3 +41,9 @@ The [included personal GPT adapter](implementation_plan_f2.md) is early work; re
 - [ ] Wire selected provider transports to their own metadata builders, including their separately documented usage-read contract. Complete human configuration review and authentication proof before live inference.
 
 - [ ] Implement [provider session and operation usage reporting](implementation_plan_a7.md) with optional starting/final quota snapshots, provider-supplied cost estimates and one frozen stdout/TUI/report summary.
+
+## Completed prerequisite before discovery
+
+- [x] Implement auth-only common integration setup, selected-provider roles/configuration, username-bound GPT cache reuse, owned refresh/getter and observed unattended login. Verify fresh-cache DEBUG/non-DEBUG setup without inference. See [setup proof](implementation_plan_f2b.md).
+
+Authenticated model discovery, generation, suite-wide quota/cost/token accounting and backend-owned shared authentication remain open; a verified token does not establish these capabilities.

@@ -32,7 +32,7 @@ The provider owns an LLMAuthSession: an async callable returning its current opa
 
 Credential readers enforce declared role, selected index and username/password/TOTP kind. The saved item name is not necessarily the username. Helpers retrieve username on demand; readers do not cache or log credentials. The LLM reader is already scoped to its provider role. Helper subprocesses have closed stdin, bounded execution and argv commands without a shell. Username retrieval failures suppress raw identity-bearing diagnostics. Versioned worker IPC, live-operation revocation and full helper wiring remain follow-ups.
 
-BrowserSession holds browser, context and current page. `BrowserOwner.prepare` invokes the UI hook once and yields that same session. Unit/integration/help/collection allocate no UI; local UI is headed only with RUN_UI. Each E2E attempt requires a fresh UI session, headless unless RUN_UI or debug is enabled. LLM authentication owners reject headed browsers. Inspection owners retain contexts, browsers and drivers until explicit cleanup; actual worker survival/inspection protocols remain open.
+BrowserSession holds browser, context and current page. `BrowserOwner.prepare` invokes the UI hook once and yields that same session. Unit/integration/help/collection allocate no UI; local UI is headed only with RUN_UI. Each E2E attempt requires a fresh UI session, headless unless RUN_UI or debug is enabled. Unattended LLM login is headless unless RUN_UI or DEBUG makes it visible; attended login is always headed. The managed browser factory owns this policy. Inspection owners retain contexts, browsers and drivers until explicit cleanup; actual worker survival/inspection protocols remain open.
 
 ## Deadlines, failures and streams
 
