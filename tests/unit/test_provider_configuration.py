@@ -28,6 +28,34 @@ def selected_base(location, extra=None):
     return type(load_shared_schema())(fields)
 
 
+@pytest.mark.parametrize('external_pack', [False, True])
+def test_gpt_state_default_displays_and_saves_the_runtime_path(tmp_path, monkeypatch, external_pack):
+    from api_agent.config.dotenv import read_dotenv
+    from api_agent.llm_providers.gpt import factory as gpt
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HOME', str(home))
+    base = tmp_path / 'base'
+    base.mkdir()
+    pack = tmp_path / 'pack' if external_pack else base
+    pack.mkdir(exist_ok=True)
+    context = SimpleNamespace(base_root=base, pack_root=pack, owner_root=pack,
+                              launcher_root=pack, external_pack=external_pack,
+                              dotenv_path=pack / '.env',
+                              anchors={'base_root': base, 'pack_root': pack, 'owner_root': pack})
+    location = str(Path(gpt.__file__).resolve()) + ':factory'
+    session = ConfigSession(context, selected_base(location), environ={})
+    session.set_value('GPT_APP_NAME', 'api-agent-2')
+    expected = home / '.config/api-agent/gpt'
+    candidates = {candidate.name: candidate for candidate in session.default_candidates()}
+    assert candidates['GPT_STATE_DIR'].value == expected
+    assert gpt.factory(session.result(_review=True).values, None).state_dir == expected
+    session.save_defaults(['GPT_STATE_DIR'])
+    assert read_dotenv(pack / '.env')['GPT_STATE_DIR'] == str(expected)
+    assert session.result(_review=True).values['GPT_STATE_DIR'] == expected
+    assert 'GPT_STATE_DIR' not in {c.name for c in session.default_candidates()}
+
+
 def test_provider_defaults_win_and_explicit_values_remain_highest(tmp_path):
     root = configured_provider(tmp_path, '[fields.LIMIT]\ntype="int"\ndefault=7\nrequired=true\n')
     base = selected_base('adapter/provider.py:create', {'LIMIT': {'type': 'int', 'default': 2}})

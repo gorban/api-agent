@@ -16,8 +16,8 @@ help = "Subscription authentication requires responses mode."
 type = "path"
 anchor = "owner_root"
 allow_empty = true
-default = ""
-help = "Protected GPT connection directory. Empty uses ~/.config/api-agent/gpt; saved credentials require owner-only permissions."
+default = "~/.config/api-agent/gpt"
+help = "Protected GPT connection directory. Default uses ~/.config/api-agent/gpt, independently of GPT_APP_NAME; Review configuration expands it to your current absolute path. An explicit empty value also uses that default. Saved credentials require owner-only permissions."
 
 [fields.GPT_APP_NAME]
 type = "str"
