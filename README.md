@@ -6,6 +6,8 @@ Build and run API-connected agents from one guided terminal interface.
 - Adapt applications through resource packs and replaceable providers.
 - Run locally with connected UI/API services, logs and optional tracing.
 - Select tests, inspect failures and browse recorded results.
+- DEBUG / `--debug` keeps completed tests open in a browser to manually verify
+  but also supports Playright MCP from another agent to work it with you.
 - Even allows hooking up a password manager for automated login to UI and LLM
   provider.
 
@@ -54,7 +56,7 @@ and branch coverage. Some integrations also need every valid configuration:
 - `GPT_AUTH_MODE`
   - `api_key`
   - `subscription`
-    - `GPT_API_MODE=completions` is unsupported.
+    - Subscription not supported with `GPT_API_MODE=completions`.
 
 Run the full integration suite once with your valid effective settings:
 ```bash
@@ -69,5 +71,4 @@ runs for GPT. For example, when this differs from your first run:
   api-agent::tests/integration/test_llm_setup.py
 ```
 
-Change the overrides for each remaining combination; do not repeat the baseline.
-Setup checks authentication. API-specific transport tests also need coverage under each applicable mode. Skipped scenarios remain unverified.
+Setup checks authentication. API-specific transport tests also need coverage under each applicable mode.
