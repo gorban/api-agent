@@ -193,18 +193,29 @@ def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_pa
     assert owner.loop.is_closed()
 
 
-def test_cli_retrieval_failure_is_actionable_and_private_output_is_sanitized(tmp_path, monkeypatch):
-    from api_agent.providers.contracts import InteractionRequiredError
+@pytest.mark.parametrize('source', [None, 'dotenv', '../base/.env', '../pack/.env', 'environment', 'cli'])
+@pytest.mark.parametrize('kind', ['username', 'password', 'totp'])
+def test_cli_retrieval_failure_is_actionable_and_private_output_is_sanitized(tmp_path, monkeypatch, source, kind):
+    from api_agent.providers.contracts import UnattendedCredentialError
     def failed(source, *, timeout):
         assert 0 < timeout <= credentials.DEFAULT_TIMEOUT
         raise credentials.CredentialError('private CLI identity/output')
-    monkeypatch.setattr(credentials, 'get_username', failed)
-    owner = IntegrationLLM(config(), tmp_path)
+    monkeypatch.setattr(credentials, 'get_' + kind, failed)
+    owner = IntegrationLLM(config(), tmp_path, unattended_index_source=source)
     try:
         reader = owner._credentials(0)
-        with pytest.raises(InteractionRequiredError, match='Sign in to the configured CLI') as error:
-            owner.loop.run_until_complete(reader(0, 'username'))
+        with pytest.raises(UnattendedCredentialError, match='Sign in to the configured CLI') as error:
+            owner.loop.run_until_complete(reader(0, kind))
         assert 'private CLI identity/output' not in str(error.value)
+        message = str(error.value)
+        guidance, internal = message.split('\n\n')
+        assert guidance.startswith('Failed to get credentials for unattended access.')
+        assert '[ and ]' in guidance and '"No unattended user set"' in guidance
+        dotenv = source == 'dotenv' or isinstance(source, str) and source.endswith('/.env')
+        assert ('Clear .env configuration' in guidance) is dotenv
+        assert ('stop passing the override' in guidance) is not dotenv
+        assert 'UNATTENDED_USER_INDEX' in guidance
+        assert internal.startswith('Password-manager ' + kind + ' retrieval is unavailable.')
     finally:
         owner.close()
     assert not owner._credential_tasks and owner.loop.is_closed()

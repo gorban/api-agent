@@ -9,17 +9,19 @@ from uuid import uuid4
 
 import pytest
 
-from api_agent.providers.contracts import ContractError, InteractionRequiredError, SetupPrerequisiteError
+from api_agent.providers.contracts import ContractError, UnattendedCredentialError, SetupPrerequisiteError
 from api_agent.providers.loading import aload_provider
 from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
 from api_agent.providers.shared_setup import SharedSetupOwner
 
 
-def write_launch_snapshot(directory, context, config):
+def write_launch_snapshot(directory, context, config, *, unattended_index_source=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
-    payload = json.dumps({'version': 1, 'owner_root': str(context.owner_root),
-                          'config': dict(config)}, default=str, allow_nan=False).encode()
+    data = {'version': 1, 'owner_root': str(context.owner_root), 'config': dict(config)}
+    if unattended_index_source is not None:
+        data['unattended_index_source'] = unattended_index_source
+    payload = json.dumps(data, default=str, allow_nan=False).encode()
     if len(payload) > 1048576:
         raise ContractError('Integration configuration is too large.')
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -41,7 +43,10 @@ def _read_snapshot():
         if len(raw) > 1048576:
             raise ValueError
         data = json.loads(raw)
-        if (set(data) != {'version', 'owner_root', 'config'} or type(data['version']) is not int
+        if (set(data) not in ({'version', 'owner_root', 'config'},
+                             {'version', 'owner_root', 'config', 'unattended_index_source'})
+                or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
+                or type(data['version']) is not int
                 or data['version'] != 1 or not isinstance(data['config'], dict)
                 or not isinstance(data['owner_root'], str) or not Path(data['owner_root']).is_absolute()):
             raise ValueError
@@ -56,9 +61,10 @@ _inspection_providers = []
 
 class IntegrationLLM:
     """One worker-local operation; this does not implement backend-wide IPC."""
-    def __init__(self, config, owner_root):
+    def __init__(self, config, owner_root, *, unattended_index_source=None):
         self.config = dict(config)
         self.owner_root = owner_root
+        self.unattended_index_source = unattended_index_source
         self.loop = asyncio.new_event_loop()
         self.provider = self.owner = None
         self._provider_config = deepcopy(self.config)
@@ -118,7 +124,9 @@ class IntegrationLLM:
                     self._credential_tasks.add(task)
                     return await asyncio.shield(task)
             except helpers.CredentialError:
-                raise InteractionRequiredError("Password-manager retrieval is unavailable. Sign in to the configured CLI and check the login entry.") from None
+                raise UnattendedCredentialError(
+                    "Password-manager " + kind + " retrieval is unavailable. Sign in to the configured CLI and check the login entry.",
+                    index_source=self.unattended_index_source) from None
         return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve))
 
     async def _prepare_setup(self):
@@ -222,7 +230,8 @@ class IntegrationLLM:
 def llm_provider():
     """Requesting the fixture is inert; ensure_ready is the authentication gate."""
     data = _read_snapshot()
-    provider = IntegrationLLM(data['config'], data['owner_root'])
+    provider = IntegrationLLM(data['config'], data['owner_root'],
+                              unattended_index_source=data.get('unattended_index_source'))
     try:
         yield provider
     finally:
@@ -297,6 +306,16 @@ class IntegrationRequirements:
 def integration_config():
     """Require only settings used by this test, not unrelated suite settings."""
     return IntegrationRequirements(_read_snapshot()['config'])
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Put recovery guidance before the internal stack in every evidence sink."""
+    report = yield
+    if call.excinfo is not None and isinstance(call.excinfo.value, UnattendedCredentialError):
+        guidance = str(call.excinfo.value).partition('\n\n')[0]
+        report.longrepr = guidance + '\n\n' + str(report.longrepr)
+    return report
 
 
 def pytest_configure(config):

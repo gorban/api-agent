@@ -72,7 +72,7 @@ sys.exit(code)
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None, config=None):
+                          after_run=None, config=None, unattended_index_source=None):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -189,7 +189,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 with directory as temporary:
                     if config is not None:
                         from .provider_setup import write_launch_snapshot
-                        env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config))
+                        env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
+                            unattended_index_source=unattended_index_source))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)

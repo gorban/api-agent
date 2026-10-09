@@ -40,7 +40,7 @@ class GPTProvider:
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.run_ui = config.get("RUN_UI", False)
-        self.attended_fallback = config.get("NO_STD_IN") is False or inspection is not None
+        self.allow_browser_interaction = config.get("NO_STD_IN") is False or inspection is not None
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
         self.browsers = []
@@ -73,17 +73,10 @@ class GPTProvider:
         store = ConnectionStore(self.state_dir)
         connections = store.list()
         username = None
-        fallback = False
-        if user_index is not None and credentials is not None:
-            try:
-                username = await credentials(user_index, "username")
-            except InteractionRequiredError:
-                if not (interactive or self.attended_fallback):
-                    raise InteractionRequiredError("Password-manager username retrieval needs attention. Sign in to the configured CLI or start attended login; noninteractive execution cannot fall back.") from None
-                print("Password-manager username retrieval is unavailable. Sign in to the configured CLI and check the login entry; continuing with attended browser login.", flush=True)
-                fallback = True
-                connections = ()
-        if user_index is not None and credentials is not None and not fallback:
+        if user_index is not None:
+            if credentials is None:
+                raise ContractError("The selected unattended user requires a credential reader.")
+            username = await credentials(user_index, "username")
             if not isinstance(username, str) or not username.strip():
                 raise ContractError("The selected login must supply a nonempty username.")
             connections = tuple(connection for connection in connections
@@ -93,12 +86,12 @@ class GPTProvider:
                 raise InteractionRequiredError("The selected login has no unique cached OAuth connection; use attended sign-in first.")
         if len(connections) == 1:
             profile = store.profile_id(connections[0])
-        elif interactive or username is not None or fallback:
+        elif interactive or username is not None:
             # Let the verified OAuth result identify the account instead of a manual ID.
             browser_options = {}
             if self.inspection is not None:
                 browser_options['inspection'] = self.inspection
-            if not interactive and not fallback:
+            if not interactive:
                 browser_options['headless'] = not (self.run_ui or self.inspection is not None)
             browser = subscription_browser(**browser_options)
             self.browsers.append(browser)
@@ -111,7 +104,7 @@ class GPTProvider:
                 profile = await connect_account(store, browser_owner=browser, app_name=self.app_name, **login_options)
             except AuthError as error:
                 if (str(error) == 'login_interaction_required' and browser_options.get('headless')
-                        and (interactive or self.attended_fallback)):
+                        and (interactive or self.allow_browser_interaction)):
                     print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
                     visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
                     visible = subscription_browser(**visible_options)

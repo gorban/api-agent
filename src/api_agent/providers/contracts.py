@@ -22,6 +22,21 @@ class InteractionRequiredError(ContractError):
     """A safe, actionable message requesting attended provider setup."""
 
 
+class UnattendedCredentialError(InteractionRequiredError):
+    """Credential access failed; never silently replace the selected identity."""
+
+    def __init__(self, message, *, index_source=None):
+        guidance = ('Failed to get credentials for unattended access. Fix credential access, '
+                    'or switch to attended login with [ and ] to cycle to "No unattended user set"')
+        if index_source == 'dotenv' or isinstance(index_source, str) and index_source.endswith('/.env'):
+            guidance += (' or use Clear .env configuration from the main menu and delete any '
+                         '.env assignment to UNATTENDED_USER_INDEX.')
+        else:
+            guidance += (' or stop passing the override for UNATTENDED_USER_INDEX '
+                         '(environment variable or command-line option).')
+        super().__init__(guidance + '\n\n' + message)
+
+
 class SessionClosedError(RuntimeError):
     """An authentication/session owner has finished disposal."""
 

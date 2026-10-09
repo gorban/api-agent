@@ -382,7 +382,7 @@ def test_invalid_login_credentials_before_allocation(lane, monkeypatch, username
         asyncio.run(c.connect_account(Store(), login_username=username, login_credentials=reader))
 
 
-@pytest.mark.parametrize('outcome', ['success', 'interaction', 'page_error', 'cancel'])
+@pytest.mark.parametrize('outcome', ['success', 'interaction', 'page_error', 'cancel', 'credentials'])
 def test_full_login_workflow_callback_and_safe_failure_cleanup(lane, monkeypatch, outcome):
     from unittest.mock import AsyncMock, Mock
     async def run():
@@ -400,6 +400,8 @@ def test_full_login_workflow_callback_and_safe_failure_cleanup(lane, monkeypatch
                 raise c.AuthError('login_interaction_required')
             elif outcome == 'cancel':
                 raise asyncio.CancelledError()
+            elif outcome == 'credentials':
+                raise c.InteractionRequiredError('Password-manager retrieval is unavailable.')
             else:
                 raise RuntimeError('private page and credential content')
         workflow = SimpleNamespace(advance=AsyncMock(side_effect=advance))
@@ -414,8 +416,10 @@ def test_full_login_workflow_callback_and_safe_failure_cleanup(lane, monkeypatch
             assert len(store.saved) == 1
             lane.finish_authorization.assert_awaited_once()
         else:
-            error = asyncio.CancelledError if outcome == 'cancel' else c.AuthError
-            code = 'login_interaction_required' if outcome == 'interaction' else 'login_step_failed'
+            error = (asyncio.CancelledError if outcome == 'cancel' else
+                     c.InteractionRequiredError if outcome == 'credentials' else c.AuthError)
+            code = ('login_interaction_required' if outcome == 'interaction' else
+                    'Password-manager retrieval is unavailable.' if outcome == 'credentials' else 'login_step_failed')
             with pytest.raises(error, match=None if outcome == 'cancel' else '^' + code + '$'):
                 await c.connect_account(store, **options)
             assert not store.saved

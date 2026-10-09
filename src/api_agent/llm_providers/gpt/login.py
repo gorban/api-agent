@@ -3,7 +3,7 @@ import asyncio
 import re
 from urllib.parse import urlsplit
 
-from api_agent.providers.contracts import InteractionRequiredError
+from api_agent.providers.contracts import UnattendedCredentialError
 from api_agent.providers.sessions import wait_browser_result
 from api_agent.runtime.managed_browser import _dispose
 from .contracts import AuthError
@@ -85,14 +85,9 @@ class LoginWorkflow:
             if bound_button is None or (field is not None and bound_field is None):
                 return
             if field is not None:
-                try:
-                    value = self.username if kind == 'username' else await self._credential(kind)
-                except InteractionRequiredError:
-                    self._interaction('Password-manager credential retrieval is unavailable. Sign in to the configured CLI or complete GPT login in the visible browser.')
-                    return
+                value = self.username if kind == 'username' else await self._credential(kind)
                 if not isinstance(value, str) or not value.strip():
-                    self._interaction('The selected login does not provide the credential requested by GPT. Complete login in the visible browser or update its password-manager entry.')
-                    return
+                    raise UnattendedCredentialError('The selected login does not provide the credential requested by GPT. Check its password-manager entry.')
                 if not await self._bound(bound_field, bound_button, location.geturl()):
                     return
                 await bound_field.fill(value, timeout=1000)

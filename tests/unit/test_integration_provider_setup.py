@@ -28,7 +28,7 @@ def test_snapshot_private_paths_and_bounds(tmp_path, monkeypatch):
         p.write_launch_snapshot(tmp_path, SimpleNamespace(owner_root=tmp_path), {})
 
 
-@pytest.mark.parametrize('problem', ['missing', 'mode', 'owner', 'symlink', 'large', 'json', 'list', 'version', 'bool_version', 'fields', 'config', 'root'])
+@pytest.mark.parametrize('problem', ['missing', 'mode', 'owner', 'symlink', 'large', 'json', 'list', 'version', 'bool_version', 'fields', 'config', 'root', 'source'])
 def test_snapshot_rejects_untrusted_context_without_echo(tmp_path, monkeypatch, problem):
     path = snapshot(tmp_path, monkeypatch)
     if problem == 'missing':
@@ -57,12 +57,78 @@ def test_snapshot_rejects_untrusted_context_without_echo(tmp_path, monkeypatch, 
             data['extra'] = 'synthetic-secret'
         elif problem == 'config':
             data['config'] = []
+        elif problem == 'source':
+            data['unattended_index_source'] = 0
         else:
             data['owner_root'] = 'relative'
         path.write_text(json.dumps(data))
     with pytest.raises(ContractError, match='start through launch.py') as error:
         p._read_snapshot()
     assert 'synthetic-secret' not in str(error.value)
+
+
+@pytest.mark.parametrize('source', [None, '../base/.env', '../pack/.env', 'environment', 'cli'])
+def test_source_metadata_is_separate_from_provider_settings_and_reaches_worker(tmp_path, monkeypatch, source):
+    path = p.write_launch_snapshot(tmp_path, SimpleNamespace(owner_root=tmp_path),
+                                   {'UNATTENDED_USER_INDEX': 0}, unattended_index_source=source)
+    monkeypatch.setenv('API_AGENT_INTEGRATION_CONTEXT', str(path))
+    data = p._read_snapshot()
+    assert data['config'] == {'UNATTENDED_USER_INDEX': 0}
+    assert data.get('unattended_index_source') == source
+    assert ('unattended_index_source' in data) is (source is not None)
+    values = p.llm_provider.__wrapped__()
+    owner = next(values)
+    assert owner.unattended_index_source == source
+    with pytest.raises(StopIteration):
+        next(values)
+    assert owner.closed and owner.loop.is_closed()
+
+
+@pytest.mark.parametrize('source', ['../base/.env', 'environment'])
+@pytest.mark.parametrize('jobs', [0, 2])
+def test_logged_out_cli_fails_real_worker_without_browser_and_records_guidance(tmp_path, source, jobs):
+    import sys
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.recorded import run_recorded_integration
+    base = tmp_path / 'base'
+    suite = base / 'tests/integration'
+    suite.mkdir(parents=True)
+    (suite / 'test_ready.py').write_text(
+        'def test_ready(llm_provider, monkeypatch):\n'
+        '    import httpx\n'
+        '    from api_agent.llm_providers.gpt import factory\n'
+        '    def forbidden(*args, **kwargs):\n'
+        '        raise AssertionError("browser or transport must not start")\n'
+        '    monkeypatch.setattr(httpx, "AsyncClient", forbidden)\n'
+        '    monkeypatch.setattr(factory, "subscription_browser", forbidden)\n'
+        '    llm_provider.ensure_ready()\n')
+    cli = tmp_path / 'logged-out-cli'
+    cli.write_text('#!' + sys.executable + '\nimport sys\nsys.stderr.write("session expired; login required\\n")\nsys.exit(1)\n')
+    cli.chmod(0o700)
+    context = SimpleNamespace(base_root=base, owner_root=base, suite_paths=lambda mode: [suite])
+    config = {'LLM_PROVIDER': str(Path(p.__file__).parents[1] / 'llm_providers/gpt/factory.py') + ':factory',
+              'GPT_STATE_DIR': tmp_path / 'state', 'UNATTENDED_USER_INDEX': 0,
+              'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': {
+                  'password_manager': {'manager': '1password', 'cli_path': str(cli)},
+                  'roles': {'LLM User': [{'vault': 'fixture', 'user': 'fixture'}]}},
+              'TUI_MODE': 'integration', 'NO_STD_IN': False, 'ALLURE_S3_BUCKET': 'synthetic',
+              'ALLURE_RESULTS_DIR': tmp_path / 'allure', 'TEST_PARALLEL_JOBS': jobs}
+    selected = [item for item in collect_tests(context, 'integration', config=config) if item.repo == 'base']
+    result = run_recorded_integration(context, selected, config, accepted=True,
+        storage=SimpleNamespace(persist=lambda *args: None), unattended_index_source=source)
+    assert result.exit_code == 1 and result.persisted
+    assert result.execution.tests[0].status == 'failed'
+    trace = result.execution.tests[0].traceback
+    assert 'UnattendedCredentialError' in trace
+    assert 'Failed to get credentials for unattended access.' in trace
+    assert trace.startswith('Failed to get credentials for unattended access.')
+    assert 'Password-manager username retrieval is unavailable.' in trace
+    assert ('Clear .env configuration' in trace) is source.endswith('/.env')
+    assert ('stop passing the override' in trace) is not source.endswith('/.env')
+    assert 'AssertionError: browser or transport must not start' not in trace
+    rows = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]
+    assert len(rows) == 1 and rows[0]['status'] == 'failed'
+    assert rows[0]['statusDetails']['trace'] == trace
 
 
 @pytest.mark.parametrize('index,no_std_in', [(None, False), (0, False), (None, True)])
@@ -232,7 +298,7 @@ def test_cleanup_failure_keeps_loop_for_retry(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('cached', [False, True])
 @pytest.mark.parametrize('jobs', [0, 2])
-def test_real_launch_worker_setup_and_allure_without_inference(tmp_path, cached, jobs):
+def test_real_launch_worker_cannot_use_an_unbound_cache_for_selected_user(tmp_path, cached, jobs):
     import time
     from api_agent.llm_providers.gpt.connections import ConnectionStore
     from api_agent.llm_providers.gpt.contracts import Connection
@@ -259,13 +325,12 @@ def test_real_launch_worker_setup_and_allure_without_inference(tmp_path, cached,
     storage = SimpleNamespace(persist=lambda directory, manifest: saved.append((directory, manifest)))
     recorded = run_recorded_integration(context, selected, config, accepted=True, storage=storage)
     assert recorded.persisted and len(saved) == 1
-    assert recorded.exit_code == (0 if cached else 1)
-    assert recorded.execution.tests[0].status == ('passed' if cached else 'failed')
-    if not cached:
-        assert 'attended sign-in' in recorded.execution.tests[0].traceback
+    assert recorded.exit_code == 1
+    assert recorded.execution.tests[0].status == 'failed'
+    assert 'requires a credential reader' in recorded.execution.tests[0].traceback
     assert 'synthetic-secret' not in recorded.execution.output
     results = list(recorded.directory.glob('*-result.json'))
-    assert len(results) == 1 and json.loads(results[0].read_text())['status'] == ('passed' if cached else 'failed')
+    assert len(results) == 1 and json.loads(results[0].read_text())['status'] == 'failed'
 
 
 def test_pack_requirement_marker_registered_for_worker():

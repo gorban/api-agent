@@ -9,7 +9,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
-from api_agent.providers.contracts import SessionClosedError
+from api_agent.providers.contracts import InteractionRequiredError, SessionClosedError
 from api_agent.providers.sessions import wait_browser_result
 from api_agent.runtime.managed_browser import _dispose
 from .contracts import AuthError
@@ -191,7 +191,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
                                 on_wait=workflow.advance if workflow is not None else guard.check if guard is not None else None)
                         except SessionClosedError:
                             raise AuthError("browser_closed") from None
-                        except (AuthError, asyncio.CancelledError):
+                        except (AuthError, InteractionRequiredError, asyncio.CancelledError):
                             raise
                         except Exception:
                             raise AuthError('login_step_failed') from None
