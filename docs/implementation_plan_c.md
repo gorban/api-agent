@@ -34,3 +34,10 @@
 - [ ] Selected LLM providers and resource packs may declare optional `UNATTENDED_USER_INDEX` when they offer indexed credential selection, including a single LLM role with multiple accounts. Shared/demo config does not hardcode it; shared help lists it only when contributed to the active schema. Generic account selection consumes the field when present and validates the selected index across the nonempty role arrays needed by the operation. Keep session-only interactive choices and fail noninteractive ambiguity. Private provider adapters perform authenticated-identity validation.
 
 - [ ] Retire `.env.example` without replacing it with another hand-maintained settings inventory. Point README users to executable `cfg/config.toml` declarations and the TUI's `.env` setup/default acknowledgement. Ignore all `.env` and `.env.*` files; keep any example-file deletion unstaged until the final cleanup commit.
+
+
+## Testing guide follow-through
+
+- [x] Add a later README Testing section covering configured test modes, positional preselection, suite ownership, unit-only noninteractive execution, collection-only, fixed full-unit coverage and the intended GPT authentication/API matrix. Distinguish implemented setup from pending API-key transports/discovery/inference and preserve integration/E2E human gates.
+- [ ] Verify the documented three valid GPT scenarios after API-key setup and both transports are implemented. Run the generic setup/conformance tests unchanged for each applicable provider, use named pytest parameters for provider-specific isolated combinations and always retain invalid-combination rejection tests. Record skipped scenarios as unverified, not covered.
+- [ ] Define named CI configuration jobs/report identities after an explicit decision on integration execution gates; do not use the DEBUG inspection exception as a general CI bypass. Keep human E2E acceptance.
