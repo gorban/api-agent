@@ -182,6 +182,7 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 - [x] Display live timing in the running test row through shared unit/integration presentation, preserving focus, selection and stable rows. Bind worker events to the current test, including parallel integration workers. Finished rows return to total execution time; late component events cannot replace completed results.
 - [x] Instrument GPT login's actual deadline and password-manager retrieval's existing limit. Show manual account selection in red, an eligible selected login in green and an unavailable selected account in red.
 - [ ] Use the same component progress interface for additional bounded provider/runtime phases and the future E2E runner. Use fixed descriptive names without credentials, account names or URLs. Keep test outcomes, Allure publication and retained debug inspection distinct.
+- [ ] Extend shared progress/presentation for the [Markdown Layout timeout contract](implementation_plan_b1.md#execution-timeouts-and-progress): retain nested scope identities and clocks, display the nearest enclosing timed scope when a component is untimed (up to a declared whole-test timeout), and show elapsed without a timeout when no scope has one. Apply the same fallback in live rows and summaries across test modes; the existing bounded-provider events do not yet implement this hierarchy.
 
 ## Error message copying
 
