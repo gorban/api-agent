@@ -12,11 +12,9 @@ Build and run API-connected agents from one guided terminal interface.
 ## Get started
 
 Use Python 3.13 or newer, then run from the `api-agent` directory:
-
 ```bash
 ./launch.py
 ```
-
 The launcher prepares its local environment and dependencies. Follow the prompts
 and select **Run local** in the main menu to start the app.
 
@@ -36,7 +34,6 @@ See [setup and configuration](docs/workbench.md#getting-started).
 ## Testing
 
 Choose `unit`, `integration`, or `e2e` as `<tests_type>`:
-
 ```bash
 ./launch.py --tui-mode "<tests_type>"
 ```
@@ -60,14 +57,12 @@ and branch coverage. Some integrations also need every valid configuration:
     - `GPT_API_MODE=completions` is unsupported.
 
 Run the full integration suite once with your valid effective settings:
-
 ```bash
 ./launch.py --tui-mode integration --no-std-in
 ```
 
 Then repeat only the LLM setup tests for the other valid combinations—two more
 runs for GPT. For example, when this differs from your first run:
-
 ```bash
 ./launch.py --tui-mode integration --no-std-in \
   --gpt-auth-mode=subscription --gpt-api-mode=responses \
