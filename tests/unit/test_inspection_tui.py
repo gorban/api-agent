@@ -13,6 +13,63 @@ from test_tui import fixture
 from test_inspection_controls import handle
 
 
+@pytest.mark.parametrize('failure', ['recording_path', 'permission_chain'])
+def test_harness_failure_displays_exception_stack_and_path_without_locals(tmp_path, failure):
+    from api_agent.testing.recorded import run_recorded_integration
+
+    test = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
+    target = tmp_path / 'blocked-recording'
+    target.write_text('This is a file, not a recording directory.')
+    pytest_runner = Mock()
+
+    def runner(context, tests, config, **options):
+        password = 'synthetic-local-password-not-for-display'
+        if failure == 'permission_chain':
+            try:
+                raise ValueError('Cannot prepare local recording')
+            except ValueError as cause:
+                raise PermissionError(13, 'Permission denied', str(target)) from cause
+        return run_recorded_integration(context, tests, config, runner=pytest_runner, **options)
+
+    async def run():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: [test], fields={
+            'ALLURE_S3_BUCKET': {'type': 'str', 'default': 'synthetic'},
+            'ALLURE_RESULTS_DIR': {'type': 'path', 'anchor': 'base_root', 'default': str(target)},
+        })
+        app.context.owner_root = tmp_path
+        app.integration_runner = runner
+        async with app.run_test(size=(110, 35)) as pilot:
+            await pilot.pause()
+            # Start directly from the picker; this regression is for the harness,
+            # not startup acknowledgement of these synthetic settings.
+            app.mode = 'integration'
+            from api_agent.testing.selection import SelectionModel
+            app.selection = SelectionModel((test,))
+            app.show_selection()
+            await pilot.pause()
+            await pilot.press('s')
+            await pilot.pause(.3)
+            assert app.screen.kind == 'error'
+            assert app.screen.heading == 'Integration execution failed'
+            body = str(app.screen.query_one('#body', Static).content)
+            assert 'Traceback (most recent call last):' in body
+            assert str(target) in body
+            assert 'in runner' in body and 'in _run_integrations' in body
+            assert 'synthetic-local-password-not-for-display' not in body
+            if failure == 'permission_chain':
+                assert 'ValueError: Cannot prepare local recording' in body
+                assert 'direct cause' in body
+                assert 'PermissionError: [Errno 13] Permission denied:' in body
+            else:
+                assert 'in run_recorded_integration' in body
+                assert 'NotADirectoryError:' in body
+            assert app.screen.copy_target() == (body, False)
+            assert not app.test_run_active() and app.operation_status == 3
+            assert app.unit_result is None
+            pytest_runner.assert_not_called()
+    asyncio.run(run())
+
+
 def test_retained_inspection_results_are_ready_and_explicit_end_is_available(tmp_path):
     test = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
     item = handle()
@@ -230,7 +287,7 @@ def test_closed_group_and_late_events_do_not_change_next_operation(tmp_path):
 def test_generic_runner_error_keeps_owned_inspections(tmp_path):
     test = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
     item = handle()
-    error = RuntimeError('private runner detail')
+    error = RuntimeError('synthetic runner diagnostic')
     error.inspections = (item, item)
     async def run():
         app = fixture(tmp_path, 'integration', collector=lambda *args: [test])
@@ -241,7 +298,8 @@ def test_generic_runner_error_keeps_owned_inspections(tmp_path):
             await pilot.pause(.3)
             assert app.screen.kind == 'error'
             assert app.inspections.handles == (item,) and app.inspections.active
-            assert 'private runner detail' not in app.screen.body
+            assert 'RuntimeError: synthetic runner diagnostic' in app.screen.body
+            assert 'Traceback (most recent call last):' in app.screen.body
             assert await app.end_inspection(force=True)
             assert item.closed
     asyncio.run(run())

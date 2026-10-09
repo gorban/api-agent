@@ -74,17 +74,19 @@ def test_integration_start_records_and_displays_results(tmp_path, status, persis
     asyncio.run(scenario())
 
 
-def test_integration_runner_failure_is_sanitized(tmp_path):
+def test_integration_runner_failure_has_local_diagnostics(tmp_path):
     test = TestIdentity('base::t.py::test_setup', 'base', 't.py', 't.py::test_setup')
     async def scenario():
         app = fixture(tmp_path, 'integration', collector=lambda *args: [test])
-        app.integration_runner = Mock(side_effect=RuntimeError('synthetic-secret'))
+        app.integration_runner = Mock(side_effect=RuntimeError('synthetic runner failure'))
         async with app.run_test() as pilot:
             await pilot.pause(.2)
             await pilot.press('s')
             await pilot.pause(.3)
             assert app.screen.kind == 'error' and app.operation_status == 3
-            assert 'synthetic-secret' not in str(app.screen.query_one('#body', Static).render())
+            body = str(app.screen.query_one('#body', Static).render())
+            assert 'RuntimeError: synthetic runner failure' in body
+            assert 'Traceback (most recent call last):' in body
             assert not app.test_run_active()
     asyncio.run(scenario())
 

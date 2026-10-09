@@ -378,7 +378,10 @@ def test_execution_error_screen_shares_copy_and_mouse_selection(tmp_path, monkey
         app = fixture(tmp_path)
         copy = AsyncMock(return_value=True)
         monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
-        message = 'Integration setup or recording failed. Check configuration and the selected provider.'
+        message = ('Integration setup or recording failed. Check configuration and the selected provider.\n\n'
+                   'Traceback (most recent call last):\n'
+                   '  File "recording.py", line 64, in __init__\n'
+                   'PermissionError: [Errno 13] Permission denied: /synthetic/recordings')
         async with app.run_test(size=(140, 35)) as pilot:
             await pilot.pause()
             monkeypatch.setattr('api_agent.tui.app.sys.platform', platform)

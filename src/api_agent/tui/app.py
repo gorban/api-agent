@@ -1297,8 +1297,10 @@ class ApiAgentApp(App[int]):
                 if not self.collection_cancel.is_set():
                     self.show_unit_results()
             elif not self.collection_cancel.is_set():
+                from traceback import format_exception
                 self.show("error", "Integration execution failed",
-                          "Integration setup or recording failed. Check configuration and the selected provider.",
+                          "Integration setup or recording failed. Check configuration and the selected provider.\n\n"
+                          + ''.join(format_exception(error)),
                           (("menu", "Main menu"),))
         finally:
             self.test_run.finish()
