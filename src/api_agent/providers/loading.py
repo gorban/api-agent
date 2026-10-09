@@ -393,16 +393,17 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
             from api_agent.config.declarations import ConfigSchema, compose_schema
             for declaration in deferred:
                 schema = compose_schema(schema, ConfigSchema({declaration.name: declaration}))
-            options = parse_options(schema, argv).values
-            # Deferred defaults must not change the discovered graph, including
-            # enabling a selector that was empty/unset throughout discovery.
+            # Discovery is intentionally fixed before optional late overrides.
+            # Compare *resolved* selections, including conditional defaults, and
+            # do not let HELP/applicability hide a changed graph from this guard.
+            from api_agent.config.resolve import resolve_config
+            selector_schema = ConfigSchema({name: replace(field, applies_when={}, pack_only=False)
+                if name in selectors else field for name, field in schema.fields.items()})
+            resolved = resolve_config(selector_schema, argv=argv, environ=environ,
+                dotenv=dotenv, overrides={**(overrides or {}), 'HELP': 'False'},
+                anchors={'owner_root': owner_root}, interactive=True)
             for name in selectors:
-                declaration = schema.fields.get(name)
-                if declaration is None:
-                    continue
-                effective = declaration.default if declaration.default is not UNSET else None
-                for values in (dotenv, environ, options, overrides or {}):
-                    effective = values.get(name, effective)
+                effective = resolved.values.get(name)
                 if (effective or name in processed) and effective != processed.get(name):
                     raise ProviderError('provider_selection_cycle')
             return schema

@@ -19,6 +19,21 @@ def _cancel_once(task, requested):
             task.cancel()
 
 
+async def finish_cleanup(awaitable):
+    """Finish owned cleanup even when its caller is cancelled."""
+    task = asyncio.create_task(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    return task.result()
+
+
+
 class OperationalError(RuntimeError):
     """Safe classification; retry decisions belong solely to the operation owner."""
     def __init__(self, kind: str, execution: str = "not_started", retry_after: float | None = None):

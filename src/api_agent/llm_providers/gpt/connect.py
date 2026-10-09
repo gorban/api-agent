@@ -115,6 +115,7 @@ async def submit_login_username(session, username, *, guard):
     async def submit():
         await session.page.get_by_role("textbox", name="Email address", exact=True).fill(username, timeout=0)
         await session.page.get_by_role("button", name="Continue", exact=True).click(timeout=0)
+    await guard.check()
     task = asyncio.create_task(submit())
     try:
         await wait_browser_result(task, session, on_wait=guard.check)

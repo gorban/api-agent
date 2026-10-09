@@ -4,21 +4,8 @@ import threading
 from pathlib import Path
 
 from api_agent.providers.sessions import BrowserOwner
+from api_agent.providers.control import finish_cleanup as _dispose
 from api_agent.runtime.browser import ensure_chromium_ready
-
-
-async def _dispose(awaitable):
-    """Finish owned cleanup even when its caller is cancelled."""
-    task = asyncio.create_task(awaitable)
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        raise asyncio.CancelledError
-    return task.result()
 
 
 class ChromiumDriver:

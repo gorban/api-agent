@@ -26,6 +26,14 @@ class Page:
     def is_closed(self):
         return self.closed
 
+    def handle(self, action):
+        async def bound(script, binding):
+            return self.url == binding['url']
+        handle = SimpleNamespace(fill=self.fill, click=self.click,
+                                 evaluate=AsyncMock(side_effect=bound), dispose=AsyncMock())
+        return SimpleNamespace(is_visible=AsyncMock(return_value=action),
+                               element_handle=AsyncMock(return_value=handle))
+
     def get_by_role(self, role, *, name, exact=False):
         if role == 'heading':
             visible = bool(name.search(self.heading)) if isinstance(name, re.Pattern) else self.heading == name
@@ -33,13 +41,13 @@ class Page:
                                    text_content=AsyncMock(return_value=self.heading))
         if role == 'button':
             assert name == 'Continue' and exact
-            return SimpleNamespace(is_visible=AsyncMock(return_value=self.button_visible), click=self.click)
+            return self.handle(self.button_visible)
         assert role == 'textbox' and name == 'Email address' and exact
         return self.locator('email')
 
     def locator(self, selector):
         assert selector in ('email', 'input[type=password]', 'input[name=code][autocomplete=one-time-code]')
-        return SimpleNamespace(is_visible=AsyncMock(return_value=self.field_visible), fill=self.fill)
+        return self.handle(self.field_visible)
 
 
 def workflow(page, *, allow_interaction=True, credentials=None, app_name='test-app'):
@@ -200,4 +208,102 @@ def test_navigation_during_lookup_prevents_filling_a_different_page():
         page.fill.assert_not_awaited()
         page.click.assert_not_awaited()
         assert login.last_action is None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('replacement', ['https://untrusted.example/replacement',
+                                       'https://auth.openai.com/replacement'])
+def test_real_browser_navigation_during_fill_never_targets_replacement(replacement):
+    """Locators retry across documents; credential actions must remain pinned."""
+    from playwright.async_api import async_playwright, Locator, ElementHandle, Error
+    from unittest.mock import patch
+
+    async def run():
+        entered = asyncio.Event()
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context(service_workers='block')
+                await context.set_offline(True)
+                async def route(request):
+                    disabled = ' disabled' if request.request.url.endswith('/original') else ''
+                    await request.fulfill(content_type='text/html', body=(
+                        '<h1>Enter your password</h1><input type=password' + disabled +
+                        '><button onclick="window.clicked=true">Continue</button>'))
+                await context.route('**/*', route)
+                page = await context.new_page()
+                await page.goto('https://auth.openai.com/original')
+                login = workflow(page)
+                login.session.browser = browser
+                async def intercepted(original, instance, *args, **kwargs):
+                    entered.set()
+                    return await original(instance, *args, **kwargs)
+                locator_fill, handle_fill = Locator.fill, ElementHandle.fill
+                with patch.object(Locator, 'fill', lambda obj, *a, **kw: intercepted(locator_fill, obj, *a, **kw)), \
+                     patch.object(ElementHandle, 'fill', lambda obj, *a, **kw: intercepted(handle_fill, obj, *a, **kw)):
+                    action = asyncio.create_task(login.advance())
+                    await asyncio.wait_for(entered.wait(), 3)
+                    await page.goto(replacement)
+                    try:
+                        await action
+                    except Error:
+                        pass  # Detached original elements safely abort the action.
+                assert await page.locator('input[type=password]').input_value() == ''
+                assert not await page.evaluate('Boolean(window.clicked)')
+                assert login.last_action is None
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('missing', ['field', 'button'])
+def test_missing_pinned_element_aborts_and_disposes_other_handles(missing):
+    async def run():
+        page = Page('Enter your password')
+        login = workflow(page)
+        original = page.handle
+        handles = []
+        def acquired(visible):
+            item = original(visible)
+            handles.append(item.element_handle.return_value)
+            if (len(handles) == 2 and missing == 'button') or (len(handles) == 1 and missing == 'field'):
+                item.element_handle.return_value = None
+            return item
+        page.handle = acquired
+        await login.advance()
+        login.credentials.assert_not_awaited()
+        page.fill.assert_not_awaited()
+        page.click.assert_not_awaited()
+        for index, handle in enumerate(handles):
+            if (index == 0 and missing != "field") or (index == 1 and missing != "button"):
+                handle.dispose.assert_awaited_once()
+        assert login.last_action is None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('changed', ['navigation', 'context_destroyed'])
+def test_pinned_action_revalidates_before_submit_and_disposes_handles(changed):
+    async def run():
+        page = Page('Enter your password')
+        handles = []
+        original = page.handle
+        def acquired(visible):
+            item = original(visible)
+            handles.append(item.element_handle.return_value)
+            return item
+        page.handle = acquired
+        async def filled(*args, **kwargs):
+            if changed == 'navigation':
+                page.url = 'https://untrusted.example/replacement'
+            else:
+                for handle in handles:
+                    handle.evaluate.side_effect = RuntimeError('destroyed original context')
+        page.fill.side_effect = filled
+        login = workflow(page)
+        await login.advance()
+        page.fill.assert_awaited_once()
+        page.click.assert_not_awaited()
+        assert login.last_action is None
+        for handle in handles:
+            handle.dispose.assert_awaited_once()
     asyncio.run(run())

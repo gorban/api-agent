@@ -377,6 +377,8 @@ class ConfigSession:
     def external_value(self, name, value):
         """Persist enum tokens rather than anchored display paths."""
         field = self.schema.fields[name]
+        if field.type == 'int' and field.allow_empty and value is None:
+            return ''
         if field.enum:
             for token in field.enum:
                 if convert_value(field, token, external=False, anchors=self.context.anchors) == value:

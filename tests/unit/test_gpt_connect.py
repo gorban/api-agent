@@ -739,3 +739,40 @@ def test_browser_guard_cannot_overturn_completed_callback_but_preserves_cancella
                 await wait_browser_result(result, session, on_wait=guard)
         result.cancel()
     asyncio.run(scenario())
+
+
+def test_accepted_real_callback_interrupts_workflow_credential_lookup(lane, monkeypatch):
+    from test_gpt_login import Page
+    from unittest.mock import AsyncMock
+    async def scenario():
+        entered, drained = asyncio.Event(), asyncio.Event()
+        page = Page('Enter your password')
+        async def goto(uri, **kwargs):
+            page.callback_uri = uri
+            page.url = 'https://auth.openai.com/password'
+        page.goto = goto
+        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page,
+            browser=SimpleNamespace(is_connected=lambda: True))), aclose=AsyncMock())
+        async def lookup(kind):
+            assert kind == 'password'
+            entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                drained.set()
+        monkeypatch.setattr(c, 'LoginPageGuard', lambda *a, **kw: SimpleNamespace(check=AsyncMock()))
+        lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email='person@example.test'))
+        store = Store()
+        task = asyncio.create_task(c.connect_account(store, client=object(), browser_owner=owner,
+            timeout=1, login_username='person@example.test', login_credentials=lookup))
+        await entered.wait()
+        assert b'200 OK' in await request(page.callback_uri)
+        assert await asyncio.wait_for(task, .5) == 'account'
+        assert drained.is_set()
+        assert len(store.saved) == 1
+        lane.finish_authorization.assert_awaited_once()
+        page.fill.assert_not_awaited()
+        page.click.assert_not_awaited()
+        owner.aclose.assert_awaited_once()
+        assert not [other for other in asyncio.all_tasks() if other is not asyncio.current_task() and not other.done()]
+    asyncio.run(scenario())

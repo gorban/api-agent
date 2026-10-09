@@ -366,3 +366,20 @@ def test_cleanup_mode_hidden_unless_saved_in_dotenv(session):
         assert row.present
         session.delete_keys(['TUI_MODE'])
         assert 'TUI_MODE' not in {row.name for row in session.cleanup_rows()}
+
+
+@pytest.mark.parametrize('default,expected,external', [('', None, ''), (0, 0, '0'), (7, 7, '7')])
+def test_allowed_empty_integer_default_acknowledgement_round_trips(tmp_path, default, expected, external):
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False,
+                              dotenv_path=tmp_path / '.env', anchors={})
+    schema = schema_from_dict({'version': 1, 'fields': {
+        'INDEX': {'type': 'int', 'allow_empty': True, 'default': default}}})
+    session = ConfigSession(context, schema, environ={})
+    assert session.result().values['INDEX'] == expected
+    result = session.save_defaults(['INDEX'])
+    assert result.errors == ()
+    assert read_dotenv(tmp_path / '.env')['INDEX'] == external
+    restarted = ConfigSession(context, schema, environ={})
+    assert restarted.result().values['INDEX'] == expected
+    assert restarted.result().errors == ()
+    assert restarted.default_candidates() == []

@@ -33,7 +33,7 @@ The TUI enforces exact 100% line/branch coverage for All tests; partial selectio
 - [x] Make the shared managed Playwright factory apply pinned Stealth before launch, preserve original-session debug inspection, and end pending login promptly on browser closure. Implement observed GPT email/password/optional TOTP/consent steps with account/origin guards; expose the fixed cache directory for acknowledgement. See [setup checklist](implementation_plan_f2b.md).
 - [x] Make main-menu q exit immediately through existing cleanup, preserving the latest operation status. Other screens retain confirmation.
 
-Latest code gate: 2,720/2,720 combined unit tests pass with exact 100% measured per-file line/branch coverage. Authentication success is distinct from configured Allure history publication, which failed in the live probes. The larger human review, recording-prerequisite join, inference and complete application milestone are not complete.
+Latest code gate: 2,747/2,747 combined unit tests pass with exact 100% measured per-file line/branch coverage. Authentication success is distinct from configured Allure history publication, which failed in the live probes. The larger human review, recording-prerequisite join, inference and complete application milestone are not complete.
 
 ## Current provider architecture
 
