@@ -20,6 +20,18 @@ def registry(monkeypatch):
             owner.loop.close()
 
 
+@pytest.mark.parametrize('error', [None, RuntimeError('ordinary failure')])
+def test_noncredential_reports_are_not_reformatted(error):
+    report = SimpleNamespace(longrepr=object())
+    original = report.longrepr
+    hook = p.pytest_runtest_makereport(None,
+        SimpleNamespace(excinfo=None if error is None else SimpleNamespace(value=error)))
+    next(hook)
+    with pytest.raises(StopIteration) as finished:
+        hook.send(report)
+    assert finished.value.value is report and report.longrepr is original
+
+
 def retained(tmp_path, registry, *, windows=True, endpoint=None, cleanup=None):
     worker = p.IntegrationLLM({}, tmp_path)
     worker.inspection = SimpleNamespace(sessions=[SimpleNamespace(

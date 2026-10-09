@@ -74,6 +74,72 @@ def test_integration_start_records_and_displays_results(tmp_path, status, persis
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('source', ['dotenv', 'environment', 'cli'])
+def test_unattended_failure_guidance_uses_launch_index_source(tmp_path, monkeypatch, source):
+    from api_agent.auth import credentials
+    from api_agent.providers.contracts import UnattendedCredentialError
+    from api_agent.testing.provider_setup import IntegrationLLM
+    from api_agent.testing.contracts import TestResult
+    from api_agent.testing.integration import IntegrationRunResult
+    from test_minimal_subscription_credentials import config as credential_config
+    from types import SimpleNamespace
+    from traceback import format_exception
+
+    test = TestIdentity('base::t.py::test_setup', 'base', 't.py', 't.py::test_setup')
+    def fail(*args, **kwargs):
+        raise credentials.CredentialError('private CLI output')
+    monkeypatch.setattr(credentials, 'get_username', fail)
+    seen = []
+    def runner(context, tests, config, **options):
+        assert config['UNATTENDED_USER_INDEX'] == 0
+        seen.append(options['unattended_index_source'])
+        worker = IntegrationLLM(credential_config(), tmp_path,
+            unattended_index_source=options['unattended_index_source'])
+        try:
+            with pytest.raises(UnattendedCredentialError) as caught:
+                worker.loop.run_until_complete(worker._credentials(0)(0, 'username'))
+            from api_agent.testing.provider_setup import pytest_runtest_makereport
+            report = SimpleNamespace(longrepr=''.join(format_exception(caught.value)))
+            hook = pytest_runtest_makereport(None, SimpleNamespace(excinfo=SimpleNamespace(value=caught.value)))
+            next(hook)
+            with pytest.raises(StopIteration) as finished:
+                hook.send(report)
+            assert finished.value.value is report
+            trace = report.longrepr
+        finally:
+            worker.close()
+        execution = IntegrationRunResult(1, (TestResult(test, 'failed', .1, trace),), '')
+        return SimpleNamespace(execution=execution, persisted=True, exit_code=1)
+
+    async def scenario():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: [test], fields={
+            'UNATTENDED_USER_INDEX': {'type': 'int', 'allow_empty': True, 'acknowledge_default': False},
+            'LLM_CREDENTIAL_ROLE': {'type': 'str', 'default': 'LLM User', 'acknowledge_default': False},
+        }, argv=('--unattended-user-index=0',) if source == 'cli' else ())
+        if source == 'dotenv':
+            app.session.set_value('UNATTENDED_USER_INDEX', '0', persist=True)
+        elif source == 'environment':
+            app.session.environ['UNATTENDED_USER_INDEX'] = '0'
+        expected_source = app.session.result().fields['UNATTENDED_USER_INDEX'].source
+        app.integration_runner = runner
+        async with app.run_test(size=(130, 40)) as pilot:
+            await pilot.pause(.2)
+            await pilot.press('s')
+            await pilot.pause(.3)
+            assert seen == [expected_source]
+            assert app.screen.kind == 'test-results'
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.screen.kind == 'test-failure'
+            assert app.screen.body.startswith(test.id + '\n\nFailed to get credentials for unattended access.')
+            assert 'Failed to get credentials for unattended access.' in app.screen.body
+            assert ('Clear .env configuration' in app.screen.body) is (source == 'dotenv')
+            assert ('stop passing the override' in app.screen.body) is (source != 'dotenv')
+            assert 'private CLI output' not in app.screen.body
+            assert 'Password-manager username retrieval is unavailable.' in app.screen.body
+    asyncio.run(scenario())
+
+
 def test_integration_runner_failure_has_local_diagnostics(tmp_path):
     test = TestIdentity('base::t.py::test_setup', 'base', 't.py', 't.py::test_setup')
     async def scenario():

@@ -203,12 +203,12 @@ def test_uncached_selected_username_drives_browser_visibility(store, monkeypatch
     run(scenario())
 
 
-@pytest.mark.parametrize('interactive,no_std_in,debug,allowed', [
-    (True, True, False, True), (False, False, False, True),
-    (False, True, True, True), (False, True, False, False),
-    (False, None, False, False),
+@pytest.mark.parametrize('interactive,no_std_in,debug', [
+    (True, True, False), (False, False, False),
+    (False, True, True), (False, True, False),
+    (False, None, False),
 ])
-def test_username_cli_failure_falls_back_only_with_attended_permission(store, monkeypatch, capsys, interactive, no_std_in, debug, allowed):
+def test_username_cli_failure_never_falls_back_to_another_identity(store, monkeypatch, capsys, interactive, no_std_in, debug):
     store.entries = (SimpleNamespace(email='unbound@example.test', profile='unbound'),)
     browser = SimpleNamespace(aclose=AsyncMock())
     created = []
@@ -222,26 +222,31 @@ def test_username_cli_failure_falls_back_only_with_attended_permission(store, mo
     async def scenario():
         config = {} if no_std_in is None else {'NO_STD_IN': no_std_in}
         provider = module.factory(config, {'browser_inspection': inspection})
-        reader = AsyncMock(side_effect=InteractionRequiredError('private CLI output'))
+        failure = InteractionRequiredError('Password-manager username retrieval is unavailable.')
+        reader = AsyncMock(side_effect=failure)
         try:
-            if allowed:
-                auth = await provider.asetup(interactive=interactive, user_index=0, credentials=reader)
-                assert auth.profile_id == 'verified-attended'
-                assert created == ([{'inspection': inspection}] if debug else [{}])
-                assert 'login_username' not in connect.await_args.kwargs
-            else:
-                with pytest.raises(InteractionRequiredError, match='noninteractive execution cannot fall back') as error:
-                    await provider.asetup(interactive=interactive, user_index=0, credentials=reader)
-                assert 'private CLI output' not in str(error.value)
-                assert not created
-                connect.assert_not_awaited()
+            with pytest.raises(InteractionRequiredError) as error:
+                await provider.asetup(interactive=interactive, user_index=0, credentials=reader)
+            assert error.value is failure
+            assert not created and not provider.sessions and not provider.browsers
+            connect.assert_not_awaited()
             reader.assert_awaited_once_with(0, 'username')
         finally:
             await provider.aclose()
     run(scenario())
-    output = capsys.readouterr().out
-    assert ('continuing with attended browser login' in output) is allowed
-    assert 'private CLI output' not in output
+    assert not capsys.readouterr().out
+
+
+def test_selected_unattended_user_requires_a_reader(store, monkeypatch):
+    browser = AsyncMock()
+    monkeypatch.setattr(module, 'subscription_browser', browser)
+    async def scenario():
+        provider = module.factory({}, None)
+        with pytest.raises(ContractError, match='requires a credential reader'):
+            await provider.asetup(interactive=True, user_index=0, credentials=None)
+        await provider.aclose()
+    run(scenario())
+    browser.assert_not_called()
 
 
 @pytest.mark.parametrize('code,expected', [

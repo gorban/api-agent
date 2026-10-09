@@ -115,6 +115,13 @@ def test_never_sends_credentials_to_an_untrusted_origin(url, interactive, capsys
         else:
             await login.advance()
             assert login.disabled is (url != 'about:blank')
+            if url != 'about:blank':
+                # An unsafe-origin pause must not resume automatic credential
+                # entry if navigation later returns to a recognized login page.
+                page.url = 'https://auth.openai.com/log-in'
+                await login.advance()
+                await login.advance()
+                assert login.disabled and login.last_action is None
         login.credentials.assert_not_awaited()
         page.fill.assert_not_awaited()
         page.click.assert_not_awaited()
@@ -124,26 +131,26 @@ def test_never_sends_credentials_to_an_untrusted_origin(url, interactive, capsys
 
 @pytest.mark.parametrize('value', [None, '', ' ', 1, InteractionRequiredError('private CLI output')])
 @pytest.mark.parametrize('interactive', [True, False])
-def test_unavailable_credentials_hand_off_once_or_fail_safely(value, interactive, capsys):
+@pytest.mark.parametrize('heading,kind', [('Enter your password', 'password'), ('Check your authenticator app', 'totp')])
+def test_unavailable_credentials_fail_without_manual_handoff(value, interactive, capsys, heading, kind):
     async def run():
-        page = Page('Enter your password')
+        page = Page(heading)
         reader = AsyncMock(side_effect=value) if isinstance(value, Exception) else AsyncMock(return_value=value)
         login = workflow(page, allow_interaction=interactive, credentials=reader)
-        if interactive:
+        with pytest.raises(InteractionRequiredError) as caught:
             await login.advance()
-            await login.advance()
-            assert login.disabled
+        if isinstance(value, Exception):
+            assert caught.value is value
         else:
-            with pytest.raises(AuthError, match='^login_interaction_required$'):
-                await login.advance()
-        reader.assert_awaited_once_with('password')
+            assert 'does not provide the credential requested' in str(caught.value)
+        assert not login.disabled and login.last_action is None
+        reader.assert_awaited_once_with(kind)
         page.fill.assert_not_awaited()
         page.click.assert_not_awaited()
     asyncio.run(run())
     output = capsys.readouterr().out
     assert 'private CLI output' not in output
-    assert bool(output) is interactive
-    assert len(output.splitlines()) == int(interactive)
+    assert not output
 
 
 @pytest.mark.parametrize('where', ['guard', 'credentials', 'fill', 'click'])
