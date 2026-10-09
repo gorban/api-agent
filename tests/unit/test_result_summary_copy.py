@@ -370,3 +370,50 @@ def test_mac_control_c_keeps_quit_hint_and_copy_failure_keeps_selection(tmp_path
             assert screen.get_selected_text() == 'Selected details'
             notify.assert_called_with('Could not copy the value.', severity='error', timeout=2)
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('darwin', 'super+c', '⌘c')])
+def test_execution_error_screen_shares_copy_and_mouse_selection(tmp_path, monkeypatch, platform, key, label):
+    async def scenario():
+        app = fixture(tmp_path)
+        copy = AsyncMock(return_value=True)
+        monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
+        message = 'Integration setup or recording failed. Check configuration and the selected provider.'
+        async with app.run_test(size=(140, 35)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr('api_agent.tui.app.sys.platform', platform)
+            app.show('error', 'Integration execution failed', message, (('menu', 'Main menu'),))
+            await pilot.pause()
+            screen = app.screen
+            screen.refresh_bindings()
+            await pilot.pause()
+            assert app.focused is screen.query_one(Button)
+            hints = [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
+            assert len(hints) == 1 and hints[0].key == key and hints[0].key_display == label
+            assert not hints[0].has_class('-disabled')
+            await pilot.press(key)
+            copy.assert_awaited_once_with(app, message)
+            assert app.screen is screen
+            copy.reset_mock()
+            await pilot.mouse_down('#body', offset=(0, 0))
+            await pilot.hover('#body', offset=(37, 0))
+            await pilot.mouse_up('#body', offset=(37, 0))
+            selected = screen.get_selected_text()
+            assert selected == 'Integration setup or recording failed.'
+            await pilot.press(key)
+            copy.assert_awaited_once_with(app, selected)
+            assert screen.get_selected_text() is None
+            assert app.screen is screen
+    asyncio.run(scenario())
+
+
+def test_empty_error_message_does_not_offer_copy(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.show('error', 'Empty error')
+            await pilot.pause()
+            assert app.screen.copy_target() == (None, False)
+            assert not app.screen.check_action('copy_value', ())
+    asyncio.run(scenario())

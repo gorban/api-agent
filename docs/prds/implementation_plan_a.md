@@ -182,3 +182,7 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 - [x] Display live timing in the running test row through shared unit/integration presentation, preserving focus, selection and stable rows. Bind worker events to the current test, including parallel integration workers. Finished rows return to total execution time; late component events cannot replace completed results.
 - [x] Instrument GPT login's actual deadline and password-manager retrieval's existing limit. Show manual account selection in red, an eligible selected login in green and an unavailable selected account in red.
 - [ ] Use the same component progress interface for additional bounded provider/runtime phases and the future E2E runner. Use fixed descriptive names without credentials, account names or URLs. Keep test outcomes, Allure publication and retained debug inspection distinct.
+
+## Error message copying
+
+- [x] Reuse selected-text copy for generic error screens, including integration setup/recording failures. Show the normal platform copy hint (Ctrl+C off macOS; Cmd+C on macOS), copy the full body when nothing is highlighted, and deselect successful highlighted copies. Preserve the error screen and publication-failure behavior. Verify actual mouse selection and keyboard dispatch on both platforms.
