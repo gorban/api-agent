@@ -371,6 +371,22 @@ def test_required_auth_does_not_enter_execution_or_general_checklist(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('status', [0, 3])
+def test_main_menu_quit_exits_without_confirmation(tmp_path, status):
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+            app.operation_status = status
+            await pilot.press('q')
+            await pilot.pause()
+            assert app.return_value == status
+            assert app.collection_cancel.is_set()
+            assert not any(screen.__class__.__name__ == 'QuitDialog' for screen in app.screen_stack)
+    asyncio.run(scenario())
+
+
 def test_quit_dialog_from_configuration_checklist(tmp_path):
     async def scenario():
         app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
@@ -819,6 +835,8 @@ def test_button_directional_navigation_and_edges(tmp_path):
             for key in ("down", "j", "right", "l"):
                 await pilot.press(key)
                 assert app.focused.id == "mode-unattended-auth"
+            app.show('unavailable', 'Operation unavailable')
+            await pilot.pause()
             await pilot.press("q")
             await pilot.pause()
             app.screen.query_one("#quit-submit", Button).focus()

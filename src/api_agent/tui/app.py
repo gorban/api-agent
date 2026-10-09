@@ -467,7 +467,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
     async def on_input_submitted(self, event):
         await self.app.choose("submit")
 
-    def action_quit_request(self):
+    async def action_quit_request(self):
+        if self.kind == 'menu':
+            await self.app.confirm_quit()
+            return
         self.app.push_screen(QuitDialog(), lambda yes: self.app.confirm_quit() if yes else None)
 
     async def action_close_view(self):
