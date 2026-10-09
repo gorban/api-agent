@@ -396,11 +396,23 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
             # Discovery is intentionally fixed before optional late overrides.
             # Compare *resolved* selections, including conditional defaults, and
             # do not let HELP/applicability hide a changed graph from this guard.
-            from api_agent.config.resolve import resolve_config
+            from api_agent.config.resolve import _controllers, resolve_config
+            # Execution-only conditions must not defeat help. Follow only the
+            # selectors' transitive conditional-default dependencies, including
+            # nested predicates, while parsing CLI against the complete schema.
+            needed = set(selectors) & schema.fields.keys()
+            remaining = list(needed)
+            while remaining:
+                for conditional in schema.fields[remaining.pop()].conditional_defaults:
+                    for controller in _controllers(conditional['when']):
+                        if controller not in needed:
+                            needed.add(controller)
+                            remaining.append(controller)
             selector_schema = ConfigSchema({name: replace(field, applies_when={}, pack_only=False)
-                if name in selectors else field for name, field in schema.fields.items()})
-            resolved = resolve_config(selector_schema, argv=argv, environ=environ,
-                dotenv=dotenv, overrides={**(overrides or {}), 'HELP': 'False'},
+                if name in selectors else field for name, field in schema.fields.items() if name in needed})
+            options = parse_options(schema, argv).values
+            resolved = resolve_config(selector_schema, environ=environ, dotenv=dotenv,
+                overrides={**options, **(overrides or {}), 'HELP': 'False'},
                 anchors={'owner_root': owner_root}, interactive=True)
             for name in selectors:
                 effective = resolved.values.get(name)

@@ -71,7 +71,8 @@ async def wait_browser_result(result: asyncio.Future, session: BrowserSession, *
                 raise SessionClosedError("Browser closed before operation completed")
             if on_wait is not None and assistance is None:
                 assistance = asyncio.create_task(on_wait())
-            await asyncio.wait({result} if assistance is None else {result, assistance}, timeout=.1)
+            await asyncio.wait({result} if assistance is None else {result, assistance},
+                               timeout=.1, return_when=asyncio.FIRST_COMPLETED)
             if assistance is not None and assistance.cancelled():
                 assistance.result()
             if result.done():

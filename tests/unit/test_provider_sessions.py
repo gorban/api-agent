@@ -907,3 +907,34 @@ def test_fast_assistance_does_not_busy_poll_or_delay_accepted_result():
         result.set_result('accepted')
         assert await asyncio.wait_for(task, .05) == 'accepted'
     run(scenario())
+
+
+def test_pending_assistance_wakes_on_callback_without_poll_timeout(monkeypatch):
+    # Disable only the combined race's polling timer: accepted completion must
+    # wake it by itself, rather than relying on a generous timing assertion.
+    original_wait = asyncio.wait
+    async def without_poll_timeout(futures, **kwargs):
+        if len(futures) == 2:
+            kwargs['timeout'] = None
+        return await original_wait(futures, **kwargs)
+    monkeypatch.setattr(asyncio, 'wait', without_poll_timeout)
+    async def scenario():
+        entered, drained = asyncio.Event(), asyncio.Event()
+        result = asyncio.get_running_loop().create_future()
+        async def assistance():
+            entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                drained.set()
+        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: False),
+                                  browser=SimpleNamespace(is_connected=lambda: True))
+        task = asyncio.create_task(wait_browser_result(result, session, on_wait=assistance))
+        await entered.wait()
+        result.set_result('accepted')
+        assert await asyncio.wait_for(task, .5) == 'accepted'
+        assert drained.is_set()
+        assert result.result() == 'accepted'
+        assert not [other for other in asyncio.all_tasks()
+                    if other is not asyncio.current_task() and not other.done()]
+    run(scenario())

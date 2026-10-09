@@ -63,7 +63,7 @@ Validation: 2,718/2,718 combined api-agent/pack unit tests pass, with exact 100%
 - [x] Reuse a unique valid attended cache without browser or credential calls. For unattended reuse, retrieve the selected descriptor username and require a unique matching verified connection; password/TOTP are not fetched for a cache match. A returned nonmatching username starts fresh login, and a different verified OAuth account cannot overwrite the selected identity.
 - [x] Verify lookup failure with a user-selected login/item in the wrong vault: attended cached setup passed without browser allocation; unattended username retrieval failed actionably and opened only the permitted attended fallback. Closing it ended the test promptly. Cache fingerprints remained unchanged; 137 focused factory/connect tests passed. The live probe exercised lookup failure, while returned-username mismatch is covered deterministically.
 
-Latest code gate, including the managed-login review fixes: 2,747/2,747 combined units pass with exact 100% measured per-file line/branch coverage. The managed-login review fix batch reran this combined gate; earlier dated counts remain historical evidence.
+Latest code gate, including the callback completion-mode and help recheck repairs: 2,758/2,758 combined units pass with exact 100% measured per-file line/branch coverage. Earlier dated counts remain historical evidence.
 
 ## Managed login and configuration review fixes — October 8, 2026
 
@@ -72,4 +72,12 @@ Latest code gate, including the managed-login review fixes: 2,747/2,747 combined
 - [x] Compare resolved selector values, including conditional defaults, against the discovered provider graph after deferred contributions. Reject a changed/previously undiscovered conditional target rather than return missing declarations. Help/applicability cannot hide the comparison; explicit source precedence and the original raw-default guard remain intact. Conditional changes to this fixed discovery graph are not supported implicitly.
 - [x] Persist an acknowledged allowed-empty integer as its empty external representation, never the text None. Verify immediate resolution/restart and zero/nonempty integer defaults.
 
-The combined gate passes 2,747/2,747 units with exact 100% measured per-file line/branch coverage. Focused mutations of credential pinning and resolved selector comparison make their rejection tests fail. No live sign-in or inference is needed for these regressions. Recording prerequisites, debug run-finalization and backend-wide shared authentication remain open.
+The initial review-fix batch passed 2,747/2,747 units with exact 100% measured per-file line/branch coverage. Focused mutations of credential pinning and resolved selector comparison make their rejection tests fail. No live sign-in or inference is needed for these regressions. Recording prerequisites, debug run-finalization and backend-wide shared authentication remain open.
+
+
+## Callback and help recheck repairs — October 8, 2026
+
+- [x] Wake the completion/assistance race with FIRST_COMPLETED so an accepted callback does not wait for the polling timeout while assistance remains pending. Retain cheap-assistance cadence, completion/cancellation precedence, caller-owned result and synchronous assistance draining. Verify a real loopback callback accepted near the deadline exchanges/saves within its remaining budget, including scoped helper ownership through shutdown.
+- [x] Restrict discovery consistency resolution to provider selectors and their transitive conditional-default controllers, including nested predicates. Parse CLI against the complete contributed schema before resolving this subset, preserving explicit precedence. Help remains available for unrelated execution cycles and still rejects unknown options; actual execution rejects those cycles. Selector-dependent changes/cycles remain rejected under help.
+
+The combined gate passes 2,758/2,758 units with exact 100% measured per-file line/branch coverage. Focused completion-mode and unrelated-field-resolution mutations make the new regression tests fail. The 150-case selector matrix and 54-case callback race matrix pass. Both wheels build. No live sign-in or inference is used. Recording acquisition, debug finalization and backend-wide shared authentication remain open.
