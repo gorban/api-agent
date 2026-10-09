@@ -89,7 +89,7 @@ Keeper TOTP (raw output):
 
 - [ ] Keep selection of needed credential roles synchronized through `UNATTENDED_USER_INDEX` only. Preserve paired array ordering; never independently pick a secondary index. Incomplete requested pairings retain attended fallback; validate a selected shared index against every array consumed by the operation, including single-entry arrays, and fail invalid pairings rather than silently using another account. Test selection explicitly persists one shared index for complete enabled-role pairs; attended Start overrides its use for that invocation.
 
-- [ ] Complete the contributed-index contract: providers or packs may declare optional UNATTENDED_USER_INDEX, including LLM-only multiple accounts. Bare core/demo does not declare it; active help/schema includes it only when contributed. The earlier secondary-pack-only restriction is superseded by [provider architecture](provider_architecture.md).
+- [ ] Complete the contributed-index contract: providers or packs may declare optional UNATTENDED_USER_INDEX, including LLM-only multiple accounts. Bare core/demo does not declare it; active help/schema includes it only when contributed. The earlier secondary-pack-only restriction is superseded by [provider architecture](../architecture/provider_architecture.md).
 
 ## B2 helper validation
 

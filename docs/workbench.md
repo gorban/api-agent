@@ -31,7 +31,7 @@ services:
 The pack/API provider owns upstream provisioning and any database options;
 there is no separate shared `RUN_API` switch. See [local operations](development.md#running-locally)
 for readiness, logs and cleanup. The current launcher does not yet execute local-run or upstream API provisioning;
-[the infrastructure plan](implementation_plan_h.md) tracks that wiring.
+[the infrastructure plan](prds/implementation_plan_h.md) tracks that wiring.
 
 ## Review and save settings
 
@@ -90,5 +90,5 @@ immediately; active operations require confirmation and owned cleanup.
 When Git successfully confirms a newer worktree, startup requires explicit
 **y** and Enter before proceeding—even with help, collection or NO_STD_IN.
 Missing Git or unverifiable worktree metadata silently skips the check. The
-gate never creates or changes worktrees. See [the provenance contract](implementation_plan_a6.md)
+gate never creates or changes worktrees. See [the provenance contract](prds/implementation_plan_a6.md)
 for recency rules and timestamp limitations.

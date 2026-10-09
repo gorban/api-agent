@@ -43,4 +43,4 @@ Latest code gate: 2,758/2,758 combined unit tests pass with exact 100% measured 
 - [ ] Build the included generic GraphQL provider with a separately selected upstream extension, and prove an outside-path API replacement. See [GraphQL provider](implementation_plan_m1.md).
 - [ ] Restore upstream authentication/validation through an external API extension and LLM connectivity through the included or another selected adapter. See [API extension requirements](implementation_plan_m2.md) and [LLM adapter requirements](implementation_plan_f1.md). Keep system-specific requirements in their owners; non-inference access adapters are independent of the selected GPT provider.
 
-Follow the [pluggable API and LLM provider plan](provider_architecture.md) for provider configuration, route extensions, authentication and browser lifetimes.
+Follow the [pluggable API and LLM provider plan](../architecture/provider_architecture.md) for provider configuration, route extensions, authentication and browser lifetimes.

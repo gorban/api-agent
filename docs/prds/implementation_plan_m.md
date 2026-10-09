@@ -1,6 +1,6 @@
 # Shared provider contracts, selection and composition
 
-Follow [provider architecture](provider_architecture.md) for ownership and the approved browser contracts. This grouping covers generic core; the [GraphQL implementation](implementation_plan_m1.md), [upstream extension](implementation_plan_m2.md) and [LLM adapter](implementation_plan_f1.md) have separate implementation/test owners.
+Follow [provider architecture](../architecture/provider_architecture.md) for ownership and the approved browser contracts. This grouping covers generic core; the [GraphQL implementation](implementation_plan_m1.md), [upstream extension](implementation_plan_m2.md) and [LLM adapter](implementation_plan_f1.md) have separate implementation/test owners.
 
 ## Foundation already present
 
@@ -16,7 +16,7 @@ These completed primitives do not complete the contracts or consumers below.
 - [x] Complete optional API/UI selection and nested declaration bootstrap, owner-relative imports, precedence/cycle rejection, deferred runtime startup, immutable services, route collision rollback and retained failed-load disposal. Check a regular streaming factory's async iterator when called; discovery must not invoke it.
 - [x] Complete reusable scoped credential readers, coalesced browser preparation, lazy opaque LLM sessions, fresh getters, nested call tracking, process/loop ownership, bounded retryable disposal and explicit debug inspection retention in `providers/sessions.py`.
 - [x] Independently review failure and cancellation assertions with focused mutations and join all applicable unit/coverage/build checks. The core suite passes 1,656 tests with exact 100% measured lines/branches; its wheel builds and installed exports load.
-- [ ] Obtain human review of the concrete [contract document](provider_contracts_v1.md) before external adapter/operation consumers proceed.
+- [ ] Obtain human review of the concrete [contract document](../architecture/provider_contracts_v1.md) before external adapter/operation consumers proceed.
 
 These primitives are separate from dependency installation, private adapter implementation, runner/TUI use, public operation completion and live acceptance. Do not mark the broader consumer tasks complete from synthetic owner checks. The surface is provisional until [consumer hardening](implementation_plan_m3.md) resolves normalized LLM data, activation, errors/deadlines, managed streams and graph-wide cleanup; that work precedes concrete consumer lanes and stable-contract human acceptance.
 
@@ -29,7 +29,7 @@ These primitives are separate from dependency installation, private adapter impl
 - [ ] Integrate selected provider dependency groups with managed setup from either launcher; keep package/bootstrap manifests outside core-specific protocol assumptions. Prepare browser dependencies before operations, not in request handlers. Keep unrelated commands free of optional installs.
 - [ ] Compose optional LLM/upstream `setup_routes` once per runtime before accepting requests, preserving core routes and rejecting method/path collisions. Give each handler immutable resolved configuration, verified TLS, scoped credential/authentication services and owned lifecycle registration. Route setup must work without successful login.
 - [ ] Provide generic credential-role contributions and optional synchronized account index. Do not hardcode an index in bare core/demo; a provider with multiple accounts can contribute it without a secondary pack role. Validate only roles consumed by the selected operation. Connect the active schema to help/default review/cleanup and operation pickers.
-- [ ] Implement the exact [browser/session contracts](provider_architecture.md) through shared owners. Keep UI fixtures worker-local and LLM sessions backend-local; version any IPC requests without copying browser/getter objects across processes.
+- [ ] Implement the exact [browser/session contracts](../architecture/provider_architecture.md) through shared owners. Keep UI fixtures worker-local and LLM sessions backend-local; version any IPC requests without copying browser/getter objects across processes.
 - [ ] Integrate optional upstream validation before execution; absent capabilities are allowed only when the selected contract declares them optional. Required validation cannot be bypassed through a direct transport/tool call. Keep identity relationships and signing inside the extension.
 - [ ] Apply privacy registration before provider/child/route emissions, support provider-owned sensitive field/value declarations, and pass verified TLS contexts to outbound clients. Tokens/credentials remain excluded with `LOG_CONTENT=True` too.
 - [ ] Drain calls, attempt final usage, dispose authentication/background work and close providers/clients in dependency order. Cover partial startup, failed rollback, cancellation while cleanup awaits, repeated close and configuration/account rebinding.

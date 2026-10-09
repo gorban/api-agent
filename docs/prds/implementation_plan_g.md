@@ -24,7 +24,7 @@ Use a separate root `cfg/` tree for human-edited configuration, workflow Layout 
 
 ## Provider placement
 
-Follow [provider architecture](provider_architecture.md) and [shared composition tasks](implementation_plan_m.md). Keep generic contracts/loading under src/api_agent/providers; put GraphQL-specific transport/schema/execution in api-providers/graphql-api-provider/src/graphql_api_provider, with its own cfg and tests. External LLM and upstream API implementations remain at explicitly configured external locations. The illustrative trees below do not make their GraphQL nodes or APIs mandatory in core; add only files needed by the current task. Generic knowledge ingestion accepts selected-provider evidence without requiring GraphQL.
+Follow [provider architecture](../architecture/provider_architecture.md) and [shared composition tasks](implementation_plan_m.md). Keep generic contracts/loading under src/api_agent/providers; put GraphQL-specific transport/schema/execution in api-providers/graphql-api-provider/src/graphql_api_provider, with its own cfg and tests. External LLM and upstream API implementations remain at explicitly configured external locations. The illustrative trees below do not make their GraphQL nodes or APIs mandatory in core; add only files needed by the current task. Generic knowledge ingestion accepts selected-provider evidence without requiring GraphQL.
 
 ## api-agent structure
 

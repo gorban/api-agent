@@ -37,8 +37,8 @@ factories, and rejects inconsistent/cyclic selection changes before execution.
 - Access adapters own application-specific authentication and identity checks.
 
 Core orchestration consumes these interfaces rather than hardcoding a pack's
-services. See [provider architecture](provider_architecture.md) and
-[versioned contracts](provider_contracts_v1.md) for extension details.
+services. See [provider architecture](architecture/provider_architecture.md) and
+[versioned contracts](architecture/provider_contracts_v1.md) for extension details.
 
 ## Contribute integration tests
 
