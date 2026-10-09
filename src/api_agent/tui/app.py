@@ -529,7 +529,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
         if value is not None:
             return value, False
         selected = self.selected_result_text()
-        return (selected, True) if selected is not None else (self.selected_test_name(), False)
+        if selected is not None:
+            return selected, True
+        fallback = (str(self.body) or None) if self.kind == 'error' else self.selected_test_name()
+        return fallback, False
 
     def selected_test_name(self):
         if self.kind == 'tests' and not isinstance(self.app.focused, DataTable):
@@ -556,7 +559,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
             self.app.notify("Could not copy the value.", severity="error", timeout=2)
 
     def selected_result_text(self):
-        if self.kind not in {'test-results', 'test-failure'}:
+        if self.kind not in {'test-results', 'test-failure', 'error'}:
             return None
         return self.get_selected_text()
 
