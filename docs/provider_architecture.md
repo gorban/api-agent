@@ -86,7 +86,7 @@ The role reader accepts declared role, index and credential kind; the LLM reader
 
 - [ ] Yield the exact same `BrowserSession`, context and updated active page from pack preparation to test/user. Finish pack navigation tasks before handoff; do not open a different default-browser profile to continue an authenticated session. Attribute failed hook setup to that E2E attempt and do not run its test body.
 - [ ] Map `E2E_DEBUG` to the debug policy. Debug retains every created browser, including failed setup attempts, through an explicit inspection owner/supervisor. Keep worker/driver ownership alive until inspection cleanup; retention cannot rely on pytest workers surviving implicitly.
-- [ ] Keep the dedicated LLM browser headless even in debug, while retaining it too after provider disposal. The unused `AUTH_BROWSER_DEBUG` declaration is removed. Define shared debug retention for non-E2E operations when the browser owner is implemented; map `E2E_DEBUG` to that owner without creating a second visibility policy.
+- [ ] Apply the same visibility policy to every LLM login consumer: unattended is headless unless RUN_UI or DEBUG makes it visible; attended is always headed. DEBUG retains its original session after provider auth disposal. The unused `AUTH_BROWSER_DEBUG` declaration is removed. Extend the implemented integration debug retention to other non-E2E consumers through the shared owner; map `E2E_DEBUG` to that owner without creating a second visibility policy.
 - [ ] Ordinary completion/cancellation closes all browser resources, including partial setup. Explicit inspection cleanup closes retained contexts, browsers and drivers. Retention never keeps provider refresh tasks or a disposed token getter active.
 
 ### Shared LLM session policy
@@ -120,7 +120,7 @@ Allure records integration/E2E, including authentication/setup failures, from th
 
 - [ ] Remove the unused legacy `src/api_agent/config/shared.toml` snapshot in final cleanup. Runtime and wheel packaging use `cfg/config.toml`; do not maintain a second declaration source.
 
-Enabled credential roles require account descriptors and a valid shared password manager/CLI for unattended operations. Plain startup offers Setup / Skip for incomplete profiles; explicit TUI_MODE bypasses that startup suggestion and Skip preserves attended use. Remove the superseded credential_role_optional metadata rather than exempting empty role arrays from setup checks. Subscription cache matching retrieves only the selected descriptor username; CLI retrieval stays lazy, bounded and owned until shutdown.
+Enabled credential roles require account descriptors and a valid shared password manager/CLI for unattended operations. Plain startup offers Setup / Skip for incomplete profiles; explicit TUI_MODE bypasses that startup suggestion and Skip preserves attended use. Remove the superseded credential_role_optional metadata rather than exempting empty role arrays from setup checks. Subscription cache matching retrieves only the selected descriptor username; fresh observed login fetches password/TOTP only at their corresponding page. CLI retrieval stays lazy, bounded and owned until shutdown.
 
 ## Development inspection follow-up
 

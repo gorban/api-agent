@@ -25,9 +25,19 @@ The TUI enforces exact 100% line/branch coverage for All tests; partial selectio
 
 - [ ] Share generic unattended provider session ownership and operation-wide usage accounting across tests and explicitly unattended local runs. The provider owns token refresh and any persistence. See [unattended lifecycle grouping](implementation_plan_a7.md).
 
+## Completed implementation follow-through — October 8, 2026
+
+- [x] Complete the shared unit runner and integration selection/results adapter: combined base/pack units, selected-provider integration discovery, one-time positional filtering, fresh recollection, stable failure/skip ordering, copy/range/navigation controls and synchronous stop cleanup. See [the TUI plan](implementation_plan_a.md). E2E execution, local run and Allure viewer wiring remain open.
+- [x] Implement the bundled GPT authentication-only factory, provider-owned declarations and launch-managed lazy setup. Verify fresh-cache unattended subscription sign-in with and without DEBUG, without inference. See [connection foundation](implementation_plan_f2a.md) and [setup/evidence](implementation_plan_f2b.md).
+- [x] Implement shared username/password/TOTP helpers, editable credential profiles and the integration account/manual-login picker. See [credential setup](implementation_plan_a2.md); request-time, local-run and E2E consumers remain separate tasks.
+- [x] Make the shared managed Playwright factory apply pinned Stealth before launch, preserve original-session debug inspection, and end pending login promptly on browser closure. Implement observed GPT email/password/optional TOTP/consent steps with account/origin guards; expose the fixed cache directory for acknowledgement. See [setup checklist](implementation_plan_f2b.md).
+- [x] Make main-menu q exit immediately through existing cleanup, preserving the latest operation status. Other screens retain confirmation.
+
+Latest code gate: 2,720/2,720 combined unit tests pass with exact 100% measured per-file line/branch coverage. Authentication success is distinct from configured Allure history publication, which failed in the live probes. The larger human review, recording-prerequisite join, inference and complete application milestone are not complete.
+
 ## Current provider architecture
 
-- [ ] Complete [consumer contract hardening](implementation_plan_m3.md) before freezing the version-1 surface or starting concrete adapter/consumer lanes. Existing factory/session primitives remain completed; normalized LLM data, activation, streams, operational errors and graph-wide cleanup remain prerequisites.
+- [ ] Complete [consumer contract hardening](implementation_plan_m3.md) before freezing the version-1 surface or adding further consumers. Shared LLM data, operational errors, managed streams and synthetic ownership proofs are complete; selected dependencies, cross-process credentials/debug lifetime, installed-pack relocation and declaration authority remain open.
 - [ ] Build the early [included personal GPT provider](implementation_plan_f2.md) through the same replaceable LLM interface. Public demo UI/Nx apps and demo API servers/providers are later work; separately owned external pack providers can exercise generic core during early live acceptance. Synthetic fixtures prove interchangeability without a live demo backend.
 - [ ] Complete generic factory, configuration, capability, route and lifecycle composition. See [shared provider contracts](implementation_plan_m.md).
 - [ ] Build the included generic GraphQL provider with a separately selected upstream extension, and prove an outside-path API replacement. See [GraphQL provider](implementation_plan_m1.md).
