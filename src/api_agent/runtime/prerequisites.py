@@ -308,6 +308,7 @@ class PrerequisiteManager:
                  readiness_probe=_readiness, deadline_seconds=120,
                  now=time.monotonic, sleep=time.sleep, identity=process_identity):
         self.plan, self.scope = plan, scope
+        self._rollback = None
         if plan.environment.get('SA_SCOPE') != scope.id:
             raise PrerequisiteError('Prerequisite plan ownership does not match scope.')
         if deadline_seconds <= 0:
@@ -379,7 +380,7 @@ class PrerequisiteManager:
 
     def _verified_digest_image(self, expected, actual_id, deadline):
         """Verify a container's immutable image against the locally resolved pin."""
-        if not isinstance(actual_id, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', actual_id):
+        if not isinstance(actual_id, str) or not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', actual_id):
             return False
         try:
             inspected = json.loads(self._command((self.plan.command[0], 'image', 'inspect', expected), deadline))
@@ -396,7 +397,8 @@ class PrerequisiteManager:
                     familiar = familiar[len('library/'):]
                 accepted.add(f'{familiar}@{digest}')
             repo_digests = image.get('RepoDigests')
-            return (image.get('Id') == actual_id and isinstance(repo_digests, list)
+            canonical_id = actual_id.removeprefix('sha256:')
+            return (image.get('Id') in {canonical_id, 'sha256:' + canonical_id} and isinstance(repo_digests, list)
                     and any(value in accepted for value in repo_digests))
         except (ValueError, TypeError, AttributeError, KeyError):
             return False
@@ -438,7 +440,23 @@ class PrerequisiteManager:
             self._command((self.plan.command[0], 'stop', '--time', '5', *owned), deadline, cleanup=True)
         return owned
 
+    def _rollback_acquisition(self, journal, deadline):
+        newly, snapshot, invocation = self._rollback
+        if newly is None:
+            raise PrerequisiteError('Initial rollback ownership could not be verified; review the failed acquisition before cleanup.')
+        journal = dict(journal)
+        journal.pop(invocation, None)
+        stopped = self._stop_new(newly, journal, deadline)
+        _write_journal(self.directory, self.scope, journal)
+        if snapshot is not None and not newly:
+            shutil.rmtree(snapshot)
+            self.snapshot_directory = None
+        self._rollback = None
+        return stopped
+
     def acquire(self):
+        if self._rollback is not None:
+            raise PrerequisiteError('Prerequisite rollback remains pending; release before acquiring again.')
         if self.lease is not None:
             return self.lease
         deadline = self.now() + self.timeout
@@ -510,28 +528,39 @@ class PrerequisiteManager:
                 _write_journal(self.directory, self.scope, pending_journal)
                 self.lease = lease
                 return lease
-            except BaseException:
-                # A failed up may have created containers before returning failure.
-                rollback_deadline = self.now() + 15
-                inventory = self._inventory(rollback_deadline, cleanup=True)
-                newly = tuple(item for item in inventory if (item not in initial or item in restarted)
-                    and inventory[item].service in missing)
-                self._stop_new(newly, journal, rollback_deadline)
-                if snapshot is not None and not newly:
-                    # stop preserves container definitions and their bind sources.
-                    # Only a snapshot unused by any created/restarted definition
-                    # is safe to remove without an explicit engine removal.
-                    shutil.rmtree(snapshot)
-                    self.snapshot_directory = None
+            except BaseException as primary:
+                # Preserve the acquisition boundary before any fallible cleanup.
+                # A failed up can create containers before returning an error.
+                self._rollback = (None, snapshot, invocation)
+                try:
+                    rollback_deadline = self.now() + 15
+                    inventory = self._inventory(rollback_deadline, cleanup=True)
+                    newly = tuple(item for item in inventory if (item not in initial or item in restarted)
+                        and inventory[item].service in missing)
+                    # Pin IDs while the acquisition lock still excludes other
+                    # invocations; a retry cannot adopt later replacements.
+                    self._rollback = (newly, snapshot, invocation)
+                    self._rollback_acquisition(journal, rollback_deadline)
+                except BaseException:
+                    from api_agent.providers.control import CleanupPendingError
+                    primary.cleanup_pending = CleanupPendingError((self,), self.retry_rollback)
                 raise
 
+    async def retry_rollback(self):
+        from api_agent.runtime.tasks import offload
+        await offload(self.release, retain=False)
+
     def release(self, *, retain=False):
-        if self.lease is None:
+        if self.lease is None and self._rollback is None:
             return ()
         deadline = self.now() + 15
         with _locked(self.directory, self.scope, deadline=deadline, cancelled=lambda: False,
                      now=self.now, sleep=self.sleep):
+            if self.lease is None and self._rollback is None:
+                return ()
             journal = _read_journal(self.directory, self.scope, self.identity)
+            if self._rollback is not None:
+                return self._rollback_acquisition(journal, deadline)
             journal.pop(self.lease.invocation_id, None)
             stopped = () if retain else self._stop_new(self.lease.owned_ids, journal, deadline)
             _write_journal(self.directory, self.scope, journal)

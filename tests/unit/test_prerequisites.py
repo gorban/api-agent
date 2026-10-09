@@ -1212,3 +1212,131 @@ def test_stopped_localstack_definition_restarts_with_original_hook(setup, failed
     assert mounts == original_mounts
     retry.release()
     assert all(path.is_file() for path in mounts.values())
+
+
+def test_failed_acquire_and_failed_rollback_keep_real_recording_retry(setup):
+    import asyncio
+    from api_agent.testing.prerequisites import RecordingPrerequisites
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing.collection import TestIdentity
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    engine.fail_up = engine.fail_stop = True
+    owner = RecordingPrerequisites(prepare_dependencies=lambda: None,
+        plan=lambda config: manager.plan, manager=lambda *args: manager)
+    test = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
+    with pytest.raises(p.PrerequisiteError) as failure:
+        owner.prepare([test], {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic'}, accepted=True)
+    pending = failure.value.cleanup_pending
+    assert str(failure.value) == 'up failed'
+    assert isinstance(pending, CleanupPendingError)
+    assert owner.owned_manager is manager and manager._rollback is not None
+    created = tuple(engine.records)
+    assert created and all(engine.records[item]['State']['Running'] for item in created)
+    with pytest.raises(p.PrerequisiteError, match='rollback remains pending'):
+        manager.acquire()
+    assert tuple(engine.records) == created
+    with pytest.raises(CleanupPendingError):
+        asyncio.run(pending.retry())
+    assert owner.pending_cleanup is pending and owner.owned_manager is manager
+    engine.fail_stop = False
+    asyncio.run(pending.retry())
+    assert not any(engine.records[item]['State']['Running'] for item in created)
+    assert manager._rollback is None and owner.owned_manager is None
+    owner.finish()
+
+
+def test_manager_retains_primary_and_exposes_rollback_retry(setup):
+    import asyncio
+    create, engine, _, _, _ = setup
+    manager = create()
+    engine.fail_up = engine.fail_stop = True
+    with pytest.raises(p.PrerequisiteError, match='up failed') as failure:
+        manager.acquire()
+    assert failure.value.cleanup_pending.owners == (manager,)
+    engine.fail_stop = False
+    asyncio.run(failure.value.cleanup_pending.retry())
+    assert manager._rollback is None and not any(r['State']['Running'] for r in engine.records.values())
+
+
+def test_rollback_retry_never_adopts_a_later_replacement(setup):
+    import asyncio
+    create, engine, _, _, _ = setup
+    manager = create()
+    engine.fail_up = engine.fail_stop = True
+    with pytest.raises(p.PrerequisiteError) as failure:
+        manager.acquire()
+    original = tuple(engine.records)
+    engine.records.clear()
+    replacement = engine.add('jaeger')
+    engine.fail_stop = False
+    asyncio.run(failure.value.cleanup_pending.retry())
+    assert engine.records[replacement]['State']['Running']
+    stops = [command[4:] for command, _ in engine.commands if command[1] == 'stop']
+    assert stops == [original]
+    assert manager._rollback is None
+
+
+def test_initial_rollback_inventory_failure_cannot_claim_later_ids(setup, monkeypatch):
+    import asyncio
+    create, engine, _, _, _ = setup
+    manager = create()
+    inventory = manager._inventory
+    def unavailable(deadline, *, cleanup=False):
+        if cleanup:
+            raise p.PrerequisiteError('unavailable initial cleanup inventory')
+        return inventory(deadline, cleanup=cleanup)
+    monkeypatch.setattr(manager, '_inventory', unavailable)
+    engine.fail_up = True
+    with pytest.raises(p.PrerequisiteError, match='up failed') as failure:
+        manager.acquire()
+    monkeypatch.setattr(manager, '_inventory', inventory)
+    with pytest.raises(p.PrerequisiteError, match='ownership could not be verified'):
+        asyncio.run(failure.value.cleanup_pending.retry())
+    assert manager._rollback is not None
+    assert all(r['State']['Running'] for r in engine.records.values())
+    assert not any(c[1] == 'stop' for c, _ in engine.commands)
+
+
+def test_concurrent_manager_rollback_retries_recheck_state_under_lock(setup, monkeypatch):
+    import asyncio
+    import threading
+    from contextlib import contextmanager
+    create, engine, _, _, _ = setup
+    manager = create()
+    engine.fail_up = engine.fail_stop = True
+    with pytest.raises(p.PrerequisiteError) as failure:
+        manager.acquire()
+    engine.fail_stop = False
+    locked = p._locked
+    barrier = threading.Barrier(2)
+    @contextmanager
+    def synchronized(*args, **kwargs):
+        barrier.wait(timeout=5)
+        with locked(*args, **kwargs):
+            yield
+    monkeypatch.setattr(p, '_locked', synchronized)
+    async def run():
+        return await asyncio.gather(failure.value.cleanup_pending.retry(),
+                                    failure.value.cleanup_pending.retry(), return_exceptions=True)
+    assert asyncio.run(run()) == [None, None]
+    assert manager._rollback is None
+
+
+@pytest.mark.parametrize('container_prefix,image_prefix', [('', ''), ('', 'sha256:'), ('sha256:', '')])
+def test_engine_image_id_prefix_normalization_keeps_exact_identity_and_pin(setup, container_prefix, image_prefix):
+    create, engine, _, _, _ = setup
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    pin = manager.specs['localstack']['image']
+    identifier = engine.add('localstack', image_id=container_prefix + '1' * 64)
+    engine.image_inspections[pin] = [{'Id': image_prefix + '1' * 64,
+                                     'RepoDigests': [pin.split(':4.14.0')[0] + '@' + pin.rsplit('@', 1)[1]]}]
+    assert manager.acquire().reused_ids == (identifier,)
+    manager.release()
+    engine.image_inspections[pin][0]['Id'] = image_prefix + '2' * 64
+    with pytest.raises(p.PrerequisiteError, match='incompatible'):
+        manager.acquire()
+    engine.image_inspections[pin][0]['Id'] = image_prefix + '1' * 64
+    engine.image_inspections[pin][0]['RepoDigests'] = [pin.split(':4.14.0')[0] + '@sha256:' + 'f' * 64]
+    with pytest.raises(p.PrerequisiteError, match='incompatible'):
+        manager.acquire()

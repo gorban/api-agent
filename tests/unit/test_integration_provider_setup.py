@@ -316,3 +316,132 @@ def test_debug_empty_inspector_and_interrupted_inspection_cleanup(tmp_path, monk
     assert provider.inspection._closed
     provider.close()
     assert provider.loop.is_closed()
+
+
+def test_finish_run_disposes_auth_before_retaining_creating_loop(tmp_path):
+    provider = p.IntegrationLLM({'DEBUG': True}, tmp_path)
+    events = []
+    provider.owner = SimpleNamespace(aclose=AsyncMock(side_effect=lambda: events.append('auth')))
+    provider.provider = SimpleNamespace(aclose=AsyncMock(side_effect=lambda: events.append('provider')))
+    async def setup():
+        provider.inspection.observe(SimpleNamespace(inspection_endpoint=None,
+            browser=SimpleNamespace(is_connected=lambda: True), context=SimpleNamespace(pages=[object()])))
+        task = asyncio.create_task(asyncio.sleep(.01, result=None))
+        provider._credential_tasks.add(task)
+        task.add_done_callback(lambda _: events.append('credential'))
+    provider.loop.run_until_complete(setup())
+    try:
+        provider.finish_run()
+        assert events == ['auth', 'provider', 'credential']
+        assert not provider.loop.is_closed() and not provider.closed
+        assert provider in p._inspection_providers
+        assert not provider._credential_tasks
+    finally:
+        p._inspection_providers.remove(provider)
+        provider.loop.run_until_complete(provider.inspection.aclose())
+        provider.loop.close()
+
+
+def test_worker_shared_setup_coalesces_and_freezes_selected_identity(tmp_path, monkeypatch):
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    class Auth:
+        def __init__(self):
+            self.reads = 0
+            self.aclose = AsyncMock()
+        async def __call__(self):
+            self.reads += 1
+            entered.set()
+            await finish.wait()
+            return object()
+    auth = Auth()
+    adapter = SimpleNamespace(asetup=AsyncMock(return_value=auth))
+    loaded = SimpleNamespace(implementation=adapter, aclose=AsyncMock())
+    load = AsyncMock(return_value=loaded)
+    monkeypatch.setattr(p, 'aload_provider', load)
+    worker = p.IntegrationLLM({'LLM_PROVIDER': 'selected'}, tmp_path)
+    other = p.IntegrationLLM({'LLM_PROVIDER': 'selected'}, tmp_path)
+    assert worker._operation_id != other._operation_id
+    other.close()
+    async def scenario():
+        waiters = [asyncio.create_task(worker._ensure()) for _ in range(5)]
+        await entered.wait()
+        assert adapter.asetup.await_count == 1 and auth.reads == 1
+        finish.set()
+        await asyncio.gather(*waiters)
+        assert worker.owner is worker._shared_setup._owner
+        assert load.await_count == 1
+        worker.config['UNATTENDED_USER_INDEX'] = 1
+        with pytest.raises(ContractError, match='outside shared binding'):
+            await worker._ensure()
+        assert auth.reads == 1
+    try:
+        worker.loop.run_until_complete(scenario())
+    finally:
+        worker.close()
+    auth.aclose.assert_awaited_once()
+
+
+def test_worker_revokes_before_provider_disposal_and_rejects_late_reply(tmp_path, monkeypatch):
+    from api_agent.providers.contracts import SessionClosedError
+    entered = asyncio.Event()
+    reply = asyncio.Event()
+    captured = []
+    async def reader(index, kind):
+        entered.set()
+        await reply.wait()
+        return 'private'
+    class Auth:
+        async def __call__(self):
+            return object()
+        async def aclose(self):
+            reply.set()
+    async def setup(**kwargs):
+        captured.append(kwargs['credentials'])
+        return Auth()
+    async def provider_close():
+        with pytest.raises(SessionClosedError):
+            await captured[0](0, 'password')
+    loaded = SimpleNamespace(implementation=SimpleNamespace(asetup=setup), aclose=provider_close)
+    monkeypatch.setattr(p, 'aload_provider', AsyncMock(return_value=loaded))
+    worker = p.IntegrationLLM({'LLM_PROVIDER': 'selected', 'UNATTENDED_USER_INDEX': 0}, tmp_path)
+    monkeypatch.setattr(worker, '_credentials', lambda index: reader)
+    worker.ensure_ready()
+    async def scenario():
+        request = asyncio.create_task(captured[0](0, 'password'))
+        await entered.wait()
+        await worker._close()
+        with pytest.raises(SessionClosedError):
+            await request
+    try:
+        worker.loop.run_until_complete(scenario())
+    finally:
+        worker.close()
+
+
+def test_cancelled_worker_helper_drain_waits_for_true_completion(tmp_path):
+    worker = p.IntegrationLLM({}, tmp_path)
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    async def helper():
+        entered.set()
+        await finish.wait()
+    async def scenario():
+        task = asyncio.create_task(helper())
+        worker._credential_tasks.add(task)
+        await entered.wait()
+        close = asyncio.create_task(worker._close())
+        await asyncio.sleep(0)
+        close.cancel()
+        await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await close
+        assert not task.done() and task in worker._credential_tasks
+        finish.set()
+        await worker._close()
+        assert task.done() and not task.cancelled()
+        assert not worker._credential_tasks
+    try:
+        worker.loop.run_until_complete(scenario())
+    finally:
+        worker.close()

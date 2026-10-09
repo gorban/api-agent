@@ -101,6 +101,16 @@ def resource_pack_main(argv=None, *, launcher_root):
         return 2
 
 
+def _retains_cleanup(error):
+    group = getattr(error, 'inspection_group', None)
+    if group is not None and group.active:
+        return True
+    if getattr(error, 'cleanup_pending', None) is not None:
+        return True
+    recording = getattr(error, 'recording_prerequisites', None)
+    return recording is not None and recording.pending_cleanup is not None
+
+
 def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None, _worktrees_verified=False):
     """Validate foundation contracts; later segments provide actual operations."""
     from api_agent.config import (compose_schema, load_declarations, load_shared_schema,
@@ -215,11 +225,14 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             if status is not None:
                 return status
             from api_agent.testing.collection import collect_tests
-            from api_agent.testing.recorded import run_recorded_integration
+            from api_agent.testing.launched import run_launched_integration
             tests = collect_tests(context, 'integration', result.positionals, config=result.values)
             print('Integration debug: serial execution; provider login may require browser interaction.', flush=True)
-            execution = run_recorded_integration(context, tests, result.values, accepted=True,
+            execution = run_launched_integration(context, tests, result.values, accepted=True,
                 output=lambda chunk: print(chunk, end='', flush=True))
+            from api_agent.testing.inspection_controls import finish_terminal_inspection
+            if not finish_terminal_inspection(execution, lambda line: print(line, flush=True)):
+                return 3
             return execution.exit_code
         if result.values.get('NO_STD_IN'):
             if mode == 'run-local':
@@ -239,10 +252,14 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return status
         from api_agent.tui.app import run_tui
         return run_tui(context, foundation_schema, argv, os.environ.copy())
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as error:
+        if _retains_cleanup(error):
+            raise
         print('Run interrupted.', file=sys.stderr)
         return 130
     except (ValueError, OSError, WorktreeGateError, subprocess.CalledProcessError) as exc:
+        if _retains_cleanup(exc):
+            raise
         print(f'Launch error: {exc}', file=sys.stderr)
         return 2
 

@@ -1,15 +1,18 @@
 """Lazy provider setup for launch-owned integration workers."""
 import asyncio
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
 import stat
+from uuid import uuid4
 
 import pytest
 
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, SetupPrerequisiteError
 from api_agent.providers.loading import aload_provider
 from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
+from api_agent.providers.shared_setup import SharedSetupOwner
 
 
 def write_launch_snapshot(directory, context, config):
@@ -48,13 +51,20 @@ def _read_snapshot():
     raise ContractError('Integration provider context is unavailable; start through launch.py.')
 
 
+_inspection_providers = []
+
+
 class IntegrationLLM:
-    """One worker-owned loop; provider setup starts only on ensure_ready."""
+    """One worker-local operation; this does not implement backend-wide IPC."""
     def __init__(self, config, owner_root):
         self.config = dict(config)
         self.owner_root = owner_root
         self.loop = asyncio.new_event_loop()
         self.provider = self.owner = None
+        self._provider_config = deepcopy(self.config)
+        self._shared_setup = None
+        self._operation_id = str(uuid4())
+        self._setup_lock = asyncio.Lock()
         self._retained_owners = []
         self._credential_tasks = set()
         self.closed = False
@@ -106,33 +116,60 @@ class IntegrationLLM:
                 raise InteractionRequiredError("Password-manager retrieval is unavailable. Sign in to the configured CLI and check the login entry.") from None
         return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve))
 
-    async def _ensure(self):
+    async def _prepare_setup(self):
         await self._release_retained()
         location = self.config.get('LLM_PROVIDER')
         if location is None or location == '':
             raise SetupPrerequisiteError('Select LLM_PROVIDER before requesting LLM setup.')
         if self.provider is None:
+            self._provider_config = deepcopy(self.config)
             try:
                 services = {'owner_root': self.owner_root}
                 if self.inspection is not None:
                     services['browser_inspection'] = self.inspection
-                self.provider = await aload_provider(location, self.config, services, kind='llm')
+                self.provider = await aload_provider(location, deepcopy(self._provider_config), services, kind='llm')
             except BaseException as error:
                 self._retained_owners.extend(getattr(error, 'retained_owners', ()))
                 raise
+        if (self._shared_setup is None
+                and self._setup_identity(self.config) != self._setup_identity(self._provider_config)):
+            provider, self.provider = self.provider, None
+            self._provider_config = None
+            primary = ContractError('Integration provider selection changed during setup.')
+            try:
+                await provider.aclose()
+            except BaseException:
+                self._retained_owners.append(provider)
+                primary.retained_owners = (provider,)
+            raise primary
         implementation = self.provider.implementation
         if not callable(getattr(implementation, 'asetup', None)):
             raise SetupPrerequisiteError('The selected LLM provider has no setup capability.')
-        if self.owner is None:
-            index = self.config.get('UNATTENDED_USER_INDEX')
-            self.owner = LLMSessionOwner(implementation, user_index=index,
-                                         credentials=self._credentials(index) if index is not None else None,
-                                         interactive=index is None and (self.inspection is not None or not self.config.get('NO_STD_IN', False)))
+        if self._shared_setup is None:
+            index = self._provider_config.get('UNATTENDED_USER_INDEX')
+            credentials = self._credentials(index) if index is not None else None
+            identity = self._selected_identity(self._provider_config)
+            def make_owner(scoped_credentials):
+                self.owner = LLMSessionOwner(implementation, user_index=index,
+                                             credentials=scoped_credentials,
+                                             interactive=index is None and (self.inspection is not None or not self._provider_config.get('NO_STD_IN', False)))
+                return self.owner
+            self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
+                                                 credentials=credentials)
 
-        async def checkpoint(*, auth):
-            if auth is None:
-                raise ContractError('The selected LLM provider did not provide authentication.')
-        await self.owner.call(checkpoint)
+    def _selected_identity(self, config=None):
+        config = self.config if config is None else config
+        return json.dumps([config.get('LLM_PROVIDER'), config.get('LLM_CREDENTIAL_ROLE'),
+                           config.get('UNATTENDED_USER_INDEX')], separators=(',', ':'))
+
+    def _setup_identity(self, config):
+        return self._selected_identity(config), json.dumps(config.get('UNATTENDED_AUTH'),
+                                                         sort_keys=True, separators=(',', ':'))
+
+    async def _ensure(self):
+        async with self._setup_lock:
+            await self._prepare_setup()
+        await self._shared_setup.ensure_ready(selected_identity=self._selected_identity())
 
     def ensure_ready(self):
         if self.closed:
@@ -144,13 +181,23 @@ class IntegrationLLM:
 
     async def _close(self):
         await self._release_retained()
-        if self.owner is not None:
+        if self._shared_setup is not None:
+            await self._shared_setup.aclose()
+        elif self.owner is not None:
             await self.owner.aclose()
         if self.provider is not None:
             await self.provider.aclose()
         if self._credential_tasks:
             await asyncio.shield(asyncio.gather(*self._credential_tasks, return_exceptions=True))
             self._credential_tasks.clear()
+
+    def finish_run(self):
+        """Dispose authentication while preserving the creating inspection loop."""
+        self.loop.run_until_complete(self._close())
+        if self.inspection is not None and self.inspection.sessions:
+            _inspection_providers.append(self)
+        else:
+            self.close()
 
     def close(self):
         if not self.closed:
@@ -174,7 +221,51 @@ def llm_provider():
     try:
         yield provider
     finally:
-        provider.close()
+        if os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
+            provider.finish_run()
+        else:
+            provider.close()
+
+
+def serve_inspections(send):
+    """Called after pytest has finalized all reports and session teardown."""
+    providers = list(_inspection_providers)
+    _inspection_providers.clear()
+    if not providers:
+        return
+    command = Path(os.environ['API_AGENT_INTEGRATION_EVENTS']).parent / 'inspection-command.json'
+    for provider in providers:
+        for session in provider.inspection.sessions:
+            send(kind='inspection_open', endpoint=session.inspection_endpoint or '')
+    seen = 0
+    pending = set()
+    while providers:
+        attempt = None
+        try:
+            row = json.loads(command.read_text())
+            if (isinstance(row, dict) and type(row.get('version')) is int and row['version'] == 1
+                    and row.get('command') == 'end_inspection'
+                    and type(row.get('attempt')) is int and row['attempt'] > seen):
+                attempt = seen = row['attempt']
+        except (OSError, ValueError):
+            pass
+        for provider in tuple(providers):
+            inspector = provider.inspection
+            windows = any(session.browser.is_connected() and session.context.pages
+                          for session in inspector.sessions)
+            if attempt is not None or (not windows and provider not in pending):
+                try:
+                    provider.loop.run_until_complete(inspector.aclose())
+                except Exception:
+                    pending.add(provider)
+                    send(kind='inspection_cleanup_pending', attempt=attempt)
+                else:
+                    provider.closed = True
+                    provider.loop.close()
+                    providers.remove(provider)
+            else:
+                provider.loop.run_until_complete(asyncio.sleep(.03))
+    send(kind='inspection_closed', attempt=seen)
 
 
 class IntegrationRequirements:
