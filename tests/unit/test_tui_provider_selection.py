@@ -38,7 +38,7 @@ def test_bundled_provider_is_reviewable_and_switching_refreshes_tables(tmp_path)
             assert 'LLM_PROVIDER' in names()
             assert 'GPT_AUTH_MODE' in names()
             assert 'GPT_PROFILE' not in app.schema.fields
-            assert 'GPT_STATE_DIR' not in names()
+            assert 'GPT_STATE_DIR' in names()
             assert app.credential_roles() == ('LLM User',) and app.auth_setup_needed()
             table = app.screen.query_one(DataTable)
             index = names().index('LLM_PROVIDER')
