@@ -32,7 +32,7 @@ The source launchers load the selected shared checkout directly; neither needs a
 .venv/bin/python launch.py --no-std-in=True --tui-mode integration
 ```
 
-The missing-mode example returns configuration error status `2`. Unit execution returns `0` when selected tests pass; All tests additionally requires every measured production coverage area to reach 100%. Partial selections report coverage informationally; coverage or test failures return nonzero. Integration/E2E execution rejects `NO_STD_IN=True`. Help returns `0` after the worktree check and any required stale-checkout approval. Git/pack/schema/bootstrap/collection errors return `2`. Configured test collection returns `0` only when valid nonempty matches are listed, without opening the TUI or executing tests.
+The missing-mode example returns configuration error status `2`. Unit execution returns `0` when selected tests pass; All tests additionally requires every measured production coverage area to reach 100%. Partial selections report coverage informationally; coverage or test failures return nonzero. Ordinary integration/E2E execution rejects `NO_STD_IN=True`; integration DEBUG has an explicit investigation-only exception. Help returns `0` after the worktree check and any required stale-checkout approval. Git/pack/schema/bootstrap/collection errors return `2`. Configured test collection returns `0` only when valid nonempty matches are listed, without opening the TUI or executing tests.
 
 ## Configuration and discovery workbench review
 
@@ -120,7 +120,7 @@ async (page) => {
 Replace `endpoint` with the launcher's printed loopback URL. The MCP extension connection/permission page is separate from the application login window. Keep URLs containing OAuth parameters, cookies, credentials and browser storage out of diagnostics; report only the minimum page identity needed to select it.
 
 
-The integration picker shows the effective `UNATTENDED_USER_INDEX` and the selected account login/item labels. Use **[ Previous user** / **] Next user** to cycle eligible accounts and **No unattended user set — logins must be done manually**; the choice saves immediately to the displayed .env target. **s Start selected tests** uses that effective choice. Integration needs only its LLM account; available same-index pack account labels are also shown. `--unattended-user-index=` overrides a saved choice with attended login for one run without editing .env. ENV/CLI overrides still take precedence over a saved picker choice and are reported when they prevent it taking effect. Unattended GPT retrieves only the configured entry username. It reuses a uniquely matching saved subscription or fills **Email address** and clicks **Continue** for a new connection. Password, TOTP and consent steps remain unautomated; subsequent challenges can still time out. The login browser starts headless unless RUN_UI or integration DEBUG makes it visible. If headless login reaches an observed error/security-verification page, interactive execution may retry once in visible Chromium and wait for you to resolve it; the selected account binding remains enforced. Strict noninteractive execution reports that browser interaction is required. Verification can still loop upstream; opening a visible browser does not guarantee acceptance. A password-manager CLI/session failure prints a safe explanation and starts attended login when interactive execution or integration DEBUG allows it; strict noninteractive execution reports that authentication needs attention without an attended fallback. No passwords, codes or usernames are printed. There is no manual GPT profile setting. Unattended GPT requires the selected LLM User account descriptor and a configured shared password manager/CLI; its retrieved username selects the matching cached subscription. Plain startup offers Setup / Skip whenever an enabled role or manager is incomplete. Skip keeps attended login available. Check **Remember my selection** under Skip to save `SKIP_UNATTENDED_SETUP=True` to the displayed .env target and suppress future startup suggestions. This setting defaults to False and is hidden from Review configuration; delete it in Clear .env configuration to restore the suggestion. Setup unattended authentication remains available from the menu. An explicitly selected TUI_MODE still bypasses the startup suggestion. Attended OAuth identifies the signed-in account when the cache is empty or ambiguous. GPT_STATE_DIR remains a hidden advanced storage override. See [the lazy setup checklist](docs/implementation_plan_f2b.md) for supported behavior and follow-ups.
+The integration picker shows the effective `UNATTENDED_USER_INDEX` and the selected account login/item labels. Use **[ Previous user** / **] Next user** to cycle eligible accounts and **No unattended user set — logins must be done manually**; the choice saves immediately to the displayed .env target. **s Start selected tests** uses that effective choice. Integration needs only its LLM account; available same-index pack account labels are also shown. `--unattended-user-index=` overrides a saved choice with attended login for one run without editing .env. ENV/CLI overrides still take precedence over a saved picker choice and are reported when they prevent it taking effect. Unattended GPT retrieves the configured entry username for account selection; password and optional TOTP are retrieved only when the login page requests them. It reuses a uniquely matching saved subscription or fills **Email address** and clicks **Continue** for a new connection. Observed password, optional TOTP and consent steps are automated; unfamiliar pages or security challenges can still require human intervention. The login browser starts headless unless RUN_UI or integration DEBUG makes it visible. If headless login reaches an observed error/security-verification page, interactive execution may retry once in visible Chromium and wait for you to resolve it; the selected account binding remains enforced. Strict noninteractive execution reports that browser interaction is required. Verification can still loop upstream; opening a visible browser does not guarantee acceptance. A password-manager CLI/session failure prints a safe explanation and starts attended login when interactive execution or integration DEBUG allows it; strict noninteractive execution reports that authentication needs attention without an attended fallback. No passwords, codes or usernames are printed. There is no manual GPT profile setting. Unattended GPT requires the selected LLM User account descriptor and a configured shared password manager/CLI; its retrieved username selects the matching cached subscription. Plain startup offers Setup / Skip whenever an enabled role or manager is incomplete. Skip keeps attended login available. Check **Remember my selection** under Skip to save `SKIP_UNATTENDED_SETUP=True` to the displayed .env target and suppress future startup suggestions. This setting defaults to False and is hidden from Review configuration; delete it in Clear .env configuration to restore the suggestion. Setup unattended authentication remains available from the menu. An explicitly selected TUI_MODE still bypasses the startup suggestion. Attended OAuth identifies the signed-in account when the cache is empty or ambiguous. GPT_STATE_DIR appears in Review configuration with its expanded default path. See [the lazy setup checklist](docs/implementation_plan_f2b.md) for supported behavior and follow-ups.
 
 To inspect a logged-out password-manager failure without terminal input, select its configured account explicitly:
 
@@ -129,3 +129,83 @@ To inspect a logged-out password-manager failure without terminal input, select 
 ```
 
 This integration DEBUG exception permits attended browser fallback: failed username retrieval explains that the CLI needs sign-in or the entry needs checking, then opens visible Chromium for manual login. Close the browser to end the pending login. Ordinary integration execution without DEBUG still requires its interactive picker; this command does not demonstrate strict unattended failure without fallback. With valid CLI retrieval, RUN_UI=False keeps unattended login headless unless DEBUG is enabled; attended login is always visible.
+
+
+## Testing
+
+Choose `unit`, `integration`, or `e2e` as the test type:
+
+```bash
+./launch.py --tui-mode "<tests_type>"
+```
+
+- All tests of that type are initially selected. Positional selectors preselect matching tests; the interactive picker still displays the full collection so you can adjust the selection. Select by file, full pytest node ID, or `tag:NAME`. Multiple selectors select their union.
+- Press **s** to start unit or integration tests. E2E execution will additionally require explicit human acceptance; its runner remains unimplemented.
+- Unit tests combine the base suite and any selected resource pack's units. Integration discovery combines generic api-agent tests, the selected pack's tests and selected providers' declared suites. E2E uses the selected pack's declared suite. Missing declared integration/E2E suites are collection errors.
+
+For example, preselect one shared integration:
+
+```bash
+./launch.py --tui-mode integration api-agent::tests/integration/test_llm_setup.py
+```
+
+This setup test authenticates the selected LLM provider through its common contract and sends no inference request. Provider-specific tests belong with their provider; pack-specific tests belong with their pack.
+
+### Noninteractive execution and collection
+
+Run unit tests without the TUI or terminal-input confirmation:
+
+```bash
+./launch.py --tui-mode unit --no-std-in
+```
+
+For several commands, set the equivalent environment variable once:
+
+```bash
+export NO_STD_IN=True
+./launch.py --tui-mode unit
+./launch.py --tui-mode integration --collect-only
+unset NO_STD_IN
+```
+
+`--collect-only` lists matching test identities without executing them or authenticating. It supports every test type and positional selectors:
+
+```bash
+./launch.py --tui-mode integration --collect-only api-agent::tests/integration/test_llm_setup.py
+```
+
+Ordinary integration and E2E execution require the interactive start/acceptance flow; `--no-std-in` is not a general CI execution switch for them. Integration's explicit `--debug` exception permits noninteractive terminal execution for browser investigation and retains its login windows; it does not bypass E2E acceptance. A confirmed newer worktree can still require stdin approval before any of these commands.
+
+### For full coverage
+
+Run **All tests** in unit mode, without positional selectors. Every applicable unit must pass and every measured production file must have **100% line and branch coverage**. Partial selections report coverage but do not enforce that threshold. Unit tests are deterministic and never use live LLMs or publish Allure results.
+
+Code coverage does not establish that every supported provider/configuration combination works. Repeat the integration conformance suite for each implemented supported combination, with its required credentials and endpoint supplied. A skipped scenario is unverified, even when the overall run reports PASS.
+
+For the bundled GPT provider, the target matrix is:
+
+| GPT_AUTH_MODE | GPT_API_MODE | Expected coverage |
+| --- | --- | --- |
+| `subscription` | `responses` | Setup, then discovery/inference contracts as implemented |
+| `api_key` | `completions` | Browser-free key setup and Chat Completions contracts |
+| `api_key` | `responses` | Browser-free key setup and Responses contracts |
+| `subscription` | `completions` | Isolated rejection test; no authentication or request side effects |
+
+**Implementation status:** subscription/responses setup is implemented. API-key setup, both API-key transports, discovery and inference remain planned; dependent integrations currently skip where these capabilities are unavailable. The commands below describe the intended full-matrix procedure once those implementations land, rather than certify current support.
+
+With the bundled GPT provider selected, run the integration suite once per valid combination:
+
+```bash
+./launch.py --tui-mode integration --no-std-in=False \
+  --gpt-auth-mode subscription --gpt-api-mode responses
+./launch.py --tui-mode integration --no-std-in=False \
+  --gpt-auth-mode api_key --gpt-api-mode completions
+./launch.py --tui-mode integration --no-std-in=False \
+  --gpt-auth-mode api_key --gpt-api-mode responses
+```
+
+CLI overrides apply to that launch without editing .env. Subscription tests need an eligible signed-in account; API-key tests will need the provider's configured endpoint and selected password-manager entry containing the key. The configured endpoint and selected GPT variant must support the API being tested. A resource pack may select another LLM provider: override `LLM_PROVIDER` with the GPT factory's `file.py:factory` location when testing this matrix. GPT settings are contributed only while that provider is selected; see [its declaration](src/api_agent/llm_providers/gpt/cfg/config.toml).
+
+The shared setup test runs unchanged for each provider's supported setup configurations. Provider-owned tests should use explicit pytest parameter IDs for isolated scenarios and override their test-local configuration without changing .env. For example, the subscription/completions rejection test must still run under a valid launch configuration, overriding only its own inputs to assert rejection.
+
+A future CI matrix should name each provider/configuration scenario, launch each with a separately resolved configuration and owned session, and preserve that scenario name in its report identity. Passing one configuration must not stand in for another, and expected skips must remain visible. Automated integration execution still needs an explicit decision about the interactive gate. E2E acceptance remains a human-run step; authentication-only setup does not replace inference, UI or E2E coverage.
