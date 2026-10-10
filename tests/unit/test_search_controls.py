@@ -6,6 +6,7 @@ from textual.app import App
 from textual.binding import Binding
 from textual.events import Paste
 from textual.widgets import Static
+from textual.widgets._footer import FooterKey
 
 from api_agent.tui import search
 
@@ -158,8 +159,10 @@ def test_grouped_brackets_color_and_clicks_preserve_other_footer():
             footer = app.query_one(search.GroupedUserFooter)
             brackets = list(footer.query(search._ShortcutKey))
             assert [widget.render().plain for widget in brackets] == ['[', ']']
-            assert all([(span.start, span.end, span.style) for span in widget.render().spans]
-                       == [(0, 1, 'bold yellow')] for widget in brackets)
+            stock_style = footer.query_one(FooterKey).get_component_rich_style('footer-key--key')
+            assert all(widget.rich_style.color == stock_style.color
+                       and widget.rich_style.bgcolor == stock_style.bgcolor
+                       and widget.rich_style.bold for widget in brackets)
             group = footer.query_one('.user-cycle')
             assert brackets[0].region.x == group.region.x + 1
             assert ''.join(widget.render().plain for widget in group.query(Static)) == '[ / ] Loop through users'
@@ -203,7 +206,8 @@ def test_disabled_bracket_does_not_dispatch():
             await pilot.pause()
             brackets = list(app.query(search._ShortcutKey))
             assert brackets[0].enabled is False and brackets[1].enabled is True
-            assert brackets[0].render().spans[0].style == 'bold yellow dim'
+            assert brackets[0].rich_style.bold and brackets[0].rich_style.dim
+            assert not brackets[1].rich_style.dim
             await pilot.click(brackets[0])
             assert app.actions == []
             await pilot.click(brackets[1])
@@ -252,8 +256,16 @@ def test_search_shortcuts_share_label_and_preserve_both_actions(reverse_order):
             assert ''.join(widget.render().plain for widget in group.query(Static)) == '/ / ? Search tests (? backwards)'
             keys = list(group.query(search._ShortcutKey))
             assert [key.render().plain for key in keys] == ['/', '?']
-            assert all([(span.start, span.end, span.style) for span in key.render().spans]
-                       == [(0, 1, 'bold yellow')] for key in keys)
+            colors = []
+            for theme in ('textual-dark', 'textual-light', 'nord'):
+                app.theme = theme
+                await pilot.pause()
+                stock_style = footer.query_one(FooterKey).get_component_rich_style('footer-key--key')
+                colors.append(stock_style.color)
+                assert all(key.rich_style.color == stock_style.color
+                           and key.rich_style.bgcolor == stock_style.bgcolor
+                           and key.rich_style.bold for key in footer.query(search._ShortcutKey))
+            assert len(set(colors)) > 1
             assert footer.styles.grid_size_columns == 3  # User pair, search pair, Other.
             await pilot.click(keys[0])
             await pilot.click(keys[1])

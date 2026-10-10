@@ -126,10 +126,19 @@ class SearchBar(Horizontal):
 
 
 class _ShortcutKey(Static):
-    DEFAULT_CSS = '_ShortcutKey { width: 1; height: 1; }'
+    DEFAULT_CSS = """
+    _ShortcutKey {
+        width: 1;
+        height: 1;
+        color: $footer-key-foreground;
+        background: $footer-key-background;
+        text-style: bold;
+        &.-disabled { text-style: bold dim; }
+    }
+    """
 
     def __init__(self, bracket, key, enabled):
-        super().__init__(Text(bracket, style='bold yellow' if enabled else 'bold yellow dim'))
+        super().__init__(Text(bracket), classes='' if enabled else '-disabled')
         self.key = key
         self.enabled = enabled
 
