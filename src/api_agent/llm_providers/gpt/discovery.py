@@ -11,14 +11,16 @@ from api_agent.providers.progress import component_timeout
 _OFFICIAL_BASE = 'https://api.openai.com/v1'
 _LIMIT = 1048576
 _TIMEOUT = 15
+_BEARER = re.compile(r'bearer\s+[^\s,;]+', flags=re.IGNORECASE)
 
 
 def _safe_text(value, token, *, limit=512):
     if type(value) is not str:
         return None
-    # Normalize first; no later transformation may reassemble the selected key.
+    # Mask before normalization consumes control whitespace separating a Bearer.
+    value = _BEARER.sub('Bearer [redacted]', value)
     value = ''.join(c for c in value if c.isprintable())
-    value = re.sub(r'(?i)bearer\s+[^\s,;]+', 'Bearer [redacted]', value)
+    value = _BEARER.sub('Bearer [redacted]', value)
     value = re.sub(r'https?://[^\s]+', '[endpoint]', value, flags=re.IGNORECASE)
     value = value.replace(token, '[redacted]')
     if token in value:
