@@ -101,6 +101,11 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
                 # A removed pack choice cannot be represented by the picker.
                 # Require an explicit new selection while retaining the CLI draft.
                 self.values['manager'] = ''
+            self._draft_manager = self.values['manager']
+            self._cli_draft_value = self.values['cli_path']
+            definition = owner.app.session.password_manager_registry.get(self._draft_manager) if self._draft_manager else None
+            self._cli_explicit = bool(self._cli_draft_value) and (
+                definition is None or self._cli_draft_value != definition.cli_default)
 
     def _selected_definition(self, identifier):
         if not identifier:
@@ -194,14 +199,27 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
         if self.manager_form:
             self.query_one('#auth-path', Input).focus()
 
+    def on_input_changed(self, event):
+        if self.manager_form and event.input.id == 'auth-path':
+            self._remember_cli_edit(event.value)
+
+    def _remember_cli_edit(self, value):
+        if value != self._cli_draft_value:
+            self._cli_explicit = bool(value)
+            self._cli_draft_value = value
+
     def on_select_changed(self, event):
         if event.select.id == 'auth-manager':
             self.query_one('#auth-implementation', Static).update(self._implementation_text(event.value))
             path = self.query_one('#auth-path', Input)
-            defaults = {'', *(item.cli_default for item in self.app.session.password_manager_registry.definitions)}
-            if path.value in defaults:
+            # Input changes can still be queued when a selection changes.
+            self._remember_cli_edit(path.value)
+            if event.value != self._draft_manager and not self._cli_explicit:
                 definition = self._selected_definition(event.value)
-                path.value = definition.cli_default if definition else ''
+                self._cli_draft_value = definition.cli_default if definition else ''
+                with path.prevent(Input.Changed):
+                    path.value = self._cli_draft_value
+            self._draft_manager = event.value
 
 
 class AuthSetupScreen(FocusNavigation, Screen[bool]):

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from api_agent.auth.managers import bundled_registry
 from api_agent.testing import provider_setup as p
 
 
@@ -60,7 +61,8 @@ def test_finish_run_without_retained_windows_closes_loop(tmp_path, registry, deb
 
 
 def test_fixture_event_transport_uses_run_finalization(tmp_path, monkeypatch, registry):
-    monkeypatch.setattr(p, '_read_snapshot', lambda: {'owner_root': str(tmp_path), 'config': {}})
+    monkeypatch.setattr(p, '_read_snapshot', lambda: {'owner_root': str(tmp_path), 'config': {},
+        'password_manager_definitions': p._manager_definitions(bundled_registry())})
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(tmp_path / 'events'))
     fixture = p.llm_provider.__wrapped__()
     worker = next(fixture)

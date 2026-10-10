@@ -217,3 +217,70 @@ def test_unavailable_manager_draft_recovery_failure_keeps_blank_editor(tmp_path,
             assert app.screen.query_one('#auth-manager', Select).value == ''
             assert app.screen.query_one('#auth-path', Input).value == ''
     asyncio.run(scenario())
+
+
+def test_saved_cli_equal_other_manager_default_survives_edit_save_reload(tmp_path):
+    async def scenario():
+        app = _Wizard(tmp_path)
+        app.session.save_auth_manager({'manager': '1password', 'cli_path': 'synthetic-cli'})
+        async with app.run_test(size=(110, 55)) as pilot:
+            await pilot.pause()
+            for expected_manager in ('1password', 'keeper'):
+                app.screen.query_one('#auth-manager-table', DataTable).focus()
+                await pilot.press('e')
+                await pilot.pause()
+                editor = app.screen
+                picker = editor.query_one('#auth-manager', Select)
+                path = editor.query_one('#auth-path', Input)
+                assert picker.value == expected_manager
+                assert path.value == 'synthetic-cli'
+                picker.value = 'synthetic'
+                await pilot.pause()
+                assert path.value == 'synthetic-cli'
+                picker.value = 'keeper'
+                await pilot.pause()
+                assert path.value == 'synthetic-cli'
+                editor.save_entry()
+                await pilot.pause()
+                assert ConfigSession(app.context, app.session.schema, environ={}).result(_review=True).values['UNATTENDED_AUTH']['password_manager'] == {
+                    'manager': 'keeper', 'cli_path': 'synthetic-cli'}
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('cli_path', ['op', 'keeper', 'synthetic-cli'])
+def test_explicit_cli_edit_equal_manager_default_stays_on_switch(tmp_path, cli_path):
+    async def scenario():
+        app = _Wizard(tmp_path)
+        app.session.save_auth_manager({'manager': '1password', 'cli_path': '/custom'})
+        async with app.run_test(size=(110, 55)) as pilot:
+            await pilot.pause()
+            app.screen.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.press('e')
+            await pilot.pause()
+            editor = app.screen
+            path = editor.query_one('#auth-path', Input)
+            path.value = cli_path
+            await pilot.pause()
+            for manager in ('synthetic', 'keeper', '1password', ''):
+                editor.query_one('#auth-manager', Select).value = manager
+                await pilot.pause()
+                assert path.value == cli_path
+    asyncio.run(scenario())
+
+
+def test_unedited_cli_follows_each_selected_managers_own_default(tmp_path):
+    async def scenario():
+        app = _Wizard(tmp_path)
+        app.session.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+        async with app.run_test(size=(110, 55)) as pilot:
+            await pilot.pause()
+            app.screen.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.press('e')
+            await pilot.pause()
+            editor = app.screen
+            for manager in ('synthetic', 'keeper', '', '1password'):
+                editor.query_one('#auth-manager', Select).value = manager
+                await pilot.pause()
+                definition = app.session.password_manager_registry.get(manager) if manager else None
+                assert editor.query_one('#auth-path', Input).value == (definition.cli_default if definition else '')
+    asyncio.run(scenario())

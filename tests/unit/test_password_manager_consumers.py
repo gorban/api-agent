@@ -135,7 +135,8 @@ def test_snapshot_keeps_selected_pack_location_and_rejects_invalid_root(tmp_path
 def test_worker_fixture_uses_snapshot_pack_location(tmp_path, monkeypatch):
     pack = contributed_pack(tmp_path)
     monkeypatch.setattr(provider_setup, '_read_snapshot', lambda: {
-        'config': {}, 'owner_root': str(tmp_path), 'password_manager_pack_root': str(pack)})
+        'config': {}, 'owner_root': str(tmp_path), 'password_manager_pack_root': str(pack),
+        'password_manager_definitions': provider_setup._manager_definitions(load_manager_registry(pack_root=pack))})
     monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
     fixture = provider_setup.llm_provider.__wrapped__()
     consumer = next(fixture)
@@ -143,3 +144,64 @@ def test_worker_fixture_uses_snapshot_pack_location(tmp_path, monkeypatch):
     with pytest.raises(StopIteration):
         next(fixture)
     assert consumer.closed and consumer.loop.is_closed()
+
+
+@pytest.mark.parametrize('change', ['adapter', 'remove', 'invalid', 'escape', 'cli'])
+def test_debug_worker_rejects_declaration_drift_before_allocating_loop(tmp_path, monkeypatch, change):
+    pack = contributed_pack(tmp_path)
+    run = tmp_path / 'run'
+    run.mkdir()
+    context = SimpleNamespace(owner_root=tmp_path / 'other-owner', pack_root=pack, external_pack=True)
+    path = provider_setup.write_launch_snapshot(run, context, {'DEBUG': True})
+    monkeypatch.setenv('API_AGENT_INTEGRATION_CONTEXT', str(path))
+    monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
+    data = provider_setup._read_snapshot()
+    assert data['password_manager_definitions'][-1]['implementation'] == str(pack / 'adapter.py')
+    declaration = pack / 'cfg/password_managers.toml'
+    if change == 'remove':
+        declaration.unlink()
+    elif change == 'invalid':
+        declaration.write_text('invalid toml')
+    elif change == 'escape':
+        (tmp_path / 'outside.py').write_text('raise AssertionError("adapter must stay inert")')
+        declaration.write_text(declaration.read_text().replace('../adapter.py', '../../outside.py'))
+    elif change == 'cli':
+        declaration.write_text(declaration.read_text().replace('fixture-cli', 'changed-cli'))
+    else:
+        (pack / 'new_adapter.py').write_text('raise AssertionError("adapter must stay inert")')
+        declaration.write_text(declaration.read_text().replace('../adapter.py', '../new_adapter.py'))
+    monkeypatch.setattr(provider_setup.asyncio, 'new_event_loop',
+                        lambda: pytest.fail('drift must be rejected before loop allocation'))
+    fixture = provider_setup.llm_provider.__wrapped__()
+    with pytest.raises(provider_setup.ContractError, match='declarations changed after launch; restart'):
+        next(fixture)
+    fixture.close()
+
+
+def test_multiple_debug_workers_keep_validated_registry_after_fixture_start(tmp_path, monkeypatch):
+    pack = contributed_pack(tmp_path)
+    run = tmp_path / 'run'
+    run.mkdir()
+    context = SimpleNamespace(owner_root=tmp_path / 'other-owner', pack_root=pack, external_pack=True)
+    path = provider_setup.write_launch_snapshot(run, context, {
+        'DEBUG': True, 'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': descriptors()})
+    monkeypatch.setenv('API_AGENT_INTEGRATION_CONTEXT', str(path))
+    monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
+    from api_agent.auth import credentials
+    calls = []
+    monkeypatch.setattr(credentials, 'resolve_cli_path', lambda cli: '/synthetic/fixture-cli')
+    monkeypatch.setattr(credentials, '_run', lambda argv, timeout: calls.append(argv) or 'synthetic-key\n')
+    fixtures = [provider_setup.llm_provider.__wrapped__() for _ in range(2)]
+    workers = []
+    try:
+        workers = [next(fixture) for fixture in fixtures]
+        assert workers[0].password_manager_registry is not workers[1].password_manager_registry
+        (pack / 'cfg/password_managers.toml').unlink()
+        for worker in workers:
+            scoped = worker._credentials(0)
+            assert worker.loop.run_until_complete(scoped(0, 'password')) == 'synthetic-key'
+        assert calls == [['/synthetic/fixture-cli', 'password', 'Example', 'account']] * 2
+    finally:
+        for fixture in fixtures:
+            fixture.close()
+    assert all(worker.closed and worker.loop.is_closed() for worker in workers)

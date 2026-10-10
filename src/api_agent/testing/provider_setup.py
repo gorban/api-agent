@@ -19,7 +19,9 @@ from api_agent.providers.shared_setup import SharedSetupOwner
 def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
-    data = {'version': 1, 'owner_root': str(context.owner_root), 'config': dict(config)}
+    from api_agent.auth.managers import registry_for_context
+    data = {'version': 1, 'owner_root': str(context.owner_root), 'config': dict(config),
+            'password_manager_definitions': _manager_definitions(registry_for_context(context))}
     if getattr(context, 'external_pack', False):
         data['password_manager_pack_root'] = str(context.pack_root)
     if unattended_index_source is not None:
@@ -49,9 +51,10 @@ def _read_snapshot():
         if len(raw) > 1048576:
             raise ValueError
         data = json.loads(raw)
-        required = {'version', 'owner_root', 'config'}
+        required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
         if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
+                or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
                 or data['version'] != 1 or not isinstance(data['config'], dict)
                 or not isinstance(data['owner_root'], str) or not Path(data['owner_root']).is_absolute()):
@@ -67,6 +70,23 @@ def _read_snapshot():
     except (OSError, KeyError, ValueError, TypeError):
         pass
     raise ContractError('Integration provider context is unavailable; start through launch.py.')
+
+
+def _manager_definitions(registry):
+    """JSON-comparable launch-time definitions, without importing adapters."""
+    return [{'id': item.id, 'label': item.label, 'implementation': str(item.implementation),
+             'cli_default': item.cli_default} for item in registry.definitions]
+
+
+def _worker_manager_registry(data):
+    from api_agent.auth.managers import load_manager_registry, ManagerError
+    try:
+        registry = load_manager_registry(pack_root=data.get('password_manager_pack_root'))
+        if _manager_definitions(registry) == data['password_manager_definitions']:
+            return registry
+    except ManagerError:
+        pass
+    raise ContractError('Password manager declarations changed after launch; restart through launch.py.')
 
 
 _inspection_providers = []
@@ -285,7 +305,7 @@ def llm_provider():
     else:
         provider = IntegrationLLM(data['config'], data['owner_root'],
                                   unattended_index_source=data.get('unattended_index_source'),
-                                  password_manager_pack_root=data.get('password_manager_pack_root'))
+                                  password_manager_registry=_worker_manager_registry(data))
     try:
         yield provider
     finally:

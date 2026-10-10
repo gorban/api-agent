@@ -18,7 +18,7 @@ cli_default = "example-cli"
 
 The implementation path is relative to the declaration file and must resolve inside its owning pack. Identifiers must be unique across bundled and pack declarations. The TUI displays friendly labels and derives the implementation path and CLI default from the chosen identifier. The stored shared-manager descriptor still contains only `manager` and `cli_path`; the derived implementation path is not saved.
 
-Discovery reads declarations without importing implementation code or invoking CLIs. Changing the selected pack changes available choices. A saved unavailable choice requires correction or restoration of its pack; it never silently selects another manager. Each running operation captures its own registry so unrelated selections do not affect its credential reader.
+Discovery opens declaration files nonblocking and checks their descriptors are regular files before reading. FIFOs fail promptly without importing implementation code or invoking CLIs. Changing the selected pack changes available choices. A saved unavailable choice requires correction or restoration of its pack; it never silently selects another manager. Each running operation captures its own registry so unrelated selections do not affect its credential reader. Worker snapshots include the validated manager definitions. DEBUG workers compare current declarations with that snapshot before allocating a loop or retrieving credentials; changed, missing or invalid declarations require restarting launch.py. A worker then uses that validated registry without reloading declarations during credential retrieval. This binds adapter locations, not the contents of trusted implementation code.
 
 ## Implementation interface
 
@@ -40,6 +40,6 @@ The included [1Password](../../src/api_agent/auth/password_managers/onepassword.
 
 ## Editor
 
-**Edit shared password manager** shows the selected implementation's resolved `.py` path in a read-only field between **Password manager** and **CLI executable path**. Changing the dropdown updates that field immediately. A blank selection displays `-`. The derived path has no Tab stop; the executable path remains editable, with explicit overrides preserved.
+**Edit shared password manager** shows the selected implementation's resolved `.py` path in a read-only field between **Password manager** and **CLI executable path**. Changing the dropdown updates that field immediately. A blank selection displays `-`. The derived path has no Tab stop; the executable path remains editable. Opening the editor preserves the saved CLI path. Unedited defaults follow the previous manager’s own default; explicit edits remain unchanged even if they equal another manager’s default.
 
 The current POSIX loader opens each resolved directory component without following symlinks, then reads a regular-file descriptor. This prevents a directory swap during loading from redirecting execution outside the captured location. Platforms without directory-handle support retain canonical-path and final-file checks; equivalent Windows race hardening has not been verified.
