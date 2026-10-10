@@ -205,3 +205,102 @@ def test_multiple_debug_workers_keep_validated_registry_after_fixture_start(tmp_
         for fixture in fixtures:
             fixture.close()
     assert all(worker.closed and worker.loop.is_closed() for worker in workers)
+
+
+@pytest.mark.parametrize('change', ['unchanged', 'adapter', 'remove', 'before_first'])
+def test_debug_run_captures_one_registry_across_repository_suites(tmp_path, monkeypatch, change):
+    import io
+    from api_agent.auth import credentials, managers
+    from api_agent.testing import integration
+    from api_agent.testing.collection import TestIdentity
+    pack = contributed_pack(tmp_path)
+    base, owner = tmp_path / 'base', tmp_path / 'different-owner'
+    base.mkdir()
+    owner.mkdir()
+    context = SimpleNamespace(base_root=base, owner_root=owner, pack_root=pack, external_pack=True)
+    identities = tuple(TestIdentity(f'{root.name}::test.py::test_ready', root.name,
+        'test.py', 'test.py::test_ready', root=root) for root in (base, owner))
+    declaration = pack / 'cfg/password_managers.toml'
+    replacement = pack / 'replacement.py'
+    replacement.write_text((pack / 'adapter.py').read_text().replace(
+        'return [cli, kind,', "return [cli, 'changed-command', kind,"))
+    captured, snapshots, calls, workers, finalized, errors = [], [], [], [], [], []
+    real_discovery = managers.registry_for_context
+    def discover(selected_context):
+        registry = real_discovery(selected_context)
+        captured.append(registry)
+        return registry
+    monkeypatch.setattr(managers, 'registry_for_context', discover)
+    before_count = 0
+    def before_run():
+        nonlocal before_count
+        before_count += 1
+        if change == 'before_first' and before_count == 1 or before_count == 2 and change != 'unchanged':
+            if change == 'remove':
+                declaration.unlink()
+            else:
+                declaration.write_text(declaration.read_text().replace('../adapter.py', '../replacement.py'))
+    class ProcessDouble:
+        def __init__(self, args, **kwargs):
+            self.stdout = io.StringIO('')
+            self.returncode = 0
+            env = kwargs['env']
+            snapshots.append(json.loads(Path(env['API_AGENT_INTEGRATION_CONTEXT']).read_text()))
+            with monkeypatch.context() as worker_env:
+                worker_env.setenv('API_AGENT_INTEGRATION_CONTEXT', env['API_AGENT_INTEGRATION_CONTEXT'])
+                worker_env.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
+                fixture = provider_setup.llm_provider.__wrapped__()
+                try:
+                    try:
+                        worker = next(fixture)
+                    except provider_setup.ContractError as error:
+                        errors.append(str(error))
+                        self.returncode = 1
+                    else:
+                        workers.append(worker)
+                        scoped = worker._credentials(0)
+                        assert worker.loop.run_until_complete(scoped(0, 'password')) == 'synthetic-key'
+                finally:
+                    fixture.close()
+            node = args[-1]
+            rows = [dict(kind='report', node=node, phase=phase,
+                status='failed' if self.returncode and phase == 'setup' else 'passed',
+                duration=0, traceback=errors[-1] if self.returncode and phase == 'setup' else '')
+                for phase in ('setup', 'call', 'teardown')]
+            rows.append(dict(kind='run_complete', exit_code=self.returncode))
+            Path(env['API_AGENT_INTEGRATION_EVENTS']).write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        def poll(self):
+            return self.returncode
+    monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: identities)
+    monkeypatch.setattr(integration.subprocess, 'Popen', ProcessDouble)
+    monkeypatch.setattr(integration, 'finalize', finalized.append)
+    monkeypatch.setattr(credentials, 'resolve_cli_path', lambda cli: '/synthetic/fixture-cli')
+    monkeypatch.setattr(credentials, '_run', lambda argv, timeout: calls.append(argv) or 'synthetic-key\n')
+    result = integration.run_integration_tests(context, identities, accepted=True, before_run=before_run,
+        config={'DEBUG': True, 'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': descriptors()})
+    assert len(captured) == 1
+    assert len(snapshots) == len(finalized) == 2
+    assert all(snapshot['password_manager_definitions'] == provider_setup._manager_definitions(captured[0])
+               for snapshot in snapshots)
+    assert all(snapshot['password_manager_pack_root'] == str(pack) for snapshot in snapshots)
+    expected_calls = 2 if change == 'unchanged' else 0 if change == 'before_first' else 1
+    assert calls == [['/synthetic/fixture-cli', 'password', 'Example', 'account']] * expected_calls
+    assert len(workers) == expected_calls and all(worker.closed and worker.loop.is_closed() for worker in workers)
+    if change == 'unchanged':
+        assert result.exit_code == 0 and all(item.status == 'passed' for item in result.tests)
+        assert errors == []
+    else:
+        assert result.exit_code == 1 and result.tests[-1].status == 'error'
+        assert len(errors) == 2 - expected_calls
+        assert all(error == 'Password manager declarations changed after launch; restart through launch.py.'
+                   for error in errors)
+        assert 'declarations changed after launch' in result.tests[-1].traceback
+
+
+def test_explicit_empty_registry_snapshot_does_not_reload_declarations(tmp_path, monkeypatch):
+    from api_agent.auth.managers import PasswordManagerRegistry
+    monkeypatch.setattr('api_agent.auth.managers.registry_for_context',
+                        lambda context: pytest.fail('explicit registry must not trigger discovery'))
+    path = provider_setup.write_launch_snapshot(tmp_path, SimpleNamespace(owner_root=tmp_path), {},
+        password_manager_registry=PasswordManagerRegistry(()))
+    assert json.loads(path.read_text())['password_manager_definitions'] == []

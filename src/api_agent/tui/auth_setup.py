@@ -200,7 +200,8 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
             self.query_one('#auth-path', Input).focus()
 
     def on_input_changed(self, event):
-        if self.manager_form and event.input.id == 'auth-path':
+        if (self.manager_form and event.input.id == 'auth-path'
+                and event.value == event.input.value):
             self._remember_cli_edit(event.value)
 
     def _remember_cli_edit(self, value):

@@ -16,12 +16,15 @@ from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
 from api_agent.providers.shared_setup import SharedSetupOwner
 
 
-def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None):
+def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None,
+                          password_manager_registry=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     from api_agent.auth.managers import registry_for_context
+    registry = (registry_for_context(context) if password_manager_registry is None
+                else password_manager_registry)
     data = {'version': 1, 'owner_root': str(context.owner_root), 'config': dict(config),
-            'password_manager_definitions': _manager_definitions(registry_for_context(context))}
+            'password_manager_definitions': _manager_definitions(registry)}
     if getattr(context, 'external_pack', False):
         data['password_manager_pack_root'] = str(context.pack_root)
     if unattended_index_source is not None:
