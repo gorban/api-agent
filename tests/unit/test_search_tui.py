@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from textual import events
-from textual.widgets import Static
+from textual.widgets import Button, Static
 from textual.widgets._input import Selection
 
 from api_agent.tui.search import SearchBar, SearchInput
@@ -31,7 +31,7 @@ def test_search_direction_exit_preserves_identity_and_selection(tmp_path, key, d
             await pilot.press(key)
             control = app.screen.query_one(SearchInput)
             assert app.focused is control
-            assert app.screen.focus_chain == [control, table]
+            assert app.screen.focus_chain == [table, app.screen.query_one('#continue', Button), control]
             assert 'all' not in row_keys(table)
             assert app.selection.selected_ids == selected
             assert app.screen.test_search.direction == direction
@@ -55,6 +55,46 @@ def test_search_direction_exit_preserves_identity_and_selection(tmp_path, key, d
             assert not app.screen.query_one(SearchBar).display
             assert app.screen.query_one('ButtonFooter').display
             assert not (tmp_path / '.env').exists()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('key', ['slash', 'question_mark'])
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+def test_search_tab_cycles_list_start_and_query_in_both_directions(tmp_path, key, mode):
+    async def scenario():
+        app = fixture(tmp_path, mode, collector=lambda *a: identities(3))
+        async with app.run_test(size=(90, 25)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one(TestTable)
+            start = app.screen.query_one('#continue', Button)
+            assert app.screen.focus_chain == [table, start]
+            await pilot.press('tab')
+            assert app.focused is start
+            await pilot.press('tab')
+            assert app.focused is table
+            await pilot.press(key)
+            control = app.screen.query_one(SearchInput)
+            assert app.focused is control
+            for size in ((90, 25), (55, 16)):
+                await pilot.resize_terminal(*size)
+                await pilot.pause()
+                assert app.screen.focus_chain == [table, start, control]
+                table.focus()
+                for expected in (start, control, table):
+                    await pilot.press('tab')
+                    assert app.focused is expected
+                for expected in (control, start, table):
+                    await pilot.press('shift+tab')
+                    assert app.focused is expected
+            app.choose = AsyncMock()
+            await pilot.press('tab', 'enter')
+            app.choose.assert_awaited_once_with('continue')
+            control.focus()
+            await pilot.press('escape')
+            assert app.screen.focus_chain == [table, start]
+            assert app.focused is table
+            await pilot.press('shift+tab')
+            assert app.focused is start
     asyncio.run(scenario())
 
 

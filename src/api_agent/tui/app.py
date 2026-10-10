@@ -228,8 +228,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
     @property
     def focus_chain(self):
         chain = super().focus_chain
-        if self.test_search is not None:
-            return [self.query_one(SearchInput), self.query_one(TestTable)]
+        if self.kind == 'tests':
+            # DOM order is the test list, action buttons, then the search field.
+            # The native chain excludes the search field while it is hidden.
+            return [widget for widget in chain if isinstance(widget, (TestTable, Button, SearchInput))]
         if self.kind == 'test-results':
             # Summary panes remain mouse-focusable for scrolling and selection,
             # but Tab only visits the actual test list.
