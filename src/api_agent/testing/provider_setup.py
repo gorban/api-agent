@@ -238,7 +238,7 @@ class IntegrationLLM:
                                              interactive=index is None and (self.inspection is not None or not self._provider_config.get('NO_STD_IN', False)))
                 return self.owner
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
-                                                 credentials=credentials)
+                                                 credentials=credentials, describe=getattr(implementation, 'adescribe', None))
 
     def _selected_identity(self, config=None):
         config = self.config if config is None else config
@@ -253,6 +253,19 @@ class IntegrationLLM:
         async with self._setup_lock:
             await self._prepare_setup()
         await self._shared_setup.ensure_ready(selected_identity=self._selected_identity())
+
+    async def _describe(self):
+        async with self._setup_lock:
+            await self._prepare_setup()
+        return await self._shared_setup.describe(selected_identity=self._selected_identity())
+
+    def describe(self):
+        if self.closed:
+            raise ContractError('Integration provider setup is closed.')
+        try:
+            return self.loop.run_until_complete(self._describe())
+        except SetupPrerequisiteError as error:
+            pytest.skip(str(error))
 
     def ensure_ready(self):
         if self.closed:
@@ -308,7 +321,7 @@ class IntegrationLLM:
 
 
 class RemoteIntegrationLLM:
-    """Only readiness and lease disposal cross the setup backend boundary."""
+    """Only readiness, bounded catalog metadata and lease disposal cross the backend boundary."""
     timeout = 300
     def __init__(self, descriptor):
         from api_agent.providers.setup_transport import SetupClient
@@ -317,14 +330,20 @@ class RemoteIntegrationLLM:
         self.loop.set_default_executor(ThreadPoolExecutor(max_workers=1,
             thread_name_prefix='api-agent-setup-client'))
 
+    def describe(self):
+        return self._request(self.client.describe)
+
     def ensure_ready(self):
+        return self._request(self.client.ensure_ready)
+
+    def _request(self, method):
         from api_agent.providers.progress import report_timeout
         from api_agent.runtime.tasks import offload
         async def ready():
             async with report_timeout('Shared provider setup', self.timeout):
-                await offload(self.client.ensure_ready)
+                return await offload(method)
         try:
-            self.loop.run_until_complete(ready())
+            return self.loop.run_until_complete(ready())
         except SetupPrerequisiteError as error:
             pytest.skip(str(error))
 

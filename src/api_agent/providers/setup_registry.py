@@ -26,6 +26,7 @@ class SetupRegistry(_Owner):
         self._factory = owner_factory
         self._owner = None
         self._ready = None
+        self._catalog = None
         self._leases = {}
         self._history = {}
 
@@ -102,6 +103,37 @@ class SetupRegistry(_Owner):
             await _drain([waiter], self._timeout, self._cancel_requested)
             lease['waiters'].discard(waiter)
 
+    async def describe(self, binding):
+        await self.ensure_ready(binding)
+        if self._catalog is None:
+            self._catalog = _spawn(self._describe())
+        lease = self._lease(binding)
+        async def wait():
+            return await asyncio.shield(self._catalog)
+        waiter = _spawn(wait())
+        lease['waiters'].add(waiter)
+        try:
+            result = await asyncio.shield(waiter)
+            self._check()
+            if lease['revoked']:
+                raise SessionClosedError('Setup lease is revoked')
+            return result
+        finally:
+            await _drain([waiter], self._timeout, self._cancel_requested)
+            lease['waiters'].discard(waiter)
+
+    async def _describe(self):
+        with independent_timeout_scope():
+            method = getattr(self._owner, 'describe', None)
+            if not callable(method):
+                from .contracts import SetupPrerequisiteError
+                raise SetupPrerequisiteError('The selected LLM provider has no catalog capability.')
+            result = await method()
+            self._check()
+            from .catalog import catalog_to_wire
+            catalog_to_wire(result)
+            return result
+
     async def revoke(self, binding):
         lease = self._lease(binding)
         lease['revoked'] = True
@@ -112,5 +144,5 @@ class SetupRegistry(_Owner):
             lease['revoked'] = True
         await _drain([waiter for lease in self._leases.values() for waiter in lease['waiters']],
                      self._timeout, self._cancel_requested)
-        await _drain([self._ready] if self._ready is not None else [], self._timeout, self._cancel_requested)
+        await _drain([task for task in (self._ready, self._catalog) if task is not None], self._timeout, self._cancel_requested)
         await self._release()

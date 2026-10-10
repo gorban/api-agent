@@ -10,6 +10,28 @@ class ContractError(ValueError):
     """A neutral boundary failure, without payload or credential diagnostics."""
 
 
+class ProviderAccessError(OperationalError):
+    """Provider-sanitized, bounded upstream rejection details for consumer reports."""
+    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None):
+        super().__init__(kind)
+        if status is not None and (status.__class__ is not int or not 100 <= status <= 599):
+            raise ContractError('Invalid provider error status')
+        for value, limit in ((message, 512), (code, 100), (type, 100), (request_id, 100)):
+            if value is not None and (value.__class__ is not str or not value or len(value) > limit or not value.isprintable()):
+                raise ContractError('Invalid provider error detail')
+        if message is None:
+            raise ContractError('Invalid provider error detail')
+        self.status, self.code, self.type, self.request_id = status, code, type, request_id
+        self.message = message
+        self.args = (message,)
+
+    def __str__(self):
+        details = [f'{label}: {value}' for label, value in (
+            ('HTTP status', self.status), ('code', self.code),
+            ('type', self.type), ('request ID', self.request_id)) if value is not None]
+        return self.message + ('\n' + ' · '.join(details) if details else '')
+
+
 class SetupPrerequisiteError(ContractError):
     """A safe reason that required setup configuration/capability is unavailable.
 
