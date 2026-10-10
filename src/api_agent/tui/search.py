@@ -108,7 +108,7 @@ class SearchBar(Horizontal):
     SearchBar { dock: bottom; width: 100%; height: 1; }
     SearchBar > .search-marker { width: 2; height: 1; }
     SearchBar > SearchInput, SearchBar > SearchInput:focus { width: 1fr; height: 1; border: none; padding: 0; }
-    SearchBar > .search-exit { width: 8; height: 1; text-align: right; }
+    SearchBar > .search-exit { width: 9; height: 1; text-align: right; }
     """
 
     def __init__(self, marker='/', **kwargs):
@@ -122,7 +122,7 @@ class SearchBar(Horizontal):
     def compose(self):
         yield Static(Text(self.marker + ' '), classes='search-marker')
         yield SearchInput(id='test-search-input')
-        yield Static(Text.assemble(('Esc', 'yellow'), ' exit'), classes='search-exit')
+        yield Static(Text.assemble(' ', ('Esc', 'yellow'), ' exit'), classes='search-exit')
 
 
 class _UserBracket(Static):
