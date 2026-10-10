@@ -6,6 +6,7 @@ import hmac
 import json
 import math
 import os
+from pathlib import Path
 import re
 import threading
 from uuid import uuid4
@@ -15,7 +16,7 @@ from .contracts import (ContractError, InteractionRequiredError, SessionClosedEr
 from .progress import (ComponentProgress, component_timeout, independent_timeout_scope,
                        progress_sink, report_timeout, _sink)
 from .sessions import _Owner, _spawn, _drain, _consume
-from .control import CleanupPendingError
+from .control import CleanupPendingError, OperationalError, KINDS
 
 MAX_FRAME = 16384
 _BINDING = {'version', 'operation_id', 'selected_identity', 'worker_id', 'attempt'}
@@ -105,6 +106,35 @@ async def _read(reader):
         raise ContractError('Setup connection unavailable') from None
 
 
+def _diagnostic(error, boundary):
+    """Locations and fixed classifications only: no messages, code or locals."""
+    if isinstance(error, OperationalError):
+        kind = error.kind if type(error.kind) is str and error.kind in KINDS else 'unknown'
+    elif isinstance(error, TimeoutError):
+        kind = 'deadline'
+    elif isinstance(error, OSError):
+        kind = 'unavailable'
+    elif isinstance(error, ContractError):
+        kind = 'contract'
+    else:
+        kind = 'unknown'
+    rows = [f'{boundary} failure category: {kind}', 'Stack locations (innermost last):']
+    root = Path(__file__).parent.parent
+    locations = []
+    trace = error.__traceback__
+    while trace is not None:
+        filename = Path(trace.tb_frame.f_code.co_filename)
+        location = '<external code>'
+        if filename.is_relative_to(root):
+            relative = filename.relative_to(root)
+            if all(re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*(?:\.py)?', part) for part in relative.parts):
+                location = 'api_agent/' + relative.as_posix()
+        locations.append(f'  {location}:{trace.tb_lineno}')
+        trace = trace.tb_next
+    rows.extend(locations[-8:] or ['  <no captured stack>'])
+    return '\n'.join(rows)[:2048]
+
+
 def _error(error, capability=None):
     category, source, message = 'failed', None, 'Shared authentication setup failed'
     if isinstance(error, UnattendedCredentialError):
@@ -116,6 +146,8 @@ def _error(error, capability=None):
         category, message = 'prerequisite', str(error)
     elif isinstance(error, InteractionRequiredError):
         category, message = 'interaction', str(error)
+    elif error is not None:
+        message += '\n\n' + _diagnostic(error, 'Backend')
     if type(message) is not str or not message or len(message) > 4096:
         message = 'Shared setup requires attention.'
     if capability is not None:
@@ -138,7 +170,7 @@ def _raise_error(frame):
         raise SetupPrerequisiteError(frame['message'])
     if category == 'interaction':
         raise InteractionRequiredError(frame['message'])
-    raise ContractError('Shared authentication setup failed')
+    raise ContractError(frame['message'])
 
 
 @dataclass(eq=False, repr=False)
@@ -293,8 +325,8 @@ class SetupServer(_Owner):
                             response = await self._dispatch(peer, frame, action)
                     except (SetupPrerequisiteError, InteractionRequiredError) as error:
                         response = _error(error, self._capability)
-                    except Exception:
-                        response = _error(None)
+                    except Exception as error:
+                        response = _error(error, self._capability)
                     peer.writer.write(_encode(response))
                     await peer.writer.drain()
                     if action == 'revoke':
@@ -454,6 +486,8 @@ class SetupClient:
                 self._failed = True
                 interrupted = isinstance(original, (KeyboardInterrupt, SystemExit, asyncio.CancelledError))
                 operation_error = ContractError('Shared setup connection failed')
+                cause = original if isinstance(original, ContractError) else ContractError(_diagnostic(original, 'Worker transport'))
+                operation_error.__cause__ = cause
                 try:
                     self.close()
                 except CleanupPendingError as pending:
@@ -461,10 +495,10 @@ class SetupClient:
                     if interrupted:
                         original.retained_owners = (self,)
                         raise original from None
-                    raise pending from None
+                    raise pending from operation_error
                 if interrupted:
                     raise original from None
-                raise operation_error from None
+                raise operation_error from cause
 
     def close(self):
         with self._lock:
