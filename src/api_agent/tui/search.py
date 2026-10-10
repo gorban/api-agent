@@ -147,6 +147,7 @@ class GroupedUserFooter(Footer):
     DEFAULT_CSS = """
     GroupedUserFooter .shortcut-pair { width: auto; height: 1; }
     GroupedUserFooter .shortcut-pair > Static { width: auto; height: 1; }
+    GroupedUserFooter .user-cycle { padding-left: 1; }
     """
 
     def compose(self):

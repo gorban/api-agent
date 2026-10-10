@@ -161,6 +161,7 @@ def test_grouped_brackets_color_and_clicks_preserve_other_footer():
             assert all([(span.start, span.end, span.style) for span in widget.render().spans]
                        == [(0, 1, 'bold yellow')] for widget in brackets)
             group = footer.query_one('.user-cycle')
+            assert brackets[0].region.x == group.region.x + 1
             assert ''.join(widget.render().plain for widget in group.query(Static)) == '[ / ] Loop through users'
             assert any(getattr(widget, 'action', None) == 'other' for widget in footer.children)
             assert footer.styles.grid_size_columns == 2
