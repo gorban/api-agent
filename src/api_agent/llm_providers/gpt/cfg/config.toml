@@ -4,7 +4,7 @@ version = 1
 type = "str"
 enum = ["subscription", "api_key"]
 default = "subscription"
-help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key authentication is pending implementation."
+help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key mode uses only the selected LLM User password as its key and sets up without a browser. Attended key acquisition is deferred; there is no fallback."
 
 [fields.GPT_API_MODE]
 type = "str"
@@ -12,15 +12,23 @@ enum = ["responses", "completions"]
 conditional_defaults = [{when = {GPT_AUTH_MODE = "subscription"}, value = "responses"}, {when = {GPT_AUTH_MODE = "api_key"}, value = "completions"}]
 help = "Subscription authentication requires responses mode."
 
+[fields.GPT_BASE_URL]
+type = "str"
+default = "https://api.openai.com/v1"
+applies_when = {GPT_AUTH_MODE = "api_key"}
+help = "HTTPS base for API-key requests. For an alternate compatible backend, set its base (for example https://openrouter.ai/api/v1) and select its matching LLM User key. Subscription ignores this setting and uses the fixed official endpoint."
+
 [fields.GPT_STATE_DIR]
 type = "path"
 anchor = "owner_root"
+applies_when = {GPT_AUTH_MODE = "subscription"}
 allow_empty = true
 default = "~/.config/api-agent/gpt"
 help = "Protected GPT connection directory. Default uses ~/.config/api-agent/gpt, independently of GPT_APP_NAME; Review configuration expands it to your current absolute path. An explicit empty value also uses that default. Saved credentials require owner-only permissions."
 
 [fields.GPT_APP_NAME]
 type = "str"
+applies_when = {GPT_AUTH_MODE = "subscription"}
 default = "api-agent"
 help = "Application display-name hint for first ChatGPT subscription registration. Defaults to api-agent even with a resource pack; override here or in the pack's configuration to name your application, consistently across its installations. Existing registrations keep their issued client ID; changing this value does not rename them."
 
@@ -28,7 +36,7 @@ help = "Application display-name hint for first ChatGPT subscription registratio
 type = "str"
 acknowledge_default = false
 default = "LLM User"
-help = "LLM credential role for the selected provider and authentication mode. Subscription uses the entry username for cached-account matching and observed login pages, retrieving password/TOTP only when requested. The pending API-key route uses only the entry password as its key. Match the selected entry to the configured provider/mode; changing an account index does not change that configuration. Repeat a resource-pack account at matching indexes if several LLM entries use the same pack identity. Attended subscription login remains available through Skip."
+help = "LLM credential role for the selected provider and authentication mode. Subscription uses the entry username for cached-account matching and observed login pages, retrieving password/TOTP only when requested. API-key mode uses only the selected LLM User entry password as its key, with browser-free setup. Attended key acquisition is deferred; there is no fallback. Match the selected entry to the configured provider/mode; changing an account index does not change that configuration. Repeat a resource-pack account at matching indexes if several LLM entries use the same pack identity. Attended subscription login remains available through Skip."
 
 [fields.UNATTENDED_USER_INDEX]
 type = "int"
