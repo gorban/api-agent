@@ -6,7 +6,7 @@ import json
 from rich.text import Text
 from api_agent.auth.profiles import _canonical_shape, normalize_auth, DEFAULT_PASSWORD_MANAGER
 from api_agent.config.dotenv import read_dotenv
-from api_agent.tui.app import ButtonFooter, FocusNavigation, QuitDialog
+from api_agent.tui.app import ButtonFooter, FocusNavigation, QuitDialog, SelectedTextCopy
 from api_agent.tui.select import AdvancingSelect
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -87,7 +87,7 @@ class ExecutableInput(Input):
             self._on_edit(self.value)
 
 
-class AuthEditScreen(FocusNavigation, Screen[bool]):
+class AuthEditScreen(FocusNavigation, SelectedTextCopy, Screen[bool]):
     """Edit account descriptors on a separate page without resizing the list."""
 
     DEFAULT_CSS = """
@@ -103,7 +103,8 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
     """
     BINDINGS = [Binding('escape', 'cancel', 'Cancel'),
                 Binding('s', 'switch_target', 'Switch .env'),
-                Binding('c', 'cancel', 'Cancel'), Binding('q', 'quit_request', 'Quit')]
+                Binding('c', 'cancel', 'Cancel'), Binding('q', 'quit_request', 'Quit'),
+                *SelectedTextCopy.COPY_BINDINGS]
 
     def __init__(self, owner, title, values):
         super().__init__()
@@ -190,7 +191,7 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
             return False
         if action == 'switch_target':
             return len(self.owner._target_paths()) > 1
-        return True
+        return super().check_action(action, parameters)
 
     def action_switch_target(self):
         if self.check_action('switch_target', ()):

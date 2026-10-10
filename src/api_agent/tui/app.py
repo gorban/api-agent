@@ -157,14 +157,64 @@ class StopContainersDialog(QuitDialog):
         yield ButtonFooter()
 
 
-class SettingHelpDialog(ModalScreen):
+class SelectedTextCopy:
+    """Shared platform shortcut and clipboard feedback for read-only selections."""
+    COPY_BINDINGS = [Binding('ctrl+c', 'copy_value', 'Copy value', key_display='^c', priority=True),
+                     Binding('super+c', 'copy_selected_text', 'Copy value', key_display='⌘c', priority=True)]
+
+    async def _watch_selections(self, old_selections, selections):
+        await super()._watch_selections(old_selections, selections)
+        self.refresh_bindings()
+
+    @property
+    def active_bindings(self):
+        bindings = super().active_bindings
+        for key in ('ctrl+c', 'super+c'):
+            if key in bindings and bindings[key].binding.action in {'copy_value', 'copy_selected_text'}:
+                copy = bindings.pop(key)
+                bindings[key] = copy
+        return bindings
+
+    def check_copy_action(self, action):
+        return (self.app.screen is self
+                and (sys.platform == 'darwin') == (action == 'copy_selected_text')
+                and self.copy_target()[0] is not None)
+
+    def check_action(self, action, parameters):
+        if action in {'copy_value', 'copy_selected_text'}:
+            return self.check_copy_action(action)
+        return super().check_action(action, parameters)
+
+    def copy_target(self):
+        return self.get_selected_text(), True
+
+    async def _copy_with_feedback(self, value, on_copied):
+        if value is None:
+            return
+        try:
+            native = await copy_text(self.app, value)
+            on_copied()
+            self.app.notify('Value copied.' if native else 'Value sent to terminal clipboard.', timeout=2)
+        except ClipboardError:
+            self.app.notify('Could not copy the value.', severity='error', timeout=2)
+
+    async def action_copy_value(self):
+        value, _ = self.copy_target()
+        await self._copy_with_feedback(value, self.clear_selection)
+
+    async def action_copy_selected_text(self):
+        await self.action_copy_value()
+
+
+class SettingHelpDialog(SelectedTextCopy, ModalScreen):
     BINDINGS = [Binding("escape,c", "close", "Close", key_display="Esc / c", priority=True),
                 Binding("up,k", "scroll_description('up')", show=False),
                 Binding("down,j", "scroll_description('down')", show=False),
                 Binding("left,h", "scroll_description('left')", show=False),
                 Binding("right,l", "scroll_description('right')", show=False),
                 Binding("pageup", "scroll_description('page_up')", show=False),
-                Binding("pagedown", "scroll_description('page_down')", show=False)]
+                Binding("pagedown", "scroll_description('page_down')", show=False),
+                *SelectedTextCopy.COPY_BINDINGS]
 
     def __init__(self, name, description):
         super().__init__()
@@ -196,7 +246,7 @@ class SettingHelpDialog(ModalScreen):
         self.action_close()
 
 
-class WorkbenchScreen(FocusNavigation, Screen):
+class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     BINDINGS = [Binding("q", "quit_request", "Quit"), Binding("c", "close_view", "Close / menu"),
                 Binding("d", "delete_assignment", "Delete .env assignment"),
                 Binding("s", "switch_target", "Switch target .env"),
@@ -211,19 +261,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 Binding("down,j", "failure_down", "Scroll down", key_display="↓/j"),
                 Binding("pageup", "failure_page_up", "Page up"),
                 Binding("pagedown", "failure_page_down", "Page down"),
-                Binding("ctrl+c", "copy_value", "Copy value", key_display="^c", priority=True)]
-    BINDINGS += [Binding('super+c', 'copy_selected_text', 'Copy value', key_display='⌘c', priority=True)]
-
-    @property
-    def active_bindings(self):
-        bindings = super().active_bindings
-        # Replacing an inherited copy binding retains its earlier insertion position.
-        # Present our contextual copy action after the other screen shortcuts.
-        for key in ('ctrl+c', 'super+c'):
-            if key in bindings and bindings[key].binding.action in {'copy_value', 'copy_selected_text'}:
-                copy = bindings.pop(key)
-                bindings[key] = copy
-        return bindings
+                *SelectedTextCopy.COPY_BINDINGS]
 
     @property
     def focus_chain(self):
@@ -562,8 +600,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
         if action == "setting_help":
             return self.selected_setting_help() is not None
         if action in {'copy_value', 'copy_selected_text'}:
-            platform_matches = (sys.platform == 'darwin') == (action == 'copy_selected_text')
-            return platform_matches and self.copy_target()[0] is not None
+            return self.check_copy_action(action)
         if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
@@ -675,12 +712,12 @@ class WorkbenchScreen(FocusNavigation, Screen):
             selected_search = self.query_one(SearchInput).selected_text
             if selected_search:
                 return selected_search, True
-        value = self.selected_effective_value()
-        if value is not None:
-            return value, False
         selected = self.selected_result_text()
         if selected is not None:
             return selected, True
+        value = self.selected_effective_value()
+        if value is not None:
+            return value, False
         fallback = (str(self.body) or None) if self.kind == 'error' else self.selected_test_name()
         return fallback, False
 
@@ -702,25 +739,17 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return
         search_control = self.query_one(SearchInput) if selected and self.test_search is not None else None
         search_snapshot = (search_control.value, search_control.selection) if search_control is not None else None
-        try:
-            native = await copy_text(self.app, value)
+        def copied():
             if selected:
                 if search_control is not None:
                     if (search_control.value, search_control.selection) == search_snapshot:
                         search_control.selection = type(search_control.selection).cursor(search_control.cursor_position)
                 else:
                     self.clear_selection()
-            self.app.notify("Value copied." if native else "Value sent to terminal clipboard.", timeout=2)
-        except ClipboardError:
-            self.app.notify("Could not copy the value.", severity="error", timeout=2)
+        await self._copy_with_feedback(value, copied)
 
     def selected_result_text(self):
-        if self.kind not in {'test-results', 'test-failure', 'error'}:
-            return None
         return self.get_selected_text()
-
-    async def action_copy_selected_text(self):
-        await self.action_copy_value()
 
     def action_unset_setting(self):
         try:
