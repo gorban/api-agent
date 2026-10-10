@@ -103,3 +103,29 @@ def test_actual_gpt_declaration_suggests_setup_until_account_and_manager_complet
                 else:
                     assert app.screen.kind == 'defaults'
     asyncio.run(scenario())
+
+
+def test_gpt_modes_reuse_llm_user_entries_and_paired_indexes(tmp_path):
+    import json
+    from api_agent.tui.accounts import account_options
+    profile = {'password_manager': {'manager': '1password', 'cli_path': 'op'},
+        'roles': {'LLM User': [{'vault': 'fixture', 'user': 'subscription'},
+                               {'vault': 'fixture', 'user': 'api-key'}],
+                  'Partner': [{'vault': 'fixture', 'user': 'UserA'},
+                              {'vault': 'fixture', 'user': 'UserA'}]}}
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path,
+        pack_id='fixture', external_pack=False, dotenv_path=tmp_path / '.env',
+        anchors={name: tmp_path for name in ('base_root', 'pack_root', 'owner_root')})
+    app = ApiAgentApp(context, load_shared_schema(),
+        environ={'UNATTENDED_AUTH': json.dumps(profile), 'UNATTENDED_USER_INDEX': '1'},
+        container_runtime=SimpleNamespace(inventory=lambda: ()))
+    for mode in ('subscription', 'api_key', 'subscription'):
+        app.session.environ['GPT_AUTH_MODE'] = mode
+        result = app.session.result(_review=True)
+        assert app.credential_roles() == ('LLM User',)
+        assert not app.auth_setup_needed()
+        assert result.values['UNATTENDED_AUTH'] == profile
+        assert result.values['UNATTENDED_USER_INDEX'] == 1
+        assert account_options(profile, (*app.credential_roles(), 'Partner'), paired=True) == (
+            (0, 'subscription / UserA'), (1, 'api-key / UserA'))
+    assert not (tmp_path / '.env').exists()

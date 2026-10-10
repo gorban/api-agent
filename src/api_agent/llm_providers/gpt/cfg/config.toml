@@ -28,12 +28,11 @@ help = "Application display-name hint for first ChatGPT subscription registratio
 type = "str"
 acknowledge_default = false
 default = "LLM User"
-conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key"}, value = "GPT API Key"}]
-help = "Subscription login role for unattended authentication. Configure its account and the shared password manager; the entry username binds reuse to the matching cached OAuth account and drives observed email, password, optional TOTP and application-consent pages for a new connection. Password and TOTP are retrieved only when requested by the current page; unsupported challenges require browser interaction. Attended login remains available through Skip. The pending API-key route uses the entry password as its key."
+help = "LLM credential role for the selected provider and authentication mode. Subscription uses the entry username for cached-account matching and observed login pages, retrieving password/TOTP only when requested. The pending API-key route uses only the entry password as its key. Match the selected entry to the configured provider/mode; changing an account index does not change that configuration. Repeat a resource-pack account at matching indexes if several LLM entries use the same pack identity. Attended subscription login remains available through Skip."
 
 [fields.UNATTENDED_USER_INDEX]
 type = "int"
 allow_empty = true
 validation = "nonnegative"
 acknowledge_default = false
-help = "Zero-based unattended account selection. Integration [ / ] cycles configured accounts and manual login, saving to the displayed .env; s starts with that choice. Empty means attended; --unattended-user-index= overrides a saved choice for one run. No default index. GPT uses the selected entry username for cached-account matching or the initial email step. Account descriptors and a password manager are required. Credential retrieval failure stops the selected unattended operation, including interactive and DEBUG runs. Repair password-manager access or explicitly choose manual login with [ / ] or --unattended-user-index=."
+help = "Zero-based unattended account selection. Integration [ / ] cycles configured accounts and manual login, saving to the displayed .env; s starts with that choice. Empty means attended; --unattended-user-index= overrides a saved choice for one run. No default index. GPT subscription uses the selected entry username for cached-account matching or the initial email step. Match the entry to the selected provider/authentication mode and pair resource-pack entries at the same index. Account descriptors and a password manager are required. Credential retrieval failure stops the selected unattended operation, including interactive and DEBUG runs. Repair password-manager access or explicitly choose manual login with [ / ] or --unattended-user-index=."
