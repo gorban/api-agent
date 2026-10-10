@@ -89,7 +89,17 @@ def test_search_tab_cycles_list_start_and_query_in_both_directions(tmp_path, key
             app.choose = AsyncMock()
             await pilot.press('tab', 'enter')
             app.choose.assert_awaited_once_with('continue')
-            control.focus()
+            app.choose.reset_mock()
+            await pilot.press('s')
+            app.choose.assert_awaited_once_with('continue')
+            assert app.focused is start and control.value == ''
+            app.choose.reset_mock()
+            await pilot.press('tab', 's')
+            assert app.focused is control and control.value == 's'
+            app.choose.assert_not_awaited()
+            await pilot.press('tab', 's')
+            assert app.focused is control and control.value == 'ss'
+            app.choose.assert_not_awaited()
             await pilot.press('escape')
             assert app.screen.focus_chain == [table, start]
             assert app.focused is table

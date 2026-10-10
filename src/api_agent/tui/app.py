@@ -524,7 +524,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
         if action == 'exit_search':
             return self.test_search is not None
         if self.test_search is not None and action not in {'copy_value', 'copy_selected_text', 'toggle_selection'}:
-            return False
+            return (action == 'start_selected' and isinstance(self.app.focused, Button)
+                    and self.app.focused.id == 'continue')
         if action in {'search_forward', 'search_backward'}:
             return self.kind == 'tests'
         if action == "toggle_selection":
