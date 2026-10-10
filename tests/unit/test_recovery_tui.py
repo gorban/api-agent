@@ -46,7 +46,19 @@ def test_recovery_send_cancel_focus_and_cleanup():
             await asyncio.to_thread(channel.write, '')
             await asyncio.to_thread(channel.write, '\x1b[32m')
             assert screen.query_one(Input).disabled
-            await asyncio.to_thread(channel.write, 'Next input:')
+            # getpass/terminal echoes may write Enter separately from a prompt.
+            # Formatting must remain visible without accepting another reply.
+            for formatting in ('\r', '\n', '\r\n', ' ', '\t', '\x1b[0m\r\n'):
+                await asyncio.to_thread(channel.write, formatting)
+                assert screen.awaiting_output
+                assert screen.query_one(Input).value == 'private-value'
+                assert screen.query_one(Input).disabled
+                assert screen.query_one('#manager-send', Button).disabled
+                screen.send_value()
+                assert channel.read(.01) is None
+            assert screen.transcript.endswith('\r\n \t\r\n')
+            await asyncio.to_thread(channel.write, '\r\nNext input:')
+            assert not screen.awaiting_output
             assert screen.query_one(Input).value == ''
             assert not screen.query_one(Input).disabled
             assert not screen.query_one('#manager-send', Button).disabled
