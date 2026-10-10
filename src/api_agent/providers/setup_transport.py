@@ -201,7 +201,10 @@ class SetupServer(_Owner):
     def _accept(self, reader, writer):
         peer = _Peer(reader, writer)
         self._peers.add(peer)
-        peer.task = _spawn(self._serve(peer))
+        # The listener captures startup's context. Each accepted connection owns
+        # its request deadlines after that startup budget has ended.
+        with independent_timeout_scope():
+            peer.task = _spawn(self._serve(peer))
 
     async def _start(self):
         self._server = await asyncio.start_server(self._accept, '127.0.0.1', 0, limit=MAX_FRAME)
