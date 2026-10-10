@@ -20,6 +20,8 @@ Approved prerequisite and interaction errors retain their actionable explanation
 
 The backend is disposed before suite publication. Failed disposal retains a cleanup handle and the creating loop for retry. Existing terminal/TUI cleanup consumers own that handle until disposal is acknowledged; it does not represent a retained browser.
 
+Worker socket disposal and its acknowledgement use fresh bounded cleanup scopes, independent of the readiness request. An expired request cannot consume those cleanup budgets. Successful cleanup preserves the request failure and revokes the disconnected lease before session teardown; genuinely unconfirmed disposal still retains a retry owner.
+
 ## Current boundary
 
 DEBUG keeps the existing serial worker-local browser inspection path. Moving retained debug browsers to the shared backend remains a separate task. Ordinary integration acceptance and the human E2E gate are unchanged. This backend supports setup readiness, not remote inference or API execution; those consumers need their own ownership contracts.

@@ -12,7 +12,8 @@ from uuid import uuid4
 
 from .contracts import (ContractError, InteractionRequiredError, SessionClosedError,
                         SetupPrerequisiteError, UnattendedCredentialError)
-from .progress import ComponentProgress, component_timeout, progress_sink, report_timeout, _sink
+from .progress import (ComponentProgress, component_timeout, independent_timeout_scope,
+                       progress_sink, report_timeout, _sink)
 from .sessions import _Owner, _spawn, _drain, _consume
 from .control import CleanupPendingError
 
@@ -408,25 +409,29 @@ class SetupClient:
             await self._exchange('ready')
 
     async def _close(self):
-        async with component_timeout('Worker setup disconnect', self._cleanup_timeout) as budget:
-            if self._request_task is not None:
-                await _drain([self._request_task], budget.remaining, self._cancel_requested)
-            if self._writer is not None:
-                try:
-                    if self._binding is not None and not self._failed:
-                        await self._exchange('revoke')
-                except Exception:
-                    pass
-                finally:
-                    self._writer.close()
+        # An expired readiness request must not exhaust owned disposal.
+        with independent_timeout_scope():
+            async with component_timeout('Worker setup disconnect', self._cleanup_timeout) as budget:
+                if self._request_task is not None:
+                    await _drain([self._request_task], budget.remaining, self._cancel_requested)
+                if self._writer is not None:
                     try:
-                        await self._writer.wait_closed()
-                    except OSError:
+                        if self._binding is not None and not self._failed:
+                            await self._exchange('revoke')
+                    except Exception:
                         pass
+                    finally:
+                        self._writer.close()
+                        try:
+                            await self._writer.wait_closed()
+                        except OSError:
+                            pass
 
     async def _await_close(self):
-        async with component_timeout('Worker transport cleanup', self._cleanup_timeout):
-            await asyncio.shield(self._closing_task)
+        # Disposal acknowledgement has its own bounded, non-request budget too.
+        with independent_timeout_scope():
+            async with component_timeout('Worker transport cleanup', self._cleanup_timeout):
+                await asyncio.shield(self._closing_task)
 
     async def _retry_close(self):
         await asyncio.to_thread(self.close)
