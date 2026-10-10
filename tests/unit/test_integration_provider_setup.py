@@ -298,12 +298,22 @@ def test_cleanup_failure_keeps_loop_for_retry(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('cached', [False, True])
 @pytest.mark.parametrize('jobs', [0, 2])
-def test_real_launch_worker_cannot_use_an_unbound_cache_for_selected_user(tmp_path, cached, jobs):
+def test_real_launch_worker_cannot_use_an_unbound_cache_for_selected_user(tmp_path, monkeypatch, cached, jobs):
     import time
     from api_agent.llm_providers.gpt.connections import ConnectionStore
     from api_agent.llm_providers.gpt.contracts import Connection
     from api_agent.testing.collection import collect_tests
     from api_agent.testing.recorded import run_recorded_integration
+    import httpx
+    from unittest.mock import Mock
+    from api_agent.llm_providers.gpt import browser, factory
+    # Authentication now runs in the launcher's backend, not the pytest child.
+    # Guard that process too; no transport or browser is valid in this case.
+    transport = Mock(side_effect=AssertionError('unexpected transport'))
+    window = Mock(side_effect=AssertionError('unexpected browser'))
+    monkeypatch.setattr(httpx, 'AsyncClient', transport)
+    monkeypatch.setattr(browser, 'subscription_browser', window)
+    monkeypatch.setattr(factory, 'subscription_browser', window)
     base = tmp_path / 'base'
     suite = base / 'tests/integration'
     suite.mkdir(parents=True)
@@ -327,7 +337,9 @@ def test_real_launch_worker_cannot_use_an_unbound_cache_for_selected_user(tmp_pa
     assert recorded.persisted and len(saved) == 1
     assert recorded.exit_code == 1
     assert recorded.execution.tests[0].status == 'failed'
-    assert 'requires a credential reader' in recorded.execution.tests[0].traceback
+    assert 'Shared setup connection failed' in recorded.execution.tests[0].traceback
+    transport.assert_not_called()
+    window.assert_not_called()
     assert 'synthetic-secret' not in recorded.execution.output
     results = list(recorded.directory.glob('*-result.json'))
     assert len(results) == 1 and json.loads(results[0].read_text())['status'] == 'failed'

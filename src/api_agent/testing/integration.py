@@ -90,6 +90,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
 
     chunks, results = [], {}
     inspections = []
+    backend = None
+    interruption = None
     callback_failed = cancelled = failed = False
     disabled = set()
 
@@ -113,11 +115,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         emit(RunnerEvent('output', repo, text=chunk))
 
     def abort_inspections():
-        nonlocal failed
+        nonlocal failed, interruption
         for inspection in inspections:
             try:
                 inspection.abort()
-            except Exception:
+            except BaseException as error:
+                if not isinstance(error, Exception) and interruption is None:
+                    interruption = error
                 chunks.append('Inspection cleanup pending; retry required.\n')
                 failed = True
 
@@ -166,6 +170,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             env = os.environ.copy()
             env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
             env['PYTHONUNBUFFERED'] = '1'
+            backend_descriptor = None
             for repo in dict.fromkeys(test.repo for test in tests):
                 selected = {test.node_id: test for test in tests if test.repo == repo}
                 root = next(iter(selected.values())).root or roots.get(repo)
@@ -184,13 +189,19 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
                     break
+                if config is not None and not config.get('DEBUG') and backend is None:
+                    from .setup_backend import SetupBackend
+                    backend = SetupBackend(config, context.owner_root,
+                        unattended_index_source=unattended_index_source)
+                    backend_descriptor = backend.start()
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
                 with directory as temporary:
                     if config is not None:
                         from .provider_setup import write_launch_snapshot
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
-                            unattended_index_source=unattended_index_source))
+                            unattended_index_source=unattended_index_source,
+                            setup_backend=backend_descriptor))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
@@ -331,6 +342,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     break
     except BaseException as error:
         if not isinstance(error, Exception):
+            interruption = error
             error.inspections = tuple(inspections)
             abort_inspections()
             raise
@@ -339,6 +351,17 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         raw('', 'Integration runner failed; details withheld.\n')
         failed = True
     finally:
+        if backend is not None:
+            try:
+                backend.close()
+            except BaseException as error:
+                inspections.append(backend)
+                if not isinstance(error, Exception) and interruption is None:
+                    interruption = error
+                if interruption is not None:
+                    interruption.inspections = tuple(inspections)
+                chunks.append('Shared setup backend cleanup pending; retry required.\n')
+                failed = True
         try:
             check_cancellation()
             for test in tests:
@@ -358,8 +381,14 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             result = IntegrationRunResult(130 if cancelled else int(result.exit_code != 0 or callback_failed or failed),
                                           result.tests, ''.join(chunks), cancelled, result.inspections)
         except BaseException as error:
+            primary = interruption or error
+            interruption = primary
+            primary.inspections = tuple(inspections)
             abort_inspections()
             # Failed emergency disposal still needs a reviewable retry handle.
-            error.inspections = tuple(inspections)
-            raise
+            primary.inspections = tuple(inspections)
+            raise primary
+        if interruption is not None:
+            interruption.inspections = tuple(inspections)
+            raise interruption
     return result

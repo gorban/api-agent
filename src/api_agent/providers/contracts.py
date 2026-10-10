@@ -26,6 +26,8 @@ class UnattendedCredentialError(InteractionRequiredError):
     """Credential access failed; never silently replace the selected identity."""
 
     def __init__(self, message, *, index_source=None):
+        self.detail = message
+        self.index_source = index_source
         guidance = ('Failed to get credentials for unattended access. Fix credential access, '
                     'or switch to attended login with [ and ] to cycle to "No unattended user set"')
         if index_source == 'dotenv' or isinstance(index_source, str) and index_source.endswith('/.env'):

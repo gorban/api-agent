@@ -1,6 +1,7 @@
 """Lazy provider setup for launch-owned integration workers."""
 import asyncio
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -15,12 +16,15 @@ from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
 from api_agent.providers.shared_setup import SharedSetupOwner
 
 
-def write_launch_snapshot(directory, context, config, *, unattended_index_source=None):
+def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     data = {'version': 1, 'owner_root': str(context.owner_root), 'config': dict(config)}
     if unattended_index_source is not None:
         data['unattended_index_source'] = unattended_index_source
+    if setup_backend is not None:
+        from api_agent.providers.setup_transport import validate_descriptor
+        data['setup_backend'] = validate_descriptor(setup_backend)
     payload = json.dumps(data, default=str, allow_nan=False).encode()
     if len(payload) > 1048576:
         raise ContractError('Integration configuration is too large.')
@@ -43,13 +47,16 @@ def _read_snapshot():
         if len(raw) > 1048576:
             raise ValueError
         data = json.loads(raw)
-        if (set(data) not in ({'version', 'owner_root', 'config'},
-                             {'version', 'owner_root', 'config', 'unattended_index_source'})
+        required = {'version', 'owner_root', 'config'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or type(data['version']) is not int
                 or data['version'] != 1 or not isinstance(data['config'], dict)
                 or not isinstance(data['owner_root'], str) or not Path(data['owner_root']).is_absolute()):
             raise ValueError
+        if 'setup_backend' in data:
+            from api_agent.providers.setup_transport import validate_descriptor
+            data['setup_backend'] = validate_descriptor(data['setup_backend'])
         return data
     except (OSError, KeyError, ValueError, TypeError):
         pass
@@ -61,11 +68,11 @@ _inspection_providers = []
 
 class IntegrationLLM:
     """One worker-local operation; this does not implement backend-wide IPC."""
-    def __init__(self, config, owner_root, *, unattended_index_source=None):
+    def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None):
         self.config = dict(config)
         self.owner_root = owner_root
         self.unattended_index_source = unattended_index_source
-        self.loop = asyncio.new_event_loop()
+        self.loop = asyncio.new_event_loop() if loop is None else loop
         self.provider = self.owner = None
         self._provider_config = deepcopy(self.config)
         self._shared_setup = None
@@ -226,16 +233,48 @@ class IntegrationLLM:
             self.loop.close()
 
 
+class RemoteIntegrationLLM:
+    """Only readiness and lease disposal cross the setup backend boundary."""
+    timeout = 300
+    def __init__(self, descriptor):
+        from api_agent.providers.setup_transport import SetupClient
+        self.client = SetupClient(descriptor, timeout=self.timeout)
+        self.loop = asyncio.new_event_loop()
+        self.loop.set_default_executor(ThreadPoolExecutor(max_workers=1,
+            thread_name_prefix='api-agent-setup-client'))
+
+    def ensure_ready(self):
+        from api_agent.providers.progress import report_timeout
+        from api_agent.runtime.tasks import offload
+        async def ready():
+            async with report_timeout('Shared provider setup', self.timeout):
+                await offload(self.client.ensure_ready)
+        try:
+            self.loop.run_until_complete(ready())
+        except SetupPrerequisiteError as error:
+            pytest.skip(str(error))
+
+    def close(self):
+        if not self.loop.is_closed():
+            from api_agent.runtime.tasks import offload
+            self.loop.run_until_complete(offload(self.client.close))
+            self.loop.run_until_complete(self.loop.shutdown_default_executor())
+            self.loop.close()
+
+
 @pytest.fixture(scope='session')
 def llm_provider():
     """Requesting the fixture is inert; ensure_ready is the authentication gate."""
     data = _read_snapshot()
-    provider = IntegrationLLM(data['config'], data['owner_root'],
-                              unattended_index_source=data.get('unattended_index_source'))
+    if 'setup_backend' in data:
+        provider = RemoteIntegrationLLM(data['setup_backend'])
+    else:
+        provider = IntegrationLLM(data['config'], data['owner_root'],
+                                  unattended_index_source=data.get('unattended_index_source'))
     try:
         yield provider
     finally:
-        if os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
+        if isinstance(provider, IntegrationLLM) and os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
             provider.finish_run()
         else:
             provider.close()
