@@ -6,7 +6,7 @@ from textual.app import App
 from textual.widgets import Button, Input, Static
 
 from api_agent.auth.interaction import Reply
-from api_agent.tui.manager_recovery import TUIInteraction, transcript_text, _LIMIT
+from api_agent.tui.manager_recovery import ManagerRecoveryScreen, TUIInteraction, transcript_text, _LIMIT
 
 
 class RecoveryApp(App):
@@ -160,4 +160,78 @@ def test_running_integration_returns_to_results_after_recovery(tmp_path):
             assert 'PASS' in app.screen.body
             assert 'synthetic answer' not in app.screen.body
             assert not app.test_run_active()
+    asyncio.run(scenario())
+
+
+def test_shared_backend_recovery_outlives_startup_deadline(tmp_path, monkeypatch):
+    """A real accepted setup connection must not inherit listener startup's limit."""
+    import sys
+    from types import SimpleNamespace
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.contracts import TestResult
+    from api_agent.testing.integration import IntegrationRunResult
+    from api_agent.testing.setup_backend import SetupBackend, _SetupOwner
+    from api_agent.providers.setup_transport import SetupClient
+    from test_tui import fixture
+
+    cli = tmp_path / 'synthetic-keeper'
+    cli.write_text('#!' + sys.executable + '\n'
+        'import os,sys\n'
+        'if not os.isatty(0):\n'
+        ' sys.stderr.write("Keeper Persistent login is not working in this non-interactive environment\\n"); sys.exit(1)\n'
+        'sys.stderr.write("Password: "); sys.stderr.flush()\n'
+        'if sys.stdin.readline().strip() != "synthetic answer": sys.exit(2)\n'
+        'sys.stdout.write("private synthetic credential\\n")\n')
+    cli.chmod(0o700)
+    config = {'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': {
+        'password_manager': {'manager': 'keeper', 'cli_path': str(cli)},
+        'roles': {'LLM User': [{'vault': 'fixture', 'user': 'fixture'}]}}}
+    received = []
+
+    async def credential_readiness(owner):
+        # Keep the real shared backend, credential reader, PTY, and TUI transport;
+        # substitute only the provider's remote authentication operation.
+        received.append(await owner.provider._credentials(0)(0, 'password'))
+    monkeypatch.setattr(_SetupOwner, 'ensure_ready', credential_readiness)
+    identity = TestIdentity('base::t.py::test_login', 'base', 't.py', 't.py::test_login')
+
+    def runner(context, tests, values, **options):
+        backend = SetupBackend(config, tmp_path, interaction=options['interaction'])
+        client = SetupClient(backend.start())
+        try:
+            client.ensure_ready()
+        finally:
+            client.close()
+            backend.close()
+        return SimpleNamespace(execution=IntegrationRunResult(
+            0, (TestResult(identity, 'passed'),), ''), exit_code=0, persisted=True)
+
+    async def scenario():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: [identity])
+        app.integration_runner = runner
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause(.2)
+            await pilot.press('s')
+            for _ in range(50):
+                if isinstance(app.screen, ManagerRecoveryScreen):
+                    break
+                await pilot.pause(.1)
+            screen = app.screen
+            assert isinstance(screen, ManagerRecoveryScreen)
+            await pilot.pause(6)
+            assert app.screen is screen and app.test_run_active()
+            assert 'Password:' in screen.transcript
+            assert not received
+            screen.query_one(Input).value = 'synthetic answer'
+            await pilot.press('enter')
+            for _ in range(50):
+                if not app.test_run_active():
+                    break
+                await pilot.pause(.1)
+            assert received == ['private synthetic credential']
+            assert app.screen.kind == 'test-results'
+            assert 'PASS' in app.screen.body
+            assert 'synthetic answer' not in app.screen.body
+            assert 'private synthetic credential' not in app.screen.body
+            assert screen.transcript == ''
     asyncio.run(scenario())
