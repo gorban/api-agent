@@ -7,7 +7,6 @@ is required. The launcher prepares a local `.venv` and dependencies; `uv` speeds
 up that setup when installed. An editable package installation is unnecessary.
 
 To create and activate the environment explicitly:
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
