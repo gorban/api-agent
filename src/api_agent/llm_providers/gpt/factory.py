@@ -34,7 +34,7 @@ class OwnedSubscriptionSession(SubscriptionSession):
 
 class GPTProvider:
     version = 1
-    capabilities = ProviderCapabilities(kind="llm", operations=())
+    capabilities = ProviderCapabilities(kind="llm", operations=("describe",))
 
     def __init__(self, config, *, inspection=None):
         self.inspection = inspection
@@ -135,6 +135,15 @@ class GPTProvider:
         session = OwnedSubscriptionSession(store, profile)
         self.sessions.append(session)
         return session
+
+    async def adescribe(self, *, auth=None):
+        if self.closed:
+            raise ContractError("GPT provider is closed.")
+        from .discovery import discover_selections
+        base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
+        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
+            return await discover_selections(client=client, base_url=base, access_token=auth,
+                                              subscription=self.auth_mode == "subscription")
 
     async def aclose(self):
         self.closed = True

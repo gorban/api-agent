@@ -1,14 +1,15 @@
 """Backend-local operation authentication owner; no worker IPC transport.
 
 A backend must route all consumers for the selected identity to this instance.
-Only the readiness acknowledgement is a consumer result. Provider sessions,
-credential readers and browsers remain inside the creating process/event loop.
+Only readiness and bounded catalog metadata are consumer results. Provider
+sessions, credential readers and browsers remain inside the creating process.
 """
 import asyncio
 
 from .contracts import ContractError, SessionClosedError
 from .sessions import _Owner, _drain, _spawn
 from .control import OperationalError, CleanupPendingError
+from .progress import independent_timeout_scope
 
 
 class RevocableCredentials(_Owner):
@@ -57,7 +58,7 @@ class SharedSetupOwner(_Owner):
     Failed checkpoints remain failed for this operation: replay requires a new
     operation owner. This is deliberately not a cross-process registry.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, timeout=5):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, timeout=5):
         super().__init__(timeout)
         if (not isinstance(operation_id, str) or not operation_id
                 or not isinstance(selected_identity, str) or not selected_identity
@@ -71,6 +72,8 @@ class SharedSetupOwner(_Owner):
         self._owner = None
         self._ready = None
         self._disposal_started = False
+        self._describe = describe
+        self._catalog = None
 
     @property
     def selected_identity(self):
@@ -104,9 +107,24 @@ class SharedSetupOwner(_Owner):
         # Failures are sticky so multiple waiters cannot initiate auth replay.
         if self._ready is None or (self._ready.done() and not self._ready.cancelled()
                                    and self._ready.exception() is None):
-            self._ready = _spawn(self._checkpoint())
+            with independent_timeout_scope():
+                self._ready = _spawn(self._checkpoint())
         await asyncio.shield(self._ready)
         self._check()
+
+    async def describe(self, *, selected_identity=None):
+        await self.ensure_ready(selected_identity=selected_identity)
+        if not callable(self._describe):
+            from .contracts import SetupPrerequisiteError
+            raise SetupPrerequisiteError('The selected LLM provider has no catalog capability.')
+        if self._catalog is None:
+            with independent_timeout_scope():
+                self._catalog = _spawn(self._owner.call(self._describe))
+        result = await asyncio.shield(self._catalog)
+        self._check()
+        from .catalog import catalog_to_wire
+        catalog_to_wire(result)
+        return result
 
     async def aclose(self):
         self._context()
@@ -115,7 +133,7 @@ class SharedSetupOwner(_Owner):
         await super().aclose()
 
     async def _dispose(self):
-        await _drain([self._ready] if self._ready is not None else [],
+        await _drain([task for task in (self._ready, self._catalog) if task is not None],
                      self._timeout, self._cancel_requested)
         if not self._disposal_started:
             self._disposal_started = True

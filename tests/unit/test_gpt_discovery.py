@@ -65,7 +65,8 @@ def test_all_error_text_fields_remove_mixed_case_endpoint_urls(scheme):
         run_discovery(httpx.Response(403, json=payload, headers={'x-request-id': sensitive}))
     error = caught.value
     assert error.kind == 'authorization' and error.status == 403
-    assert str(error) == 'Permission denied at [endpoint]'
+    assert str(error).splitlines()[0] == 'Permission denied at [endpoint]'
+    assert 'HTTP status: 403' in str(error) and 'request ID: [endpoint]' in str(error)
     assert error.code == error.type == error.request_id == '[endpoint]'
     assert 'private.example' not in repr(error) + repr(vars(error))
 

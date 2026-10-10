@@ -1,12 +1,12 @@
 # Shared integration authentication
 
-Ordinary integration runs use one lazy authentication backend for the selected provider and account. Base, resource-pack and selected-provider suites share that backend, including parallel pytest workers. Requesting the `llm_provider` fixture is inert; `ensure_ready()` is the authentication boundary.
+Ordinary integration runs use one lazy authentication backend for the selected provider and account. Base, resource-pack and selected-provider suites share that backend, including parallel pytest workers. Requesting the `llm_provider` fixture is inert; `ensure_ready()` acquires authentication; `describe()` additionally verifies remote catalog access.
 
 ## Ownership
 
-The launcher owns a backend thread and its creating event loop. The backend freezes the operation configuration and creates one provider/session owner on demand. Simultaneous readiness requests coalesce. Later checkpoints reuse that owner so the provider can refresh its session. A failed setup remains failed for that operation; a new operation is required to retry it.
+The launcher owns a backend thread and its creating event loop. The backend freezes the operation configuration and creates one provider/session owner on demand. Simultaneous readiness requests coalesce. Later checkpoints reuse that owner so the provider can refresh its session. Concurrent discovery requests also share one cached catalog result. Failed setup or discovery remains failed for that operation; a new operation is required to retry it.
 
-Workers receive an opaque readiness acknowledgement. Provider tokens, password-manager readers and browser objects stay in the backend. No worker credential-retrieval endpoint is exposed: the backend uses the existing scoped, revocable reader for the selected role/account/kind.
+Workers receive an opaque readiness acknowledgement or bounded catalog metadata. Provider tokens, password-manager readers and browser objects stay in the backend. No worker credential-retrieval endpoint is exposed: the backend uses the existing scoped, revocable reader for the selected role/account/kind.
 
 Shared authentication runs under its own component deadlines. A short worker request limits that worker's wait, not the authentication needed by a longer-lived sibling. Timing reports still reach every waiting test.
 
@@ -16,7 +16,7 @@ Each worker receives a lease bound to the operation, selected identity, worker a
 
 The versioned protocol listens on an ephemeral IPv4 loopback port. Its operation capability is delivered only through the existing protected launcher snapshot. Requests and responses have bounded frames and strict shapes. A client cannot select a different provider/account or shut down the operation.
 
-Approved prerequisite and interaction errors retain their actionable explanations. Unknown failures use a fixed diagnostic. Component timing is relayed to waiting tests with neutral component labels and remapped identifiers; nested budgets and elapsed time remain available without sending provider-supplied identifiers or names.
+Approved prerequisite and interaction errors retain their actionable explanations. Provider-normalized access errors preserve safe upstream messages, HTTP status, code/type and request identifiers. Unknown failures use a fixed diagnostic. Component timing is relayed to waiting tests with neutral component labels and remapped identifiers; nested budgets and elapsed time remain available without sending provider-supplied identifiers or names.
 
 The backend is disposed before suite publication. Failed disposal retains a cleanup handle and the creating loop for retry. Existing terminal/TUI cleanup consumers own that handle until disposal is acknowledged; it does not represent a retained browser.
 
@@ -24,8 +24,15 @@ Worker socket disposal and its acknowledgement use fresh bounded cleanup scopes,
 
 ## Current boundary
 
-DEBUG keeps the existing serial worker-local browser inspection path. Moving retained debug browsers to the shared backend remains a separate task. Ordinary integration acceptance and the human E2E gate are unchanged. This backend supports setup readiness, not remote inference or API execution; those consumers need their own ownership contracts.
+DEBUG keeps the existing serial worker-local browser inspection path. Moving retained debug browsers to the shared backend remains a separate task. Ordinary integration acceptance and the human E2E gate are unchanged. This backend supports setup readiness and catalog discovery; remote inference and API execution remain separate; those consumers need their own ownership contracts.
 
-Help, units and collection do not start this backend. Integration startup allocates its communication resources after prerequisite preparation; it loads no provider or browser until a test requests readiness.
+Help, units and collection do not start this backend. Integration startup allocates its communication resources after prerequisite preparation; it loads no provider or browser until a test requests readiness or discovery.
 
 See [contract hardening](../prds/implementation_plan_m3.md) and [lazy setup](../prds/implementation_plan_f2b.md) for remaining work. Synthetic multiprocess tests prove the ownership boundary separately from live authentication acceptance.
+
+Catalogs contain selection IDs, display names and optional version, output-token
+and context limits. Unknown metadata remains absent rather than inferred from an
+ID. Strict local/wire validation applies the same count, text and aggregate byte
+limits before any result reaches a worker. No raw response or key metadata is
+exported. Short waiter deadlines and lease revocation cannot poison a sibling's
+shared discovery; operation disposal drains the catalog before releasing auth.

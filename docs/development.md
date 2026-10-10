@@ -93,7 +93,7 @@ an implemented-mode pass.
 To inspect provider login, use DEBUG with selected integration tests:
 ```bash
 ./launch.py --tui-mode integration --no-std-in --debug \
-  api-agent::tests/integration/test_llm_setup.py
+  api-agent::tests/integration/test_llm_discovery.py
 ```
 
 A created browser is retained after success/failure; a cached session may need

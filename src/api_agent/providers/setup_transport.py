@@ -1,4 +1,4 @@
-"""Capability-protected loopback readiness IPC; authentication stays backend-local."""
+"""Capability-protected readiness/catalog IPC; authentication stays backend-local."""
 import asyncio
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -12,13 +12,13 @@ import threading
 from uuid import uuid4
 
 from .contracts import (ContractError, InteractionRequiredError, SessionClosedError,
-                        SetupPrerequisiteError, UnattendedCredentialError)
+                        SetupPrerequisiteError, UnattendedCredentialError, ProviderAccessError)
 from .progress import (ComponentProgress, component_timeout, independent_timeout_scope,
                        progress_sink, report_timeout, _sink)
 from .sessions import _Owner, _spawn, _drain, _consume
 from .control import CleanupPendingError, OperationalError, KINDS
 
-MAX_FRAME = 16384
+MAX_FRAME = 262144
 _BINDING = {'version', 'operation_id', 'selected_identity', 'worker_id', 'attempt'}
 _COMPONENT = {'id', 'name', 'timeout', 'elapsed', 'active', 'parent_id'}
 _NAME = 'Shared provider setup'
@@ -137,6 +137,15 @@ def _diagnostic(error, boundary):
 
 def _error(error, capability=None):
     category, source, message = 'failed', None, 'Shared authentication setup failed'
+    if isinstance(error, ProviderAccessError):
+        details = {name: getattr(error, name) for name in ('status', 'code', 'type', 'request_id')}
+        details['kind'] = error.kind
+        message = error.message if capability is None else error.message.replace(capability, '[redacted]')
+        if capability is not None:
+            details = {name: value.replace(capability, '[redacted]') if isinstance(value, str) else value
+                       for name, value in details.items()}
+        return dict(version=1, status='error', category='provider', index_source=None,
+                    message=message, details=details)
     if isinstance(error, UnattendedCredentialError):
         category = 'credential'
         original = getattr(error, 'index_source', None)
@@ -156,6 +165,18 @@ def _error(error, capability=None):
 
 
 def _raise_error(frame):
+    if frame.get('category') == 'provider':
+        if (set(frame) != {'version', 'status', 'category', 'index_source', 'message', 'details'}
+                or frame['index_source'] is not None or type(frame['details']) is not dict
+                or set(frame['details']) != {'kind', 'status', 'code', 'type', 'request_id'}):
+            raise ContractError('Invalid provider response')
+        details = frame['details'].copy()
+        kind = details.pop('kind')
+        try:
+            error = ProviderAccessError(kind, frame['message'], **details)
+        except ValueError:
+            raise ContractError('Invalid provider response') from None
+        raise error
     if (set(frame) != {'version', 'status', 'category', 'index_source', 'message'}
             or type(frame['category']) is not str or frame['category'] not in ('failed', 'prerequisite', 'credential', 'interaction')
             or frame['index_source'] not in (None, 'dotenv', 'override')
@@ -225,7 +246,7 @@ class SetupServer(_Owner):
     def _request(self, frame):
         action = frame.get('action')
         keys = {'version', 'capability', 'action', 'timeout'} | ({'worker_id', 'attempt'} if action == 'register' else {'binding'})
-        if set(frame) != keys or type(frame['version']) is not int or frame['version'] != 1 or action not in ('register', 'ready', 'revoke'):
+        if set(frame) != keys or type(frame['version']) is not int or frame['version'] != 1 or action not in ('register', 'ready', 'describe', 'revoke'):
             raise ContractError('Invalid setup request')
         capability = _capability(frame['capability'])
         if not hmac.compare_digest(capability, self._capability):
@@ -270,12 +291,14 @@ class SetupServer(_Owner):
         except Exception:
             pass
 
-    async def _ready(self, peer):
+    async def _ready(self, peer, action):
         peer.waiting = True
         peer.count = 0
         peer.finals.clear()
         try:
             with progress_sink(self._progress):
+                if action == 'describe':
+                    return await self._registry.describe(peer.binding)
                 await self._registry.ensure_ready(peer.binding)
         finally:
             peer.waiting = False
@@ -291,15 +314,18 @@ class SetupServer(_Owner):
         if action == 'revoke':
             await self._registry.revoke(peer.binding)
             return dict(version=1, status='revoked')
-        ready = _spawn(self._ready(peer))
+        ready = _spawn(self._ready(peer, action))
         disconnected = _spawn(peer.reader.read(1))
         peer.jobs = (ready, disconnected)
         try:
             done, _ = await asyncio.wait({ready, disconnected}, return_when=asyncio.FIRST_COMPLETED)
             if disconnected in done:
                 raise ContractError('Setup connection disconnected')
-            await ready
+            result = await ready
             self._check()
+            if action == 'describe':
+                from .catalog import catalog_to_wire
+                return dict(version=1, status='catalog', catalog=catalog_to_wire(result))
             return dict(version=1, status='ready')
         finally:
             async with report_timeout('Setup request cancellation', self._timeout) as budget:
@@ -420,12 +446,17 @@ class SetupClient:
             if type(response.get('version')) is not int or response['version'] != 1:
                 raise ContractError('Invalid setup response')
             status = response.get('status')
-            if status == 'progress' and action == 'ready':
+            if status == 'progress' and action in ('ready', 'describe'):
                 self._progress(response)
                 continue
             if status == 'error':
                 _raise_error(response)
-            expected = {'register': 'registered', 'ready': 'ready', 'revoke': 'revoked'}[action]
+            if action == 'describe' and status == 'catalog':
+                if set(response) != {'version', 'status', 'catalog'}:
+                    raise ContractError('Invalid catalog response')
+                from .catalog import catalog_from_wire
+                return catalog_from_wire(response['catalog'])
+            expected = {'describe': 'catalog', 'register': 'registered', 'ready': 'ready', 'revoke': 'revoked'}[action]
             keys = {'version', 'status', 'binding'} if action == 'register' else {'version', 'status'}
             if status != expected or set(response) != keys:
                 raise ContractError('Invalid setup response')
@@ -436,12 +467,12 @@ class SetupClient:
                 self._binding = binding
             return
 
-    async def _ensure(self):
+    async def _ensure(self, action='ready'):
         async with component_timeout('Worker shared setup', self._timeout):
             if self._writer is None:
                 self._reader, self._writer = await asyncio.open_connection(self._descriptor['host'], self._descriptor['port'], limit=MAX_FRAME)
                 await self._exchange('register')
-            await self._exchange('ready')
+            return await self._exchange(action)
 
     async def _close(self):
         # An expired readiness request must not exhaust owned disposal.
@@ -472,6 +503,12 @@ class SetupClient:
         await asyncio.to_thread(self.close)
 
     def ensure_ready(self):
+        return self._run_request('ready')
+
+    def describe(self):
+        return self._run_request('describe')
+
+    def _run_request(self, action):
         with self._lock:
             self._context()
             if self._closed:
@@ -479,11 +516,11 @@ class SetupClient:
             if self._loop is None:
                 self._thread = threading.get_ident()
                 self._loop = asyncio.new_event_loop()
-            self._request_task = self._loop.create_task(self._ensure())
+            self._request_task = self._loop.create_task(self._ensure(action))
             self._request_task.add_done_callback(_consume)
             try:
-                self._loop.run_until_complete(self._request_task)
-            except (SetupPrerequisiteError, InteractionRequiredError):
+                return self._loop.run_until_complete(self._request_task)
+            except (SetupPrerequisiteError, InteractionRequiredError, ProviderAccessError):
                 raise
             except BaseException as original:
                 self._failed = True

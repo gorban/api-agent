@@ -25,7 +25,7 @@ def test_saved_subscription_setup_without_transport(tmp_path, monkeypatch):
             session = await provider.asetup(interactive=False, user_index=None, credentials=None)
             assert session.profile_id == profile
             assert await session() == "synthetic-access"
-            assert provider.capabilities.operations == ()
+            assert provider.capabilities.operations == ("describe",)
         finally:
             await provider.aclose()
     asyncio.run(scenario())

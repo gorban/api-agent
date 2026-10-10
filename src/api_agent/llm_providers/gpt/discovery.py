@@ -4,7 +4,7 @@ import re
 
 import httpx
 
-from api_agent.providers.control import OperationalError
+from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.llm import AvailableSelection
 from api_agent.providers.progress import component_timeout
 
@@ -23,13 +23,8 @@ def _safe_text(value, token, *, limit=512):
     return value[:limit] or None
 
 
-class ModelDiscoveryError(OperationalError):
+class ModelDiscoveryError(ProviderAccessError):
     """Only bounded, redacted upstream classification crosses the boundary."""
-    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None):
-        super().__init__(kind)
-        self.status, self.code, self.type, self.request_id = status, code, type, request_id
-        self.message = message
-        self.args = (message,)
 
 
 def _failure(status, data, request_id, token):
@@ -61,14 +56,28 @@ def _catalog(data, subscription, token):
                 or (description and (not description.isprintable() or token in description))):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned an invalid catalog.')
         seen.add(identifier)
-        if not identifier.startswith('gpt-'):
+        if not (identifier.startswith('gpt-') or identifier.startswith('openai/gpt-')):
             continue
-        selections.append(AvailableSelection(identifier, description))
+        name = row.get('display_name' if subscription else 'name', '')
+        version = row.get('version')
+        top = row.get('top_provider')
+        top = top if type(top) is dict else {}
+        maximum = row.get('max_output_tokens', top.get('max_completion_tokens'))
+        context = row.get('context_length')
+        if (type(name) is not str or len(name) > 200 or (name and not name.isprintable())
+                or (version is not None and (type(version) is not str or len(version) > 100 or (version and not version.isprintable())))
+                or any(token in text for text in (name, version or '') if text)
+                or any(value is not None and (type(value) is not int or not 0 < value <= 2147483647)
+                       for value in (maximum, context))):
+            raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata.')
+        selections.append(AvailableSelection(identifier, description, display_name=name,
+                          version=version, max_output_tokens=maximum, context_length=context))
+    if len(selections) > 256:
+        raise ModelDiscoveryError('unknown', 'GPT model discovery returned too many selections.')
     return tuple(selections)
 
 
-async def discover_models(*, client, base_url, access_token, subscription):
-    """Use one scoped GET; the caller retains ownership of the injected client."""
+def _endpoint(base_url, access_token, subscription):
     from .endpoint import validate_base_url
     if (type(subscription) is not bool or type(access_token) is not str
             or not access_token or not access_token.isascii() or len(access_token) > 16384
@@ -77,24 +86,67 @@ async def discover_models(*, client, base_url, access_token, subscription):
     base_url = validate_base_url(base_url)
     if subscription and base_url != _OFFICIAL_BASE:
         raise ModelDiscoveryError('invalid_request', 'GPT subscription model discovery requires the official endpoint.')
+    return base_url
+
+
+async def discover_models(*, client, base_url, access_token, subscription):
+    """One authorized catalog GET; the caller owns the injected client."""
+    base_url = _endpoint(base_url, access_token, subscription)
     failure = None
     try:
         async with component_timeout('GPT model discovery', _TIMEOUT) as budget:
-            async with client.stream('GET', base_url + '/models',
-                    headers={'Authorization': 'Bearer ' + access_token},
-                    follow_redirects=False, timeout=budget.remaining) as response:
-                body = bytearray()
-                async for chunk in response.aiter_bytes():
-                    if len(body) + len(chunk) > _LIMIT:
-                        raise ModelDiscoveryError('unknown', 'GPT model discovery response exceeded its limit.')
-                    body.extend(chunk)
-                try:
-                    data = json.loads(body)
-                except (ValueError, UnicodeDecodeError, RecursionError):
-                    data = None
-                if response.status_code != 200:
-                    raise _failure(response.status_code, data, response.headers.get('x-request-id'), access_token)
-                return _catalog(data, subscription, access_token)
+            status, data, request_id = await _get(client, base_url + '/models', access_token, budget)
+            if status != 200:
+                raise _failure(status, data, request_id, access_token)
+            return _catalog(data, subscription, access_token)
+    except (TimeoutError, httpx.TimeoutException):
+        failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')
+    except httpx.RequestError:
+        failure = ModelDiscoveryError('unavailable', 'GPT model discovery transport is unavailable.')
+    raise failure
+
+
+async def _get(client, url, token, budget):
+    headers = {} if token is None else {'Authorization': 'Bearer ' + token}
+    async with client.stream('GET', url, headers=headers, follow_redirects=False,
+                             timeout=budget.remaining) as response:
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            if len(body) + len(chunk) > _LIMIT:
+                raise ModelDiscoveryError('unknown', 'GPT model discovery response exceeded its limit.')
+            body.extend(chunk)
+        try:
+            data = json.loads(body)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            data = None
+        return response.status_code, data, response.headers.get('x-request-id')
+
+
+async def discover_selections(*, client, base_url, access_token, subscription):
+    """Verify remote access before returning a public or authenticated catalog."""
+    base_url = _endpoint(base_url, access_token, subscription)
+    failure = None
+    try:
+        async with component_timeout('GPT authenticated discovery', _TIMEOUT) as budget:
+            status, data, request_id = await _get(client, base_url + '/models', None, budget)
+            if status == 200:
+                if subscription:
+                    raise ModelDiscoveryError('authentication', 'GPT subscription requires an authenticated account catalog; the endpoint returned a public catalog.')
+                catalog = _catalog(data, False, access_token)
+                status, data, request_id = await _get(client, base_url + '/key', access_token, budget)
+                if status != 200:
+                    raise _failure(status, data, request_id, access_token)
+                if (type(data) is not dict or type(data.get('data')) is not dict
+                        or type(data['data'].get('label')) is not str or not data['data']['label']
+                        or len(data['data']['label']) > 512 or not data['data']['label'].isprintable()):
+                    raise ModelDiscoveryError('authentication', 'GPT endpoint did not verify the selected API key.')
+                return catalog
+            if status != 401:
+                raise _failure(status, data, request_id, access_token)
+            status, data, request_id = await _get(client, base_url + '/models', access_token, budget)
+            if status != 200:
+                raise _failure(status, data, request_id, access_token)
+            return _catalog(data, subscription, access_token)
     except (TimeoutError, httpx.TimeoutException):
         failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')
     except httpx.RequestError:

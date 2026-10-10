@@ -60,15 +60,16 @@ and branch coverage. Some integrations also need every valid configuration:
 
 Run the full integration suite once with your valid effective settings:
 ```bash
-./launch.py --tui-mode integration --no-std-in
+./launch.py --tui-mode integration --no-std-in --start
 ```
 
-Then repeat only the LLM setup tests for the other valid combinations—two more
+Then repeat only the LLM discovery tests for the other valid combinations—two more
 runs for GPT. For example, when this differs from your first run:
 ```bash
-./launch.py --tui-mode integration --no-std-in \
+./launch.py --tui-mode integration --no-std-in --start \
   --gpt-auth-mode=subscription --gpt-api-mode=responses \
-  api-agent::tests/integration/test_llm_setup.py
+  api-agent::tests/integration/test_llm_discovery.py
 ```
 
-Setup checks authentication. API-specific transport tests also need coverage under each applicable mode.
+Discovery checks remote credential acceptance and catalog access without inference.
+API-specific request tests also need coverage under each applicable mode.

@@ -14,12 +14,20 @@ password, without a separate secret-bearing API-key configuration field.
 API-key setup/transports are tracked in [the GPT plan](prds/implementation_plan_f2.md).
 
 Authentication starts when an operation needs it. Help, collection and choosing
-tests do not sign in or send inference requests. The shared `test_llm_setup`
-checks provider readiness without inference. For GPT API-key mode, readiness
-means acquiring a nonempty password into an owned session. A subscription login
-password can pass this acquisition check; subscription caches are never read
-in API-key mode. Remote key validity, permissions and API support need separate
-catalog/request tests. API-key setup itself makes no HTTP request.
+tests do not sign in or send inference requests. The shared `test_llm_discovery`
+authenticates the selected provider and verifies remote catalog access without
+inference. GPT probes the catalog anonymously first: a protected catalog is
+retried with the selected credential; a public API-key catalog requires a
+successful credentialed key-verification response. Subscription uses only its
+fixed official endpoint and rejects a public catalog. No other user, cache or
+authentication mode is tried on rejection.
+
+A wrong password, revoked key or missing catalog permission fails this test with
+the safe upstream explanation. Catalog access does not prove permission for
+Responses or Chat Completions; their request tests check that separately. An
+explicitly selected GPT must not acquire a universal catalog prerequisite.
+Acquisition-only readiness remains an internal unit-tested checkpoint, not the
+integration verdict. API-key acquisition itself makes no HTTP request.
 
 ## Attended and unattended login
 
