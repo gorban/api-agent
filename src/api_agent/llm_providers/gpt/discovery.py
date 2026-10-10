@@ -16,10 +16,13 @@ _TIMEOUT = 15
 def _safe_text(value, token, *, limit=512):
     if type(value) is not str:
         return None
-    value = value.replace(token, '[redacted]')
+    # Normalize first; no later transformation may reassemble the selected key.
+    value = ''.join(c for c in value if c.isprintable())
     value = re.sub(r'(?i)bearer\s+[^\s,;]+', 'Bearer [redacted]', value)
     value = re.sub(r'https?://[^\s]+', '[endpoint]', value, flags=re.IGNORECASE)
-    value = ''.join(c for c in value if c.isprintable())
+    value = value.replace(token, '[redacted]')
+    if token in value:
+        return None
     return value[:limit] or None
 
 
@@ -122,9 +125,14 @@ async def discover_models(*, client, base_url, access_token, subscription):
 
 
 async def _get(client, url, token, budget):
-    headers = {} if token is None else {'Authorization': 'Bearer ' + token}
+    headers = {'Accept-Encoding': 'identity'}
+    if token is not None:
+        headers['Authorization'] = 'Bearer ' + token
     async with client.stream('GET', url, headers=headers, follow_redirects=False,
                              timeout=budget.remaining) as response:
+        # Reject compression before HTTPX's decoder can allocate expanded chunks.
+        if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
+            raise ModelDiscoveryError('unknown', 'GPT model discovery returned unsupported content encoding.')
         body = bytearray()
         async for chunk in response.aiter_bytes():
             if len(body) + len(chunk) > _LIMIT:

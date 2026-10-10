@@ -9,7 +9,8 @@ import pytest
 
 
 @pytest.mark.parametrize('jobs', [0, 2])
-@pytest.mark.parametrize('outcome', ['accepted', 'wrong-password', 'restricted', 'public-wrong-password', 'expired'])
+@pytest.mark.parametrize('outcome', ['accepted', 'wrong-password', 'restricted', 'public-wrong-password', 'expired',
+    'control-newline', 'control-nul', 'control-escape'])
 def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, monkeypatch, jobs, outcome):
     from api_agent.auth import credentials
     from api_agent.llm_providers.gpt import factory
@@ -38,6 +39,11 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
             return httpx.Response(401, json={'error': {'message': 'API key expired.', 'code': 401,
                 'metadata': {'headers': {'WWW-Authenticate': challenge, 'secret': key}}}},
                 headers={'www-authenticate': challenge})
+        controls = {'control-newline': '\n', 'control-nul': '\0', 'control-escape': '\x1b'}
+        if outcome in controls:
+            reflected = key[:10] + controls[outcome] + key[10:]
+            return httpx.Response(401, json={'error': {'message': 'Selected credential rejected ' + reflected,
+                'code': reflected, 'type': reflected}}, headers={'x-request-id': reflected})
         status = 403 if outcome == 'restricted' else 401
         return httpx.Response(status, json={'error': {'message': 'Selected credential rejected ' + key,
             'code': 'restricted' if status == 403 else 'invalid_key', 'type': 'access_error'}}, headers={'x-request-id': 'req-safe'})
@@ -96,4 +102,8 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
                 continue
             assert 'Selected credential rejected' in details['message'] + details['trace']
             assert f'HTTP status: {403 if outcome == "restricted" else 401}' in details['trace']
+            if outcome.startswith('control-'):
+                assert 'code: [redacted]' in details['trace']
+                assert 'type: [redacted]' in details['trace'] and 'request ID: [redacted]' in details['trace']
+                continue
             assert 'type: access_error' in details['trace'] and 'request ID: req-safe' in details['trace']
