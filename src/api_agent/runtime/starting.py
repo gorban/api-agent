@@ -19,7 +19,7 @@ def automatically_started(result):
     values = result.values
     mode = values.get('TUI_MODE')
     return (mode in {'unit', 'run-local', 'allure', 'deployment-logs'}
-            or (mode == 'integration' and bool(values.get('DEBUG')))
+            or (mode == 'integration' and (bool(values.get('DEBUG')) or start_requested(values)))
             or (mode == 'e2e' and e2e_accepted(result)))
 
 

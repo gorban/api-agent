@@ -53,12 +53,12 @@ Supply the mode and applicable required settings. Missing prerequisites skip
 dependent integrations with a reason; malformed values and execution failures
 fail. Authentication that needs human interaction cannot be called unattended.
 
-Ordinary integration currently requires its interactive picker. The
-[automation task](prds/implementation_plan_a.md#terminal-integration-automation) tracks
-noninteractive execution; `--no-std-in --debug` is reserved for
-browser investigation and can permit attended browser interaction. E2E always
-requires explicit human acceptance and cannot use that exception. A confirmed
-newer worktree can still require approval before any mode.
+For terminal integration execution, combine `--no-std-in` with `--start`
+(or `--start=E2E`). `--debug` additionally retains login browsers for inspection.
+E2E requires its acceptance screen unless explicitly accepted with `--start=E2E`,
+which also permits terminal execution. Normal startup configuration checks and
+confirmed-newer-worktree approval still apply. The [automation task](prds/implementation_plan_a.md#terminal-integration-automation)
+tracks remaining terminal result presentation.
 
 ## Results and configuration coverage
 
