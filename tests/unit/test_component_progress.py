@@ -85,6 +85,79 @@ def test_reporting_failure_does_not_change_operation():
     asyncio.run(run())
 
 
+def test_repeated_child_cancellation_reports_completion_and_restores_live_parent(monkeypatch):
+    from api_agent.providers import progress
+    clock = [0.0]
+    monkeypatch.setattr(progress, '_clock', lambda: clock[0])
+    async def run():
+        baseline = set(asyncio.all_tasks())
+        rows = []
+        async def child():
+            async with report_timeout('Cancelled child', 1):
+                await asyncio.sleep(60)
+        with progress_sink(rows.append):
+            async with report_timeout('Continuing parent', 10) as parent:
+                clock[0] = 2
+                task = asyncio.create_task(child())
+                await asyncio.sleep(0)
+                task.cancel()
+                asyncio.get_running_loop().call_soon(task.cancel)
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                active = {}
+                for row in rows:
+                    if row.active:
+                        active[row.id] = row
+                    else:
+                        active.pop(row.id, None)
+                assert list(active) == [parent.id]
+                assert component_timing(tuple(active.values())) == 'Continuing parent: 0s elapsed; timeout 10s'
+                assert len([row for row in rows if row.name == 'Cancelled child' and not row.active]) == 1
+                clock[0] = 3
+                assert parent.remaining == 7 and parent.timeout == 10
+                assert progress._scope.get() is parent
+        await asyncio.sleep(0)
+        assert set(asyncio.all_tasks()) == baseline
+        assert progress._scope.get() is None
+    asyncio.run(asyncio.wait_for(run(), timeout=2))
+
+
+def test_repeated_cancellation_does_not_interrupt_heartbeat_disposal(monkeypatch):
+    from api_agent.providers import progress
+    original_sleep = asyncio.sleep
+    async def run():
+        baseline = set(asyncio.all_tasks())
+        started, disposing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        rows = []
+        async def heartbeat_sleep(delay):
+            assert delay == 1
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                disposing.set()
+                await release.wait()
+        monkeypatch.setattr(progress.asyncio, 'sleep', heartbeat_sleep)
+        async def action():
+            with progress_sink(rows.append):
+                async with report_timeout('Owned heartbeat', 10):
+                    await asyncio.Event().wait()
+        task = asyncio.create_task(action())
+        await started.wait()
+        task.cancel()
+        await disposing.wait()
+        for _ in range(3):
+            task.cancel()
+            await original_sleep(0)
+            assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert [row.active for row in rows] == [True, False]
+        assert set(asyncio.all_tasks()) == baseline
+    asyncio.run(asyncio.wait_for(run(), timeout=2))
+
+
 def test_nested_component_display_and_late_events(tmp_path):
     async def run():
         app = fixture(tmp_path)

@@ -13,6 +13,8 @@ import math
 import time
 from uuid import uuid4
 
+from .control import finish_cleanup
+
 
 @dataclass(frozen=True)
 class ComponentProgress:
@@ -111,12 +113,18 @@ async def report_timeout(name, timeout):
 
         emit(True)
         task = asyncio.create_task(heartbeat())
+
+        async def stop_heartbeat():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
         try:
             yield budget
         finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            emit(False)
+            try:
+                await finish_cleanup(stop_heartbeat())
+            finally:
+                emit(False)
     finally:
         _scope.reset(token)
 

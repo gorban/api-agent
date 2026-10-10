@@ -157,6 +157,11 @@ def test_bootstrap_selection_obeys_each_precedence_layer(tmp_path):
     assert bundled.fields['GPT_APP_NAME'].help
     assert bundled.fields['LLM_CREDENTIAL_ROLE'].default == 'LLM User'
     assert not hasattr(bundled.fields['LLM_CREDENTIAL_ROLE'], 'credential_role_optional')
+    help_text = bundled.fields['UNATTENDED_USER_INDEX'].help
+    assert 'Credential retrieval failure stops the selected unattended operation' in help_text
+    assert 'including interactive and DEBUG runs' in help_text
+    assert 'explicitly choose manual login' in help_text
+    assert 'falls back to attended' not in help_text
     assert 'GPT_PROFILE' not in bundled.fields
     # Higher-precedence explicit empty selections disable the lower selection.
     assert loading.bootstrap_schema(schema, [], {'LLM_PROVIDER': ''}, {'LLM_PROVIDER': '/missing.py:create'}) is schema

@@ -354,6 +354,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
             self._bindings.bind('slash', 'search_forward', 'Search tests', key_display='/')
             self._bindings.bind('question_mark', 'search_backward', 'Search tests from bottom', key_display='?')
             self._bindings.bind('escape', 'exit_search', 'Exit search', show=False, priority=True)
+            for binding in Input.BINDINGS:
+                if binding.key.rsplit('+', 1)[-1] in {'left', 'right'}:
+                    self._bindings.bind(binding.key, f'edit_search_query({binding.action!r})',
+                                        show=False, priority=True)
         if self.kind == "test-results":
             self._bindings.bind("e", "end_inspection", "End inspection")
             self.call_after_refresh(self.layout_test_results)
@@ -408,6 +412,11 @@ class WorkbenchScreen(FocusNavigation, Screen):
 
     def action_search_backward(self):
         self.start_search(-1)
+
+    async def action_edit_search_query(self, action):
+        control = self.query_one(SearchInput)
+        control.focus()
+        await control.run_action(action)
 
     def start_search(self, direction):
         from api_agent.testing.search import SearchSelection
@@ -523,6 +532,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
             return False
         if action == 'exit_search':
             return self.test_search is not None
+        if action == 'edit_search_query':
+            return self.test_search is not None and isinstance(self.app.focused, TestTable)
         if self.test_search is not None and action not in {'copy_value', 'copy_selected_text', 'toggle_selection'}:
             return (action == 'start_selected' and isinstance(self.app.focused, Button)
                     and self.app.focused.id == 'continue')
