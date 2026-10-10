@@ -52,9 +52,11 @@ Only roles needed by the operation participate; local authenticated UI may need
 a full pair, while provider-only tests need only the LLM account.
 
 Provider login is headless for unattended operations unless RUN_UI or DEBUG
-requests visibility. Attended login is visible. Where interaction is permitted,
-helper failure can explain the CLI issue and offer attended fallback; strict
-noninteractive operation must fail actionably instead of waiting for stdin.
+requests visibility. Attended login is visible. Credential retrieval failure stops an explicitly
+selected unattended operation, including interactive and DEBUG runs. Repair
+password-manager access or choose manual login with **[ / ]** or
+`--unattended-user-index=`. Browser security challenges may separately require
+human intervention when interaction is permitted.
 
 ## Saved GPT subscription connections
 

@@ -4,10 +4,44 @@ import sys
 import tempfile
 import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from api_agent.testing import inspection
+
+
+@pytest.mark.parametrize('failure', ['reader', 'stream', 'directory'])
+@pytest.mark.parametrize('retry', ['end_inspection', 'abort'])
+def test_disposed_group_is_never_signalled_again_after_later_cleanup_failure(tmp_path, monkeypatch, failure, retry):
+    from api_agent.testing import processes
+    monkeypatch.setattr(inspection.threading.Thread, 'start', lambda self: None)
+    signals = []
+    owner = ['original']
+    monkeypatch.setattr(processes.os, 'killpg', lambda *args: signals.append((owner[0], args)))
+    monkeypatch.setattr(processes, '_group_running', lambda group: False)
+    stream = SimpleNamespace(close=Mock(side_effect=[OSError('stream pending'), None] if failure == 'stream' else None))
+    process = SimpleNamespace(pid=424242, poll=lambda: 0, wait=Mock(return_value=0), stdout=stream)
+    reader = SimpleNamespace(join=Mock(), is_alive=Mock(side_effect=[True, False] if failure == 'reader' else None,
+                                                      return_value=False))
+    temporary = SimpleNamespace(name=str(tmp_path), cleanup=Mock(
+        side_effect=[OSError('directory pending'), None] if failure == 'directory' else None))
+    events = tmp_path / 'events.jsonl'
+    events.write_text('{"kind":"inspection_closed"}\n')
+    finalized = Mock(wraps=inspection.finalize)
+    monkeypatch.setattr(inspection, 'finalize', finalized)
+    handle = inspection.IntegrationInspection(process, inspection.InspectionDirectory(temporary), events, reader)
+    assert not handle.end_inspection()
+    assert handle.pending and not handle.closed
+    assert finalized.call_count == 1 and signals
+    initial_signals = signals.copy()
+    owner[0] = 'unrelated reused process group'
+    getattr(handle, retry)()
+    assert handle.closed and not handle.pending
+    assert finalized.call_count == 1 and signals == initial_signals
+    assert reader.join.call_count == (2 if failure == 'reader' else 1)
+    assert stream.close.call_count == (2 if failure == 'stream' else 1)
+    assert temporary.cleanup.call_count == (2 if failure == 'directory' else 1)
 
 
 def test_failed_group_reap_keeps_retry_handle_and_ipc_directory(monkeypatch):

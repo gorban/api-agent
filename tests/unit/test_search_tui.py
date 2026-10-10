@@ -290,6 +290,40 @@ def test_search_typing_does_not_start_operation_or_cycle_accounts(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('key', ['left', 'right', 'shift+left', 'shift+right',
+                                'ctrl+left', 'ctrl+right', 'ctrl+shift+left', 'ctrl+shift+right'])
+@pytest.mark.parametrize('search_key', ['slash', 'question_mark'])
+def test_table_focused_horizontal_edits_match_native_query_editing(tmp_path, key, search_key):
+    async def scenario():
+        app = fixture(tmp_path, 'unit', collector=lambda *a: identities(5))
+        async with app.run_test(size=(90, 25)) as pilot:
+            await pilot.pause()
+            await pilot.press(search_key)
+            control = app.screen.query_one(SearchInput)
+            table = app.screen.query_one(TestTable)
+            control.value = '::test_'
+            control.selection = Selection.cursor(3)
+            await pilot.pause()
+            await pilot.press(key)
+            expected = control.selection
+            assert expected != Selection.cursor(3)
+            control.selection = Selection.cursor(3)
+            table.focus()
+            await pilot.pause()
+            cursor, selected = table.cursor_row, app.selection.selected_ids.copy()
+            await pilot.press(key)
+            assert app.focused is control
+            assert control.selection == expected and control.value == '::test_'
+            assert table.cursor_row == cursor and table.range_anchor is None
+            assert app.selection.selected_ids == selected
+            await pilot.press('tab')
+            assert app.focused is table
+            await pilot.press('down')
+            assert table.cursor_row == min(cursor + 1, table.row_count - 1)
+            assert control.selection == expected
+    asyncio.run(scenario())
+
+
 def test_search_table_focus_space_ranges_typing_and_exit_message(tmp_path):
     async def scenario():
         tests = identities(5)

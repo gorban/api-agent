@@ -36,6 +36,9 @@ class IntegrationInspection:
         self.closed = False
         self.pending = False
         self.lost = False
+        self._process_reaped = False
+        self._reader_drained = False
+        self._stdout_closed = False
         self._lock = threading.Lock()
         self._attempt = 0
         try:
@@ -78,14 +81,22 @@ class IntegrationInspection:
                 pass
 
     def _reap(self):
-        finalize(self.process)
+        # A successful group disposal releases its numeric identity. Later
+        # reader/stream/directory failures must not signal that identity again.
+        if not self._process_reaped:
+            finalize(self.process)
+            self._process_reaped = True
         if self.liveness_fd is not None:
             os.close(self.liveness_fd)
             self.liveness_fd = None
-        self.reader.join(timeout=5)
-        if self.reader.is_alive():
-            raise TimeoutError('Inspection output reader remains owned')
-        self.process.stdout.close()
+        if not self._reader_drained:
+            self.reader.join(timeout=5)
+            if self.reader.is_alive():
+                raise TimeoutError('Inspection output reader remains owned')
+            self._reader_drained = True
+        if not self._stdout_closed:
+            self.process.stdout.close()
+            self._stdout_closed = True
         self.directory.temporary.cleanup()
         self.closed = True
         self.pending = False
