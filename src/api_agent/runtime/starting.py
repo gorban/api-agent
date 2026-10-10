@@ -35,5 +35,8 @@ def start_configuration_errors(result):
     if (field is not None and field.explicit and values.get('START') == 'False'
             and values.get('NO_STD_IN') and not values.get('COLLECT_ONLY')
             and automatically_started(result)):
-        return ('START=False conflicts with automatic execution using NO_STD_IN=True; omit START or set START=True.',)
+        message = 'START=False conflicts with automatic execution using NO_STD_IN=True; omit START or set START=True'
+        if mode in {'unit', 'integration', 'e2e'}:
+            message += '; collection-only is still allowed via --collect-only'
+        return (message + '.',)
     return ()
