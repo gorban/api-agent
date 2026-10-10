@@ -89,7 +89,9 @@ def test_stream_exhaustion_early_close_async_factory_and_terminal_once():
 
 def test_stream_shapes_errors_and_failed_close_retry():
     async def scenario():
-        llm, *_ = owner(timeout=.01)
+        # This tests an explicit close error, not expiry; a 10 ms budget can
+        # accidentally time out ordinary teardown under parallel coverage load.
+        llm, *_ = owner()
         with pytest.raises(ContractError):
             async with llm.stream(lambda **kwargs: object()):
                 pass
@@ -113,6 +115,7 @@ def test_stream_shapes_errors_and_failed_close_retry():
         assert llm._streams and not llm._finalizing
         await stream.aclose()
         assert not llm._streams
+        assert raw.aclose.await_count == 2
         await llm.aclose()
         llm, *_ = owner()
         async def bad(**kwargs):
