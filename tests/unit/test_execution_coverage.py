@@ -337,4 +337,4 @@ def test_unselected_production_owner_report_is_measured_or_fails_explicitly(monk
 
 def test_no_production_files_summary_is_explicit():
     result=runner.UnitRunResult(0,(runner.TestResult(identity(),'passed'),),(),'')
-    assert 'base: no measured production files' in runner.format_unit_summary(result)
+    assert 'base: no measured code files' in runner.format_unit_summary(result)

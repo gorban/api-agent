@@ -288,16 +288,16 @@ def format_unit_summary(result):
                              and any(not area.complete for area in result.coverage))
     state = ('CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0
              else 'Coverage FAIL' if coverage_only_failure else 'FAIL')
-    lines = [format_test_summary('unit', result.tests, state=state),
-             ('Production coverage requires every measured file to reach 100% lines and branches.'
-              if result.require_full_coverage else 'Partial selection: coverage is informational.')]
+    lines = [format_test_summary('unit', result.tests, state=state)]
+    if not result.require_full_coverage:
+        lines.append('Partial selection: coverage is informational.')
     if result.coverage and all(area.complete for area in result.coverage):
-        lines.append('Production coverage: 100% lines and branches across all measured files.')
+        lines.append('Code coverage: lines 100% · branches 100%.')
     for area in result.coverage:
         if area.complete:
             continue
         lines.append(f'{area.repo}::{area.file}: lines {area.line_percent:.2f}% ({area.covered_lines}/{area.num_statements}), branches {area.branch_percent:.2f}% ({area.covered_branches}/{area.num_branches})' + (' [below 100%]' if not area.complete else ''))
     for repo in dict.fromkeys(test.identity.repo for test in result.tests):
         if not any(area.repo == repo for area in result.coverage):
-            lines.append(f'{repo}: no measured production files (or coverage report unavailable; see output).')
+            lines.append(f'{repo}: no measured code files (or coverage report unavailable; see output).')
     return '\n'.join(lines)

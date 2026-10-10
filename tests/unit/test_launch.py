@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class LaunchTests(unittest.TestCase):
     def test_raw_unit_summary_has_separator_without_changing_shared_formatter(self):
-        from api_agent.testing.runner import UnitRunResult, format_unit_summary
-        result = UnitRunResult(0, (), (), '', require_full_coverage=False)
+        from api_agent.testing.runner import CoverageArea, UnitRunResult, format_unit_summary
+        result = UnitRunResult(0, (), (CoverageArea('base', 'tiny.py', 1, 1, 0, 0),), '')
         stream = StringIO()
         def runner(*args, **kwargs):
             kwargs['output']('pytest output\n')
@@ -24,6 +24,8 @@ class LaunchTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', stream), patch('api_agent.runtime.worktrees.verify_worktrees'), patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), patch('api_agent.testing.collection.collect_tests', return_value=[]), patch('api_agent.testing.runner.run_unit_tests', side_effect=runner):
             self.assertEqual(main(['--no-std-in', '--tui-mode', 'unit'], base_root=ROOT), 0)
         self.assertIn('pytest output\n\nUnit results:', stream.getvalue())
+        self.assertEqual(stream.getvalue().count('Code coverage: lines 100% · branches 100%.'), 1)
+        self.assertNotIn('Production coverage', stream.getvalue())
         self.assertTrue(format_unit_summary(result).startswith('Unit results:'))
 
     def test_internal_interpreter_handoff_does_not_repeat_worktree_gate(self):

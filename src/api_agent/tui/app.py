@@ -1671,7 +1671,7 @@ class ApiAgentApp(App[int]):
                                      if non_unit else bool(self.unit_result.exit_code),
                 skipped=non_unit and any(test.status == 'skipped' for test in self.unit_result.tests),
                 neutral_details=non_unit or not self.unit_result.require_full_coverage,
-                green_prefixes=("Production coverage: 100%", "Allure publication: PASS"),
+                green_prefixes=("Code coverage: lines 100% · branches 100%.", "Allure publication: PASS"),
                 red_prefixes=('Allure publication: FAIL', 'Test operation: FAIL', 'Inspection cleanup: FAIL')))
 
     def account_options(self):

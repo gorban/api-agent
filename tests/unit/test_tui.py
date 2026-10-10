@@ -1137,7 +1137,8 @@ def test_unit_summary_scroll_and_full_coverage_color(tmp_path):
             await pilot.pause()
             content = app.screen.query_one('#body', Static).content
             assert isinstance(content, Text)
-            coverage_start = content.plain.index('Production coverage: 100%')
+            coverage_start = content.plain.index('Code coverage: lines 100% · branches 100%.')
+            assert 'Production coverage' not in content.plain
             assert any(span.start == coverage_start and span.style == 'green' for span in content.spans)
             viewport = app.screen.query_one('#workbench-content', VerticalScroll)
             initial_scroll = viewport.max_scroll_y
