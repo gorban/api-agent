@@ -39,6 +39,7 @@ class ManagerRecoveryScreen(FocusNavigation, Screen):
         self.channel = channel
         self.transcript = ''
         self.pending = False
+        self.awaiting_output = False
 
     def compose(self):
         yield Static(Text(self.channel.label + ' Password Manager'), id='manager-title')
@@ -60,18 +61,28 @@ class ManagerRecoveryScreen(FocusNavigation, Screen):
     def append_output(self, value):
         if self.channel.closed or self.pending:
             return
-        self.transcript = (self.transcript + transcript_text(value))[-_LIMIT:]
+        text = transcript_text(value)
+        self.transcript = (self.transcript + text)[-_LIMIT:]
         if self.is_mounted:
             self.query_one('#manager-output', Static).update(self.transcript)
             self.query_one('#manager-output-scroll', VerticalScroll).scroll_end(animate=False)
+            if text and self.awaiting_output:
+                self.awaiting_output = False
+                field = self.query_one('#manager-input', Input)
+                field.value = ''
+                field.disabled = False
+                self.query_one('#manager-send', Button).disabled = False
+                if self.app.screen is self:
+                    field.focus()
 
     def send_value(self):
-        if self.pending or self.channel.closed:
+        if self.pending or self.channel.closed or self.awaiting_output:
             return
         field = self.query_one('#manager-input', Input)
+        self.awaiting_output = True
+        field.disabled = True
+        self.query_one('#manager-send', Button).disabled = True
         self.channel.reply(Reply('input', field.value))
-        field.value = ''
-        field.focus()
 
     def on_input_submitted(self, event):
         self.send_value()
@@ -162,6 +173,7 @@ class TUIInteraction:
     def dismiss(self, channel):
         # A deadline/cancellation may complete while the confirmation is open.
         if channel.screen in self.app.screen_stack:
+            channel.screen.query_one('#manager-input', Input).value = ''
             while self.app.screen is not channel.screen:
                 self.app.pop_screen()
             self.app.pop_screen()
