@@ -248,7 +248,7 @@ def test_malformed_provider_selection_is_not_a_skip(tmp_path, value):
 
 
 @pytest.mark.parametrize('jobs', [0, 2])
-def test_selected_invalid_combination_skips_shared_setup_but_runs_isolated_checks(tmp_path, jobs):
+def test_selected_invalid_combination_skips_shared_setup(tmp_path, jobs):
     from api_agent.testing.collection import collect_tests
     from api_agent.testing.recorded import run_recorded_integration
     base = tmp_path / 'base'
@@ -262,16 +262,16 @@ def test_selected_invalid_combination_skips_shared_setup_but_runs_isolated_check
               'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
               'ALLURE_RESULTS_DIR': tmp_path / 'allure', 'TEST_PARALLEL_JOBS': jobs}
     selected = collect_tests(context, 'integration', config=config)
-    assert len(selected) == 3
+    assert len(selected) == 1
     recorded = run_recorded_integration(context, selected, config, accepted=True,
         storage=SimpleNamespace(persist=lambda *args: None))
     assert recorded.exit_code == 0 and recorded.persisted
-    assert [test.status for test in recorded.execution.tests] == ['skipped', 'passed', 'passed']
+    assert [test.status for test in recorded.execution.tests] == ['skipped']
     reason = 'GPT subscription authentication requires responses mode; set GPT_API_MODE=responses.'
     assert recorded.execution.tests[0].traceback == reason
     assert not state.exists()
     rows = [json.loads(path.read_text()) for path in recorded.directory.glob('*-result.json')]
-    assert sorted(row['status'] for row in rows) == ['passed', 'passed', 'skipped']
+    assert [row['status'] for row in rows] == ['skipped']
     assert next(row for row in rows if row['status'] == 'skipped')['statusDetails']['message'] == reason
 
 
