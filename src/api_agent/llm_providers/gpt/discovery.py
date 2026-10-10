@@ -27,14 +27,29 @@ class ModelDiscoveryError(ProviderAccessError):
     """Only bounded, redacted upstream classification crosses the boundary."""
 
 
-def _failure(status, data, request_id, token):
+def _authentication_type(challenge):
+    """Extract only a bounded Bearer error identifier, never a raw challenge."""
+    if type(challenge) is not str or len(challenge) > 4096:
+        return None
+    scheme, separator, parameters = challenge.partition(' ')
+    if not separator or scheme.lower() != 'bearer':
+        return None
+    errors = re.findall(r'(?:^|,)\s*error\s*=\s*"([A-Za-z0-9_.-]{1,100})"\s*(?=,|$)',
+                        parameters, flags=re.IGNORECASE)
+    return errors[0] if len(errors) == 1 else None
+
+
+def _failure(status, data, request_id, token, authentication_type=None):
     row = data.get('error') if type(data) is dict else None
     row = row if type(row) is dict else {}
     kind = {401: 'authentication', 403: 'authorization', 429: 'rate_limited'}.get(status, 'invalid_request' if 400 <= status < 500 else 'unavailable')
     message = _safe_text(row.get('message'), token) or 'GPT model discovery failed.'
+    code = row.get('code')
+    if type(code) is int and -2147483648 <= code <= 2147483647:
+        code = str(code)
     return ModelDiscoveryError(kind, message, status=status,
-        code=_safe_text(row.get('code'), token, limit=100),
-        type=_safe_text(row.get('type'), token, limit=100),
+        code=_safe_text(code, token, limit=100),
+        type=_safe_text(row.get('type'), token, limit=100) or _safe_text(authentication_type, token, limit=100),
         request_id=_safe_text(request_id, token, limit=100))
 
 
@@ -95,9 +110,9 @@ async def discover_models(*, client, base_url, access_token, subscription):
     failure = None
     try:
         async with component_timeout('GPT model discovery', _TIMEOUT) as budget:
-            status, data, request_id = await _get(client, base_url + '/models', access_token, budget)
+            status, data, request_id, authentication_type = await _get(client, base_url + '/models', access_token, budget)
             if status != 200:
-                raise _failure(status, data, request_id, access_token)
+                raise _failure(status, data, request_id, access_token, authentication_type)
             return _catalog(data, subscription, access_token)
     except (TimeoutError, httpx.TimeoutException):
         failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')
@@ -119,7 +134,8 @@ async def _get(client, url, token, budget):
             data = json.loads(body)
         except (ValueError, UnicodeDecodeError, RecursionError):
             data = None
-        return response.status_code, data, response.headers.get('x-request-id')
+        return (response.status_code, data, response.headers.get('x-request-id'),
+                _authentication_type(response.headers.get('www-authenticate')))
 
 
 async def discover_selections(*, client, base_url, access_token, subscription):
@@ -128,24 +144,24 @@ async def discover_selections(*, client, base_url, access_token, subscription):
     failure = None
     try:
         async with component_timeout('GPT authenticated discovery', _TIMEOUT) as budget:
-            status, data, request_id = await _get(client, base_url + '/models', None, budget)
+            status, data, request_id, authentication_type = await _get(client, base_url + '/models', None, budget)
             if status == 200:
                 if subscription:
                     raise ModelDiscoveryError('authentication', 'GPT subscription requires an authenticated account catalog; the endpoint returned a public catalog.')
                 catalog = _catalog(data, False, access_token)
-                status, data, request_id = await _get(client, base_url + '/key', access_token, budget)
+                status, data, request_id, authentication_type = await _get(client, base_url + '/key', access_token, budget)
                 if status != 200:
-                    raise _failure(status, data, request_id, access_token)
+                    raise _failure(status, data, request_id, access_token, authentication_type)
                 if (type(data) is not dict or type(data.get('data')) is not dict
                         or type(data['data'].get('label')) is not str or not data['data']['label']
                         or len(data['data']['label']) > 512 or not data['data']['label'].isprintable()):
                     raise ModelDiscoveryError('authentication', 'GPT endpoint did not verify the selected API key.')
                 return catalog
             if status != 401:
-                raise _failure(status, data, request_id, access_token)
-            status, data, request_id = await _get(client, base_url + '/models', access_token, budget)
+                raise _failure(status, data, request_id, access_token, authentication_type)
+            status, data, request_id, authentication_type = await _get(client, base_url + '/models', access_token, budget)
             if status != 200:
-                raise _failure(status, data, request_id, access_token)
+                raise _failure(status, data, request_id, access_token, authentication_type)
             return _catalog(data, subscription, access_token)
     except (TimeoutError, httpx.TimeoutException):
         failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')

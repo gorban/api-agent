@@ -102,6 +102,43 @@ def test_malformed_upstream_error_fields_are_not_exported(payload):
     assert caught.value.code is None and caught.value.type is None
 
 
+@pytest.mark.parametrize('code,expected', [(401, '401'), (0, '0'), (-32603, '-32603'),
+    (-2147483648, '-2147483648'), (2147483647, '2147483647'),
+    (-2147483649, None), (2147483648, None), (True, None), (401.0, None), ([], None)])
+def test_numeric_upstream_codes_remain_bounded_strings(code, expected):
+    with pytest.raises(ModelDiscoveryError) as caught:
+        run_discovery(httpx.Response(401, json={'error': {'message': 'API key expired.', 'code': code}}))
+    assert caught.value.code == expected
+    assert caught.value.status == 401 and caught.value.kind == 'authentication'
+    if expected is not None:
+        assert 'code: ' + expected in str(caught.value)
+
+
+@pytest.mark.parametrize('challenge,expected', [
+    (None, None), (1, None), ('Bearer ' + 'x'*4090, None), ('Bearer', None),
+    ('Basic error="invalid_token"', None), ('Bearer realm="example"', None),
+    ('Bearer error="invalid_token"', 'invalid_token'),
+    ('bEaReR realm="example", ERROR="invalid_token", error_description="API key expired"', 'invalid_token'),
+    ('Bearer error="first", error="second"', None), ('Bearer error="' + 'x'*101 + '"', None),
+    ('Bearer error="https://private.example/token"', None),
+])
+def test_authentication_challenge_exports_only_one_safe_identifier(challenge, expected):
+    from api_agent.llm_providers.gpt.discovery import _authentication_type
+    assert _authentication_type(challenge) == expected
+
+
+@pytest.mark.parametrize('body_type,expected', [(None, 'invalid_token'), ('key_expired', 'key_expired'),
+    (TOKEN, '[redacted]')])
+def test_challenge_type_fallback_and_body_type_precedence(body_type, expected):
+    with pytest.raises(ModelDiscoveryError) as caught:
+        run_discovery(httpx.Response(401,
+            json={'error': {'message': 'API key expired.', 'code': 401, 'type': body_type,
+                            'metadata': {'headers': {'secret': TOKEN}}}},
+            headers={'www-authenticate': 'Bearer error="invalid_token", error_description="' + TOKEN + '"'}))
+    assert caught.value.type == expected and caught.value.code == '401'
+    assert TOKEN not in str(caught.value) + repr(vars(caught.value))
+
+
 def test_redirect_is_not_followed_even_when_injected_client_follows():
     calls = []
     def handler(request):
