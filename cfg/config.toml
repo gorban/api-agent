@@ -82,7 +82,7 @@ type = "str"
 enum = ["", "False", "True", "E2E"]
 default = "False"
 acknowledge_default = false
-help = "True starts the selected operation after startup configuration. E2E also accepts E2E execution, including with NO_STD_IN=True. False or empty disables automatic interactive startup; bare --start means True."
+help = "True starts the selected operation after startup configuration and permits NO_STD_IN integration execution. E2E also accepts E2E execution, including with NO_STD_IN=True. False or empty disables automatic interactive startup; bare --start means True."
 
 [fields.TUI_MODE]
 acknowledge_default = false

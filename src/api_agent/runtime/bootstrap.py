@@ -161,7 +161,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                 overrides=runtime_directory_overrides(context))
         result = retain_runtime_directory(result, context)
         errors = list(result.errors)
-        from api_agent.runtime.starting import start_configuration_errors, e2e_accepted
+        from api_agent.runtime.starting import start_configuration_errors, automatically_started
         errors.extend(start_configuration_errors(result))
         if result.values.get('NO_STD_IN') and not result.help_requested:
             errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}'
@@ -174,9 +174,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                               for name in result.missing)
             if (result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'}
                     and not result.values.get('COLLECT_ONLY')
-                    and not (mode == 'integration' and result.values.get('DEBUG'))
-                    and not (mode == 'e2e' and e2e_accepted(result))):
-                errors.append('NO_STD_IN=True is incompatible with integration/E2E execution unless integration DEBUG or E2E START=E2E is selected; collection-only is allowed.')
+                    and not automatically_started(result)):
+                errors.append('NO_STD_IN=True is incompatible with integration/E2E execution unless integration START=True/E2E or DEBUG, or E2E START=E2E is selected; collection-only is allowed.')
             if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'cleanup-containers', 'unattended-auth'}:
                 errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')
             if result.values.get('COLLECT_ONLY') and mode is not None and mode not in {'unit', 'integration', 'e2e'}:
@@ -222,7 +221,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print()
             print(format_unit_summary(execution))
             return execution.exit_code
-        if result.values.get('NO_STD_IN') and mode == 'integration' and result.values.get('DEBUG'):
+        if result.values.get('NO_STD_IN') and mode == 'integration' and automatically_started(result):
             from api_agent.runtime.dependencies import ensure_environment
             status = ensure_environment(context, argv, collect=True, groups=('dev',))
             if status is not None:
@@ -230,7 +229,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             from api_agent.testing.collection import collect_tests
             from api_agent.testing.launched import run_launched_integration
             tests = collect_tests(context, 'integration', result.positionals, config=result.values)
-            print('Integration debug: serial execution; provider login may require browser interaction.', flush=True)
+            print('Integration debug: serial execution; provider login may require browser interaction.'
+                  if result.values.get('DEBUG') else 'Integration tests: provider login may require browser interaction.', flush=True)
             from api_agent.auth.terminal_interaction import TerminalInteraction
             execution = run_launched_integration(context, tests, result.values, accepted=True,
                 interaction=TerminalInteraction(),

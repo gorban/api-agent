@@ -1,7 +1,7 @@
 """Join integration accounting and durable recording through owned runner hooks.
 
-The TUI supplies interactive acceptance; explicit integration DEBUG allows a
-launch-owned noninteractive start. This adapter records execution and
+The TUI supplies interactive acceptance; START=True/E2E or integration DEBUG
+allows a launch-owned noninteractive start. This adapter records execution and
 never supplies acceptance or starts services on its own.
 """
 from dataclasses import dataclass, replace
@@ -37,9 +37,11 @@ class RecordedIntegrationResult:
 
 def validate_recorded_integration(tests, config, *, accepted=False, no_std_in=False):
     """Validate acceptance before listeners, authentication or artifacts exist."""
-    if (accepted is not True or ((no_std_in or config.get('NO_STD_IN')) and not config.get('DEBUG'))
+    from api_agent.runtime.starting import start_requested
+    if (accepted is not True or ((no_std_in or config.get('NO_STD_IN'))
+            and not config.get('DEBUG') and not start_requested(config))
             or config.get('COLLECT_ONLY') or config.get('TUI_MODE') != 'integration'):
-        raise PermissionError('Recorded integrations require interactive Start')
+        raise PermissionError('Recorded integrations require explicit Start acceptance')
     tests = tuple(tests)
     if not tests:
         raise ValueError('Cannot record an empty integration selection')
