@@ -125,8 +125,8 @@ class SearchBar(Horizontal):
         yield Static(Text.assemble(' ', ('Esc', 'yellow'), ' exit'), classes='search-exit')
 
 
-class _UserBracket(Static):
-    DEFAULT_CSS = '_UserBracket { width: 1; height: 1; }'
+class _ShortcutKey(Static):
+    DEFAULT_CSS = '_ShortcutKey { width: 1; height: 1; }'
 
     def __init__(self, bracket, key, enabled):
         super().__init__(Text(bracket, style='bold yellow' if enabled else 'bold yellow dim'))
@@ -142,27 +142,37 @@ class _UserBracket(Static):
 
 
 class GroupedUserFooter(Footer):
-    """Keep stock footer bindings except the paired user navigation labels."""
+    """Preserve stock footer actions while combining related shortcut hints."""
 
     DEFAULT_CSS = """
-    GroupedUserFooter .user-cycle { width: auto; height: 1; }
-    GroupedUserFooter .user-cycle > Static { width: auto; height: 1; }
+    GroupedUserFooter .shortcut-pair { width: auto; height: 1; }
+    GroupedUserFooter .shortcut-pair > Static { width: auto; height: 1; }
     """
 
     def compose(self):
         widgets = list(super().compose())
         pairs = {getattr(widget, 'key', None): widget for widget in widgets}
-        left, right = (pairs.get(key) for key in ('left_square_bracket', 'right_square_bracket'))
-        if left is None or right is None:
-            yield from widgets
-            return
-        self.styles.grid_size_columns -= 1
+        groups, hidden = {}, set()
+        for keys, labels, description, css_class in (
+            (('left_square_bracket', 'right_square_bracket'), ('[', ']'),
+             ' Loop through users', 'user-cycle'),
+            (('slash', 'question_mark'), ('/', '?'),
+             ' Search tests (? backwards)', 'test-search-shortcuts'),
+        ):
+            left, right = (pairs.get(key) for key in keys)
+            if left is None or right is None:
+                continue
+            anchor = next(widget for widget in widgets if widget in (left, right))
+            groups[anchor] = (left, right, labels, description, css_class)
+            hidden.update((left, right))
+        self.styles.grid_size_columns -= len(groups)
         for widget in widgets:
-            if widget is left:
-                with Horizontal(classes='user-cycle'):
-                    yield _UserBracket('[', left.key, not left.has_class('-disabled'))
+            if widget in groups:
+                left, right, labels, description, css_class = groups[widget]
+                with Horizontal(classes='shortcut-pair ' + css_class):
+                    yield _ShortcutKey(labels[0], left.key, not left.has_class('-disabled'))
                     yield Static(' / ')
-                    yield _UserBracket(']', right.key, not right.has_class('-disabled'))
-                    yield Static(' Loop through users')
-            elif widget is not right:
+                    yield _ShortcutKey(labels[1], right.key, not right.has_class('-disabled'))
+                    yield Static(description)
+            elif widget not in hidden:
                 yield widget

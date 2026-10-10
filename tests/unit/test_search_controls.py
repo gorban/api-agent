@@ -156,7 +156,7 @@ def test_grouped_brackets_color_and_clicks_preserve_other_footer():
             app.screen.set_focus(None)
             await pilot.pause()
             footer = app.query_one(search.GroupedUserFooter)
-            brackets = list(footer.query(search._UserBracket))
+            brackets = list(footer.query(search._ShortcutKey))
             assert [widget.render().plain for widget in brackets] == ['[', ']']
             assert all([(span.start, span.end, span.style) for span in widget.render().spans]
                        == [(0, 1, 'bold yellow')] for widget in brackets)
@@ -200,7 +200,7 @@ def test_disabled_bracket_does_not_dispatch():
         async with app.run_test() as pilot:
             app.screen.set_focus(None)
             await pilot.pause()
-            brackets = list(app.query(search._UserBracket))
+            brackets = list(app.query(search._ShortcutKey))
             assert brackets[0].enabled is False and brackets[1].enabled is True
             assert brackets[0].render().spans[0].style == 'bold yellow dim'
             await pilot.click(brackets[0])
@@ -223,4 +223,38 @@ def test_search_marker_updates_after_mount():
             bar.marker = '/'
             await pilot.pause()
             assert bar.query_one('.search-marker', Static).render().plain == '/ '
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('reverse_order', [False, True])
+def test_search_shortcuts_share_label_and_preserve_both_actions(reverse_order):
+    class SearchHarness(Harness):
+        BINDINGS = ([Binding('question_mark', 'search_backward', 'Search tests from bottom'),
+                     Binding('slash', 'search_forward', 'Search tests')]
+                    if reverse_order else
+                    [Binding('slash', 'search_forward', 'Search tests'),
+                     Binding('question_mark', 'search_backward', 'Search tests from bottom')])
+
+        def action_search_forward(self):
+            self.actions.append('forward')
+
+        def action_search_backward(self):
+            self.actions.append('backward')
+
+    async def scenario():
+        app = SearchHarness()
+        async with app.run_test(size=(120, 12)) as pilot:
+            app.screen.set_focus(None)
+            await pilot.pause()
+            footer = app.query_one(search.GroupedUserFooter)
+            group = footer.query_one('.test-search-shortcuts')
+            assert ''.join(widget.render().plain for widget in group.query(Static)) == '/ / ? Search tests (? backwards)'
+            keys = list(group.query(search._ShortcutKey))
+            assert [key.render().plain for key in keys] == ['/', '?']
+            assert all([(span.start, span.end, span.style) for span in key.render().spans]
+                       == [(0, 1, 'bold yellow')] for key in keys)
+            assert footer.styles.grid_size_columns == 3  # User pair, search pair, Other.
+            await pilot.click(keys[0])
+            await pilot.click(keys[1])
+            assert app.actions == ['forward', 'backward']
     asyncio.run(scenario())
