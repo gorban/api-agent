@@ -68,7 +68,8 @@ class ManagerRecoveryScreen(FocusNavigation, Screen):
         if self.is_mounted:
             self.query_one('#manager-output', Static).update(self.transcript)
             self.query_one('#manager-output-scroll', VerticalScroll).scroll_end(animate=False)
-            if text and self.awaiting_output:
+            # Enter echoes and formatting-only output are not a new prompt.
+            if text.strip() and self.awaiting_output:
                 self.awaiting_output = False
                 field = self.query_one('#manager-input', Input)
                 field.value = ''
