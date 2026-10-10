@@ -36,8 +36,21 @@ def test_recovery_send_cancel_focus_and_cleanup():
             answer = await asyncio.to_thread(channel.read, .01)
             assert answer == Reply('input', 'private-value')
             assert 'private-value' not in repr(answer)
-            assert screen.query_one(Input).value == ''
+            assert screen.query_one(Input).value == 'private-value'
+            assert screen.query_one(Input).disabled
+            assert screen.query_one('#manager-send', Button).disabled
             assert 'private-value' not in screen.transcript
+            await pilot.press('enter')
+            screen.send_value()
+            assert channel.read(.01) is None
+            await asyncio.to_thread(channel.write, '')
+            await asyncio.to_thread(channel.write, '\x1b[32m')
+            assert screen.query_one(Input).disabled
+            await asyncio.to_thread(channel.write, 'Next input:')
+            assert screen.query_one(Input).value == ''
+            assert not screen.query_one(Input).disabled
+            assert not screen.query_one('#manager-send', Button).disabled
+            assert app.focused.id == 'manager-input'
             for expected in ('manager-send', 'manager-cancel', 'manager-input'):
                 await pilot.press('tab')
                 assert app.focused.id == expected
@@ -67,6 +80,53 @@ def test_recovery_send_cancel_focus_and_cleanup():
             await asyncio.to_thread(channel.write, 'discarded')
             channel.reply(Reply('input', 'discarded'))
             assert channel.read(.01).action == 'cancel'
+    asyncio.run(scenario())
+
+
+def test_output_during_cancel_confirmation_preserves_dialog_focus():
+    async def scenario():
+        app = RecoveryApp()
+        async with app.run_test() as pilot:
+            channel = await open_channel(app)
+            screen = app.screen
+            screen.query_one(Input).value = 'private'
+            await pilot.press('enter')
+            assert channel.read(.01) == Reply('input', 'private')
+            screen.request_cancel()
+            await pilot.pause()
+            dialog = app.screen
+            assert dialog is not screen
+            focused = app.focused
+            await asyncio.to_thread(channel.write, 'Try again:')
+            assert app.screen is dialog and app.focused is focused
+            assert not screen.query_one(Input).disabled
+            assert screen.query_one(Input).value == ''
+            await pilot.press('escape')
+            screen.query_one(Input).focus()
+            screen.query_one(Input).value = 'private again'
+            await pilot.press('enter')
+            assert channel.read(.01) == Reply('input', 'private again')
+            await pilot.press('ctrl+r')
+            assert channel.read(.01).action == 'retry'
+            assert screen.pending and screen.query_one(Input).value == ''
+            await asyncio.to_thread(channel.close)
+    asyncio.run(scenario())
+
+
+def test_completed_request_clears_readonly_secret_before_dismissal():
+    async def scenario():
+        app = RecoveryApp()
+        async with app.run_test() as pilot:
+            channel = await open_channel(app)
+            screen = app.screen
+            field = screen.query_one(Input)
+            field.value = 'private'
+            await pilot.press('enter')
+            assert channel.read(.01) == Reply('input', 'private')
+            assert field.disabled
+            await asyncio.to_thread(channel.close)
+            assert field.value == ''
+            assert screen.transcript == ''
     asyncio.run(scenario())
 
 
