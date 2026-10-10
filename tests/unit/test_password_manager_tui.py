@@ -317,3 +317,86 @@ def test_stale_clear_event_keeps_generated_default_following_through_save_reload
                 assert saved.values['UNATTENDED_AUTH']['password_manager'] == {
                     'manager': '1password', 'cli_path': 'op'}
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('initial_manager, initial_cli', [('1password', 'op'), ('synthetic', 'synthetic-cli')])
+def test_queued_clear_restore_preserves_explicit_previous_default_through_save_reload(
+        tmp_path, initial_manager, initial_cli):
+    async def scenario():
+        for attempt in range(3):
+            root = tmp_path / str(attempt)
+            root.mkdir()
+            app = _Wizard(root)
+            app.session.save_auth_manager({'manager': initial_manager, 'cli_path': initial_cli})
+            async with app.run_test(size=(110, 55)) as pilot:
+                await pilot.pause()
+                app.screen.query_one('#auth-manager-table', DataTable).focus()
+                await pilot.press('e')
+                await pilot.pause()
+                editor = app.screen
+                picker = editor.query_one('#auth-manager', Select)
+                path = editor.query_one('#auth-path', Input)
+                picker.value = 'synthetic' if initial_manager != 'synthetic' else '1password'
+                path.value = ''
+                picker.value = 'keeper'
+                path.value = initial_cli
+                await pilot.pause()
+                assert picker.value == 'keeper'
+                assert path.value == initial_cli
+                assert editor._cli_explicit
+                # Future choices must preserve the same deliberate executable.
+                picker.value = '1password'
+                await pilot.pause()
+                assert path.value == initial_cli
+                picker.value = 'keeper'
+                await pilot.pause()
+                assert path.value == initial_cli
+                editor.save_entry()
+                await pilot.pause()
+                saved = ConfigSession(app.context, app.session.schema, environ={}).result(_review=True)
+                assert saved.values['UNATTENDED_AUTH']['password_manager'] == {
+                    'manager': 'keeper', 'cli_path': initial_cli}
+                app.screen.query_one('#auth-manager-table', DataTable).focus()
+                await pilot.press('e')
+                await pilot.pause()
+                assert app.screen.query_one('#auth-manager', Select).value == 'keeper'
+                assert app.screen.query_one('#auth-path', Input).value == initial_cli
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('manager, cli', [('1password', 'op'), ('synthetic', 'synthetic-cli')])
+def test_same_text_selected_paste_is_an_explicit_executable_edit(tmp_path, manager, cli):
+    from textual import events
+    async def scenario():
+        app = _Wizard(tmp_path)
+        app.session.save_auth_manager({'manager': manager, 'cli_path': cli})
+        async with app.run_test(size=(110, 55)) as pilot:
+            await pilot.pause()
+            app.screen.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.press('e')
+            await pilot.pause()
+            editor = app.screen
+            path = editor.query_one('#auth-path', Input)
+            path.focus()
+            await pilot.pause()
+            await pilot.press('ctrl+shift+a')
+            assert not path.selection.is_empty
+            path.post_message(events.Paste(cli))
+            await pilot.pause()
+            assert path.value == cli
+            assert editor._cli_explicit
+            await pilot.press('backspace', cli[-1])
+            assert path.value == cli
+            assert editor._cli_explicit
+            editor.query_one('#auth-manager', Select).value = 'keeper'
+            await pilot.pause()
+            assert path.value == cli
+            editor.save_entry()
+            await pilot.pause()
+            saved = ConfigSession(app.context, app.session.schema, environ={}).result(_review=True)
+            assert saved.values['UNATTENDED_AUTH']['password_manager'] == {'manager': 'keeper', 'cli_path': cli}
+            app.screen.query_one('#auth-manager-table', DataTable).focus()
+            await pilot.press('e')
+            await pilot.pause()
+            assert app.screen.query_one('#auth-path', Input).value == cli
+    asyncio.run(scenario())

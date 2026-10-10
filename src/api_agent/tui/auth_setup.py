@@ -73,6 +73,20 @@ class AuthTable(DataTable):
             super().action_cursor_up()
 
 
+class ExecutableInput(Input):
+    """Preserve deliberate same-text replacements as explicit edits."""
+
+    def __init__(self, value, *, on_edit, id):
+        self._on_edit = on_edit
+        super().__init__(value=value, id=id)
+
+    def replace(self, text, start, end):
+        previous = self.value
+        super().replace(text, start, end)
+        if text and self.value == previous:
+            self._on_edit(self.value)
+
+
 class AuthEditScreen(FocusNavigation, Screen[bool]):
     """Edit account descriptors on a separate page without resizing the list."""
 
@@ -129,7 +143,7 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
                 yield Static('Password manager implementation path', classes='auth-next-field')
                 yield Static(self._implementation_text(self.values['manager']), id='auth-implementation', markup=False)
                 yield Static('CLI executable path', classes='auth-next-field')
-                yield Input(value=self.values['cli_path'], id='auth-path')
+                yield ExecutableInput(value=self.values['cli_path'], on_edit=self._record_cli_edit, id='auth-path')
             else:
                 yield Static('Vault name', id='auth-first-label')
                 yield Input(value=self.values['vault'], id='auth-vault')
@@ -148,6 +162,8 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
     def on_mount(self):
         self.query_one('#auth-edit-content', VerticalScroll).can_focus = False
         self.query_one('#auth-error').display = False
+        if self.manager_form:
+            self.watch(self.query_one('#auth-path', Input), 'value', self._remember_cli_edit, init=False)
         self.query_one('#auth-manager' if self.manager_form else '#auth-vault').focus()
 
     def save_entry(self):
@@ -199,24 +215,21 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
         if self.manager_form:
             self.query_one('#auth-path', Input).focus()
 
-    def on_input_changed(self, event):
-        if (self.manager_form and event.input.id == 'auth-path'
-                and event.value == event.input.value):
-            self._remember_cli_edit(event.value)
-
     def _remember_cli_edit(self, value):
         if value != self._cli_draft_value:
-            self._cli_explicit = bool(value)
-            self._cli_draft_value = value
+            self._record_cli_edit(value)
+
+    def _record_cli_edit(self, value):
+        self._cli_explicit = bool(value)
+        self._cli_draft_value = value
 
     def on_select_changed(self, event):
         if event.select.id == 'auth-manager':
             self.query_one('#auth-implementation', Static).update(self._implementation_text(event.value))
             path = self.query_one('#auth-path', Input)
-            # Input changes can still be queued when a selection changes.
-            self._remember_cli_edit(path.value)
             if event.value != self._draft_manager and not self._cli_explicit:
                 definition = self._selected_definition(event.value)
+                # Record generated values before the synchronous input watcher.
                 self._cli_draft_value = definition.cli_default if definition else ''
                 with path.prevent(Input.Changed):
                     path.value = self._cli_draft_value
