@@ -48,6 +48,19 @@ def test_nonposix_teardown_does_not_require_sigkill(monkeypatch):
     process.kill.assert_called_once()
 
 
+@pytest.mark.parametrize('reaped', [False, True])
+def test_nonposix_interrupted_disposal_requires_confirmed_leader(monkeypatch, reaped):
+    interruption = KeyboardInterrupt('controlled interrupt')
+    process = SimpleNamespace(returncode=0 if reaped else None, terminate=Mock(),
+                              wait=Mock(side_effect=interruption))
+    monkeypatch.setattr(processes, 'os', SimpleNamespace(name='nt'))
+    with pytest.raises(KeyboardInterrupt) as caught:
+        processes.finalize(process)
+    assert caught.value is interruption
+    assert processes.disposal_complete(process) is reaped
+    process.terminate.assert_called_once()
+
+
 @pytest.mark.parametrize('listing,running', [
     (' 123 Z\n 456 S\n', False),
     (' 123 S\n 456 Z\n', True),
