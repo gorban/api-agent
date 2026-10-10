@@ -144,8 +144,8 @@ def test_search_bar_layout_and_rich_esc():
             decorations = bar.query(Static)
             assert all(not decoration.can_focus for decoration in decorations)
             hint = decorations.last().render()
-            assert hint.plain == 'Esc exit'
-            assert [(span.start, span.end) for span in hint.spans] == [(0, 3)]
+            assert hint.plain == ' Esc exit'
+            assert [(span.start, span.end) for span in hint.spans] == [(1, 4)]
     asyncio.run(scenario())
 
 
