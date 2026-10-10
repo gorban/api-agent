@@ -58,16 +58,28 @@ def finish_terminal_inspection(recorded, output):
     from .contracts import format_test_summary
     group = InspectionGroup(getattr(execution, 'inspections', ()))
     try:
+        primary = None
         try:
             output(format_test_summary('integration', execution.tests,
                 state='CANCELLED' if execution.cancelled else None))
             output('Allure publication: ' + ('PASS' if recorded.persisted else 'FAIL'))
             if group.active:
-                output('Debug inspection remains open. Tests and publication have finished; close the browser windows or press Ctrl+C to end inspection.')
+                if any(not handle.closed and getattr(handle, 'retains_browser', True) for handle in group.handles):
+                    output('Debug inspection remains open. Tests and publication have finished; close the browser windows or press Ctrl+C to end inspection.')
+                else:
+                    output('Shared authentication cleanup remains pending. Tests and publication have finished; retrying owned cleanup.')
                 for handle in group.handles:
                     handle.wait_closed()
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            cleaned = group.close(force=True)
+            try:
+                cleaned = group.close(force=True)
+            except BaseException:
+                if primary is not None:
+                    raise primary
+                raise
         if not cleaned or group.lost:
             output('Inspection cleanup: FAIL — worker exited unexpectedly or cleanup remains pending.')
             if not cleaned:

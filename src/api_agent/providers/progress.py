@@ -68,6 +68,20 @@ def progress_sink(callback):
         _sink.reset(token)
 
 
+@contextmanager
+def independent_timeout_scope():
+    """Detach backend-owned work from a request's deadline, retaining its sink.
+
+    A shared operation owns its component deadlines and disposal. A waiter's
+    shorter deadline limits only that waiter, never a sibling's authentication.
+    """
+    token = _scope.set(None)
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+
+
 @asynccontextmanager
 async def report_timeout(name, timeout):
     """Observe a scope, yielding its budget clipped by all enclosing deadlines.
