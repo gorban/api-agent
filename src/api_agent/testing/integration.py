@@ -72,7 +72,7 @@ sys.exit(code)
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None, config=None, unattended_index_source=None):
+                          after_run=None, config=None, unattended_index_source=None, interaction=None):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -91,6 +91,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     chunks, results = [], {}
     inspections = []
     backend = None
+    interaction_server = None
     interruption = None
     callback_failed = cancelled = failed = False
     disabled = set()
@@ -171,6 +172,11 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
             env['PYTHONUNBUFFERED'] = '1'
             backend_descriptor = None
+            interaction_descriptor = None
+            if config is not None and config.get('DEBUG') and interaction is not None:
+                from api_agent.auth.interaction_transport import InteractionServer
+                interaction_server = InteractionServer(interaction)
+                interaction_descriptor = interaction_server.descriptor
             from api_agent.auth.managers import registry_for_context
             manager_registry = registry_for_context(context) if config is not None else None
             for repo in dict.fromkeys(test.repo for test in tests):
@@ -195,7 +201,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     from .setup_backend import SetupBackend
                     backend = SetupBackend(config, context.owner_root,
                         unattended_index_source=unattended_index_source,
-                        password_manager_registry=manager_registry)
+                        password_manager_registry=manager_registry, interaction=interaction)
                     backend_descriptor = backend.start()
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
@@ -204,7 +210,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         from .provider_setup import write_launch_snapshot
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
                             unattended_index_source=unattended_index_source,
-                            setup_backend=backend_descriptor, password_manager_registry=manager_registry))
+                            setup_backend=backend_descriptor, password_manager_registry=manager_registry,
+                            interaction_descriptor=interaction_descriptor))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
@@ -354,6 +361,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         raw('', 'Integration runner failed; details withheld.\n')
         failed = True
     finally:
+        if interaction_server is not None:
+            interaction_server.close()
         if backend is not None:
             try:
                 backend.close()

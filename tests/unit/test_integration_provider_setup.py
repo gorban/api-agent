@@ -515,10 +515,11 @@ def test_cancelled_worker_helper_drain_waits_for_true_completion(tmp_path):
         await asyncio.sleep(0)
         close.cancel()
         await asyncio.sleep(0)
-        with pytest.raises(asyncio.CancelledError):
-            await close
+        assert not close.done()
         assert not task.done() and task in worker._credential_tasks
         finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await close
         await worker._close()
         assert task.done() and not task.cancelled()
         assert not worker._credential_tasks

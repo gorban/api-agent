@@ -19,7 +19,8 @@ class _SetupOwner:
         self.provider = IntegrationLLM(backend.config, backend.owner_root,
             unattended_index_source=backend.unattended_index_source,
             loop=asyncio.get_running_loop(),
-            password_manager_registry=backend.password_manager_registry)
+            password_manager_registry=backend.password_manager_registry,
+            interaction=backend.interaction)
 
     async def ensure_ready(self):
         await self.provider._ensure()
@@ -41,7 +42,8 @@ class SetupBackend:
     retains_browser = False
 
     def __init__(self, config, owner_root, *, unattended_index_source=None,
-                 password_manager_registry=None):
+                 password_manager_registry=None, interaction=None):
+        self.interaction = interaction
         self._config = deepcopy(dict(config))
         if self._config.get('DEBUG'):
             raise ContractError('Debug setup must remain worker-local.')

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import math
+import threading
 import time
 from uuid import uuid4
 
@@ -82,14 +83,7 @@ def independent_timeout_scope():
         _scope.reset(token)
 
 
-@asynccontextmanager
-async def report_timeout(name, timeout):
-    """Observe a scope, yielding its budget clipped by all enclosing deadlines.
-
-    None declares an untimed scope. Its inherited deadline still constrains
-    timed descendants; progress marks it untimed for ancestor-display fallback.
-    Zero is valid only as a computed exhausted budget, not a declared limit.
-    """
+def _budget(name, timeout):
     if timeout is not None and (type(timeout) not in (int, float)
             or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError('Invalid component timeout')
@@ -105,6 +99,57 @@ async def report_timeout(name, timeout):
     budget = TimeoutBudget(identifier, parent.id if parent else None, started, deadline, effective_timeout)
     reported_timeout = None if timeout is None else budget.timeout
     ComponentProgress(identifier, name, reported_timeout, 0, True, budget.parent_id)
+    return budget, reported_timeout
+
+
+@contextmanager
+def report_timeout_sync(name, timeout=None):
+    """Observe a CLI-thread component with the same inherited deadline budget.
+
+    Threaded process runners enforce budget.remaining and own process cleanup.
+    The heartbeat ends synchronously before the component reports completion.
+    """
+    budget, reported_timeout = _budget(name, timeout)
+    token = _scope.set(budget)
+    callback = _sink.get()
+    try:
+        if callback is None:
+            yield budget
+            return
+
+        def emit(active):
+            try:
+                callback(ComponentProgress(budget.id, name, reported_timeout,
+                                           max(0, _clock() - budget.started), active, budget.parent_id))
+            except Exception:
+                pass
+
+        stopped = threading.Event()
+        def heartbeat():
+            while not stopped.wait(1):
+                emit(True)
+        emit(True)
+        thread = threading.Thread(target=heartbeat, name='api-agent-component-progress', daemon=True)
+        thread.start()
+        try:
+            yield budget
+        finally:
+            stopped.set()
+            thread.join()
+            emit(False)
+    finally:
+        _scope.reset(token)
+
+
+@asynccontextmanager
+async def report_timeout(name, timeout):
+    """Observe a scope, yielding its budget clipped by all enclosing deadlines.
+
+    None declares an untimed scope. Its inherited deadline still constrains
+    timed descendants; progress marks it untimed for ancestor-display fallback.
+    Zero is valid only as a computed exhausted budget, not a declared limit.
+    """
+    budget, reported_timeout = _budget(name, timeout)
     token = _scope.set(budget)
     try:
         callback = _sink.get()
@@ -114,8 +159,8 @@ async def report_timeout(name, timeout):
 
         def emit(active):
             try:
-                callback(ComponentProgress(identifier, name, reported_timeout,
-                                           max(0, _clock() - started), active, budget.parent_id))
+                callback(ComponentProgress(budget.id, name, reported_timeout,
+                                           max(0, _clock() - budget.started), active, budget.parent_id))
             except Exception:
                 # Presentation failures must not change authentication or its limits.
                 pass

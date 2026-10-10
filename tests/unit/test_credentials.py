@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from api_agent.auth.credentials import CredentialError, get_password, get_totp, resolve_cli_path
+from api_agent.auth.credentials import CredentialError, CredentialLoginRequiredError, get_password, get_totp, resolve_cli_path
 
 
 def fake_cli(tmp_path, body):
@@ -56,16 +56,20 @@ def test_invalid_csv(tmp_path, output):
 def test_prompt_fails_promptly_without_newline(tmp_path, kind, stream):
     path = fake_cli(tmp_path, f"sys.{stream}.write('Enter master password: ')\nsys.{stream}.flush()\ntime.sleep(10)")
     start = time.monotonic()
-    with pytest.raises(CredentialError, match="Log into the CLI first") as error:
+    with pytest.raises(CredentialError) as error:
         kind(source(path), timeout=2)
-    assert "Enter master password:" in str(error.value)
+    if stream == 'stderr':
+        assert isinstance(error.value, CredentialLoginRequiredError)
+        assert 'Enter master password:' not in str(error.value)
+    else:
+        assert "Enter master password:" not in str(error.value)
     assert error.value.exit_code != 0
     assert time.monotonic() - start < (2.5 if stream == "stdout" else 1.5)
 
 
 def test_split_prompt(tmp_path):
     path = fake_cli(tmp_path, "sys.stderr.write('Enter master ')\nsys.stderr.flush()\ntime.sleep(.05)\nsys.stderr.write('password:')\nsys.stderr.flush()\ntime.sleep(10)")
-    with pytest.raises(CredentialError, match="requires authentication"):
+    with pytest.raises(CredentialLoginRequiredError, match="Keeper login required"):
         get_totp(source(path), timeout=1)
 
 
@@ -78,12 +82,12 @@ def test_timeout(tmp_path, kind):
     assert time.monotonic() - start < 1
 
 
-def test_nonzero_captures_both_streams(tmp_path):
+def test_nonzero_excludes_both_private_streams(tmp_path):
     path = fake_cli(tmp_path, "print('failure stdout')\nprint('failure stderr', file=sys.stderr)\nsys.exit(7)")
     with pytest.raises(CredentialError, match="exit code 7") as error:
         get_password(source(path))
-    assert "failure stdout" in str(error.value)
-    assert "failure stderr" in str(error.value)
+    assert "failure stdout" not in str(error.value)
+    assert "failure stderr" not in str(error.value)
 
 
 def test_concurrent_large_streams(tmp_path, capsys):

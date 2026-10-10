@@ -1382,10 +1382,12 @@ class ApiAgentApp(App[int]):
                 return
             if not self.integration_unattended:
                 active['UNATTENDED_USER_INDEX'] = None
+            from api_agent.tui.manager_recovery import TUIInteraction
+            interaction = TUIInteraction(self, self.collection_cancel)
             def execute():
                 try:
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
-                        active, accepted=True,
+                        active, accepted=True, interaction=interaction,
                         unattended_index_source=getattr(resolved.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         on_event=lambda event: self.call_from_thread(self.integration_event, event, generation),
                         cancel_event=self.collection_cancel)

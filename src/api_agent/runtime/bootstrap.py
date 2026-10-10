@@ -228,7 +228,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             from api_agent.testing.launched import run_launched_integration
             tests = collect_tests(context, 'integration', result.positionals, config=result.values)
             print('Integration debug: serial execution; provider login may require browser interaction.', flush=True)
+            from api_agent.auth.terminal_interaction import TerminalInteraction
             execution = run_launched_integration(context, tests, result.values, accepted=True,
+                interaction=TerminalInteraction(),
                 unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                 output=lambda chunk: print(chunk, end='', flush=True))
             from api_agent.testing.inspection_controls import finish_terminal_inspection
