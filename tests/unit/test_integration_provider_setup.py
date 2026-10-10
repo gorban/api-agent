@@ -28,7 +28,7 @@ def test_snapshot_private_paths_and_bounds(tmp_path, monkeypatch):
         p.write_launch_snapshot(tmp_path, SimpleNamespace(owner_root=tmp_path), {})
 
 
-@pytest.mark.parametrize('problem', ['missing', 'mode', 'owner', 'symlink', 'large', 'json', 'list', 'version', 'bool_version', 'fields', 'config', 'root', 'source'])
+@pytest.mark.parametrize('problem', ['missing', 'mode', 'owner', 'symlink', 'large', 'json', 'list', 'version', 'bool_version', 'fields', 'config', 'root', 'source', 'definitions', 'missing_definitions'])
 def test_snapshot_rejects_untrusted_context_without_echo(tmp_path, monkeypatch, problem):
     path = snapshot(tmp_path, monkeypatch)
     if problem == 'missing':
@@ -59,6 +59,10 @@ def test_snapshot_rejects_untrusted_context_without_echo(tmp_path, monkeypatch, 
             data['config'] = []
         elif problem == 'source':
             data['unattended_index_source'] = 0
+        elif problem == 'definitions':
+            data['password_manager_definitions'] = {}
+        elif problem == 'missing_definitions':
+            del data['password_manager_definitions']
         else:
             data['owner_root'] = 'relative'
         path.write_text(json.dumps(data))

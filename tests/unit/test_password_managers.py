@@ -299,3 +299,46 @@ def test_non_directory_handle_platform_loads_regular_file(tmp_path, monkeypatch)
     registry = managers.load_manager_registry(pack_root=tmp_path)
     monkeypatch.setattr(managers, '_DIRECTORY_HANDLES', False)
     assert registry.load('third').parse('value', 'password') == 'value'
+
+
+@pytest.mark.parametrize('symlink', [False, True])
+def test_fifo_declaration_fails_without_blocking_discovery(tmp_path, symlink):
+    import os
+    import threading
+    from api_agent.config.session import ConfigSession
+    path = declaration(tmp_path)
+    path.unlink()
+    fifo = tmp_path / 'declaration-fifo' if symlink else path
+    os.mkfifo(fifo)
+    if symlink:
+        path.symlink_to(fifo)
+    session = ConfigSession.__new__(ConfigSession)
+    session.context = SimpleNamespace(external_pack=True, pack_root=tmp_path)
+    errors = []
+    def discover():
+        try:
+            session.password_manager_registry
+        except managers.ManagerError as error:
+            errors.append(str(error))
+    worker = threading.Thread(target=discover)
+    worker.start()
+    try:
+        worker.join(1)
+        assert not worker.is_alive(), 'FIFO declaration blocked configuration discovery'
+        assert errors == ['Password manager declaration must remain a regular file']
+    finally:
+        # Release a regressed blocking reader so the proof cannot leak a thread.
+        if worker.is_alive():
+            descriptor = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(descriptor, b'version = 1\nmanagers = []\n')
+            finally:
+                os.close(descriptor)
+        worker.join(1)
+        assert not worker.is_alive()
+    fifo.unlink()
+    if symlink:
+        path.unlink()
+    (tmp_path / 'adapter.py').write_text(VALID)
+    declaration(tmp_path)
+    assert session.password_manager_registry.get('third').cli_default == 'third-cli'

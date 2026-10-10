@@ -19,7 +19,7 @@ class ManagerError(ValueError):
 _DIRECTORY_HANDLES = os.open in os.supports_dir_fd
 
 
-def _implementation_source(path):
+def _implementation_source(path, *, nonregular_message='Password manager implementation must remain a regular Python file'):
     """Read a resolved path without following replaced parent directories."""
     flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0)
     if _DIRECTORY_HANDLES:
@@ -36,7 +36,7 @@ def _implementation_source(path):
         descriptor = os.open(path, flags)
     with os.fdopen(descriptor, 'rb') as source:
         if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-            raise ManagerError('Password manager implementation must remain a regular Python file')
+            raise ManagerError(nonregular_message)
         return source.read()
 
 
@@ -109,7 +109,9 @@ def _read_definitions(declaration: Path, *, owner_root: Path) -> tuple[ManagerDe
     if not declaration.is_relative_to(owner_root):
         raise ManagerError("Password manager declaration must remain inside its owning resource pack")
     try:
-        data = tomllib.loads(declaration.read_text(encoding='utf-8'))
+        data = tomllib.loads(_implementation_source(
+            declaration, nonregular_message='Password manager declaration must remain a regular file'
+        ).decode('utf-8'))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError):
         raise ManagerError(f'Cannot read password manager declaration: {declaration}') from None
     if set(data) != {'version', 'managers'} or type(data['version']) is not int or data['version'] != 1:
