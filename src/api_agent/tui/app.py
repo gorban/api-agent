@@ -840,6 +840,8 @@ class ApiAgentApp(App[int]):
                 self.branches[root] = None
         self.operation_status = 3
         self.mode = None
+        self.startup_mode = None
+        self.auto_start_pending = False
         self.review_names = set()
         self.selection = None
         self.pending_test_selectors = tuple(self.session.result().positionals)
@@ -890,11 +892,15 @@ class ApiAgentApp(App[int]):
 
     async def on_mount(self):
         result = self.session.result()
-        if result.errors:
-            self.show("error", "Configuration error", "\n".join(result.errors), (("menu", "Main menu"),))
+        from api_agent.runtime.starting import start_configuration_errors, start_requested
+        errors = (*result.errors, *start_configuration_errors(result))
+        if errors:
+            self.show("error", "Configuration error", "\n".join(errors), (("menu", "Main menu"),))
             return
         mode = result.fields.get("TUI_MODE")
-        self.mode = mode.value if mode and mode.explicit else None
+        self.auto_start_pending = bool(start_requested(result.values) and not result.values.get('COLLECT_ONLY'))
+        self.startup_mode = mode.value if mode and (mode.explicit or self.auto_start_pending) else None
+        self.mode = None if self.auto_start_pending else self.startup_mode
         if self.mode is not None:
             await self.enter_mode(skip_defaults=True)
             return
@@ -974,7 +980,10 @@ class ApiAgentApp(App[int]):
             self.mode = None
             await self.start_configuration()
         else:
-            self.show_menu()
+            if self.auto_start_pending:
+                await self.enter_mode(skip_defaults=True)
+            else:
+                self.show_menu()
 
     async def start_configuration(self):
         pending = self.configuration_pending()
@@ -1004,7 +1013,7 @@ class ApiAgentApp(App[int]):
             self.show_required_auth()
             return
         if not rows:
-            self.show_menu()
+            self.finish_configuration_review()
             return
         self.show("defaults", "Review configuration",
                   "Review each setting: a saves its default immediately; e edits its value, then Enter saves to .env. "
@@ -1039,7 +1048,7 @@ class ApiAgentApp(App[int]):
         """Refresh displayed values and contextual actions as one UI snapshot."""
         rows = self.configuration_rows()
         if not rows:
-            self.show_menu()
+            self.finish_configuration_review()
             return
         result = self.session.result(_review=True)
         table = screen.query_one(DataTable)
@@ -1124,6 +1133,9 @@ class ApiAgentApp(App[int]):
             self.collection_cancel.set()
             self.exit(2)
             return
+        if self.mode is None and self.auto_start_pending:
+            self.mode = self.startup_mode
+            skip_defaults = True
         if self.mode and self.mode != "config-cleanup":
             self.operation_status = 3
         if self.session.result().values.get("COLLECT_ONLY") and self.mode:
@@ -1151,10 +1163,17 @@ class ApiAgentApp(App[int]):
         else:
             await self.configure_operation(skip_defaults=skip_defaults)
 
+    def finish_configuration_review(self):
+        if self.auto_start_pending:
+            self.run_worker(self.enter_mode(skip_defaults=True), group='startup-mode', exclusive=True)
+        else:
+            self.show_menu()
+
     def show_menu(self):
         if self.inspection_cleanup_active():
             return
         self.discard_finished_inspection()
+        self.auto_start_pending = False
         # Keep acknowledged rows only for the current review, not later visits.
         self.review_names.clear()
         self.pending_test_selectors = ()
@@ -1251,6 +1270,7 @@ class ApiAgentApp(App[int]):
         if self.mode in {"unit", "integration", "e2e"}:
             await self.collect_tests()
         else:
+            self.auto_start_pending = False
             if self.mode == "run-local" and not self.check_operation_start():
                 return
             self.unavailable(f"{dict(MODES)[self.mode]} execution is not implemented yet. No services or processes were started.")
@@ -1287,6 +1307,9 @@ class ApiAgentApp(App[int]):
             if not tests:
                 raise ValueError("No tests matched the selected suite/selectors")
             self.show_selection()
+            if self.auto_start_pending:
+                self.auto_start_pending = False
+                await self.choose('continue')
         except Exception as error:
             if cancel_event.is_set() or self.collection_cancel is not cancel_event:
                 return
@@ -1819,6 +1842,10 @@ class ApiAgentApp(App[int]):
                 if not self.selection.selected_ids:
                     raise ValueError(NO_TEST_SELECTION_MESSAGE)
                 if self.mode == "e2e":
+                    from api_agent.runtime.starting import e2e_accepted
+                    if e2e_accepted(self.session.result()):
+                        await self.choose("accept")
+                        return
                     self.show("acceptance", "E2E human acceptance", f"{len(self.selection.selected_tests)} tests selected to run.\n\n" + E2E_WARNING, (("accept", "Accept for this run"), ("decline", "Decline")))
                 elif self.mode == "unit":
                     self.start_unit_run()
@@ -1902,6 +1929,8 @@ class ApiAgentApp(App[int]):
             await self.start_configuration()
         elif self.screen.kind == "input":
             self.show_configuration()
+        elif self.screen.kind == "defaults" and self.auto_start_pending:
+            await self.enter_mode(skip_defaults=True)
         elif self.screen.kind == "test-failure":
             self.show_unit_results()
         elif self.screen.kind == "test-results" and self.unit_result is None:

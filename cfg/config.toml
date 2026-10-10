@@ -77,6 +77,13 @@ default = false
 acknowledge_default = false
 help = "Collect test identities without executing tests or prerequisites."
 
+[fields.START]
+type = "str"
+enum = ["", "False", "True", "E2E"]
+default = "False"
+acknowledge_default = false
+help = "True starts the selected operation after startup configuration. E2E also accepts E2E execution, including with NO_STD_IN=True. False or empty disables automatic interactive startup; bare --start means True."
+
 [fields.TUI_MODE]
 acknowledge_default = false
 type = "str"
@@ -137,7 +144,7 @@ TUI_MODE = ["unit", "integration", "e2e"]
 COLLECT_ONLY = false
 
 [fields.E2E_RERUNS]
-help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires human acceptance. Set to 0 to turn off."
+help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires its human-acceptance screen or explicit START=E2E. Set to 0 to turn off."
 type = "int"
 default = 2
 validation = "nonnegative"
@@ -157,7 +164,7 @@ COLLECT_ONLY = false
 type = "bool"
 default = false
 acknowledge_default = false
-help = "Integration authentication debug: run serially and retain provider login browsers until their windows are closed. With NO_STD_IN, selected integration tests can start without terminal input; browser login can still require human interaction. E2E execution retains its human acceptance requirement."
+help = "Integration authentication debug: run serially and retain provider login browsers until their windows are closed. With NO_STD_IN, selected integration tests can start without terminal input; browser login can still require human interaction. E2E requires its human-acceptance screen unless explicitly accepted with START=E2E."
 [fields.DEBUG.applies_when]
 TUI_MODE = "integration"
 COLLECT_ONLY = false

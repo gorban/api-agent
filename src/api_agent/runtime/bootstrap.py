@@ -161,6 +161,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                 overrides=runtime_directory_overrides(context))
         result = retain_runtime_directory(result, context)
         errors = list(result.errors)
+        from api_agent.runtime.starting import start_configuration_errors, e2e_accepted
+        errors.extend(start_configuration_errors(result))
         if result.values.get('NO_STD_IN') and not result.help_requested:
             errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}'
                           for name in result.missing)
@@ -172,8 +174,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                               for name in result.missing)
             if (result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'}
                     and not result.values.get('COLLECT_ONLY')
-                    and not (mode == 'integration' and result.values.get('DEBUG'))):
-                errors.append('NO_STD_IN=True is incompatible with integration/E2E execution; collection-only is allowed.')
+                    and not (mode == 'integration' and result.values.get('DEBUG'))
+                    and not (mode == 'e2e' and e2e_accepted(result))):
+                errors.append('NO_STD_IN=True is incompatible with integration/E2E execution unless integration DEBUG or E2E START=E2E is selected; collection-only is allowed.')
             if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'cleanup-containers', 'unattended-auth'}:
                 errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')
             if result.values.get('COLLECT_ONLY') and mode is not None and mode not in {'unit', 'integration', 'e2e'}:
@@ -238,7 +241,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 return 3
             return execution.exit_code
         if result.values.get('NO_STD_IN'):
-            if mode == 'run-local':
+            if mode in {'run-local', 'e2e'}:
                 from api_agent.auth.extensions import validate_operation
                 try:
                     validate_operation(context, result.values)
@@ -284,6 +287,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'HELP': '-h, --help: print help without execution configuration validation.',
         'NO_STD_IN': '--no-std-in: disable interactive input after the worktree gate.',
         'COLLECT_ONLY': '--collect-only: list selected tests without running them.',
+        'START': '--start: start the selected TUI operation after normal startup checks; --start=E2E explicitly accepts E2E execution without its human-review screen.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
         'DEBUG': '--debug: retain integration login browsers; allows serial --no-std-in integration debugging.',
@@ -292,7 +296,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
     for name, description in callouts.items():
         if name in schema.fields:
             lines.append('  ' + description)
-    lines.extend(['', 'Debug and credential-index switches skip startup default acknowledgement/persistence.',
+    lines.extend(['', 'Start, debug and credential-index settings are hidden from Review configuration.',
                   'All declared configuration values also accept CLI options; see the executable declarations:'])
     from api_agent.config.declarations import shared_declaration_path
     for path in declaration_paths or [shared_declaration_path()]:
