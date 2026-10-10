@@ -53,7 +53,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                              usage_output=None,
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
-                             unattended_index_source=None):
+                             unattended_index_source=None, interaction=None):
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
@@ -167,6 +167,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                            parallel_jobs=0 if config.get('DEBUG') else config.get('TEST_PARALLEL_JOBS', 8),
                            before_run=before, on_result=record, after_run=after,
                            on_event=on_event, output=output, cancel_event=cancel_event,
-                           unattended_index_source=unattended_index_source)
+                           unattended_index_source=unattended_index_source,
+                           **({'interaction': interaction} if interaction is not None else {}))
         return RecordedIntegrationResult(execution, identity, directory if local_directory else None,
                                          usage_summary if usage_summary is not None else usage.report(), manifest, persisted)

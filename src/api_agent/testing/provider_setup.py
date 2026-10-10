@@ -17,7 +17,7 @@ from api_agent.providers.shared_setup import SharedSetupOwner
 
 
 def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None,
-                          password_manager_registry=None):
+                          password_manager_registry=None, interaction_descriptor=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     from api_agent.auth.managers import registry_for_context
@@ -32,6 +32,9 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
     if setup_backend is not None:
         from api_agent.providers.setup_transport import validate_descriptor
         data['setup_backend'] = validate_descriptor(setup_backend)
+    if interaction_descriptor is not None:
+        from api_agent.auth.interaction_transport import validate_descriptor
+        data['interaction'] = validate_descriptor(interaction_descriptor)
     payload = json.dumps(data, default=str, allow_nan=False).encode()
     if len(payload) > 1048576:
         raise ContractError('Integration configuration is too large.')
@@ -55,7 +58,7 @@ def _read_snapshot():
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
@@ -69,6 +72,9 @@ def _read_snapshot():
         if 'setup_backend' in data:
             from api_agent.providers.setup_transport import validate_descriptor
             data['setup_backend'] = validate_descriptor(data['setup_backend'])
+        if 'interaction' in data:
+            from api_agent.auth.interaction_transport import validate_descriptor
+            data['interaction'] = validate_descriptor(data['interaction'])
         return data
     except (OSError, KeyError, ValueError, TypeError):
         pass
@@ -98,7 +104,9 @@ _inspection_providers = []
 class IntegrationLLM:
     """One worker-local operation; this does not implement backend-wide IPC."""
     def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None,
-                 password_manager_registry=None, password_manager_pack_root=None):
+                 password_manager_registry=None, password_manager_pack_root=None, interaction=None):
+        from api_agent.auth.interaction_transport import OwnedInteraction
+        self.interaction = None if interaction is None else OwnedInteraction(interaction)
         self.config = dict(config)
         self.owner_root = owner_root
         from api_agent.auth.managers import load_manager_registry, registry_for_owner
@@ -158,19 +166,37 @@ class IntegrationLLM:
         async def retrieve(selected_role, selected_index, kind):
             helper = {'username': helpers.get_username, 'password': helpers.get_password,
                       'totp': helpers.get_totp}[kind]
+            interaction = None if self.interaction is None else self.interaction.fork()
             try:
                 from api_agent.providers.progress import report_timeout
-                async with report_timeout('Password-manager ' + kind, helpers.DEFAULT_TIMEOUT) as budget:
+                async with report_timeout('Password-manager ' + kind, None) as budget:
                     def call_helper():
                         # A queued worker must not restart the captured budget.
-                        return helper(source, timeout=budget.remaining)
+                        remaining = budget.remaining
+                        timeout = helpers.DEFAULT_TIMEOUT if remaining is None else min(helpers.DEFAULT_TIMEOUT, remaining)
+                        return helper(source, timeout=timeout,
+                                      interaction=interaction, recovery_timeout=remaining)
                     task = asyncio.create_task(asyncio.to_thread(call_helper))
                     self._credential_tasks.add(task)
-                    return await asyncio.shield(task)
+                    task.add_done_callback(self._credential_tasks.discard)
+                    try:
+                        return await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        if interaction is not None:
+                            interaction.cancel()
+                        from api_agent.runtime.tasks import settle
+                        await settle(asyncio.gather(task, return_exceptions=True))
+                        raise
+            except (helpers.CredentialLoginRequiredError, helpers.CredentialRecoveryError) as error:
+                raise UnattendedCredentialError(str(error),
+                    index_source=self.unattended_index_source) from None
             except helpers.CredentialError:
                 raise UnattendedCredentialError(
                     "Password-manager " + kind + " retrieval is unavailable. Sign in to the configured CLI and check the login entry.",
                     index_source=self.unattended_index_source) from None
+            finally:
+                if interaction is not None:
+                    interaction.close()
         return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve))
 
     async def _prepare_setup(self):
@@ -237,16 +263,27 @@ class IntegrationLLM:
             pytest.skip(str(error))
 
     async def _close(self):
-        await self._release_retained()
-        if self._shared_setup is not None:
-            await self._shared_setup.aclose()
-        elif self.owner is not None:
-            await self.owner.aclose()
-        if self.provider is not None:
-            await self.provider.aclose()
-        if self._credential_tasks:
-            await asyncio.shield(asyncio.gather(*self._credential_tasks, return_exceptions=True))
-            self._credential_tasks.clear()
+        if self.interaction is not None:
+            self.interaction.cancel()
+        try:
+            await self._release_retained()
+            if self._shared_setup is not None:
+                await self._shared_setup.aclose()
+            elif self.owner is not None:
+                await self.owner.aclose()
+            if self.provider is not None:
+                await self.provider.aclose()
+        finally:
+            try:
+                if self._credential_tasks:
+                    from api_agent.providers.control import finish_cleanup
+                    async def drain():
+                        await asyncio.gather(*self._credential_tasks, return_exceptions=True)
+                        self._credential_tasks.clear()
+                    await finish_cleanup(drain())
+            finally:
+                if self.interaction is not None:
+                    self.interaction.close()
 
     def finish_run(self):
         """Dispose authentication while preserving the creating inspection loop."""
@@ -299,6 +336,13 @@ class RemoteIntegrationLLM:
             self.loop.close()
 
 
+def _worker_interaction(data):
+    if 'interaction' not in data:
+        return None
+    from api_agent.auth.interaction_transport import InteractionClient
+    return InteractionClient(data['interaction'])
+
+
 @pytest.fixture(scope='session')
 def llm_provider():
     """Requesting the fixture is inert; ensure_ready is the authentication gate."""
@@ -308,7 +352,8 @@ def llm_provider():
     else:
         provider = IntegrationLLM(data['config'], data['owner_root'],
                                   unattended_index_source=data.get('unattended_index_source'),
-                                  password_manager_registry=_worker_manager_registry(data))
+                                  password_manager_registry=_worker_manager_registry(data),
+                                  interaction=_worker_interaction(data))
     try:
         yield provider
     finally:

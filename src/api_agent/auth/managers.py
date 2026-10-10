@@ -94,6 +94,15 @@ class PasswordManagerRegistry:
                     inspect.signature(function).bind(*arguments)
                 except (TypeError, ValueError):
                     raise ManagerError(f'Password manager implementation has incompatible {hook} arguments') from None
+            optional = getattr(module, 'classify_login', None)
+            if optional is not None:
+                if (not inspect.isfunction(optional) or inspect.iscoroutinefunction(optional)
+                        or inspect.isasyncgenfunction(optional) or inspect.isgeneratorfunction(optional)):
+                    raise ManagerError('Password manager classification must be synchronous')
+                try:
+                    inspect.signature(optional).bind('stderr')
+                except (TypeError, ValueError):
+                    raise ManagerError('Password manager classification has incompatible arguments') from None
             return module
         except ManagerError:
             raise

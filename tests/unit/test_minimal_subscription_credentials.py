@@ -20,7 +20,7 @@ def config():
 @pytest.mark.parametrize('kind', ['username', 'password', 'totp'])
 def test_selected_descriptor_retrieval_is_lazy_and_scoped(tmp_path, monkeypatch, kind):
     calls = []
-    def fetch(source, *, timeout):
+    def fetch(source, *, timeout, interaction=None, recovery_timeout=None):
         assert 0 < timeout <= credentials.DEFAULT_TIMEOUT
         calls.append(source)
         return 'synthetic-value'
@@ -73,7 +73,7 @@ def test_configured_invalid_descriptor_fails_without_retrieval(tmp_path, problem
 
 def test_cancelled_read_is_retained_and_close_waits_for_worker(tmp_path, monkeypatch):
     entered, release = threading.Event(), threading.Event()
-    def fetch(source, *, timeout):
+    def fetch(source, *, timeout, interaction=None, recovery_timeout=None):
         assert 0 < timeout <= credentials.DEFAULT_TIMEOUT
         entered.set()
         assert release.wait(5)
@@ -85,16 +85,20 @@ def test_cancelled_read_is_retained_and_close_waits_for_worker(tmp_path, monkeyp
         while not entered.is_set():
             await asyncio.sleep(.001)
         read.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await read
+        await asyncio.sleep(.01)
+        assert not read.done()
         closing = asyncio.create_task(owner._close())
         await asyncio.sleep(.01)
         assert not closing.done()
         closing.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await closing
+        await asyncio.sleep(.01)
+        assert not closing.done()
         assert owner._credential_tasks and not next(iter(owner._credential_tasks)).done()
         release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await read
+        with pytest.raises(asyncio.CancelledError):
+            await closing
         await owner._close()
         assert not owner._credential_tasks
     try:
@@ -113,7 +117,7 @@ def test_helper_receives_ancestor_remaining_budget(tmp_path, monkeypatch):
         now[0] = 4  # Time spent waiting for the worker counts against the budget.
         return await original_to_thread(function, *args, **kwargs)
     monkeypatch.setattr(asyncio, 'to_thread', delayed_to_thread)
-    def fetch(source, *, timeout):
+    def fetch(source, *, timeout, interaction=None, recovery_timeout=None):
         timeouts.append(timeout)
         return 'synthetic-value'
     monkeypatch.setattr(credentials, 'get_password', fetch)
@@ -125,7 +129,8 @@ def test_helper_receives_ancestor_remaining_budget(tmp_path, monkeypatch):
                 assert await owner._credentials(0)(0, 'password') == 'synthetic-value'
         assert timeouts == [1]
         child = [row for row in rows if row.name == 'Password-manager password']
-        assert len(child) == 2 and all(row.timeout == 2 for row in child)
+        assert len(child) == 2 and all(row.timeout is None for row in child)
+        assert all(row.parent_id == rows[0].id for row in child)
     try:
         owner.loop.run_until_complete(run())
     finally:
@@ -197,7 +202,7 @@ def test_real_setup_uses_selected_vault_username_without_separate_profile(tmp_pa
 @pytest.mark.parametrize('kind', ['username', 'password', 'totp'])
 def test_cli_retrieval_failure_is_actionable_and_private_output_is_sanitized(tmp_path, monkeypatch, source, kind):
     from api_agent.providers.contracts import UnattendedCredentialError
-    def failed(source, *, timeout):
+    def failed(source, *, timeout, interaction=None, recovery_timeout=None):
         assert 0 < timeout <= credentials.DEFAULT_TIMEOUT
         raise credentials.CredentialError('private CLI identity/output')
     monkeypatch.setattr(credentials, 'get_' + kind, failed)
