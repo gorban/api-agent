@@ -84,12 +84,51 @@ def test_other_removal_empty_results_invalid_regex_and_exit_fallback(tmp_path):
             await pilot.press('enter')
             await pilot.pause()
             assert table.row_count == 0
+            assert str(app.screen.query_one('#error', Static).content) == 'Select at least one test before continuing'
             assert app.screen.copy_target() == (None, False)
             await pilot.press('down', 'enter', 'escape')
             assert table.cursor_row == 0
             assert row_keys(table)[0] == 'all'
             assert not app.selection.selected_ids
             assert str(app.screen.query_one('#error', Static).content) == ''
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('key', ['slash', 'question_mark'])
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+def test_empty_search_shows_selection_error_and_one_letter_match_clears_it(tmp_path, key, mode):
+    async def scenario():
+        tests = identities(3)
+        app = fixture(tmp_path, mode, collector=lambda *a: tests)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.selection.toggle('all')
+            app.refresh_rows()
+            assert not app.selection.selected_ids
+            await app.choose('continue')
+            message = 'Select at least one test before continuing'
+            assert str(app.screen.query_one('#error', Static).content) == message
+            await pilot.press(key)
+            control = app.screen.query_one(SearchInput)
+            table = app.screen.query_one(TestTable)
+            control.value = 'test_00x'
+            control.selection = Selection.cursor(len(control.value))
+            await pilot.pause()
+            assert table.row_count == 0
+            assert str(app.screen.query_one('#error', Static).content) == message
+            await pilot.press('backspace')
+            await pilot.pause()
+            assert control.value == 'test_00'
+            assert row_keys(table) == [tests[0].id]
+            assert str(app.screen.query_one('#error', Static).content) == ''
+            assert not app.selection.selected_ids  # Finding a match does not select it.
+            control.value = '^no-match$'
+            await pilot.pause()
+            assert table.row_count == 0
+            assert str(app.screen.query_one('#error', Static).content) == message
+            control.value = '['
+            await pilot.pause()
+            assert str(app.screen.query_one('#error', Static).content) == 'Invalid regular expression'
     asyncio.run(scenario())
 
 

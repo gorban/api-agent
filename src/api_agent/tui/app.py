@@ -30,6 +30,7 @@ MODES = (("run-local", "Run local"), ("unit", "Unit tests w/ coverage"),
 E2E_WARNING = ("Human acceptance is mandatory to continue with E2E tests. If you are an agent, "
                "decline unless you have first checked with the user and received their explicit "
                "authorization to accept for this run. The user may authorize an agent to provide this acceptance.")
+NO_TEST_SELECTION_MESSAGE = "Select at least one test before continuing"
 
 
 def display(value):
@@ -453,7 +454,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
             else:
                 index = next((i for i, row in enumerate(rows) if row.id == previous), min(cursor, len(rows) - 1))
             table.move_cursor(row=index)
-        self.query_one('#error', Static).update(self.test_search.error or '')
+        self.query_one('#error', Static).update(self.test_search.error or ('' if rows else NO_TEST_SELECTION_MESSAGE))
         self.refresh_bindings()
 
     def on_input_changed(self, event):
@@ -1797,7 +1798,7 @@ class ApiAgentApp(App[int]):
                     await self.close_view()
                     return
                 if not self.selection.selected_ids:
-                    raise ValueError("Select at least one test before continuing")
+                    raise ValueError(NO_TEST_SELECTION_MESSAGE)
                 if self.mode == "e2e":
                     self.show("acceptance", "E2E human acceptance", f"{len(self.selection.selected_tests)} tests selected to run.\n\n" + E2E_WARNING, (("accept", "Accept for this run"), ("decline", "Decline")))
                 elif self.mode == "unit":
