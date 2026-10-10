@@ -77,14 +77,15 @@ def test_devtools_original_callsite_and_payload_survive_filter(monkeypatch, rout
         for multiple in (False, True):
             line = emit(multiple)
             payload, group, verbosity = received[-1]
-            baseline.append((payload.content, group, verbosity, line))
+            baseline.append((payload.content, group, verbosity, line, payload.caller.filename))
         install_private_input_logging()
-        for multiple, (content, group, verbosity, line) in zip((False, True), baseline):
+        for multiple, (content, group, verbosity, line, filename) in zip((False, True), baseline):
             assert emit(multiple) == line
             payload, actual_group, actual_verbosity = received[-1]
             assert payload.content == content
             assert (actual_group, actual_verbosity) == (group, verbosity)
-            assert payload.caller.filename == __file__
+            assert payload.caller.filename == filename
+            assert os.path.samefile(payload.caller.filename, __file__)
             assert payload.caller.function == 'emit'
             assert payload.caller.lineno == line
             assert logger._log == (app._log if route == 'custom' else None)
