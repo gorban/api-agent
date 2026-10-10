@@ -13,6 +13,7 @@ from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_
                                           reconcile_results_table, styled_summary, component_timing)
 from api_agent.tui.select import AdvancingSelect
 from api_agent.tui.test_table import TestTable
+from api_agent.tui.search import GroupedUserFooter, SearchBar, SearchInput
 from api_agent.tui.clipboard import ClipboardError, copy_text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -37,7 +38,7 @@ def display(value):
     return str(value)
 
 
-class ButtonFooter(Footer):
+class ButtonFooter(GroupedUserFooter):
     def compose(self) -> ComposeResult:
         buttons = [button for button in self.screen.query(Button)
                    if button.visible and all(node.display for node in (button, *button.ancestors))]
@@ -226,6 +227,8 @@ class WorkbenchScreen(FocusNavigation, Screen):
     @property
     def focus_chain(self):
         chain = super().focus_chain
+        if self.test_search is not None:
+            return [self.query_one(SearchInput), self.query_one(TestTable)]
         if self.kind == 'test-results':
             # Summary panes remain mouse-focusable for scrolling and selection,
             # but Tab only visits the actual test list.
@@ -241,6 +244,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
         self.style_results = None
         self.config_saved = set()
         self.config_defaults = set()
+        self.test_search = None
 
     def compose(self) -> ComposeResult:
         app = self.app
@@ -303,6 +307,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
                 yield ButtonFooter()
         else:
             yield ButtonFooter()
+        if self.kind == 'tests':
+            search = SearchBar(marker='/', id='test-search-bar')
+            search.display = False
+            yield search
 
     def on_mount(self):
         if self.rows:
@@ -340,6 +348,9 @@ class WorkbenchScreen(FocusNavigation, Screen):
             self._bindings.bind("s", "start_selected", "Start selected tests")
             self._bindings.bind('left_square_bracket', 'previous_account', 'Previous user', key_display='[')
             self._bindings.bind('right_square_bracket', 'next_account', 'Next user', key_display=']')
+            self._bindings.bind('slash', 'search_forward', 'Search tests', key_display='/')
+            self._bindings.bind('question_mark', 'search_backward', 'Search tests from bottom', key_display='?')
+            self._bindings.bind('escape', 'exit_search', 'Exit search', show=False, priority=True)
         if self.kind == "test-results":
             self._bindings.bind("e", "end_inspection", "End inspection")
             self.call_after_refresh(self.layout_test_results)
@@ -389,11 +400,130 @@ class WorkbenchScreen(FocusNavigation, Screen):
     def action_next_account(self):
         self.app.cycle_account(1)
 
+    def action_search_forward(self):
+        self.start_search(1)
+
+    def action_search_backward(self):
+        self.start_search(-1)
+
+    def start_search(self, direction):
+        from api_agent.testing.search import SearchSelection
+        self.test_search = SearchSelection(self.app.selection, direction)
+        bar = self.query_one(SearchBar)
+        bar.marker = '/' if direction > 0 else '?'
+        bar.display = True
+        self.query_one(ButtonFooter).display = False
+        control = self.query_one(SearchInput)
+        control.value = ''
+        control.focus()
+        self.render_search_rows(reset_cursor=True)
+        self.refresh_bindings()
+
+    def selection_rows(self):
+        return self.test_search.rows() if self.test_search is not None else self.app.selection.groups()
+
+    def toggle_test_rows(self, keys):
+        if self.test_search is not None:
+            self.test_search.toggle_many(keys)
+            self.render_search_rows()
+        else:
+            self.app.selection.toggle_many(keys)
+            self.app.refresh_rows()
+
+    def render_search_rows(self, *, reset_cursor=False):
+        table = self.query_one(TestTable)
+        cursor = table.cursor_row
+        previous = table.ordered_rows[cursor].key.value if table.row_count else None
+        rows = self.selection_rows()
+        stable_rows = not reset_cursor and [row.key.value for row in table.ordered_rows] == [row.id for row in rows]
+        if stable_rows:
+            for row in rows:
+                cells = ('✓' if row.selected else '', row.label, f'{row.count}/{row.total}', row.kind)
+                for column, value in zip(table.columns, cells):
+                    table.update_cell(row.id, column, literal_cell(value))
+        else:
+            table.clear()
+            for row in rows:
+                table.add_row(literal_cell('✓' if row.selected else ''), literal_cell(row.label),
+                              literal_cell(f'{row.count}/{row.total}'), literal_cell(row.kind), key=row.id)
+        if rows:
+            matches = [index for index, row in enumerate(rows) if row.kind != 'other']
+            if reset_cursor:
+                index = (matches[0] if self.test_search.direction > 0 else matches[-1]) if matches else 0
+            else:
+                index = next((i for i, row in enumerate(rows) if row.id == previous), min(cursor, len(rows) - 1))
+            table.move_cursor(row=index)
+        self.query_one('#error', Static).update(self.test_search.error or '')
+        self.refresh_bindings()
+
+    def on_input_changed(self, event):
+        if isinstance(event.input, SearchInput) and self.test_search is not None:
+            valid = self.test_search.set_query(event.value)
+            self.render_search_rows(reset_cursor=valid)
+
+    def on_search_input_navigate(self, event):
+        table = self.query_one(TestTable)
+        ranges = {'range_up': (-1, False), 'range_down': (1, False),
+                  'range_top': (-1, True), 'range_bottom': (1, True)}
+        if event.action in ranges:
+            table.action_extend_range(*ranges[event.action])
+        elif event.action in {'range_page_up', 'range_page_down'}:
+            table.action_extend_page(-1 if event.action == 'range_page_up' else 1)
+        else:
+            table.action_move_plain({'up': 'cursor_up', 'down': 'cursor_down',
+                                     'page_up': 'page_up', 'page_down': 'page_down'}[event.action])
+
+    def on_search_input_toggle(self, event):
+        self.toggle_test_rows(self.query_one(TestTable).selected_row_keys)
+
+    def on_search_input_exit(self, event):
+        self.action_exit_search()
+
+    def on_key(self, event):
+        if self.test_search is not None and isinstance(self.app.focused, TestTable):
+            movement = {'j': 'down', 'k': 'up', 'J': 'range_down', 'K': 'range_up',
+                        'shift+j': 'range_down', 'shift+k': 'range_up'}
+            if event.key in movement:
+                self.on_search_input_navigate(SearchInput.Navigate(movement[event.key]))
+            elif event.is_printable and event.key != 'space':
+                control = self.query_one(SearchInput)
+                control.focus()
+                control.replace(event.character, *control.selection)
+            else:
+                return super().on_key(event)
+            event.stop()
+            event.prevent_default()
+            return
+        super().on_key(event)
+
+    def action_exit_search(self):
+        table = self.query_one(TestTable)
+        cursor = table.cursor_row
+        selected = table.ordered_rows[cursor].key.value if table.row_count else None
+        self.test_search = None
+        self.query_one(SearchBar).display = False
+        self.query_one(ButtonFooter).display = True
+        table.clear()
+        rows = self.selection_rows()
+        for row in rows:
+            table.add_row(literal_cell('✓' if row.selected else ''), literal_cell(row.label),
+                          literal_cell(f'{row.count}/{row.total}'), literal_cell(row.kind), key=row.id)
+        table.move_cursor(row=next((i for i, row in enumerate(rows) if row.id == selected), min(cursor, len(rows) - 1)))
+        self.query_one('#error', Static).update('')
+        table.focus()
+        self.refresh_bindings()
+
     def check_action(self, action, parameters):
         # Textual evaluates underlying screen bindings while a modal is open.
         # Their contextual actions must not inspect the modal as this screen.
         if self.app.screen is not self:
             return False
+        if action == 'exit_search':
+            return self.test_search is not None
+        if self.test_search is not None and action not in {'copy_value', 'copy_selected_text', 'toggle_selection'}:
+            return False
+        if action in {'search_forward', 'search_backward'}:
+            return self.kind == 'tests'
         if action == "toggle_selection":
             return isinstance(self.app.focused, DataTable)
         if action == "close_view" and self.kind == "menu":
@@ -452,8 +582,9 @@ class WorkbenchScreen(FocusNavigation, Screen):
             else:
                 self.app.edit_setting()
         elif self.kind == 'tests':
-            self.app.selection.toggle_many(event.data_table.selected_row_keys)
-            self.app.refresh_rows()
+            self.toggle_test_rows(event.data_table.selected_row_keys)
+            if self.test_search is not None:
+                self.query_one(SearchInput).focus()
         else:
             self.app.toggle_row(str(event.row_key.value))
 
@@ -525,6 +656,10 @@ class WorkbenchScreen(FocusNavigation, Screen):
 
     def copy_target(self):
         """One source for copy availability, full value and deselection policy."""
+        if self.test_search is not None:
+            selected_search = self.query_one(SearchInput).selected_text
+            if selected_search:
+                return selected_search, True
         value = self.selected_effective_value()
         if value is not None:
             return value, False
@@ -535,7 +670,7 @@ class WorkbenchScreen(FocusNavigation, Screen):
         return fallback, False
 
     def selected_test_name(self):
-        if self.kind == 'tests' and not isinstance(self.app.focused, DataTable):
+        if self.kind == 'tests' and self.test_search is None and not isinstance(self.app.focused, DataTable):
             return None
         if self.kind in {'tests', 'test-results'} and self.query(DataTable):
             table = self.query_one(DataTable)
@@ -550,10 +685,16 @@ class WorkbenchScreen(FocusNavigation, Screen):
         value, selected = self.copy_target()
         if value is None:
             return
+        search_control = self.query_one(SearchInput) if selected and self.test_search is not None else None
+        search_snapshot = (search_control.value, search_control.selection) if search_control is not None else None
         try:
             native = await copy_text(self.app, value)
             if selected:
-                self.clear_selection()
+                if search_control is not None:
+                    if (search_control.value, search_control.selection) == search_snapshot:
+                        search_control.selection = type(search_control.selection).cursor(search_control.cursor_position)
+                else:
+                    self.clear_selection()
             self.app.notify("Value copied." if native else "Value sent to terminal clipboard.", timeout=2)
         except ClipboardError:
             self.app.notify("Could not copy the value.", severity="error", timeout=2)
@@ -638,6 +779,7 @@ class ApiAgentApp(App[int]):
     .compact-setting-help #setting-help-title, .compact-setting-help #setting-help-scroll { margin-bottom: 0; }
     #tab-select-hint { width: auto; height: 1; }
     Footer { dock: bottom; width: 100%; }
+    #test-search-bar SearchInput, #test-search-bar SearchInput:focus { height: 1; border: none; padding: 0; }
     #menu-bottom-bar { dock: bottom; height: auto; }
     #menu-bottom-bar Footer { dock: none; }
     #pack-bootstrap { height: auto; color: red; }
@@ -1572,6 +1714,9 @@ class ApiAgentApp(App[int]):
 
     def refresh_rows(self):
         table = self.screen.query_one(DataTable)
+        if self.screen.kind == 'tests' and self.screen.test_search is not None:
+            self.screen.render_search_rows()
+            return
         if self.screen.kind == "tests":
             rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
         else:
