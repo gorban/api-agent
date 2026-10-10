@@ -9,6 +9,8 @@ from .connections import ConnectionStore, SubscriptionSession
 from .contracts import AuthError
 from .browser import subscription_browser
 from .oauth import refresh_connection
+from .api_key import APIKeySession
+from .endpoint import validate_base_url
 
 
 class OwnedSubscriptionSession(SubscriptionSession):
@@ -39,6 +41,7 @@ class GPTProvider:
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
+        self.base_url = config.get("GPT_BASE_URL", "https://api.openai.com/v1")
         self.run_ui = config.get("RUN_UI", False)
         self.allow_browser_interaction = config.get("NO_STD_IN") is False or inspection is not None
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
@@ -66,8 +69,18 @@ class GPTProvider:
             raise ContractError("GPT_AUTH_MODE must be subscription or api_key.")
         if not isinstance(self.api_mode, str) or self.api_mode not in {"responses", "completions"}:
             raise ContractError("GPT_API_MODE must be responses or completions.")
-        if self.auth_mode != "subscription":
-            raise SetupPrerequisiteError("GPT API-key authentication is pending implementation; select subscription authentication.")
+        if self.auth_mode == "api_key":
+            self.base_url = validate_base_url(self.base_url)
+            if user_index is not None and (type(user_index) is not int or user_index < 0):
+                raise ContractError("The selected LLM User index must be a nonnegative integer.")
+            if user_index is None or credentials is None:
+                raise SetupPrerequisiteError("Select an LLM User with an API key stored in its password credential and configure the shared password-manager credential reader.")
+            key = await credentials(user_index, "password")
+            if self.closed:
+                raise ContractError("GPT provider is closed.")
+            session = APIKeySession(key)
+            self.sessions.append(session)
+            return session
         if self.api_mode != "responses":
             raise SetupPrerequisiteError("GPT subscription authentication requires responses mode; set GPT_API_MODE=responses.")
         store = ConnectionStore(self.state_dir)

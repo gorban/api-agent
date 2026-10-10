@@ -49,7 +49,7 @@ def test_factory_no_io(monkeypatch):
     assert module.factory({"GPT_AUTH_MODE": "api_key", "GPT_STATE_DIR": "/tmp/test"}, None).api_mode == "completions"
 
 
-@pytest.mark.parametrize("config,message", [({"GPT_AUTH_MODE": "api_key"}, "pending"), ({"GPT_API_MODE": "completions"}, "requires responses")])
+@pytest.mark.parametrize("config,message", [({"GPT_AUTH_MODE": "api_key"}, "Select an LLM User"), ({"GPT_API_MODE": "completions"}, "requires responses")])
 def test_route_rejected_before_io(config, message, monkeypatch):
     monkeypatch.setattr(module, "ConnectionStore", lambda *_: pytest.fail("storage"))
     with pytest.raises(SetupPrerequisiteError, match=message):
