@@ -11,6 +11,7 @@ from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.setup_transport import _error, _raise_error
 
 KEY = 'synthetic-selected-api-key-never-exported'
+SECONDARY_KEY = 'synthetic-secondary-credential-not-selected'
 BASE = 'https://compatible.example/v1'
 
 
@@ -32,6 +33,27 @@ def test_normalization_precedes_bearer_and_url_redaction():
     error = _failure(403, {'error': {'message': 'Bearer\0 OTHER-SECRET and ht\ntps://private.example/account'}}, None, KEY)
     assert str(error).splitlines()[0] == 'Bearer [redacted] and [endpoint]'
     assert 'OTHER-SECRET' not in str(error) and 'private.example' not in str(error)
+
+
+@pytest.mark.parametrize('separator', [' ', '\t', '\n', '\r\n', '\v', '\f', '\u0085', '\u2028'])
+def test_secondary_bearer_credentials_remain_masked_across_whitespace(separator):
+    reflected = 'Bearer' + separator + SECONDARY_KEY
+    error = _failure(401, {'error': {'message': 'Rejected: ' + reflected + '; safe explanation',
+        'code': reflected, 'type': reflected}}, reflected, KEY)
+    frame = _error(error)
+    assert SECONDARY_KEY not in repr(vars(error)) + repr(frame)
+    with pytest.raises(ProviderAccessError) as caught:
+        _raise_error(frame)
+    assert str(caught.value).startswith('Rejected: Bearer [redacted]; safe explanation')
+    assert caught.value.code == caught.value.type == caught.value.request_id == 'Bearer [redacted]'
+    assert caught.value.status == 401
+
+
+@pytest.mark.parametrize('scheme', ['Bearer\0', 'Bea\0rer'])
+def test_secondary_bearer_masking_still_applies_after_control_normalization(scheme):
+    error = _failure(403, {'error': {'message': scheme + ' ' + SECONDARY_KEY}}, None, KEY)
+    assert SECONDARY_KEY not in str(error)
+    assert str(error).splitlines()[0] == 'Bearer [redacted]'
 
 
 def test_final_redaction_catches_credentials_created_by_other_replacements():

@@ -10,7 +10,7 @@ import pytest
 
 @pytest.mark.parametrize('jobs', [0, 2])
 @pytest.mark.parametrize('outcome', ['accepted', 'wrong-password', 'restricted', 'public-wrong-password', 'expired',
-    'control-newline', 'control-nul', 'control-escape'])
+    'control-newline', 'control-nul', 'control-escape', 'bearer-space', 'bearer-tab', 'bearer-newline', 'bearer-crlf'])
 def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, monkeypatch, jobs, outcome):
     from api_agent.auth import credentials
     from api_agent.llm_providers.gpt import factory
@@ -18,6 +18,7 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     from api_agent.testing.collection import collect_tests
     from api_agent.testing.recorded import run_recorded_integration
     key = 'synthetic-subscription-password-or-key-never-exported'
+    secondary_key = 'synthetic-secondary-credential-not-selected'
     credential_reads, requests, loaded = [], [], []
     def password(profile, **kwargs):
         credential_reads.append((profile.vault, profile.user))
@@ -43,6 +44,11 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
         if outcome in controls:
             reflected = key[:10] + controls[outcome] + key[10:]
             return httpx.Response(401, json={'error': {'message': 'Selected credential rejected ' + reflected,
+                'code': reflected, 'type': reflected}}, headers={'x-request-id': reflected})
+        separators = {'bearer-space': ' ', 'bearer-tab': '\t', 'bearer-newline': '\n', 'bearer-crlf': '\r\n'}
+        if outcome in separators:
+            reflected = 'Bearer' + separators[outcome] + secondary_key
+            return httpx.Response(401, json={'error': {'message': 'Selected credential rejected; ' + reflected,
                 'code': reflected, 'type': reflected}}, headers={'x-request-id': reflected})
         status = 403 if outcome == 'restricted' else 401
         return httpx.Response(status, json={'error': {'message': 'Selected credential rejected ' + key,
@@ -86,11 +92,13 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     artifacts = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]
     assert [item['status'] for item in artifacts] == [expected, expected]
     assert key not in result.execution.output
+    assert secondary_key not in result.execution.output
     if outcome == 'expired':
         assert 'API key expired.' in result.execution.output
         assert 'code: 401' in result.execution.output and 'type: invalid_token' in result.execution.output
     all_text = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
     assert key not in all_text
+    assert secondary_key not in all_text
     if outcome != 'accepted':
         for item in artifacts:
             details = item['statusDetails']
@@ -102,6 +110,10 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
                 continue
             assert 'Selected credential rejected' in details['message'] + details['trace']
             assert f'HTTP status: {403 if outcome == "restricted" else 401}' in details['trace']
+            if outcome.startswith('bearer-'):
+                assert 'code: Bearer [redacted]' in details['trace']
+                assert 'type: Bearer [redacted]' in details['trace'] and 'request ID: Bearer [redacted]' in details['trace']
+                continue
             if outcome.startswith('control-'):
                 assert 'code: [redacted]' in details['trace']
                 assert 'type: [redacted]' in details['trace'] and 'request ID: [redacted]' in details['trace']
