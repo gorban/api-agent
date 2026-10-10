@@ -1,4 +1,4 @@
-"""Provider-owned setup checks using isolated synthetic saved state."""
+"""Deterministic GPT setup checks using isolated synthetic saved state."""
 import asyncio
 import time
 
