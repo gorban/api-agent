@@ -73,7 +73,15 @@ Most users configure one provider/authentication mode and one LLM User entry per
 - [x] Share a single lazy catalog request/result through the operation backend, including parallel base/pack/provider workers. Extend strict capability/lease IPC with bounded catalog metadata and provider-normalized safe upstream failures. Worker cancellation/deadlines do not cancel sibling work; disposal drains requests before auth resources. Keep DEBUG's current serial worker-local ownership.
 - [x] Prove wrong-password, public-catalog/invalid-key and catalog-permission rejection through actual loaded-factory serial/parallel recorded tests. Assert the selected password is retrieved once, subscription state/username/TOTP stay untouched for API-key access, upstream details reach Allure, secrets do not, and failures remain failures. Independent review repaired aggregate frame bounds, malformed key verification and initiating-waiter deadline inheritance.
 - [x] Preserve bounded numeric upstream error codes as strings and use a bounded Bearer authentication-challenge error identifier when the JSON error has no type. Verify expired-key details survive the actual serial/parallel worker, console and Allure paths without exporting raw headers or arbitrary response metadata.
+- [x] Human-review API-key discovery rejecting an intentionally expired credential with visible expiry/status details, then passing with a replacement valid key at the matching compatible endpoint. Other live catalog/account scenarios remain separate.
 - [ ] Human-review no-inference discovery with matching and mismatched personal credentials/endpoints, including restricted/expired keys. Catalog PASS does not prove Responses/Chat Completions permissions; implement and test those transports separately with safe upstream failure propagation. Do not require catalog access for explicitly selected inference.
+
+## Minimal inference integration checkpoint
+
+- [ ] Implement the smallest shared LLM-request integration through the loaded provider and owned session, using a short prompt and bounded output. Prove the transports with deterministic unit tests before live checks. Supply an explicit GPT selection so this test does not require catalog permission; keep discovery as its own integration.
+- [ ] Verify subscription Responses first, then API-key Chat Completions and, when funded, API-key Responses against compatible endpoints. Use the same consumer assertion and generic result/usage contracts. Keep repeated live checks limited to the approved personal account and spending plan maintained outside this repository.
+- [ ] Exercise deliberately unfunded or exhausted API-key access in both API formats, preserving the actual upstream message, HTTP status, code/type and available request identifier through test details and Allure. Distinguish observed billing/credit rejection from permission rejection; never manufacture a quota diagnosis or fall back to another account, endpoint or authentication mode. A normal request integration fails on rejection; a dedicated rejection test passes only when it asserts that expected error behavior.
+- [ ] Record each live outcome and unavailable funded combination separately; a funding-limited deferred check is not transport acceptance. Use the verified subscription Responses route for subsequent development while retaining deterministic coverage of both API-key transports.
 
 Validation: 3,922/3,922 combined base/pack units pass with 100% line and branch
 coverage in every measured file. Serial/parallel recorded synthetic runs preserve
@@ -81,4 +89,5 @@ PASS/FAIL and safe upstream details in Allure. Independent adversarial review is
 clear; focused mutations detect disabled key rejection, verification shape,
 subscription/public-catalog rejection and shared deadline isolation. The wheel
 builds and its relocated catalog/factory contract loads without authentication.
-Live no-inference acceptance and inference-format permissions remain pending.
+The expired/replacement API-key discovery walkthrough is human-approved; other
+live catalog scenarios and inference-format permissions remain pending.
