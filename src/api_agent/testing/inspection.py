@@ -5,7 +5,7 @@ from pathlib import Path
 import threading
 import time
 
-from .processes import finalize
+from .processes import disposal_complete, finalize
 
 
 class InspectionDirectory:
@@ -84,7 +84,12 @@ class IntegrationInspection:
         # A successful group disposal releases its numeric identity. Later
         # reader/stream/directory failures must not signal that identity again.
         if not self._process_reaped:
-            finalize(self.process)
+            self._process_reaped = disposal_complete(self.process)
+        if not self._process_reaped:
+            try:
+                finalize(self.process)
+            finally:
+                self._process_reaped = disposal_complete(self.process)
             self._process_reaped = True
         if self.liveness_fd is not None:
             os.close(self.liveness_fd)

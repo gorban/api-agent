@@ -33,6 +33,11 @@ def _group_running(group):
     return False
 
 
+def disposal_complete(process):
+    """Confirmed leader/group disposal belongs to this exact process handle."""
+    return getattr(process, '_api_agent_disposal_complete', False) is True
+
+
 def finalize(process, *, communicate=False):
     """Stop the owned group and wait briefly for leader and live descendants."""
     def send(*, force=False):
@@ -48,18 +53,35 @@ def finalize(process, *, communicate=False):
 
     send()
     wait = process.communicate if communicate else process.wait
+    leader_reaped = False
+    primary = None
     try:
-        result = wait(timeout=.5)
-    except subprocess.TimeoutExpired:
-        send(force=True)
-        result = wait(timeout=5)
-    finally:
-        if os.name == 'posix':
-            # The leader may already have exited while a child ignored TERM.
+        try:
+            result = wait(timeout=.5)
+        except subprocess.TimeoutExpired:
             send(force=True)
-            deadline = time.monotonic() + 2
-            while _group_running(process.pid):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f'Owned pytest process group {process.pid} did not stop after SIGKILL')
-                time.sleep(.01)
-    return result
+            result = wait(timeout=5)
+        leader_reaped = True
+        return result
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            if os.name == 'posix':
+                # The leader may already have exited while a child ignored TERM.
+                send(force=True)
+                deadline = time.monotonic() + 2
+                while _group_running(process.pid):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f'Owned pytest process group {process.pid} did not stop after SIGKILL')
+                    time.sleep(.01)
+        except BaseException as error:
+            if primary is None:
+                raise
+            primary.cleanup_error = error
+        else:
+            # Popen.wait can reap during its interrupt grace wait, then raise.
+            # Persist that success before the original interruption propagates.
+            if leader_reaped or type(getattr(process, 'returncode', None)) is int:
+                process._api_agent_disposal_complete = True

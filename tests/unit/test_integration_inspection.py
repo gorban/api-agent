@@ -44,6 +44,94 @@ def test_disposed_group_is_never_signalled_again_after_later_cleanup_failure(tmp
     assert temporary.cleanup.call_count == (2 if failure == 'directory' else 1)
 
 
+@pytest.mark.parametrize('retry', ['end_inspection', 'abort'])
+@pytest.mark.parametrize('handoff_interrupted', [False, True])
+def test_real_interrupt_grace_wait_records_disposal_before_retry(tmp_path, monkeypatch, retry, handoff_interrupted):
+    from api_agent.testing import processes
+    monkeypatch.setattr(inspection.threading.Thread, 'start', lambda self: None)
+    signals = Mock()
+    monkeypatch.setattr(processes.os, 'killpg', signals)
+    group_checks = Mock(return_value=False)
+    monkeypatch.setattr(processes, '_group_running', group_checks)
+    process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(.02)'],
+                               stdout=subprocess.PIPE, text=True, start_new_session=True)
+    original_wait = process._wait
+    waits = []
+    interruption = KeyboardInterrupt('controlled interrupt')
+    def interrupt_first_wait(timeout):
+        waits.append(timeout)
+        if len(waits) == 1:
+            raise interruption
+        return original_wait(timeout)
+    monkeypatch.setattr(process, '_wait', interrupt_first_wait)
+    temporary = SimpleNamespace(name=str(tmp_path), cleanup=Mock())
+    reader = SimpleNamespace(join=Mock(), is_alive=lambda: False)
+    handle = inspection.IntegrationInspection(process, inspection.InspectionDirectory(temporary),
+                                             tmp_path / 'events', reader)
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            handle.abort()
+        assert caught.value is interruption
+        assert len(waits) == 2 and process.returncode == 0
+        group_checks.assert_called_once_with(process.pid)
+        assert handle._process_reaped and not handle.closed
+        reader.join.assert_not_called()
+        temporary.cleanup.assert_not_called()
+        signals_before_retry = signals.call_args_list.copy()
+        assert signals_before_retry
+        if handoff_interrupted:
+            # Another interrupt can prevent the caller from caching the receipt.
+            handle._process_reaped = False
+        # A delayed retry may happen after another operation reuses this ID.
+        getattr(handle, retry)()
+        assert handle.closed and signals.call_args_list == signals_before_retry
+        assert len(waits) == 2 and group_checks.call_count == 1
+        reader.join.assert_called_once()
+        temporary.cleanup.assert_called_once()
+        assert process.stdout.closed
+    finally:
+        monkeypatch.setattr(process, '_wait', original_wait)
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
+@pytest.mark.parametrize('leader_known,group_known', [(False, True), (True, False), (False, False)])
+def test_interrupted_unconfirmed_disposal_preserves_interrupt_and_retries(tmp_path, monkeypatch, leader_known, group_known):
+    from api_agent.testing import processes
+    monkeypatch.setattr(inspection.threading.Thread, 'start', lambda self: None)
+    signals = Mock()
+    monkeypatch.setattr(processes.os, 'killpg', signals)
+    group_checks = Mock(side_effect=None if group_known else [OSError('group status unavailable'), False],
+                        return_value=False)
+    monkeypatch.setattr(processes, '_group_running', group_checks)
+    interruption = KeyboardInterrupt('controlled interrupt')
+    process = SimpleNamespace(pid=424242, returncode=0 if leader_known else None,
+                              stdout=SimpleNamespace(close=Mock()), poll=lambda: 0)
+    def wait(timeout):
+        if wait.calls == 0:
+            wait.calls += 1
+            raise interruption
+        wait.calls += 1
+        process.returncode = 0
+        return 0
+    wait.calls = 0
+    process.wait = wait
+    handle = inspection.IntegrationInspection(process, inspection.InspectionDirectory(
+        SimpleNamespace(name=str(tmp_path), cleanup=Mock())), tmp_path / 'events',
+        SimpleNamespace(join=Mock(), is_alive=lambda: False))
+    with pytest.raises(KeyboardInterrupt) as caught:
+        handle.abort()
+    assert caught.value is interruption
+    if not group_known:
+        assert isinstance(interruption.cleanup_error, OSError)
+    assert not handle._process_reaped and not processes.disposal_complete(process)
+    assert not handle.closed
+    first_signal_count = signals.call_count
+    assert handle.end_inspection()
+    assert signals.call_count > first_signal_count
+    assert wait.calls == 2 and handle.closed and processes.disposal_complete(process)
+
+
 def test_failed_group_reap_keeps_retry_handle_and_ipc_directory(monkeypatch):
     directory = inspection.InspectionDirectory(tempfile.TemporaryDirectory())
     events = []
