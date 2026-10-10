@@ -284,3 +284,36 @@ def test_unedited_cli_follows_each_selected_managers_own_default(tmp_path):
                 definition = app.session.password_manager_registry.get(manager) if manager else None
                 assert editor.query_one('#auth-path', Input).value == (definition.cli_default if definition else '')
     asyncio.run(scenario())
+
+
+def test_stale_clear_event_keeps_generated_default_following_through_save_reload(tmp_path):
+    async def scenario():
+        app = _Wizard(tmp_path)
+        app.session.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+        async with app.run_test(size=(110, 55)) as pilot:
+            await pilot.pause()
+            # Repeat the queued sequence across saved/reopened editors.
+            for _ in range(3):
+                app.screen.query_one('#auth-manager-table', DataTable).focus()
+                await pilot.press('e')
+                await pilot.pause()
+                editor = app.screen
+                picker = editor.query_one('#auth-manager', Select)
+                path = editor.query_one('#auth-path', Input)
+                assert path.value == 'op'
+                picker.value = 'synthetic'
+                path.value = ''
+                picker.value = 'keeper'
+                await pilot.pause()
+                assert path.value == 'keeper'
+                assert editor._cli_draft_value == 'keeper'
+                assert not editor._cli_explicit
+                picker.value = '1password'
+                await pilot.pause()
+                assert path.value == 'op'
+                editor.save_entry()
+                await pilot.pause()
+                saved = ConfigSession(app.context, app.session.schema, environ={}).result(_review=True)
+                assert saved.values['UNATTENDED_AUTH']['password_manager'] == {
+                    'manager': '1password', 'cli_path': 'op'}
+    asyncio.run(scenario())

@@ -171,6 +171,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
             env['PYTHONUNBUFFERED'] = '1'
             backend_descriptor = None
+            from api_agent.auth.managers import registry_for_context
+            manager_registry = registry_for_context(context) if config is not None else None
             for repo in dict.fromkeys(test.repo for test in tests):
                 selected = {test.node_id: test for test in tests if test.repo == repo}
                 root = next(iter(selected.values())).root or roots.get(repo)
@@ -191,10 +193,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     break
                 if config is not None and not config.get('DEBUG') and backend is None:
                     from .setup_backend import SetupBackend
-                    from api_agent.auth.managers import registry_for_context
                     backend = SetupBackend(config, context.owner_root,
                         unattended_index_source=unattended_index_source,
-                        password_manager_registry=registry_for_context(context))
+                        password_manager_registry=manager_registry)
                     backend_descriptor = backend.start()
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
@@ -203,7 +204,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         from .provider_setup import write_launch_snapshot
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
                             unattended_index_source=unattended_index_source,
-                            setup_backend=backend_descriptor))
+                            setup_backend=backend_descriptor, password_manager_registry=manager_registry))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
