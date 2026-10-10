@@ -48,7 +48,7 @@ def test_selection_and_index_bounds():
 
 @pytest.mark.parametrize('payload,message', [
     ([], 'JSON object'),
-    ({'password_manager': {'manager': 'bad', 'cli_path': 'x'}, 'roles': {}}, 'keeper or 1password'),
+    ({'password_manager': {'manager': 'bad', 'cli_path': 'x'}, 'roles': {}}, 'Selected password manager is unavailable'),
     ({'roles': {'LLM User': {}}}, 'array'),
     ({'roles': {'LLM User': [None]}}, 'object'),
     ({'roles': {'LLM User': [{'vault': 'v'}]}}, 'exactly vault and user'),
@@ -162,7 +162,7 @@ def test_credential_source_error_identifies_role_and_position(monkeypatch):
 
     error = CredentialError('unavailable descriptor')
 
-    def fail(_):
+    def fail(_, *, registry=None):
         raise error
 
     monkeypatch.setattr(module.CredentialSource, 'from_mapping', fail)

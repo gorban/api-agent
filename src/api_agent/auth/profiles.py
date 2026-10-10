@@ -15,26 +15,33 @@ def _canonical_shape(value: Mapping) -> bool:
             ("password_manager" in value and isinstance(value["password_manager"], Mapping)))
 
 
-def _manager(value: object) -> dict[str, str]:
+def _manager(value: object, *, registry=None) -> dict[str, str]:
     if not isinstance(value, Mapping) or set(value) != {"manager", "cli_path"}:
         raise ValueError("password_manager requires exactly manager and cli_path.")
     manager, path = value["manager"], value["cli_path"]
-    if not isinstance(manager, str) or manager not in {"", "keeper", "1password"}:
-        raise ValueError("password_manager manager must be blank, keeper or 1password.")
+    if not isinstance(manager, str):
+        raise ValueError('password_manager manager must be a string.')
+    definition = None
+    if manager:
+        from .managers import bundled_registry
+        selected_registry = bundled_registry() if registry is None else registry
+        definition = selected_registry.get(manager)
     if not isinstance(path, str):
         raise ValueError("password_manager cli_path must be a string.")
     if manager and not path.strip():
-        path = "keeper" if manager == "keeper" else "op"
+        path = definition.cli_default
     return {"manager": manager, "cli_path": path}
 
 
-def normalize_auth(value: object) -> dict[str, object]:
+def normalize_auth(value: object, *, registry=None) -> dict[str, object]:
     """Return canonical descriptors, migrating uniform legacy entries in memory."""
     if not isinstance(value, Mapping):
         raise ValueError("UNATTENDED_AUTH must be a JSON object.")
     if '_auth_error' in value:
         if value['_auth_error'] == 'manager_conflict':
             raise ValueError('Saved .env profiles use different password managers or CLI paths; choose one shared password manager before saving.')
+        if value['_auth_error'] == 'manager_unavailable':
+            raise ValueError('Selected password manager is unavailable; select an available manager or restore its resource pack')
         raise ValueError('Saved UNATTENDED_AUTH in .env is malformed or invalid; fix that file before editing accounts.')
     if _canonical_shape(value):
         if set(value) - {"password_manager", "roles"}:
@@ -42,7 +49,7 @@ def normalize_auth(value: object) -> dict[str, object]:
         roles = value.get("roles", {})
         if not isinstance(roles, Mapping):
             raise ValueError("UNATTENDED_AUTH roles must be a JSON object.")
-        manager = _manager(value.get("password_manager", DEFAULT_PASSWORD_MANAGER))
+        manager = _manager(value.get("password_manager", DEFAULT_PASSWORD_MANAGER), registry=registry)
         return {"password_manager": manager, "roles": dict(roles)}
     roles = {}
     found_manager = None
@@ -53,7 +60,7 @@ def normalize_auth(value: object) -> dict[str, object]:
         for index, entry in enumerate(entries):
             if not isinstance(entry, Mapping) or set(entry) != {"manager", "cli_path", "vault", "user"}:
                 raise ValueError(f"Legacy credential role {role!r} entry {index} requires manager, cli_path, vault and user.")
-            manager = _manager({key: entry[key] for key in ("manager", "cli_path")})
+            manager = _manager({key: entry[key] for key in ("manager", "cli_path")}, registry=registry)
             if found_manager is not None and manager != found_manager:
                 raise ValueError("Legacy credential entries use different password managers or CLI paths; choose one shared password manager before saving.")
             found_manager = manager
@@ -121,10 +128,10 @@ def _labels(labels: Sequence[str], *, name: str) -> tuple[str, ...]:
     return result
 
 
-def parse_profiles(value: object, enabled_roles: Sequence[str]) -> CredentialProfiles:
+def parse_profiles(value: object, enabled_roles: Sequence[str], *, registry=None) -> CredentialProfiles:
     """Validate a parsed JSON object against caller-supplied enabled role labels."""
     labels = _labels(enabled_roles, name="Enabled roles")
-    canonical = normalize_auth(value)
+    canonical = normalize_auth(value, registry=registry)
     roles = canonical["roles"]
     unknown = roles.keys() - labels
     if unknown:
@@ -138,7 +145,7 @@ def parse_profiles(value: object, enabled_roles: Sequence[str]) -> CredentialPro
             if not canonical["password_manager"]["manager"] or not canonical["password_manager"]["cli_path"].strip():
                 raise ValueError("Select a password manager and CLI path before unattended retrieval.")
             try:
-                sources.append(CredentialSource.from_mapping({**canonical["password_manager"], **entry}))
+                sources.append(CredentialSource.from_mapping({**canonical["password_manager"], **entry}, registry=registry))
             except CredentialError as exc:
                 raise ValueError(f"Credential role {role!r} entry {index}: {exc}") from exc
         result.append((role, tuple(sources)))

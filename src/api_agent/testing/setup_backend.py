@@ -18,7 +18,8 @@ class _SetupOwner:
         from .provider_setup import IntegrationLLM
         self.provider = IntegrationLLM(backend.config, backend.owner_root,
             unattended_index_source=backend.unattended_index_source,
-            loop=asyncio.get_running_loop())
+            loop=asyncio.get_running_loop(),
+            password_manager_registry=backend.password_manager_registry)
 
     async def ensure_ready(self):
         await self.provider._ensure()
@@ -39,14 +40,21 @@ class SetupBackend:
     lost = False
     retains_browser = False
 
-    def __init__(self, config, owner_root, *, unattended_index_source=None):
+    def __init__(self, config, owner_root, *, unattended_index_source=None,
+                 password_manager_registry=None):
         self._config = deepcopy(dict(config))
         if self._config.get('DEBUG'):
             raise ContractError('Debug setup must remain worker-local.')
         self._owner_root = Path(owner_root).resolve()
+        from api_agent.auth.managers import registry_for_owner
+        self._password_manager_registry = (password_manager_registry if password_manager_registry is not None
+                                           else registry_for_owner(self._owner_root))
         self._unattended_index_source = unattended_index_source
         self._operation_id = str(uuid4())
-        frozen = json.dumps({'config': self._config, 'owner_root': str(self._owner_root)},
+        managers = [(item.id, str(item.implementation), item.cli_default)
+                    for item in self._password_manager_registry.definitions]
+        frozen = json.dumps({'config': self._config, 'owner_root': str(self._owner_root),
+                             'password_managers': managers},
                             sort_keys=True, separators=(',', ':'), default=str)
         self._selected_identity = hashlib.sha256(frozen.encode()).hexdigest()
         self.loop = self.thread = self.registry = self.server = None
@@ -65,6 +73,10 @@ class SetupBackend:
     @property
     def owner_root(self):
         return self._owner_root
+
+    @property
+    def password_manager_registry(self):
+        return self._password_manager_registry
 
     @property
     def unattended_index_source(self):

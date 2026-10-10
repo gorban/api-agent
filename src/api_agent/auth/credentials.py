@@ -1,8 +1,6 @@
 """Noninteractive, in-memory credential retrieval from existing CLI sessions."""
 from __future__ import annotations
 
-import csv
-import io
 import math
 import os
 import queue
@@ -13,7 +11,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class CredentialError(RuntimeError):
@@ -31,16 +29,20 @@ class CredentialSource:
     cli_path: str
     vault: str
     user: str
+    _registry: object | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> CredentialSource:
+    def from_mapping(cls, value: Mapping[str, object], *, registry=None) -> CredentialSource:
         fields = ("manager", "cli_path", "vault", "user")
-        if any(not isinstance(value.get(key), str) or not value[key].strip() for key in fields):
+        if not isinstance(value, Mapping) or any(not isinstance(value.get(key), str) or not value[key].strip() for key in fields):
             raise CredentialError("Credential source requires nonempty manager, cli_path, vault and user strings.")
-        source = cls(**{key: value[key] for key in fields})
-        if source.manager not in {"keeper", "1password"}:
-            raise CredentialError("Credential manager must be keeper or 1password.")
-        return source
+        from .managers import ManagerError, bundled_registry
+        registry = bundled_registry() if registry is None else registry
+        try:
+            registry.get(value['manager'])
+        except ManagerError as error:
+            raise CredentialError(str(error)) from None
+        return cls(**{key: value[key] for key in fields}, _registry=registry)
 
 
 def resolve_cli_path(cli_path: str) -> str:
@@ -145,40 +147,35 @@ def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeou
     if type(kind) is not str or kind not in {"username", "password", "totp"}:
         raise CredentialError("Unsupported credential kind.")
     if isinstance(source, CredentialSource):
-        source = CredentialSource.from_mapping(vars(source))
+        source = CredentialSource.from_mapping(vars(source), registry=source._registry)
     else:
         source = CredentialSource.from_mapping(source)
+    from .managers import ManagerError
+    try:
+        adapter = source._registry.load(source.manager)
+    except ManagerError as error:
+        raise CredentialError(str(error)) from None
     cli = resolve_cli_path(source.cli_path)
-    if source.manager == "keeper":
-        item = f"{source.vault}/{source.user}"
-        if kind == "password":
-            argv = [cli, "find-password", item]
-        elif kind == "username":
-            argv = [cli, "clipboard-copy", item, "--field", "login", "--output", "stdout"]
-        else:
-            argv = [cli, "clipboard-copy", item, "--totp", "--output", "stdout", "-t"]
-    else:
-        argv = [cli, "item", "get", source.user, "--vault", source.vault]
-        if kind == "password":
-            argv += ["--fields", "password", "--reveal"]
-        elif kind == "username":
-            argv += ["--fields", "username"]
-        else:
-            argv += ["--otp"]
+    try:
+        argv = adapter.command(source, kind, cli)
+    except ManagerError as error:
+        raise CredentialError(str(error)) from None
+    except Exception:
+        raise CredentialError("Password manager command creation failed.") from None
+    if (type(argv) is not list or not argv or argv[0] != cli
+            or any(type(argument) is not str or '\0' in argument for argument in argv)):
+        raise CredentialError("Password manager returned an invalid credential command.")
     output = _run(argv, timeout)
-    if source.manager == "1password" and kind in {"username", "password"}:
-        try:
-            rows = list(csv.reader(io.StringIO(output), strict=True))
-        except csv.Error as exc:
-            raise CredentialError(f"1Password returned invalid {kind} CSV.") from exc
-        if len(rows) != 1 or len(rows[0]) != 1:
-            raise CredentialError(f"1Password {kind} output must contain exactly one CSV cell.")
-        output = rows[0][0]
-    else:
-        # Keeper appends one line terminator to the credential it prints.
-        terminator = "\r\n" if os.name == "nt" else "\n"
-        if output.endswith(terminator):
-            output = output[:-len(terminator)]
+    if type(output) is not str:
+        raise CredentialError("Credential CLI returned invalid output.")
+    try:
+        output = adapter.parse(output, kind)
+    except ManagerError as error:
+        raise CredentialError(str(error)) from None
+    except Exception:
+        raise CredentialError("Password manager output parsing failed.") from None
+    if type(output) is not str:
+        raise CredentialError("Password manager returned an invalid credential.")
     if not output or kind == "username" and not output.strip():
         raise CredentialError("Credential CLI returned an empty credential.")
     return output

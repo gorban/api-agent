@@ -12,6 +12,7 @@ from .editor import DotenvEditor, serialize_value
 from .resolve import (ConfigError, ResolvedValue, convert_value, resolve_config,
                       runtime_directory_overrides, retain_runtime_directory)
 from api_agent.auth.profiles import DEFAULT_PASSWORD_MANAGER, _canonical_shape, normalize_auth, validate_role_entries
+from api_agent.auth.managers import registry_for_context
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,11 @@ class CleanupRow:
 
 
 class ConfigSession:
+    @property
+    def password_manager_registry(self):
+        """Resolve declarations for the currently selected pack on each access."""
+        return registry_for_context(self.context)
+
     @property
     def schema(self):
         return self._schema
@@ -136,7 +142,7 @@ class ConfigSession:
             raise
 
     @staticmethod
-    def _auth_object(path, *, chosen_manager=None):
+    def _auth_object(path, *, chosen_manager=None, registry=None):
         raw = read_dotenv(path).get('UNATTENDED_AUTH')
         if raw is None:
             return {}
@@ -145,29 +151,41 @@ class ConfigSession:
         except (TypeError, ValueError):
             raise ConfigError('UNATTENDED_AUTH in .env must be a JSON object of role arrays.') from None
         try:
-            canonical = normalize_auth(value)
+            if chosen_manager is not None and isinstance(value, dict) and not _canonical_shape(value):
+                # An explicit choice replaces superseded legacy manager fields,
+                # including declarations from a pack that is no longer active.
+                roles = {}
+                for role, entries in value.items():
+                    if not isinstance(entries, list):
+                        raise ValueError('UNATTENDED_AUTH legacy roles must contain arrays.')
+                    converted = []
+                    for entry in entries:
+                        if (not isinstance(entry, dict) or
+                                set(entry) != {'manager', 'cli_path', 'vault', 'user'} or
+                                not isinstance(entry['manager'], str) or
+                                not isinstance(entry['cli_path'], str)):
+                            raise ValueError('UNATTENDED_AUTH legacy entries require manager, cli_path, vault and user descriptors.')
+                        converted.append({'vault': entry['vault'], 'user': entry['user']})
+                    validate_role_entries(role, converted)
+                    roles[role] = converted
+                return {'password_manager': chosen_manager, 'roles': roles}
+            replacement = value
+            if chosen_manager is not None and isinstance(value, dict) and _canonical_shape(value):
+                old_manager = value.get('password_manager')
+                if (old_manager is not None and
+                        (not isinstance(old_manager, dict) or set(old_manager) != {'manager', 'cli_path'} or
+                         any(not isinstance(old_manager[key], str) for key in ('manager', 'cli_path')))):
+                    raise ValueError('UNATTENDED_AUTH password_manager requires manager and cli_path strings.')
+                replacement = {**value, 'password_manager': chosen_manager}
+            canonical = normalize_auth(replacement, registry=registry)
+            if isinstance(value, dict) and _canonical_shape(value):
+                result = {key: canonical[key] for key in ('password_manager', 'roles') if key in value}
+                if chosen_manager is not None and 'password_manager' in value:
+                    result['password_manager'] = value['password_manager']
+                return result
+            return canonical
         except ValueError as exc:
-            if chosen_manager is None or 'different password managers or CLI paths' not in str(exc):
-                raise ConfigError(f'UNATTENDED_AUTH in .env: {exc}') from None
-            # An explicit manager choice resolves mixed legacy entries. Preserve
-            # each account identity while discarding its superseded CLI fields.
-            roles = {}
-            for role, entries in value.items():
-                if not isinstance(entries, list):
-                    raise ConfigError('UNATTENDED_AUTH legacy roles must contain arrays.') from None
-                converted = []
-                for entry in entries:
-                    if (not isinstance(entry, dict) or
-                            set(entry) != {'manager', 'cli_path', 'vault', 'user'} or
-                            any(not isinstance(entry[key], str) or not entry[key].strip()
-                                for key in ('vault', 'user'))):
-                        raise ConfigError('UNATTENDED_AUTH legacy entries require nonempty vault and user descriptors.') from None
-                    converted.append({'vault': entry['vault'], 'user': entry['user']})
-                roles[role] = converted
-            return {'password_manager': chosen_manager, 'roles': roles}
-        if isinstance(value, dict) and _canonical_shape(value):
-            return {key: canonical[key] for key in ('password_manager', 'roles') if key in value}
-        return canonical
+            raise ConfigError(f'UNATTENDED_AUTH in .env: {exc}') from None
 
     def save_auth_role(self, role, entries):
         """Save one role, enforcing pack targets and removing older copies."""
@@ -177,7 +195,8 @@ class ConfigSession:
             validate_role_entries(role, entries)
         except ValueError as exc:
             raise ConfigError(f'UNATTENDED_AUTH role is invalid: {exc}') from None
-        objects = {path: self._auth_object(path) for path in self.target_paths}
+        registry = self.password_manager_registry
+        objects = {path: self._auth_object(path, registry=registry) for path in self.target_paths}
         manager_choice = None
         for path in self.target_paths:
             raw = read_dotenv(path).get('UNATTENDED_AUTH')
@@ -187,7 +206,7 @@ class ConfigSession:
             explicit = ('password_manager' in value if _canonical_shape(value)
                         else any(value.values()))
             if explicit:
-                choice = normalize_auth(value)['password_manager']
+                choice = normalize_auth(value, registry=registry)['password_manager']
                 if manager_choice is not None and choice != manager_choice:
                     raise ConfigError('Saved .env profiles use different password managers or CLI paths; choose one shared password manager before editing accounts.')
                 manager_choice = choice
@@ -225,10 +244,11 @@ class ConfigSession:
     def save_auth_manager(self, manager_dict):
         """Persist the one shared CLI choice at the selected target."""
         try:
-            manager = normalize_auth({'password_manager': manager_dict})['password_manager']
+            registry = self.password_manager_registry
+            manager = normalize_auth({'password_manager': manager_dict}, registry=registry)['password_manager']
         except ValueError as exc:
             raise ConfigError(str(exc)) from None
-        objects = {path: self._auth_object(path, chosen_manager=manager) for path in self.target_paths}
+        objects = {path: self._auth_object(path, chosen_manager=manager, registry=registry) for path in self.target_paths}
         target = self.dotenv_path
         updated = deepcopy(objects)
         updated[target]['password_manager'] = manager
@@ -248,7 +268,8 @@ class ConfigSession:
 
     def reset_auth_manager(self):
         """Delete saved manager choices; retain environment and CLI precedence."""
-        objects = {path: self._auth_object(path, chosen_manager=DEFAULT_PASSWORD_MANAGER)
+        registry = self.password_manager_registry
+        objects = {path: self._auth_object(path, chosen_manager=DEFAULT_PASSWORD_MANAGER, registry=registry)
                    for path in self.target_paths}
         updated = deepcopy(objects)
         for value in updated.values():
@@ -283,6 +304,7 @@ class ConfigSession:
         return self._resolve(_review=True)[1]
 
     def _resolve(self, *, _cleanup=False, _review=False):
+        registry = self.password_manager_registry
         dotenv, origins = {}, {}
         auth_sources = {'password_manager': 'Not provided', 'roles': {}}
         explicit_manager = None
@@ -292,7 +314,7 @@ class ConfigSession:
             if 'UNATTENDED_AUTH' in entries:
                 try:
                     raw_later = json.loads(entries['UNATTENDED_AUTH'])
-                    later = normalize_auth(raw_later)
+                    later = normalize_auth(raw_later, registry=registry)
                     has_manager = ('password_manager' in raw_later
                                    if isinstance(raw_later, dict) and _canonical_shape(raw_later)
                                    else any(raw_later.values()) if isinstance(raw_later, dict) else False)
@@ -304,12 +326,13 @@ class ConfigSession:
                         auth_sources['password_manager'] = self._source(path)
                     auth_sources['roles'].update({role: self._source(path) for role in later['roles']})
                     if 'UNATTENDED_AUTH' in dotenv:
-                        earlier = normalize_auth(json.loads(dotenv['UNATTENDED_AUTH']))
+                        earlier = normalize_auth(json.loads(dotenv['UNATTENDED_AUTH']), registry=registry)
                         later = {'password_manager': later['password_manager'] if has_manager else earlier['password_manager'],
                                  'roles': {**earlier['roles'], **later['roles']}}
                     entries['UNATTENDED_AUTH'] = json.dumps(later, ensure_ascii=False, separators=(',', ':'))
                 except (TypeError, ValueError) as exc:
                     kind = ('manager_conflict' if 'different password managers or CLI paths' in str(exc)
+                            else 'manager_unavailable' if 'password manager is unavailable' in str(exc)
                             else 'invalid_profile')
                     if auth_error != 'invalid_profile':
                         auth_error = kind
@@ -344,7 +367,7 @@ class ConfigSession:
         if auth is not None and auth.source != 'dotenv':
             try:
                 raw = auth.value
-                normalized = normalize_auth(raw)
+                normalized = normalize_auth(raw, registry=registry)
                 has_manager = ('password_manager' in raw if _canonical_shape(raw) else any(raw.values()))
                 source = 'interactive' if 'UNATTENDED_AUTH' in self._choices else auth.source
                 auth_sources = {'password_manager': source if has_manager else 'Not provided',
