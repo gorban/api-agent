@@ -9,7 +9,7 @@ import pytest
 
 
 @pytest.mark.parametrize('jobs', [0, 2])
-@pytest.mark.parametrize('outcome', ['accepted', 'wrong-password', 'restricted', 'public-wrong-password'])
+@pytest.mark.parametrize('outcome', ['accepted', 'wrong-password', 'restricted', 'public-wrong-password', 'expired'])
 def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, monkeypatch, jobs, outcome):
     from api_agent.auth import credentials
     from api_agent.llm_providers.gpt import factory
@@ -29,10 +29,15 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     def respond(request):
         requests.append(request)
         if 'Authorization' not in request.headers:
-            return httpx.Response(200, json={'data': [{'id': 'gpt-example'}]}) if outcome == 'public-wrong-password' else httpx.Response(401)
+            return httpx.Response(200, json={'data': [{'id': 'gpt-example'}]}) if outcome in ('public-wrong-password', 'expired') else httpx.Response(401)
         assert request.headers['Authorization'] == 'Bearer ' + key
         if outcome == 'accepted':
             return httpx.Response(200, json={'data': [{'id': 'gpt-example', 'name': 'Example', 'max_output_tokens': 2048}]})
+        if outcome == 'expired':
+            challenge = 'Bearer error="invalid_token", error_description="API key expired"'
+            return httpx.Response(401, json={'error': {'message': 'API key expired.', 'code': 401,
+                'metadata': {'headers': {'WWW-Authenticate': challenge, 'secret': key}}}},
+                headers={'www-authenticate': challenge})
         status = 403 if outcome == 'restricted' else 401
         return httpx.Response(status, json={'error': {'message': 'Selected credential rejected ' + key,
             'code': 'restricted' if status == 403 else 'invalid_key', 'type': 'access_error'}}, headers={'x-request-id': 'req-safe'})
@@ -75,11 +80,20 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     artifacts = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]
     assert [item['status'] for item in artifacts] == [expected, expected]
     assert key not in result.execution.output
+    if outcome == 'expired':
+        assert 'API key expired.' in result.execution.output
+        assert 'code: 401' in result.execution.output and 'type: invalid_token' in result.execution.output
     all_text = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
     assert key not in all_text
     if outcome != 'accepted':
         for item in artifacts:
             details = item['statusDetails']
+            if outcome == 'expired':
+                assert 'API key expired.' in details['trace']
+                assert 'HTTP status: 401' in details['trace'] and 'code: 401' in details['trace']
+                assert 'type: invalid_token' in details['trace']
+                assert 'WWW-Authenticate' not in details['trace']
+                continue
             assert 'Selected credential rejected' in details['message'] + details['trace']
             assert f'HTTP status: {403 if outcome == "restricted" else 401}' in details['trace']
             assert 'type: access_error' in details['trace'] and 'request ID: req-safe' in details['trace']
