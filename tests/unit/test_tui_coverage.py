@@ -62,8 +62,8 @@ def test_presentation_reconcile_and_summary_preserve_precise_colors(tmp_path):
             assert table.get_row_at(0) == ['PASSED', 'b', '3s']
     run(scenario)
     assert display([1, 2]) == '[1,2]'
-    summary = styled_summary(Text('PASS\nCoverage: partial\nProduction coverage: 100%'), failed=False,
-                             neutral_details=True, green_prefixes=('Production coverage:',))
+    summary = styled_summary(Text('PASS\nCoverage: partial\nCode coverage: lines 100% · branches 100%.'), failed=False,
+                             neutral_details=True, green_prefixes=('Code coverage:',))
     assert summary.get_style_at_offset(__import__('rich').console.Console(), 0).color.name == 'green'
     assert summary.get_style_at_offset(__import__('rich').console.Console(), 5).color is None
     assert 'green' in str(summary.spans[-1].style)
