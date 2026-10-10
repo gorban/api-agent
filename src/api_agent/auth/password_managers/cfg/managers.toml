@@ -1,0 +1,13 @@
+version = 1
+
+[[managers]]
+id = "1password"
+label = "1Password"
+implementation = "../onepassword.py"
+cli_default = "op"
+
+[[managers]]
+id = "keeper"
+label = "Keeper"
+implementation = "../keeper.py"
+cli_default = "keeper"

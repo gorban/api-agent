@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from rich.text import Text
-from api_agent.auth.profiles import normalize_auth, DEFAULT_PASSWORD_MANAGER
+from api_agent.auth.profiles import _canonical_shape, normalize_auth, DEFAULT_PASSWORD_MANAGER
+from api_agent.config.dotenv import read_dotenv
 from api_agent.tui.app import ButtonFooter, FocusNavigation, QuitDialog
 from api_agent.tui.select import AdvancingSelect
 from textual.app import ComposeResult
@@ -22,6 +24,34 @@ def replace_auth_rows(table, headings, rows):
                                             *(cells[index].cell_len for _, cells in rows)]))
     for key, cells in rows:
         table.add_row(*cells, key=key)
+
+
+def _manager_draft(value):
+    """Extract a display-only manager draft without resolving implementations."""
+    if not isinstance(value, dict):
+        return None
+    if _canonical_shape(value):
+        saved = value.get('password_manager')
+        if (set(value) <= {'password_manager', 'roles'} and
+                isinstance(saved, dict) and set(saved) == {'manager', 'cli_path'} and
+                all(isinstance(saved[key], str) for key in ('manager', 'cli_path'))):
+            return dict(saved)
+        return None
+    found = None
+    for entries in value.values():
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if (not isinstance(entry, dict) or
+                    set(entry) != {'manager', 'cli_path', 'vault', 'user'} or
+                    any(not isinstance(entry[key], str) for key in entry) or
+                    any(not entry[key].strip() for key in ('vault', 'user'))):
+                return None
+            candidate = {'manager': entry['manager'], 'cli_path': entry['cli_path']}
+            if found is not None and candidate != found:
+                return None
+            found = candidate
+    return found
 
 
 class AuthTable(DataTable):
@@ -65,6 +95,21 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
         super().__init__()
         self.owner, self.title, self.values = owner, title, dict(values)
         self.manager_form = owner.editing == 'manager'
+        if self.manager_form:
+            available = {identifier for _, identifier in owner.app.session.password_manager_registry.choices}
+            if self.values['manager'] not in available:
+                # A removed pack choice cannot be represented by the picker.
+                # Require an explicit new selection while retaining the CLI draft.
+                self.values['manager'] = ''
+
+    def _selected_definition(self, identifier):
+        if not identifier:
+            return None
+        return self.app.session.password_manager_registry.get(identifier)
+
+    def _implementation_text(self, identifier):
+        definition = self._selected_definition(identifier)
+        return str(definition.implementation) if definition else '-'
 
     def compose(self) -> ComposeResult:
         identity = getattr(self.app, 'identity_text', None)
@@ -74,8 +119,10 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
             yield Static(self.title, id='auth-form-title', markup=False)
             if self.manager_form:
                 yield Static('Password manager', id='auth-first-label')
-                yield AdvancingSelect([('-', ''), ('1Password', '1password'), ('Keeper', 'keeper')],
+                yield AdvancingSelect([('-', ''), *self.app.session.password_manager_registry.choices],
                              value=self.values['manager'], allow_blank=False, id='auth-manager')
+                yield Static('Password manager implementation path', classes='auth-next-field')
+                yield Static(self._implementation_text(self.values['manager']), id='auth-implementation', markup=False)
                 yield Static('CLI executable path', classes='auth-next-field')
                 yield Input(value=self.values['cli_path'], id='auth-path')
             else:
@@ -149,9 +196,12 @@ class AuthEditScreen(FocusNavigation, Screen[bool]):
 
     def on_select_changed(self, event):
         if event.select.id == 'auth-manager':
+            self.query_one('#auth-implementation', Static).update(self._implementation_text(event.value))
             path = self.query_one('#auth-path', Input)
-            if path.value in {'', 'keeper', 'op'}:
-                path.value = {'keeper': 'keeper', '1password': 'op'}.get(event.value, '')
+            defaults = {'', *(item.cli_default for item in self.app.session.password_manager_registry.definitions)}
+            if path.value in defaults:
+                definition = self._selected_definition(event.value)
+                path.value = definition.cli_default if definition else ''
 
 
 class AuthSetupScreen(FocusNavigation, Screen[bool]):
@@ -212,7 +262,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         self.load_error = ''
         try:
             value = self.app.session.result(_review=True).values.get('UNATTENDED_AUTH') or {}
-            normalized = normalize_auth(value)
+            normalized = normalize_auth(value, registry=self.app.session.password_manager_registry)
             self.manager = dict(normalized['password_manager'])
             for role in self.roles:
                 entries = normalized['roles'].get(role, [])
@@ -222,6 +272,24 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
                 self.entries[role] = [dict(item) for item in entries]
         except (TypeError, ValueError) as exc:
             self.load_error = f"Invalid unattended authentication configuration: {exc} Fix its source before editing accounts."
+            if 'password manager is unavailable' in str(exc):
+                # The resolved error marker deliberately hides old descriptors.
+                # An environment or CLI override still carries its own draft
+                # and must take precedence over a saved .env manager.
+                candidates = [value]
+                if isinstance(value, dict) and value.get('_auth_error') == 'manager_unavailable':
+                    candidates = []
+                    for path in reversed(self.app.session.target_paths):
+                        try:
+                            raw = read_dotenv(path).get('UNATTENDED_AUTH')
+                            candidates.append(json.loads(raw) if raw is not None else None)
+                        except (OSError, ValueError):
+                            continue
+                for candidate in candidates:
+                    saved = _manager_draft(candidate)
+                    if saved is not None:
+                        self.manager = saved
+                        break
 
     def _manager_selected(self):
         return self.editing == 'manager' or self.editing is None and self.app.focused is self.query_one('#auth-manager-table')

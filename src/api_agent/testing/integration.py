@@ -191,8 +191,10 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     break
                 if config is not None and not config.get('DEBUG') and backend is None:
                     from .setup_backend import SetupBackend
+                    from api_agent.auth.managers import registry_for_context
                     backend = SetupBackend(config, context.owner_root,
-                        unattended_index_source=unattended_index_source)
+                        unattended_index_source=unattended_index_source,
+                        password_manager_registry=registry_for_context(context))
                     backend_descriptor = backend.start()
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))

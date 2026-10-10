@@ -41,6 +41,7 @@ This does not complete selected-provider dependency manifests, relocated install
 
 ## Selected configuration and credential follow-through
 
+- [ ] Before claiming equivalent password-manager loading guarantees on platforms without directory-handle support, implement and verify protection against intermediate-directory replacement there. Current POSIX loading uses component-wise no-follow directory handles; the direct-file fallback and simulated portability test do not establish real Windows race protection. See [the password-manager interface](../architecture/password_managers.md).
 - [ ] Add browser-free scoped credential acquisition for API-key providers before the included GPT consumer. Derive active credential role labels from selected provider declarations, including mode predicates; do not hardcode an intermediary LLM User. Retrieve the selected entry password only, register it with the emission boundary, own its in-memory lifetime, reject late/revoked replies, and allocate no browser for that acquisition. No separate plaintext API-key setting is needed for the included GPT adapter.
 - [x] Verify the implemented bundled authentication factory defaults relative to base root/package, explicit pack/provider overrides and inert help/configuration discovery; source and narrow wheel factory/declaration checks pass.
 - [ ] Complete whole relocated installed-pack manifests, schemas and dependency acceptance; narrow bundled-wheel checks do not close this distribution requirement.

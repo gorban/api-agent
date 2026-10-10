@@ -20,6 +20,8 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     data = {'version': 1, 'owner_root': str(context.owner_root), 'config': dict(config)}
+    if getattr(context, 'external_pack', False):
+        data['password_manager_pack_root'] = str(context.pack_root)
     if unattended_index_source is not None:
         data['unattended_index_source'] = unattended_index_source
     if setup_backend is not None:
@@ -48,11 +50,15 @@ def _read_snapshot():
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or type(data['version']) is not int
                 or data['version'] != 1 or not isinstance(data['config'], dict)
                 or not isinstance(data['owner_root'], str) or not Path(data['owner_root']).is_absolute()):
+            raise ValueError
+        if ('password_manager_pack_root' in data and
+                (not isinstance(data['password_manager_pack_root'], str)
+                 or not Path(data['password_manager_pack_root']).is_absolute())):
             raise ValueError
         if 'setup_backend' in data:
             from api_agent.providers.setup_transport import validate_descriptor
@@ -68,9 +74,15 @@ _inspection_providers = []
 
 class IntegrationLLM:
     """One worker-local operation; this does not implement backend-wide IPC."""
-    def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None):
+    def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None,
+                 password_manager_registry=None, password_manager_pack_root=None):
         self.config = dict(config)
         self.owner_root = owner_root
+        from api_agent.auth.managers import load_manager_registry, registry_for_owner
+        self.password_manager_registry = (
+            password_manager_registry if password_manager_registry is not None else
+            load_manager_registry(pack_root=password_manager_pack_root)
+            if password_manager_pack_root is not None else registry_for_owner(owner_root))
         self.unattended_index_source = unattended_index_source
         self.loop = asyncio.new_event_loop() if loop is None else loop
         self.provider = self.owner = None
@@ -99,7 +111,8 @@ class IntegrationLLM:
         from api_agent.providers.sessions import ScopedRoleCredentials, ScopedLLMCredentials
         role = self.config.get('LLM_CREDENTIAL_ROLE')
         try:
-            canonical = normalize_auth(self.config.get('UNATTENDED_AUTH', {}))
+            canonical = normalize_auth(self.config.get('UNATTENDED_AUTH', {}),
+                                       registry=self.password_manager_registry)
             entries = canonical['roles'].get(role, [])
             if not role:
                 return None
@@ -109,7 +122,8 @@ class IntegrationLLM:
             if not canonical['password_manager']['manager']:
                 raise SetupPrerequisiteError('Configure the shared password manager before unattended authentication.')
             profiles = parse_profiles({'password_manager': canonical['password_manager'],
-                                       'roles': {role: entries}}, (role,))
+                                       'roles': {role: entries}}, (role,),
+                                      registry=self.password_manager_registry)
             if type(index) is not int or index < 0 or index >= len(profiles.for_role(role)):
                 raise ValueError
             source = profiles.for_role(role)[index]
@@ -270,7 +284,8 @@ def llm_provider():
         provider = RemoteIntegrationLLM(data['setup_backend'])
     else:
         provider = IntegrationLLM(data['config'], data['owner_root'],
-                                  unattended_index_source=data.get('unattended_index_source'))
+                                  unattended_index_source=data.get('unattended_index_source'),
+                                  password_manager_pack_root=data.get('password_manager_pack_root'))
     try:
         yield provider
     finally:

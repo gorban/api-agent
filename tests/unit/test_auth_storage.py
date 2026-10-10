@@ -212,14 +212,17 @@ def test_role_save_rejects_cross_file_manager_conflict_before_writes(tmp_path):
     assert config.result(_review=True).values['UNATTENDED_AUTH']['roles']['LLM User'] == [account('new')]
 
 
-@pytest.mark.parametrize('bad', ['not json', json.dumps({'password_manager': {'manager': 'invalid', 'cli_path': 'x'}, 'roles': {}})])
-def test_invalid_earlier_file_remains_invalid_after_later_valid(tmp_path, bad):
+@pytest.mark.parametrize('bad, message', [
+    ('not json', 'malformed or invalid'),
+    (json.dumps({'password_manager': {'manager': 'invalid', 'cli_path': 'x'}, 'roles': {}}), 'password manager is unavailable'),
+])
+def test_invalid_earlier_file_remains_invalid_after_later_valid(tmp_path, bad, message):
     config = session(tmp_path)
     base, pack = config.target_paths[0], config.target_paths[-1]
     DotenvEditor(base).update({'UNATTENDED_AUTH': bad})
     put(pack, {'roles': {'Secondary': []}})
     from api_agent.auth.profiles import normalize_auth
-    with pytest.raises(ValueError, match='malformed or invalid') as error:
+    with pytest.raises(ValueError, match=message) as error:
         normalize_auth(config.result(_review=True).values['UNATTENDED_AUTH'])
     assert bad not in str(error.value)
 

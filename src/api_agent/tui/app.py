@@ -942,13 +942,15 @@ class ApiAgentApp(App[int]):
             roles = self.credential_roles()
             if not roles:
                 return False
-            canonical = normalize_auth(profile)
+            registry = self.session.password_manager_registry
+            canonical = normalize_auth(profile, registry=registry)
             for role in roles:
                 validate_role_entries(role, canonical['roles'].get(role, []))
             if any(not canonical['roles'].get(role) for role in roles):
                 return True
             parse_profiles({'password_manager': canonical['password_manager'],
-                            'roles': {role: canonical['roles'][role] for role in roles}}, roles)
+                            'roles': {role: canonical['roles'][role] for role in roles}}, roles,
+                           registry=registry)
         except ValueError:
             return True
         # Every enabled role needs an account and valid manager/path settings.
@@ -1654,7 +1656,8 @@ class ApiAgentApp(App[int]):
         try:
             roles = self.credential_roles()
             return account_options(self.session.result(_review=True).values.get('UNATTENDED_AUTH') or {},
-                                   roles, paired=self.mode == 'run-local')
+                                   roles, paired=self.mode == 'run-local',
+                                   registry=self.session.password_manager_registry)
         except ValueError:
             return ()
 
