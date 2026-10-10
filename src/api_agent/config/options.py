@@ -48,6 +48,11 @@ def parse_options(schema, argv):
                 if index < len(argv) and argv[index].lower() in ('true', 'false'):
                     value = argv[index]
                     index += 1
+            elif declaration.type == 'str' and {'True', 'False'} <= set(declaration.enum):
+                value = 'True'
+                if index < len(argv) and argv[index] in declaration.enum:
+                    value = argv[index]
+                    index += 1
             elif index < len(argv) and not argv[index].startswith('--'):
                 value = argv[index]
                 index += 1
