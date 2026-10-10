@@ -3,7 +3,6 @@
 ## Run a resource pack
 
 Use its own `launch.py`, or select it from api-agent:
-
 ```bash
 ./launch.py --resource-pack-dir /path/to/pack
 ```
@@ -43,7 +42,6 @@ services. See [provider architecture](architecture/provider_architecture.md) and
 ## Contribute integration tests
 
 A selected provider can add adjacent `cfg/tests.toml`:
-
 ```toml
 version = 1
 [tests]

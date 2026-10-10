@@ -25,7 +25,6 @@ logs and traces; credentials stay excluded regardless of that setting.
 Select `unit`, `integration` or `e2e` through `--tui-mode`. File/node selectors
 can be repository-qualified; `tag:NAME` selects a marked group. Multiple
 selectors select their union. Unknown, ambiguous or empty matches fail.
-
 ```bash
 ./launch.py --tui-mode "<tests_type>" "<selector>"
 ./launch.py --tui-mode "<tests_type>" --collect-only
@@ -92,7 +91,6 @@ an implemented-mode pass.
 ## Browser debugging
 
 To inspect provider login, use DEBUG with selected integration tests:
-
 ```bash
 ./launch.py --tui-mode integration --no-std-in --debug \
   api-agent::tests/integration/test_llm_setup.py
@@ -112,7 +110,6 @@ storage out of diagnostic output. See [inspection contracts](architecture/provid
 
 Activate `.venv` in each shell. Development installation is separate from the
 managed user launch path:
-
 ```bash
 uv pip install --python .venv/bin/python -e '.[dev]'
 .venv/bin/python -m build --wheel
