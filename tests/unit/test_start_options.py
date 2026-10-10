@@ -64,7 +64,13 @@ def test_supported_mode_start_true(mode):
     ('integration',False,False), ('e2e',False,False), ('config-cleanup',False,False)])
 def test_explicit_false_conflicts_only_with_automatic_execution(mode, debug, conflict):
     argv = ['--tui-mode='+mode, '--no-std-in', *(['--debug'] if debug else [])]
-    assert bool(start_configuration_errors(resolved([*argv, '--start=False']))) is conflict
+    errors = start_configuration_errors(resolved([*argv, '--start=False']))
+    assert bool(errors) is conflict
+    if conflict:
+        suffix = ('; collection-only is still allowed via --collect-only.'
+                  if mode in {'unit', 'integration', 'e2e'} else '.')
+        assert errors == ('START=False conflicts with automatic execution using NO_STD_IN=True; '
+                          'omit START or set START=True' + suffix,)
     assert not start_configuration_errors(resolved(argv))
     assert not start_configuration_errors(resolved([*argv, '--start=False', '--collect-only']))
     assert not start_configuration_errors(resolved([arg for arg in [*argv, '--start=False'] if arg != '--no-std-in']))
