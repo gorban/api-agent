@@ -11,6 +11,7 @@
 ## Completed runner and authentication follow-through — October 8, 2026
 
 - [x] Join unit and integration adapters through shared selection, presentation and TestRunLifecycle. Support fresh scope-based recollection, Back to selection, stable failures then skips, skip reasons/counts, selected text/test-name copy, keyboard ranges and bounded synchronous cancellation. Integration is recorded; units stay outside Allure.
+- [x] Refresh result shortcuts through shared teardown immediately after the lifecycle finishes, so **b Back to selection** appears without another focus/key event. Verify passed, failed and skipped results in unit/integration and the shared future E2E result path; keep Back unavailable during active execution.
 - [x] Complete credential setup and startup Setup / Skip with optional remembered Skip, plus the integration account/manual-login selector. See [credential tasks](implementation_plan_a2.md).
 - [x] Wire auth-only provider integrations and explicit integration DEBUG inspection. See [setup tasks](implementation_plan_f2b.md). Full E2E, local application, tracing/reporting acquisition and independent debug run-finalization remain open.
 

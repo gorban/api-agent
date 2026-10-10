@@ -1377,7 +1377,11 @@ class ApiAgentApp(App[int]):
             if not self.collection_cancel.is_set():
                 self.show("error", "Unit execution failed", str(error), (("menu", "Main menu"),))
         finally:
-            self.test_run.finish()
+            self.finish_test_run()
+
+    def finish_test_run(self):
+        self.test_run.finish()
+        self.refresh_bindings()
 
     async def _run_integrations(self):
         from api_agent.testing.launched import run_launched_integration
@@ -1489,7 +1493,7 @@ class ApiAgentApp(App[int]):
                           + ''.join(format_exception(error)),
                           (("menu", "Main menu"),))
         finally:
-            self.test_run.finish()
+            self.finish_test_run()
 
     def inspection_cleanup_active(self):
         return self.inspections.active or self.recording_cleanup is not None

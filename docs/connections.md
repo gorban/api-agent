@@ -15,7 +15,11 @@ API-key setup/transports are tracked in [the GPT plan](prds/implementation_plan_
 
 Authentication starts when an operation needs it. Help, collection and choosing
 tests do not sign in or send inference requests. The shared `test_llm_setup`
-checks provider readiness without inference.
+checks provider readiness without inference. For GPT API-key mode, readiness
+means acquiring a nonempty password into an owned session. A subscription login
+password can pass this acquisition check; subscription caches are never read
+in API-key mode. Remote key validity, permissions and API support need separate
+catalog/request tests. API-key setup itself makes no HTTP request.
 
 ## Attended and unattended login
 
