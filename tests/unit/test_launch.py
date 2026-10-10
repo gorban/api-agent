@@ -144,7 +144,7 @@ class LaunchTests(unittest.TestCase):
             for mode in ('integration', 'e2e'):
                 with self.subTest(mode=mode), patch('sys.stderr', new_callable=StringIO) as stderr:
                     self.assertEqual(main(['--tui-mode=' + mode, '--no-std-in'], base_root=ROOT), 2)
-                    self.assertIn('incompatible', stderr.getvalue())
+                    self.assertIn('NO_STD_IN=True with TUI_MODE=' + mode + ' requires', stderr.getvalue())
                     self.assertNotIn('not implemented yet', stderr.getvalue())
 
     def test_noninteractive_live_collection_remains_nonexecuting(self):

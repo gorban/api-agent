@@ -175,7 +175,14 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             if (result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'}
                     and not result.values.get('COLLECT_ONLY')
                     and not automatically_started(result)):
-                errors.append('NO_STD_IN=True is incompatible with integration/E2E execution unless integration START=True/E2E or DEBUG, or E2E START=E2E is selected; collection-only is allowed.')
+                if mode == 'e2e':
+                    errors.append('NO_STD_IN=True with TUI_MODE=e2e requires explicit START=E2E. '
+                                  'Use --start=E2E to accept execution, or --no-std-in=False for interactive acceptance; '
+                                  'collection-only is still allowed via --collect-only.')
+                else:
+                    errors.append('NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E or DEBUG=True. '
+                                  'Use --start to execute, --debug for browser investigation, or --no-std-in=False for interactive selection; '
+                                  'collection-only is still allowed via --collect-only.')
             if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'cleanup-containers', 'unattended-auth'}:
                 errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')
             if result.values.get('COLLECT_ONLY') and mode is not None and mode not in {'unit', 'integration', 'e2e'}:
