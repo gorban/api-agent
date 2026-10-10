@@ -61,11 +61,18 @@ class SelectionModel:
         if not rows:
             return
         members = frozenset().union(*(row.members for row in rows))
+        self.toggle_members(members, (row.id for row in rows if row.kind != "test"))
+
+    def toggle_members(self, members, scopes=()):
+        """Toggle a projected union while retaining only complete group intent."""
+        members = frozenset(members)
+        if not members:
+            return
         if members <= self.selected_ids:
             self.selected_ids.difference_update(members)
         else:
             self.selected_ids.update(members)
-            self.selected_scopes.update(row.id for row in rows if row.kind != 'test')
+            self.selected_scopes.update(scopes)
         checked = {group.id for group in self.groups() if group.selected}
         self.selected_scopes = {scope for scope in self.selected_scopes if scope in checked or (
             "::tag:" in scope and any(test.repo == scope.split("::tag:", 1)[0]
