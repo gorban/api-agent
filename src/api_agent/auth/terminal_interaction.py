@@ -4,7 +4,6 @@ import re
 import select
 import sys
 import threading
-import termios
 
 
 class TerminalInteraction:
@@ -14,6 +13,9 @@ class TerminalInteraction:
         self.lock = threading.RLock()
         self.buffer = bytearray()
     def open(self, label):
+        if os.name != 'posix':
+            from .credentials import CredentialRecoveryError
+            raise CredentialRecoveryError('Interactive credential recovery requires a POSIX terminal.')
         return _Channel(self)
 
 
@@ -24,7 +26,10 @@ class _Channel:
         self.pending_prompt = ''
         self.fd = owner.input.fileno()
         self.settings = None
+        self.terminal = None
         if os.isatty(self.fd):
+            import termios
+            self.terminal = termios
             self.settings = termios.tcgetattr(self.fd)
             masked = list(self.settings)
             masked[3] &= ~termios.ECHO
@@ -47,11 +52,11 @@ class _Channel:
         if b'\n' not in self.owner.buffer:
             if not select.select([self.fd], [], [], min(0.1, max(0, timeout)))[0]:
                 return None
-            chunk = os.read(self.fd, 4096)
+            chunk = os.read(self.fd, 4096 - len(self.owner.buffer))
             if not chunk:
                 return Reply('eof')
             self.owner.buffer.extend(chunk)
-            if len(self.owner.buffer) > 4096:
+            if len(self.owner.buffer) > 4096 or (len(self.owner.buffer) == 4096 and b'\n' not in self.owner.buffer):
                 self.owner.buffer.clear()
                 return Reply('cancel')
         if b'\n' not in self.owner.buffer:
@@ -64,5 +69,5 @@ class _Channel:
     def close(self):
         self.closed = True
         if self.settings is not None:
-            termios.tcsetattr(self.fd, termios.TCSANOW, self.settings)
+            self.terminal.tcsetattr(self.fd, self.terminal.TCSANOW, self.settings)
             self.settings = None

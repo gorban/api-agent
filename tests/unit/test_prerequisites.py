@@ -1301,6 +1301,7 @@ def test_initial_rollback_inventory_failure_cannot_claim_later_ids(setup, monkey
 def test_concurrent_manager_rollback_retries_recheck_state_under_lock(setup, monkeypatch):
     import asyncio
     import threading
+    import time
     from contextlib import contextmanager
     create, engine, _, _, _ = setup
     manager = create()
@@ -1308,6 +1309,10 @@ def test_concurrent_manager_rollback_retries_recheck_state_under_lock(setup, mon
     with pytest.raises(p.PrerequisiteError) as failure:
         manager.acquire()
     engine.fail_stop = False
+    # These are real competing threads: fake sleep advances the shared clock
+    # without yielding, exhausting cleanup's budget before the lock owner runs.
+    monkeypatch.setattr(manager, 'now', time.monotonic)
+    monkeypatch.setattr(manager, 'sleep', time.sleep)
     locked = p._locked
     barrier = threading.Barrier(2)
     @contextmanager

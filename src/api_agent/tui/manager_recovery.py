@@ -35,6 +35,8 @@ class ManagerRecoveryScreen(FocusNavigation, Screen):
     '''
 
     def __init__(self, channel):
+        from .private_input import install_private_input_logging
+        install_private_input_logging()
         super().__init__()
         self.channel = channel
         self.transcript = ''
