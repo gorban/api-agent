@@ -1,0 +1,12 @@
+# Pluggable password-manager implementations
+
+## Checklist
+
+- [ ] Define a common password-manager interface for retrieving username, password and TOTP independently. API-key authentication requests only the password; subscription login requests the fields needed by its current page. Consumers depend on this interface rather than manager-specific functions.
+- [ ] Supply 1Password and Keeper implementations in separate files within api-agent. Preserve the established CLI commands, CSV/raw parsing, closed stdin, actionable errors, owned process cleanup, shared timing and secret-safe diagnostics.
+- [ ] Declare a stable manager identifier, friendly picker label, implementation file/factory location and conditional CLI executable default for each implementation. Selected resource packs can contribute additional implementations. Resolve declaration paths relative to their owning declaration; users select enum identifiers/labels rather than Python paths.
+- [ ] Merge base and selected-pack declarations into the available enum choices, validation and conditional executable defaults. Preserve `1password` and `keeper` identifiers, the blank initial choice, existing descriptor storage and explicit executable overrides. Configuration discovery, help and wizard rendering must not execute credential helpers or authenticate.
+- [ ] Validate malformed declarations, conflicting identifiers, missing implementation locations and incompatible interfaces before credential retrieval. When a pack is changed or removed, refresh available choices and give an actionable error for a stored manager that is no longer available; do not silently substitute another manager or delete saved configuration.
+- [ ] Use the same retrieval contract for API keys, subscription login and other provider/pack consumers. Keep account roles and paired indexes independent of manager implementation selection; do not add an API-key-specific user role.
+- [ ] Add conformance tests for both bundled implementations and a synthetic third implementation contributed by a resource pack. Verify friendly enum choices, real dispatch through the unchanged consumer interface, independent field retrieval, executable defaults/overrides and inactive-pack removal. Invalid registrations must fail without invoking a helper.
+- [ ] Run the applicable unit/coverage gate and independent adversarial review, then present the merged picker, manager editing and credential-error behavior for human review before continuing to API-key acquisition.

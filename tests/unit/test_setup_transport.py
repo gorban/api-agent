@@ -616,6 +616,79 @@ def test_real_registry_coalesces_clients_and_survives_one_deadline():
 
 
 @pytest.mark.parametrize('pending', [False, True])
+def test_remote_timeout_disposes_client_before_fixture_teardown(monkeypatch, pending):
+    import threading
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.providers.setup_registry import SetupRegistry
+    from api_agent.testing.provider_setup import RemoteIntegrationLLM
+    monkeypatch.setattr(RemoteIntegrationLLM, 'timeout', .2)
+    async def scenario():
+        entered, blocked = asyncio.Event(), asyncio.Event()
+        release_cleanup = threading.Event()
+        calls, events = [], []
+        class Owner:
+            async def ensure_ready(self):
+                calls.append('ready')
+                entered.set()
+                await blocked.wait()
+            async def aclose(self):
+                calls.append('closed')
+        registry = SetupRegistry('public-operation', 'frozen-selection', Owner)
+        server = SetupServer(registry, CAPABILITY, timeout=2)
+        endpoint = await server.start()
+        remote = RemoteIntegrationLLM(endpoint)
+        original_connect = asyncio.open_connection
+        async def connect(*args, **kwargs):
+            reader, writer = await original_connect(*args, **kwargs)
+            if pending:
+                original_wait = writer.wait_closed
+                async def delayed_acknowledgement():
+                    while not release_cleanup.is_set():
+                        await asyncio.sleep(.001)
+                    await original_wait()
+                writer.wait_closed = delayed_acknowledgement
+            return reader, writer
+        monkeypatch.setattr(asyncio, 'open_connection', connect)
+        try:
+            expected = CleanupPendingError if pending else ContractError
+            with progress_sink(events.append), pytest.raises(expected) as caught:
+                await asyncio.to_thread(remote.ensure_ready)
+            assert type(caught.value) is expected
+            assert entered.is_set() and calls == ['ready']
+            assert remote.client._writer.is_closing()
+            # The server observes this real disconnect before session teardown.
+            async with asyncio.timeout(2):
+                while not registry._leases[remote.client._worker]['revoked']:
+                    await asyncio.sleep(.001)
+            assert not registry._ready.done()
+            cleanup = [event for event in events if event.name in (
+                'Worker setup disconnect', 'Worker transport cleanup')]
+            assert {event.name for event in cleanup} == {
+                'Worker setup disconnect', 'Worker transport cleanup'}
+            assert all(event.timeout > 0 and event.parent_id is None for event in cleanup)
+            assert all(any(event.name == name and not event.active for event in cleanup)
+                       for name in ('Worker setup disconnect', 'Worker transport cleanup'))
+            if pending:
+                assert caught.value.owners == (remote.client,)
+                assert str(caught.value.operation_error) == 'Shared setup connection failed'
+                assert not remote.client._disposed and not remote.client._loop.is_closed()
+                release_cleanup.set()
+                await caught.value.retry()
+            else:
+                assert str(caught.value) == 'Shared setup connection failed'
+            assert remote.client._disposed and remote.client._loop.is_closed()
+            assert remote.client._writer.get_extra_info('socket').fileno() == -1
+            assert not remote.loop.is_closed()
+        finally:
+            release_cleanup.set()
+            await asyncio.to_thread(remote.close)
+            await server.aclose()
+            await registry.aclose()
+        assert remote.loop.is_closed() and calls == ['ready', 'closed']
+    run(scenario())
+
+
+@pytest.mark.parametrize('pending', [False, True])
 def test_interrupt_preserves_request_and_socket_cleanup_ownership(monkeypatch, pending):
     client = SetupClient(descriptor(), timeout=.03)
     client._loop = asyncio.new_event_loop()
