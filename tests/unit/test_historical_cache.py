@@ -123,7 +123,7 @@ def test_adapter_policy_qualified(tmp_path, monkeypatch):
     no_account = dict(settings); no_account.pop('_COST_QUOTA_WINDOW_ID')
     unknown_account = HistoricalEstimator([test], no_account, Cache(), 'origin', 'repo', bundled_rate_card(), now=now)
     assert unknown_account.predictions['t']['basis'] == 'historical_list_price'
-    assert 'selected account window unavailable' in unknown_account.details(['t'])
+    assert unknown_account.config.get('_COST_QUOTA_WINDOW_ID') is None
     snapshot = HistoricalEstimator([test], dict(settings, TEST_COST_HISTORY_DAYS=1), Cache(), 'origin', 'repo', bundled_rate_card(), now=now)
     assert snapshot.predictions['t']['basis'] == 'unavailable'
     history[0][1]['quota']['payment_policy'] = dict(history[0][1]['quota']['payment_policy'], usd=200)
@@ -167,7 +167,7 @@ def test_adapter_unqualified_and_unknown_prediction(tmp_path, monkeypatch):
     snapshot.ingest(tmp_path, {})
 
 
-def test_partial_sync_deadline_cache_error_and_details(tmp_path, monkeypatch):
+def test_partial_sync_deadline_cache_error(tmp_path, monkeypatch):
     from contextlib import contextmanager
     from api_agent.testing.cost_history import HistoricalEstimator
     cache = HistoryCache(tmp_path / 'cache')
@@ -180,13 +180,11 @@ def test_partial_sync_deadline_cache_error_and_details(tmp_path, monkeypatch):
         def accounting_history(self, *args, **kwargs): return [(manifest, payload)]
     snapshot = HistoricalEstimator([], {}, cache, 'origin', 'repo', bundled_rate_card(), Storage())
     replacement = snapshot.synchronize()
-    assert 'unavailable' in replacement.details([])
+    assert replacement.sync_unavailable
     assert replacement.cache.records('origin') == []
     monkeypatch.setattr(cache, 'records', lambda *args: (_ for _ in ()).throw(OSError()))
     assert snapshot.synchronize() is snapshot
-    assert 'unavailable' in snapshot.details([])
-    snapshot.sync_unavailable = False
-    assert 'Rates:' in snapshot.details([])
+    assert snapshot.sync_unavailable
     cache.close()
 
 

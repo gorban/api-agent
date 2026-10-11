@@ -86,7 +86,7 @@ def test_snapshot_frozen_completion_and_totals():
     assert snap.total(['t', 't', 'missing']) == dict(estimated_cost_usd=.2, incomplete=True, known_count=1, unknown_count=1, known_zero=False)
     assert snap.total(['zero'])['known_zero']
     assert snap.total(['missing'])['estimated_cost_usd'] is None
-    assert '3 samples' in snap.details(['t', 't'])
+    assert snap.predictions['t']['sample_count'] == 3
     artifact = deepcopy(history[0][1])
     calibrated = snap.complete(artifact)['t']
     assert calibrated['basis'] == 'historical_quota'
@@ -194,7 +194,7 @@ def test_calibration_zero_priced_calls():
 
 
 def test_billing_mode_revision_and_details_age_calibration():
-    from api_agent.telemetry.estimation import quota_allowed, freshness_age
+    from api_agent.telemetry.estimation import quota_allowed
     api = row(); api['calls'][0]['quote']['accounting']['billing_mode'] = 'api_key'
     assert not quota_allowed(api)
     history = records()
@@ -204,8 +204,7 @@ def test_billing_mode_revision_and_details_age_calibration():
     artifact = history[0][1]
     now = datetime(2026, 10, 10, tzinfo=timezone.utc)
     snap = EstimateSnapshot({'t': {'freshness': '2026-10-09T00:00:00Z'}}, records=history, card=bundled_rate_card(), now=now)
-    assert freshness_age('2026-10-09T00:00:00Z', now) == 86400
-    assert 'age seconds 86400' in snap.details(['t'])
+    assert snap.predictions['t']['freshness'] == '2026-10-09T00:00:00Z'
     derived = snap.complete(artifact)['t']['calibration']
     assert derived['sample_count'] == 3
     assert derived['relative_uncertainty'] == pytest.approx(.1)

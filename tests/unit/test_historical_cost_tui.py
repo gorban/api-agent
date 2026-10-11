@@ -8,7 +8,7 @@ import pytest
 from textual.widgets import Static
 
 from api_agent.tui.app import SettingHelpDialog
-from api_agent.tui.cost_history import cost_cell, total_cell, selected_summary, completed_details
+from api_agent.tui.cost_history import cost_cell, total_cell, selected_summary
 from api_agent.tui.search import SearchInput
 from api_agent.tui.test_table import TestTable
 from test_test_table import identities
@@ -25,10 +25,6 @@ class Snapshot:
         return {'estimated_cost_usd': self.value, 'incomplete': self.incomplete,
                 'known_zero': self.known_zero}
 
-    def details(self, ids):
-        self.seen.append(tuple(ids))
-        return 'Basis: matched history\nSamples: 3\nAge: 1 day\nPrice freshness: bundled\nRounding variation: ±25%'
-
     def synchronize(self):
         return self
 
@@ -39,7 +35,7 @@ def test_cost_cells(record, expected):
     assert cost_cell(record) == expected
 
 
-def test_totals_and_completed_evidence():
+def test_totals():
     snapshot = Snapshot(1, True)
     assert total_cell(snapshot, ['a','a']) == '1.000000 *'
     assert snapshot.seen[-1] == ('a',)
@@ -48,14 +44,11 @@ def test_totals_and_completed_evidence():
     assert 'no inference calls' in selected_summary(Snapshot(None, known_zero=True), [])
     assert '—' in selected_summary(Snapshot(None), [])
     assert '1.000000' in selected_summary(Snapshot(), [])
-    text = completed_details(snapshot, ['b','a','a'], {'a': {'raw_quota_cost_usd':.1, 'list_cost_usd':.2}})
-    assert 'raw_quota_cost_usd: 0.1' in text and 'list_cost_usd: 0.2' in text
-    assert snapshot.seen[-1] == ('a','b')
-    assert text.count('Completed cost evidence:') == 1
+
 
 
 @pytest.mark.parametrize('mode', ['integration', 'e2e'])
-def test_cached_picker_refresh_preserves_search_range_and_details(tmp_path, monkeypatch, mode):
+def test_cached_picker_refresh_preserves_search_range_without_cost_popup(tmp_path, monkeypatch, mode):
     async def scenario():
         gate = threading.Event()
         snapshot = Snapshot(1, True)
@@ -74,10 +67,11 @@ def test_cached_picker_refresh_preserves_search_range_and_details(tmp_path, monk
                 assert 'incomplete' in str(app.screen.query_one('#body', Static).render())
                 await pilot.press('shift+down')
                 selected = table.selected_row_keys
+                picker = app.screen
+                assert 'i' not in picker._bindings.key_to_bindings
                 await pilot.press('i')
-                assert isinstance(app.screen, SettingHelpDialog)
-                assert set(snapshot.seen[-1]) == {test.id for test in tests}
-                await pilot.press('escape', 'slash', 'i')
+                assert app.screen is picker
+                await pilot.press('slash', 'i')
                 control = app.screen.query_one(SearchInput)
                 assert control.value == 'i'
                 control.value = 'test_0[01]'
@@ -147,7 +141,7 @@ def test_history_failure_and_stale_refresh_are_nonblocking(tmp_path, monkeypatch
     asyncio.run(scenario())
 
 
-def test_costs_hidden_live_and_completed_details(tmp_path, monkeypatch):
+def test_costs_hidden_live_and_completed_without_cost_popup(tmp_path, monkeypatch):
     async def scenario():
         snapshot = Snapshot()
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
@@ -160,7 +154,10 @@ def test_costs_hidden_live_and_completed_details(tmp_path, monkeypatch):
             app.show_unit_results('Running')
             await pilot.pause()
             assert len(app.screen.query_one(TestTable).columns) == 3
-            assert not app.screen.check_action('cost_details', ())
+            assert 'i' not in app.screen._bindings.key_to_bindings
+            live = app.screen
+            await pilot.press('i')
+            assert app.screen is live
             app.unit_result = SimpleNamespace(tests=(), cancelled=False)
             app.test_costs = {tests[0].id: {'known_zero':True}, tests[1].id: {
                 'estimated_cost_usd':.012, 'raw_quota_cost_usd':0, 'list_cost_usd':.02,
@@ -172,11 +169,12 @@ def test_costs_hidden_live_and_completed_details(tmp_path, monkeypatch):
             assert str(table.get_row_at(0)[3]) == ''
             assert str(table.get_row_at(1)[3]) == '0.012000'
             table.move_cursor(row=1)
+            completed = app.screen
+            assert 'i' not in completed._bindings.key_to_bindings
             await pilot.press('i')
-            assert isinstance(app.screen, SettingHelpDialog)
-            text = str(app.screen.query_one('#setting-help-text', Static).render())
-            assert 'stabilized_history' in text and 'raw_quota_cost_usd: 0' in text
-            assert 'Price freshness' in text
+            assert app.screen is completed
+            assert app.test_costs[tests[1].id]['basis'] == 'stabilized_history'
+            assert app.test_costs[tests[1].id]['raw_quota_cost_usd'] == 0
     asyncio.run(scenario())
 
 
@@ -221,7 +219,7 @@ def test_search_toggle_summary_and_exit_restore_cost_cells(tmp_path, monkeypatch
     asyncio.run(scenario())
 
 
-def test_sync_during_cost_modal_refreshes_after_close(tmp_path, monkeypatch):
+def test_sync_during_modal_refreshes_after_close(tmp_path, monkeypatch):
     async def scenario():
         gate = threading.Event()
         snapshot, replacement = Snapshot(1), Snapshot(2)
@@ -236,7 +234,8 @@ def test_sync_during_cost_modal_refreshes_after_close(tmp_path, monkeypatch):
                 table = picker.query_one(TestTable)
                 await pilot.press('shift+down')
                 keys, cursor = table.selected_row_keys, table.cursor_coordinate
-                await pilot.press('i')
+                app.push_screen(SettingHelpDialog('Information', 'Fixture modal'))
+                await pilot.pause()
                 gate.set()
                 for _ in range(30):
                     await pilot.pause(.03)

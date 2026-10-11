@@ -20,14 +20,3 @@ def selected_summary(snapshot, ids):
     return ('Selected estimate: $' + amount if amount not in {'', '—'} else
             'Selected estimate: ' + ('no inference calls' if amount == '' else '—')) + (
                 ' (incomplete; some tests unknown)' if total.get('incomplete') else '')
-
-
-def completed_details(snapshot, ids, completed):
-    ids = sorted(set(ids))
-    text = snapshot.details(ids)
-    for identity in ids:
-        record = completed.get(identity)
-        if record is not None:
-            text += '\n\n' + identity + '\nCompleted cost evidence:\n' + '\n'.join(
-                f'{key}: {value}' for key, value in sorted(record.items()))
-    return text

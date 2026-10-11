@@ -103,11 +103,6 @@ class HistoricalEstimator(EstimateSnapshot):
             self.sync_unavailable = True
             return self
 
-    def details(self, ids):
-        text = super().details(ids)
-        text += ('\nQuota calibration: selected account window unavailable; using list prices.' if self.config.get('_COST_QUOTA_WINDOW_ID') is None else '')
-        return text + ('\nHistory synchronization unavailable.' if getattr(self, 'sync_unavailable', False) else '')
-
     def ingest(self, directory, manifest):
         try:
             if self.cache is not None:
