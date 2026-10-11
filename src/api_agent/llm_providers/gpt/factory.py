@@ -1,5 +1,6 @@
 """Lazy personal subscription authentication through the provider boundary."""
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 
@@ -43,6 +44,9 @@ class GPTProvider:
         self.cost_compatibility = compatibility(config)
         self.rate_card = cached_rate_card(config=config)
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
+        # Keep subscription cache affinity across the owned provider's calls,
+        # including calls made with newly allocated HTTP clients.
+        self.cache_session_id = str(uuid4())
         self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
                                                  features=("cache_policy",) if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy"))
         self.cache_policy = config.get('LLM_CACHE_POLICY')
@@ -178,7 +182,7 @@ class GPTProvider:
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             return await complete_text(client=client, base_url=base, access_token=auth,
                                        subscription=self.auth_mode == "subscription", api_mode=self.api_mode,
-                                       request=request)
+                                       request=request, cache_session_id=self.cache_session_id)
 
     async def asnapshot(self, *, auth=None):
         if self.closed:

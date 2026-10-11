@@ -1,5 +1,6 @@
 """Bounded text inference; caller owns HTTP transport and selected authentication."""
 import json
+from uuid import UUID
 
 import httpx
 
@@ -308,14 +309,25 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     return base_url, body
 
 
-async def complete_text(*, client, base_url, access_token, subscription, api_mode, request):
+async def complete_text(*, client, base_url, access_token, subscription, api_mode, request, cache_session_id=None):
     """One request, no discovery, retry, credential fallback or result cache."""
     base_url, body = validate_text_request(base_url=base_url, access_token=access_token,
         subscription=subscription, api_mode=api_mode, request=request)
+    headers = {'Authorization': 'Bearer ' + access_token, 'Accept-Encoding': 'identity'}
+    if subscription and cache_session_id is not None:
+        try:
+            if type(cache_session_id) is not str or str(UUID(cache_session_id)) != cache_session_id:
+                raise ValueError
+        except ValueError:
+            raise ProviderAccessError('invalid_request', 'GPT subscription cache session must be a canonical UUID.') from None
+        # ChatGPT's routing uses the HTTP session identity independently of the
+        # JSON key. Both refer to this owned provider session, never credentials.
+        body['prompt_cache_key'] = cache_session_id
+        headers['session-id'] = cache_session_id
     try:
         async with component_timeout('GPT text inference', _TIMEOUT) as budget:
             async with client.stream('POST', base_url + ('/responses' if api_mode == 'responses' else '/chat/completions'),
-                    json=body, headers={'Authorization': 'Bearer ' + access_token, 'Accept-Encoding': 'identity'},
+                    json=body, headers=headers,
                     follow_redirects=False, timeout=budget.remaining) as response:
                 if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
                     raise _invalid('GPT inference returned unsupported content encoding.')
