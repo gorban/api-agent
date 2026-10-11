@@ -6,7 +6,18 @@ import time
 import pytest
 
 from api_agent.testing.collection import collect_tests, CollectionError
-from api_agent.testing.runner import CoverageArea, run_unit_tests
+from api_agent.testing.runner import CoverageArea, run_unit_tests, unit_parallel_jobs
+
+
+@pytest.mark.parametrize('config, expected', [
+    ({}, 8),
+    ({'TEST_PARALLEL_JOBS': 11}, 11),
+    ({'TEST_PARALLEL_JOBS': 11, 'UNIT_TEST_PARALLEL_JOBS': None}, 11),
+    ({'TEST_PARALLEL_JOBS': 11, 'UNIT_TEST_PARALLEL_JOBS': 0}, 0),
+    ({'TEST_PARALLEL_JOBS': 11, 'UNIT_TEST_PARALLEL_JOBS': 12}, 12),
+])
+def test_unit_worker_override_preserves_empty_inheritance_and_serial_zero(config, expected):
+    assert unit_parallel_jobs(config) == expected
 
 
 def fixture_repo(root, code='VALUE = 1\n', test='from tiny import VALUE\ndef test_ok():\n    assert VALUE == 1\n'):

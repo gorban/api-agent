@@ -129,11 +129,11 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 
 - [ ] Before the first traced "Ok" run, apply the shared [LOG_CONTENT policy](implementation_plan_j.md) to captured/displayed diagnostic log streams, including selected-source and interleaved views. Raw log formatting and source switching must not bypass content scrubbing; preserving original log content is subject to this gate.
 
-- [ ] Use `TEST_PARALLEL_JOBS` (nonnegative integer, default `8`) for unit, integration, and E2E execution; `0` disables parallelism and runs serially. Preserve test event identity, per-test artifacts/auth isolation, and E2E consecutive confirmation ordering when scheduling workers. Collection starts no workers.
+- [ ] Use `TEST_PARALLEL_JOBS` (nonnegative integer, default `8`) for integration/E2E and as the unit fallback. Units override it with `UNIT_TEST_PARALLEL_JOBS` (default `32`, empty inherits the global count); `0` on the effective count disables parallelism and runs serially. Preserve test event identity, per-test artifacts/auth isolation, and E2E consecutive confirmation ordering when scheduling workers. Collection starts no workers.
 
 ## B2 unit execution slice
 
-- [x] Execute selected base/pack unit identities with owner working directories, pytest configuration, raw output or per-test events, failure tracebacks and durations. Support `TEST_PARALLEL_JOBS` through pytest-xdist (`0` disables); cancel/reap owned process groups, including children left after normal pytest exit. Never retry or record units in Allure.
+- [x] Execute selected base/pack unit identities with owner working directories, pytest configuration, raw output or per-test events, failure tracebacks and durations. Support `UNIT_TEST_PARALLEL_JOBS` through pytest-xdist (empty inherits `TEST_PARALLEL_JOBS`; `0` disables); cancel/reap owned process groups, including children left after normal pytest exit. Never retry or record units in Allure.
 - [x] Gate unit result status on all selected tests passing and exact 100% line/branch counters for every measured production file, retaining full source scope for subsets. Show red failure summaries and nonzero status for coverage gaps. Missing/empty mandatory base units remain an error.
 - [x] Reach exact 100% line and branch coverage for the current B2 production code, using separate deterministic coverage lanes and high-review checks; verify the combined real launcher passes. Final rewrite coverage must still be reverified after later features.
 - [x] Reverify line and branch coverage for the API, HTTPS, credential and configuration-editor foundations using deterministic lifecycle validation, parsing/source errors, persistence rollback, inactive-field reset, HTTPS lock/recovery and guarded TUI focus/write tests. The converted base launcher passes 1,531/1,531 unit tests with exact 100% lines and branches across all 61 measured production files (6,725 statements, 2,560 branches). Added provider factory/import isolation, request ownership/expiry, and lifecycle failure/cancellation regressions; focused mutations confirm factory version/capability rejection assertions detect disabled guards. Record selected resource-pack verification separately; recheck coverage as later features land.
@@ -205,3 +205,11 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 ## Read-only description and implementation copying
 
 - [x] Reuse the shared clipboard shortcut/feedback for mouse-selected text in both configuration-description popups, setting edits and the shared password-manager editor, including its read-only implementation path. Show Ctrl+C off macOS or Cmd+C on macOS only when a copy target exists; refresh availability when selection changes. Selected read-only text takes precedence over a configuration row's effective value. Clear the highlight after successful copying, retain it on clipboard failure, and leave configuration/editor values untouched. Preserve normal input copying and macOS Ctrl+C quit guidance on setting edits. Verify actual mouse selection, footer labels and keyboard dispatch with synthetic clipboard doubles on Linux, Windows and macOS.
+
+## Unit worker tuning
+
+- [x] Benchmark the same combined unit/coverage suite at increasing worker counts
+  before selecting a unit default. Set UNIT_TEST_PARALLEL_JOBS=32 with optional
+  empty inheritance from TEST_PARALLEL_JOBS (global default remains 8).
+  Share effective-count resolution across TUI/terminal routes; verify default,
+  explicit override, empty fallback, serial zero and invalid negative settings.
