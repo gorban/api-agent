@@ -126,12 +126,24 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
         assert len(csv.splitlines()) == 3
         assert sum(row.kind=='inference_usage' for row in events)==4
         assert sum(row['total_tokens'] for row in usage['usage_observations']) == 6
-        assert 'Tokens: input 4 · output 2' in console[-1]
+        assert 'Tokens: input 4 — ' in console[-1] and ' · output 2 — ' in console[-1]
         artifact = json.loads((result.directory/'accounting.json').read_text())
         assert [row['calls'][0]['usage']['input_tokens'] for row in artifact['tests']] == [2,2]
         assert [row['calls'][0]['usage']['output_tokens'] for row in artifact['tests']] == [1,1]
         if status == 200:
             assert all(row['list_cost_usd'] > 0 for row in artifact['tests'])
+            for row in artifact['tests']:
+                categories = row['stabilized_estimate']['category_costs_usd']
+                assert categories['input_tokens'] == pytest.approx(.0000002)
+                assert categories['output_tokens'] == pytest.approx(.0000004)
+                assert categories['total_tokens'] == pytest.approx(row['stabilized_estimate']['estimated_cost_usd'])
+                assert usage['test_costs'][row['test_id']]['category_costs_usd'] == categories
+            assert usage['category_costs_usd']['total_tokens'] == pytest.approx(.0000012)
+            assert 'input 4 — $0.0000004 · output 2 — $0.0000008' in console[-1]
+            assert 'total 6 — $0.0000012' in console[-1]
+        else:
+            assert all(value is None for value in usage['category_costs_usd'].values())
+            assert 'input 4 — unavailable' in console[-1]
         if status == 200 and failure_usage:
             assert all(row['outcomes'] == ['failed'] for row in artifact['tests'])
             assert 'Synthetic failure after completed inference' in result.execution.output

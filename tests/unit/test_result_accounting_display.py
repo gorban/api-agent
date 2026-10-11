@@ -18,7 +18,11 @@ def accounting(test_id):
     tracker.add_usage(provider='selected', model='example', session_id=test_id,
         input_tokens=11, output_tokens=5, cache_read_tokens=2,
         cache_creation_tokens=0, reasoning_tokens=1)
-    return tracker.report()
+    report = tracker.report()
+    report['category_costs_usd'] = {'input_tokens':.04,'output_tokens':.06,'total_tokens':.1}
+    report['test_costs'] = {test_id:{'category_costs_usd':{'input_tokens':.008,'output_tokens':.012,
+        'cache_read_tokens':.001,'reasoning_tokens':.0024,'total_tokens':.02}}}
+    return report
 
 
 @pytest.mark.parametrize('status,color', [('passed','green'),('skipped','dark_orange'),('failed','red')])
@@ -30,6 +34,8 @@ def test_shared_details_metadata_precedes_status_or_full_failure_trace(status, c
     assert rendered.plain.startswith(result.identity.id + '\n\nExecution time: 1.234s')
     assert 'Estimated cost: $0.020' in rendered.plain
     assert tokens_text(usage, result.identity.id) in rendered.plain
+    assert 'input 11 — $0.008' in rendered.plain and 'output 5 — $0.012' in rendered.plain
+    assert 'total 16 — $0.020' in rendered.plain and 'total 16 — $0.100' not in rendered.plain
     assert rendered.plain.endswith('\n\n' + status.upper())
     assert rendered.spans[-1].style == color
     result.traceback = 'AssertionError: failed\n  source.py:42\noriginal traceback'

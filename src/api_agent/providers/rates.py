@@ -67,7 +67,17 @@ def bundled_rate_card():
     return _card(OPENAI, models, b'official-standard-2026-10-10', now=datetime(2026, 10, 10, tzinfo=timezone.utc), fallback=True)
 
 
+USAGE_COST_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_tokens',
+                     'cache_creation_tokens', 'reasoning_tokens', 'total_tokens')
+
+
 def price_usage(card, model, usage):
+    return price_usage_parts(card, model, usage)['total_tokens']
+
+
+def price_usage_parts(card, model, usage):
+    """Input includes cached input; output includes reasoning. Cache writes are unsupported."""
+    parts = dict.fromkeys(USAGE_COST_FIELDS)
     validate_rate_card(card)
     rate = card['models'].get(model)
     values = usage if type(usage) is dict else vars(usage)
@@ -77,16 +87,22 @@ def price_usage(card, model, usage):
     except (TypeError, ValueError):
         raise ContractError('Invalid priced usage') from None
     if rate is None or all(rate[name] is None for name in ('input', 'cached_input', 'output')) or tokens.input_tokens is None or tokens.output_tokens is None:
-        return None
+        return parts
     # Unknown cached usage cannot be assumed to be zero.
     if tokens.cached_input_tokens is None:
-        return None
+        return parts
     counts = (tokens.input_tokens - tokens.cached_input_tokens, tokens.cached_input_tokens, tokens.output_tokens)
     if any(count and rate[name] is None for count, name in zip(counts, ('input', 'cached_input', 'output'))):
-        return None
+        return parts
     long = rate['threshold'] is not None and tokens.input_tokens > rate['threshold']
     factors = (rate['input_multiplier'], rate['input_multiplier'], rate['output_multiplier']) if long else (1, 1, 1)
-    return math.fsum(count * (rate[name] or 0) * factor for count, name, factor in zip(counts, ('input', 'cached_input', 'output'), factors))
+    fresh, cached, output = (count * (rate[name] or 0) * factor
+        for count, name, factor in zip(counts, ('input', 'cached_input', 'output'), factors))
+    parts.update(input_tokens=math.fsum((fresh, cached)), output_tokens=output,
+        cache_read_tokens=cached, reasoning_tokens=None if tokens.reasoning_tokens is None else
+        tokens.reasoning_tokens * (rate['output'] or 0) * factors[2],
+        total_tokens=math.fsum((fresh, cached, output)))
+    return parts
 
 
 def parse_openrouter(raw, *, now=None):
