@@ -10,7 +10,7 @@ import pytest
 @pytest.mark.parametrize('jobs,debug', [(0,False),(2,False),(0,True)])
 @pytest.mark.parametrize('mode', ['responses','completions'])
 @pytest.mark.parametrize('status', [200,403])
-def test_recorded_inference_without_discovery_counts_usage_and_keeps_selected_auth(tmp_path, monkeypatch, jobs, debug, mode, status):
+def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_path, monkeypatch, jobs, debug, mode, status):
     from api_agent.auth import credentials
     from api_agent.llm_providers.gpt import factory
     from api_agent.testing import provider_setup
@@ -29,6 +29,8 @@ def test_recorded_inference_without_discovery_counts_usage_and_keeps_selected_au
     real_client = httpx.AsyncClient
     def respond(request):
         requests.append(request)
+        if request.method == 'GET':
+            return httpx.Response(401) if 'authorization' not in request.headers else httpx.Response(200, json={'data': [{'id': 'gpt-4.1-nano'}]})
         assert request.method == 'POST' and '/models' not in request.url.path
         assert request.headers['authorization'] == 'Bearer '+key
         assert json.loads(request.content)['model'] == 'gpt-4.1-nano'
@@ -74,6 +76,8 @@ credentials.get_username = forbidden
 credentials.get_totp = forbidden
 real_client = httpx.AsyncClient
 def respond(request):
+    if request.method == "GET":
+        return httpx.Response(401) if "authorization" not in request.headers else httpx.Response(200, json={{"data": [{{"id": "gpt-4.1-nano"}}]}})
     assert request.method == "POST" and "/models" not in request.url.path
     assert request.headers["authorization"] == "Bearer " + key
     assert json.loads(request.content)["model"] == "gpt-4.1-nano"
@@ -81,7 +85,7 @@ def respond(request):
 httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(respond), **kwargs)
 ''')
     context = SimpleNamespace(base_root=base,owner_root=base,suite_paths=lambda mode: [suite])
-    config = dict(LLM_PROVIDER=str(Path(factory.__file__).resolve())+':factory',LLM_CREDENTIAL_ROLE='LLM User',
+    config = dict(LLM_DEFAULT_MODEL='gpt-4.1-nano', LLM_ALLOWED_MODELS='gpt-4.*', LLM_PROVIDER=str(Path(factory.__file__).resolve())+':factory',LLM_CREDENTIAL_ROLE='LLM User',
         GPT_AUTH_MODE='api_key',GPT_API_MODE=mode,UNATTENDED_USER_INDEX=0,
         UNATTENDED_AUTH={'password_manager':{'manager':'keeper','cli_path':'synthetic-cli'},
         'roles':{'LLM User':[{'vault':'synthetic-vault','user':'selected-entry'}]}},TUI_MODE='integration',DEBUG=debug,ALLURE_S3_BUCKET='synthetic',ALLURE_RESULTS_DIR=tmp_path/'allure',TEST_PARALLEL_JOBS=jobs)
@@ -96,7 +100,7 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
         # assertions execute there and failures return through actual reports.
         assert not reads and not requests and not loaded
     else:
-        assert reads == [('synthetic-vault','selected-entry')] and len(requests)==2 and len(loaded)==1
+        assert reads == [('synthetic-vault','selected-entry')] and sum(request.method == 'POST' for request in requests)==2 and len(loaded)==1
         assert loaded[0].closed and not loaded[0].implementation.sessions
     assert result.usage['prompt_count'] == 2
     usage = json.loads((result.directory/'usage-summary.json').read_text())

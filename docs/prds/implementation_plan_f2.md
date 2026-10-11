@@ -80,7 +80,7 @@ Most users configure one provider/authentication mode and one LLM User entry per
 
 ## Minimal inference integration checkpoint
 
-- [x] Implement the smallest shared LLM-request integration through the loaded provider and owned session, using a short prompt and bounded output. Prove the transports with deterministic unit tests before live checks. Supply an explicit GPT selection so this test does not require catalog permission; keep discovery as its own integration.
+- [x] Implement the smallest shared LLM-request integration through the loaded provider and owned session, using a short prompt and bounded output. Prove the transports with deterministic unit tests before live checks. Resolve the shared configurable default through the allowed catalog; this test requires catalog permission. Explicit allowed inference remains independent of discovery permission.
 - [ ] Verify subscription Responses first, then API-key Chat Completions and, when funded, API-key Responses against compatible endpoints. Use the same consumer assertion and generic result/usage contracts. Keep repeated live checks limited to the approved personal account and spending plan maintained outside this repository.
 - [ ] Exercise deliberately unfunded or exhausted API-key access in both API formats, preserving the actual upstream message, HTTP status, code/type and available request identifier through test details and Allure. Distinguish observed billing/credit rejection from permission rejection; never manufacture a quota diagnosis or fall back to another account, endpoint or authentication mode. A normal request integration fails on rejection; a dedicated rejection test passes only when it asserts that expected error behavior.
 - [ ] Record each live outcome and unavailable funded combination separately; a funding-limited deferred check is not transport acceptance. Use the verified subscription Responses route for subsequent development while retaining deterministic coverage of both API-key transports.
@@ -112,12 +112,11 @@ live catalog scenarios and inference-format permissions remain pending.
   and rejection before decompression. Reject selected-credential echoes in
   successful output, including controls that could later expose the credential.
   No retries or endpoint/account/mode fallback are used.
-- [x] Add generic test_llm_request integration with provider-owned authored
-  request selections. Remove the inference-selection runtime setting and its
-  spending opt-in: integration execution may use tokens after normal start gates.
-  The bundled provider supplies subscription/API-key cases without requiring
-  discovery permission; actual remote rejection fails. Capture attempted turns and returned token totals in recorded suite
-  history without prompt/output/auth content; retain unknown counters.
+- [x] Add generic test_llm_request integration using the shared configured
+  default selected from the allowed catalog. Remove obsolete provider-authored
+  request selections and the inference-selection runtime opt-in. Normal start
+  gates authorize integration execution; actual remote rejection fails. Capture
+  attempted turns and returned token totals without prompt/output/auth content.
 - [ ] Periodically review integration/E2E tests for value and selectively mark
   low-value cases skipped by default; do not require a separate inference opt-in.
 - [ ] Complete the separate live compatibility and human checkpoints above.
@@ -170,6 +169,19 @@ preview requirements, including its unsupported-option restrictions.
 
 ## Subscription cache and diagnostic follow-up
 
-- [x] Reject every explicit cache preset on the subscription route before authentication or inference, including newer selections: a real request rejected `prompt_cache_options`. Empty retains provider defaults; documented API-key mappings remain separate. Advertise no explicit cache-policy capability for subscription.
+- [x] Reject every explicit cache preset on the subscription route before completion authentication or inference (automatic default-model catalog resolution may authenticate separately), including newer selections: a real request rejected `prompt_cache_options`. Empty retains provider defaults; documented API-key mappings remain separate. Advertise no explicit cache-policy capability for subscription.
 - [x] Clear unwound provider traceback locals before pytest records failures, including cause/context cycles and exception-group children. Preserve stack locations and safe upstream error details. Exercise serial, parallel and actual DEBUG subprocess recording with controlled credentials and detect disabled clearing through isolated mutations.
 - [x] Allow START=True/E2E or DEBUG at both launch and recording boundaries for NO_STD_IN integrations. DEBUG alone retains the approved terminal-free integration exception; E2E still requires explicit START=E2E.
+
+## Shared model policy
+
+- [x] Declare LLM_ALLOWED_MODELS and LLM_DEFAULT_MODEL in base configuration,
+  using validated full-ID regexes. Defaults admit GPT-6 Luna/Haiku/Sol and select
+  the highest Luna version. Providers describe family/version metadata; core
+  selection remains vendor-neutral. Reject no matches, mixed/missing comparison
+  metadata, highest-version ties and excessive regex work explicitly.
+- [x] Enforce admission before provider loading for explicit inference, and filter
+  local/shared-backend catalogs consistently. Resolve the request integration's
+  model through the same allowed catalog rather than a hardcoded Sol selection.
+  Cover both consumer paths, bootstrap validation and metadata wire preservation.
+- [ ] Wire this policy into the [public model-list and inference API](implementation_plan_f.md).

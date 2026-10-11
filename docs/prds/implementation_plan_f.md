@@ -19,6 +19,15 @@ The [included personal GPT adapter](implementation_plan_f2.md) is early work; re
   - [ ] Record quota resets, unavailable snapshots and possible unrelated account usage explicitly. Parallel selected tests share one suite bracket. Quota snapshots remain separate from token counts and provider cost estimation.
 - [ ] After declarative config, LLM provider authentication, Allure, and usage tracking are ready, implement `GET /app/agent/models` as an early API/authentication milestone before any token-spending "Ok" test.
   - [ ] Establish the model-list schema and route/frontend contract. Preserve the response shape required for selecting a model.
+  - [ ] Apply providers.selection.ModelSelectionPolicy to GET /app/agent/models
+    before serialization. Preserve allowed IDs, display names, family/version
+    metadata and optional token limits. Resolve the default only within that
+    filtered catalog. Keep no-match/multiple-family/highest-tie errors explicit.
+  - [ ] Apply the same admission guard to every public inference path before
+    provider authentication/calls; bypassing the UI cannot bypass the allowlist.
+    Prove forbidden models cause zero provider loading/authentication/inference
+    and generic policies work with another model family.
+
   - [ ] Add a targeted integration test of authenticated LLM provider model discovery, plus deterministic tests of missing/invalid authentication handling. These model-list requests must not invoke LLM inference or generate a completion. Record the integration result in Allure and show its suite-wide quota delta in the TUI even when usage is unchanged.
 
 - [ ] Track suite-wide user prompts independently of LLM call counts: initial conversation turns, clarification answer rounds, and mutation approval turns each count once. Include failed attempts and confirmation reruns; associate counts with the suite run and retain them in Allure artifacts for the [TUI summaries](implementation_plan_a.md).

@@ -83,6 +83,9 @@ def convert_value(declaration, value, *, external, anchors):
         raise ValueError('expected positive integer')
     if declaration.validation == 'resolution' and not re.fullmatch(r'[1-9]\d*x[1-9]\d*', value):
         raise ValueError('expected positive WIDTHxHEIGHT')
+    if declaration.validation == 'regex':
+        from api_agent.providers.selection import compile_pattern
+        compile_pattern(value)
     if kind == 'path' and value and anchors is not None:
         path = Path(value).expanduser()
         if not path.is_absolute():

@@ -2,10 +2,3 @@ version = 1
 
 [tests]
 integration = []
-# Test cases choose a small explicit selection without requiring catalog permission.
-# These are authored test parameters, not user configuration or spend opt-ins.
-request_selections = [
-  {when = {GPT_AUTH_MODE = "subscription"}, selected_llm = "gpt-6.1-sol"},
-  {when = {GPT_AUTH_MODE = "api_key", GPT_BASE_URL = ["https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"]}, selected_llm = "openai/gpt-4.1-nano"},
-  {when = {GPT_AUTH_MODE = "api_key"}, selected_llm = "gpt-4.1-nano"},
-]

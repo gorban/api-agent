@@ -14,7 +14,7 @@ def row():
 
 
 def test_full_and_unknown_metadata_round_trip():
-    values = (AvailableSelection('one'), AvailableSelection('two', 'Description', ('tools',), 'Two', 'v2', 100, 500))
+    values = (AvailableSelection('one'), AvailableSelection('two', 'Description', ('tools',), 'Two', 'v2', 100, 500, family='example'))
     assert catalog_from_wire(catalog_to_wire(values)) == values
     assert catalog_from_wire([]) == () and catalog_to_wire(()) == []
 
@@ -35,7 +35,8 @@ def test_invalid_wire_shape_rejected(value):
     ('description', 'x'*513), ('description', False), ('description', '\n'), ('display_name', 'x'*201), ('display_name', None),
     ('version', 'x'*101), ('version', 2), ('version', '\n'), ('features', ()), ('features', ['unsupported']), ('features', ['tools','tools']),
     ('max_output_tokens', True), ('max_output_tokens', 0), ('max_output_tokens', -1), ('max_output_tokens', 2147483648),
-    ('context_length', '100'), ('context_length', 0)])
+    ('context_length', '100'), ('context_length', 0), ('family', ''), ('family', False),
+    ('family', 'x'*201), ('family', '\n')])
 def test_invalid_wire_value_rejected(field, value):
     with pytest.raises(ContractError):
         catalog_from_wire([row() | {field: value}])

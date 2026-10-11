@@ -135,22 +135,20 @@ def test_worker_local_complete_closed_and_prerequisite(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('available', [True, False])
-def test_selection_fixture_uses_provider_test_case_or_missing_capability(monkeypatch, available):
+def test_selection_fixture_resolves_catalog_or_missing_capability(monkeypatch, available):
     from api_agent.testing import provider_setup
-    from api_agent.testing import provider_tests
-    config = {'LLM_PROVIDER': 'synthetic.py:factory'}
-    monkeypatch.setattr(provider_setup,'_read_snapshot',lambda: {'config': config, 'owner_root': '/synthetic'})
-    def selection(values, *, owner_root):
-        assert values == config and owner_root == '/synthetic'
-        if not available:
-            raise SetupPrerequisiteError('no test case')
-        return 'provider-test-selection'
-    monkeypatch.setattr(provider_tests, 'request_selection', selection)
-    if available:
-        assert provider_setup.llm_selection.__wrapped__() == 'provider-test-selection'
+    from api_agent.providers.llm import AvailableSelection
+    from unittest.mock import Mock
+    config = {'LLM_DEFAULT_MODEL': 'family-.*'}
+    monkeypatch.setattr(provider_setup, '_read_snapshot', lambda: {'config': config})
+    provider = SimpleNamespace(describe=Mock(return_value=(AvailableSelection('family-2'),)))
+    if not available:
+        provider.describe.side_effect = pytest.skip.Exception('no catalog capability')
+        with pytest.raises(pytest.skip.Exception, match='no catalog capability'):
+            provider_setup.llm_selection.__wrapped__(provider)
     else:
-        with pytest.raises(pytest.skip.Exception,match='no test case'):
-            provider_setup.llm_selection.__wrapped__()
+        assert provider_setup.llm_selection.__wrapped__(provider) == 'family-2'
+    provider.describe.assert_called_once_with()
 
 
 @pytest.mark.parametrize('grouped', [False, True])
