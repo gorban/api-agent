@@ -76,7 +76,7 @@ class QuotaReadError:
     status: int | None = None
 
     def __post_init__(self):
-        if type(self.code) is not str or self.code not in {'identity', 'http', 'response', 'window', 'request'}:
+        if type(self.code) is not str or self.code not in {'identity', 'http', 'response', 'window', 'request', 'source'}:
             raise ValueError('Invalid quota error code')
         if ((self.code == 'http' and (type(self.status) is not int or not 100 <= self.status <= 599))
                 or (self.code != 'http' and self.status is not None)):
@@ -89,7 +89,8 @@ class QuotaReadError:
         return {'identity': 'The authenticated token has no usable quota account identity.',
                 'response': 'Quota endpoint returned an invalid response.',
                 'window': 'Quota response did not include the configured quota window.',
-                'request': 'Quota request failed or timed out.'}[self.code]
+                'request': 'Quota request failed or timed out.',
+                'source': 'Quota requires Codex CLI signed in to the selected ChatGPT account.'}[self.code]
 
     def to_json(self):
         return {'code': self.code, 'status': self.status}
