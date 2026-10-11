@@ -308,3 +308,47 @@ def test_background_history_cannot_replace_completed_run_snapshot(tmp_path, monk
         finally:
             gate.set()
     asyncio.run(scenario())
+
+
+def test_back_to_selection_immediately_reads_new_local_history(tmp_path, monkeypatch):
+    from api_agent.telemetry.history import HistoryCache
+    from api_agent.testing.contracts import TestResult
+    from api_agent.testing.integration import IntegrationRunResult
+    from test_historical_cache import fixture as history_fixture
+    cache = HistoryCache(tmp_path / 'history.sqlite3')
+    counts = []
+    def estimator(*args):
+        count = len(cache.records('local'))
+        counts.append(count)
+        return Snapshot(1 + count)
+    monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
+                        SimpleNamespace(estimator_for=estimator))
+    tests = identities(2)
+    def runner(*args, **kwargs):
+        manifest, payload = history_fixture()
+        cache.ingest('local', manifest, payload)
+        result = IntegrationRunResult(0, tuple(TestResult(test, 'passed', .1) for test in tests), '')
+        return SimpleNamespace(execution=result, persisted=True, exit_code=0)
+    async def scenario():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: tests)
+        app.integration_runner = runner
+        async with app.run_test(size=(120, 35)) as pilot:
+            await pilot.pause()
+            assert counts == [0]
+            assert str(app.screen.query_one(TestTable).get_row_at(0)[4]) == '1.000000'
+            await pilot.press('s')
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.screen.kind == 'test-results' and app.screen.test_run_complete
+            assert len(cache.records('local')) == 1
+            await pilot.press('b')
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.screen.kind == 'tests'
+            assert counts == [0, 1]
+            assert str(app.screen.query_one(TestTable).get_row_at(0)[4]) == '2.000000'
+            assert app.selection.selected_ids == {test.id for test in tests}
+    try:
+        asyncio.run(scenario())
+    finally:
+        cache.close()

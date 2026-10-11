@@ -168,7 +168,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                         recorder.record_test(TestResult(failure, 'error'))
             usage_summary = usage.report()
             from api_agent.telemetry.accounting import build_accounting
-            artifact = build_accounting(identity, tests, config, usage, result.tests, estimator=estimator, summary=usage_summary)
+            artifact = build_accounting(identity, tests, config, usage, result.tests, estimator=estimator, summary=usage_summary, context=context)
             stabilized = estimator.complete(artifact)
             # Preserve the initial raw allocation while publishing separately
             # derived completion estimates from this suite's frozen estimator.

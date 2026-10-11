@@ -162,3 +162,40 @@ def test_known_contamination_survives_frozen_accounting(tmp_path):
     artifact['quota']['contaminated'] = 'yes'
     with pytest.raises(ValueError,match='contamination'):
         validate_accounting(artifact)
+
+
+@pytest.mark.parametrize('mode,retries,expected', [('integration',None,0), ('integration',5,0),
+    ('e2e',None,None), ('e2e',2,2)])
+def test_history_records_actual_retry_policy(tmp_path, monkeypatch, mode, retries, expected):
+    ctx = context(tmp_path)
+    mocked_schema(monkeypatch, [])
+    from api_agent.telemetry.accounting import compatibility
+    config = {'TUI_MODE':mode, 'E2E_RERUNS':retries}
+    resolved = cost_config(ctx, config)
+    assert compatibility(resolved)['E2E_RERUNS'] == expected
+    assert config['E2E_RERUNS'] == retries
+
+
+@pytest.mark.parametrize('external', [True, False])
+def test_repository_tests_fingerprint_their_own_checkout(tmp_path, external):
+    from api_agent.telemetry.accounting import source_fingerprint, build_accounting
+    from api_agent.testing.collection import TestIdentity, repository_label
+    from api_agent.testing.recording import RunIdentity
+    base = tmp_path / 'base'; base.mkdir()
+    owner = tmp_path / 'pack' if external else base
+    if external:
+        owner.mkdir()
+    ctx = SimpleNamespace(base_root=base, owner_root=owner)
+    (base / 'test.py').write_bytes(b'base suite')
+    (owner / 'test.py').write_bytes(b'pack suite' if external else b'base suite')
+    tests = [TestIdentity(repository_label(ctx, path)+'::test.py::test_one',
+                          repository_label(ctx, path), 'test.py', 'test.py::test_one')
+             for path in dict.fromkeys((base, owner))]
+    for test, path in zip(tests, dict.fromkeys((base, owner))):
+        expected = sha256((path / 'test.py').read_bytes()).hexdigest()
+        assert source_fingerprint(test, context=ctx) == expected
+        assert source_fingerprint(test) is None
+        artifact = build_accounting(RunIdentity.create('base', 'integration'), [test], {}, SuiteUsage('run'), (), context=ctx)
+        assert artifact['tests'][0]['source_fingerprint'] == expected
+    unknown = TestIdentity('other::test.py::test_one', 'other', 'test.py', 'test.py::test_one')
+    assert source_fingerprint(unknown, context=ctx) is None

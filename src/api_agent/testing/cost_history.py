@@ -41,8 +41,9 @@ def allocation_scope(config):
 
 
 class HistoricalEstimator(EstimateSnapshot):
-    def __init__(self, tests, config, cache, origin, repo, card, storage=None, now=None):
+    def __init__(self, tests, config, cache, origin, repo, card, storage=None, now=None, context=None):
         from api_agent.telemetry.accounting import compatibility, source_fingerprint
+        self.context = context
         self.tests, self.config, self.cache = tuple(tests), dict(config), cache
         self.now = now or datetime.now(timezone.utc)
         self.scope = allocation_scope(config)
@@ -55,7 +56,7 @@ class HistoricalEstimator(EstimateSnapshot):
                 self.config['_COST_QUOTA_WINDOW_ID'] = window
                 config = self.config
         self.origin, self.repo, self.storage = origin, repo, storage
-        fingerprints = {test.id: source_fingerprint(test) for test in tests}
+        fingerprints = {test.id: source_fingerprint(test, context=context) for test in tests}
         self.fingerprints, self.compatibility = fingerprints, compatibility(config)
         records = cache.records(origin) if cache is not None else []
         cutoff = self.now - timedelta(days=config.get('TEST_COST_HISTORY_DAYS', 7))
@@ -96,7 +97,7 @@ class HistoricalEstimator(EstimateSnapshot):
         except Exception:
             error = True
         try:
-            replacement = HistoricalEstimator(self.tests, self.config, self.cache, self.origin, self.repo, self.card, self.storage, self.now)
+            replacement = HistoricalEstimator(self.tests, self.config, self.cache, self.origin, self.repo, self.card, self.storage, self.now, context=self.context)
             replacement.sync_unavailable = error
             return replacement
         except Exception:
@@ -128,6 +129,6 @@ def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=Non
         if config.get('ALLURE_S3_BUCKET'):
             storage = RunStorage(config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),
                                  endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'))
-        return HistoricalEstimator(tests, config, cache, origin, repo, card, storage, now)
+        return HistoricalEstimator(tests, config, cache, origin, repo, card, storage, now, context=context)
     except Exception:
         return EstimateSnapshot({test.id: {'estimated_cost_usd': None, 'known_zero': False, 'basis': 'unavailable', 'sample_count': 0} for test in tests}, card=card)

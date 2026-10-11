@@ -24,3 +24,15 @@
 - [ ] Human review through deterministic replay and existing Allure history. No additional paid inference is needed for this batch.
 
 Implementation evidence: 4,738 combined unit tests pass with exact per-file 100% line/branch coverage; both applicable wheels, deterministic picker/completed replay and public-boundary checks pass. Independent adversarial reviews and focused mutation controls cover the repaired cases. Human acceptance remains pending; future E2E executor wiring is a separate task.
+
+## Live-history verification follow-up
+
+- [x] Resolve ordinary base/resource-pack test-file fingerprints through trusted collected repository identities, as well as explicit provider suite roots. Use identical resolution for immutable recording, initial predictions and background refresh; unknown repositories remain unmatched.
+- [x] Record integration's actual zero-retry policy in accounting compatibility even when the E2E retry setting is inactive. Keep the execution configuration unchanged.
+- [x] Verify that Back to selection immediately rereads a newly finalized local history record, preserving selections and updating predictions.
+- [x] Verify before/after quota snapshots and zero deltas in finalized usage and accounting artifacts across passed, failed and interrupted runs. Unavailable snapshots stay null, distinct from observed zero.
+- [x] Isolate unit recording fixtures from the real user history cache; unit runs must not leave synthetic integration observations there.
+- [ ] Verify supported selected-subscription quota retrieval and expose a safe unavailable reason when its optional endpoint rejects access. Do not substitute another account's credentials or infer zero usage from missing snapshots.
+- [ ] Expand exact pricing mappings only when official model/context/tier evidence is unambiguous. Missing or ambiguous refreshed rates remain unavailable.
+
+Follow-up verification: 4,750/4,750 combined unit tests pass at exact per-file 100% lines and branches; focused history/recording checks, mutation controls, wheel and public-boundary audit pass. Live quota and exact model pricing remain unverified as described above.

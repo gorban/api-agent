@@ -116,7 +116,7 @@ def test_adapter_policy_qualified(tmp_path, monkeypatch):
         artifact['tests'][0]['calls'][0]['quote']['accounting']['compatibility'] = actual
     class Cache:
         def records(self, origin): return history
-    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test: 'hash')
+    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test, **kwargs: 'hash')
     test = SimpleNamespace(id='t', node_id='test.py::test[one]', root=None)
     snapshot = HistoricalEstimator([test], settings, Cache(), 'origin', 'repo', bundled_rate_card(), now=now)
     assert snapshot.predictions['t']['basis'] == 'historical_quota'
@@ -156,7 +156,7 @@ def test_adapter_unqualified_and_unknown_prediction(tmp_path, monkeypatch):
     class Cache:
         def records(self, origin): return history
         def ingest(self, *args): pytest.fail('Oversized data ingested')
-    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test: 'hash')
+    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test, **kwargs: 'hash')
     tests = [SimpleNamespace(id='t', node_id='test.py::test[one]'), SimpleNamespace(id='other', node_id='test.py::other')]
     snapshot = HistoricalEstimator(tests, settings, Cache(), 'origin', 'repo', bundled_rate_card(), now=datetime(2026, 10, 10, tzinfo=timezone.utc))
     assert snapshot.predictions['other']['estimated_cost_usd'] is None
@@ -292,7 +292,7 @@ def test_api_key_history_never_scales_with_same_compatibility(tmp_path, monkeypa
     history.append((dict(history[-1][0], finished_at='2026-10-04T01:00:00Z'), dict(history[-1][1], tests=[api])))
     class Cache:
         def records(self, origin): return history
-    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test: 'hash')
+    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test, **kwargs: 'hash')
     snapshot = HistoricalEstimator([SimpleNamespace(id='t', node_id=api['node_id'])], settings, Cache(), 'origin', 'repo', bundled_rate_card(), now=datetime(2026, 10, 10, tzinfo=timezone.utc))
     assert snapshot.predictions['t']['basis'] == 'historical_list_price'
     assert snapshot.predictions['t']['estimated_cost_usd'] == pytest.approx(.0001)
@@ -335,7 +335,7 @@ def test_local_finalized_binding_enables_next_picker_never_current(tmp_path, mon
     cache = HistoryCache(tmp_path / 'cache')
     settings, manifest, payload = binding_run()
     now = datetime(2026, 10, 10, tzinfo=timezone.utc)
-    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test: 'c' * 64)
+    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test, **kwargs: 'c' * 64)
     test = SimpleNamespace(id='t', node_id='test.py::test[one]')
     initial = HistoricalEstimator([test], settings, cache, 'origin', 'repo', bundled_rate_card(), now=now)
     for day in (1, 2, 3):
@@ -468,3 +468,47 @@ def test_disposable_legacy_bindings_are_invalidated(tmp_path):
     assert rebuilt.connection.execute('SELECT * FROM allocation_bindings').fetchall() == []
     assert 'digest' in {row[1] for row in rebuilt.connection.execute('PRAGMA table_info(allocation_bindings)')}
     rebuilt.close()
+
+
+def test_recording_adapter_never_opens_user_cache(tmp_path, monkeypatch, isolated_recording_history):
+    monkeypatch.setattr('api_agent.telemetry.history.cache_path',
+                        lambda: pytest.fail('Unit fixtures must not open the user cache'))
+    context = SimpleNamespace(owner_root=tmp_path, base_root=tmp_path)
+    snapshot = estimator_for(context, [], {})
+    assert snapshot.cache is not None
+    filename = snapshot.cache.connection.execute('PRAGMA database_list').fetchone()[2]
+    assert filename == str(isolated_recording_history)
+    snapshot.cache.close()
+
+
+def test_repository_root_resolution_is_shared_by_picker_refresh(tmp_path):
+    from hashlib import sha256
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.cost_history import HistoricalEstimator
+    from api_agent.telemetry.accounting import source_fingerprint
+    from test_historical_estimation import records, compat
+    from datetime import datetime, timezone
+    source = tmp_path / 'test.py'; source.write_text('def test_one(): pass')
+    context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path)
+    test = TestIdentity('t', tmp_path.name, 'test.py', 'test.py::test[one]')
+    expected = sha256(source.read_bytes()).hexdigest()
+    histories = records()
+    settings = dict(compat(), TEST_COST_HISTORY_DAYS=30)
+    from api_agent.telemetry.accounting import compatibility
+    for _, artifact in histories:
+        artifact['tests'][0]['source_fingerprint'] = expected
+        artifact['tests'][0]['compatibility'] = compatibility(settings)
+        artifact['tests'][0]['calls'][0]['quote']['accounting']['compatibility'] = compatibility(settings)
+    class Cache:
+        def records(self, origin): return histories
+    snapshot = HistoricalEstimator([test], settings, Cache(), 'origin', 'repo', bundled_rate_card(),
+                                   now=datetime(2026,10,10,tzinfo=timezone.utc), context=context)
+    assert snapshot.fingerprints['t'] == expected
+    assert source_fingerprint(test, context=context) == expected
+    assert snapshot.predictions['t']['basis'] == 'historical_list_price'
+    assert snapshot.predictions['t']['sample_count'] == 3
+    snapshot.storage = SimpleNamespace(accounting_history=lambda *args, **kwargs: ())
+    refreshed = snapshot.synchronize()
+    assert refreshed.context is context
+    assert refreshed.fingerprints == snapshot.fingerprints
+    assert refreshed.predictions == snapshot.predictions

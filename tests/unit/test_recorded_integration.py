@@ -52,14 +52,15 @@ def fake_runner(status='passed', *, deliver=True):
 
 
 @pytest.mark.parametrize('status,expected', [('passed', 'completed'), ('failed', 'failed'), ('cancelled', 'interrupted')])
-def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, status, expected):
+@pytest.mark.parametrize('delta', [0, 1.5])
+def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, status, expected, delta):
     context, test, config = fixture(tmp_path)
     config['TOKEN_USAGE_CSV'] = tmp_path / 'external.csv'
     config['TOKEN_USAGE_CSV_ENABLED'] = True
     storage = Storage()
     instant = datetime(2028, 1, 1, tzinfo=timezone.utc)
     snapshots = iter([QuotaSnapshot(10, 'window', instant + timedelta(hours=1), instant),
-                      QuotaSnapshot(11.5, 'window', instant + timedelta(hours=1), instant + timedelta(seconds=5))])
+                      QuotaSnapshot(10 + delta, 'window', instant + timedelta(hours=1), instant + timedelta(seconds=5))])
     def prepare(usage):
         usage.record_prompt(turn_id='turn', prompt_id='initial', kind='initial')
         usage.add_usage(provider='synthetic_provider', model='selected', session_id='session', input_tokens=2, output_tokens=3)
@@ -68,9 +69,16 @@ def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, 
     assert result.exit_code == (130 if status == 'cancelled' else int(status != 'passed'))
     assert result.persisted and len(storage.calls) == 1
     assert result.manifest['status'] == expected
-    assert result.usage['pct_point_delta'] == 1.5 and result.usage['cost_per_prompt_usd'] is None
+    assert result.usage['pct_point_delta'] == delta and result.usage['cost_per_prompt_usd'] is None
     summary = json.loads((result.directory / 'usage-summary.json').read_text())
     assert summary['prompt_count'] == 1 and summary['before']['pct_used'] == 10
+    assert summary['after']['pct_used'] == 10 + delta
+    assert summary['pct_point_delta'] == delta
+    accounting = json.loads((result.directory / 'accounting.json').read_text())
+    assert accounting['quota']['before']['pct_used'] == 10
+    assert accounting['quota']['after']['pct_used'] == 10 + delta
+    assert accounting['quota']['pct_point_delta'] == delta
+    assert accounting['quota']['quota_unavailable_reason'] is None
     with (result.directory / 'token-usage.csv').open() as stream:
         row = list(csv.DictReader(stream))[0]
     assert row['total_tokens'] == '5'
