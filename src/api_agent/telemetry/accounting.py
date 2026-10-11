@@ -22,11 +22,16 @@ def compatibility(config):
     return {key: deepcopy(config.get(key)) for key in _COMPAT}
 
 
-def source_fingerprint(test):
+def source_fingerprint(test, *, context=None):
     """Resolve source through the collected root and node ID, never artifact paths."""
-    if test.root is None:
+    root = test.root
+    if root is None and context is not None:
+        from api_agent.testing.collection import repository_label
+        root = next((candidate for candidate in (context.base_root, context.owner_root)
+                     if getattr(test, 'repo', None) == repository_label(context, candidate)), None)
+    if root is None:
         return None
-    root = Path(test.root).resolve()
+    root = Path(root).resolve()
     source = root / test.node_id.split('::', 1)[0]
     try:
         source.resolve().relative_to(root)
@@ -125,7 +130,7 @@ def validate_evidence(value):
     return value
 
 
-def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None, summary=None):
+def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None, summary=None, context=None):
     summary = usage.report() if summary is None else summary
     quota = {key: deepcopy(summary.get(key)) for key in ('before', 'after', 'pct_point_delta',
              'quota_unavailable_reason', 'payment_policy', 'payment_month')}
@@ -139,7 +144,7 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
         statuses = [outcome.status for outcome in outcomes if outcome.identity.id == test.id]
         costs = summary.get('test_costs', {}).get(test.id, {})
         prediction = None if estimator is None else deepcopy(getattr(estimator, 'advance_predictions', estimator.predictions).get(test.id))
-        records.append(dict(test_id=test.id, node_id=test.node_id, source_fingerprint=source_fingerprint(test),
+        records.append(dict(test_id=test.id, node_id=test.node_id, source_fingerprint=source_fingerprint(test, context=context),
             compatibility=compatibility(config), outcomes=statuses, attempts=len(statuses), calls=own,
             original_estimate=costs.get('estimated_cost_usd'), list_cost_usd=costs.get('list_cost_usd'),
             raw_quota_cost_usd=costs.get('estimated_cost_usd') if costs.get('basis') == 'quota_payment' else None,

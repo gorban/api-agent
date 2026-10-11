@@ -26,6 +26,10 @@ def cost_config(context, config):
     starts provider/authentication operations.
     """
     result = dict(config)
+    if config.get('TUI_MODE') == 'integration':
+        # Integration execution never retries; its inactive E2E option is not
+        # missing compatibility evidence for the actual retry policy.
+        result['E2E_RERUNS'] = 0
     pack_root = Path(getattr(context, 'pack_root', context.owner_root))
     result['_COST_PACK_IDENTITY'] = file_fingerprint(pack_root / 'pack.toml')
     result['_COST_REQUEST_SETTINGS'] = None
