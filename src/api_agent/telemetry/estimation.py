@@ -227,7 +227,9 @@ def call_signature(row):
         if (not metadata or not compatibility_complete(metadata.get('compatibility'))
                 or metadata['compatibility'] != row.get('compatibility')):
             return None
-        signatures.add(key({name: metadata.get(name) for name in ('requested_model', 'catalog_model', 'actual_model', 'serving_revision', 'service_tier', 'billing_mode')}))
+        signature = {name: metadata.get(name) for name in ('requested_model', 'catalog_model', 'actual_model', 'serving_revision', 'service_tier', 'billing_mode')}
+        signature['cache_policy'] = metadata.get('cache_policy', 'unknown')
+        signatures.add(key(signature))
     return key(sorted(signatures))
 
 

@@ -86,7 +86,8 @@ def validate_compatibility(value):
 
 
 def validate_metadata(value):
-    if (type(value) is not dict or set(value) != _METADATA or type(value['version']) is not int or value['version'] != 1
+    if (type(value) is not dict or set(value) not in (_METADATA, _METADATA | {'cache_policy'}) or type(value['version']) is not int or value['version'] != 1
+            or (value.get('cache_policy') is not None and (type(value['cache_policy']) is not str or value['cache_policy'] not in ('off', 'medium', 'high')))
             or any(not _identifier(value[key], nullable=key in ('actual_model', 'serving_revision')) for key in
                    ('requested_model', 'catalog_model', 'actual_model', 'serving_revision'))
             or not _identifier(value['service_tier'], nullable=True) or value['billing_mode'] not in ('subscription', 'api_key', 'unknown') or type(value['compatibility']) is not dict

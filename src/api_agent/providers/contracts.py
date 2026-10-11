@@ -26,7 +26,7 @@ class ProviderAccessError(OperationalError):
         from .llm import Usage
         if usage is not None and (not isinstance(usage, Usage) or any(
                 value is not None and value > 2147483647 for value in (usage.input_tokens,
-                usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens))):
+                usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens, usage.cache_write_tokens))):
             raise ContractError('Invalid provider error usage')
         self.usage = usage
         self.args = (message,)

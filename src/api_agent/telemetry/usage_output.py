@@ -56,8 +56,8 @@ def tokens_text(report, test_id=None):
         value = (f'{sum(known):,}' + (' + unknown' if unknown else '') if known or not unknown
                  else 'unavailable')
         parts.append(f'  {label}: {value} — {money(costs.get(field))}')
-    return ('Tokens this run (estimated costs):\n' + '\n'.join(parts)
-            + '\n  Cached input and reasoning are included in input/output totals.')
+    return ('Tokens this run:\n' + '\n'.join(parts)
+            + '\n  Cached input and cache writes are included in input; reasoning is included in output.')
 
 
 def final_usage_text(report):

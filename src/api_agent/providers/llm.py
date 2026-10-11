@@ -159,17 +159,20 @@ class LLMRequest:
 
 @dataclass(frozen=True)
 class Usage:
-    """Totals include cached input and reasoning output subsets when known."""
+    """Input includes disjoint cache reads/writes; output includes reasoning."""
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
     reasoning_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
     def __post_init__(self):
-        _require(all(value is None or (type(value) is int and value >= 0) for value in (self.input_tokens, self.output_tokens, self.cached_input_tokens, self.reasoning_tokens)))
+        _require(all(value is None or (type(value) is int and value >= 0) for value in (self.input_tokens, self.output_tokens, self.cached_input_tokens, self.reasoning_tokens, self.cache_write_tokens)))
 
         _require(self.input_tokens is None or self.cached_input_tokens is None or self.cached_input_tokens <= self.input_tokens)
         _require(self.output_tokens is None or self.reasoning_tokens is None or self.reasoning_tokens <= self.output_tokens)
+        _require(self.input_tokens is None or self.cache_write_tokens is None or
+                 (self.cached_input_tokens or 0) + self.cache_write_tokens <= self.input_tokens)
 
 
 @dataclass(frozen=True)

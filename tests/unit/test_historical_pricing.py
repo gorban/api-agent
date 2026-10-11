@@ -36,14 +36,14 @@ def _evidence(**kw):
 
 def test_exact_categories_and_wire():
     card = rates.bundled_rate_card()
-    assert rates.price_usage(card, 'gpt-6-luna', Usage(1000000, 1000000, 100000)) == pytest.approx(.932)
-    assert rates.price_usage(card, 'gpt-6-luna', Usage(0, 0, 0)) == 0
+    assert rates.price_usage(card, 'gpt-6-luna', Usage(1000000, 1000000, 100000, cache_write_tokens=0)) == pytest.approx(.932)
+    assert rates.price_usage(card, 'gpt-6-luna', Usage(0, 0, 0, cache_write_tokens=0)) == 0
     assert rates.price_usage(card, 'gpt-6-luna', Usage(1, 1)) is None
-    assert rates.price_usage(card, 'alias', Usage(1, 1, 0)) is None
+    assert rates.price_usage(card, 'alias', Usage(1, 1, 0, cache_write_tokens=0)) is None
     assert rates.price_usage(card, 'gpt-6-luna', Usage()) is None
     card['models']['gpt-6-luna']['cached_input'] = None
-    assert rates.price_usage(card, 'gpt-6-luna', Usage(1, 1, 1)) is None
-    assert rates.price_usage(card, 'gpt-6-luna', Usage(1, 1, 0)) == pytest.approx(.0000006)
+    assert rates.price_usage(card, 'gpt-6-luna', Usage(1, 1, 1, cache_write_tokens=0)) is None
+    assert rates.price_usage(card, 'gpt-6-luna', Usage(1, 1, 0, cache_write_tokens=0)) == pytest.approx(.0000006)
     with pytest.raises(ContractError):
         rates.price_usage(card, 'x', {'input_tokens': True})
     result = LLMResult(Message('assistant', (TextContent('ok'),)), actual_model='gpt-exact')
@@ -67,6 +67,7 @@ def test_parsers():
     card = rates.parse_openai(raw)
     assert set(card['models']) == {'gpt-test', 'gpt-new'}
     assert card['models']['gpt-new']['cached_input'] is None
+    assert card['models']['gpt-new']['cache_write'] == .00000125
     with pytest.raises(ContractError):
         rates.parse_openai(_html([['gpt-test', 1, 1, 2], ['gpt-test', 2, 2, 2]]))
     with pytest.raises(ContractError):
@@ -277,7 +278,7 @@ def test_quote_frozen_snapshot_optional_metadata_and_actual(tmp_path, monkeypatc
     from api_agent.providers.llm import LLMRequest, CompletionRequest
     from api_agent.testing.inference_usage import publish, capture
     request = LLMRequest('gpt-6-luna', CompletionRequest((Message('user',(TextContent('secret text'),)),)))
-    result = LLMResult(Message('assistant',(TextContent('answer'),)),Usage(10,2,0),actual_model='unpriced-revision')
+    result = LLMResult(Message('assistant',(TextContent('answer'),)),Usage(10,2,0, cache_write_tokens=0),actual_model='unpriced-revision')
     quoted = quote(request,result,direct=True,subscription=False)
     assert quoted['list_cost_usd'] is None
     assert validate_quote(quoted) == quoted
@@ -341,9 +342,9 @@ def test_official_context_threshold_does_not_infer_family():
     card = rates.parse_openai(raw)
     rate = card['models']['gpt-5.6-sol']
     assert rate['threshold']==272000
-    assert rates.price_usage(card,'gpt-5.6-sol',Usage(272000,100,0)) == pytest.approx(1.09)
-    assert rates.price_usage(card,'gpt-5.6-sol',Usage(300000,100,0)) == pytest.approx(2.403)
-    assert rates.price_usage(card,'gpt-other',Usage(1,1,0)) is None
+    assert rates.price_usage(card,'gpt-5.6-sol',Usage(272000,100,0, cache_write_tokens=0)) == pytest.approx(1.09)
+    assert rates.price_usage(card,'gpt-5.6-sol',Usage(300000,100,0, cache_write_tokens=0)) == pytest.approx(2.403)
+    assert rates.price_usage(card,'gpt-other',Usage(1,1,0, cache_write_tokens=0)) is None
     assert rates.parse_openai(_grouped(threshold=False))['models']['gpt-5.6-sol']['input'] is None
     assert rates.parse_openai(_grouped([4,.4,5,20,8,.9,10,30]))['models']['gpt-5.6-sol']['input'] is None
     assert rates.parse_openai(_grouped([4,.4,5,20,'-','-',10,'-']))['models']['gpt-5.6-sol']['input'] is None
@@ -394,10 +395,10 @@ def test_large_card_compaction_keeps_selected_and_call_small():
     assert 'provider/model-05999' in compact['models']
     assert compact['revision']==card['revision'] and compact['verified_at']==card['verified_at']
     missing = next(model for model in card['models'] if model not in compact['models'])
-    assert rates.price_usage(compact,missing,Usage(1,1,0)) is None
+    assert rates.price_usage(compact,missing,Usage(1,1,0, cache_write_tokens=0)) is None
     one = rates.compact_rate_card(compact,model=missing)
-    assert len(one['models'])==1 and rates.price_usage(one,missing,Usage(1,1,0)) is None
-    assert rates.price_usage(one,missing,Usage(0,0,0)) is None
+    assert len(one['models'])==1 and rates.price_usage(one,missing,Usage(1,1,0, cache_write_tokens=0)) is None
+    assert rates.price_usage(one,missing,Usage(0,0,0, cache_write_tokens=0)) is None
     assert len(json.dumps(one).encode()) < 1000
     assert rates.compact_rate_card(None) is None
     assert rates.compact_rate_card(card,{'LLM_DEFAULT_MODEL':'('})
@@ -433,7 +434,7 @@ def test_multiple_calls_same_user_turn_and_failed_terminal(tmp_path,monkeypatch)
     from api_agent.testing.inference_usage import publish,capture,user_turn,_STARTS
     from api_agent.providers.llm import LLMRequest,CompletionRequest
     request=LLMRequest('gpt-6-luna',CompletionRequest((Message('user',(TextContent('x'),)),)))
-    result=LLMResult(Message('assistant',(TextContent('x'),)),Usage(1,1,0))
+    result=LLMResult(Message('assistant',(TextContent('x'),)),Usage(1,1,0, cache_write_tokens=0))
     path=tmp_path/'events'
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(path))
     monkeypatch.setenv('PYTEST_CURRENT_TEST','test.py::test (call)')

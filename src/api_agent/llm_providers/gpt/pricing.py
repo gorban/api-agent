@@ -13,5 +13,6 @@ def quote(request, result, *, direct, subscription, payment_usd=100, quota_secon
             'period': 'calendar_month' if pay_period == 'month' else pay_period} if subscription else None,
             'accounting': dict(version=1, requested_model=request.selected_llm, catalog_model=request.selected_llm,
                 actual_model=getattr(result, 'actual_model', None), serving_revision=getattr(result, 'serving_revision', None), service_tier=tier, billing_mode='subscription' if subscription else 'api_key',
+                cache_policy=request.payload.generation.cache_policy,
                 rate_card=compact_rate_card(card, model=model) if card is not None and (direct or card['source'].startswith('https://openrouter.ai/')) else None,
                 compatibility=deepcopy(compatibility) if compatibility is not None else cost_compatibility({}))}

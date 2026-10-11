@@ -74,3 +74,13 @@ Current quota calibration separates account windows; compatible token histories 
 - [x] Exclude the entire reset-crossing run from future token predictions, account binding, quota calibration and overlap-based effects on other runs. Retain immutable Allure and SQLite evidence; reopening, synchronization and cache re-import cannot re-enable it. Missing quota observations alone remain distinct from a detected reset.
 - [x] Verify changed windows with both lower and higher ending percentages, unchanged metadata with a decreasing percentage, exact reset boundaries, null raw allocations, positive token estimates, preserved Allure attachments and deterministic cache reopening. Use isolated controls to prove the prediction and raw-allocation guards reject their specific cases.
 - [ ] Human acceptance: inspect the reset notice, null quota delta/raw costs and retained estimated costs through deterministic replay; no additional paid inference is required.
+
+
+## Cache and reasoning accounting
+
+- [x] Normalize cache reads and writes as disjoint input subsets, and reasoning as an output subset. Preserve the ten-column CSV and input + output total; record writes in cache_creation_tokens without adding subsets again.
+- [x] Carry optional write counts through response/stream parsing, successful and failed worker messages, immutable Allure call artifacts and SQLite history. Keep old observations readable and unchanged.
+- [x] Capture validated cache-write prices from public Standard pricing and compatible catalogs, including long-context multipliers. Price ordinary input, reads and writes separately; unknown write counts/rates remain unavailable when they could change the total.
+- [x] Record the effective per-call cache policy, including explicit overrides, and distinguish it in historical matching. Calculate prices from measured cache behavior rather than assuming a preset guarantees a hit. Preserve existing tier, model, price freshness and calibration safeguards.
+- [x] Use the heading Tokens this run: in shared suite/test output. Keep the total count row for CSV comparison; its dollar amount includes all priced token categories and repeats the full test estimate when available.
+- [ ] Human acceptance of the clarified token display and missing-price behavior; no additional inference is required.

@@ -69,7 +69,9 @@ def result_from_wire(row):
     if type(row['outcome']) is not str or row['outcome'] not in ('completed', 'length', 'refused'):
         _fail()
     usage = row['usage']
-    if type(usage) is not dict or set(usage) != {'input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens'}:
+    if type(usage) is not dict or set(usage) not in (
+            {'input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens'},
+            {'input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens', 'cache_write_tokens'}):
         _fail()
     if any(value is not None and (type(value) is not int or not 0 <= value <= 2147483647) for value in usage.values()):
         _fail()
@@ -81,13 +83,21 @@ def result_from_wire(row):
     return result
 
 
+def usage_to_wire(usage):
+    """Keep older four-field observations readable; write counts are optional."""
+    row = {name: getattr(usage, name) for name in
+           ('input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens')}
+    if usage.cache_write_tokens is not None:
+        row['cache_write_tokens'] = usage.cache_write_tokens
+    return row
+
+
 def result_to_wire(result):
     if (not isinstance(result, LLMResult) or result.payload.calls or result.payload.results
             or len(result.payload.content) != 1):
         _fail()
     row = dict(text=result.payload.content[0].text, outcome=result.outcome,
-        usage={name: getattr(result.usage, name) for name in
-               ('input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens')})
+        usage=usage_to_wire(result.usage))
     for name in ('actual_model', 'service_tier', 'serving_revision'):
         if getattr(result, name) is not None:
             row[name] = getattr(result, name)
