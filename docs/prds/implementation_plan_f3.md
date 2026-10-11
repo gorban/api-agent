@@ -95,6 +95,8 @@ Transport matching uses a copied view of original setting hashes, including olde
 
 ## Lazy quota presentation
 
+- [x] Display starting/final quota percentages and quota changes as whole-number percentages in shared TUI/console output, e.g. 29%, while retaining raw accounting values for calculation and history.
+
 - [x] Omit quota messages while provider authentication is pending and for token-priced providers without quota accounting. Keep prices, tokens and cost basis; no substitute token-pricing announcement is needed.
 - [x] Publish the starting percentage only after acquiring a validated snapshot, preserving observed zero. A confirmed quota retrieval failure carries a content-free reason/status across worker and direct-observer paths, appears as a red Error in the TUI, and remains recorded in the Allure usage summary. Failure never changes the underlying test outcome or invents a zero delta.
 - [ ] Human review: waiting for password-manager/login completion shows no premature unavailable line; afterwards inspect either the actual quota percentage or a confirmed retrieval error. Supported live subscription quota retrieval remains to be verified separately.

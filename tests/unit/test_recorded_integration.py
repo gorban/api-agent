@@ -319,7 +319,7 @@ def test_worker_quota_observation_is_frozen_with_cost_shares_and_start_output(tm
     assert result.usage['raw_estimated_cost_usd'] > 0
     assert result.usage['test_costs'][test.id]['list_cost_usd'] == .25
     assert result.usage['test_costs'][test.id]['raw_quota_cost_usd'] > 0
-    assert lines[0]=='Starting quota used: 10.000%'
+    assert lines[0]=='Starting quota used: 10%'
     assert all('Starting quota used: unavailable' not in line for line in lines)
     row=json.loads(next(result.directory.glob('*-result.json')).read_bytes())
     artifact=next(a for a in row['attachments'] if a['name']=='Test cost estimate')
