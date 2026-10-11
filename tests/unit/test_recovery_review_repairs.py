@@ -111,8 +111,6 @@ def test_non_recovery_terminal_dispatch_without_termios(monkeypatch, activation)
     # Force the actual bootstrap import to execute the relay module afresh.
     monkeypatch.delitem(sys.modules, 'api_agent.auth.terminal_interaction')
     args = ['--no-std-in', '--tui-mode=integration', activation, '--allure-s3-bucket=synthetic']
-    if activation == '--debug':
-        args.append('--start=True')
     stderr = io.StringIO()
     with patch.dict('os.environ', {}, clear=True), patch('sys.stderr', stderr), \
          patch('api_agent.config.read_dotenv', return_value={}), \

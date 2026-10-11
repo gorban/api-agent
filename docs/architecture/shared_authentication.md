@@ -51,7 +51,7 @@ catalog permission. Worker request/result codecs reject unsupported features,
 malformed values and aggregate sizes before provider execution or result return.
 
 Integration tests may spend tokens. Interactive users start selected tests;
-noninteractive integration requires `START=True` (also accepts `START=E2E`),
+noninteractive integration requires `START=True` (also accepts `START=E2E`) or `DEBUG=True`,
 and noninteractive E2E requires `START=E2E`. There is no additional inference
 selection acknowledgement. Keep small tests valuable; periodic default-skip
 review is a later task.

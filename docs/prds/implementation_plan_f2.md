@@ -172,4 +172,4 @@ preview requirements, including its unsupported-option restrictions.
 
 - [x] Reject every explicit cache preset on the subscription route before authentication or inference, including newer selections: a real request rejected `prompt_cache_options`. Empty retains provider defaults; documented API-key mappings remain separate. Advertise no explicit cache-policy capability for subscription.
 - [x] Clear unwound provider traceback locals before pytest records failures, including cause/context cycles and exception-group children. Preserve stack locations and safe upstream error details. Exercise serial, parallel and actual DEBUG subprocess recording with controlled credentials and detect disabled clearing through isolated mutations.
-- [x] Require START=True/E2E at both launch and recording boundaries for NO_STD_IN integrations, including DEBUG. DEBUG changes inspection ownership, not spending acceptance.
+- [x] Allow START=True/E2E or DEBUG at both launch and recording boundaries for NO_STD_IN integrations. DEBUG alone retains the approved terminal-free integration exception; E2E still requires explicit START=E2E.
