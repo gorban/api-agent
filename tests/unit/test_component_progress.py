@@ -111,7 +111,7 @@ def test_repeated_child_cancellation_reports_completion_and_restores_live_parent
                     else:
                         active.pop(row.id, None)
                 assert list(active) == [parent.id]
-                assert component_timing(tuple(active.values())) == 'Continuing parent: 0s elapsed; timeout 10s'
+                assert component_timing(tuple(active.values())) == '0s elapsed; timeout 10s — Continuing parent'
                 assert len([row for row in rows if row.name == 'Cancelled child' and not row.active]) == 1
                 clock[0] = 3
                 assert parent.remaining == 7 and parent.timeout == 10
@@ -176,21 +176,21 @@ def test_nested_component_display_and_late_events(tmp_path):
             table.focus()
             app.unit_event(RunnerEvent('component_progress', identity=test))
             app.unit_event(RunnerEvent('component_progress', identity=test, component=parent))
-            assert table.get_row_at(0)[2] == 'GPT login: 59s elapsed; timeout 3m'
+            assert table.get_row_at(0)[2] == '59s elapsed; timeout 3m — GPT login'
             assert 'GPT login' not in app.screen.query_one('#body', Static).content.plain
             app.unit_event(RunnerEvent('component_progress', identity=test, component=child))
-            assert table.get_row_at(0)[2] == 'Password-manager password: 2s elapsed; timeout 15s'
+            assert table.get_row_at(0)[2] == '2s elapsed; timeout 15s — Password-manager password'
             assert table.has_focus
             app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(child, timeout=None)))
-            assert table.get_row_at(0)[2] == 'GPT login: 59s elapsed; timeout 3m'
+            assert table.get_row_at(0)[2] == '59s elapsed; timeout 3m — GPT login'
             app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(parent, timeout=None)))
-            assert table.get_row_at(0)[2] == 'Password-manager password: 2s elapsed'
+            assert table.get_row_at(0)[2] == '2s elapsed — Password-manager password'
             assert 'Password-manager password' not in app.screen.query_one('#body', Static).content.plain
             app.unit_event(RunnerEvent('component_progress', identity=test, component=parent))
             app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(child, active=False)))
             assert table.get_row_at(0)[2] == component_timing((parent,))
             app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(parent, elapsed=120)))
-            assert table.get_row_at(0)[2] == 'GPT login: 2m elapsed; timeout 3m'
+            assert table.get_row_at(0)[2] == '2m elapsed; timeout 3m — GPT login'
             app.unit_event(RunnerEvent('component_progress', identity=test, component=replace(parent, active=False)))
             assert table.get_row_at(0)[2] == ''
             app.unit_event(RunnerEvent('test_finished', identity=test, status='failed', duration=213.375))
@@ -203,8 +203,8 @@ def test_nested_component_display_and_late_events(tmp_path):
             app.unit_rows['stale'] = ('RUNNING', 'stale', '')
             assert 'GPT login' not in app.unit_progress().plain
     asyncio.run(run())
-    assert component_timing((ComponentProgress('x', 'Step [literal]', 61, .5, True),)) == 'Step [literal]: 0s elapsed; timeout 1m 1s'
-    assert component_timing((ComponentProgress('x', 'Short step', .02, .001, True),)) == 'Short step: 0s elapsed; timeout 0.02s'
+    assert component_timing((ComponentProgress('x', 'Step [literal]', 61, .5, True),)) == '0s elapsed; timeout 1m 1s — Step [literal]'
+    assert component_timing((ComponentProgress('x', 'Short step', .02, .001, True),)) == '0s elapsed; timeout 0.02s — Short step'
 
 
 @pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
@@ -224,13 +224,13 @@ def test_parallel_component_clocks_stay_in_their_rows(tmp_path, mode):
             table = app.screen.query_one(DataTable)
             app.unit_event(RunnerEvent('component_progress', identity=first, component=login))
             app.unit_event(RunnerEvent('component_progress', identity=second, component=helper))
-            assert table.get_row(first.id)[2] == 'GPT login: 59s elapsed; timeout 3m'
-            assert table.get_row(second.id)[2] == 'Password-manager username: 3s elapsed; timeout 15s'
+            assert table.get_row(first.id)[2] == '59s elapsed; timeout 3m — GPT login'
+            assert table.get_row(second.id)[2] == '3s elapsed; timeout 15s — Password-manager username'
             assert app.screen.query_one('#body', Static).content.plain == (
                 f'Running selected {mode} tests… 0 passed / 0 failed / 0 skipped / 2 running / 0 pending')
             app.unit_event(RunnerEvent('test_finished', identity=first, status='passed', duration=72.125))
             assert table.get_row(first.id) == ['PASSED', first.id, '72.125s']
-            assert table.get_row(second.id)[2] == 'Password-manager username: 3s elapsed; timeout 15s'
+            assert table.get_row(second.id)[2] == '3s elapsed; timeout 15s — Password-manager username'
             assert app.screen.query_one('#body', Static).content.plain == (
                 f'Running selected {mode} tests… 1 passed / 0 failed / 0 skipped / 1 running / 0 pending')
             app.unit_event(RunnerEvent('test_finished', identity=second, status='failed', duration=24.875))

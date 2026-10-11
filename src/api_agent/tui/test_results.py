@@ -2,14 +2,16 @@
 from rich.text import Text
 
 
+def elapsed_time(seconds):
+    """Shared compact elapsed/deadline units for live test presentation."""
+    if 0 < seconds < 1:
+        return f'{seconds:.2g}s'
+    minutes, seconds = divmod(int(seconds), 60)
+    return (f'{minutes}m' + (f' {seconds}s' if seconds else '')) if minutes else f'{seconds}s'
+
+
 def component_timing(components):
     """Show leaf clocks, or their nearest timed ancestor for untimed work."""
-    def duration(seconds):
-        if 0 < seconds < 1:
-            return f'{seconds:.2g}s'
-        seconds = int(seconds)
-        minutes, seconds = divmod(seconds, 60)
-        return (f'{minutes}m' + (f' {seconds}s' if seconds else '')) if minutes else f'{seconds}s'
     components = tuple(components)
     by_id = {component.id: component for component in components}
     parents = {component.parent_id for component in components}
@@ -22,8 +24,9 @@ def component_timing(components):
             component = by_id[component.parent_id]
         displayed = component if component.timeout is not None else leaf
         visible[displayed.id] = displayed
-    return '; '.join(f'{component.name}: {duration(int(component.elapsed))} elapsed'
-                     + (f'; timeout {duration(component.timeout)}' if component.timeout is not None else '')
+    return '; '.join(f'{elapsed_time(int(component.elapsed))} elapsed'
+                     + (f'; timeout {elapsed_time(component.timeout)}' if component.timeout is not None else '')
+                     + f' — {component.name}'
                      for component in visible.values())
 
 

@@ -156,16 +156,16 @@ def test_display_leaf_clamped_budget_or_nearest_timed_ancestor():
     root = p.ComponentProgress('root', 'Test', 60, 50, True)
     group = p.ComponentProgress('group', 'Untimed group', None, 25, True, parent_id='root')
     node = p.ComponentProgress('node', 'Node', 10, 2, True, parent_id='group')
-    assert component_timing((root, group, node)) == 'Node: 2s elapsed; timeout 10s'
+    assert component_timing((root, group, node)) == '2s elapsed; timeout 10s — Node'
     untimed = replace(node, timeout=None)
-    assert component_timing((root, group, untimed)) == 'Test: 50s elapsed; timeout 1m'
-    assert component_timing((replace(root, timeout=None), group, untimed)) == 'Node: 2s elapsed'
-    assert component_timing((untimed,)) == 'Node: 2s elapsed'
+    assert component_timing((root, group, untimed)) == '50s elapsed; timeout 1m — Test'
+    assert component_timing((replace(root, timeout=None), group, untimed)) == '2s elapsed — Node'
+    assert component_timing((untimed,)) == '2s elapsed — Node'
     assert component_timing(()) == ''
     second = replace(untimed, id='second', name='Other node')
-    assert component_timing((root, group, untimed, second)) == 'Test: 50s elapsed; timeout 1m'
+    assert component_timing((root, group, untimed, second)) == '50s elapsed; timeout 1m — Test'
     cycle = replace(root, timeout=None, parent_id='group')
-    assert component_timing((cycle, group)) == 'Test: 50s elapsed; Untimed group: 25s elapsed'
+    assert component_timing((cycle, group)) == '50s elapsed — Test; 25s elapsed — Untimed group'
 
 
 @pytest.mark.parametrize('parent_id', ['', 2, 'x' * 101, 'self'])

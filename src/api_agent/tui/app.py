@@ -10,7 +10,7 @@ from api_agent.config.declarations import UNSET
 from api_agent.config.resolve import ConfigError, convert_value
 from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
-                                          reconcile_results_table, styled_summary, component_timing)
+                                          reconcile_results_table, styled_summary, component_timing, elapsed_time)
 from api_agent.tui.select import AdvancingSelect
 from api_agent.tui.test_table import TestTable
 from api_agent.tui.search import GroupedUserFooter, SearchBar, SearchInput
@@ -300,12 +300,17 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                     yield Static(field.help, id="config-description", markup=False)
             if self.kind == "test-results":
                 with VerticalScroll(id="unit-summary"):
-                    yield Static(self.body, id="body", markup=False)
+                    with Horizontal(id="live-progress"):
+                        yield Static(self.body, id="body", markup=False)
+                        yield Static('', id='suite-elapsed', markup=False)
             else:
                 yield Static(self.body, id="body", markup=False)
             if self.rows:
                 table_type = TestTable if self.kind in {'tests', 'test-results'} else DataTable
-                yield table_type(id="choices", cursor_type="row")
+                if self.kind == 'test-results':
+                    yield table_type(id="choices", cursor_type="row", sticky_timing=True)
+                else:
+                    yield table_type(id="choices", cursor_type="row")
             if self.kind == "input":
                 field = app.schema.fields[app.prompt_name]
                 choices = field.enum or ((True, False) if field.type == 'bool' else ())
@@ -398,6 +403,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                                         show=False, priority=True)
         if self.kind == "test-results":
             self._bindings.bind("e", "end_inspection", "End inspection")
+            self.set_interval(.25, self.refresh_suite_timer)
+            self.refresh_suite_timer()
             self.call_after_refresh(self.layout_test_results)
         if self.kind == "defaults":
             self._bindings.bind("c", "close_view", "Next menu")
@@ -410,6 +417,14 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def watch_selections(self):
         # Textual updates highlighted text without refreshing contextual bindings.
         self.refresh_bindings()
+
+    def refresh_suite_timer(self):
+        run = self.app.test_run
+        timer = self.query_one('#suite-elapsed', Static)
+        live = run is not None and run.active and self.app.unit_result is None
+        timer.display = live
+        if live:
+            timer.update(elapsed_time(run.elapsed))
 
     def layout_test_results(self):
         if not self.is_mounted or not self.rows or self.app.screen is not self or not self.query("#workbench-content"):
@@ -800,6 +815,9 @@ class ApiAgentApp(App[int]):
     #body { height: auto; margin-bottom: 1; }
     #config-description { height: auto; margin: 1 0; }
     #unit-summary { height: 1fr; min-height: 6; margin-bottom: 1; }
+    #live-progress { height: auto; }
+    #live-progress > #body { width: 1fr; }
+    #suite-elapsed { width: auto; height: 1; margin-left: 1; text-align: right; }
     #actions { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     #actions.auth-suggestion { layout: horizontal; }
     #actions.auth-suggestion > Button { width: 1fr; }
@@ -1688,6 +1706,7 @@ class ApiAgentApp(App[int]):
         if self.screen is not screen or not screen.query(DataTable):
             return
         screen.query_one("#body", Static).update(screen.body)
+        screen.refresh_suite_timer()
         table = screen.query_one(DataTable)
         reconcile_results_table(table, screen.rows, completed=screen.test_run_complete)
         if screen.test_run_complete and screen.style_results:
