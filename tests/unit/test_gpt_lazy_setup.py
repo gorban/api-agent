@@ -43,7 +43,7 @@ def test_factory_no_io(monkeypatch):
     monkeypatch.setattr(module.httpx, "AsyncClient", lambda: pytest.fail("transport at creation"))
     provider = module.factory({}, object())
     assert provider.version == 1
-    assert provider.capabilities.operations == ("describe",)
+    assert provider.capabilities.operations == ("describe", "complete")
     assert provider.capabilities.credential_roles == ()
     assert provider.state_dir == module.Path.home() / ".config/api-agent/gpt"
     assert module.factory({"GPT_AUTH_MODE": "api_key", "GPT_STATE_DIR": "/tmp/test"}, None).api_mode == "completions"

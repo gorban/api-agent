@@ -245,8 +245,8 @@ class SetupServer(_Owner):
 
     def _request(self, frame):
         action = frame.get('action')
-        keys = {'version', 'capability', 'action', 'timeout'} | ({'worker_id', 'attempt'} if action == 'register' else {'binding'})
-        if set(frame) != keys or type(frame['version']) is not int or frame['version'] != 1 or action not in ('register', 'ready', 'describe', 'revoke'):
+        keys = {'version', 'capability', 'action', 'timeout'} | ({'worker_id', 'attempt'} if action == 'register' else {'binding'}) | ({'request'} if action == 'complete' else set())
+        if set(frame) != keys or type(frame['version']) is not int or frame['version'] != 1 or action not in ('register', 'ready', 'describe', 'complete', 'revoke'):
             raise ContractError('Invalid setup request')
         capability = _capability(frame['capability'])
         if not hmac.compare_digest(capability, self._capability):
@@ -258,6 +258,9 @@ class SetupServer(_Owner):
                 raise ContractError('Invalid setup attempt')
         else:
             _binding(frame['binding'])
+        if action == 'complete':
+            from .inference import request_from_wire
+            request_from_wire(frame['request'])
         return action
 
     def _progress(self, event):
@@ -291,12 +294,14 @@ class SetupServer(_Owner):
         except Exception:
             pass
 
-    async def _ready(self, peer, action):
+    async def _ready(self, peer, action, request=None):
         peer.waiting = True
         peer.count = 0
         peer.finals.clear()
         try:
             with progress_sink(self._progress):
+                if action == 'complete':
+                    return await self._registry.complete(peer.binding, request)
                 if action == 'describe':
                     return await self._registry.describe(peer.binding)
                 await self._registry.ensure_ready(peer.binding)
@@ -314,7 +319,12 @@ class SetupServer(_Owner):
         if action == 'revoke':
             await self._registry.revoke(peer.binding)
             return dict(version=1, status='revoked')
-        ready = _spawn(self._ready(peer, action))
+        if action == 'complete':
+            from .inference import request_from_wire
+            request = request_from_wire(frame['request'])
+            ready = _spawn(self._ready(peer, action, request))
+        else:
+            ready = _spawn(self._ready(peer, action))
         disconnected = _spawn(peer.reader.read(1))
         peer.jobs = (ready, disconnected)
         try:
@@ -323,6 +333,9 @@ class SetupServer(_Owner):
                 raise ContractError('Setup connection disconnected')
             result = await ready
             self._check()
+            if action == 'complete':
+                from .inference import result_to_wire
+                return dict(version=1, status='completed', result=result_to_wire(result))
             if action == 'describe':
                 from .catalog import catalog_to_wire
                 return dict(version=1, status='catalog', catalog=catalog_to_wire(result))
@@ -433,12 +446,14 @@ class SetupClient:
             except Exception:
                 pass
 
-    async def _exchange(self, action):
+    async def _exchange(self, action, request=None):
         frame = dict(version=1, action=action, timeout=self._timeout, capability=self._descriptor['capability'])
         if action == 'register':
             frame.update(worker_id=self._worker, attempt=1)
         else:
             frame['binding'] = self._binding
+        if action == 'complete':
+            frame['request'] = request
         self._writer.write(_encode(frame))
         await self._writer.drain()
         while True:
@@ -446,17 +461,22 @@ class SetupClient:
             if type(response.get('version')) is not int or response['version'] != 1:
                 raise ContractError('Invalid setup response')
             status = response.get('status')
-            if status == 'progress' and action in ('ready', 'describe'):
+            if status == 'progress' and action in ('ready', 'describe', 'complete'):
                 self._progress(response)
                 continue
             if status == 'error':
                 _raise_error(response)
+            if action == 'complete' and status == 'completed':
+                if set(response) != {'version', 'status', 'result'}:
+                    raise ContractError('Invalid completion response')
+                from .inference import result_from_wire
+                return result_from_wire(response['result'])
             if action == 'describe' and status == 'catalog':
                 if set(response) != {'version', 'status', 'catalog'}:
                     raise ContractError('Invalid catalog response')
                 from .catalog import catalog_from_wire
                 return catalog_from_wire(response['catalog'])
-            expected = {'describe': 'catalog', 'register': 'registered', 'ready': 'ready', 'revoke': 'revoked'}[action]
+            expected = {'complete': 'completed', 'describe': 'catalog', 'register': 'registered', 'ready': 'ready', 'revoke': 'revoked'}[action]
             keys = {'version', 'status', 'binding'} if action == 'register' else {'version', 'status'}
             if status != expected or set(response) != keys:
                 raise ContractError('Invalid setup response')
@@ -467,12 +487,13 @@ class SetupClient:
                 self._binding = binding
             return
 
-    async def _ensure(self, action='ready'):
+    async def _ensure(self, action='ready', request=None):
         async with component_timeout('Worker shared setup', self._timeout):
             if self._writer is None:
                 self._reader, self._writer = await asyncio.open_connection(self._descriptor['host'], self._descriptor['port'], limit=MAX_FRAME)
                 await self._exchange('register')
-            return await self._exchange(action)
+            return await self._exchange(action, request)
+
 
     async def _close(self):
         # An expired readiness request must not exhaust owned disposal.
@@ -508,7 +529,11 @@ class SetupClient:
     def describe(self):
         return self._run_request('describe')
 
-    def _run_request(self, action):
+    def complete(self, request):
+        from .inference import request_to_wire
+        return self._run_request('complete', request_to_wire(request))
+
+    def _run_request(self, action, request=None):
         with self._lock:
             self._context()
             if self._closed:
@@ -516,7 +541,7 @@ class SetupClient:
             if self._loop is None:
                 self._thread = threading.get_ident()
                 self._loop = asyncio.new_event_loop()
-            self._request_task = self._loop.create_task(self._ensure(action))
+            self._request_task = self._loop.create_task(self._ensure(action, request))
             self._request_task.add_done_callback(_consume)
             try:
                 return self._loop.run_until_complete(self._request_task)

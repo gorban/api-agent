@@ -34,11 +34,13 @@ class OwnedSubscriptionSession(SubscriptionSession):
 
 class GPTProvider:
     version = 1
-    capabilities = ProviderCapabilities(kind="llm", operations=("describe",))
+    capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"))
 
     def __init__(self, config, *, inspection=None):
         self.inspection = inspection
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
+        self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
+                                                 features=() if self.auth_mode == "subscription" else ("max_output_tokens",))
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.base_url = config.get("GPT_BASE_URL", "https://api.openai.com/v1")
@@ -144,6 +146,20 @@ class GPTProvider:
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             return await discover_selections(client=client, base_url=base, access_token=auth,
                                               subscription=self.auth_mode == "subscription")
+
+    async def acomplete(self, request, *, auth=None):
+        if self.closed:
+            raise ContractError("GPT provider is closed.")
+        from .inference import complete_text, validate_text_request
+        if not isinstance(self.auth_mode, str) or self.auth_mode not in {'subscription', 'api_key'}:
+            raise ContractError('GPT_AUTH_MODE must be subscription or api_key.')
+        base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
+        validate_text_request(base_url=base, access_token=auth, subscription=self.auth_mode == 'subscription',
+                              api_mode=self.api_mode, request=request)
+        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
+            return await complete_text(client=client, base_url=base, access_token=auth,
+                                       subscription=self.auth_mode == "subscription", api_mode=self.api_mode,
+                                       request=request)
 
     async def aclose(self):
         self.closed = True

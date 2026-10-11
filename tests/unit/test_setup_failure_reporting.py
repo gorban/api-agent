@@ -101,7 +101,8 @@ def test_remote_failure_and_local_transport_failure_keep_safe_causes(monkeypatch
 
 def test_pending_cleanup_retains_primary_diagnostics(monkeypatch):
     client = SetupClient(descriptor())
-    async def fail(action):
+    async def fail(action, request=None):
+        assert request is None
         assert action == "ready"
         raise ContractError('Safe protocol rejection')
     monkeypatch.setattr(client, '_ensure', fail)

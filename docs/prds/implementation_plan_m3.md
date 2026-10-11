@@ -50,3 +50,16 @@ This does not complete selected-provider dependency manifests, relocated install
 
 - [x] Use the shared browser-closure guard for GPT callback waits and in-flight credential retrieval, synchronously drain owned work, preserve accepted callbacks and stop closed-browser tests promptly. Apply the same guard to future provider/UI/E2E consumers through the open debug/browser tasks above.
 - [x] Keep scoped username/password/TOTP helpers and auth-only session reuse active without exporting token getters or browser objects across processes. Ordinary integration uses one backend-wide owner and revocable worker readiness leases; DEBUG remains serial/per-worker. One run-wide registry is captured before suite callbacks and passed to the backend and all protected worker snapshots; changed, missing or invalid declarations require a new launch before loop allocation or credentials, and accepted workers keep their validated registry. Independent run-complete/inspection-open ownership is implemented; retained-backend DEBUG and future invocation contracts remain open.
+
+## Text inference consumer subset
+
+- [x] Extend the owned readiness/catalog boundary with separate per-call text
+  completion leases, bounded strict request/result codecs and safe upstream
+  failures. Do not cache inference, export authentication, or require discovery
+  for explicit selections. Preserve separate sibling authentication and owned
+  inference cancellation, including repeated cancellation and completed-task
+  disposal tracking. Serial DEBUG uses its existing worker-local owner.
+- [x] Verify actual loaded-provider serial/parallel recorded consumers retain
+  selected identity, prompt/token counters, sanitized failures and no credentials.
+- [ ] Complete remaining richer inference, API and retained-backend DEBUG
+  contracts independently; this does not enable parallel retained DEBUG.
