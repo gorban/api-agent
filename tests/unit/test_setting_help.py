@@ -8,7 +8,7 @@ from textual.widgets import DataTable, Static
 from api_agent.config import load_shared_schema
 from api_agent.config.declarations import UNSET
 from api_agent.tui.app import SettingHelpDialog, WorkbenchScreen
-from test_tui import fixture
+from test_tui import fixture, setting_row
 
 
 @pytest.mark.parametrize('mode', [None, 'config-cleanup'])
@@ -23,7 +23,8 @@ def test_setting_description_popup_preserves_selected_row_and_config(tmp_path, m
             await pilot.pause()
             screen = app.screen
             table = screen.query_one(DataTable)
-            table.move_cursor(row=10)
+            row = setting_row(table, "SETTING_10")
+            table.move_cursor(row=row)
             await pilot.pause()
             original_values = app.session.result(_review=True).values.copy()
             assert screen.check_action('setting_help', ())
@@ -62,10 +63,10 @@ def test_setting_description_popup_preserves_selected_row_and_config(tmp_path, m
                 await pilot.press(close)
             await pilot.pause()
             assert app.screen is screen
-            assert table.cursor_row == 10 and table.has_focus
+            assert table.cursor_row == row and table.has_focus
             assert app.session.result(_review=True).values == original_values
             assert not (tmp_path / '.env').exists()
-            table.move_cursor(row=11)
+            table.move_cursor(row=row + 1)
             await pilot.pause()
             assert screen.selected_setting_help() is None
             assert not screen.check_action('setting_help', ())

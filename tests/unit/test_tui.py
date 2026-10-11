@@ -24,6 +24,10 @@ def fixture(tmp_path, mode=None, fields=None, collector=None, argv=()):
     return ApiAgentApp(context, schema, argv=argv, environ=environ, collector=collector, container_runtime=SimpleNamespace(inventory=lambda: ()))
 
 
+def setting_row(table, name):
+    return next(i for i, row in enumerate(table.ordered_rows) if row.key.value == name)
+
+
 def test_defaults_save_and_typed_prompt(tmp_path):
     async def scenario():
         app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
@@ -56,6 +60,23 @@ def test_defaults_save_and_typed_prompt(tmp_path):
             assert app.session.result().values["COUNT"] == 4
             assert "COUNT=" in (tmp_path / ".env").read_text()
     asyncio.run(save())
+
+
+@pytest.mark.parametrize('mode', [None, 'config-cleanup'])
+def test_configuration_tables_sort_names_alphabetically(tmp_path, mode):
+    async def scenario():
+        app = fixture(tmp_path, mode, {
+            'LLM_CACHE_POLICY': {'type': 'str', 'default': ''},
+            'TRACE_MODE': {'type': 'str', 'default': ''},
+            'ALLURE_RESULTS_DIR': {'type': 'str', 'default': ''},
+        })
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == ('cleanup' if mode else 'defaults')
+            table = app.screen.query_one(DataTable)
+            assert [row.key.value for row in table.ordered_rows] == [
+                'ALLURE_RESULTS_DIR', 'LLM_CACHE_POLICY', 'TRACE_MODE']
+    asyncio.run(scenario())
 
 
 def test_cleanup_context_and_deletion(tmp_path):
@@ -132,13 +153,15 @@ def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0)[0] == "VALUE"
+            assert table.get_row_at(1)[0] == "VALUE"
+            table.move_cursor(row=setting_row(table, "VALUE"))
             assert not app.focused_default()
             await pilot.press("c")
             await pilot.pause(0.4)
             await pilot.click("#mode-run-local")
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
+            app.screen.query_one(DataTable).move_cursor(row=1)
             await pilot.press("e")
             await pilot.pause(0.4)
             await pilot.press("enter")
@@ -146,12 +169,12 @@ def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
             assert 'VALUE=""' in (tmp_path / ".env").read_text()
             assert app.session.result().values["VALUE"] == ""
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
-            table.move_cursor(row=1)
+            assert table.get_row_at(1)[2] == app.session._source(app.session.dotenv_path)
+            table.move_cursor(row=0)
             await pilot.press("a")
             await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
-            assert app.screen.query_one(DataTable).get_row_at(1)[2] == app.session._source(app.session.dotenv_path)
+            assert app.screen.query_one(DataTable).get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
             await pilot.press("c")
             await pilot.pause(0.4)
             await pilot.click("#mode-run-local")
@@ -266,6 +289,7 @@ def test_no_stdin_choice_exits_without_more_prompts(tmp_path):
         app = fixture(tmp_path, fields={"NO_STD_IN": {"type": "bool", "default": False}, "COUNT": {"type": "int", "default": 4}})
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(0.4)
+            app.screen.query_one(DataTable).move_cursor(row=1)
             await pilot.press("e")
             await pilot.pause(0.4)
             assert app.prompt_name == "NO_STD_IN"
@@ -323,15 +347,15 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ["ENABLED", "DETAIL"]
-            table.move_cursor(row=1)
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ["DETAIL", "ENABLED"]
+            table.move_cursor(row=0)
             await pilot.press("e")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "saved detail"
             await pilot.press("enter")
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            table.move_cursor(row=0)
+            table.move_cursor(row=1)
             await pilot.press("e")
             await pilot.pause(0.4)
             app.screen.query_one(Select).value = "False"
@@ -339,7 +363,7 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
             assert table.row_count == 2
-            assert table.get_row_at(0)[0:3] == ["ENABLED", "False", app.session._source(app.session.dotenv_path)]
+            assert table.get_row_at(1)[0:3] == ["ENABLED", "False", app.session._source(app.session.dotenv_path)]
             await pilot.press("e")
             await pilot.pause(0.4)
             await pilot.press("escape")
@@ -352,7 +376,7 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
             assert table.row_count == 2
-            assert table.get_row_at(1)[0:3] == ["DETAIL", "saved detail", app.session._source(app.session.dotenv_path)]
+            assert table.get_row_at(0)[0:3] == ["DETAIL", "saved detail", app.session._source(app.session.dotenv_path)]
     asyncio.run(scenario())
 
 
@@ -629,7 +653,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             await pilot.pause()
             assert relaunched.screen.kind == 'defaults'
             table = relaunched.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET', 'ALLURE_S3_BUCKET', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV']
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['ALLURE_S3_BUCKET', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV', 'TRACE_MODE', 'TRACE_TARGET']
     asyncio.run(scenario())
 
 
@@ -792,21 +816,22 @@ def test_external_dotenv_removal_refreshes_source_and_unset_together(tmp_path):
                                        'OTHER': {'type': 'str', 'review_optional': True}})
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
+            app.screen.query_one(DataTable).move_cursor(row=1)
             await pilot.press('e')
             await pilot.pause()
             app.screen.query_one(Input).value = ''
             await pilot.press('enter')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0)[2].endswith('/.env')
+            assert table.get_row_at(1)[2].endswith('/.env')
             assert app.screen.check_action('unset_setting', ())
             (tmp_path / '.env').write_text('')
             # Nothing re-reads just the shortcut state behind the displayed row.
             assert app.screen.check_action('unset_setting', ())
-            assert table.get_row_at(0)[2].endswith('/.env')
-            await pilot.press('down', 'up')
+            assert table.get_row_at(1)[2].endswith('/.env')
+            await pilot.press('up', 'down')
             await pilot.pause()
-            assert table.get_row_at(0) == ['TRACE_MODE', '', 'Not provided']
+            assert table.get_row_at(1) == ['TRACE_MODE', '', 'Not provided']
             assert not app.screen.check_action('unset_setting', ())
     asyncio.run(scenario())
 
@@ -1001,7 +1026,7 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
             await pilot.pause()
             assert 'UI_NX_APP' not in rows()
             dotenv.write_text('UI_NX_APP=shell\nCOUNT=7\n')
-            await pilot.press('down')
+            await pilot.press('up')
             await pilot.pause()
             assert rows()['UI_NX_APP'][0:3] == ['✓', 'UI_NX_APP', 'shell']
             assert rows()['UI_NX_APP'][3].endswith('/.env')
@@ -1011,7 +1036,7 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
             await pilot.pause()
             assert app.screen.check_action('delete_assignment', ())
             dotenv.write_text('COUNT=7\n')
-            await pilot.press('down')
+            await pilot.press('up')
             await pilot.pause()
             assert 'UI_NX_APP' not in rows()
     asyncio.run(scenario())
@@ -1639,15 +1664,16 @@ def test_accept_default_retains_focused_setting_and_updates_source(tmp_path, acc
         async with app.run_test(size=(100,25)) as pilot:
             await pilot.pause()
             table=app.screen.query_one(DataTable)
-            table.move_cursor(row=18)
+            row = next(i for i, item in enumerate(table.ordered_rows) if item.key.value == 'SETTING_18')
+            table.move_cursor(row=row)
             await pilot.pause()
             assert app.focused_setting()=='SETTING_18'
             await pilot.press(accept_key)
             await pilot.pause()
             table=app.screen.query_one(DataTable)
             assert app.focused_setting()=='SETTING_18'
-            assert table.cursor_row==18 and table.has_focus
-            assert table.get_row_at(18)==['SETTING_18','18',app.session._source(tmp_path/'.env')]
+            assert table.cursor_row==row and table.has_focus
+            assert table.get_row_at(row)==['SETTING_18','18',app.session._source(tmp_path/'.env')]
             assert table.scroll_y>0
             assert not app.screen.check_action('accept_default',())
             assert app.screen.check_action('unset_setting',())
@@ -1660,5 +1686,5 @@ def test_accept_default_retains_focused_setting_and_updates_source(tmp_path, acc
             await pilot.pause()
             table=app.screen.query_one(DataTable)
             assert app.focused_setting()=='SETTING_18' and table.has_focus
-            assert table.get_row_at(18)==['SETTING_18','42',app.session._source(tmp_path/'.env')]
+            assert table.get_row_at(row)==['SETTING_18','42',app.session._source(tmp_path/'.env')]
     asyncio.run(scenario())
