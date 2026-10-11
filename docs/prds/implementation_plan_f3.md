@@ -95,7 +95,7 @@ Transport matching uses a copied view of original setting hashes, including olde
 - [x] Display disjoint ordinary input, cached reads, cache writes, non-reasoning output and reasoning counts with their estimated dollar contributions. Subtract known input/output subsets only in presentation; preserve inclusive raw usage and the ten-column CSV. Scale frozen list-price weights to the finalized test/suite cost, and round contributions together so displayed amounts sum to the displayed total.
 - [x] Preserve unknown write/reasoning observations. When an existing total is available, permit an explicitly tagged derived split using ordinary-input weights for unreported writes and output weights for unreported reasoning; do not use that assumption to qualify missing-price history. Keep missing rates/counts explicit and retain any unattributed charge. Version derived category amounts so older inclusive-cost reports remain readable without rewriting original artifacts.
 - [x] Verify reported-charge replay, known writes, reasoning inclusion, failed/partial observations, old-category compatibility, sub-nanodollar rounding and CSV preservation with focused arithmetic mutations and shared suite/test display checks.
-- [ ] Human acceptance of the clarified token display and missing-price behavior; no additional inference is required.
+- [x] Human acceptance passed for the clarified token display and missing-price behavior (October 11, 2026). No additional inference was required.
 
 
 ## Lazy quota presentation
