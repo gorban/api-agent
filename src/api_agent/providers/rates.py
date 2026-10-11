@@ -131,10 +131,42 @@ def parse_openrouter(raw, *, now=None):
         if any(pricing.get(key) not in (None, '0', '0.0', 0) for key in ('request', 'image')):
             continue
         # Missing/zero write quotes do not establish that writes are free.
+        if pricing.get('prompt') in ('-1', -1) or pricing.get('completion') in ('-1', -1):
+            models[row['id']] = _rate(None, None, None)
+            continue
         write = amount('input_cache_write')
         models[row['id']] = _rate(amount('prompt'), amount('input_cache_read'), amount('completion'),
                                  cache_write=write if write else None)
+        if pricing.get('overrides'):
+            models[row['id']] = _router_context_rate(models[row['id']], pricing['overrides'])
     return _card(OPENROUTER, models, raw, now=now)
+
+
+def _router_context_rate(rate, overrides):
+    """Support one explicit context threshold only when category ratios agree."""
+    if any(value is not None and not _number(value) for value in (rate['input'], rate['cached_input'], rate['cache_write'], rate['output'])):
+        raise ContractError('Invalid model rate')
+    unavailable = _rate(None, None, None)
+    if type(overrides) is not list or len(overrides) != 1 or type(overrides[0]) is not dict:
+        return unavailable
+    row = overrides[0]
+    threshold = row.get('min_prompt_tokens')
+    if type(threshold) is not int or threshold < 2:
+        return unavailable
+    factors = {}
+    for name, key in (('input', 'prompt'), ('cached_input', 'input_cache_read'), ('cache_write', 'input_cache_write'), ('output', 'completion')):
+        if rate.get(name) is None or rate[name] <= 0:
+            return unavailable
+        try:
+            value = float(row[key])
+        except (ValueError, TypeError, KeyError):
+            return unavailable
+        if not _number(value) or value < rate[name]:
+            return unavailable
+        factors[name] = value / rate[name]
+    if not (factors['input'] == factors['cached_input'] == factors['cache_write']):
+        return unavailable
+    return dict(rate, threshold=threshold - 1, input_multiplier=factors['input'], output_multiplier=factors['output'])
 
 
 def _unpack(value):

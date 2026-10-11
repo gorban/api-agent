@@ -65,7 +65,7 @@ def _payload(request, api_mode, subscription):
     return body
 
 
-def _usage(data, responses):
+def _usage(data, responses, *, router=False):
     if data is None:
         return Usage()
     if type(data) is not dict:
@@ -77,7 +77,7 @@ def _usage(data, responses):
         raise _invalid()
     try:
         usage = Usage(data.get(input_name), data.get(output_name), (input_details or {}).get('cached_tokens'),
-                      (output_details or {}).get('reasoning_tokens'), (input_details or {}).get('cache_write_tokens'))
+                      (output_details or {}).get('reasoning_tokens'), (input_details or {}).get('cache_write_tokens', 0 if router else None))
         if any(value is not None and value > 2147483647 for value in (usage.input_tokens,
                 usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens, usage.cache_write_tokens)):
             raise ValueError('Usage exceeded its limit')
@@ -145,6 +145,19 @@ def _result_body(data, responses, token):
     if any(value is not None and (type(value) is not str or not 0 < len(value) <= 200 or not value.isprintable() or token in value) for value in (tier, revision)):
         raise _invalid('GPT inference returned invalid billing metadata.')
     return LLMResult(Message('assistant', (TextContent(joined),)), _usage(data.get('usage'), responses), outcome, model, tier, revision)
+
+
+def _billing(data, request_id, token):
+    from api_agent.providers.costs import validate_billing
+    billing = dict(usd=(data.get('usage') or {}).get('cost'),
+                   request_id=data.get('request_id', request_id), generation_id=data.get('id'))
+    try:
+        validate_billing(billing)
+        if any(token in value for value in (billing['request_id'], billing['generation_id']) if value is not None):
+            raise ValueError()
+    except ValueError:
+        raise _invalid('GPT inference returned invalid billing metadata.') from None
+    return billing
 
 
 def _pairs(items):
@@ -317,7 +330,13 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
                     if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
                         raise _invalid('GPT subscription inference requires an event stream.')
                     return _sse(raw, access_token, request_id)
-                return _result(_json(raw), api_mode == 'responses', access_token)
+                data = _json(raw)
+                result = _result(data, api_mode == 'responses', access_token)
+                if base_url == 'https://openrouter.ai/api/v1':
+                    from dataclasses import replace
+                    billing = _billing(data, request_id, access_token)
+                    result = replace(result, usage=_usage(data.get('usage'), api_mode == 'responses', router=True), billing=billing)
+                return result
     except (TimeoutError, httpx.TimeoutException):
         error = ProviderAccessError('deadline', 'GPT inference timed out.')
         error.execution = 'possibly_executed'
