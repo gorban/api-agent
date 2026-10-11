@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 import json
 from hashlib import sha256
 
-from api_agent.telemetry.estimation import EstimateSnapshot, predictions_for, calibration, key, payment_per_point, quota_allowed, calibration_key
+from api_agent.telemetry.estimation import EstimateSnapshot, predictions_for, calibration, key, payment_per_point, quota_allowed, calibration_key, quota_reset_observed
 from api_agent.telemetry.history import HistoryCache, MAX_BYTES
 from .collection import repository_label
 from .storage import RunStorage
@@ -60,7 +60,8 @@ class HistoricalEstimator(EstimateSnapshot):
         self.fingerprints, self.compatibility = fingerprints, compatibility(config)
         records = cache.records(origin) if cache is not None else []
         cutoff = self.now - timedelta(days=config.get('TEST_COST_HISTORY_DAYS', 7))
-        records = [(manifest, artifact) for manifest, artifact in records if cutoff <= datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')) <= self.now]
+        records = [(manifest, artifact) for manifest, artifact in records if cutoff <= datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')) <= self.now
+                   and not quota_reset_observed(artifact.get('quota') or {})]
         overlap_records = cache.records(None) if cache is not None else []
         predictions = predictions_for(tests, records, card, fingerprints, self.compatibility)
         # A policy is learned only from exactly compatible successful histories.

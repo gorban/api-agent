@@ -256,3 +256,60 @@ def test_token_history_is_independent_of_prices_and_pass_status_but_requires_com
     assert not predictions_for([test], history, card, {'t':'hash'}, compat())['t']['has_token_history']
     value['calls'][0]['usage'] = {'input_tokens':0, 'output_tokens':0}
     assert not predictions_for([test], history, card, {'t':'hash'}, compat())['t']['has_token_history']
+
+
+@pytest.mark.parametrize('change', ['reason', 'delta', 'window', 'reset', 'percentage', 'boundary'])
+def test_reset_run_never_contributes_tokens_to_future_predictions(change):
+    from api_agent.telemetry.estimation import quota_reset_observed
+    history = records()
+    bad = history[0][1]
+    quota = bad['quota']
+    if change == 'reason': quota['quota_unavailable_reason'] = 'changed_window'
+    elif change == 'delta': quota['pct_point_delta'] = -99
+    elif change == 'window': quota['after']['window_id'] = 'new-window'
+    elif change == 'reset': quota['after']['reset_at'] = '2026-12-01T00:00:00Z'
+    elif change == 'percentage':
+        quota['before']['pct_used'], quota['after']['pct_used'] = 99, 1
+    else: quota['after']['captured_at'] = quota['after']['reset_at']
+    assert quota_reset_observed(quota)
+    test = SimpleNamespace(id='t', node_id='test.py::test[one]')
+    prediction = predictions_for([test], [history[0]], bundled_rate_card(), {'t': 'hash'}, compat())['t']
+    assert prediction['estimated_cost_usd'] is None and prediction['sample_count'] == 0
+    assert not prediction['has_token_history']
+    # One discontinuous outlier must not change a valid token average.
+    bad['tests'][0]['calls'][0]['usage']['input_tokens'] = 10_000_000
+    prediction = predictions_for([test], history, bundled_rate_card(), {'t': 'hash'}, compat())['t']
+    assert prediction['sample_count'] == 2
+    assert prediction['estimated_cost_usd'] == priced(row(), bundled_rate_card())
+    assert calibration([history[0]], bundled_rate_card()) == {}
+
+
+@pytest.mark.parametrize('snapshots', [({}, {}), ({'captured_at': None, 'reset_at': 'invalid'}, {}),
+    ({'captured_at': 'invalid', 'reset_at': 'invalid'}, {}),
+    ({'captured_at': '2026-10-01', 'reset_at': '2026-11-01T00:00:00Z'}, {})])
+def test_missing_or_malformed_quota_does_not_fabricate_reset(snapshots):
+    from api_agent.telemetry.estimation import quota_reset_observed
+    assert not quota_reset_observed({'before': snapshots[0], 'after': snapshots[1]})
+    assert not quota_reset_observed({'quota_unavailable_reason': 'missing_snapshot'})
+
+
+@pytest.mark.parametrize('calibrated', [False, True])
+def test_reset_completed_estimate_uses_measured_tokens_not_invalid_quota(calibrated):
+    history = records()
+    artifact = deepcopy(history[0][1])
+    artifact['quota']['after']['reset_at'] = '2026-12-01T00:00:00Z'
+    artifact['quota'].update(quota_unavailable_reason='changed_window', pct_point_delta=None)
+    snapshot = EstimateSnapshot({}, records=history if calibrated else (), card=bundled_rate_card())
+    result = snapshot.complete(artifact)['t']
+    assert result['basis'] == ('historical_quota' if calibrated else 'list_price')
+    expected = 1 if calibrated else priced(row(), bundled_rate_card())
+    assert result['estimated_cost_usd'] == pytest.approx(expected)
+
+
+def test_reset_evidence_does_not_invalidate_other_suites_by_overlap():
+    history = records()
+    bad = deepcopy(history[0])
+    bad[1]['quota']['quota_unavailable_reason'] = 'changed_window'
+    card = bundled_rate_card()
+    assert calibration(history + [bad], card) == calibration(history, card)
+    assert calibration(history, card, overlap_records=history + [bad]) == calibration(history, card)

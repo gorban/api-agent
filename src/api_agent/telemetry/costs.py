@@ -5,6 +5,7 @@ import math
 from datetime import datetime, timezone
 
 from api_agent.providers.costs import validate_quote
+from .estimation import quota_reset_observed
 
 
 class CostLedger:
@@ -36,7 +37,7 @@ class CostLedger:
         total, basis = list_total, 'list_price'
         policy = policies[0] if len(policies) == 1 else None
         delta = usage.get('pct_point_delta')
-        if policy is not None and delta is not None:
+        if policy is not None and delta is not None and not quota_reset_observed(usage):
             cycles = (calendar.monthrange(date.year, date.month)[1] * 86400 / policy['quota_seconds']
                       if policy['period'] == 'calendar_month' else
                       (86400 if policy['period'] == 'day' else 604800) / policy['quota_seconds']
@@ -59,6 +60,7 @@ class CostLedger:
                              if row['estimated_cost_usd'] is not None)
         prompts = sum(prompt_counts.values())
         return {'estimated_cost_usd': total, 'cost_per_prompt_usd': None if total is None or not prompts else total / prompts,
+                'raw_quota_cost_usd': total if basis == 'quota_payment' else None,
                 'cost_basis': basis, 'list_cost_usd': list_total,
                 'unallocated_cost_usd': None if total is None else max(0.0, total - assigned),
                 'test_costs': allocated, 'payment_policy': policy,

@@ -1,5 +1,8 @@
 """Present quota snapshots and independently supplied provider cost estimates."""
 import math
+from .estimation import quota_reset_observed
+
+QUOTA_RESET_NOTE = 'Quota reset/change detected: quota cost unavailable; this run is excluded from cost history.'
 
 
 def number(value):
@@ -73,6 +76,8 @@ def final_usage_text(report):
              'Cost attribution assumes exclusive use of this account during the operation; other activity invalidates it.']
     if report.get('quota_unavailable_reason'):
         lines.append(f"Quota unavailable: {report['quota_unavailable_reason']}")
+    if quota_reset_observed(report):
+        lines.append(QUOTA_RESET_NOTE)
     if report.get('cost_basis'):
         lines.append(f"Cost basis: {report['cost_basis']}")
     lines.append(tokens_text(report))

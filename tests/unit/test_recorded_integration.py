@@ -379,3 +379,53 @@ def test_long_parameterized_id_does_not_fail_optional_accounting(tmp_path):
     artifact = json.loads((result.directory/'accounting.json').read_text())
     assert artifact['tests'][0]['test_id'] == test.id
     assert artifact['tests'][0]['node_id'] == test.node_id
+
+
+@pytest.mark.parametrize('scenario,reason', [('reset','changed_window'),
+    ('reset_higher_used','changed_window'), ('decrease','negative_delta'), ('boundary','reset_boundary_crossed')])
+def test_reset_allure_keeps_null_quota_cost_and_positive_token_estimates(tmp_path, scenario, reason):
+    from api_agent.telemetry.accounting import compatibility
+    from api_agent.telemetry.history import HistoryCache
+    from api_agent.telemetry.estimation import predictions_for
+    from api_agent.providers.rates import bundled_rate_card
+    from test_historical_pricing import _evidence
+    context, test, config = fixture(tmp_path)
+    instant = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    reset = instant + timedelta(seconds=30)
+    before = QuotaSnapshot(80, 'window', reset, instant, 1)
+    after = QuotaSnapshot(90 if scenario == 'reset_higher_used' else 1, 'window',
+        reset + timedelta(days=1) if scenario.startswith('reset') else reset,
+        instant + timedelta(seconds=31 if scenario == 'boundary' else 5), 1)
+    snapshots = iter((before, after))
+    def prepare(usage):
+        quote = {'list_cost_usd':.0001, 'payment':{'usd':100,'quota_seconds':86400,'period':'quota'}}
+        evidence = _evidence()
+        evidence.update(usage={'input_tokens':1000,'output_tokens':0,'cached_input_tokens':0,'reasoning_tokens':0}, quote=quote)
+        usage.record_inference(evidence['call_id'], test.id, evidence)
+        usage.add_usage(provider='synthetic', model='gpt-4.1-nano', session_id=test.id, input_tokens=1000, output_tokens=0)
+        usage.add_cost(evidence['call_id'], test.id, quote)
+        usage.record_prompt(turn_id=test.id, prompt_id='prompt', kind='initial')
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+        quota_fetcher=lambda:next(snapshots), prepare=prepare, runner=fake_runner(), storage=Storage())
+    assert result.persisted and result.exit_code == 0
+    summary = json.loads((result.directory / 'usage-summary.json').read_bytes())
+    artifact = json.loads((result.directory / 'accounting.json').read_bytes())
+    assert summary['pct_point_delta'] is None and summary['raw_quota_cost_usd'] is None
+    assert summary['quota_unavailable_reason'] == reason
+    assert summary['estimated_cost_usd'] == pytest.approx(.0001)
+    assert summary['test_costs'][test.id]['estimated_cost_usd'] == pytest.approx(.0001)
+    assert summary['test_costs'][test.id]['raw_quota_cost_usd'] is None
+    assert artifact['quota']['pct_point_delta'] is None
+    assert artifact['quota']['before']['pct_used'] == 80
+    assert artifact['quota']['after']['pct_used'] == after.pct_used
+    assert artifact['tests'][0]['raw_quota_cost_usd'] is None
+    assert artifact['tests'][0]['stabilized_estimate']['estimated_cost_usd'] == pytest.approx(.0001)
+    attached = json.loads(next(result.directory.glob('*-result.json')).read_bytes())
+    attachment = next(a for a in attached['attachments'] if a['name'] == 'Test cost estimate')
+    assert json.loads((result.directory / attachment['source']).read_bytes())['raw_quota_cost_usd'] is None
+    cache = HistoryCache(tmp_path / 'history.sqlite3')
+    cache.ingest('origin', result.manifest, (result.directory / 'accounting.json').read_bytes())
+    prediction = predictions_for([test], cache.records('origin'), bundled_rate_card(),
+        {test.id: artifact['tests'][0]['source_fingerprint']}, compatibility(config))[test.id]
+    assert prediction['sample_count'] == 0 and prediction['estimated_cost_usd'] is None
+    cache.close()
