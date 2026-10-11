@@ -145,11 +145,13 @@ preview requirements, including its unsupported-option restrictions.
   transport mappings. Map common output limits to supported request fields;
   account for reasoning tokens sharing the output budget. Reject unsupported
   options explicitly, including subscription server output caps.
-- [ ] Describe prompt-cache capabilities separately from response-result caching.
-  Support requested off/5-minute/60-minute policies only where the selected
-  route can honor them; distinguish omission of explicit cache writes from
-  disabling server caching. Do not translate unsupported durations silently.
-  Record available cache reads/writes and keep unknown values unknown.
+- [ ] Implement the core-owned LLM_CACHE_TTL enum (`0`, `5m`, `60m`) through
+  this adapter's advertised prompt-cache capabilities. Reject any policy the
+  selected authentication/API route and selection cannot honor, including `0`
+  where disabled caching cannot be enforced. Do not change the shared enum,
+  silently substitute durations, or equate omitted cache instructions with
+  disabled server caching. Record available cache reads/writes and keep unknown
+  values unknown; response-result and authentication caching remain separate.
 - [ ] Add bounded image content to shared requests and worker frames, with
   provider-owned Chat Completions/Responses mappings and selection validation.
   Check media type, size, supported detail and safe source handling before
