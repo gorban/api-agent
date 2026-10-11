@@ -343,9 +343,9 @@ help = "HTTPS origin of the agent's Django backend serving its HTTP API. Local o
 
 [fields.LLM_QUOTA_PERIOD]
 type = "str"
-enum = ["day", "week"]
+enum = ["day", "week", "month"]
 default = "week"
-help = "Quota window used for subscription cost estimation. The selected provider reads only a matching window. API-key authentication uses list prices instead. Override to match the selected provider/account allocation."
+help = "Quota window used for subscription cost estimation. Month means the current UTC calendar month. The selected provider reads only a matching window; an unsupported window is not replaced with another period. API-key authentication uses list prices instead. Override to match the selected provider/account allocation."
 
 [fields.LLM_PAY_PERIOD]
 type = "str"

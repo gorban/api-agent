@@ -1,18 +1,64 @@
 """Quota priority, payment periods and attribution do not invent charges."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 import math
 
 import pytest
 
 from api_agent.providers.contracts import ContractError
-from api_agent.providers.costs import validate_quote, quote_cost, valid_amount
+from api_agent.providers.costs import validate_quote, quote_cost, valid_amount, period_seconds
 from api_agent.telemetry.costs import CostLedger
 from api_agent.telemetry.usage import SuiteUsage
 from api_agent.llm_providers.gpt.pricing import quote
 from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent
 
 PAYMENT = {'usd':100,'quota_seconds':604800,'period':'calendar_month'}
+
+
+@pytest.mark.parametrize('year,month,days', [(2026,10,31),(2026,4,30),(2026,2,28),(2028,2,29)])
+def test_monthly_quota_uses_real_calendar_days_and_matches_payment_conversion(year, month, days):
+    from api_agent.telemetry.estimation import payment_per_point
+    now = datetime(year,month,2,tzinfo=timezone.utc)
+    seconds = days * 86400
+    assert period_seconds('month', now=now) == period_seconds('calendar_month', now=now) == seconds
+    policy = {'usd':100, 'quota_seconds':seconds, 'period':'calendar_month'}
+    ledger = CostLedger()
+    ledger.record('call', 'test', priced(1, policy))
+    assert ledger.report({'pct_point_delta':2}, {'test':1}, now=now)['estimated_cost_usd'] == 2
+    assert payment_per_point(policy, now=now) == 1
+    # UTC determines the month even when the supplied offset is still February.
+    boundary = datetime(2026,2,28,23,30,tzinfo=timezone(-timedelta(hours=2)))
+    assert period_seconds('month', now=boundary) == 31 * 86400
+
+
+@pytest.mark.parametrize('period', ['year', None])
+def test_unsupported_accounting_period_never_falls_back_to_week(period):
+    with pytest.raises(ContractError, match='Unsupported accounting period'):
+        period_seconds(period)
+
+
+@pytest.mark.parametrize('quota', ['day', 'week', 'month'])
+@pytest.mark.parametrize('pay', ['day', 'week', 'month'])
+def test_base_quota_and_payment_options_are_consistent(quota, pay):
+    from api_agent.config import load_shared_schema, resolve_config
+    schema = load_shared_schema()
+    assert schema.fields['LLM_QUOTA_PERIOD'].enum == schema.fields['LLM_PAY_PERIOD'].enum == ('day', 'week', 'month')
+    result = resolve_config(schema, argv=['--tui-mode=unit', f'--llm-quota-period={quota}',
+                            f'--llm-pay-period={pay}'], environ={}, dotenv={})
+    assert not result.errors
+    assert result.values['LLM_QUOTA_PERIOD'] == quota and result.values['LLM_PAY_PERIOD'] == pay
+
+
+def test_provider_monthly_quote_uses_calendar_duration(monkeypatch):
+    from api_agent.llm_providers.gpt.factory import GPTProvider
+    period = SimpleNamespace(now=lambda *_:datetime(2028,2,1,tzinfo=timezone.utc))
+    monkeypatch.setattr('api_agent.providers.costs.datetime', period)
+    request = LLMRequest('gpt-6-luna',CompletionRequest((Message('user',(TextContent('Ok'),)),)))
+    subject = GPTProvider({'GPT_AUTH_MODE':'subscription', 'LLM_QUOTA_PERIOD':'month', 'LLM_PAY_PERIOD':'month'})
+    result = SimpleNamespace(usage=SimpleNamespace(input_tokens=1,output_tokens=1,cached_input_tokens=0))
+    payment = subject.quote_cost(request, result)['payment']
+    assert payment == {'usd':100, 'quota_seconds':29 * 86400, 'period':'calendar_month'}
+    assert validate_quote(priced(1, payment))['payment'] == payment
 
 
 def priced(amount, payment=None):

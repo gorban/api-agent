@@ -12,7 +12,7 @@ NOW=datetime.now(timezone.utc)
 
 
 @pytest.mark.parametrize('mode', ['subscription', 'api_key'])
-@pytest.mark.parametrize('period', ['day', 'week'])
+@pytest.mark.parametrize('period', ['day', 'week', 'month'])
 def test_gpt_snapshot_does_not_send_app_credentials_to_unsupported_routes(monkeypatch,mode,period):
     from api_agent.llm_providers.gpt import factory
     from api_agent.providers.contracts import ContractError
