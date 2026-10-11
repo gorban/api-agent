@@ -8,7 +8,7 @@ default = "subscription"
 help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key mode uses only the selected LLM User password as its key and sets up without a browser. Attended key acquisition is deferred; there is no fallback."
 
 [fields.GPT_API_MODE]
-cost_affecting = true
+cost_affecting = false
 type = "str"
 enum = ["responses", "completions"]
 conditional_defaults = [{when = {GPT_AUTH_MODE = "subscription"}, value = "responses"}, {when = {GPT_AUTH_MODE = "api_key"}, value = "completions"}]
