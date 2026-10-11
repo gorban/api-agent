@@ -15,8 +15,8 @@ _acceptance = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_acceptance)
 
 
-def result(cached=1024, write=0):
-    return LLMResult(Message('assistant', (TextContent('Paris'),)), Usage(1027, 2, cached, None, write), billing={'usd': 0.01, 'request_id': None, 'generation_id': None})
+def result(cached=1024, write=0, input_tokens=1027):
+    return LLMResult(Message('assistant', (TextContent('Paris'),)), Usage(input_tokens, 2, cached, None, write), billing={'usd': 0.01, 'request_id': None, 'generation_id': None})
 
 
 class OwnedProvider:
@@ -49,7 +49,7 @@ class Fixtures:
 def run(provider, values=None, selection='openai/gpt-6-luna'):
     fixtures = Fixtures(provider, selection)
     config = {'GPT_AUTH_MODE': 'api_key', 'GPT_BASE_URL': 'https://openrouter.ai/api/v1', 'LLM_CACHE_POLICY': ''} | (values or {})
-    _acceptance.test_prompt_cache_1027_tokens(SimpleNamespace(values=config), fixtures)
+    _acceptance.test_prompt_cache(SimpleNamespace(values=config), fixtures)
     return fixtures
 
 
@@ -58,7 +58,7 @@ def test_integration_skip_happens_before_selection_discovery_or_auth(values):
     fixtures = Fixtures(OwnedProvider([]))
     config = {'GPT_AUTH_MODE': 'api_key'} | values
     with pytest.raises(pytest.skip.Exception):
-        _acceptance.test_prompt_cache_1027_tokens(SimpleNamespace(values=config), fixtures)
+        _acceptance.test_prompt_cache(SimpleNamespace(values=config), fixtures)
     assert fixtures.lookups == []
     assert fixtures.provider.requests == []
 
@@ -73,7 +73,10 @@ def test_unsupported_family_or_namespace_skips_before_inference(values, selectio
 
 @pytest.mark.parametrize('values,selection', [({}, 'openai/gpt-6-luna'), ({'LLM_CACHE_POLICY': 'medium'}, 'openai/gpt-6-luna'), ({'LLM_CACHE_POLICY': 'high'}, 'openai/gpt-6-luna'), ({'GPT_AUTH_MODE': 'subscription'}, 'gpt-6-luna'), ({'GPT_AUTH_MODE': 'subscription', 'LLM_CACHE_POLICY': 'medium'}, 'gpt-6-luna'), ({'GPT_BASE_URL': 'https://api.openai.com/v1'}, 'gpt-6.1-sol')])
 def test_exact_1027_input_repeated_immutably_and_both_usage_costs_preserved(values, selection):
-    provider = OwnedProvider([result(0, 1024), result(1024)])
+    subscription = values.get('GPT_AUTH_MODE') == 'subscription'
+    tokens = 4045 if subscription else 1027
+    cached = 3840 if subscription else 1024
+    provider = OwnedProvider([result(0, cached, tokens), result(cached, 0, tokens)])
     fixtures = run(provider, values, selection)
     assert fixtures.lookups == ['llm_selection', 'llm_provider']
     assert len(provider.requests) == 2
@@ -82,10 +85,10 @@ def test_exact_1027_input_repeated_immutably_and_both_usage_costs_preserved(valu
     assert first.selected_llm == selection
     assert first.payload.generation.cache_policy is None  # Owned provider applies configuration.
     text = first.payload.messages[0].content[0].text
-    assert text == _acceptance._prompt_text(values.get('GPT_API_MODE', 'responses' if values.get('GPT_AUTH_MODE') == 'subscription' else 'completions'))
+    assert text == _acceptance._prompt_text(values.get('GPT_API_MODE', 'responses' if subscription else 'completions'), subscription)
     assert 'What is the capital of France?' in text
     assert 'A small town library' in text
-    assert provider.usages == [Usage(1027, 2, 0, None, 1024), Usage(1027, 2, 1024, None, 0)]
+    assert provider.usages == [Usage(tokens, 2, 0, None, cached), Usage(tokens, 2, cached, None, 0)]
     assert provider.cost == 0.02
 
 
@@ -96,6 +99,22 @@ def test_missing_or_insufficient_repeat_cache_counter_fails(cached):
         run(provider)
     assert len(provider.requests) == 2
     assert provider.cost == 0.02
+
+
+@pytest.mark.parametrize('cached', [None, 0, 1024, 3640])
+def test_subscription_requires_over_ninety_percent_reuse(cached):
+    provider = OwnedProvider([result(0, 0, 4045), result(cached, 0, 4045)])
+    with pytest.raises(AssertionError, match='greater than 90%'):
+        run(provider, {'GPT_AUTH_MODE': 'subscription'}, 'gpt-6-luna')
+    assert len(provider.requests) == 2
+
+
+@pytest.mark.parametrize('failure_index', [0, 1])
+def test_subscription_input_count_is_exact_not_a_local_tokenizer_estimate(failure_index):
+    provider = OwnedProvider(([result(0, 0, 4045)] if failure_index else []) + [result(0, 0, 4044)])
+    with pytest.raises(AssertionError, match='exactly 4045 input tokens'):
+        run(provider, {'GPT_AUTH_MODE': 'subscription'}, 'gpt-6-luna')
+    assert len(provider.requests) == failure_index + 1
 
 
 @pytest.mark.parametrize('failure_index', [0, 1])

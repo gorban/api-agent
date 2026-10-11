@@ -1,11 +1,16 @@
-"""Two owned English requests with exactly 1027 API-reported input tokens.
+"""Two owned English requests prove both processing and prompt-cache reuse.
 
 Live OpenRouter GPT-6 Luna calibration found three framing tokens outside the
 explicit cache prefix: 1024 reported input tokens gave zero cached tokens,
 whereas 1027 reported input tokens allowed a 1024-token cached prefix. This
 explains the deliberate 1027 total instead of 1024. Mode-specific fixtures
 cover Responses and Chat Completions; any different backend/model framing
-fails the exact usage assertion explicitly. No tokenizer download,
+fails the exact usage assertion explicitly. Subscription routing instead uses
+a 4045-token prefix: 1027/1035/1227-token probes still missed with stable session
+headers; 2033 cached 1792 (below 90%), while 4045 cached 3840 (94.9%). Its cache
+reporting differs from the explicit API-key boundary. Assert greater than 90%
+reuse for that route without relaxing the 1027-token API-key acceptance.
+No tokenizer download,
 calibration inference, or retry occurs in this test.
 """
 from pathlib import Path
@@ -18,11 +23,15 @@ from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent
 
 
-def _prompt_text(api_mode):
-    return Path(__file__).with_name('prompt_cache_' + api_mode + '.txt').read_text()
+def _prompt_text(api_mode, subscription=False):
+    text = Path(__file__).with_name('prompt_cache_' + api_mode + '.txt').read_text()
+    if subscription:
+        prefix, question = text.rsplit('What is the capital', 1)
+        return prefix * 4 + 'What is the capital' + question.rstrip()
+    return text
 
 
-def test_prompt_cache_1027_tokens(integration_config, request):
+def test_prompt_cache(integration_config, request):
     values = integration_config.values
     policy = values.get('LLM_CACHE_POLICY') or None
     if policy == 'off':
@@ -45,13 +54,17 @@ def test_prompt_cache_1027_tokens(integration_config, request):
     except ProviderAccessError as error:
         pytest.skip(error.message)
     provider = request.getfixturevalue('llm_provider')
-    supplied = LLMRequest(selection, CompletionRequest((Message('user', (TextContent(_prompt_text(values.get('GPT_API_MODE', 'responses' if subscription else 'completions'))),)),)))
+    supplied = LLMRequest(selection, CompletionRequest((Message('user', (TextContent(_prompt_text(values.get('GPT_API_MODE', 'responses' if subscription else 'completions'), subscription)),)),)))
+    expected_input = 4045 if subscription else 1027
     warm = provider.complete(supplied)
     assert warm.outcome == 'completed'
-    assert warm.usage.input_tokens == 1027, 'Warm request did not report exactly 1027 input tokens.'
+    assert warm.usage.input_tokens == expected_input, f'Warm request did not report exactly {expected_input} input tokens.'
     assert ''.join(part.text for part in warm.payload.content).strip() == 'Paris'
     repeated = provider.complete(supplied)
     assert repeated.outcome == 'completed'
-    assert repeated.usage.input_tokens == 1027, 'Repeated request did not report exactly 1027 input tokens.'
+    assert repeated.usage.input_tokens == expected_input, f'Repeated request did not report exactly {expected_input} input tokens.'
     assert ''.join(part.text for part in repeated.payload.content).strip() == 'Paris'
-    assert (repeated.usage.cached_input_tokens or 0) >= 1024, 'Repeated request did not report at least 1024 cached input tokens.'
+    if subscription:
+        assert (repeated.usage.cached_input_tokens or 0) > expected_input * 0.9, 'Repeated subscription request did not report greater than 90% cached input tokens.'
+    else:
+        assert (repeated.usage.cached_input_tokens or 0) >= 1024, 'Repeated request did not report at least 1024 cached input tokens.'
