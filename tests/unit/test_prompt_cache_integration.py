@@ -89,7 +89,7 @@ def test_route_input_repeated_immutably_and_both_usage_costs_preserved(values, s
     assert first.selected_llm == selection
     assert first.payload.generation.cache_policy is None  # Owned provider applies configuration.
     text = first.payload.messages[0].content[0].text
-    assert text == _acceptance._prompt_text(_acceptance._EXPECTATIONS[values.get('GPT_AUTH_MODE', 'api_key')])
+    assert text == _acceptance._prompt_text(_acceptance._EXPECTATIONS[values.get('GPT_AUTH_MODE', 'api_key')], text.splitlines()[0])
     assert 'What is the capital of France?' in text
     assert 'A small town library' in text
     assert provider.usages == [Usage(tokens, 2, 0, None, cached), Usage(tokens, 2, cached, None, 0)]
@@ -115,8 +115,9 @@ def test_subscription_requires_over_ninety_percent_reuse(cached):
 
 @pytest.mark.parametrize('failure_index', [0, 1])
 def test_subscription_input_count_is_exact_not_a_local_tokenizer_estimate(failure_index):
-    replies = [result(3840, 0, 4045), result(3840, 0, 4045)]
-    replies[failure_index] = result(3840, 0, 4044)
+    replies = [result(0, 0, 4045), result(3840, 0, 4045)]
+    from dataclasses import replace
+    replies[failure_index] = replace(replies[failure_index], usage=replace(replies[failure_index].usage, input_tokens=4044))
     provider = OwnedProvider(replies)
     with pytest.raises(AssertionError, match='exactly 4045 input tokens'):
         run(provider, {'GPT_AUTH_MODE': 'subscription'}, 'gpt-6-luna')
@@ -142,8 +143,8 @@ def test_provider_manifest_discovers_cache_acceptance_suite():
 @pytest.mark.parametrize('input_tokens', [None, 1026, 1028])
 def test_exact_api_input_count_required_for_warm_and_repeat(failure_index, input_tokens):
     from dataclasses import replace
-    replies = [result(), result()]
-    replies[failure_index] = replace(result(), usage=Usage(input_tokens, 2, 1024, None, 0))
+    replies = [result(0), result()]
+    replies[failure_index] = replace(replies[failure_index], usage=replace(replies[failure_index].usage, input_tokens=input_tokens))
     provider = OwnedProvider(replies)
     with pytest.raises(AssertionError, match='exactly 1027 input tokens'):
         run(provider)
@@ -158,7 +159,7 @@ def test_exact_api_input_count_required_for_warm_and_repeat(failure_index, input
 ])
 def test_processing_rejection_has_no_other_invalid_reply_fields(failure_index, change, message):
     from dataclasses import replace
-    replies = [result(), result()]
+    replies = [result(0), result()]
     replies[failure_index] = replace(replies[failure_index], **change)
     provider = OwnedProvider(replies)
     with pytest.raises(AssertionError, match=message):
@@ -167,12 +168,47 @@ def test_processing_rejection_has_no_other_invalid_reply_fields(failure_index, c
 
 
 @pytest.mark.parametrize('mode,digest', [
-    ('api_key', 'ae6901a622e48ab20aab6ae05dc7929fe97fe16aefad5087a1f4cb5a622980a7'),
-    ('subscription', 'c7e1c94d8ff23907c26f42937df52407d30b964efe5b9e82ffeaf3c5eda0dc88'),
+    ('api_key', '914ff23fc104e6e60a136880eecac8009ef9375ef0ee4e9c55f50414485f95da'),
+    ('subscription', '12a1306993cd84bee3291d0735f124dd0191b98987ab86d4e3fbd4fe2537d933'),
 ])
-def test_calibrated_wire_prompts_preserved(mode, digest):
+def test_calibrated_nonce_prompt_budget_preserved(mode, digest):
     from hashlib import sha256
-    assert sha256(_acceptance._prompt_text(_acceptance._EXPECTATIONS[mode]).encode()).hexdigest() == digest
+    assert sha256(_acceptance._prompt_text(_acceptance._EXPECTATIONS[mode], ' '.join('A'*32)).encode()).hexdigest() == digest
+
+
+def test_nonce_encodes_every_uuid_bit_at_start_without_a_shared_label(monkeypatch):
+    from uuid import UUID
+    monkeypatch.setattr(_acceptance, 'uuid4', lambda: UUID('01234567-89ab-4def-8123-456789abcdef'))
+    nonce = _acceptance._new_prompt_nonce()
+    assert len(nonce.split(' ')) == 32
+    assert ''.join(format(ord(letter) - ord('A'), 'x') for letter in nonce.split(' ')) == '0123456789ab4def8123456789abcdef'
+    text = _acceptance._prompt_text(_acceptance._EXPECTATIONS['api_key'], nonce)
+    assert text.startswith(nonce + '\n\nPlease read')
+    assert '{run_nonce}' not in text
+
+
+@pytest.mark.parametrize('mode,occurrences', [('api_key', 1), ('subscription', 4)])
+def test_new_cases_have_unique_initial_prefixes(mode, occurrences, monkeypatch):
+    from uuid import UUID
+    identities = iter([UUID('01234567-89ab-4def-8123-456789abcdef'), UUID('fedcba98-7654-4321-8123-456789abcdef')])
+    monkeypatch.setattr(_acceptance, 'uuid4', lambda: next(identities))
+    first = _acceptance.prepare_prompt_cache_case({'GPT_AUTH_MODE': mode}, Fixtures(OwnedProvider([]), 'gpt-6-luna'))
+    second = _acceptance.prepare_prompt_cache_case({'GPT_AUTH_MODE': mode}, Fixtures(OwnedProvider([]), 'gpt-6-luna'))
+    first_text = first.request.payload.messages[0].content[0].text
+    second_text = second.request.payload.messages[0].content[0].text
+    first_nonce = first_text.splitlines()[0]
+    second_nonce = second_text.splitlines()[0]
+    assert first_nonce != second_nonce
+    assert first_text.count(first_nonce) == occurrences
+    assert second_text.count(second_nonce) == occurrences
+
+
+@pytest.mark.parametrize('cached', [None, 1, 1024])
+def test_first_reply_must_prove_fresh_prefix_not_previous_run_cache(cached):
+    provider = OwnedProvider([result(cached), result()])
+    with pytest.raises(AssertionError, match='First request did not report zero'):
+        run(provider)
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.parametrize('values,status,lookups', [
