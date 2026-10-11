@@ -22,6 +22,16 @@ def key(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'))
 
 
+def matching_compatibility(value, ignored_settings=None):
+    """Ignore only declared non-cost settings in a copy of raw evidence."""
+    result = deepcopy(value)
+    settings = result.get('_COST_REQUEST_SETTINGS') if isinstance(result, dict) else None
+    if isinstance(settings, dict):
+        for name in ignored_settings or ():
+            settings.pop(name, None)
+    return result
+
+
 def quota_reset_observed(quota):
     """Exclude discontinuous allocation evidence, retaining it for diagnostics."""
     if quota.get('quota_unavailable_reason') in {'changed_window', 'reset_boundary_crossed', 'negative_delta'}:
@@ -97,7 +107,7 @@ def clean_quota(quota):
         return False
 
 
-def calibration(records, card, *, overlap_records=None):
+def calibration(records, card, *, overlap_records=None, ignored_settings=None):
     groups = {}
     intervals = []
     for manifest, artifact in (records if overlap_records is None else overlap_records):
@@ -136,7 +146,7 @@ def calibration(records, card, *, overlap_records=None):
         total = math.fsum(amounts)
         if total <= 0:
             continue
-        group = calibration_key(artifact)
+        group = calibration_key(artifact, ignored_settings=ignored_settings)
         groups.setdefault(group, []).append((delta, total, sum(steps) / 2))
     qualified = {}
     for group, samples in groups.items():
@@ -149,12 +159,13 @@ def calibration(records, card, *, overlap_records=None):
 
 
 class EstimateSnapshot:
-    def __init__(self, predictions, *, records=(), card=None, overlap_records=None, now=None):
+    def __init__(self, predictions, *, records=(), card=None, overlap_records=None, now=None, ignored_settings=None):
         self.predictions = deepcopy(predictions)
         self.records = deepcopy(records)
         self.card = deepcopy(card)
         self.overlap_records = deepcopy(overlap_records)
         self.now = now or datetime.now(timezone.utc)
+        self.ignored_settings = deepcopy(ignored_settings)
 
     def total(self, ids):
         rows = [self.predictions.get(identity, {}) for identity in dict.fromkeys(ids)]
@@ -174,8 +185,9 @@ class EstimateSnapshot:
         scale, basis, calibration_details = 1., 'list_price', None
         eligible = all(priced(row, self.card) is not None and compatibility_complete(row.get('compatibility')) and call_signature(row) is not None and quota_allowed(row) for row in artifact['tests'])
         if policy is not None and eligible:
-            group = calibration_key(artifact)
-            calibrated = calibration(self.records, self.card, overlap_records=self.overlap_records).get(group)
+            group = calibration_key(artifact, ignored_settings=self.ignored_settings)
+            calibrated = calibration(self.records, self.card, overlap_records=self.overlap_records,
+                                     ignored_settings=self.ignored_settings).get(group)
             if calibrated is not None:
                 scale, basis = calibrated['pct_per_usd'] * payment_per_point(policy, now=self.now), 'historical_quota'
                 calibration_details = dict(calibrated, scale_factor=scale, provenance=json.loads(group))
@@ -191,7 +203,8 @@ class EstimateSnapshot:
                     scale, basis = delta * payment_per_point(policy, now=self.now) / math.fsum(known), 'current_quota'
         return {identity: {'estimated_cost_usd': None if amount is None else amount * scale,
                            'known_zero': any(row['test_id'] == identity and row.get('calls_complete') is True and row.get('observed_call_count') == 0 and not row['calls'] for row in artifact['tests']), 'basis': 'unavailable' if amount is None else basis,
-                           'sample_count': self.predictions.get(identity, {}).get('sample_count', 0), 'calibration': deepcopy(calibration_details)}
+                           'sample_count': self.predictions.get(identity, {}).get('sample_count', 0), 'calibration': deepcopy(calibration_details),
+                           'ignored_cost_settings': tuple(self.ignored_settings or ())}
                 for identity, amount in amounts.items()}
 
     def synchronize(self):
@@ -204,11 +217,11 @@ class EstimateSnapshot:
         return None
 
 
-def calibration_key(artifact):
+def calibration_key(artifact, *, ignored_settings=None):
     card = artifact.get('rate_card')
     epoch = None if card is None else {name: card.get(name) for name in ('source', 'revision', 'currency', 'unit', 'models')}
     return key({'window_id': ((artifact.get('quota') or {}).get('before') or {}).get('window_id'), 'policy': (artifact.get('quota') or {}).get('payment_policy'), 'rate_card': epoch,
-                'compatibility': sorted({key(row.get('compatibility')) for row in artifact.get('tests', [])}),
+                'compatibility': sorted({key(matching_compatibility(row.get('compatibility'), ignored_settings)) for row in artifact.get('tests', [])}),
                 'model_signatures': sorted({call_signature(row) for row in artifact.get('tests', []) if call_signature(row) is not None})})
 
 
@@ -233,7 +246,7 @@ def call_signature(row):
     return key(sorted(signatures))
 
 
-def predictions_for(tests, records, card, fingerprints, compatibility):
+def predictions_for(tests, records, card, fingerprints, compatibility, *, ignored_settings=None):
     result = {}
     for test in tests:
         samples, signatures, zeroes, finished, quota_eligible = [], set(), [], [], []
@@ -242,7 +255,7 @@ def predictions_for(tests, records, card, fingerprints, compatibility):
             if quota_reset_observed(artifact.get('quota') or {}):
                 continue
             for row in artifact.get('tests', []):
-                if (compatibility_complete(compatibility) and row.get('compatibility') == compatibility and fingerprints.get(test.id) is not None
+                if (compatibility_complete(compatibility) and matching_compatibility(row.get('compatibility'), ignored_settings) == matching_compatibility(compatibility, ignored_settings) and fingerprints.get(test.id) is not None
                         and row.get('source_fingerprint') == fingerprints[test.id] and row.get('node_id') == test.node_id):
                     has_token_history |= any(type(value) is int and value > 0
                         for call in row.get('calls', []) for value in (call.get('usage') or {}).values())
@@ -262,5 +275,6 @@ def predictions_for(tests, records, card, fingerprints, compatibility):
         result[test.id] = {'estimated_cost_usd': amount, 'known_zero': bool(samples) and all(zeroes),
                            'has_token_history': has_token_history,
                            'basis': 'historical_list_price' if samples else 'unavailable', 'sample_count': len(samples),
-                           'call_signature': next(iter(signatures)) if len(signatures) == 1 else None, 'quota_eligible': bool(samples) and all(quota_eligible), 'variation': None if not samples else max(samples) - min(samples), 'freshness': max(finished, default=None)}
+                           'call_signature': next(iter(signatures)) if len(signatures) == 1 else None, 'quota_eligible': bool(samples) and all(quota_eligible), 'variation': None if not samples else max(samples) - min(samples), 'freshness': max(finished, default=None),
+                           'ignored_cost_settings': tuple(ignored_settings or ())}
     return result

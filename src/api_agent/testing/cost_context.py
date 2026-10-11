@@ -33,6 +33,7 @@ def cost_config(context, config):
     pack_root = Path(getattr(context, 'pack_root', context.owner_root))
     result['_COST_PACK_IDENTITY'] = file_fingerprint(pack_root / 'pack.toml')
     result['_COST_REQUEST_SETTINGS'] = None
+    result['_COST_IGNORED_SETTINGS'] = ()
     location = config.get('LLM_PROVIDER')
     result['_COST_PROVIDER_IDENTITY'] = None
     if isinstance(location, str) and ':' in location:
@@ -52,8 +53,12 @@ def cost_config(context, config):
         schema = bootstrap_schema(schema, (), {}, {}, choices, owner_root=context.owner_root,
                                   configuration_paths=getattr(context, 'provider_config_paths', ()))
         selected = {}
+        ignored = tuple(name for name, field in schema.fields.items() if not field.cost_affecting)
         for name, field in schema.fields.items():
             if not field.cost_affecting:
+                # Non-secret enum selections remain diagnostic evidence only.
+                if field.enum and not _credential_key(name) and config.get(name) is not None:
+                    selected[name] = sha256(json.dumps(config[name], sort_keys=True, allow_nan=False).encode()).hexdigest()
                 continue
             if _credential_key(name) or field.type == 'jsonobject':
                 return result
@@ -67,6 +72,7 @@ def cost_config(context, config):
                 value = str(value)
             selected[name] = sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
         result['_COST_REQUEST_SETTINGS'] = selected
+        result['_COST_IGNORED_SETTINGS'] = ignored
     except (OSError, ValueError, TypeError):
         pass
     return result
