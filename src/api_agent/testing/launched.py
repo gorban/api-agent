@@ -7,8 +7,10 @@ from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS
 from api_agent.runtime.ownership import StackScope
 from .prerequisites import local_recording_prerequisites
 from .recorded import validate_recorded_integration
+from .suite_lock import suite_locked
 
 
+@suite_locked
 def run_launched_integration(context, tests, config, *, accepted=False,
                              no_std_in=False, prerequisites=None, **options):
     """Acquire storage lazily; retain its cleanup handle through every outcome.

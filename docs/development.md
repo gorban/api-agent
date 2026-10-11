@@ -64,6 +64,11 @@ runs. Collection starts no services, authentication or test-result publication.
 defaulting to 32; set it empty to inherit the global count, or 0 to run units
 serially. Both the TUI and terminal execution honor this override.
 
+Only one suite can execute at a time per local user, across repositories and
+resource packs. Idle launchers and history browsing remain available. The suite
+lock covers setup, quota capture, recording and cleanup; the OS releases it if
+the owner process dies. A competing Start fails before execution.
+
 ## Terminal automation and acceptance
 
 `--no-std-in` (or `NO_STD_IN=True`) disables terminal prompts and uses raw output.

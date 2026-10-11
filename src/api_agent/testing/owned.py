@@ -9,8 +9,10 @@ from threading import Event
 
 from api_agent.runtime.tasks import settle as _settle
 from .recorded import run_recorded_integration, validate_recorded_integration
+from .suite_lock import suite_locked, suite_worker
 
 
+@suite_locked
 async def run_owned_integration(context, tests, config, *, operation, accepted=False,
                                 session_factory=None, gateway_factory=None,
                                 cancel_event=None, storage=None, runner=None,
@@ -101,8 +103,8 @@ async def run_owned_integration(context, tests, config, *, operation, accepted=F
             content_policy=getattr(owned.runtime.emissions, 'policy', None))
         if runner is not None:
             options['runner'] = runner
-        worker = asyncio.create_task(asyncio.to_thread(
-            run_recorded_integration, context, tests, active, **options))
+        worker = asyncio.create_task(asyncio.to_thread(suite_worker(
+            run_recorded_integration, context, tests, active, **options)))
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:

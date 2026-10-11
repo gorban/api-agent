@@ -13,6 +13,7 @@ import time
 
 from .collection import CollectionError, TestIdentity, collect_tests
 from .processes import finalize
+from .suite_lock import suite_locked
 
 
 def unit_parallel_jobs(config):
@@ -96,6 +97,7 @@ def _production_sources(context, root):
                                if Path(path).is_dir() and any(Path(path).rglob('*.py'))))
 
 
+@suite_locked
 def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True):
     """Run selected collected identities once; preserve owner configs and full source scope.
 
