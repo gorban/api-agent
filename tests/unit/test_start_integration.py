@@ -12,19 +12,19 @@ from api_agent.testing.recorded import validate_recorded_integration
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize('start', ['True', 'E2E'])
+@pytest.mark.parametrize('activation,value', [('START', 'True'), ('START', 'E2E'), ('DEBUG', 'True')])
 @pytest.mark.parametrize('source', ['cli', 'environment', 'dotenv'])
-def test_terminal_start_dispatches_recorded_integration(start, source):
+def test_terminal_start_or_debug_dispatches_recorded_integration(activation, value, source):
     stdout, stderr = StringIO(), StringIO()
     args = ['--tui-mode=integration', '--no-std-in', '--allure-s3-bucket=synthetic', 'selected.py']
-    environ = {'START': start} if source == 'environment' else {}
-    dotenv = {'START': start} if source == 'dotenv' else {}
+    environ = {activation: value} if source == 'environment' else {}
+    dotenv = {activation: value} if source == 'dotenv' else {}
     if source == 'cli':
-        args.append('--start=' + start)
+        args.append('--' + activation.lower() + '=' + value)
     selected = [object()]
     def execute(context, tests, config, **options):
-        assert tests is selected and config['START'] == start
-        assert not config['DEBUG'] and config['NO_STD_IN']
+        assert tests is selected and config['START'] == (value if activation == 'START' else 'False')
+        assert config['DEBUG'] is (activation == 'DEBUG') and config['NO_STD_IN']
         assert options['accepted'] is True
         assert validate_recorded_integration(tests, config, accepted=True) == tuple(selected)
         options['output']('synthetic runner output\n')
@@ -37,7 +37,7 @@ def test_terminal_start_dispatches_recorded_integration(start, source):
     run.assert_called_once()
     assert not stderr.getvalue()
     assert 'synthetic runner output' in stdout.getvalue()
-    assert 'Integration debug:' not in stdout.getvalue()
+    assert ('Integration debug:' in stdout.getvalue()) is (activation == 'DEBUG')
 
 
 @pytest.mark.parametrize('start', ['True', 'E2E'])
@@ -58,7 +58,7 @@ def test_disabled_start_does_not_unlock_terminal_recording(start):
         validate_recorded_integration([object()], config, accepted=True)
 
 
-@pytest.mark.parametrize('mode,debug', [('e2e', False), ('e2e', True), ('integration', False), ('integration', True)])
+@pytest.mark.parametrize('mode,debug', [('e2e', False), ('e2e', True), ('integration', False)])
 def test_rejection_describes_only_the_selected_mode(mode, debug):
     stderr = StringIO()
     args = ['--tui-mode=' + mode, '--no-std-in', '--allure-s3-bucket=synthetic',
@@ -70,8 +70,8 @@ def test_rejection_describes_only_the_selected_mode(mode, debug):
     expected = ('NO_STD_IN=True with TUI_MODE=e2e requires explicit START=E2E. '
                 'Use --start=E2E to accept execution, or --no-std-in=False for interactive acceptance; '
                 'collection-only is still allowed via --collect-only.' if mode == 'e2e' else
-                'NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E. '
-                'Use --start to execute, or --no-std-in=False for interactive selection; '
+                'NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E or DEBUG=True. '
+                'Use --start to execute, --debug for browser investigation, or --no-std-in=False for interactive selection; '
                 'collection-only is still allowed via --collect-only.')
     with patch.dict('os.environ', {}, clear=True), patch('sys.stderr', stderr), patch('api_agent.config.read_dotenv', return_value={}), patch('api_agent.config.dotenv.read_dotenv', return_value={}), patch('api_agent.runtime.worktrees.verify_worktrees'), patch('api_agent.runtime.dependencies.ensure_environment') as prepare:
         assert main(args, base_root=ROOT) == 2

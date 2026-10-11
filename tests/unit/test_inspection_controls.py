@@ -180,7 +180,7 @@ def test_bootstrap_keeps_terminal_pending_receipt_in_process(monkeypatch):
          patch('api_agent.testing.launched.run_launched_integration', side_effect=pending):
         from api_agent.providers.control import CleanupPendingError
         with pytest.raises(CleanupPendingError) as caught:
-            main(['--tui-mode=integration', '--no-std-in', '--start=True', '--debug', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
+            main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
     assert caught.value is pending and caught.value.inspections == (item,)
 
 
@@ -199,7 +199,7 @@ def test_bootstrap_does_not_drop_active_primary_cleanup_receipt(failure):
          patch('api_agent.testing.collection.collect_tests', return_value=[]), \
          patch('api_agent.testing.launched.run_launched_integration', side_effect=primary):
         with pytest.raises(failure) as caught:
-            main(['--tui-mode=integration', '--no-std-in', '--start=True', '--debug', '--allure-s3-bucket=synthetic'],
+            main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic'],
                  base_root=Path(__file__).parents[2])
     assert caught.value is primary and caught.value.inspection_group.active
 

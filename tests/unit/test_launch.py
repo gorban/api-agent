@@ -244,7 +244,7 @@ def test_noninteractive_debug_integration_dispatch_and_prepare_failure(monkeypat
         return SimpleNamespace(exit_code=1)
     monkeypatch.setattr('api_agent.testing.recorded.run_recorded_integration', run)
     monkeypatch.setattr(os, 'environ', {})
-    args = ['--tui-mode=integration', '--no-std-in', '--start=True', '--debug', '--allure-s3-bucket=synthetic', '--unattended-user-index=0']
+    args = ['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic', '--unattended-user-index=0']
     assert main(args, base_root=ROOT) == 1
     assert calls == ['run'] and 'raw evidence' in capsys.readouterr().out
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **k: 3)
