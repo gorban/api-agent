@@ -86,7 +86,7 @@ def validate_compatibility(value):
 
 
 def validate_metadata(value):
-    if (type(value) is not dict or set(value) not in (_METADATA, _METADATA | {'cache_policy'}) or type(value['version']) is not int or value['version'] != 1
+    if (type(value) is not dict or not _METADATA <= set(value) or set(value) - _METADATA - {'cache_policy', 'billing'} or type(value['version']) is not int or value['version'] != 1
             or (value.get('cache_policy') is not None and (type(value['cache_policy']) is not str or value['cache_policy'] not in ('off', 'medium', 'high')))
             or any(not _identifier(value[key], nullable=key in ('actual_model', 'serving_revision')) for key in
                    ('requested_model', 'catalog_model', 'actual_model', 'serving_revision'))
@@ -94,6 +94,9 @@ def validate_metadata(value):
             or set(value['compatibility']) != set(_COMPAT)):
         raise ContractError('Invalid call accounting metadata')
     validate_compatibility(value['compatibility'])
+    if 'billing' in value:
+        from api_agent.providers.costs import validate_billing
+        validate_billing(value['billing'])
     if value['rate_card'] is not None:
         validate_rate_card(value['rate_card'])
     # Bound shape and forbid custom objects/NaN; no payload/callback extension keys.
@@ -151,7 +154,7 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
             raw_quota_cost_usd=costs.get('estimated_cost_usd') if costs.get('basis') == 'quota_payment' else None,
             prediction=prediction, stabilized_estimate=None, calls_complete=calls_complete,
             observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id))))
-    artifact = dict(version=1, estimator_version=3, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
+    artifact = dict(version=1, estimator_version=4, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
                     quota=quota, tests=records)
     validate_accounting(artifact)
     return artifact
@@ -160,7 +163,7 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
 def validate_accounting(value):
     if (type(value) is not dict or set(value) != {'version', 'estimator_version', 'run_id', 'rate_card', 'quota', 'tests'}
             or type(value['version']) is not int or value['version'] != 1
-            or type(value['estimator_version']) is not int or value['estimator_version'] not in (1, 2, 3) or not _uuid(value['run_id'])
+            or type(value['estimator_version']) is not int or value['estimator_version'] not in (1, 2, 3, 4) or not _uuid(value['run_id'])
             or type(value['quota']) is not dict or set(value['quota']) not in ({'before', 'after', 'pct_point_delta',
                 'quota_unavailable_reason', 'payment_policy', 'payment_month'}, {'before', 'after', 'pct_point_delta',
                 'quota_unavailable_reason', 'payment_policy', 'payment_month', 'contaminated'}) or type(value['tests']) is not list):

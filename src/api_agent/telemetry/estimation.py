@@ -77,6 +77,23 @@ def priced(row, card):
     return math.fsum(amounts)
 
 
+def reported_charge(row):
+    from api_agent.providers.costs import qualified_charge
+    calls = row.get('calls')
+    if row.get('calls_complete') is not True or not isinstance(calls, list) or not calls or row.get('observed_call_count', len(calls)) != len(calls):
+        return None
+    amounts = []
+    for call in calls:
+        metadata = (call.get('quote') or {}).get('accounting') or {}
+        if metadata.get('billing_mode') != 'api_key':
+            return None
+        amount = qualified_charge(metadata.get('billing'), call.get('usage') or {})
+        if amount is None:
+            return None
+        amounts.append(amount)
+    return math.fsum(amounts)
+
+
 def overlapping_quota(artifact, records):
     quota = artifact.get('quota') or {}
     if not clean_quota(quota):
@@ -201,8 +218,9 @@ class EstimateSnapshot:
                         and all(type(step) in (int, float) and math.isfinite(step) and step > 0 for step in steps)
                         and sum(steps) / 2 <= delta * .25):
                     scale, basis = delta * payment_per_point(policy, now=self.now) / math.fsum(known), 'current_quota'
-        return {identity: {'estimated_cost_usd': None if amount is None else amount * scale,
-                           'known_zero': any(row['test_id'] == identity and row.get('calls_complete') is True and row.get('observed_call_count') == 0 and not row['calls'] for row in artifact['tests']), 'basis': 'unavailable' if amount is None else basis,
+        charges = {row['test_id']: reported_charge(row) for row in artifact['tests']}
+        return {identity: {'estimated_cost_usd': charges[identity] if charges[identity] is not None else None if amount is None else amount * scale,
+                           'known_zero': any(row['test_id'] == identity and row.get('calls_complete') is True and row.get('observed_call_count') == 0 and not row['calls'] for row in artifact['tests']), 'basis': 'reported_charge' if charges[identity] is not None else 'unavailable' if amount is None else basis,
                            'sample_count': self.predictions.get(identity, {}).get('sample_count', 0), 'calibration': deepcopy(calibration_details),
                            'ignored_cost_settings': tuple(self.ignored_settings or ())}
                 for identity, amount in amounts.items()}
@@ -250,6 +268,7 @@ def predictions_for(tests, records, card, fingerprints, compatibility, *, ignore
     for test in tests:
         samples, signatures, zeroes, finished, quota_eligible = [], set(), [], [], []
         has_token_history = False
+        reported_samples = False
         for manifest, artifact in records:
             if quota_reset_observed(artifact.get('quota') or {}):
                 continue
@@ -262,6 +281,9 @@ def predictions_for(tests, records, card, fingerprints, compatibility, *, ignore
                         continue
                     signature = call_signature(row)
                     amount = priced(row, card) if signature is not None else None
+                    if amount is None and signature is not None:
+                        amount = reported_charge(row)
+                        reported_samples |= amount is not None
                     if amount is not None:
                         samples.append(amount)
                         quota_eligible.append(quota_allowed(row))
@@ -273,7 +295,7 @@ def predictions_for(tests, records, card, fingerprints, compatibility, *, ignore
         amount = math.fsum(samples) / len(samples) if samples else None
         result[test.id] = {'estimated_cost_usd': amount, 'known_zero': bool(samples) and all(zeroes),
                            'has_token_history': has_token_history,
-                           'basis': 'historical_list_price' if samples else 'unavailable', 'sample_count': len(samples),
+                           'basis': ('historical_reported_charge' if reported_samples else 'historical_list_price') if samples else 'unavailable', 'sample_count': len(samples),
                            'call_signature': next(iter(signatures)) if len(signatures) == 1 else None, 'quota_eligible': bool(samples) and all(quota_eligible), 'variation': None if not samples else max(samples) - min(samples), 'freshness': max(finished, default=None),
                            'ignored_cost_settings': tuple(ignored_settings or ())}
     return result

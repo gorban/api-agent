@@ -9,10 +9,14 @@ def quote(request, result, *, direct, subscription, payment_usd=100, quota_secon
     model = getattr(result, 'actual_model', None) or request.selected_llm
     tier = getattr(result, 'service_tier', None)
     amount = price_usage(card, model, result.usage) if tier in (None, 'standard', 'default') and card is not None and (direct or card['source'].startswith('https://openrouter.ai/')) else None
-    return {'list_cost_usd': amount, 'payment': {'usd': payment_usd, 'quota_seconds': quota_seconds,
+    result_quote = {'list_cost_usd': amount, 'payment': {'usd': payment_usd, 'quota_seconds': quota_seconds,
             'period': 'calendar_month' if pay_period == 'month' else pay_period} if subscription else None,
             'accounting': dict(version=1, requested_model=request.selected_llm, catalog_model=request.selected_llm,
                 actual_model=getattr(result, 'actual_model', None), serving_revision=getattr(result, 'serving_revision', None), service_tier=tier, billing_mode='subscription' if subscription else 'api_key',
                 cache_policy=request.payload.generation.cache_policy,
                 rate_card=compact_rate_card(card, model=model) if card is not None and (direct or card['source'].startswith('https://openrouter.ai/')) else None,
                 compatibility=deepcopy(compatibility) if compatibility is not None else cost_compatibility({}))}
+
+    if getattr(result, 'billing', None) is not None and not subscription:
+        result_quote['accounting']['billing'] = deepcopy(result.billing)
+    return result_quote

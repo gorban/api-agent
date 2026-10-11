@@ -19,6 +19,33 @@ def valid_amount(value):
     return type(value) in (int, float) and 0 <= value <= 1e12 and math.isfinite(value)
 
 
+MIN_REPORTED_COST_USD = 0.000001
+
+
+def validate_billing(value):
+    """Optional content-free charge evidence, independent of list prices."""
+    import re
+    if (type(value) is not dict or set(value) != {'usd', 'request_id', 'generation_id'}
+            or (value['usd'] is not None and not valid_amount(value['usd']))
+            or any(item is not None and (type(item) is not str or
+                   re.fullmatch(r'[A-Za-z0-9._:-]{1,200}', item) is None)
+                   for item in (value['request_id'], value['generation_id']))):
+        raise ContractError('Invalid reported billing evidence')
+    return value
+
+
+def qualified_charge(billing, usage):
+    """Keep sub-display-unit nonzero-token charges as raw evidence only."""
+    if billing is None:
+        return None
+    validate_billing(billing)
+    amount = billing['usd']
+    if amount is None or (amount < MIN_REPORTED_COST_USD and
+                          [usage.get('input_tokens'), usage.get('output_tokens')] != [0, 0]):
+        return None
+    return amount
+
+
 def validate_quote(quote):
     if (type(quote) is not dict or set(quote) not in ({'list_cost_usd', 'payment'}, {'list_cost_usd', 'payment', 'accounting'})
             or (quote['list_cost_usd'] is not None and not valid_amount(quote['list_cost_usd']))):

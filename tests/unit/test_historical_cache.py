@@ -18,7 +18,7 @@ def fixture():
     return manifest, payload
 
 
-@pytest.mark.parametrize('version', [1, 2, 3])
+@pytest.mark.parametrize('version', [1, 2, 3, 4])
 def test_estimator_versions_rebuild_without_rewriting_evidence(tmp_path, version):
     manifest, payload = fixture()
     artifact = json.loads(payload)
@@ -33,7 +33,7 @@ def test_estimator_versions_rebuild_without_rewriting_evidence(tmp_path, version
     cache.close()
 
 
-@pytest.mark.parametrize('version', [True, 1.0, '2', 0, 4])
+@pytest.mark.parametrize('version', [True, 1.0, '2', 0, 5])
 def test_estimator_version_is_a_supported_integer(version):
     from api_agent.telemetry.accounting import validate_accounting
     from api_agent.providers.contracts import ContractError
@@ -49,7 +49,7 @@ def test_new_accounting_identifies_transport_equivalent_estimator():
     manifest, _ = fixture()
     usage = SimpleNamespace(inference_calls={}, report=lambda: {})
     artifact = build_accounting(SimpleNamespace(run_id=manifest['run_id']), [], {}, usage, [])
-    assert artifact['estimator_version'] == 3
+    assert artifact['estimator_version'] == 4
 
 
 def test_transaction_verified_idempotent_and_origin(tmp_path, monkeypatch):
