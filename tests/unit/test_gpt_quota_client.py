@@ -1,7 +1,7 @@
 """Local quota reads never borrow native credentials for inference."""
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 from types import SimpleNamespace
 
@@ -114,6 +114,18 @@ def test_zero_quota_and_daily_secondary_are_real_measurements():
     result=q._snapshot(data,'subject','day',NOW)
     assert isinstance(result,QuotaSnapshot) and result.pct_used==0 and ':1440:' in result.window_id
     assert result.window_id != q._snapshot(data,'other','day',NOW).window_id
+
+
+@pytest.mark.parametrize('year,month,days', [(2026,10,31),(2026,4,30),(2026,2,28),(2028,2,29)])
+def test_monthly_window_does_not_reuse_weekly_quota(year, month, days):
+    now = datetime(year, month, 1, tzinfo=timezone.utc)
+    assert q._snapshot(DATA, 'subject', 'month', now) == QuotaReadError('window')
+    monthly = dict(WINDOW, windowDurationMins=days*1440, resetsAt=int((now+timedelta(days=days)).timestamp()))
+    data = {'rateLimits':{'limitId':'codex','primary':monthly}}
+    snapshot = q._snapshot(data, 'subject', 'month', now)
+    assert isinstance(snapshot, QuotaSnapshot) and snapshot.pct_used == 28
+    assert f':{days*1440}:' in snapshot.window_id
+    assert q._snapshot(data, 'subject', 'week', now) == QuotaReadError('window')
 
 @pytest.mark.parametrize('signal', ['terminate','kill'])
 def test_disappearing_process_and_timeout_cleanup(client, signal):

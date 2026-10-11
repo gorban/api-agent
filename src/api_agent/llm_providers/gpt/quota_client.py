@@ -9,6 +9,7 @@ import shutil
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import settle
 from api_agent.providers.control import finish_cleanup
+from api_agent.providers.costs import period_seconds
 from api_agent.telemetry.usage import QuotaReadError, QuotaSnapshot
 
 
@@ -44,7 +45,7 @@ def _snapshot(data, subject, period, now):
     bucket = buckets.get('codex') if type(buckets) is dict else data.get('rateLimits')
     if type(bucket) is not dict or bucket.get('limitId') != 'codex':
         return QuotaReadError('window')
-    minutes = 1440 if period == 'day' else 10080
+    minutes = period_seconds(period, now=now) // 60
     windows = [value for key in ('primary', 'secondary')
                if type(value := bucket.get(key)) is dict and value.get('windowDurationMins') == minutes]
     if len(windows) != 1:

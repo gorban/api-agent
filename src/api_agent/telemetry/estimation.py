@@ -1,9 +1,9 @@
 """Pure historical arithmetic means and conservative quota calibration."""
 from copy import deepcopy
 from datetime import datetime, timezone
-import calendar
 import json
 import math
+from api_agent.providers.costs import period_seconds
 
 
 def compatibility_complete(value):
@@ -226,9 +226,8 @@ def calibration_key(artifact, *, ignored_settings=None):
 
 
 def payment_per_point(policy, *, now=None):
-    date = now or datetime.now(timezone.utc)
-    seconds = {'calendar_month': calendar.monthrange(date.year, date.month)[1] * 86400,
-               'day': 86400, 'week': 604800}.get(policy['period'], policy['quota_seconds'])
+    seconds = (policy['quota_seconds'] if policy['period'] == 'quota' else
+               period_seconds(policy['period'], now=now))
     return policy['usd'] * policy['quota_seconds'] / seconds / 100
 
 

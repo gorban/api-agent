@@ -1,6 +1,18 @@
 """Bounded provider-owned list quotes and quota payment policies."""
 import math
+import calendar
+from datetime import datetime, timezone
 from .contracts import ContractError
+
+
+def period_seconds(period, *, now=None):
+    """Use fixed days/weeks and the actual current UTC calendar month."""
+    if period in ('day', 'week'):
+        return 86400 if period == 'day' else 604800
+    if period not in ('month', 'calendar_month'):
+        raise ContractError('Unsupported accounting period.')
+    date = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return calendar.monthrange(date.year, date.month)[1] * 86400
 
 
 def valid_amount(value):

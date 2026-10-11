@@ -1,10 +1,9 @@
 """Allocate a suite estimate using provider-supplied list-price proportions."""
 from copy import deepcopy
-import calendar
 import math
 from datetime import datetime, timezone
 
-from api_agent.providers.costs import validate_quote
+from api_agent.providers.costs import validate_quote, period_seconds
 from .estimation import quota_reset_observed
 
 
@@ -38,10 +37,8 @@ class CostLedger:
         policy = policies[0] if len(policies) == 1 else None
         delta = usage.get('pct_point_delta')
         if policy is not None and delta is not None and not quota_reset_observed(usage):
-            cycles = (calendar.monthrange(date.year, date.month)[1] * 86400 / policy['quota_seconds']
-                      if policy['period'] == 'calendar_month' else
-                      (86400 if policy['period'] == 'day' else 604800) / policy['quota_seconds']
-                      if policy['period'] in ('day', 'week') else 1)
+            cycles = (1 if policy['period'] == 'quota' else
+                      period_seconds(policy['period'], now=date) / policy['quota_seconds'])
             total, basis = delta / 100 * policy['usd'] / cycles, 'quota_payment'
         if total is None:
             basis = 'unavailable'
