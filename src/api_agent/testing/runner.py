@@ -15,6 +15,12 @@ from .collection import CollectionError, TestIdentity, collect_tests
 from .processes import finalize
 
 
+def unit_parallel_jobs(config):
+    """An explicit zero stays serial; empty inherits the global worker count."""
+    override = config.get('UNIT_TEST_PARALLEL_JOBS')
+    return config.get('TEST_PARALLEL_JOBS', 8) if override is None else override
+
+
 @dataclass(frozen=True)
 class CoverageArea:
     repo: str

@@ -1378,7 +1378,7 @@ class ApiAgentApp(App[int]):
         self.run_worker(self._run_units(), group="unit-run", exclusive=True)
 
     async def _run_units(self):
-        from api_agent.testing.runner import run_unit_tests
+        from api_agent.testing.runner import run_unit_tests, unit_parallel_jobs
         runner = self.unit_runner or run_unit_tests
         try:
             fresh_tests = await self.discover_tests(self.collection_cancel)
@@ -1393,7 +1393,7 @@ class ApiAgentApp(App[int]):
                 runner, self.context, self.selection.selected_tests,
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
-                parallel_jobs=self.session.result().values.get("TEST_PARALLEL_JOBS", 8),
+                parallel_jobs=unit_parallel_jobs(self.session.result().values),
                 require_full_coverage=self.selection.groups()[0].selected)
             self.unit_result = result
             for test in result.tests:

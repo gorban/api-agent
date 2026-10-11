@@ -46,6 +46,10 @@ shared, pack and selected-provider suites. E2E uses the selected pack's suite.
 Missing declared integration/E2E directories are errors, not successful empty
 runs. Collection starts no services, authentication or test-result publication.
 
+`TEST_PARALLEL_JOBS` defaults to 8. Units use `UNIT_TEST_PARALLEL_JOBS`,
+defaulting to 32; set it empty to inherit the global count, or 0 to run units
+serially. Both the TUI and terminal execution honor this override.
+
 ## Terminal automation and acceptance
 
 `--no-std-in` (or `NO_STD_IN=True`) disables terminal prompts and uses raw output.

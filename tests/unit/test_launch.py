@@ -14,6 +14,22 @@ from api_agent.config import load_shared_schema, schema_from_dict
 ROOT = Path(__file__).resolve().parents[2]
 
 class LaunchTests(unittest.TestCase):
+    def test_terminal_units_use_override_or_inherit_global_workers(self):
+        from api_agent.testing.runner import UnitRunResult
+        for extra, expected in (([], 32), (['--unit-test-parallel-jobs='], 11),
+                                (['--unit-test-parallel-jobs=0'], 0),
+                                (['--unit-test-parallel-jobs=12'], 12)):
+            with self.subTest(extra=extra), patch.dict(os.environ, {}, clear=True), \
+                    patch('sys.stdout', StringIO()), \
+                    patch('api_agent.config.read_dotenv', return_value={}), \
+                    patch('api_agent.runtime.worktrees.verify_worktrees'), \
+                    patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+                    patch('api_agent.testing.collection.collect_tests', return_value=[]), \
+                    patch('api_agent.testing.runner.run_unit_tests', return_value=UnitRunResult(0, (), (), '')) as run:
+                self.assertEqual(main(['--no-std-in', '--tui-mode=unit',
+                                       '--test-parallel-jobs=11', *extra], base_root=ROOT), 0)
+                self.assertEqual(run.call_args.kwargs['parallel_jobs'], expected)
+
     def test_raw_unit_summary_has_separator_without_changing_shared_formatter(self):
         from api_agent.testing.runner import CoverageArea, UnitRunResult, format_unit_summary
         result = UnitRunResult(0, (), (CoverageArea('base', 'tiny.py', 1, 1, 0, 0),), '')

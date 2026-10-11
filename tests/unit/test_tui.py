@@ -1074,7 +1074,8 @@ def test_demo_directory_highlighted_in_pack_identity_only(tmp_path):
     assert not app.identity_text().spans
 
 
-def test_unit_runner_events_final_failure_and_view(tmp_path):
+@pytest.mark.parametrize('workers, expected', [('', 8), (0, 0), (12, 12)])
+def test_unit_runner_events_final_failure_and_view(tmp_path, workers, expected):
     from api_agent.testing.runner import RunnerEvent, TestResult, UnitRunResult, CoverageArea
     identity = Identity('base::test.py::test_fail', 'base', 'test.py', 'test.py::test_fail')
     calls = []
@@ -1085,7 +1086,9 @@ def test_unit_runner_events_final_failure_and_view(tmp_path):
         return UnitRunResult(1, (TestResult(identity, 'failed', .125, 'AssertionError: expected Ok'),),
                              (CoverageArea('base', 'src/example.py', 1, 2, 0, 0),), '')
     async def scenario():
-        app = fixture(tmp_path, collector=lambda *args: [identity])
+        app = fixture(tmp_path, collector=lambda *args: [identity], fields={
+            'UNIT_TEST_PARALLEL_JOBS': {'type': 'int', 'allow_empty': True,
+                                        'default': workers, 'acknowledge_default': False}})
         app.unit_runner = runner
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
@@ -1097,7 +1100,7 @@ def test_unit_runner_events_final_failure_and_view(tmp_path):
                 await pilot.pause(.05)
                 if app.unit_result is not None:
                     break
-            assert calls == [((identity,), 8)]
+            assert calls == [((identity,), expected)]
             assert app.operation_status == 1, str(app.screen.query_one("#body", Static).content)
             assert app.screen.kind == 'test-results'
             table = app.screen.query_one(DataTable)

@@ -220,10 +220,10 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             if status is not None:
                 return status
             from api_agent.testing.collection import collect_tests
-            from api_agent.testing.runner import run_unit_tests, format_unit_summary
+            from api_agent.testing.runner import run_unit_tests, format_unit_summary, unit_parallel_jobs
             tests = collect_tests(context, 'unit', result.positionals)
             execution = run_unit_tests(context, tests, output=lambda chunk: print(chunk, end='', flush=True),
-                                       parallel_jobs=result.values.get('TEST_PARALLEL_JOBS', 8),
+                                       parallel_jobs=unit_parallel_jobs(result.values),
                                        require_full_coverage=not result.positionals)
             print()
             print(format_unit_summary(execution))

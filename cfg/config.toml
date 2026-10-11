@@ -156,9 +156,19 @@ help = "Base runtime location, resolved relative to the pack root."
 type = "int"
 default = 8
 validation = "nonnegative"
-help = "Number of parallel test workers. Set to 0 to disable parallelism and run tests serially."
+help = "Global parallel test worker count. Unit tests may override it with UNIT_TEST_PARALLEL_JOBS. Set to 0 to disable parallelism and run tests serially."
 [fields.TEST_PARALLEL_JOBS.applies_when]
 TUI_MODE = ["unit", "integration", "e2e"]
+COLLECT_ONLY = false
+
+[fields.UNIT_TEST_PARALLEL_JOBS]
+type = "int"
+allow_empty = true
+default = 32
+validation = "nonnegative"
+help = "Unit-test worker override. Empty inherits TEST_PARALLEL_JOBS; 0 runs units serially. Integration/E2E continue to use TEST_PARALLEL_JOBS."
+[fields.UNIT_TEST_PARALLEL_JOBS.applies_when]
+TUI_MODE = "unit"
 COLLECT_ONLY = false
 
 [fields.E2E_RERUNS]
