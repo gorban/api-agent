@@ -89,3 +89,10 @@ Transport matching uses a copied view of original setting hashes, including olde
 - [x] Record the effective per-call cache policy, including explicit overrides, and distinguish it in historical matching. Calculate prices from measured cache behavior rather than assuming a preset guarantees a hit. Preserve existing tier, model, price freshness and calibration safeguards.
 - [x] Use the heading Tokens this run: in shared suite/test output. Keep the total count row for CSV comparison; its dollar amount includes all priced token categories and repeats the full test estimate when available.
 - [ ] Human acceptance of the clarified token display and missing-price behavior; no additional inference is required.
+
+
+## Lazy quota presentation
+
+- [x] Omit quota messages while provider authentication is pending and for token-priced providers without quota accounting. Keep prices, tokens and cost basis; no substitute token-pricing announcement is needed.
+- [x] Publish the starting percentage only after acquiring a validated snapshot, preserving observed zero. A confirmed quota retrieval failure carries a content-free reason/status across worker and direct-observer paths, appears as a red Error in the TUI, and remains recorded in the Allure usage summary. Failure never changes the underlying test outcome or invents a zero delta.
+- [ ] Human review: waiting for password-manager/login completion shows no premature unavailable line; afterwards inspect either the actual quota percentage or a confirmed retrieval error. Supported live subscription quota retrieval remains to be verified separately.

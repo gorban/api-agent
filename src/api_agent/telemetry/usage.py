@@ -69,6 +69,32 @@ class QuotaSnapshot:
             raise ValueError('window_id must be nonempty text or None')
 
 
+@dataclass(frozen=True)
+class QuotaReadError:
+    """Content-free failure evidence; never accept arbitrary provider messages."""
+    code: str
+    status: int | None = None
+
+    def __post_init__(self):
+        if type(self.code) is not str or self.code not in {'identity', 'http', 'response', 'window', 'request'}:
+            raise ValueError('Invalid quota error code')
+        if ((self.code == 'http' and (type(self.status) is not int or not 100 <= self.status <= 599))
+                or (self.code != 'http' and self.status is not None)):
+            raise ValueError('Invalid quota error status')
+
+    @property
+    def message(self):
+        if self.code == 'http':
+            return f'Quota endpoint returned HTTP {self.status}.'
+        return {'identity': 'The authenticated token has no usable quota account identity.',
+                'response': 'Quota endpoint returned an invalid response.',
+                'window': 'Quota response did not include the configured quota window.',
+                'request': 'Quota request failed or timed out.'}[self.code]
+
+    def to_json(self):
+        return {'code': self.code, 'status': self.status}
+
+
 class SuiteUsage:
     def __init__(self, run_id: str, *, cost_estimator=None):
         if type(run_id) is not str or not run_id:
@@ -77,6 +103,7 @@ class SuiteUsage:
         self.cost_estimator = cost_estimator
         self.before: QuotaSnapshot | None = None
         self.after: QuotaSnapshot | None = None
+        self.quota_errors = {}
         self._rows: dict[tuple[str, str, str], dict[str, int | None]] = {}
         self._unknown: dict[tuple[str, str, str], set[str]] = {}
         self._known: dict[tuple[str, str, str], dict[str, int]] = {}
@@ -154,9 +181,12 @@ class SuiteUsage:
             return prior is None
 
     def observe_snapshot(self, phase, snapshot):
-        if phase not in ('before', 'after') or not isinstance(snapshot, QuotaSnapshot):
+        if phase not in ('before', 'after') or not isinstance(snapshot, (QuotaSnapshot, QuotaReadError)):
             raise ValueError('Invalid quota observation')
         with self._lock:
+            if isinstance(snapshot, QuotaReadError):
+                self.quota_errors[phase] = snapshot.to_json()
+                return
             prior = getattr(self, phase)
             if prior is None or ((snapshot.captured_at < prior.captured_at) if phase == 'before'
                                  else (snapshot.captured_at > prior.captured_at)):
@@ -223,6 +253,7 @@ class SuiteUsage:
                 'pct_used_before': None if before is None or not _valid_pct(before.pct_used) else before.pct_used,
                 'pct_used_after': None if after is None or not _valid_pct(after.pct_used) else after.pct_used,
                 'pct_point_delta': delta, 'quota_unavailable_reason': reason,
+                'quota_errors': deepcopy(self.quota_errors),
                 'raw_quota_cost_usd': None,
                 'estimated_cost_usd': estimate, 'cost_per_prompt_usd': None if estimate is None or prompts == 0 else estimate / prompts,
                 'pct_used_per_prompt': None if per_prompt is None else f'{per_prompt:.3f}',

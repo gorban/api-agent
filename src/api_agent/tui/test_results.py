@@ -71,6 +71,16 @@ def literal_cell(value):
     return Text(value) if isinstance(value, str) and "[" in value else value
 
 
+def append_usage_line(text, line, *, style=''):
+    """Keep accounting data literal; only a confirmed quota error is red."""
+    prefix, marker, error = line.partition('quota used: Error: ')
+    if marker:
+        text.append(prefix + 'quota used: ', style=style)
+        text.append('Error: ' + error, style='red')
+    else:
+        text.append(line, style=style)
+
+
 def progress_summary(mode, rows):
     statuses = [row[0] for row in rows.values()]
     passed = statuses.count('PASSED')
@@ -116,5 +126,5 @@ def styled_summary(content, *, failed, skipped=False, neutral_details=False, gre
                  else 'red' if any(line.startswith(prefix) for prefix in red_prefixes)
                  else '' if neutral_details and index > 0
                  else 'red' if failed else 'dark_orange' if skipped else 'green')
-        summary.append(line, style=style)
+        append_usage_line(summary, line, style=style)
     return summary

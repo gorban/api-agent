@@ -1,6 +1,7 @@
 """Present quota snapshots and independently supplied provider cost estimates."""
 import math
 from .estimation import quota_reset_observed
+from .usage import QuotaReadError
 
 QUOTA_RESET_NOTE = 'Quota reset/change detected: quota cost unavailable; this run is excluded from cost history.'
 
@@ -20,7 +21,28 @@ def money(value):
 
 
 def starting_usage_line(report):
-    return f"Starting quota used: {percentage(report.get('pct_used_before'))}"
+    return quota_line(report, 'before', 'Starting')
+
+
+def quota_line(report, phase, label):
+    value = report.get('pct_used_' + phase)
+    if number(value):
+        return f'{label} quota used: {percentage(value)}'
+    error = report.get('quota_errors', {}).get(phase)
+    if error is not None:
+        try:
+            message = QuotaReadError(**error).message
+        except (TypeError, ValueError):
+            # An evidence boundary may have redacted a coincidentally matching code.
+            message = QuotaReadError('request').message
+        return f"{label} quota used: Error: {message}"
+    return ''
+
+
+def quota_observed(report):
+    return (number(report.get('pct_used_before')) or number(report.get('pct_used_after'))
+            or number(report.get('pct_point_delta')) or bool(report.get('quota_errors')))
+
 
 
 def historical_average(costs):
@@ -64,18 +86,20 @@ def final_usage_text(report):
     delta = report.get('pct_point_delta')
     count = report.get('prompt_count', 0)
     per_turn = delta / count if number(delta) and type(count) is int and count > 0 else None
-    lines = [starting_usage_line(report),
-             f"Final quota used: {percentage(report.get('pct_used_after'))}",
-             f'Quota change: {percentage(delta)}',
-             f'Full user turns: {count}',
-             f"Quota points per turn: {f'{per_turn:.3f}' if per_turn is not None else 'unavailable'}",
-             f"This suite cost: {money(report.get('estimated_cost_usd'))}",
-             f"  Historical average: {money(historical_average(report.get('test_costs', {}).values()))}",
-             f"Cost per turn: {money(report.get('cost_per_prompt_usd'))}",
-             f"Quota reset countdown: {report.get('reset_countdown_hms') or 'unavailable'}",
-             'Cost attribution assumes exclusive use of this account during the operation; other activity invalidates it.']
-    if report.get('quota_unavailable_reason'):
-        lines.append(f"Quota unavailable: {report['quota_unavailable_reason']}")
+    lines = [line for line in (starting_usage_line(report), quota_line(report, 'after', 'Final')) if line]
+    if quota_observed(report):
+        lines.append(f'Quota change: {percentage(delta)}')
+    lines.append(f'Full user turns: {count}')
+    if quota_observed(report):
+        lines.append(f"Quota points per turn: {f'{per_turn:.3f}' if per_turn is not None else 'unavailable'}")
+    lines.extend((f"This suite cost: {money(report.get('estimated_cost_usd'))}",
+                  f"  Historical average: {money(historical_average(report.get('test_costs', {}).values()))}",
+                  f"Cost per turn: {money(report.get('cost_per_prompt_usd'))}"))
+    if quota_observed(report):
+        lines.extend((f"Quota reset countdown: {report.get('reset_countdown_hms') or 'unavailable'}",
+                      'Cost attribution assumes exclusive use of this account during the operation; other activity invalidates it.'))
+        if report.get('quota_unavailable_reason'):
+            lines.append(f"Quota unavailable: {report['quota_unavailable_reason']}")
     if quota_reset_observed(report):
         lines.append(QUOTA_RESET_NOTE)
     if report.get('cost_basis'):

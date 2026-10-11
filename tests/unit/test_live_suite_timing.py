@@ -198,10 +198,16 @@ def test_live_cost_column_hidden_and_final_cost_summary_visible(tmp_path):
             assert len(table.columns)==3
             app.receive_usage('Starting quota used: 12.000%',object())
             assert app.starting_quota is None
+            app.receive_usage('',app._inspection_generation)
+            assert app.starting_quota is None
             app.receive_usage('multiple\nlines',app._inspection_generation)
             assert app.starting_quota is None
             app.receive_usage('Starting quota used: 12.000%',app._inspection_generation)
             assert '12.000%' in app.screen.query_one('#body',Static).content.plain
+            app.receive_usage('Starting quota used: Error: Quota endpoint returned HTTP 401.',app._inspection_generation)
+            shown = app.screen.query_one('#body',Static).content
+            assert shown.plain.endswith('Starting quota used: Error: Quota endpoint returned HTTP 401.')
+            assert any(span.style == 'red' and shown.plain[span.start:span.end] == 'Error: Quota endpoint returned HTTP 401.' for span in shown.spans)
             app.unit_result=IntegrationRunResult(0,(TestResult(identity,'passed',1),),'')
             app.suite_usage={'estimated_cost_usd':.01,'cost_basis':'quota_payment','prompt_count':1}
             app.test_costs={identity.id:{'estimated_cost_usd':.01}}

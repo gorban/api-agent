@@ -98,8 +98,9 @@ def test_usage_is_output_even_when_publication_fails(tmp_path):
     completed = recorded.run_recorded_integration(context, [test], config,
         accepted=True, storage=storage, usage_output=lines.append, runner=fake_runner())
     assert completed.exit_code == 1 and not completed.persisted
-    assert lines[0] == 'Starting quota used: unavailable'
-    assert 'Final quota used: unavailable' in lines[1]
+    assert all('quota' not in line.lower() for line in lines)
+    assert len(lines) == 1
+    assert 'This suite cost:' in lines[0] and 'Tokens this run:' in lines[0]
 
 
 def test_output_failure_preserves_failure_history(tmp_path):
@@ -107,7 +108,7 @@ def test_output_failure_preserves_failure_history(tmp_path):
     lines = []
     def output(text):
         lines.append(text)
-        if len(lines) == 2:
+        if len(lines) == 1:
             raise RuntimeError('synthetic display failure')
     completed = recorded.run_recorded_integration(context, [test], config,
         accepted=True, storage=Storage(), usage_output=output, runner=fake_runner())

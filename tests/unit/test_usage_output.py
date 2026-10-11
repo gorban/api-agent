@@ -9,11 +9,11 @@ def test_usage_lines_measured_zero_and_unavailable():
     assert 'Quota change: 0.000%' in text
     assert 'Quota points per turn: unavailable' in text
     assert 'other activity invalidates it' in text
-    assert 'Quota change: unavailable' in final_usage_text({'prompt_count': 2, 'quota_unavailable_reason': 'changed_window'})
+    assert 'Quota change: unavailable' in final_usage_text({'pct_used_before': 1, 'prompt_count': 2, 'quota_unavailable_reason': 'changed_window'})
 
 
 def test_output_fallback_per_prompt_and_start_unavailable():
-    assert starting_usage_line({}) == 'Starting quota used: unavailable'
+    assert starting_usage_line({}) == ''
     assert 'Quota points per turn: 1.500' in final_usage_text({
         'pct_point_delta': 3.0, 'prompt_count': 2})
 
@@ -100,7 +100,7 @@ def test_sub_nanodollar_contributions_remain_distinct_from_zero():
 
 def test_run_tokens_follow_cost_basis_after_any_unavailable_quota_reason():
     from api_agent.telemetry.usage_output import tokens_text
-    report = {'cost_basis':'historical_quota', 'quota_unavailable_reason':'missing_snapshot'}
+    report = {'cost_basis':'historical_quota', 'quota_unavailable_reason':'missing_snapshot', 'pct_used_before':1}
     output = final_usage_text(report)
     assert output.endswith('Cost basis: historical_quota\n' + tokens_text(report))
     assert output.index('Quota unavailable: missing_snapshot') < output.index('Cost basis:')
@@ -140,3 +140,40 @@ def test_reset_notice_preserves_observations_and_token_based_cost():
     detailed = test_details(result, report, {'estimated_cost_usd':.23, 'basis':'historical_quota'})
     assert QUOTA_RESET_NOTE in detailed.plain and 'This test cost: $0.230' in detailed.plain
     assert detailed.plain.endswith('PASSED')
+
+
+def test_pending_and_token_priced_runs_have_no_quota_lines_but_keep_costs():
+    from api_agent.telemetry.usage import SuiteUsage
+    for report in ({}, SuiteUsage('run').report(), {'cost_basis':'list_price', 'estimated_cost_usd':.02}):
+        assert starting_usage_line(report) == ''
+        text = final_usage_text(report)
+        assert 'quota' not in text.lower() and 'Cost accounting:' not in text
+        assert 'This suite cost:' in text and 'Tokens this run:' in text
+
+
+def test_quota_failure_is_explicit_and_valid_snapshots_override_display():
+    from api_agent.telemetry.usage import SuiteUsage, QuotaReadError, QuotaSnapshot
+    from datetime import datetime, timezone, timedelta
+    usage = SuiteUsage('run')
+    usage.observe_snapshot('before', QuotaReadError('http', 401))
+    usage.observe_snapshot('after', QuotaReadError('window'))
+    report = usage.report()
+    assert starting_usage_line(report) == 'Starting quota used: Error: Quota endpoint returned HTTP 401.'
+    assert 'Final quota used: Error: Quota response did not include the configured quota window.' in final_usage_text(report)
+    now = datetime.now(timezone.utc)
+    usage.observe_snapshot('before', QuotaSnapshot(0, 'window', now + timedelta(days=1), now))
+    assert starting_usage_line(usage.report()) == 'Starting quota used: 0.000%'
+    assert usage.report()['quota_errors']['before'] == {'code':'http', 'status':401}
+
+
+def test_completed_quota_errors_use_shared_literal_red_rendering():
+    from api_agent.tui.test_results import styled_summary
+    report = {'quota_errors':{'before':{'code':'http','status':401}}}
+    summary = styled_summary('Integration results: PASS\n' + final_usage_text(report), failed=False)
+    assert any(span.style == 'red' and summary.plain[span.start:span.end] == 'Error: Quota endpoint returned HTTP 401.' for span in summary.spans)
+    assert summary.plain.startswith('Integration results: PASS')
+
+
+def test_quota_error_display_fails_closed_on_redacted_or_uncontrolled_metadata():
+    for error in ({'code':'[REDACTED]','status':None}, {'code':'secret','status':None}, 'secret'):
+        assert starting_usage_line({'quota_errors':{'before':error}}) == 'Starting quota used: Error: Quota request failed or timed out.'
