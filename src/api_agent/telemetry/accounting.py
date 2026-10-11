@@ -150,7 +150,7 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
             raw_quota_cost_usd=costs.get('estimated_cost_usd') if costs.get('basis') == 'quota_payment' else None,
             prediction=prediction, stabilized_estimate=None, calls_complete=calls_complete,
             observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id))))
-    artifact = dict(version=1, estimator_version=1, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
+    artifact = dict(version=1, estimator_version=2, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
                     quota=quota, tests=records)
     validate_accounting(artifact)
     return artifact
@@ -158,7 +158,8 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
 
 def validate_accounting(value):
     if (type(value) is not dict or set(value) != {'version', 'estimator_version', 'run_id', 'rate_card', 'quota', 'tests'}
-            or type(value['version']) is not int or value['version'] != 1 or value['estimator_version'] != 1 or not _uuid(value['run_id'])
+            or type(value['version']) is not int or value['version'] != 1
+            or type(value['estimator_version']) is not int or value['estimator_version'] not in (1, 2) or not _uuid(value['run_id'])
             or type(value['quota']) is not dict or set(value['quota']) not in ({'before', 'after', 'pct_point_delta',
                 'quota_unavailable_reason', 'payment_policy', 'payment_month'}, {'before', 'after', 'pct_point_delta',
                 'quota_unavailable_reason', 'payment_policy', 'payment_month', 'contaminated'}) or type(value['tests']) is not list):

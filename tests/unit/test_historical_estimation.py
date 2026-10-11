@@ -22,7 +22,7 @@ def records(delta=1, step=.1):
                   payment_policy={'usd': 100, 'quota_seconds': 604800, 'period': 'quota'}, quota_unavailable_reason=None), tests=[row()])) for day in (1, 2, 3)]
 
 
-def test_prices_median_retries_and_missing():
+def test_prices_mean_retries_and_missing():
     card = bundled_rate_card()
     value = row()
     amount = priced(value, card)
@@ -43,6 +43,25 @@ def test_prices_median_retries_and_missing():
     assert priced(bad, card) is None
     bad = row(); bad['calls'][0]['quote']['accounting']['actual_model'] = 'unknown'
     assert priced(bad, card) is None
+
+
+def test_each_new_small_run_reduces_arithmetic_prediction():
+    card = bundled_rate_card()
+    test = SimpleNamespace(id='t', node_id='test.py::test[one]')
+    history = [({}, {'tests': [row(10000)]}), ({}, {'tests': [row(1000)]}),
+               ({}, {'tests': [row(1000)]})]
+    unit_cost = priced(row(1000), card)
+    previous = None
+    for count in (3, 4, 5):
+        prediction = predictions_for([test], history, card, {'t': 'hash'}, compat())['t']
+        expected = unit_cost * (10 + count - 1) / count
+        assert prediction['estimated_cost_usd'] == pytest.approx(expected)
+        assert prediction['sample_count'] == count
+        assert prediction['variation'] == pytest.approx(unit_cost * 9)
+        if previous is not None:
+            assert prediction['estimated_cost_usd'] < previous
+        previous = prediction['estimated_cost_usd']
+        history.append(({}, {'tests': [row(1000)]}))
 
 
 def test_calibration_zero_and_spike_and_bounds():

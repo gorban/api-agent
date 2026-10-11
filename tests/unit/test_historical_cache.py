@@ -18,6 +18,40 @@ def fixture():
     return manifest, payload
 
 
+@pytest.mark.parametrize('version', [1, 2])
+def test_estimator_versions_rebuild_without_rewriting_evidence(tmp_path, version):
+    manifest, payload = fixture()
+    artifact = json.loads(payload)
+    artifact['estimator_version'] = version
+    payload = json.dumps(artifact).encode()
+    manifest['files']['accounting.json'] = sha256(payload).hexdigest()
+    cache = HistoryCache(tmp_path / 'cost-history.sqlite3')
+    cache.ingest('review', manifest, payload)
+    cache.close()
+    cache = HistoryCache(tmp_path / 'cost-history.sqlite3')
+    assert cache.records('review') == [(manifest, artifact)]
+    cache.close()
+
+
+@pytest.mark.parametrize('version', [True, 1.0, '2', 0, 3])
+def test_estimator_version_is_a_supported_integer(version):
+    from api_agent.telemetry.accounting import validate_accounting
+    from api_agent.providers.contracts import ContractError
+    _, payload = fixture()
+    artifact = json.loads(payload)
+    artifact['estimator_version'] = version
+    with pytest.raises(ContractError, match='Invalid suite accounting'):
+        validate_accounting(artifact)
+
+
+def test_new_accounting_identifies_arithmetic_estimator():
+    from api_agent.telemetry.accounting import build_accounting
+    manifest, _ = fixture()
+    usage = SimpleNamespace(inference_calls={}, report=lambda: {})
+    artifact = build_accounting(SimpleNamespace(run_id=manifest['run_id']), [], {}, usage, [])
+    assert artifact['estimator_version'] == 2
+
+
 def test_transaction_verified_idempotent_and_origin(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path))
     assert cache_path() == tmp_path / 'api-agent' / 'cost-history.sqlite3'

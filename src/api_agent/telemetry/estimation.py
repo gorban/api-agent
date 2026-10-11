@@ -1,10 +1,9 @@
-"""Pure historical medians and conservative quota calibration."""
+"""Pure historical arithmetic means and conservative quota calibration."""
 from copy import deepcopy
 from datetime import datetime, timezone
 import calendar
 import json
 import math
-from statistics import median
 
 
 def compatibility_complete(value):
@@ -225,7 +224,7 @@ def predictions_for(tests, records, card, fingerprints, compatibility):
                         finished.append(manifest.get('finished_at', ''))
         if len(signatures) > 1:
             samples = []
-        amount = median(samples) if samples else None
+        amount = math.fsum(samples) / len(samples) if samples else None
         result[test.id] = {'estimated_cost_usd': amount, 'known_zero': bool(samples) and all(zeroes),
                            'basis': 'historical_list_price' if samples else 'unavailable', 'sample_count': len(samples),
                            'call_signature': next(iter(signatures)) if len(signatures) == 1 else None, 'quota_eligible': bool(samples) and all(quota_eligible), 'variation': None if not samples else max(samples) - min(samples), 'freshness': max(finished, default=None)}
