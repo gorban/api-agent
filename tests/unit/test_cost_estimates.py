@@ -10,6 +10,7 @@ from api_agent.providers.costs import validate_quote, quote_cost, valid_amount
 from api_agent.telemetry.costs import CostLedger
 from api_agent.telemetry.usage import SuiteUsage
 from api_agent.llm_providers.gpt.pricing import quote
+from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent
 
 PAYMENT = {'usd':100,'quota_seconds':604800,'period':'calendar_month'}
 
@@ -109,11 +110,11 @@ def test_conflicting_payment_profiles_fall_back_without_mixing_quotas():
     ('gpt-6-luna',True,(None,50,20,30),None),
     ('gpt-6-luna',True,(100,None,20,30),None)])
 def test_provider_list_prices_do_not_double_count_cache_or_reasoning(model,direct,counts,expected):
-    usage=SimpleNamespace(**dict(zip(('input_tokens','output_tokens','cached_input_tokens','reasoning_tokens'),counts)))
-    result=quote(SimpleNamespace(selected_llm=model),SimpleNamespace(usage=usage),direct=direct,subscription=True)
+    usage=SimpleNamespace(cache_write_tokens=0,**dict(zip(('input_tokens','output_tokens','cached_input_tokens','reasoning_tokens'),counts)))
+    result=quote(LLMRequest(model,CompletionRequest((Message('user',(TextContent('Ok'),)),))),SimpleNamespace(usage=usage),direct=direct,subscription=True)
     assert result['list_cost_usd']==pytest.approx(expected) if expected is not None else result['list_cost_usd'] is None
     assert result['payment']==PAYMENT
-    assert quote(SimpleNamespace(selected_llm=model),SimpleNamespace(usage=usage),direct=direct,subscription=False)['payment'] is None
+    assert quote(LLMRequest(model,CompletionRequest((Message('user',(TextContent('Ok'),)),))),SimpleNamespace(usage=usage),direct=direct,subscription=False)['payment'] is None
 
 
 @pytest.mark.parametrize('quota,pay,days,expected', [(86400,'day',31,2),(86400,'week',31,2/7),(604800,'day',31,14),(86400,'calendar_month',31,2/31)])
@@ -139,7 +140,7 @@ def test_float_config_can_be_saved_and_round_trips_with_decimal_dollars():
 
 def test_gpt_provider_pay_override_and_api_key_ignores_quota(tmp_path):
     from api_agent.llm_providers.gpt.factory import GPTProvider
-    request=SimpleNamespace(selected_llm='gpt-6-luna')
+    request=LLMRequest('gpt-6-luna',CompletionRequest((Message('user',(TextContent('Ok'),)),)))
     result=SimpleNamespace(usage=SimpleNamespace(input_tokens=1,output_tokens=1,cached_input_tokens=0))
     subject=GPTProvider({'GPT_AUTH_MODE':'subscription','LLM_QUOTA_PERIOD':'day','LLM_PAY_PERIOD':'week','LLM_PAY_PERIOD_LIMIT':123.45})
     assert subject.quote_cost(request,result)['payment']=={'usd':123.45,'quota_seconds':86400,'period':'week'}

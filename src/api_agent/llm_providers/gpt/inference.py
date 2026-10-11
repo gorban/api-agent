@@ -77,9 +77,9 @@ def _usage(data, responses):
         raise _invalid()
     try:
         usage = Usage(data.get(input_name), data.get(output_name), (input_details or {}).get('cached_tokens'),
-                      (output_details or {}).get('reasoning_tokens'))
+                      (output_details or {}).get('reasoning_tokens'), (input_details or {}).get('cache_write_tokens'))
         if any(value is not None and value > 2147483647 for value in (usage.input_tokens,
-                usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens)):
+                usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens, usage.cache_write_tokens)):
             raise ValueError('Usage exceeded its limit')
         return usage
     except ValueError:

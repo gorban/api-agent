@@ -141,8 +141,8 @@ def _error(error, capability=None):
         details = {name: getattr(error, name) for name in ('status', 'code', 'type', 'request_id')}
         details['kind'] = error.kind
         if error.usage is not None:
-            from dataclasses import asdict
-            details['usage'] = asdict(error.usage)
+            from .inference import usage_to_wire
+            details['usage'] = usage_to_wire(error.usage)
         message = error.message if capability is None else error.message.replace(capability, '[redacted]')
         if capability is not None:
             details = {name: value.replace(capability, '[redacted]') if isinstance(value, str) else value
@@ -178,12 +178,9 @@ def _raise_error(frame):
         kind = details.pop('kind')
         try:
             if 'usage' in details:
-                from .llm import Usage
+                from .inference import result_from_wire
                 usage = details['usage']
-                if (type(usage) is not dict or set(usage) !=
-                        {'input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens'}):
-                    raise ContractError('Invalid provider response')
-                details['usage'] = Usage(**usage)
+                details['usage'] = result_from_wire({'text': '', 'outcome': 'completed', 'usage': usage}).usage
             error = ProviderAccessError(kind, frame['message'], **details)
         except ValueError:
             raise ContractError('Invalid provider response') from None

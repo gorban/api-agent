@@ -9,7 +9,7 @@ from api_agent.telemetry.usage_costs import attach_category_costs, test_category
 
 
 def call(*, model='gpt-6-luna', actual=True, usage=None):
-    return {'usage': usage or {'input_tokens':100,'output_tokens':50,'cached_input_tokens':20,'reasoning_tokens':30},
+    return {'usage': usage or {'input_tokens':100,'output_tokens':50,'cached_input_tokens':20,'reasoning_tokens':30,'cache_write_tokens':0},
         'quote':{'accounting':{'actual_model':model if actual else None,'catalog_model':model,
             'rate_card':bundled_rate_card(),'service_tier':'standard'}}}
 
@@ -33,7 +33,7 @@ def test_frozen_prices_and_calibrated_total_preserve_cached_and_reasoning_subset
     assert costs['output_tokens'] == pytest.approx(25/33.2)
     assert costs['cache_read_tokens'] == pytest.approx(.2/33.2)
     assert costs['reasoning_tokens'] == pytest.approx(15/33.2)
-    assert costs['cache_creation_tokens'] is None
+    assert costs['cache_creation_tokens'] == 0
     assert costs['total_tokens'] == pytest.approx(1)
     assert costs['input_tokens'] + costs['output_tokens'] == pytest.approx(1)
     assert costs['cache_read_tokens'] + costs['reasoning_tokens'] > 0
@@ -42,7 +42,7 @@ def test_frozen_prices_and_calibrated_total_preserve_cached_and_reasoning_subset
 
 def test_long_context_prices_apply_the_same_factors_to_subset_categories():
     evidence = row(call(model='gpt-6-sol', usage={'input_tokens':272001,'output_tokens':50,
-        'cached_input_tokens':20,'reasoning_tokens':30}))
+        'cached_input_tokens':20,'reasoning_tokens':30,'cache_write_tokens':0}))
     card = bundled_rate_card()
     parts = price_usage_parts(card, 'gpt-6-sol', evidence['calls'][0]['usage'])
     assert parts['input_tokens'] == pytest.approx(271981 * .000004 + 20 * .0000004)
@@ -61,7 +61,7 @@ def test_multiple_models_and_attempts_use_summed_prices_not_raw_token_proportion
     total = math.fsum(weight['total_tokens'] for weight in weights)
     for field in USAGE_COST_FIELDS:
         if field == 'cache_creation_tokens':
-            assert costs[field] is None
+            assert costs[field] == 0
         else:
             assert costs[field] == pytest.approx(.42 * math.fsum(weight[field] for weight in weights) / total)
     assert costs['input_tokens'] != pytest.approx(.42 * 300 / 450)

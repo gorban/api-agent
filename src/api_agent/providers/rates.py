@@ -40,16 +40,17 @@ def validate_rate_card(card):
     except (ValueError, TypeError):
         raise ContractError('Invalid rate snapshot timestamp') from None
     for model, rate in card['models'].items():
-        if (not _text(model) or type(rate) is not dict or set(rate) != _KEYS or rate['service_tier'] != 'standard'
-                or any(value is not None and not _number(value) for value in (rate['input'], rate['cached_input'], rate['output']))
+        if (not _text(model) or type(rate) is not dict or set(rate) not in (_KEYS, _KEYS | {'cache_write'}) or rate['service_tier'] != 'standard'
+                or any(value is not None and not _number(value) for value in (rate['input'], rate['cached_input'], rate['output'], rate.get('cache_write')))
                 or any(not _number(rate[name]) or rate[name] < 1 for name in ('input_multiplier', 'output_multiplier'))
                 or (rate['threshold'] is not None and (type(rate['threshold']) is not int or rate['threshold'] <= 0))):
             raise ContractError('Invalid model rate')
     return card
 
 
-def _rate(input_rate, cached, output, *, long=False):
+def _rate(input_rate, cached, output, *, long=False, cache_write='input'):
     return dict(service_tier='standard', input=input_rate, cached_input=cached, output=output,
+                cache_write=input_rate if cache_write == 'input' else cache_write,
                 threshold=272000 if long else None, input_multiplier=2 if long else 1, output_multiplier=1.5 if long else 1)
 
 
@@ -60,11 +61,12 @@ def _card(source, models, raw, *, now=None, fallback=False):
 
 
 def bundled_rate_card():
-    """Reviewed Standard text fallback, official pricing page, 2026-10-10."""
+    """Reviewed Standard text fallback, official pricing page, 2026-10-11."""
     rates = {'gpt-6-luna': (.1, .01, .5, True), 'gpt-6-sol': (2, .2, 10, True),
              'gpt-6.1-sol': (2, .1, 10, True), 'gpt-4.1-nano': (.1, .025, .4, False)}
-    models = {model: _rate(*(value / 1000000 for value in row[:3]), long=row[3]) for model, row in rates.items()}
-    return _card(OPENAI, models, b'official-standard-2026-10-10', now=datetime(2026, 10, 10, tzinfo=timezone.utc), fallback=True)
+    models = {model: _rate(*(value / 1000000 for value in row[:3]), long=row[3],
+                          cache_write=row[0] * (1.25 if row[3] else 1) / 1000000) for model, row in rates.items()}
+    return _card(OPENAI, models, b'official-standard-cache-writes-2026-10-11', now=datetime(2026, 10, 11, tzinfo=timezone.utc), fallback=True)
 
 
 USAGE_COST_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_tokens',
@@ -76,7 +78,7 @@ def price_usage(card, model, usage):
 
 
 def price_usage_parts(card, model, usage):
-    """Input includes cached input; output includes reasoning. Cache writes are unsupported."""
+    """Price disjoint input categories; cached/write/reasoning detail is inclusive."""
     parts = dict.fromkeys(USAGE_COST_FIELDS)
     validate_rate_card(card)
     rate = card['models'].get(model)
@@ -91,17 +93,23 @@ def price_usage_parts(card, model, usage):
     # Unknown cached usage cannot be assumed to be zero.
     if tokens.cached_input_tokens is None:
         return parts
-    counts = (tokens.input_tokens - tokens.cached_input_tokens, tokens.cached_input_tokens, tokens.output_tokens)
-    if any(count and rate[name] is None for count, name in zip(counts, ('input', 'cached_input', 'output'))):
+    remaining = tokens.input_tokens - tokens.cached_input_tokens
+    writes = tokens.cache_write_tokens
+    if writes is None and remaining and rate.get('cache_write') != rate['input']:
+        return parts
+    counts = (remaining - (writes or 0), tokens.cached_input_tokens, writes or 0, tokens.output_tokens)
+    names = ('input', 'cached_input', 'cache_write', 'output')
+    if any(count and rate.get(name) is None for count, name in zip(counts, names)):
         return parts
     long = rate['threshold'] is not None and tokens.input_tokens > rate['threshold']
-    factors = (rate['input_multiplier'], rate['input_multiplier'], rate['output_multiplier']) if long else (1, 1, 1)
-    fresh, cached, output = (count * (rate[name] or 0) * factor
-        for count, name, factor in zip(counts, ('input', 'cached_input', 'output'), factors))
-    parts.update(input_tokens=math.fsum((fresh, cached)), output_tokens=output,
+    factors = (rate['input_multiplier'],) * 3 + (rate['output_multiplier'],) if long else (1, 1, 1, 1)
+    fresh, cached, written, output = (count * (rate.get(name) or 0) * factor
+        for count, name, factor in zip(counts, names, factors))
+    parts.update(input_tokens=math.fsum((fresh, cached, written)), output_tokens=output,
+        cache_creation_tokens=written if writes is not None else None,
         cache_read_tokens=cached, reasoning_tokens=None if tokens.reasoning_tokens is None else
-        tokens.reasoning_tokens * (rate['output'] or 0) * factors[2],
-        total_tokens=math.fsum((fresh, cached, output)))
+        tokens.reasoning_tokens * (rate['output'] or 0) * factors[3],
+        total_tokens=math.fsum((fresh, cached, written, output)))
     return parts
 
 
@@ -120,9 +128,12 @@ def parse_openrouter(raw, *, now=None):
             return None if value is None else float(value)
         if row['id'] in models:
             raise ContractError('Duplicate catalog model')
-        if any(pricing.get(key) not in (None, '0', '0.0', 0) for key in ('request', 'image', 'input_cache_write')):
+        if any(pricing.get(key) not in (None, '0', '0.0', 0) for key in ('request', 'image')):
             continue
-        models[row['id']] = _rate(amount('prompt'), amount('input_cache_read'), amount('completion'))
+        # Missing/zero write quotes do not establish that writes are free.
+        write = amount('input_cache_write')
+        models[row['id']] = _rate(amount('prompt'), amount('input_cache_read'), amount('completion'),
+                                 cache_write=write if write else None)
     return _card(OPENROUTER, models, raw, now=now)
 
 
@@ -156,8 +167,10 @@ def _context_rate(short, long, threshold):
     factors = [right / left for left, right in zip(short, long)]
     if factors[0] != factors[1] or min(factors) < 1:
         return _rate(None, None, None)
-    rate = _rate(*short)
-    rate.update(threshold=threshold, input_multiplier=factors[0], output_multiplier=factors[2])
+    if factors[0] != factors[2]:
+        return _rate(None, None, None)
+    rate = _rate(short[0], short[1], short[3], cache_write=short[2])
+    rate.update(threshold=threshold, input_multiplier=factors[0], output_multiplier=factors[3])
     return rate
 
 
@@ -192,8 +205,8 @@ class _PricingHTML(HTMLParser):
                 if type(rows) is not list or len(rows) != 1 or len(rows[0]) != 8 or not _text(model):
                     raise ContractError('Invalid context pricing rows')
                 row = rows[0]
-                short = [_usd(row[index]) for index in (0, 1, 3)]
-                long = [_usd(row[index]) for index in (4, 5, 7)]
+                short = [_usd(row[index]) for index in (0, 1, 2, 3)]
+                long = [_usd(row[index]) for index in (4, 5, 6, 7)]
                 rate = _context_rate(short, long, threshold)
                 if model in self.context and self.context[model] != rate:
                     raise ContractError('Conflicting context rates')
@@ -225,10 +238,12 @@ def parse_openai(raw, *, now=None):
         elif not _text(model) or ' ' in model or not model.startswith('gpt-'):
             continue
         else:
-            rate = _rate(*[_usd(value) for value in row[1:3] + [row[-1]]])
+            rate = _rate(*[_usd(value) for value in row[1:3] + [row[-1]]],
+                         cache_write=_usd(row[3]) if len(row) == 5 else 'input')
             if model in parser.ambiguous:
                 rate = _rate(None, None, None)
-        short = _rate(*[_usd(value) for value in row[1:3] + [row[-1]]])
+        short = _rate(*[_usd(value) for value in row[1:3] + [row[-1]]],
+                      cache_write=_usd(row[3]) if len(row) == 5 else 'input')
         if model in short_models and short_models[model] != short:
             raise ContractError('Conflicting Standard rates')
         short_models[model] = short
@@ -239,7 +254,7 @@ def parse_openai(raw, *, now=None):
         if model not in short_models and model not in parser.context_explicit:
             models[model] = _rate(None, None, None)
             continue
-        if model in short_models and any(rate[name] is not None and rate[name] != short_models[model][name] for name in ('input', 'cached_input', 'output')):
+        if model in short_models and any(rate[name] is not None and rate[name] != short_models[model][name] for name in ('input', 'cached_input', 'cache_write', 'output')):
             raise ContractError('Grouped context rates conflict with Standard prices')
         models[model] = rate
     return _card(OPENAI, models, raw, now=now)

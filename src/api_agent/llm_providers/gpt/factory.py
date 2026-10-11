@@ -191,6 +191,8 @@ class GPTProvider:
 
     def quote_cost(self, request, result):
         from .pricing import quote
+        from api_agent.providers.cache_policy import configured_request
+        request = configured_request(request, self.cache_policy)
         return quote(request, result, direct=self.auth_mode == 'subscription' or self.base_url == 'https://api.openai.com/v1',
                      subscription=self.auth_mode == 'subscription', rate_card=self.rate_card, compatibility=self.cost_compatibility, payment_usd=self.payment_usd, quota_seconds=86400 if self.quota_period == 'day' else 604800, pay_period=self.pay_period)
 

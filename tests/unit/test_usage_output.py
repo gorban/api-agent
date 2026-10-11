@@ -37,10 +37,10 @@ def test_actual_token_totals_retain_known_counts_without_double_counting_subsets
     usage.add_usage(provider='p', model='two', session_id='second', input_tokens=2,
         output_tokens=4, cache_read_tokens=0, cache_creation_tokens=0, reasoning_tokens=2)
     report = usage.report()
-    assert tokens_text(report) == ('Tokens this run (estimated costs):\n'
+    assert tokens_text(report) == ('Tokens this run:\n'
         '  input: 1,202 — unavailable\n  output: 14 — unavailable\n  cached input: 1,000 — unavailable\n'
         '  cache write: 0 — unavailable\n  reasoning: 5 — unavailable\n  total (input + output): 1,216 — unavailable\n'
-        '  Cached input and reasoning are included in input/output totals.')
+        '  Cached input and cache writes are included in input; reasoning is included in output.')
     assert final_usage_text(report).endswith(tokens_text(report))
     assert 'total (input + output): 1,210 — unavailable' in tokens_text(report, 'first')
     assert 'total (input + output): 6 — unavailable' in tokens_text(report, 'second')
@@ -77,14 +77,14 @@ def test_each_count_displays_its_scoped_cost_and_identifies_subset_amounts():
                              'reasoning_tokens':.16,'total_tokens':1},
         'test_costs':{'one':{'category_costs_usd':{'input_tokens':.000002,'output_tokens':.000008,
             'cache_read_tokens':0,'cache_creation_tokens':None,'reasoning_tokens':.0000016,'total_tokens':.00001}}}}
-    assert tokens_text(report).splitlines() == ['Tokens this run (estimated costs):',
+    assert tokens_text(report).splitlines() == ['Tokens this run:',
         '  input: 10 — $0.200', '  output: 5 — $0.800', '  cached input: 2 — $0.010',
         '  cache write: 0 — unavailable', '  reasoning: 1 — $0.160', '  total (input + output): 15 — $1.000',
-        '  Cached input and reasoning are included in input/output totals.']
-    assert tokens_text(report, 'one').splitlines() == ['Tokens this run (estimated costs):',
+        '  Cached input and cache writes are included in input; reasoning is included in output.']
+    assert tokens_text(report, 'one').splitlines() == ['Tokens this run:',
         '  input: 10 — $0.000002', '  output: 5 — $0.000008', '  cached input: 2 — $0.000',
         '  cache write: 0 — unavailable', '  reasoning: 1 — $0.0000016', '  total (input + output): 15 — $0.00001',
-        '  Cached input and reasoning are included in input/output totals.']
+        '  Cached input and cache writes are included in input; reasoning is included in output.']
 
 
 def test_sub_nanodollar_contributions_remain_distinct_from_zero():

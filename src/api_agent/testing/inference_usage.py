@@ -22,7 +22,7 @@ def user_turn(identifier, kind='initial'):
     finally:
         _TURN.reset(token)
 
-from api_agent.providers.inference import request_to_wire, result_to_wire
+from api_agent.providers.inference import request_to_wire, result_to_wire, usage_to_wire
 
 
 def publish(request, result=None, *, call_id=None, quote=None, failed=False, attempt=None, error=None):
@@ -34,11 +34,10 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
     call_id = str(uuid4()) if call_id is None else call_id
     now = datetime.now(timezone.utc).isoformat()
     started = _STARTS.setdefault(call_id, now)
-    from dataclasses import asdict
     from api_agent.providers.contracts import ProviderAccessError
     reported = error.usage if isinstance(error, ProviderAccessError) else None
     row = {'call_id': call_id, 'selection': selection,
-           'usage': (asdict(reported) if reported is not None else None)
+           'usage': (usage_to_wire(reported) if reported is not None else None)
                     if result is None else result_to_wire(result)['usage']}
     if result is not None:
         for name in ('actual_model', 'service_tier', 'serving_revision'):
@@ -82,6 +81,7 @@ def capture(event, tracker):
         values = result_from_wire({'text': '', 'outcome': 'completed', 'usage': usage}).usage
         tracker.add_usage(provider='selected-llm', model=selection, session_id=event.identity.id,
             input_tokens=values.input_tokens, output_tokens=values.output_tokens,
-            cache_read_tokens=values.cached_input_tokens, reasoning_tokens=values.reasoning_tokens)
+            cache_read_tokens=values.cached_input_tokens, reasoning_tokens=values.reasoning_tokens,
+            cache_creation_tokens=values.cache_write_tokens)
 
     tracker.add_cost(identifier, event.identity.id, row.get('quote'))
