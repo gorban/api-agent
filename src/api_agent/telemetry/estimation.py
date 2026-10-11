@@ -225,6 +225,29 @@ class EstimateSnapshot:
                            'ignored_cost_settings': tuple(self.ignored_settings or ())}
                 for identity, amount in amounts.items()}
 
+    def completed_averages(self, artifact, stabilized):
+        """Include this finished observation once, without refitting calibration."""
+        from types import SimpleNamespace
+        records = [(manifest, prior) for manifest, prior in self.records
+                   if artifact.get('run_id') is None or prior.get('run_id') != artifact['run_id']]
+        records.append(({'finished_at': datetime.now(timezone.utc).isoformat()}, artifact))
+        averages = {}
+        for row in artifact['tests']:
+            test = SimpleNamespace(id=row['test_id'], node_id=row['node_id'])
+            prediction = predictions_for((test,), records, self.card,
+                {test.id: row.get('source_fingerprint')}, row.get('compatibility'),
+                ignored_settings=self.ignored_settings)[test.id]
+            # Reuse only pre-run-qualified calibration, never the new sample.
+            calibrated = stabilized.get(test.id, {}).get('calibration')
+            if prediction['quota_eligible'] and calibrated is not None:
+                scale = calibrated['scale_factor']
+                prediction['estimated_cost_usd'] *= scale
+                prediction['variation'] *= scale
+                prediction['basis'] = 'historical_quota'
+                prediction['calibration'] = deepcopy(calibrated)
+            averages[test.id] = prediction
+        return averages
+
     def synchronize(self):
         return self
 

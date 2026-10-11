@@ -223,3 +223,20 @@ def test_completed_quota_errors_use_shared_literal_red_rendering():
 def test_quota_error_display_fails_closed_on_redacted_or_uncontrolled_metadata():
     for error in ({'code':'[REDACTED]','status':None}, {'code':'secret','status':None}, 'secret'):
         assert starting_usage_line({'quota_errors':{'before':error}}) == 'Starting quota used: Error: Quota request failed or timed out.'
+
+
+def test_completed_history_replaces_advance_comparison_in_suite_and_test_details():
+    from types import SimpleNamespace
+    from api_agent.tui.test_results import test_details
+    from api_agent.telemetry.usage_output import historical_average
+    cost = {'estimated_cost_usd': .0000036,
+            'advance_prediction': {'estimated_cost_usd': None},
+            'historical_average': {'estimated_cost_usd': .0000036, 'sample_count': 1}}
+    report = {'estimated_cost_usd': .0000036, 'estimated_cost_per_prompt_usd': .0000036,
+              'prompt_count': 1, 'test_costs': {'t': cost}}
+    text = final_usage_text(report)
+    assert text.count('Historical average: $0.0000036') == 2
+    result = SimpleNamespace(identity=SimpleNamespace(id='t'), duration=8, status='passed', traceback='')
+    assert 'Historical average: $0.0000036' in test_details(result, report, cost).plain
+    assert historical_average((dict(cost, historical_average=None),)) is None
+    assert cost['advance_prediction']['estimated_cost_usd'] is None

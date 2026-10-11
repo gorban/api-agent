@@ -75,6 +75,9 @@ def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, 
     assert summary['after']['pct_used'] == 10 + delta
     assert summary['pct_point_delta'] == delta
     accounting = json.loads((result.directory / 'accounting.json').read_text())
+    assert 'historical_average' in accounting['tests'][0]['stabilized_estimate']
+    assert summary['test_costs'][test.id]['historical_average'] == accounting['tests'][0]['stabilized_estimate']['historical_average']
+    assert accounting['tests'][0]['prediction']['estimated_cost_usd'] is None
     assert accounting['quota']['before']['pct_used'] == 10
     assert accounting['quota']['after']['pct_used'] == 10 + delta
     assert accounting['quota']['pct_point_delta'] == delta
