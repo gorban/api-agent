@@ -299,6 +299,12 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     body = _payload(request, api_mode, subscription)
     body.update(prompt_cache_fields(request.payload.generation.cache_policy, request.selected_llm,
                                   base_url=base_url, subscription=subscription))
+    if base_url == 'https://openrouter.ai/api/v1' and request.payload.generation.cache_policy in ('medium', 'high'):
+        rows = body['input' if api_mode == 'responses' else 'messages']
+        if not rows[-1]['content']:
+            raise ProviderAccessError('unsupported', 'OpenRouter enabled prompt-cache presets require a nonempty final text message.')
+        rows[-1]['content'] = [{'type': 'input_text' if api_mode == 'responses' else 'text',
+                               'text': rows[-1]['content'], 'prompt_cache_breakpoint': {'mode': 'explicit'}}]
     return base_url, body
 
 
@@ -334,8 +340,13 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
                 result = _result(data, api_mode == 'responses', access_token)
                 if base_url == 'https://openrouter.ai/api/v1':
                     from dataclasses import replace
-                    billing = _billing(data, request_id, access_token)
-                    result = replace(result, usage=_usage(data.get('usage'), api_mode == 'responses', router=True), billing=billing)
+                    usage = _usage(data.get('usage'), api_mode == 'responses', router=True)
+                    try:
+                        billing = _billing(data, request_id, access_token)
+                    except ProviderAccessError as error:
+                        error.usage = usage
+                        raise
+                    result = replace(result, usage=usage, billing=billing)
                 return result
     except (TimeoutError, httpx.TimeoutException):
         error = ProviderAccessError('deadline', 'GPT inference timed out.')
