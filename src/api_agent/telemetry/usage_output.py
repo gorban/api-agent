@@ -20,9 +20,15 @@ def starting_usage_line(report):
     return f"Starting quota used: {percentage(report.get('pct_used_before'))}"
 
 
+def historical_average(costs):
+    """Sum frozen advance predictions; absent/incomplete history stays unavailable."""
+    amounts = [(cost.get('advance_prediction') or {}).get('estimated_cost_usd') for cost in costs]
+    return math.fsum(amounts) if amounts and all(number(value) for value in amounts) else None
+
+
 TOKEN_LABELS = (('input_tokens', 'input'), ('output_tokens', 'output'),
                 ('cache_read_tokens', 'cached input'), ('cache_creation_tokens', 'cache write'),
-                ('reasoning_tokens', 'reasoning'), ('total_tokens', 'total'))
+                ('reasoning_tokens', 'reasoning'), ('total_tokens', 'total (input + output)'))
 
 
 def has_tokens(report, test_id):
@@ -46,26 +52,28 @@ def tokens_text(report, test_id=None):
                    or any(field in row.get('unknown_fields', ()) for row in rows))
         value = (f'{sum(known):,}' + (' + unknown' if unknown else '') if known or not unknown
                  else 'unavailable')
-        parts.append(f'{label} {value} — {money(costs.get(field))}')
-    return ('Tokens: ' + ' · '.join(parts)
-            + '\nCached input and reasoning are included in input/output totals.')
+        parts.append(f'  {label}: {value} — {money(costs.get(field))}')
+    return ('Tokens this run (estimated costs):\n' + '\n'.join(parts)
+            + '\n  Cached input and reasoning are included in input/output totals.')
 
 
 def final_usage_text(report):
     delta = report.get('pct_point_delta')
     count = report.get('prompt_count', 0)
     per_turn = delta / count if number(delta) and type(count) is int and count > 0 else None
-    lines = [tokens_text(report), starting_usage_line(report),
+    lines = [starting_usage_line(report),
              f"Final quota used: {percentage(report.get('pct_used_after'))}",
              f'Quota change: {percentage(delta)}',
              f'Full user turns: {count}',
              f"Quota points per turn: {f'{per_turn:.3f}' if per_turn is not None else 'unavailable'}",
-             f"Estimated cost: {money(report.get('estimated_cost_usd'))}",
-             f"Estimated cost per turn: {money(report.get('cost_per_prompt_usd'))}",
+             f"Actual cost (estimated): {money(report.get('estimated_cost_usd'))}",
+             f"  Historical average: {money(historical_average(report.get('test_costs', {}).values()))}",
+             f"Actual cost per turn (estimated): {money(report.get('cost_per_prompt_usd'))}",
              f"Quota reset countdown: {report.get('reset_countdown_hms') or 'unavailable'}",
              'Cost attribution assumes exclusive use of this account during the operation; other activity invalidates it.']
-    if report.get('cost_basis'):
-        lines.append(f"Cost basis: {report['cost_basis']}")
     if report.get('quota_unavailable_reason'):
         lines.append(f"Quota unavailable: {report['quota_unavailable_reason']}")
+    if report.get('cost_basis'):
+        lines.append(f"Cost basis: {report['cost_basis']}")
+    lines.append(tokens_text(report))
     return '\n'.join(lines)
