@@ -360,3 +360,132 @@ def test_strict_sse_duplicate_guards_have_otherwise_valid_final(mutation):
     else: frame='{"type":"response.completed","response":{"status":"failed"},"response":'+response+'}'
     with pytest.raises(ProviderAccessError,match='invalid result'):
         run(httpx.Response(200,text='data: '+frame+'\n\n',headers={'content-type':'text/event-stream'}),subscription=True)
+
+
+def test_subscription_accepts_missing_content_type_only_with_completed_sse():
+    frame='data: '+json.dumps({'type':'response.completed','response':result()})+'\n\n'
+    value,calls=run(httpx.Response(200,content=frame.encode()),subscription=True)
+    assert value.outcome=='completed' and value.payload.content[0].text=='Ok' and len(calls)==1
+
+
+@pytest.mark.parametrize('body', [json.dumps(result()).encode(), b'<html>Not a stream</html>',
+    ('data: '+json.dumps({'type':'response.completed','response':result()})).encode(),
+    b'data: {"type":"response.created"}\n\n'])
+def test_subscription_missing_content_type_does_not_allow_nonstream_or_unfinished_success(body):
+    with pytest.raises(ProviderAccessError,match='stream ended before completion'):
+        run(httpx.Response(200,content=body),subscription=True)
+
+
+def test_subscription_rejects_explicit_unexpected_content_type_even_with_valid_sse():
+    frame='data: '+json.dumps({'type':'response.completed','response':result()})+'\n\n'
+    with pytest.raises(ProviderAccessError,match='requires an event stream'):
+        run(httpx.Response(200,content=frame.encode(),headers={'content-type':'application/json'}),subscription=True)
+
+
+def streamed_events(*, terminal_output=None):
+    item={'id':'item-1','type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':'Ok'}]}
+    terminal=result();terminal.update(id='response-1',output=[] if terminal_output is None else terminal_output)
+    return [
+        {'type':'response.created','response':{'id':'response-1'}},
+        {'type':'response.in_progress','response':{'id':'response-1'}},
+        {'type':'response.output_item.added','output_index':0,'item':dict(item,status='in_progress',content=[])},
+        {'type':'response.content_part.added','output_index':0,'content_index':0,'item_id':'item-1','part':{'type':'output_text','text':''}},
+        {'type':'response.output_text.delta','output_index':0,'content_index':0,'item_id':'item-1','delta':'Partial'},
+        {'type':'response.output_text.done','output_index':0,'content_index':0,'item_id':'item-1','text':'Ok'},
+        {'type':'response.content_part.done','output_index':0,'content_index':0,'item_id':'item-1','part':item['content'][0]},
+        {'type':'response.output_item.done','output_index':0,'item':item},
+        {'type':'response.completed','response':terminal},
+    ]
+
+
+def run_events(events):
+    body=''.join('data: '+json.dumps(event)+'\n\n' for event in events)
+    return run(httpx.Response(200,content=body.encode()),subscription=True)
+
+
+def test_stream_recovers_only_finished_items_after_successful_terminal_and_usage():
+    events=streamed_events()
+    value,_=run_events(events)
+    assert value.payload.content[0].text=='Ok' and value.usage.input_tokens==3 and value.usage.output_tokens==1
+    events[-1]['response']['output']=[events[-2]['item']]
+    value,_=run_events(events);assert value.payload.content[0].text=='Ok'
+
+
+@pytest.mark.parametrize('mutation', ['missing_added','missing_done','no_terminal','unfinished_done','identity_mismatch','duplicate_added','duplicate_done','duplicate_id','index_gap','bad_index','negative_index','large_index','missing_index','bad_item','missing_id','long_id','control_id','tool','refusal','terminal_id','inprogress_id','bad_response_id','terminal_count','terminal_text','terminal_identity','terminal_shape','event_item_id','event_content_index','event_after_done','invalid_usage','protected_output'])
+def test_stream_accumulator_rejects_inconsistent_or_partial_state(mutation):
+    events=streamed_events()
+    if mutation=='missing_added':events.pop(2)
+    elif mutation=='missing_done':events.pop(-2)
+    elif mutation=='no_terminal':events.pop()
+    elif mutation=='unfinished_done':events[-2]['item']['status']='in_progress'
+    elif mutation=='identity_mismatch':events[-2]['item']['id']='other'
+    elif mutation=='duplicate_added':events.insert(3,events[2])
+    elif mutation=='duplicate_done':events.insert(-1,events[-2])
+    elif mutation=='duplicate_id':events.insert(3,dict(events[2],output_index=1))
+    elif mutation=='index_gap':
+        for event in events:
+            if 'output_index' in event:event['output_index']=1
+    elif mutation=='bad_index':events[2]['output_index']=True
+    elif mutation=='negative_index':events[2]['output_index']=-1
+    elif mutation=='large_index':events[2]['output_index']=64
+    elif mutation=='missing_index':events[2].pop('output_index')
+    elif mutation=='bad_item':events[2]['item']=None
+    elif mutation=='missing_id':events[2]['item'].pop('id')
+    elif mutation=='long_id':events[2]['item']['id']='x'*201
+    elif mutation=='control_id':events[2]['item']['id']='item\n'
+    elif mutation=='tool':events[2]['item']['type']='function_call'
+    elif mutation=='refusal':events[-2]['item']['content']=[{'type':'refusal','refusal':'No'}]
+    elif mutation=='terminal_id':events[-1]['response']['id']='other'
+    elif mutation=='inprogress_id':events[1]['response']['id']='other'
+    elif mutation=='bad_response_id':events[0]['response']['id']=True
+    elif mutation=='terminal_count':events[-1]['response']['output']=[events[-2]['item']]*2
+    elif mutation=='terminal_text':events[-1]['response']['output']=[dict(events[-2]['item'],content=[{'type':'output_text','text':'Wrong'}])]
+    elif mutation=='terminal_identity':events[-1]['response']['output']=[dict(events[-2]['item'],id='other')]
+    elif mutation=='terminal_shape':events[-1]['response']['output']=None
+    elif mutation=='event_item_id':events[4]['item_id']='other'
+    elif mutation=='event_content_index':events[4]['content_index']=True
+    elif mutation=='event_after_done':events.insert(-1,events[4])
+    elif mutation=='invalid_usage':events[-1]['response']['usage']['output_tokens']=-1
+    else:events[-2]['item']['content'][0]['text']=TOKEN
+    with pytest.raises(ProviderAccessError):run_events(events)
+
+
+def test_stream_multiple_items_preserves_index_order():
+    events=streamed_events()
+    second={'id':'item-2','type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':'!'}]}
+    events.insert(-1,{'type':'response.output_item.added','output_index':1,'item':dict(second,status='in_progress')})
+    events.insert(-1,{'type':'response.output_item.done','output_index':1,'item':second})
+    value,_=run_events(events);assert value.payload.content[0].text=='Ok!'
+
+
+def test_stream_duplicate_item_id_rejected_with_otherwise_finished_contiguous_items():
+    events=streamed_events()
+    second={'id':'item-1','type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':'!'}]}
+    events.insert(-1,{'type':'response.output_item.added','output_index':1,'item':dict(second,status='in_progress')})
+    events.insert(-1,{'type':'response.output_item.done','output_index':1,'item':second})
+    with pytest.raises(ProviderAccessError,match='duplicate output items'):run_events(events)
+
+
+@pytest.mark.parametrize('status', [None,'completed','in_progress','incomplete'])
+def test_reasoning_finished_event_allows_optional_status_only(status):
+    events=streamed_events()
+    reasoning={'id':'reasoning-1','type':'reasoning','summary':[]}
+    if status is not None:reasoning['status']=status
+    # Shift the ordinary assistant message to index1 after completed reasoning0.
+    for event in events:
+        if 'output_index' in event:event['output_index']=1
+    events.insert(2,{'type':'response.output_item.added','output_index':0,'item':{'id':'reasoning-1','type':'reasoning'}})
+    events.insert(3,{'type':'response.output_item.done','output_index':0,'item':reasoning})
+    if status in (None,'completed'):
+        value,_=run_events(events);assert value.payload.content[0].text=='Ok'
+    else:
+        with pytest.raises(ProviderAccessError,match='unfinished output item'):run_events(events)
+
+
+def test_stream_finished_first_item_cannot_hide_unfinished_second_item():
+    events=streamed_events()
+    events.insert(-1,{'type':'response.output_item.added','output_index':1,
+                      'item':{'id':'item-2','type':'message','role':'assistant','status':'in_progress','content':[]}})
+    assert events[-1]['response']['output']==[]
+    with pytest.raises(ProviderAccessError,match='unfinished or missing output items'):
+        run_events(events)

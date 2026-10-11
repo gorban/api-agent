@@ -138,6 +138,38 @@ def _json(body):
         raise _invalid() from None
 
 
+def _stream_identity(item, *, finished=False):
+    if type(item) is not dict:
+        raise _invalid()
+    identifier = item.get('id')
+    kind = item.get('type')
+    if (type(identifier) is not str or not identifier or len(identifier) > 200
+            or not identifier.isprintable() or kind not in ('message', 'reasoning')):
+        raise _invalid()
+    if finished and (item.get('status') != 'completed' and not (kind == 'reasoning' and item.get('status') is None)):
+        raise _invalid('GPT inference returned an unfinished output item.')
+    return identifier, kind
+
+
+def _stream_completed(response, added, completed, token):
+    if type(response) is not dict or type(response.get('output')) is not list:
+        raise _invalid()
+    if added:
+        if set(added) != set(completed) or set(completed) != set(range(len(completed))):
+            raise _invalid('GPT inference stream contains unfinished or missing output items.')
+        recovered = [completed[index] for index in range(len(completed))]
+        terminal = response['output']
+        if terminal:
+            if len(terminal) != len(recovered):
+                raise _invalid('GPT inference terminal output conflicts with finished items.')
+            for left, right in zip(terminal, recovered):
+                if (_stream_identity(left, finished=True) != _stream_identity(right, finished=True)
+                        or left.get('role') != right.get('role') or left.get('content') != right.get('content')):
+                    raise _invalid('GPT inference terminal output conflicts with finished items.')
+        response = dict(response, output=recovered)
+    return _result(response, True, token)
+
+
 def _sse(body, token, request_id):
     try:
         text = body.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
@@ -146,6 +178,8 @@ def _sse(body, token, request_id):
     except UnicodeDecodeError:
         raise _invalid() from None
     final = None
+    added, completed, identifiers = {}, {}, set()
+    response_id = None
     for block in text.split('\n\n'):
         values = [line[5:].lstrip(' ') for line in block.split('\n') if line.startswith('data:')]
         if not values:
@@ -154,6 +188,36 @@ def _sse(body, token, request_id):
         if type(data) is not dict or type(data.get('type')) is not str or final is not None:
             raise _invalid()
         kind = data['type']
+        if kind in ('response.created', 'response.in_progress'):
+            response = data.get('response')
+            if type(response) is dict and 'id' in response:
+                identifier = response['id']
+                if (type(identifier) is not str or not identifier or len(identifier) > 200
+                        or not identifier.isprintable() or (response_id is not None and response_id != identifier)):
+                    raise _invalid()
+                response_id = identifier
+        if 'output_index' in data:
+            index = data['output_index']
+            if type(index) is not int or not 0 <= index < 64:
+                raise _invalid()
+            if kind == 'response.output_item.added':
+                identity = _stream_identity(data.get('item'))
+                if index in added or identity[0] in identifiers:
+                    raise _invalid('GPT inference stream contains duplicate output items.')
+                added[index] = identity
+                identifiers.add(identity[0])
+            elif kind == 'response.output_item.done':
+                item = data.get('item')
+                if index not in added or index in completed or _stream_identity(item, finished=True) != added[index]:
+                    raise _invalid('GPT inference stream contains inconsistent output items.')
+                completed[index] = item
+            else:
+                if index not in added or index in completed or data.get('item_id') != added[index][0]:
+                    raise _invalid('GPT inference stream contains inconsistent output identities.')
+                if 'content_index' in data and (type(data['content_index']) is not int or not 0 <= data['content_index'] < 64):
+                    raise _invalid()
+        elif kind in ('response.output_item.added', 'response.output_item.done'):
+            raise _invalid()
         if kind in ('response.failed', 'response.incomplete', 'error'):
             response = data.get('response')
             if kind == 'response.incomplete':
@@ -163,7 +227,10 @@ def _sse(body, token, request_id):
                 failure = {'error': failure}
             raise _rejection(200, failure, request_id, token)
         if kind == 'response.completed':
-            final = _result(data.get('response'), True, token)
+            response = data.get('response')
+            if response_id is not None and (type(response) is not dict or response.get('id') != response_id):
+                raise _invalid('GPT inference terminal response identity changed.')
+            final = _stream_completed(response, added, completed, token)
     if final is None:
         raise _invalid('GPT inference stream ended before completion.')
     return final
@@ -202,7 +269,7 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
                     raise _rejection(response.status_code, data, request_id, access_token,
                                    _authentication_type(response.headers.get('www-authenticate')))
                 if subscription:
-                    if response.headers.get('content-type', '').split(';')[0].strip().lower() != 'text/event-stream':
+                    if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
                         raise _invalid('GPT subscription inference requires an event stream.')
                     return _sse(raw, access_token, request_id)
                 return _result(_json(raw), api_mode == 'responses', access_token)
