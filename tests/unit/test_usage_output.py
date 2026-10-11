@@ -40,15 +40,14 @@ def test_actual_token_totals_retain_known_counts_without_double_counting_subsets
         output_tokens=4, cache_read_tokens=0, cache_creation_tokens=0, reasoning_tokens=2)
     report = usage.report()
     assert tokens_text(report) == ('Tokens this run:\n'
-        '  input: 1,202\n  output: 14\n  cached input: 1,000\n'
-        '  cache write: 0\n  reasoning: 5\n  total (input + output): 1,216\n'
-        '  Cached input and cache writes are included in input; reasoning is included in output.')
+        '  non-cached input: 202\n  non-reasoning output: 9\n  cached input: 1,000\n'
+        '  cache write: 0\n  reasoning: 5\n  total: 1,216')
     assert final_usage_text(report).endswith(tokens_text(report))
-    assert 'total (input + output): 1,210' in tokens_text(report, 'first')
-    assert 'total (input + output): 6' in tokens_text(report, 'second')
+    assert 'total: 1,210' in tokens_text(report, 'first')
+    assert 'total: 6' in tokens_text(report, 'second')
     assert has_tokens(report, 'first') and has_tokens(report, 'second')
     assert not has_tokens(report, 'absent')
-    assert 'total (input + output): 0' in tokens_text(report, 'absent')
+    assert 'total: 0' in tokens_text(report, 'absent')
 
 
 def test_unknown_failed_calls_do_not_erase_reported_spend_or_claim_zero():
@@ -61,14 +60,14 @@ def test_unknown_failed_calls_do_not_erase_reported_spend_or_claim_zero():
     report = usage.report()
     # CSV keeps unavailable aggregates; display retains known lower bounds.
     assert report['usage_rows'][0]['total_tokens'] is None
-    assert 'total (input + output): 16 + unknown' in tokens_text(report, 'first')
-    assert 'input: 11 + unknown' in tokens_text(report)
+    assert 'total: 16 + unknown' in tokens_text(report, 'first')
+    assert 'non-cached input (writes unreported): unavailable' in tokens_text(report)
     assert has_tokens(report, 'first') and not has_tokens(report, 'second')
-    assert 'total (input + output): unavailable' in tokens_text(report, 'second')
+    assert 'total: unavailable' in tokens_text(report, 'second')
     assert report['unmeasured_calls'] == {'second':1}
     assert 'cached input: unavailable' in tokens_text(report)
     legacy = {'usage_rows':[{'session_id':'first', 'input_tokens':2, 'output_tokens':3, 'total_tokens':5}]}
-    assert has_tokens(legacy, 'first') and 'total (input + output): 5' in tokens_text(legacy, 'first')
+    assert has_tokens(legacy, 'first') and 'total: 5' in tokens_text(legacy, 'first')
 
 
 def test_each_count_displays_its_scoped_cost_and_identifies_subset_amounts():
@@ -80,13 +79,11 @@ def test_each_count_displays_its_scoped_cost_and_identifies_subset_amounts():
         'test_costs':{'one':{'category_costs_usd':{'input_tokens':.000002,'output_tokens':.000008,
             'cache_read_tokens':0,'cache_creation_tokens':None,'reasoning_tokens':.0000016,'total_tokens':.00001}}}}
     assert tokens_text(report).splitlines() == ['Tokens this run:',
-        '  input: 10 — $0.200', '  output: 5 — $0.800', '  cached input: 2 — $0.010',
-        '  cache write: 0', '  reasoning: 1 — $0.160', '  total (input + output): 15 — $1.000',
-        '  Cached input and cache writes are included in input; reasoning is included in output.']
+        '  non-cached input: 8 — $0.190', '  non-reasoning output: 4 — $0.640', '  cached input: 2 — $0.010',
+        '  cache write: 0', '  reasoning: 1 — $0.160', '  total: 15 — $1.000']
     assert tokens_text(report, 'one').splitlines() == ['Tokens this run:',
-        '  input: 10 — $0.000002', '  output: 5 — $0.000008', '  cached input: 2 — $0.000',
-        '  cache write: 0', '  reasoning: 1 — $0.0000016', '  total (input + output): 15 — $0.00001',
-        '  Cached input and cache writes are included in input; reasoning is included in output.']
+        '  non-cached input: 8 — $0.000002', '  non-reasoning output: 4 — $0.0000064', '  cached input: 2 — $0.000',
+        '  cache write: 0', '  reasoning: 1 — $0.0000016', '  total: 15 — $0.00001']
 
 
 def test_sub_nanodollar_contributions_remain_distinct_from_zero():
@@ -165,7 +162,7 @@ def test_zero_tokens_hide_even_known_category_prices_and_unknown_prices_have_no_
     from api_agent.telemetry.usage_output import tokens_text
     report = {'usage_rows':[{'input_tokens':0, 'output_tokens':5}],
               'category_costs_usd':{'input_tokens':0, 'output_tokens':None}}
-    assert '  input: 0\n  output: 5\n' in tokens_text(report)
+    assert '  non-cached input (writes unreported): unavailable\n  output (reasoning unreported): 5\n' in tokens_text(report)
     assert ' — ' not in tokens_text(report)
 
 

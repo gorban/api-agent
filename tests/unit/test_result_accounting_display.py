@@ -36,8 +36,8 @@ def test_shared_details_metadata_precedes_status_or_full_failure_trace(status, c
     assert 'This test cost: $0.020' in rendered.plain
     assert 'This test cost: $0.020\n  Historical average: $0.050' in rendered.plain
     assert 'Cost basis: historical_quota\n' + tokens_text(usage, result.identity.id) in rendered.plain
-    assert 'input: 11 — $0.008' in rendered.plain and 'output: 5 — $0.012' in rendered.plain
-    assert 'total (input + output): 16 — $0.020' in rendered.plain and 'total (input + output): 16 — $0.100' not in rendered.plain
+    assert 'non-cached input: 9 — $0.007' in rendered.plain and 'non-reasoning output: 4 — $0.0096' in rendered.plain
+    assert 'total: 16 — $0.020' in rendered.plain and 'total: 16 — $0.100' not in rendered.plain
     assert rendered.plain.endswith(tokens_text(usage, result.identity.id) + '\n\n' + status.upper())
     assert rendered.spans[-1].style == color
     result.traceback = 'AssertionError: failed\n  source.py:42\noriginal traceback'

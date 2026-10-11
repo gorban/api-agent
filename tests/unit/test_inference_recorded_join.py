@@ -126,11 +126,13 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
         assert len(csv.splitlines()) == 3
         assert sum(row.kind=='inference_usage' for row in events)==4
         assert sum(row['total_tokens'] for row in usage['usage_observations']) == 6
-        assert '  input: 4' in console[-1] and '\n  output: 2' in console[-1]
+        assert sum(row['input_tokens'] for row in usage['usage_observations']) == 4
         artifact = json.loads((result.directory/'accounting.json').read_text())
         assert [row['calls'][0]['usage']['input_tokens'] for row in artifact['tests']] == [2,2]
         assert [row['calls'][0]['usage']['output_tokens'] for row in artifact['tests']] == [1,1]
         if status == 200:
+            assert '  non-cached input (writes unreported): 4' in console[-1]
+            assert '\n  non-reasoning output: 2' in console[-1]
             assert all(row['list_cost_usd'] > 0 for row in artifact['tests'])
             for row in artifact['tests']:
                 categories = row['stabilized_estimate']['category_costs_usd']
@@ -139,11 +141,13 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
                 assert categories['total_tokens'] == pytest.approx(row['stabilized_estimate']['estimated_cost_usd'])
                 assert usage['test_costs'][row['test_id']]['category_costs_usd'] == categories
             assert usage['category_costs_usd']['total_tokens'] == pytest.approx(.0000012)
-            assert 'input: 4 — $0.0000004\n  output: 2 — $0.0000008' in console[-1]
-            assert 'total (input + output): 6 — $0.0000012' in console[-1]
+            assert 'non-cached input (writes unreported): 4 — $0.0000004\n  non-reasoning output: 2 — $0.0000008' in console[-1]
+            assert 'total: 6 — $0.0000012' in console[-1]
         else:
+            assert '  non-cached input (writes unreported): unavailable' in console[-1]
+            assert '\n  output (reasoning unreported): 2' in console[-1]
             assert all(value is None for value in usage['category_costs_usd'].values())
-            assert '  input: 4\n  output: 2\n' in console[-1]
+            assert '  non-cached input (writes unreported): unavailable\n  output (reasoning unreported): 2\n' in console[-1]
             assert ' — unavailable' not in console[-1]
         if status == 200 and failure_usage:
             assert all(row['outcomes'] == ['failed'] for row in artifact['tests'])
@@ -153,7 +157,7 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
     else:
         assert len(csv.splitlines())==1
         assert len(usage['unmeasured_calls']) == 2
-        assert 'total (input + output): unavailable' in console[-1]
+        assert 'total: unavailable' in console[-1]
         assert 'HTTP status: 403' in result.execution.output and 'Request permission denied' in result.execution.output
         assert 'code: denied' in result.execution.output and 'request ID: request-safe' in result.execution.output
     artifacts = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
