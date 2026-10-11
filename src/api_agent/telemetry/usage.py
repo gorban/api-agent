@@ -74,6 +74,12 @@ class SuiteUsage:
         self._unknown: dict[tuple[str, str, str], set[str]] = {}
         self._prompts: dict[tuple[str, str], str] = {}
         self._lock = RLock()
+        from .costs import CostLedger
+        self._costs = CostLedger()
+
+    def add_cost(self, call_id, session_id, quote=None):
+        with self._lock:
+            self._costs.record(call_id, session_id, quote)
 
     def add_usage(self, *, provider: str, model: str, session_id: str,
                   llm_calls: int = 1, input_tokens: int | None = None,
@@ -113,6 +119,15 @@ class SuiteUsage:
                 raise ValueError('prompt identity reused with another kind')
             self._prompts[key] = kind
             return prior is None
+
+    def observe_snapshot(self, phase, snapshot):
+        if phase not in ('before', 'after') or not isinstance(snapshot, QuotaSnapshot):
+            raise ValueError('Invalid quota observation')
+        with self._lock:
+            prior = getattr(self, phase)
+            if prior is None or ((snapshot.captured_at < prior.captured_at) if phase == 'before'
+                                 else (snapshot.captured_at > prior.captured_at)):
+                setattr(self, phase, snapshot)
 
     def capture_before(self, fetcher: Callable[[], QuotaSnapshot]) -> QuotaSnapshot:
         snapshot = fetcher()
@@ -171,7 +186,7 @@ class SuiteUsage:
             estimate = self.cost_estimator(usage_rows=rows, before=before, after=after)
             if type(estimate) not in (int, float) or not math.isfinite(estimate) or estimate < 0:
                 raise ValueError('provider cost estimate must be finite and nonnegative')
-        return {'run_id': self.run_id, 'before': _snapshot_json(before), 'after': _snapshot_json(after),
+        report = {'run_id': self.run_id, 'before': _snapshot_json(before), 'after': _snapshot_json(after),
                 'pct_used_before': None if before is None or not _valid_pct(before.pct_used) else before.pct_used,
                 'pct_used_after': None if after is None or not _valid_pct(after.pct_used) else after.pct_used,
                 'pct_point_delta': delta, 'quota_unavailable_reason': reason,
@@ -182,6 +197,12 @@ class SuiteUsage:
                 'reset_countdown_seconds': reset_seconds,
                 'reset_countdown_hms': None if reset_seconds is None else f'{reset_seconds // 3600:02d}:{reset_seconds // 60 % 60:02d}:{reset_seconds % 60:02d}',
                 'usage_rows': rows}
+        with self._lock:
+            if any(quote is not None for _, quote in self._costs.calls.values()):
+                prompts_by_session = {session: sum(key[0] == session for key in self._prompts)
+                                      for session, _ in self._costs.calls.values()}
+                report.update(self._costs.report(report, prompts_by_session, now=now))
+        return report
 
     def write_csv(self, run_csv: Path, external_csv: Path | None = None) -> None:
         """Write the run artifact and optionally append to the shared usage CSV."""

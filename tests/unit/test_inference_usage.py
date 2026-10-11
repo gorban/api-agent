@@ -60,3 +60,17 @@ def test_multiple_turns_unknown_usage_and_failed_attempt_counts():
     assert tracker.report()['prompt_count']==3
     assert tracker.rows()[0]['llm_calls']==2
     assert tracker.rows()[0]['input_tokens'] is None and tracker.rows()[0]['total_tokens'] is None
+
+
+def test_cost_quote_published_with_tokens_is_joined_to_same_test(tmp_path,monkeypatch):
+    path=tmp_path/'events';monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST','test.py::test_request (call)')
+    call_id=publish(REQUEST)
+    publish(REQUEST,RESULT,call_id=call_id,quote={'list_cost_usd':.25,'payment':None})
+    tracker=SuiteUsage('run')
+    for line in path.read_text().splitlines():capture(event(json.loads(line)['data']),tracker)
+    report=tracker.report()
+    assert report['test_costs']['test-id']['estimated_cost_usd']==.25
+    assert report['cost_per_prompt_usd']==.25 and report['cost_basis']=='list_price'
+    from api_agent.telemetry.usage_output import final_usage_text
+    assert 'Cost basis: list_price' in final_usage_text(report)

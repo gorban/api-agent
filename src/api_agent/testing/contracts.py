@@ -25,7 +25,7 @@ class RunnerEvent:
     component: ComponentProgress | None = None
 
 
-def format_test_summary(mode, tests, *, state=None):
+def format_test_summary(mode, tests, *, state=None, elapsed=None):
     """Shared final outcome counts for terminal and interactive test modes."""
     total = len(tests)
     passed = sum(test.status == 'passed' for test in tests)
@@ -40,4 +40,7 @@ def format_test_summary(mode, tests, *, state=None):
         summary += f' ({100 * passed / total if total else 0:.2f}%)'
         if skipped:
             summary += f', {skipped}/{total} skipped ({100 * skipped / total:.2f}%)'
+    if elapsed is not None:
+        from api_agent.tui.test_results import elapsed_time
+        summary += f' — {elapsed_time(elapsed)} total'
     return summary + '.'

@@ -14,3 +14,5 @@ Follow the exact [session and browser contracts](../architecture/provider_archit
 - [ ] Obtain cost estimates from the provider using recorded token counts and optional quota snapshots. Core does not equate percentage points with currency. Divide a valid estimate by a nonzero prompt count; otherwise report per-prompt cost as unavailable. Measured zero remains distinct from unavailable data.
 - [ ] Persist the same frozen usage summary in integration/E2E reports and show it in TUI/stdout. Local-run may show its summary without creating a test report.
 - [ ] Verify lazy initialization, fresh token retrieval, runtime disposal, browser retention, credential-index isolation, concurrent requests, optional quota data, provider cost estimation and identical frozen summaries using synthetic providers. Live provider verification remains separate.
+
+- [x] Use the shared [suite estimate and final timing contracts](implementation_plan_f.md#suite-timing-and-cost-estimates) for recorded integration execution and result presentation. Local-run and E2E ownership wiring remain future tasks above.

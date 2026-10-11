@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from time import monotonic
 
 from api_agent.telemetry.usage import SuiteUsage
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
@@ -29,6 +30,7 @@ class RecordedIntegrationResult:
     usage: dict
     manifest: dict | None
     persisted: bool
+    elapsed: float | None = None
 
     @property
     def exit_code(self):
@@ -66,6 +68,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     accounting remain independent. Register credentials before emitting evidence.
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
+    started_at = monotonic()
     if content_policy is not None:
         config = dict(config, LOG_CONTENT=content_policy.allow_content)
     identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
@@ -85,6 +88,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'))
         usage = SuiteUsage(identity.run_id, cost_estimator=cost_estimator)
         seen = set()
+        recording_ids = {}
         content = {}
         persisted = False
         manifest = None
@@ -116,8 +120,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 label = ('provider:' + os.path.relpath(test.root, context.base_root)
                          if test.root is not None else test.repo)
                 test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
-            recorder.record_test(replace(result, identity=test),
-                                 attachments=content.pop(result.identity.id, ()))
+            filename = recorder.record_test(replace(result, identity=test),
+                                            attachments=content.pop(result.identity.id, ()))
+            recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)
 
         def after(result):
@@ -151,6 +156,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                                                '__suite__', '__suite__::usage_csv')
                         recorder.record_test(TestResult(failure, 'error'))
             usage_summary = usage.report()
+            recorder.attach_test_artifacts({recording_ids[key]: value for key, value in usage_summary.get('test_costs', {}).items()
+                                            if key in recording_ids})
             recorder.record_artifact('usage-summary.json', json.dumps(usage_summary, allow_nan=False).encode())
             output_failed = False
             if usage_output is not None:
@@ -169,7 +176,15 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if external_failed or cleanup_failed or output_failed:
                 raise RuntimeError('Recording finalization failed')
 
+        def observe_quota(phase, snapshot):
+            usage.observe_snapshot(phase, snapshot)
+            if phase == 'before' and usage_output is not None:
+                usage_output(starting_usage_line(usage.report()))
+
         def event(row):
+            if row.kind == 'quota_snapshot':
+                from .quota_events import capture
+                capture(row, observe_quota)
             if row.kind == 'inference_usage':
                 from .inference_usage import capture
                 capture(row, usage)
@@ -190,6 +205,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                            before_run=before, on_result=record, after_run=after,
                            on_event=event, output=output, cancel_event=cancel_event,
                            unattended_index_source=unattended_index_source,
+                           **({'quota_observer': observe_quota} if runner is run_integration_tests and quota_fetcher is None else {}),
                            **({'interaction': interaction} if interaction is not None else {}))
         return RecordedIntegrationResult(execution, identity, directory if local_directory else None,
-                                         usage_summary if usage_summary is not None else usage.report(), manifest, persisted)
+                                         usage_summary if usage_summary is not None else usage.report(), manifest, persisted,
+                                         monotonic() - started_at)

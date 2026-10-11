@@ -338,3 +338,21 @@ type = "str"
 default = "https://localhost:8443"
 review_optional = true
 help = "HTTPS origin of the agent's Django backend serving its HTTP API. Local operations bind its port on loopback; frontend and provider callback URLs are configured separately."
+
+[fields.LLM_QUOTA_PERIOD]
+type = "str"
+enum = ["day", "week"]
+default = "week"
+help = "Quota window used for subscription cost estimation. The selected provider reads only a matching window. API-key authentication uses list prices instead. Override to match the selected provider/account allocation."
+
+[fields.LLM_PAY_PERIOD]
+type = "str"
+enum = ["day", "week", "month"]
+default = "month"
+help = "Payment/allocation period for subscription estimates. Month means the current UTC calendar month; fractional weeks are its days divided by seven. API-key authentication uses list prices instead."
+
+[fields.LLM_PAY_PERIOD_LIMIT]
+type = "float"
+validation = "nonnegative"
+default = 100.0
+help = "USD payment/allocation limit per LLM_PAY_PERIOD for subscription estimates. A quota delta consumes that fraction of the payment allocated to one quota window. This is an estimate assuming exclusive account use, not an invoice. API-key authentication uses list prices instead."

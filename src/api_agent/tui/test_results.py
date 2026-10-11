@@ -10,6 +10,21 @@ def elapsed_time(seconds):
     return (f'{minutes}m' + (f' {seconds}s' if seconds else '')) if minutes else f'{seconds}s'
 
 
+def completed_summary(content, elapsed):
+    """Append the frozen whole-operation clock to the first summary line."""
+    content = content.plain if isinstance(content, Text) else content
+    first, separator, rest = content.partition('\n')
+    return first.rstrip('.') + f' — {elapsed_time(elapsed)} total.' + separator + rest
+
+
+def compact_cost(value):
+    if value is None:
+        return '—'
+    if 0 < value < .000001:
+        return '<0.000001'
+    return f'{value:.6f}' if value < 100 else f'{value:.2f}'
+
+
 def component_timing(components):
     """Show leaf clocks, or their nearest timed ancestor for untimed work."""
     components = tuple(components)

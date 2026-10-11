@@ -455,6 +455,9 @@ def test_nested_calls_and_resistant_operation_keep_dependencies_owned():
         assert not auth.closed and not driver.stop.called
         release.set()
         await call
+        # The blocked-cleanup proof above needs a short deadline; successful
+        # disposal should not depend on a 20 ms scheduling budget under xdist.
+        llm._timeout = 1
         await llm.aclose()
         assert auth.closed
         driver.stop.assert_awaited_once()

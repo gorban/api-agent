@@ -11,7 +11,7 @@ def percentage(value):
 
 
 def money(value):
-    return f'${value:.3f}' if number(value) else 'unavailable'
+    return (f'${value:.9f}'.rstrip('0') if 0 < value < .001 else f'${value:.3f}') if number(value) else 'unavailable'
 
 
 def starting_usage_line(report):
@@ -31,6 +31,8 @@ def final_usage_text(report):
              f"Estimated cost per turn: {money(report.get('cost_per_prompt_usd'))}",
              f"Quota reset countdown: {report.get('reset_countdown_hms') or 'unavailable'}",
              'Cost attribution assumes exclusive use of this account during the operation; other activity invalidates it.']
+    if report.get('cost_basis'):
+        lines.append(f"Cost basis: {report['cost_basis']}")
     if report.get('quota_unavailable_reason'):
         lines.append(f"Quota unavailable: {report['quota_unavailable_reason']}")
     return '\n'.join(lines)

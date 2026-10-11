@@ -185,3 +185,11 @@ preview requirements, including its unsupported-option restrictions.
   model through the same allowed catalog rather than a hardcoded Sol selection.
   Cover both consumer paths, bootstrap validation and metadata wire preservation.
 - [ ] Wire this policy into the [public model-list and inference API](implementation_plan_f.md).
+
+## GPT estimate ownership
+
+- [x] Supply standard text list rates for exactly known direct-provider selections, with cached-input discounts and long-context premiums; do not invent rates for unknown selections or third-party routing. API-key mode never reads subscription quota or uses subscription allocation prices.
+- [x] Use a bounded optional read of the selected subscription token's weekly/daily quota window, matching LLM_QUOTA_PERIOD, before/after owned integration work. Rejection, schema changes or unavailable fields fall back to list pricing; do not read another application's auth cache or let accounting change authentication/test outcomes.
+- [ ] Extend third-party routing price discovery from validated catalog metadata and support later media/tool/cache-write billing metrics. Unknown routed prices stay unavailable until implemented and verified.
+
+Pricing sources, verified 2026-10-10: [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol), [6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol), [4.1 nano](https://developers.openai.com/api/docs/models/gpt-4.1-nano). Rates are USD per million standard text tokens. Missing cached-input detail is estimated at the uncached input rate; reasoning is already included in output. Quota protocol evidence: [official backend client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client.rs). This optional endpoint's compatibility with the selected subscription token requires live verification; inaccessible usage remains unavailable.

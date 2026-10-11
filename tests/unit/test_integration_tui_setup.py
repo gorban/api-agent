@@ -27,7 +27,7 @@ def test_skipped_results_are_orange_and_enter_opens_selected_reason(tmp_path):
             await pilot.press('s')
             await pilot.pause(.4)
             body = app.screen.query_one('#body', Static).content
-            assert 'PASS' in body.plain and '1/3 passed (33.33%), 2/3 skipped (66.67%).' in body.plain
+            assert 'PASS' in body.plain and '1/3 passed (33.33%), 2/3 skipped (66.67%)' in body.plain
             skip_offset = body.plain.index('2/3 skipped')
             assert any(span.start <= skip_offset < span.end and span.style == 'dark_orange'
                            for span in body.spans)

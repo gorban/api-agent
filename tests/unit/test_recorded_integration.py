@@ -284,3 +284,55 @@ def test_terminal_recording_accepts_start_or_debug(tmp_path, debug, start):
     else:
         with pytest.raises(PermissionError, match='Start acceptance'):
             recorded.validate_recorded_integration([test], config, accepted=True)
+
+
+def test_worker_quota_observation_is_frozen_with_cost_shares_and_start_output(tmp_path):
+    from api_agent.testing.contracts import RunnerEvent
+    context,test,config=fixture(tmp_path);lines=[]
+    now=datetime.now(timezone.utc);reset=now+timedelta(days=3)
+    before=QuotaSnapshot(10,'weekly:opaque',reset,now)
+    after=QuotaSnapshot(11,'weekly:opaque',reset,now+timedelta(seconds=2))
+    def run(context,tests,**hooks):
+        hooks['before_run']()
+        usage_payload={'call_id':'00000000-0000-0000-0000-000000000001','selection':'gpt-example','usage':None}
+        hooks['on_event'](RunnerEvent('inference_usage',identity=test,text=json.dumps(usage_payload)))
+        usage_payload.update(usage={'input_tokens':2,'output_tokens':1,'cached_input_tokens':0,'reasoning_tokens':0},
+            quote={'list_cost_usd':.25,'payment':{'usd':100,'quota_seconds':604800,'period':'calendar_month'}})
+        hooks['on_event'](RunnerEvent('inference_usage',identity=test,text=json.dumps(usage_payload)))
+        for phase,snapshot in [('before',before),('after',after)]:
+            from api_agent.telemetry.usage import _snapshot_json
+            hooks['on_event'](RunnerEvent('quota_snapshot',identity=test,text=json.dumps({'phase':phase,'snapshot':_snapshot_json(snapshot)})))
+        result=IntegrationRunResult(0,(TestResult(test,'passed'),),'')
+        hooks['on_result'](result.tests[0]);hooks['after_run'](result)
+        return result
+    result=recorded.run_recorded_integration(context,[test],config,accepted=True,storage=Storage(),runner=run,usage_output=lines.append)
+    assert result.persisted and result.usage['cost_basis']=='quota_payment'
+    assert result.usage['test_costs'][test.id]['estimated_cost_usd']==result.usage['estimated_cost_usd']
+    assert lines[1]=='Starting quota used: 10.000%'
+    row=json.loads(next(result.directory.glob('*-result.json')).read_bytes())
+    artifact=next(a for a in row['attachments'] if a['name']=='Test cost estimate')
+    assert json.loads((result.directory/artifact['source']).read_bytes())['basis']=='quota_payment'
+    assert result.elapsed>=0
+
+
+def test_real_worker_quota_events_reach_recorded_suite(tmp_path):
+    context,test,config=fixture(tmp_path)
+    root=context.owner_root;root.mkdir()
+    suite=root/'tests/integration';suite.mkdir(parents=True)
+    context.suite_paths=lambda mode:(suite,)
+    testfile=suite/'test_quota.py'
+    testfile.write_text('''from datetime import datetime,timedelta,timezone
+from api_agent.telemetry.usage import QuotaSnapshot
+from api_agent.testing.quota_events import publish
+
+def test_quota():
+    now=datetime.now(timezone.utc)
+    reset=now+timedelta(days=3)
+    publish('before',QuotaSnapshot(20,'window:opaque',reset,now))
+    publish('after',QuotaSnapshot(21,'window:opaque',reset,now+timedelta(seconds=1)))
+''')
+    from api_agent.testing.collection import collect_tests
+    selected,=collect_tests(context,'integration',config=config)
+    result=recorded.run_recorded_integration(context,[selected],config,accepted=True,storage=Storage())
+    assert result.execution.exit_code==0 and result.persisted
+    assert result.usage['pct_used_before']==20 and result.usage['pct_point_delta']==1

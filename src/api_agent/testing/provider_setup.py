@@ -105,7 +105,7 @@ _inspection_providers = []
 class IntegrationLLM:
     """One worker-local operation; this does not implement backend-wide IPC."""
     def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None,
-                 password_manager_registry=None, password_manager_pack_root=None, interaction=None):
+                 password_manager_registry=None, password_manager_pack_root=None, interaction=None, quota_observer=None):
         from api_agent.auth.interaction_transport import OwnedInteraction
         self.interaction = None if interaction is None else OwnedInteraction(interaction)
         self.config = dict(config)
@@ -124,6 +124,9 @@ class IntegrationLLM:
         self._shared_setup = None
         self._operation_id = str(uuid4())
         self._setup_lock = asyncio.Lock()
+        self._quota_lock = asyncio.Lock()
+        self._quota_observer = quota_observer
+        self._quota_before = self._quota_after = False
         self._retained_owners = []
         self._credential_tasks = set()
         self.closed = False
@@ -252,6 +255,29 @@ class IntegrationLLM:
                                                  complete=complete if callable(getattr(implementation, 'acomplete', None)) else None,
                                                  validate_request=lambda request: self._validate_request(implementation, request))
 
+    async def _capture_quota(self, phase):
+        async with self._quota_lock:
+            if getattr(self, '_quota_' + phase):
+                return
+            setattr(self, '_quota_' + phase, True)
+            method = getattr(self.provider.implementation, 'asnapshot', None)
+            if not callable(method):
+                return
+            try:
+                from api_agent.providers.progress import component_timeout
+                async with component_timeout('Provider quota snapshot', 3):
+                    snapshot = await self.owner.call(method)
+                if snapshot is not None:
+                    from .quota_events import validate_snapshot, publish
+                    validate_snapshot(snapshot)
+                    if self._quota_observer is None:
+                        publish(phase, snapshot)
+                    else:
+                        self._quota_observer(phase, snapshot)
+            except Exception:
+                # Accounting failure never changes authentication/test outcomes.
+                pass
+
     def _validate_request(self, implementation, request):
         from api_agent.providers.cache_policy import validate_provider_request
         from api_agent.providers.selection import ModelSelectionPolicy
@@ -271,11 +297,13 @@ class IntegrationLLM:
         async with self._setup_lock:
             await self._prepare_setup()
         await self._shared_setup.ensure_ready(selected_identity=self._selected_identity())
+        await self._capture_quota('before')
 
     async def _describe(self):
         async with self._setup_lock:
             await self._prepare_setup()
         from api_agent.providers.selection import ModelSelectionPolicy
+        await self._ensure()
         catalog = await self._shared_setup.describe(selected_identity=self._selected_identity())
         return ModelSelectionPolicy(self.config).filter(catalog)
 
@@ -291,6 +319,7 @@ class IntegrationLLM:
 
     async def _complete(self, request):
         request = await self._preflight(request)
+        await self._ensure()
         return await self._shared_setup.complete(request, selected_identity=self._selected_identity())
 
     def complete(self, request):
@@ -301,7 +330,8 @@ class IntegrationLLM:
         result = None
         try:
             result = self._run_private(self._complete(request))
-            publish(request, result, call_id=call_id)
+            from api_agent.providers.costs import quote_cost
+            publish(request, result, call_id=call_id, quote=quote_cost(self.provider.implementation, request, result))
             return result
         except SetupPrerequisiteError as error:
             pytest.skip(str(error))
@@ -347,6 +377,8 @@ class IntegrationLLM:
         if self.interaction is not None:
             self.interaction.cancel()
         try:
+            if self._quota_before and not self._quota_after and self.owner is not None:
+                await self._capture_quota('after')
             await self._release_retained()
             if self._shared_setup is not None:
                 await self._shared_setup.aclose()
@@ -403,7 +435,7 @@ class RemoteIntegrationLLM:
         call_id = publish(request)
         try:
             result = self._request(lambda: self.client.complete(request))
-            publish(request, result, call_id=call_id)
+            publish(request, result, call_id=call_id, quote=getattr(self.client, 'cost_quote', None))
             return result
         finally:
             from .inference_content import publish_content
