@@ -30,25 +30,36 @@ Help, units and collection do not start this backend. Integration startup alloca
 
 See [contract hardening](../prds/implementation_plan_m3.md) and [lazy setup](../prds/implementation_plan_f2b.md) for remaining work. Synthetic multiprocess tests prove the ownership boundary separately from live authentication acceptance.
 
-Catalogs contain selection IDs, display names and optional version, output-token
-and context limits. Unknown metadata remains absent rather than inferred from an
-ID. Strict local/wire validation applies the same count, text and aggregate byte
+Catalogs contain selection IDs, display names and optional family, version,
+output-token and context limits. Providers normalize their own documented IDs;
+the shared agent never infers a family or version from vendor spelling. Unknown
+metadata stays absent. Strict local/wire validation applies the same count, text and aggregate byte
 limits before any result reaches a worker. No raw response or key metadata is
 exported. Short waiter deadlines and lease revocation cannot poison a sibling's
 shared discovery; operation disposal drains the catalog before releasing auth.
 
 ## Text-request checkpoint
 
-The selected provider's `cfg/tests.toml` supplies authored `request_selections`
-for the small generic request integration. Each entry has `selected_llm` and a
-`when` table matching effective settings (scalar values or lists of alternatives);
-the first match wins. This is test metadata, not a runtime configuration setting
-or spending opt-in. A provider without a matching case skips that unsupported
-test; the bundled GPT provider supplies cases for both authentication modes.
-It sends one short
-user turn, requires completed nonempty assistant text, and does not require
-catalog permission. Worker request/result codecs reject unsupported features,
-malformed values and aggregate sizes before provider execution or result return.
+`LLM_ALLOWED_MODELS` full-matches model IDs to filter the shared catalog and
+reject explicit disallowed requests before provider loading or authentication.
+`LLM_DEFAULT_MODEL` full-matches that allowed catalog. One match is selected
+without comparison; multiple matches require one provider-described family,
+comparable versions and a unique highest version. Missing metadata, no matches
+and tied highest versions fail explicitly. Regex evaluation has bounded input
+and execution; malformed patterns fail configuration validation.
+
+The base defaults allow GPT-6 Luna, Haiku and Sol and choose the newest Luna.
+Providers/resource packs and .env/ENV/CLI may override these generic declarations.
+`llm_selection` resolves this default for the small shared request integration;
+it requires catalog access. Explicit allowed `complete(request)` calls still do
+not require discovery permission. `cfg/tests.toml` declares provider test roots,
+not hardcoded inference choices. The test sends one short user turn and requires
+completed nonempty assistant text. Worker codecs reject unsupported features,
+malformed values and aggregate sizes before execution or result return.
+
+The public Django model-list route is still deferred. Its implementation must
+use the same filtered catalog and default-selection policy; public inference
+must enforce admission even when a caller bypasses the UI picker.
 
 Integration tests may spend tokens. Interactive users start selected tests;
 noninteractive integration requires `START=True` (also accepts `START=E2E`) or `DEBUG=True`,

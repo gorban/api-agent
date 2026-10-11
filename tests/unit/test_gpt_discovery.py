@@ -41,6 +41,24 @@ def test_discovery_single_authorized_get_preserves_order_and_client(subscription
     assert requests[0].headers['Authorization'] == 'Bearer ' + TOKEN
 
 
+@pytest.mark.parametrize('identifier,family,version', [
+    ('gpt-6-luna', 'gpt-luna', '6'),
+    ('gpt-6.10-luna', 'gpt-luna', '6.10'),
+    ('openai/gpt-6.1-luna-2026-10-01', 'gpt-luna', '6.1+2026.10.01'),
+    ('gpt-6.1-sol', 'gpt-sol', '6.1'),
+    ('gpt-4.1', 'gpt', '4.1'),
+    ('gpt-unknown', None, None),
+])
+def test_public_identifier_metadata_is_provider_owned(identifier, family, version):
+    rows, _ = run_discovery(httpx.Response(200, json={'data': [{'id': identifier}]}))
+    assert rows[0].family == family and rows[0].version == version
+
+
+def test_upstream_version_takes_precedence_over_identifier_version():
+    rows, _ = run_discovery(httpx.Response(200, json={'data': [{'id': 'gpt-6-luna', 'version': '6.2'}]}))
+    assert rows[0].family == 'gpt-luna' and rows[0].version == '6.2'
+
+
 @pytest.mark.parametrize('status,kind', [(401, 'authentication'), (403, 'authorization'), (429, 'rate_limited'), (400, 'invalid_request'), (500, 'unavailable'), (302, 'unavailable')])
 def test_errors_preserve_safe_detail_and_exclude_secret_response_fields(status, kind):
     payload = {'error': {'message': 'Models permission denied: ' + TOKEN + ' https://private.example/key',

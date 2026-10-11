@@ -245,6 +245,8 @@ class IntegrationLLM:
 
     def _validate_request(self, implementation, request):
         from api_agent.providers.cache_policy import validate_provider_request
+        from api_agent.providers.selection import ModelSelectionPolicy
+        ModelSelectionPolicy(self.config).require_allowed(request.selected_llm)
         validate_provider_request(implementation, request)
 
     def _selected_identity(self, config=None):
@@ -264,10 +266,14 @@ class IntegrationLLM:
     async def _describe(self):
         async with self._setup_lock:
             await self._prepare_setup()
-        return await self._shared_setup.describe(selected_identity=self._selected_identity())
+        from api_agent.providers.selection import ModelSelectionPolicy
+        catalog = await self._shared_setup.describe(selected_identity=self._selected_identity())
+        return ModelSelectionPolicy(self.config).filter(catalog)
 
     async def _preflight(self, request):
         from api_agent.providers.cache_policy import configured_request
+        from api_agent.providers.selection import ModelSelectionPolicy
+        ModelSelectionPolicy(self.config).require_allowed(request.selected_llm)
         request = configured_request(request, self.config.get('LLM_CACHE_POLICY'))
         async with self._setup_lock:
             await self._prepare_setup()
@@ -419,13 +425,10 @@ def _worker_interaction(data):
 
 
 @pytest.fixture(scope='session')
-def llm_selection():
-    from .provider_tests import request_selection
+def llm_selection(llm_provider):
+    from api_agent.providers.selection import ModelSelectionPolicy
     data = _read_snapshot()
-    try:
-        return request_selection(data['config'], owner_root=data['owner_root'])
-    except SetupPrerequisiteError as error:
-        pytest.skip(str(error))
+    return ModelSelectionPolicy(data['config']).select_default(llm_provider.describe())
 
 
 @pytest.fixture(scope='session')

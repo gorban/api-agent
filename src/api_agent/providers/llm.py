@@ -130,12 +130,14 @@ class AvailableSelection:
     version: str | None = None
     max_output_tokens: int | None = None
     context_length: int | None = None
+    family: str | None = None
 
     def __post_init__(self):
         _require(isinstance(self.selected_llm, str) and bool(self.selected_llm) and isinstance(self.description, str) and isinstance(self.features, tuple) and all(type(feature) is str and feature in LLM_FEATURES for feature in self.features))
         _require(len(set(self.features)) == len(self.features))
         _require(type(self.display_name) is str)
         _require(self.version is None or type(self.version) is str)
+        _require(self.family is None or (type(self.family) is str and bool(self.family)))
         _require(all(value is None or (type(value) is int and 0 < value <= 2147483647)
                      for value in (self.max_output_tokens, self.context_length)))
 

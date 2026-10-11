@@ -90,11 +90,24 @@ def _catalog(data, subscription, token):
                 or any(value is not None and (type(value) is not int or not 0 < value <= 2147483647)
                        for value in (maximum, context))):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata.')
+        family, inferred_version = _selection_identity(identifier)
         selections.append(AvailableSelection(identifier, description, display_name=name,
-                          version=version, max_output_tokens=maximum, context_length=context))
+                          version=version if version is not None else inferred_version,
+                          max_output_tokens=maximum, context_length=context, family=family))
     if len(selections) > 256:
         raise ModelDiscoveryError('unknown', 'GPT model discovery returned too many selections.')
     return tuple(selections)
+
+
+def _selection_identity(identifier):
+    """Normalize structured public GPT identifiers; unknown names stay unknown."""
+    match = re.fullmatch(r'(?:openai/)?gpt-(\d+(?:\.\d+)*)(-[a-z][a-z0-9-]*?)?(?:-(\d{4}-\d{2}-\d{2}))?', identifier)
+    if match is None:
+        return None, None
+    version, variant, date = match.groups()
+    if date:
+        version += '+' + date.replace('-', '.')
+    return 'gpt' + (variant or ''), version
 
 
 def _endpoint(base_url, access_token, subscription):

@@ -8,6 +8,18 @@
 # configuration; explicit .env, environment and CLI assignments still work.
 version = 1
 
+[fields.LLM_ALLOWED_MODELS]
+type = "str"
+validation = "regex"
+default = '(?:openai/)?gpt-6(?:\.\d+)*-(?:luna|haiku|sol)(?:-\d{4}-\d{2}-\d{2})?'
+help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows GPT-6 Luna, Haiku and Sol, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
+
+[fields.LLM_DEFAULT_MODEL]
+type = "str"
+validation = "regex"
+default = '(?:openai/)?gpt-6(?:\.\d+)*-luna(?:-\d{4}-\d{2}-\d{2})?'
+help = "Full model-ID regular expression for the default model. A single allowed match is selected directly. Multiple matches must share a provider-described family and comparable versions; select the unique highest version. No match, missing comparison metadata or a highest-version tie errors rather than switching models. Default selects GPT-6 Luna. Automatic resolution requires catalog access; explicit allowed model calls do not."
+
 [fields.LLM_CACHE_POLICY]
 type = "str"
 enum = ["", "off", "medium", "high"]

@@ -58,7 +58,7 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
             raise ValueError(f'{name}: path requires an explicit anchor')
         if spec.get('allow_empty') and spec['type'] not in {'path', 'int'}:
             raise ValueError(f'{name}: allow_empty requires path or int type')
-        if spec.get('validation') not in (None, 'nonnegative', 'positive', 'resolution'):
+        if spec.get('validation') not in (None, 'nonnegative', 'positive', 'resolution', 'regex'):
             raise ValueError(f'{name}: unknown validation rule')
         if spec.get('validation') == 'nonnegative' and spec['type'] != 'int':
             raise ValueError(f'{name}: nonnegative validation requires int type')
@@ -66,6 +66,8 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
             raise ValueError(f'{name}: positive validation requires int type')
         if spec.get('validation') == 'resolution' and spec['type'] != 'str':
             raise ValueError(f'{name}: resolution validation requires str type')
+        if spec.get('validation') == 'regex' and spec['type'] != 'str':
+            raise ValueError(f'{name}: regex validation requires str type')
         for metadata in ('enum', 'conditional_defaults'):
             if metadata in spec and not isinstance(spec[metadata], list):
                 raise ValueError(f'{name}: {metadata} must be an array')

@@ -63,3 +63,13 @@ This does not complete selected-provider dependency manifests, relocated install
   selected identity, prompt/token counters, sanitized failures and no credentials.
 - [ ] Complete remaining richer inference, API and retained-backend DEBUG
   contracts independently; this does not enable parallel retained DEBUG.
+
+## Catalog family and default selection
+
+- [x] Extend bounded local/wire catalog metadata with optional family. Preserve
+  family/version metadata across process boundaries. Core compares versions only
+  within one provider-described family and rejects ambiguous highest matches.
+  A singleton default match needs no comparison metadata.
+- [ ] Require new adapters' catalogs to describe stable family and comparable
+  versions when they expose multiple default candidates. Keep vendor-ID parsing
+  inside adapters and apply the shared allowlist/default policy at public APIs.

@@ -5,7 +5,7 @@ from .contracts import ContractError
 from .llm import AvailableSelection
 
 _FIELDS = {'selected_llm', 'description', 'features', 'display_name', 'version',
-           'max_output_tokens', 'context_length'}
+           'max_output_tokens', 'context_length', 'family'}
 
 
 def catalog_to_wire(values):
@@ -33,9 +33,9 @@ def catalog_from_wire(rows):
     for row in rows:
         if type(row) is not dict or set(row) != _FIELDS:
             raise ContractError('Invalid provider catalog')
-        for name, limit in (('selected_llm', 200), ('description', 512), ('display_name', 200), ('version', 100)):
+        for name, limit in (('selected_llm', 200), ('description', 512), ('display_name', 200), ('version', 100), ('family', 200)):
             text = row[name]
-            if name == 'version' and text is None:
+            if name in ('version', 'family') and text is None:
                 continue
             if type(text) is not str or len(text) > limit or (text and not text.isprintable()):
                 raise ContractError('Invalid provider catalog')
