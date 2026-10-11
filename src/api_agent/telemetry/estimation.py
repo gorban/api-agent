@@ -209,11 +209,15 @@ def predictions_for(tests, records, card, fingerprints, compatibility):
     result = {}
     for test in tests:
         samples, signatures, zeroes, finished, quota_eligible = [], set(), [], [], []
+        has_token_history = False
         for manifest, artifact in records:
             for row in artifact.get('tests', []):
                 if (compatibility_complete(compatibility) and row.get('compatibility') == compatibility and fingerprints.get(test.id) is not None
-                        and row.get('source_fingerprint') == fingerprints[test.id] and row.get('node_id') == test.node_id
-                        and row.get('outcomes') and row['outcomes'][-1] == 'passed'):
+                        and row.get('source_fingerprint') == fingerprints[test.id] and row.get('node_id') == test.node_id):
+                    has_token_history |= any(type(value) is int and value > 0
+                        for call in row.get('calls', []) for value in (call.get('usage') or {}).values())
+                    if not row.get('outcomes') or row['outcomes'][-1] != 'passed':
+                        continue
                     signature = call_signature(row)
                     amount = priced(row, card) if signature is not None else None
                     if amount is not None:
@@ -226,6 +230,7 @@ def predictions_for(tests, records, card, fingerprints, compatibility):
             samples = []
         amount = math.fsum(samples) / len(samples) if samples else None
         result[test.id] = {'estimated_cost_usd': amount, 'known_zero': bool(samples) and all(zeroes),
+                           'has_token_history': has_token_history,
                            'basis': 'historical_list_price' if samples else 'unavailable', 'sample_count': len(samples),
                            'call_signature': next(iter(signatures)) if len(signatures) == 1 else None, 'quota_eligible': bool(samples) and all(quota_eligible), 'variation': None if not samples else max(samples) - min(samples), 'freshness': max(finished, default=None)}
     return result

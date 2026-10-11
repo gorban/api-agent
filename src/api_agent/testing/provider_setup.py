@@ -334,10 +334,10 @@ class IntegrationLLM:
             publish(request, result, call_id=call_id, quote=self.emissions.content_export(quote_cost(self.provider.implementation, request, result)))
             return result
         except SetupPrerequisiteError as error:
-            publish(request, call_id=call_id, failed=True)
+            publish(request, result, call_id=call_id, failed=True)
             pytest.skip(str(error))
-        except BaseException:
-            publish(request, call_id=call_id, failed=True)
+        except BaseException as error:
+            publish(request, result, call_id=call_id, failed=True, error=error)
             raise
         finally:
             from .inference_content import export_content, publish_content
@@ -437,12 +437,13 @@ class RemoteIntegrationLLM:
     def complete(self, request):
         from .inference_usage import publish
         call_id = publish(request)
+        result = None
         try:
             result = self._request(lambda: self.client.complete(request))
             publish(request, result, call_id=call_id, quote=getattr(self.client, 'cost_quote', None))
             return result
-        except BaseException:
-            publish(request, call_id=call_id, failed=True)
+        except BaseException as error:
+            publish(request, result, call_id=call_id, failed=True, error=error)
             raise
         finally:
             from .inference_content import publish_content

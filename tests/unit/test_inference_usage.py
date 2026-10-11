@@ -74,3 +74,33 @@ def test_cost_quote_published_with_tokens_is_joined_to_same_test(tmp_path,monkey
     assert report['cost_per_prompt_usd']==.25 and report['cost_basis']=='list_price'
     from api_agent.telemetry.usage_output import final_usage_text
     assert 'Cost basis: list_price' in final_usage_text(report)
+
+
+@pytest.mark.parametrize('reported', [True, False])
+def test_failed_provider_call_keeps_reported_tokens_and_terminal_status(tmp_path, monkeypatch, reported):
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.providers.llm import Usage
+    path = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test_request (call)')
+    identifier = publish(REQUEST)
+    error = ProviderAccessError('authorization', 'Safe rejection', status=403,
+        usage=Usage(11, 5, 2, 1) if reported else None)
+    publish(REQUEST, call_id=identifier, failed=True, error=error)
+    tracker = SuiteUsage('run')
+    events = [json.loads(line)['data'] for line in path.read_text().splitlines()]
+    for data in events:
+        capture(event(data), tracker)
+    capture(event(events[-1]), tracker)  # Re-delivery cannot double count.
+    report = tracker.report()
+    assert events[-1]['outcome'] == 'failed' and events[-1]['finished_at']
+    assert tracker.inference_calls[identifier]['outcome'] == 'failed'
+    assert report['prompt_count'] == 1
+    if reported:
+        assert tracker.rows()[0]['total_tokens'] == 16
+        assert tracker.rows()[0]['cache_read_tokens'] == 2
+        assert tracker.rows()[0]['reasoning_tokens'] == 1
+        assert report['unmeasured_calls'] == {}
+    else:
+        assert tracker.rows() == [] and report['unmeasured_calls'] == {'test-id':1}
+    assert 'Safe rejection' not in path.read_text() and 'Ok' not in path.read_text()

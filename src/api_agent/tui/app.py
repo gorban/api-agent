@@ -754,7 +754,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 return '\n'.join(str(table.get_row_at(index)[1])
                                  for index in table.selected_row_indices)
         if self.kind == 'test-failure' and self.body:
-            return self.body.splitlines()[0]
+            return (self.body.plain if isinstance(self.body, Text) else self.body).splitlines()[0]
         return None
 
     async def action_copy_value(self):
@@ -1885,11 +1885,17 @@ class ApiAgentApp(App[int]):
 
     def toggle_row(self, key):
         if self.screen.kind == "test-results" and self.unit_result is not None:
-            result = next((test for test in self.unit_result.tests if test.identity.id == key and test.traceback), None)
-            if result:
+            result = next((test for test in self.unit_result.tests if test.identity.id == key), None)
+            from api_agent.telemetry.usage_output import has_tokens
+            historical = (self.cost_estimator.predictions.get(key, {}).get('has_token_history', False)
+                          if self.cost_estimator is not None else False)
+            if result and (result.status != 'passed' or has_tokens(self.suite_usage, key) or historical):
                 mode = (self.mode or 'unit').capitalize()
-                title = f"{mode} test skipped" if result.status == 'skipped' else f"{mode} test failure"
-                self.show("test-failure", title, key + "\n\n" + result.traceback)
+                title = (f"{mode} test details" if result.status == 'passed' else
+                         f"{mode} test skipped" if result.status == 'skipped' else f"{mode} test failure")
+                from .test_results import test_details
+                self.show("test-failure", title, test_details(result, self.suite_usage,
+                    self.test_costs.get(key, {}), historical_tokens=historical))
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
         elif self.screen.kind == "tests":
             self.selection.toggle(key)

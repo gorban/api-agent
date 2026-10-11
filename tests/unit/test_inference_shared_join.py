@@ -49,7 +49,8 @@ def test_missing_capability_or_invalid_reply(method, expected):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('failure', [None, ProviderAccessError('authorization','Request permission denied',status=403,code='denied',request_id='req-safe')])
+@pytest.mark.parametrize('failure', [None, ProviderAccessError('authorization','Request permission denied',status=403,code='denied',request_id='req-safe'),
+    ProviderAccessError('authorization','Request permission denied',status=403,code='denied',request_id='req-safe',usage=Usage(11,5,2,1))])
 def test_real_ipc_returns_complete_result_or_safe_error_and_runs_each_call(failure):
     async def scenario():
         owner = SimpleNamespace(ensure_ready=AsyncMock(),complete=AsyncMock(return_value=RESULT,side_effect=failure),aclose=AsyncMock())
@@ -65,6 +66,7 @@ def test_real_ipc_returns_complete_result_or_safe_error_and_runs_each_call(failu
                     with pytest.raises(ProviderAccessError) as error:
                         await asyncio.to_thread(client.complete,REQUEST)
                     assert error.value.status == 403 and error.value.code == 'denied' and error.value.request_id == 'req-safe'
+                    assert error.value.usage == failure.usage
             assert owner.complete.await_count == 2
         finally:
             for client in clients:
@@ -331,3 +333,35 @@ def test_ipc_rejects_ambiguous_or_extra_cost_frames(frames):
             await client._exchange('complete',{})
         client._writer=None
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('error_type', [RuntimeError, SetupPrerequisiteError])
+def test_post_inference_accounting_failure_retains_result_usage(tmp_path, monkeypatch, error_type):
+    import json
+    from api_agent.testing import provider_setup
+    from api_agent.providers import costs
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.testing.inference_usage import capture
+    path = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test_request (call)')
+    implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),
+                                     acomplete=AsyncMock(return_value=RESULT))
+    monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(
+        implementation=implementation, aclose=AsyncMock())))
+    def broken(*args):
+        raise error_type('Synthetic quote failure')
+    monkeypatch.setattr(costs, 'quote_cost', broken)
+    local = IntegrationLLM({'LLM_PROVIDER':'synthetic'}, tmp_path)
+    try:
+        with pytest.raises(pytest.skip.Exception if error_type is SetupPrerequisiteError else RuntimeError):
+            local.complete(REQUEST)
+    finally:
+        local.close()
+    tracker = SuiteUsage('run')
+    for line in path.read_text().splitlines():
+        frame = json.loads(line)
+        capture(SimpleNamespace(text=json.dumps(frame['data']), identity=SimpleNamespace(id='test-id')), tracker)
+    assert tracker.rows()[0]['total_tokens'] == 3
+    assert tracker.rows()[0]['llm_calls'] == 1
+    assert next(iter(tracker.inference_calls.values()))['outcome'] == 'failed'

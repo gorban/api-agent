@@ -12,7 +12,7 @@ class ContractError(ValueError):
 
 class ProviderAccessError(OperationalError):
     """Provider-sanitized, bounded upstream rejection details for consumer reports."""
-    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None):
+    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None, usage=None):
         super().__init__(kind)
         if status is not None and (status.__class__ is not int or not 100 <= status <= 599):
             raise ContractError('Invalid provider error status')
@@ -23,6 +23,12 @@ class ProviderAccessError(OperationalError):
             raise ContractError('Invalid provider error detail')
         self.status, self.code, self.type, self.request_id = status, code, type, request_id
         self.message = message
+        from .llm import Usage
+        if usage is not None and (not isinstance(usage, Usage) or any(
+                value is not None and value > 2147483647 for value in (usage.input_tokens,
+                usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens))):
+            raise ContractError('Invalid provider error usage')
+        self.usage = usage
         self.args = (message,)
 
     def __str__(self):

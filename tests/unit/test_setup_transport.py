@@ -716,3 +716,29 @@ def test_interrupt_preserves_request_and_socket_cleanup_ownership(monkeypatch, p
         writer.wait_closed = AsyncMock()
         client.close()
     assert client._disposed and client._loop.is_closed()
+
+
+def test_provider_error_usage_roundtrip_is_strict_and_legacy_frames_remain_supported():
+    from api_agent.providers.setup_transport import _error, _raise_error
+    from api_agent.providers.contracts import ProviderAccessError, ContractError
+    from api_agent.providers.llm import Usage
+    error = ProviderAccessError('authorization', 'Safe failure', status=403, usage=Usage(11,5,2,1))
+    frame = _error(error)
+    with pytest.raises(ProviderAccessError) as caught:
+        _raise_error(frame)
+    assert caught.value.usage == error.usage and caught.value.status == 403
+    assert str(caught.value) == str(error)
+    for usage in (None, {}, {'extra':1}, {'input_tokens':True,'output_tokens':5,'cached_input_tokens':2,'reasoning_tokens':1},
+                  {'input_tokens':2147483648,'output_tokens':5,'cached_input_tokens':2,'reasoning_tokens':1}):
+        changed = dict(frame, details=dict(frame['details'], usage=usage))
+        with pytest.raises(ContractError, match='Invalid provider response'):
+            _raise_error(changed)
+    with pytest.raises(ContractError, match='Invalid provider error usage'):
+        ProviderAccessError('unknown', 'Safe', usage={'input_tokens':1})
+    with pytest.raises(ContractError, match='Invalid provider error usage'):
+        ProviderAccessError('unknown', 'Safe', usage=Usage(input_tokens=2147483648))
+    legacy = _error(ProviderAccessError('unknown','Safe'))
+    assert 'usage' not in legacy['details']
+    with pytest.raises(ProviderAccessError) as caught:
+        _raise_error(legacy)
+    assert caught.value.usage is None

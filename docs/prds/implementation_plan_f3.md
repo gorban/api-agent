@@ -36,3 +36,14 @@ Implementation evidence: 4,738 combined unit tests pass with exact per-file 100%
 - [ ] Expand exact pricing mappings only when official model/context/tier evidence is unambiguous. Missing or ambiguous refreshed rates remain unavailable.
 
 Follow-up verification: 4,750/4,750 combined unit tests pass at exact per-file 100% lines and branches; focused history/recording checks, mutation controls, wheel and public-boundary audit pass. Live quota and exact model pricing remain unverified as described above.
+
+
+## Completed token totals and individual test details
+
+- [x] Show actual input, output, cached-input, cache-write, reasoning and total token counts after integration/E2E completion in shared interactive and noninteractive output. Cached/reasoning counts are subsets, not additions to input/output totals. Distinguish missing measurements from zero, retaining reported lower bounds when other calls lack usage.
+- [x] Put finalized per-test estimated cost, actual tokens and execution time before the original failure details. Enter also opens passing-test details when the current run or compatible history contains any tokens; show a green PASSED status when no error details apply. Reuse selectable text, copying, scrolling and return-to-results behavior without adding a shortcut.
+- [x] Retain validated upstream usage on inference failures through worker/parent error transport, preserving the original safe rejection and bounds. Retain completed-call usage when later assertion or accounting work fails. Final cost attribution still uses the frozen suite/history estimator; unavailable upstream usage or prices stay explicit.
+- [x] Keep immutable accounting, ten-column CSV, credential scrubbing and unit-test exclusion unchanged. Use controlled serial/parallel/DEBUG recording and headless TUI proofs; reuse presentation when the future E2E runner is connected.
+- [ ] Human acceptance: inspect the completed suite totals and Enter on a token-bearing passed test or failure, including copy and return navigation. No additional paid inference is needed for deterministic acceptance.
+
+Token/details verification: **4,813/4,813** combined unit tests (4,627 base + 186 pack) pass with exact per-file **100% line and branch coverage**. Controlled serial/parallel/DEBUG recording, passing/failing/skipped headless result views, lower-bound accounting and three isolated mutation controls pass. Both wheels, whitespace and the hash-bound public audit pass. Human acceptance remains pending.

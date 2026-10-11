@@ -25,6 +25,21 @@ def compact_cost(value):
     return f'{value:.6f}' if value < 100 else f'{value:.2f}'
 
 
+def test_details(result, usage, cost, *, historical_tokens=False):
+    from api_agent.telemetry.usage_output import tokens_text, money
+    lines = [result.identity.id, '', f'Execution time: {result.duration:.3f}s',
+             f"Estimated cost: {money(cost.get('estimated_cost_usd'))}",
+             tokens_text(usage, result.identity.id)]
+    if historical_tokens:
+        lines.append('Earlier compatible runs have recorded token usage.')
+    lines.extend(('', result.traceback or result.status.upper()))
+    text = Text('\n'.join(lines))
+    if not result.traceback:
+        text.stylize('green' if result.status == 'passed' else 'dark_orange'
+                     if result.status == 'skipped' else 'red', len(text) - len(result.status))
+    return text
+
+
 def component_timing(components):
     """Show leaf clocks, or their nearest timed ancestor for untimed work."""
     components = tuple(components)
