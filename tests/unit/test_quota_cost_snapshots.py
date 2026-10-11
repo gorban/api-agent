@@ -1,73 +1,43 @@
 """Optional selected-account snapshots are bounded, private and reset-aware."""
 import asyncio
-import base64
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 
-import httpx
 import pytest
-from api_agent.llm_providers.gpt.quota import read_snapshot
 from api_agent.telemetry.usage import SuiteUsage, QuotaSnapshot, QuotaReadError
 from api_agent.testing.quota_events import capture, publish, validate_snapshot
 
 NOW=datetime.now(timezone.utc)
-RESET=int((NOW+timedelta(days=3)).timestamp())
-TOKEN='header.'+base64.urlsafe_b64encode(json.dumps({'sub':'selected-user'}).encode()).decode().rstrip('=')+'.signature'
-WINDOW={'used_percent':25,'reset_at':RESET,'limit_window_seconds':604800}
 
 
-@pytest.mark.parametrize('data,status,expected', [
-    ({'rate_limit':{'primary_window':WINDOW}},200,25),
-    ({'rate_limit':{'secondary_window':WINDOW}},200,25),
-    ({'rate_limit':{'primary_window':dict(WINDOW,limit_window_seconds=18000)}},200,'window'),
-    ({'rate_limit':{'secondary_window':dict(WINDOW,used_percent=101)}},200,'response'),
-    ({'rate_limit':{'secondary_window':dict(WINDOW,reset_at='invalid')}},200,'response'),
-    ({'rate_limit':{'secondary_window':dict(WINDOW,reset_at=10**100)}},200,'request'),
-    ({},200,'response'),([] ,200,'response'),({'rate_limit':[]},200,'response'),({},401,'http')])
-def test_weekly_window_only_uses_selected_token(data,status,expected):
-    requests=[]
-    def respond(request):
-        requests.append(request)
-        return httpx.Response(status,json=data)
+@pytest.mark.parametrize('mode', ['subscription', 'api_key'])
+@pytest.mark.parametrize('period', ['day', 'week'])
+def test_gpt_snapshot_does_not_send_app_credentials_to_unsupported_routes(monkeypatch,mode,period):
+    from api_agent.llm_providers.gpt import factory
+    from api_agent.providers.contracts import ContractError
+    from api_agent.telemetry.usage_output import final_usage_text
+    def forbidden(*args,**kwargs):
+        pytest.fail('Optional quota accounting must not create a transport or reuse another login')
+    monkeypatch.setattr(factory.httpx, 'AsyncClient', forbidden)
+    from api_agent.llm_providers.gpt import quota_client
+    connection=SimpleNamespace(access_token='selected-app-token')
+    monkeypatch.setattr(factory, 'ConnectionStore', lambda _:SimpleNamespace(list=lambda:[connection]))
+    async def snapshot(selected, *, period):
+        assert selected is connection
+        return None
+    monkeypatch.setattr(quota_client,'read_quota',snapshot)
+    subject=factory.GPTProvider({'GPT_AUTH_MODE':mode,'LLM_QUOTA_PERIOD':period})
     async def run():
-        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            result=await read_snapshot(client,TOKEN)
-        assert requests[0].url=='https://chatgpt.com/backend-api/wham/usage'
-        assert requests[0].headers['Authorization']=='Bearer '+TOKEN
-        if type(expected) is str:
-            assert isinstance(result, QuotaReadError)
-            assert result.code == expected
-            if status != 200:
-                assert result.status == status
-        else:
-            assert result.pct_used==expected and result.reset_at.timestamp()==RESET
-            assert result.window_id.startswith('window:604800:') and 'selected-user' not in result.window_id
+        assert await subject.asnapshot(auth='selected-app-token') is None
+        assert await subject.asnapshot(auth=None) == (QuotaReadError('identity') if mode=='subscription' else None)
+        await subject.aclose()
+        with pytest.raises(ContractError,match='closed'):
+            await subject.asnapshot(auth='selected-app-token')
     asyncio.run(run())
-
-
-@pytest.mark.parametrize('token', [None,'not-jwt','h.'+base64.urlsafe_b64encode(b'{"sub":null}').decode()+'.s'])
-def test_unreadable_identity_skips_transport(token):
-    class Never:
-        def stream(self,*a,**kw):
-            raise AssertionError('Must not contact an account without its identity')
-    assert asyncio.run(read_snapshot(Never(),token)) == QuotaReadError('identity')
-
-
-def test_snapshot_transport_failure_and_cancellation():
-    async def fail(request):
-        raise httpx.ConnectError('sensitive diagnostic')
-    async def cancelled(request):
-        raise asyncio.CancelledError
-    async def run():
-        async with httpx.AsyncClient(transport=httpx.MockTransport(fail)) as client:
-            result = await read_snapshot(client,TOKEN)
-            assert result == QuotaReadError('request')
-            assert 'sensitive' not in result.message
-        async with httpx.AsyncClient(transport=httpx.MockTransport(cancelled)) as client:
-            with pytest.raises(asyncio.CancelledError):
-                await read_snapshot(client,TOKEN)
-    asyncio.run(run())
+    text=final_usage_text(SuiteUsage('run').report())
+    assert 'quota' not in text.lower() and 'Cost accounting:' not in text
+    assert 'Tokens this run:' in text and 'This suite cost:' in text
 
 
 def test_worker_events_choose_outermost_suite_boundaries(tmp_path,monkeypatch):
@@ -111,7 +81,7 @@ def test_quota_error_rejects_uncontrolled_diagnostics(code,status):
         QuotaReadError(code,status)
 
 
-@pytest.mark.parametrize('code', ['identity','response','window','request'])
+@pytest.mark.parametrize('code', ['identity','response','window','request','source'])
 def test_quota_error_message_and_wire_round_trip(tmp_path,monkeypatch,code):
     path=tmp_path/'events'
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(path))

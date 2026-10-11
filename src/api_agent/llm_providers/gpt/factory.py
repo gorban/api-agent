@@ -185,9 +185,13 @@ class GPTProvider:
             raise ContractError('GPT provider is closed.')
         if self.auth_mode != 'subscription':
             return None
-        from .quota import read_snapshot
-        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
-            return await read_snapshot(client, auth, quota_seconds=86400 if self.quota_period == 'day' else 604800)
+        from api_agent.telemetry.usage import QuotaReadError
+        from .quota_client import read_quota
+        connections = ConnectionStore(self.state_dir).list()
+        matches = [connection for connection in connections if connection.access_token == auth]
+        if len(matches) != 1:
+            return QuotaReadError('identity')
+        return await read_quota(matches[0], period=self.quota_period)
 
     def quote_cost(self, request, result):
         from .pricing import quote

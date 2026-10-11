@@ -5,7 +5,7 @@ cost_affecting = true
 type = "str"
 enum = ["subscription", "api_key"]
 default = "subscription"
-help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key mode uses only the selected LLM User password as its key and sets up without a browser. Attended key acquisition is deferred; there is no fallback."
+help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key mode uses only the selected LLM User password as its key and sets up without a browser. Attended key acquisition is deferred; there is no fallback. Subscription quota readings optionally use an installed Codex CLI already signed in to the same selected account; this does not change inference authentication."
 
 [fields.GPT_API_MODE]
 cost_affecting = false
