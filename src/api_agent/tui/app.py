@@ -1656,7 +1656,7 @@ class ApiAgentApp(App[int]):
         return closed and cleaned
 
     def receive_usage(self, text, generation):
-        if generation is self._inspection_generation and '\n' not in text:
+        if generation is self._inspection_generation and text and '\n' not in text:
             self.starting_quota = text
             if self.test_run_active() and isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'test-results':
                 self.screen.query_one('#body', Static).update(self.unit_progress())
@@ -1664,7 +1664,9 @@ class ApiAgentApp(App[int]):
     def unit_progress(self):
         result = progress_summary(self.mode or "unit", self.unit_rows)
         if self.starting_quota is not None:
-            result.append('\n' + self.starting_quota)
+            from .test_results import append_usage_line
+            result.append('\n')
+            append_usage_line(result, self.starting_quota)
         return result
 
     def unit_event(self, event):

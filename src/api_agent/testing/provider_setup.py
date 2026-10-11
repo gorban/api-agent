@@ -263,20 +263,25 @@ class IntegrationLLM:
             method = getattr(self.provider.implementation, 'asnapshot', None)
             if not callable(method):
                 return
+            from .quota_events import validate_snapshot, publish
+            from api_agent.telemetry.usage import QuotaReadError
             try:
                 from api_agent.providers.progress import component_timeout
                 async with component_timeout('Provider quota snapshot', 3):
                     snapshot = await self.owner.call(method)
                 if snapshot is not None:
-                    from .quota_events import validate_snapshot, publish
                     validate_snapshot(snapshot)
+            except Exception:
+                snapshot = QuotaReadError('request')
+            if snapshot is not None:
+                try:
                     if self._quota_observer is None:
                         publish(phase, snapshot)
                     else:
                         self._quota_observer(phase, snapshot)
-            except Exception:
-                # Accounting failure never changes authentication/test outcomes.
-                pass
+                except Exception:
+                    # Reporting failure never changes authentication/test outcomes.
+                    pass
 
     def _validate_request(self, implementation, request):
         from api_agent.providers.cache_policy import validate_provider_request

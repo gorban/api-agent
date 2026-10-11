@@ -319,7 +319,8 @@ def test_worker_quota_observation_is_frozen_with_cost_shares_and_start_output(tm
     assert result.usage['raw_estimated_cost_usd'] > 0
     assert result.usage['test_costs'][test.id]['list_cost_usd'] == .25
     assert result.usage['test_costs'][test.id]['raw_quota_cost_usd'] > 0
-    assert lines[1]=='Starting quota used: 10.000%'
+    assert lines[0]=='Starting quota used: 10.000%'
+    assert all('Starting quota used: unavailable' not in line for line in lines)
     row=json.loads(next(result.directory.glob('*-result.json')).read_bytes())
     artifact=next(a for a in row['attachments'] if a['name']=='Test cost estimate')
     assert json.loads((result.directory/artifact['source']).read_bytes())['basis']=='list_price'
@@ -429,3 +430,32 @@ def test_reset_allure_keeps_null_quota_cost_and_positive_token_estimates(tmp_pat
         {test.id: artifact['tests'][0]['source_fingerprint']}, compatibility(config))[test.id]
     assert prediction['sample_count'] == 0 and prediction['estimated_cost_usd'] is None
     cache.close()
+
+
+@pytest.mark.parametrize('direct', [False, True])
+def test_lazy_quota_failure_follows_start_and_is_saved_without_failing_tests(tmp_path, direct, monkeypatch):
+    from api_agent.telemetry.usage import QuotaReadError
+    from api_agent.testing.runner import RunnerEvent
+    context, test, config = fixture(tmp_path)
+    lines=[]
+    def run(context, tests, **hooks):
+        hooks['before_run']()
+        assert lines == []  # Awaiting credentials is not a quota retrieval failure.
+        for phase in ('before','after'):
+            if direct:
+                hooks['quota_observer'](phase, QuotaReadError('http',401))
+            else:
+                hooks['on_event'](RunnerEvent('quota_snapshot', identity=test,
+                    text=json.dumps({'phase':phase, 'error':{'code':'http','status':401}})))
+        result=IntegrationRunResult(0,(TestResult(test,'passed'),),'')
+        hooks['on_result'](result.tests[0]);hooks['after_run'](result)
+        return result
+    # Exercise the real runner's direct observer hook without launching a worker.
+    monkeypatch.setattr(recorded,'run_integration_tests',run)
+    result=recorded.run_recorded_integration(context,[test],config,accepted=True,storage=Storage(),usage_output=lines.append,runner=run)
+    assert result.exit_code == 0 and result.persisted
+    assert lines[0] == 'Starting quota used: Error: Quota endpoint returned HTTP 401.'
+    assert 'Starting quota used: unavailable' not in '\n'.join(lines)
+    summary=json.loads((result.directory/'usage-summary.json').read_text())
+    assert summary['quota_errors'] == {phase:{'code':'http','status':401} for phase in ('before','after')}
+    assert summary['before'] is None and summary['after'] is None

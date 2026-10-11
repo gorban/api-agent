@@ -106,13 +106,14 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         usage_summary = None
         prepared = False
 
-        def capture(method):
+        def capture(method, phase):
             if quota_fetcher is not None:
                 try:
                     method(quota_fetcher)
                 except Exception:
                     # Never retain provider exception bodies or credentials.
-                    pass
+                    from api_agent.telemetry.usage import QuotaReadError
+                    usage.observe_snapshot(phase, QuotaReadError('request'))
 
         def before():
             nonlocal prepared
@@ -121,9 +122,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if prepare is not None:
                 prepare(usage)
             prepared = True
-            capture(usage.capture_before)
-            if usage_output is not None:
-                usage_output(starting_usage_line(usage.report()))
+            capture(usage.capture_before, 'before')
+            if usage_output is not None and (line := starting_usage_line(usage.report())):
+                usage_output(line)
 
         def record(result):
             test = result.identity
@@ -139,7 +140,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         def after(result):
             nonlocal persisted, manifest, usage_summary
             if prepared:
-                capture(usage.capture_after)
+                capture(usage.capture_after, 'after')
             cleanup_failed = False
             if finish is not None:
                 try:

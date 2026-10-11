@@ -301,7 +301,7 @@ def test_provider_cost_quote_crosses_real_ipc_and_revoked_lease_cannot_read():
 @pytest.mark.parametrize('observed', [True,False,'error'])
 def test_local_snapshot_brackets_requests_once_and_failures_are_optional(tmp_path,monkeypatch,observed):
     from datetime import datetime,timedelta,timezone
-    from api_agent.telemetry.usage import QuotaSnapshot
+    from api_agent.telemetry.usage import QuotaSnapshot, QuotaReadError
     from api_agent.testing import provider_setup,quota_events
     now=datetime.now(timezone.utc);rows=[]
     snapshots=[QuotaSnapshot(1,'w',now+timedelta(days=1),now),QuotaSnapshot(2,'w',now+timedelta(days=1),now+timedelta(seconds=1))]
@@ -315,7 +315,8 @@ def test_local_snapshot_brackets_requests_once_and_failures_are_optional(tmp_pat
     subject.close()
     assert snap.await_count==2
     assert impl.asetup.await_count==1 and impl.acomplete.await_count==1
-    assert rows==([] if observed=='error' else list(zip(('before','after'),snapshots)))
+    assert rows == list(zip(('before','after'), [QuotaReadError('request')]*2 if observed=='error' else snapshots))
+    assert 'secret diagnostic' not in repr(rows)
 
 
 @pytest.mark.parametrize('frames', [
@@ -365,3 +366,22 @@ def test_post_inference_accounting_failure_retains_result_usage(tmp_path, monkey
     assert tracker.rows()[0]['total_tokens'] == 3
     assert tracker.rows()[0]['llm_calls'] == 1
     assert next(iter(tracker.inference_calls.values()))['outcome'] == 'failed'
+
+
+@pytest.mark.parametrize('reply', [None, 'invalid', 'error'])
+def test_quota_publication_failure_and_unsupported_reads_do_not_fail_setup(tmp_path, monkeypatch, reply):
+    from api_agent.testing import provider_setup, quota_events
+    from api_agent.telemetry.usage import QuotaReadError
+    value = QuotaReadError('http', 403) if reply == 'error' else reply
+    impl = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),
+                           asnapshot=AsyncMock(return_value=value))
+    monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(implementation=impl, aclose=AsyncMock())))
+    seen = []
+    def failed_publish(phase, value):
+        seen.append((phase, value))
+        raise RuntimeError('diagnostic must not fail setup')
+    monkeypatch.setattr(quota_events, 'publish', failed_publish)
+    subject = IntegrationLLM({'LLM_PROVIDER':'synthetic'}, tmp_path)
+    subject.ensure_ready()
+    subject.close()
+    assert seen == ([] if reply is None else [(phase, QuotaReadError('http', 403) if reply == 'error' else QuotaReadError('request')) for phase in ('before','after')])
