@@ -22,10 +22,10 @@ def test_cost_is_provider_supplied_not_quota_delta():
     text = final_usage_text({'pct_point_delta': 3.0, 'prompt_count': 2,
                             'estimated_cost_usd': 0.02, 'cost_per_prompt_usd': 0.01})
     assert 'Quota change: 3.000%' in text
-    assert 'Actual cost (estimated): $0.020' in text
-    assert 'Actual cost per turn (estimated): $0.010' in text
+    assert 'This suite cost: $0.020' in text
+    assert 'Cost per turn: $0.010' in text
     assert '$3.000' not in text
-    assert 'Actual cost (estimated): unavailable' in final_usage_text({'pct_point_delta': 3.0})
+    assert 'This suite cost: unavailable' in final_usage_text({'pct_point_delta': 3.0})
 
 
 def test_actual_token_totals_retain_known_counts_without_double_counting_subsets():
@@ -114,7 +114,7 @@ def test_current_run_cost_and_frozen_historical_average_are_distinct():
              {'estimated_cost_usd':2, 'advance_prediction':{'estimated_cost_usd':.1}},
              {'estimated_cost_usd':0, 'advance_prediction':{'estimated_cost_usd':0}}]
     report = {'estimated_cost_usd':3, 'test_costs':dict(zip(('one','two','zero'),costs))}
-    assert 'Actual cost (estimated): $3.000\n  Historical average: $0.800' in final_usage_text(report)
+    assert 'This suite cost: $3.000\n  Historical average: $0.800' in final_usage_text(report)
     assert isclose(historical_average(costs), .8)
     assert historical_average(()) is None
     assert historical_average(({'advance_prediction':None},)) is None

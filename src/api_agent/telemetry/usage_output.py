@@ -66,9 +66,9 @@ def final_usage_text(report):
              f'Quota change: {percentage(delta)}',
              f'Full user turns: {count}',
              f"Quota points per turn: {f'{per_turn:.3f}' if per_turn is not None else 'unavailable'}",
-             f"Actual cost (estimated): {money(report.get('estimated_cost_usd'))}",
+             f"This suite cost: {money(report.get('estimated_cost_usd'))}",
              f"  Historical average: {money(historical_average(report.get('test_costs', {}).values()))}",
-             f"Actual cost per turn (estimated): {money(report.get('cost_per_prompt_usd'))}",
+             f"Cost per turn: {money(report.get('cost_per_prompt_usd'))}",
              f"Quota reset countdown: {report.get('reset_countdown_hms') or 'unavailable'}",
              'Cost attribution assumes exclusive use of this account during the operation; other activity invalidates it.']
     if report.get('quota_unavailable_reason'):

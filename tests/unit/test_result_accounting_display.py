@@ -33,8 +33,8 @@ def test_shared_details_metadata_precedes_status_or_full_failure_trace(status, c
     rendered = render_details(result, usage, {'estimated_cost_usd':.02, 'basis':'historical_quota',
         'advance_prediction':{'estimated_cost_usd':.05}})
     assert rendered.plain.startswith(result.identity.id + '\n\nExecution time: 1.234s')
-    assert 'Actual cost (estimated): $0.020' in rendered.plain
-    assert 'Actual cost (estimated): $0.020\n  Historical average: $0.050' in rendered.plain
+    assert 'This test cost: $0.020' in rendered.plain
+    assert 'This test cost: $0.020\n  Historical average: $0.050' in rendered.plain
     assert 'Cost basis: historical_quota\n' + tokens_text(usage, result.identity.id) in rendered.plain
     assert 'input: 11 — $0.008' in rendered.plain and 'output: 5 — $0.012' in rendered.plain
     assert 'total (input + output): 16 — $0.020' in rendered.plain and 'total (input + output): 16 — $0.100' not in rendered.plain
@@ -43,7 +43,7 @@ def test_shared_details_metadata_precedes_status_or_full_failure_trace(status, c
     result.traceback = 'AssertionError: failed\n  source.py:42\noriginal traceback'
     detailed = render_details(result, usage, {}, historical_tokens=True)
     assert detailed.plain.endswith(result.traceback)
-    assert 'Actual cost (estimated): unavailable' in detailed.plain
+    assert 'This test cost: unavailable' in detailed.plain
     assert '  Historical average: unavailable' in detailed.plain
     assert detailed.plain.index('Earlier compatible runs') < detailed.plain.index('Tokens this run')
     assert not detailed.spans
@@ -82,7 +82,7 @@ def test_passing_details_open_only_for_current_or_compatible_historical_tokens(t
             body = app.screen.query_one('#body', Static).content
             assert body.plain.endswith('PASSED') and body.spans[-1].style == 'green'
             assert 'Execution time: 1.250s' in body.plain
-            assert 'Actual cost (estimated): $0.000011' in body.plain
+            assert 'This test cost: $0.000011' in body.plain
             assert ('Earlier compatible runs' in body.plain) == historical
             assert tokens_text(app.suite_usage, tests[0].id) in body.plain
             assert app.screen.selected_test_name() == tests[0].id
