@@ -206,5 +206,6 @@ def test_parent_recording_scrubs_before_callbacks_and_keeps_usage_without_conten
         assert 'parent-only-secret' not in content_events[0].text
         assert '[REDACTED] /var/app/source.py' in content_events[0].text
     outcome = json.loads(next(result.directory.glob('*-result.json')).read_text())
-    assert len(outcome['attachments']) == 1 + int(enabled and policy is None)
+    assert len(outcome['attachments']) == 3 + int(enabled and policy is None)
+    assert {'Test cost estimate', 'Suite usage', 'Immutable accounting'} <= {row['name'] for row in outcome['attachments']}
     assert (result.directory / 'token-usage.csv').read_text().splitlines()[0] == ','.join(CSV_COLUMNS)

@@ -38,6 +38,10 @@ class GPTProvider:
 
     def __init__(self, config, *, inspection=None):
         self.inspection = inspection
+        from api_agent.telemetry.accounting import compatibility
+        from api_agent.providers.rates import cached_rate_card
+        self.cost_compatibility = compatibility(config)
+        self.rate_card = cached_rate_card(config=config)
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
         self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
                                                  features=() if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy"))
@@ -188,7 +192,7 @@ class GPTProvider:
     def quote_cost(self, request, result):
         from .pricing import quote
         return quote(request, result, direct=self.auth_mode == 'subscription' or self.base_url == 'https://api.openai.com/v1',
-                     subscription=self.auth_mode == 'subscription', payment_usd=self.payment_usd, quota_seconds=86400 if self.quota_period == 'day' else 604800, pay_period=self.pay_period)
+                     subscription=self.auth_mode == 'subscription', rate_card=self.rate_card, compatibility=self.cost_compatibility, payment_usd=self.payment_usd, quota_seconds=86400 if self.quota_period == 'day' else 604800, pay_period=self.pay_period)
 
     async def aclose(self):
         self.closed = True

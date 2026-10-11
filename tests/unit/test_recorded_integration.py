@@ -306,12 +306,15 @@ def test_worker_quota_observation_is_frozen_with_cost_shares_and_start_output(tm
         hooks['on_result'](result.tests[0]);hooks['after_run'](result)
         return result
     result=recorded.run_recorded_integration(context,[test],config,accepted=True,storage=Storage(),runner=run,usage_output=lines.append)
-    assert result.persisted and result.usage['cost_basis']=='quota_payment'
+    assert result.persisted and result.usage['cost_basis']=='list_price'
     assert result.usage['test_costs'][test.id]['estimated_cost_usd']==result.usage['estimated_cost_usd']
+    assert result.usage['raw_estimated_cost_usd'] > 0
+    assert result.usage['test_costs'][test.id]['list_cost_usd'] == .25
+    assert result.usage['test_costs'][test.id]['raw_quota_cost_usd'] > 0
     assert lines[1]=='Starting quota used: 10.000%'
     row=json.loads(next(result.directory.glob('*-result.json')).read_bytes())
     artifact=next(a for a in row['attachments'] if a['name']=='Test cost estimate')
-    assert json.loads((result.directory/artifact['source']).read_bytes())['basis']=='quota_payment'
+    assert json.loads((result.directory/artifact['source']).read_bytes())['basis']=='list_price'
     assert result.elapsed>=0
 
 
@@ -336,3 +339,35 @@ def test_quota():
     result=recorded.run_recorded_integration(context,[selected],config,accepted=True,storage=Storage())
     assert result.execution.exit_code==0 and result.persisted
     assert result.usage['pct_used_before']==20 and result.usage['pct_point_delta']==1
+
+
+def test_all_accounting_exports_scrub_parameterized_identifiers(tmp_path):
+    from dataclasses import replace
+    from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
+    context, test, config = fixture(tmp_path)
+    test = replace(test, id=test.id+'[registered-secret]', node_id=test.node_id+'[registered-secret]')
+    config.update(TOKEN_USAGE_CSV_ENABLED=True, TOKEN_USAGE_CSV=tmp_path/'external.csv')
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=('registered-secret',))
+    def prepare(usage):
+        usage.add_usage(provider='generic',model='model',session_id=test.id,input_tokens=1,output_tokens=1)
+    result = recorded.run_recorded_integration(context,[test],config,accepted=True,storage=Storage(),runner=fake_runner(),prepare=prepare,evidence_boundary=boundary)
+    assert result.persisted
+    assert 'registered-secret' not in json.dumps(result.usage)
+    for path in result.directory.iterdir():
+        assert b'registered-secret' not in path.read_bytes(), path.name
+    assert b'registered-secret' not in (tmp_path/'external.csv').read_bytes()
+    artifact=json.loads((result.directory/'accounting.json').read_text())
+    assert '[REDACTED]' in artifact['tests'][0]['test_id']
+    assert len(next(csv.reader((result.directory/'token-usage.csv').read_text().splitlines()))) == 10
+
+
+def test_long_parameterized_id_does_not_fail_optional_accounting(tmp_path):
+    from dataclasses import replace
+    context, test, config = fixture(tmp_path)
+    suffix = '[' + 'x' * 300 + ']'
+    test = replace(test, id=test.id+suffix, node_id=test.node_id+suffix)
+    result = recorded.run_recorded_integration(context,[test],config,accepted=True,storage=Storage(),runner=fake_runner())
+    assert result.exit_code == 0 and result.persisted
+    artifact = json.loads((result.directory/'accounting.json').read_text())
+    assert artifact['tests'][0]['test_id'] == test.id
+    assert artifact['tests'][0]['node_id'] == test.node_id

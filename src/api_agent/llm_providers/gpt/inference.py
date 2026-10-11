@@ -116,7 +116,13 @@ def _result(data, responses, token):
         raise _invalid('GPT inference returned protected authentication content.')
     if not joined or _size(joined) > 65536:
         raise _invalid()
-    return LLMResult(Message('assistant', (TextContent(joined),)), _usage(data.get('usage'), responses), outcome)
+    model = data.get('model')
+    if model is not None and (type(model) is not str or not 0 < len(model) <= 200 or not model.isprintable() or token in model):
+        raise _invalid('GPT inference returned an invalid model identity.')
+    tier, revision = data.get('service_tier'), data.get('serving_revision')
+    if any(value is not None and (type(value) is not str or not 0 < len(value) <= 200 or not value.isprintable() or token in value) for value in (tier, revision)):
+        raise _invalid('GPT inference returned invalid billing metadata.')
+    return LLMResult(Message('assistant', (TextContent(joined),)), _usage(data.get('usage'), responses), outcome, model, tier, revision)
 
 
 def _pairs(items):

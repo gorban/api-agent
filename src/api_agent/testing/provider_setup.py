@@ -331,10 +331,14 @@ class IntegrationLLM:
         try:
             result = self._run_private(self._complete(request))
             from api_agent.providers.costs import quote_cost
-            publish(request, result, call_id=call_id, quote=quote_cost(self.provider.implementation, request, result))
+            publish(request, result, call_id=call_id, quote=self.emissions.content_export(quote_cost(self.provider.implementation, request, result)))
             return result
         except SetupPrerequisiteError as error:
+            publish(request, call_id=call_id, failed=True)
             pytest.skip(str(error))
+        except BaseException:
+            publish(request, call_id=call_id, failed=True)
+            raise
         finally:
             from .inference_content import export_content, publish_content
             publish_content(export_content(self.emissions, request, result), call_id)
@@ -437,6 +441,9 @@ class RemoteIntegrationLLM:
             result = self._request(lambda: self.client.complete(request))
             publish(request, result, call_id=call_id, quote=getattr(self.client, 'cost_quote', None))
             return result
+        except BaseException:
+            publish(request, call_id=call_id, failed=True)
+            raise
         finally:
             from .inference_content import publish_content
             publish_content(getattr(self.client, 'evidence', ()), call_id)

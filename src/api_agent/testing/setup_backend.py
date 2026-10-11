@@ -37,7 +37,7 @@ class _SetupOwner:
 
     def quote_cost(self, request, result):
         from api_agent.providers.costs import quote_cost
-        return quote_cost(self.provider.provider.implementation, request, result)
+        return self.provider.emissions.content_export(quote_cost(self.provider.provider.implementation, request, result))
 
     async def validate_request(self, request):
         await self.provider._preflight(request)
