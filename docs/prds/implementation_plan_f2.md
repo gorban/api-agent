@@ -124,3 +124,38 @@ live catalog scenarios and inference-format permissions remain pending.
 
 Protocol follows the official OpenAI Responses, Chat Completions and subscription
 preview requirements, including its unsupported-option restrictions.
+
+## Live text compatibility and capability follow-up
+
+- [x] Accept subscription SSE with missing MIME only when strict event parsing
+  and successful terminal validation succeed. Recover finished assistant items
+  from item-done events when terminal output is empty; require matching unique
+  indexes/identifiers, no unfinished items, and agreement with nonempty terminal
+  output. Preserve bounded allocation, original usage and credential guards.
+- [x] Verify the ordinary subscription Responses request and tiny compatible
+  API-key requests in both API formats. Preserve actual exhausted-credit and
+  missing-permission rejections in failed tests and successfully published
+  history; absence of a funded positive check is not acceptance.
+- [ ] Extend the common contracts and each selected adapter for incremental
+  streaming, strict structured output and tool calls/results. Preserve tool
+  identifiers, argument fragments, explicit completion/refusal/truncation states,
+  cancellation and unknown usage after interrupted streams. Never execute a
+  partially received tool call or automatically repeat a possibly executed turn.
+- [ ] Add configurable reasoning effort with per-selection validation and
+  transport mappings. Map common output limits to supported request fields;
+  account for reasoning tokens sharing the output budget. Reject unsupported
+  options explicitly, including subscription server output caps.
+- [ ] Describe prompt-cache capabilities separately from response-result caching.
+  Support requested off/5-minute/60-minute policies only where the selected
+  route can honor them; distinguish omission of explicit cache writes from
+  disabling server caching. Do not translate unsupported durations silently.
+  Record available cache reads/writes and keep unknown values unknown.
+- [ ] Add bounded image content to shared requests and worker frames, with
+  provider-owned Chat Completions/Responses mappings and selection validation.
+  Check media type, size, supported detail and safe source handling before
+  submission. Preserve LOG_CONTENT=False privacy for image bytes/URLs across
+  logs, traces, errors and reports. Test image+text and unsupported selections.
+- [ ] Prove these capabilities through the same consumer and a synthetic second
+  adapter, with capability-specific integration coverage. Follow the separately
+  approved personal live-call budget; broader live inference remains a separate
+  human checkpoint.
