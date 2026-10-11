@@ -30,6 +30,7 @@ class Snapshot:
 
 
 @pytest.mark.parametrize('record,expected', [({}, '—'), ({'known_zero':True}, ''),
+    ({'estimated_cost_usd':0, 'incomplete':True}, '—'),
     ({'estimated_cost_usd':0}, '0.000000'), ({'estimated_cost_usd':.0000001}, '<0.000001')])
 def test_cost_cells(record, expected):
     assert cost_cell(record) == expected
@@ -37,13 +38,25 @@ def test_cost_cells(record, expected):
 
 def test_totals():
     snapshot = Snapshot(1, True)
-    assert total_cell(snapshot, ['a','a']) == '1.000000 *'
+    assert total_cell(snapshot, ['a','a']) == '—'
     assert snapshot.seen[-1] == ('a',)
-    assert 'incomplete' in selected_summary(snapshot, ['a'])
+    assert selected_summary(snapshot, ['a']) == 'Selected estimate: not enough historical data'
     assert total_cell(Snapshot(None, True), ['a']) == '—'
     assert 'no inference calls' in selected_summary(Snapshot(None, known_zero=True), [])
-    assert '—' in selected_summary(Snapshot(None), [])
+    assert selected_summary(Snapshot(None), []) == 'Selected estimate: not enough historical data'
     assert '1.000000' in selected_summary(Snapshot(), [])
+    assert selected_summary(Snapshot(.0000001), ['a']) == 'Selected estimate: < $0.000001'
+
+
+def test_known_zero_plus_unknown_is_not_a_free_suite_estimate():
+    from api_agent.telemetry.estimation import EstimateSnapshot
+    snapshot = EstimateSnapshot({'no_llm':{'estimated_cost_usd':0, 'known_zero':True},
+                                 'llm':{'estimated_cost_usd':None}})
+    assert total_cell(snapshot, ['no_llm', 'llm']) == '—'
+    assert selected_summary(snapshot, ['no_llm', 'llm']) == 'Selected estimate: not enough historical data'
+    assert total_cell(snapshot, ['no_llm']) == ''
+    assert selected_summary(snapshot, ['no_llm']) == 'Selected estimate: no inference calls'
+    assert total_cell(snapshot, ['llm']) == '—'
 
 
 
@@ -63,8 +76,8 @@ def test_cached_picker_refresh_preserves_search_range_without_cost_popup(tmp_pat
                 await pilot.pause()
                 table = app.screen.query_one(TestTable)
                 assert len(table.columns) == 5
-                assert str(table.get_row_at(0)[4]) == '1.000000 *'
-                assert 'incomplete' in str(app.screen.query_one('#body', Static).render())
+                assert str(table.get_row_at(0)[4]) == '—'
+                assert 'Selected estimate: not enough historical data' in str(app.screen.query_one('#body', Static).render())
                 await pilot.press('shift+down')
                 selected = table.selected_row_keys
                 picker = app.screen
