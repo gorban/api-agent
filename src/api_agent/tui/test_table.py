@@ -1,6 +1,8 @@
 """Shared keyboard ranges for test pickers and result lists."""
 from textual.binding import Binding
 from textual.widgets import DataTable
+from textual.strip import Strip
+from rich.segment import Segment
 
 
 class TestTable(DataTable):
@@ -22,10 +24,34 @@ class TestTable(DataTable):
         Binding('escape', 'clear_range', show=False),
     ]
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, sticky_timing=False, **kwargs):
         super().__init__(*args, **kwargs)
+        self.sticky_timing = sticky_timing
         self.range_anchor = None
         self.range_end = None
+
+    def _render_line(self, y, x1, x2, base_style):
+        """Preview the final timing column without changing scroll geometry.
+
+        Render through DataTable to preserve row/cell styles and mouse metadata.
+        Once scrolling exposes its start, the normal column (including its long
+        tail) takes over. Only the hidden right edge of preceding cells is marked.
+        """
+        normal = super()._render_line(y, x1, x2, base_style)
+        if not self.sticky_timing or len(self.columns) != 3 or not normal.text.strip():
+            return normal
+        width = self.scrollable_content_region.width
+        preview_width = len('Execution time') + 2 * self.cell_padding
+        timing_start = sum(column.get_render_width(self) for column in self.ordered_columns[:-1])
+        if width <= preview_width or timing_start - x1 <= width - preview_width:
+            return normal
+        boundary = width - preview_width
+        edge = normal.crop(boundary - 1, boundary)
+        ellipsis = Strip([Segment('…', next(iter(edge)).style)])
+        preview = super()._render_line(y, timing_start, timing_start + preview_width,
+                                       base_style).crop(0, preview_width)
+        return Strip.join((normal.crop(0, boundary - 1), ellipsis, preview,
+                           normal.crop(width)))
 
     @property
     def selected_row_indices(self):
