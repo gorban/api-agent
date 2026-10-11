@@ -131,3 +131,13 @@ Use api_agent.runtime.managed_browser.managed_browser for real provider, integra
 - [ ] Establish one backend-owned suite authentication session before restoring parallel debug execution; concurrent requests coalesce and use the same selected account/session without multiple login windows. Workers receive generic operation/credential IPC, never browser objects or raw provider tokens.
   - [x] Ordinary integration readiness uses a [shared backend](shared_authentication.md) across base/pack/provider suites and parallel workers. Workers receive readiness/error/timing leases only; scoped credentials and tokens remain backend-local. Shared component deadlines are independent of individual waiters. Retained DEBUG remains serial and requires its own backend join.
 - [ ] Separate browser attachability from retention. An explicitly inspection-enabled operation can expose the same original page without DEBUG; it may close normally when its purpose ends. DEBUG retains it beyond setup/test completion. Unattended visibility and automation remain provider-owned, with headed retention for explicit debug; attended consent is always headed. Apply this policy uniformly to included and private LLM providers, and to E2E/local-run UI sessions.
+
+### Content emission boundary
+
+Integration factories receive `services["emissions"]`, a shared credential-scrubbing
+boundary. Register newly obtained secrets before emitting payloads, including
+opaque authentication fields that core cannot inspect. Core registers configured
+secrets, credential-helper results and string session tokens. Explicit
+`LOG_CONTENT=True` enables per-call provider-neutral request/response Allure
+attachments; default False omits them without disabling usage accounting.
+Future tool, streaming and browser evidence must use the same gate and scrubber.

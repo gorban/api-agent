@@ -109,6 +109,8 @@ class IntegrationLLM:
         from api_agent.auth.interaction_transport import OwnedInteraction
         self.interaction = None if interaction is None else OwnedInteraction(interaction)
         self.config = dict(config)
+        from .inference_content import content_boundary
+        self.emissions = content_boundary(self.config)
         self.owner_root = owner_root
         from api_agent.auth.managers import load_manager_registry, registry_for_owner
         self.password_manager_registry = (
@@ -181,7 +183,10 @@ class IntegrationLLM:
                     self._credential_tasks.add(task)
                     task.add_done_callback(self._credential_tasks.discard)
                     try:
-                        return await asyncio.shield(task)
+                        value = await asyncio.shield(task)
+                        if type(value) is str and value:
+                            self.emissions.register_secret(value)
+                        return value
                     except asyncio.CancelledError:
                         if interaction is not None:
                             interaction.cancel()
@@ -208,7 +213,7 @@ class IntegrationLLM:
         if self.provider is None:
             self._provider_config = deepcopy(self.config)
             try:
-                services = {'owner_root': self.owner_root}
+                services = {'owner_root': self.owner_root, 'emissions': self.emissions}
                 if self.inspection is not None:
                     services['browser_inspection'] = self.inspection
                 self.provider = await aload_provider(location, deepcopy(self._provider_config), services, kind='llm')
@@ -238,9 +243,13 @@ class IntegrationLLM:
                                              credentials=scoped_credentials,
                                              interactive=index is None and (self.inspection is not None or not self._provider_config.get('NO_STD_IN', False)))
                 return self.owner
+            async def complete(request, *, auth):
+                if type(auth) is str and auth:
+                    self.emissions.register_secret(auth)
+                return await implementation.acomplete(request, auth=auth)
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
                                                  credentials=credentials, describe=getattr(implementation, 'adescribe', None),
-                                                 complete=getattr(implementation, 'acomplete', None),
+                                                 complete=complete if callable(getattr(implementation, 'acomplete', None)) else None,
                                                  validate_request=lambda request: self._validate_request(implementation, request))
 
     def _validate_request(self, implementation, request):
@@ -289,12 +298,16 @@ class IntegrationLLM:
             raise ContractError('Integration provider setup is closed.')
         from .inference_usage import publish
         call_id = publish(request)
+        result = None
         try:
             result = self._run_private(self._complete(request))
             publish(request, result, call_id=call_id)
             return result
         except SetupPrerequisiteError as error:
             pytest.skip(str(error))
+        finally:
+            from .inference_content import export_content, publish_content
+            publish_content(export_content(self.emissions, request, result), call_id)
 
     def describe(self):
         if self.closed:
@@ -388,9 +401,13 @@ class RemoteIntegrationLLM:
     def complete(self, request):
         from .inference_usage import publish
         call_id = publish(request)
-        result = self._request(lambda: self.client.complete(request))
-        publish(request, result, call_id=call_id)
-        return result
+        try:
+            result = self._request(lambda: self.client.complete(request))
+            publish(request, result, call_id=call_id)
+            return result
+        finally:
+            from .inference_content import publish_content
+            publish_content(getattr(self.client, 'evidence', ()), call_id)
 
     def describe(self):
         return self._request(self.client.describe)

@@ -20,6 +20,20 @@ resources stop on exit; retained test services remain available for observation
 and explicit cleanup. `LOG_CONTENT=False` keeps user/LLM/tool content out of
 logs and traces; credentials stay excluded regardless of that setting.
 
+## Recorded content and token usage
+
+`LOG_CONTENT` defaults to False. Set it True to attach exact provider-neutral
+LLM request/response content to Allure, including paths and code internals;
+credentials remain redacted. Failure diagnostics and token accounting remain
+available with content disabled. Future tool/browser evidence uses the same gate.
+
+Set `TOKEN_USAGE_CSV_ENABLED=True` to append usage to `token_usage.csv` in the
+selected pack root, or the base root without a pack. `TOKEN_USAGE_CSV` overrides
+that path; an explicit empty value disables it. Its columns are provider, selected LLM,
+call count, session ID, input, output, total, cache-read, cache-creation and
+reasoning tokens. Allure retains its own usage summary and CSV independently.
+The default CSV, its lock and legacy backups are Git-ignored.
+
 ## Testing
 
 Select `unit`, `integration` or `e2e` through `--tui-mode`. File/node selectors

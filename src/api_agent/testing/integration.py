@@ -308,6 +308,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         emit(RunnerEvent('test_started', repo, identity))
                                     elif row['kind'] == 'inference_usage':
                                         emit(RunnerEvent('inference_usage', repo, identity, text=json.dumps(row['data'])))
+                                    elif row['kind'] == 'inference_content':
+                                        emit(RunnerEvent('inference_content', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'component_progress':
                                         from api_agent.providers.progress import ComponentProgress
                                         component = ComponentProgress(**row['component'])

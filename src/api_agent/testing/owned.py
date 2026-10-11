@@ -97,7 +97,8 @@ async def run_owned_integration(context, tests, config, *, operation, accepted=F
                 min(5, quota_timeout) if cancel_event.is_set() else quota_timeout)))
                 if session_factory is not None else None,
             cancel_event=cancel_event, on_event=on_event, output=output,
-            usage_output=usage_output, evidence_boundary=owned.runtime.emissions)
+            usage_output=usage_output, evidence_boundary=owned.runtime.emissions,
+            content_policy=getattr(owned.runtime.emissions, 'policy', None))
         if runner is not None:
             options['runner'] = runner
         worker = asyncio.create_task(asyncio.to_thread(

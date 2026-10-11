@@ -41,7 +41,7 @@ help = "Optional trace destination. Defaults to the selected trace mode's local 
 [fields.LOG_CONTENT]
 type = "bool"
 default = false
-help = "Only explicitly setting LOG_CONTENT=True enables message and tool content logging; tracing does not enable content logging."
+help = "Default False omits raw prompts, responses and tool content from logs, traces and Allure. Set True to retain inference request/response attachments and content, including paths and code internals. Credentials and registered secrets are always redacted; tracing does not enable content logging."
 
 [fields.CLIENT_CA_FILE]
 acknowledge_default = false

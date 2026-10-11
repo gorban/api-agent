@@ -235,11 +235,13 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 return status
             from api_agent.testing.collection import collect_tests
             from api_agent.testing.launched import run_launched_integration
+            from api_agent.telemetry.privacy import ContentPolicy
             tests = collect_tests(context, 'integration', result.positionals, config=result.values)
             print('Integration debug: serial execution; provider login may require browser interaction.'
                   if result.values.get('DEBUG') else 'Integration tests: provider login may require browser interaction.', flush=True)
             from api_agent.auth.terminal_interaction import TerminalInteraction
             execution = run_launched_integration(context, tests, result.values, accepted=True,
+                content_policy=ContentPolicy.from_config(result),
                 interaction=TerminalInteraction(),
                 unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                 output=lambda chunk: print(chunk, end='', flush=True))

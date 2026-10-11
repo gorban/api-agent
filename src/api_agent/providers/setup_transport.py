@@ -327,6 +327,7 @@ class SetupServer(_Owner):
             ready = _spawn(self._ready(peer, action))
         disconnected = _spawn(peer.reader.read(1))
         peer.jobs = (ready, disconnected)
+        result = None
         try:
             done, _ = await asyncio.wait({ready, disconnected}, return_when=asyncio.FIRST_COMPLETED)
             if disconnected in done:
@@ -341,8 +342,15 @@ class SetupServer(_Owner):
                 return dict(version=1, status='catalog', catalog=catalog_to_wire(result))
             return dict(version=1, status='ready')
         finally:
-            async with report_timeout('Setup request cancellation', self._timeout) as budget:
-                await _drain(peer.jobs, budget.remaining, self._cancel_requested)
+            try:
+                if (action == 'complete' and not peer.writer.is_closing()
+                        and not disconnected.done()):
+                    exporter = getattr(self._registry, 'export_content', lambda *args: ())
+                    for evidence in exporter(peer.binding, request, result):
+                        peer.writer.write(_encode(dict(version=1, status='evidence', **evidence)))
+            finally:
+                async with report_timeout('Setup request cancellation', self._timeout) as budget:
+                    await _drain(peer.jobs, budget.remaining, self._cancel_requested)
 
     async def _drop(self, peer):
         peer.writer.close()
@@ -421,6 +429,7 @@ class SetupClient:
         self._request_task = None
         self._cancel_requested = set()
         self._lock = threading.RLock()
+        self.evidence = []
 
     def _context(self):
         if self._pid != os.getpid():
@@ -447,6 +456,8 @@ class SetupClient:
                 pass
 
     async def _exchange(self, action, request=None):
+        if action == 'complete':
+            self.evidence = []
         frame = dict(version=1, action=action, timeout=self._timeout, capability=self._descriptor['capability'])
         if action == 'register':
             frame.update(worker_id=self._worker, attempt=1)
@@ -461,6 +472,14 @@ class SetupClient:
             if type(response.get('version')) is not int or response['version'] != 1:
                 raise ContractError('Invalid setup response')
             status = response.get('status')
+            if status == 'evidence' and action == 'complete':
+                if (set(response) != {'version', 'status', 'phase', 'content'}
+                        or response['phase'] not in ('request', 'response')
+                        or type(response['content']) is not dict
+                        or any(row['phase'] == response['phase'] for row in self.evidence)):
+                    raise ContractError('Invalid inference evidence response')
+                self.evidence.append({'phase': response['phase'], 'content': response['content']})
+                continue
             if status == 'progress' and action in ('ready', 'describe', 'complete'):
                 self._progress(response)
                 continue
@@ -531,7 +550,9 @@ class SetupClient:
 
     def complete(self, request):
         from .inference import request_to_wire
-        return self._run_request('complete', request_to_wire(request))
+        with self._lock:
+            self.evidence = []
+            return self._run_request('complete', request_to_wire(request))
 
     def _run_request(self, action, request=None):
         with self._lock:
