@@ -157,6 +157,9 @@ preview requirements, including its unsupported-option restrictions.
   selections and older off reject explicitly before credentials/inference.
   Configured policies cross the ordinary backend and DEBUG local consumer;
   explicit request policies win. Authentication and answer caching stay separate.
+- [x] Implement explicit cache presets for canonical `https://openrouter.ai/api/v1` and known namespaced OpenAI GPT-5.6/6/6.1 families, including `openai/gpt-6-luna` and dated suffixes. Off sends explicit mode without breakpoints; medium/high use documented explicit mode with 30m TTL and a final text-block breakpoint covering the whole input prefix. Official OpenAI mappings stay unchanged. Deterministically verify both Responses and Chat Completions mappings for off/medium/high, retaining rejection for unknown routes/models or unsupported retention. Empty must continue omitting controls and allowing upstream automatic caching; a short prompt is not a cache-hit acceptance test. Use deterministic request/usage/accounting proofs first; live cache-hit checks need an eligible repeated prefix and separately authorized spend. See [OpenRouter prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching).
+- [x] Independently review cache preflight and accounting error paths. Require ASCII calendar-valid dated suffixes without freezing supported families to one catalog snapshot; preserve validated token/cache counts when OpenRouter billing metadata is rejected. Verify both transports and isolate mutations of the intended checks.
+- [ ] Human acceptance for OpenRouter cache presets remains pending: verify live repeated-prefix cache behavior, and authorize any paid repeated-prefix cache-hit check separately.
 - [ ] Add bounded image content to shared requests and worker frames, with
   provider-owned Chat Completions/Responses mappings and selection validation.
   Check media type, size, supported detail and safe source handling before

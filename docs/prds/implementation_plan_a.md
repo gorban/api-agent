@@ -189,6 +189,9 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 
 ## Active component timeout progress
 
+- [x] Use one shared code-coverage summary in interactive and noninteractive unit output: `Code coverage: lines 100% · branches 100%.` Keep the exact All-tests coverage gate and partial-selection behavior; avoid a separate production-coverage announcement.
+- [x] Reuse completed accounting presentation for integration selection/results: live timing stays separate from completed costs, token-bearing passed tests can open details, and Back to selection refreshes historical estimates. See [the detailed accounting checklist](implementation_plan_f3.md); future E2E execution must consume the same helpers.
+
 - [x] Bubble component names, their own elapsed time and existing timeout through shared operation-local progress events. Start immediately, update once per second and remove on completion, failure, timeout or cancellation. Nested components keep separate clocks; never sum limits or invent a whole-test deadline. Reporting does not change timeout enforcement.
 - [x] Drain owned progress heartbeats through cancellation-safe cleanup and always emit component completion under repeated cancellation. Verify that a stopped child disappears, its continuing parent's original clock/budget becomes visible, and heartbeat disposal finishes before cancellation propagates.
 - [x] Display live component timing only in the running test row through shared unit/integration presentation, preserving focus, selection and stable rows. Name the column `Execution time`; finished rows show the entire test duration. Bind worker events to the current test, including parallel integration workers. Keep component names and per-test clocks out of the summary; late component events cannot replace completed results. Verify the shared presentation for unit, integration and E2E.

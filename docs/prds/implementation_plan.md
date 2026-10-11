@@ -33,7 +33,7 @@ The TUI enforces exact 100% line/branch coverage for All tests; partial selectio
 - [x] Make the shared managed Playwright factory apply pinned Stealth before launch, preserve original-session debug inspection, and end pending login promptly on browser closure. Implement observed GPT email/password/optional TOTP/consent steps with account/origin guards; expose the fixed cache directory for acknowledgement. See [setup checklist](implementation_plan_f2b.md).
 - [x] Make main-menu q exit immediately through existing cleanup, preserving the latest operation status. Other screens retain confirmation.
 
-Latest code gate: 2,758/2,758 combined unit tests pass with exact 100% measured per-file line/branch coverage. Authentication success is distinct from configured Allure history publication, which failed in the live probes. The larger human review, recording-prerequisite join, inference and complete application milestone are not complete.
+At the October 8 checkpoint, 2,758/2,758 combined unit tests passed with exact 100% measured per-file line/branch coverage; live authentication probes exposed publication failures. Later recording, inference and accounting delivery is tracked in the linked checklists and the completed accounting summary below. That earlier gate is historical evidence, not the current test count or full application acceptance.
 
 ## Current provider architecture
 
@@ -44,3 +44,10 @@ Latest code gate: 2,758/2,758 combined unit tests pass with exact 100% measured 
 - [ ] Restore upstream authentication/validation through an external API extension and LLM connectivity through the included or another selected adapter. See [API extension requirements](implementation_plan_m2.md) and [LLM adapter requirements](implementation_plan_f1.md). Keep system-specific requirements in their owners; non-inference access adapters are independent of the selected GPT provider.
 
 Follow the [pluggable API and LLM provider plan](../architecture/provider_architecture.md) for provider configuration, route extensions, authentication and browser lifetimes.
+
+## Delivered accounting and history requirements
+
+- [x] Record integration calls, tokens, safe failures, optional content, reported charges and quota observations in immutable Allure/S3 history, with optional secondary copies and the compatibility CSV. See [reporting](implementation_plan_d.md) and [usage](implementation_plan_f.md).
+- [x] Predict integration test costs from compatible history, refresh on Back to selection, and present completed costs, token contributions and historical averages using shared TUI/terminal helpers. Preserve frozen pricing, original observations and unavailable-versus-zero distinctions. See [historical accounting](implementation_plan_f3.md).
+- [x] Prevent simultaneous local test suites from interfering with quota accounting through an exclusive operation-lifetime lease, automatically released on process death. Record completed arithmetic-average and empty-history/rebuild human checks in [the accounting checklist](implementation_plan_f3.md).
+- [ ] Reuse these contracts in local-run and E2E consumers; finish account-aware calibration, history-window refinements and remaining human acceptance without treating integration completion as full application completion.

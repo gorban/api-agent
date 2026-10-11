@@ -19,6 +19,7 @@ from api_agent.llm_providers.gpt.inference import complete_text
 from api_agent.testing.provider_setup import IntegrationLLM
 
 BASE = 'https://api.openai.com/v1'
+OPENROUTER = 'https://openrouter.ai/api/v1'
 
 
 def request(policy=None, selection='gpt-6.1-sol'):
@@ -98,6 +99,28 @@ def test_alternate_route_rejects_explicit_policy_before_request(policy):
     with pytest.raises(ProviderAccessError,match='compatible backend'):
         prompt_cache_fields(policy,'openai/gpt-6.1-sol',base_url='https://compatible.example/v1',subscription=False)
     assert prompt_cache_fields('', 'openai/gpt-6.1-sol',base_url='https://compatible.example/v1',subscription=False)=={}
+
+
+@pytest.mark.parametrize('base', [OPENROUTER, 'https://OPENROUTER.AI/api/v1/'])
+@pytest.mark.parametrize('selection', ['openai/gpt-5.6-sol', 'openai/gpt-5.6-sol-pro', 'openai/gpt-6-astra', 'openai/gpt-6-luna', 'openai/gpt-6-luna-2026-10-01', 'openai/gpt-6.1-sol'])
+@pytest.mark.parametrize('policy,expected', [(None, {}), ('', {}), ('off', {'prompt_cache_options': {'mode': 'explicit'}}), ('medium', {'prompt_cache_options': {'mode': 'explicit', 'ttl': '30m'}}), ('high', {'prompt_cache_options': {'mode': 'explicit', 'ttl': '30m'}})])
+def test_openrouter_known_families_and_normalized_endpoint(base, selection, policy, expected):
+    assert prompt_cache_fields(policy, selection, base_url=base, subscription=False) == expected
+
+
+@pytest.mark.parametrize('selection', ['gpt-6-luna', 'openai/gpt-5.5', 'openai/gpt-4.1', 'openai/gpt-6-unknown', 'openai/gpt-7', 'anthropic/claude-sonnet-4', 'google/gemini-2.5-pro'])
+@pytest.mark.parametrize('policy', ['off', 'medium', 'high'])
+def test_openrouter_unknown_or_older_models_reject(selection, policy):
+    with pytest.raises(ProviderAccessError, match='unknown.*OpenRouter'):
+        prompt_cache_fields(policy, selection, base_url=OPENROUTER, subscription=False)
+    assert prompt_cache_fields('', selection, base_url=OPENROUTER, subscription=False) == {}
+
+
+@pytest.mark.parametrize('base', ['https://openrouter.ai/api/V1', 'https://openrouter.ai:443/api/v1', 'https://openrouter.ai/api/v1/other', 'https://openrouter.ai.example/api/v1', 'https://other.example/api/v1'])
+def test_openrouter_requires_canonical_endpoint(base):
+    with pytest.raises(ProviderAccessError, match='compatible backend'):
+        prompt_cache_fields('medium', 'openai/gpt-6-luna', base_url=base, subscription=False)
+    assert prompt_cache_fields(None, 'openai/gpt-6-luna', base_url=base, subscription=False) == {}
 
 
 def test_configured_policy_preserves_immutable_call_overrides():
@@ -252,4 +275,104 @@ def test_revoked_completion_cannot_return_a_cooperative_final_reply():
         finally:
             await registry.aclose()
         adapter.aclose.assert_awaited_once()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+@pytest.mark.parametrize('configured,override,effective', [('', None, None), ('off', None, 'off'), ('medium', None, 'medium'), ('high', None, 'high'), ('high', 'off', 'off'), ('off', 'medium', 'medium')])
+def test_openrouter_actual_effective_payload(mode, configured, override, effective, monkeypatch):
+    from api_agent.llm_providers.gpt import factory
+    bodies = []
+    original_client = httpx.AsyncClient
+    def transport(sent):
+        body = json.loads(sent.content)
+        bodies.append(body)
+        options = body.get('prompt_cache_options')
+        if effective:
+            assert options == ({'mode': 'explicit'} if effective == 'off' else {'mode': 'explicit', 'ttl': '30m'})
+            assert options['mode'] == 'explicit'  # Published OpenRouter enum.
+        else:
+            assert options is None
+        rows = body['input' if mode == 'responses' else 'messages']
+        expected_tail = 'Task' if effective in (None, 'off') else [{'type': 'input_text' if mode == 'responses' else 'text', 'text': 'Task', 'prompt_cache_breakpoint': {'mode': 'explicit'}}]
+        assert rows == [{'role': 'system', 'content': 'Prefix'}, {'role': 'assistant', 'content': 'Earlier'}, {'role': 'user', 'content': expected_tail}]
+        data = ({'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Ok'}]}], 'usage': {'input_tokens': 1200, 'output_tokens': 2, 'input_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}}} if mode == 'responses' else {'choices': [{'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': 'Ok'}}], 'usage': {'prompt_tokens': 1200, 'completion_tokens': 2, 'prompt_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}}})
+        return httpx.Response(200, json=data)
+    monkeypatch.setattr(factory.httpx, 'AsyncClient', lambda **kwargs: original_client(transport=httpx.MockTransport(transport), **kwargs))
+    req = LLMRequest('openai/gpt-6-luna', CompletionRequest((Message('system', (TextContent('Prefix'),)), Message('assistant', (TextContent('Earlier'),)), Message('user', (TextContent('Task'),))), generation=GenerationOptions(cache_policy=override)))
+    original_wire = request_to_wire(req)
+    adapter = GPTProvider({'GPT_AUTH_MODE': 'api_key', 'GPT_BASE_URL': OPENROUTER, 'GPT_API_MODE': mode, 'LLM_CACHE_POLICY': configured})
+    result = asyncio.run(adapter.acomplete(req, auth='synthetic-token'))
+    assert result.usage.cached_input_tokens == 1000
+    assert result.usage.cache_write_tokens == 200
+    assert result.usage.input_tokens == 1200
+    assert request_to_wire(req) == original_wire
+    assert len(bodies) == 1
+
+
+@pytest.mark.parametrize('selection,base,tail', [('openai/gpt-5.5', OPENROUTER, 'Task'), ('openai/gpt-6-unknown', OPENROUTER, 'Task'), ('openai/gpt-6-luna', 'https://other.example/api/v1', 'Task'), ('openai/gpt-6-luna', OPENROUTER, ''), ('openai/gpt-6-luna-2099-99-99', OPENROUTER, 'Task'), ('openai/gpt-6-luna-20999999', OPENROUTER, 'Task'), ('openai/gpt-6-luna-２０９９９９９９', OPENROUTER, 'Task')])
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+def test_openrouter_unsupported_effective_request_precedes_auth(tmp_path, monkeypatch, selection, base, tail, mode):
+    from api_agent.testing import provider_setup
+    adapter = GPTProvider({'GPT_AUTH_MODE': 'api_key', 'GPT_BASE_URL': base, 'GPT_API_MODE': mode})
+    adapter.asetup = AsyncMock()
+    adapter.acomplete = AsyncMock()
+    monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(implementation=adapter, aclose=AsyncMock())))
+    local = IntegrationLLM({'LLM_PROVIDER': 'synthetic', 'LLM_CACHE_POLICY': 'medium'}, tmp_path)
+    req = LLMRequest(selection, CompletionRequest((Message('user', (TextContent(tail),)),)))
+    try:
+        with pytest.raises(ProviderAccessError):
+            local.complete(req)
+        adapter.asetup.assert_not_awaited()
+        adapter.acomplete.assert_not_awaited()
+    finally:
+        local.close()
+
+
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+@pytest.mark.parametrize('role', ['system', 'user', 'assistant'])
+def test_openrouter_final_block_preserves_multipart_unicode_long_text(mode, role):
+    from api_agent.llm_providers.gpt.inference import validate_text_request
+    text = 'Reusable λ🙂 prefix\n' * 200
+    req = LLMRequest('openai/gpt-6-luna-20261001', CompletionRequest((Message('user', (TextContent('Earlier'),)), Message(role, (TextContent(text), TextContent('尾')))), generation=GenerationOptions(cache_policy='high')))
+    before = req.payload
+    _, body = validate_text_request(base_url=OPENROUTER, access_token='synthetic-token', subscription=False, api_mode=mode, request=req)
+    rows = body['input' if mode == 'responses' else 'messages']
+    assert rows == [{'role': 'user', 'content': 'Earlier'}, {'role': role, 'content': [{'type': 'input_text' if mode == 'responses' else 'text', 'text': text + '尾', 'prompt_cache_breakpoint': {'mode': 'explicit'}}]}]
+    # Published EasyInputMessage allows assistant with InputText content too.
+    assert rows[-1]['role'] in ('user', 'system', 'assistant', 'developer')
+    assert req.payload == before
+    assert req.payload.messages[-1].content == (TextContent(text), TextContent('尾'))
+
+
+@pytest.mark.parametrize('suffix', ['2099-99-99', '20999999', '２０９９９９９９', '2026-02-29', '20260229', '0000-01-01', '2026-13-01'])
+@pytest.mark.parametrize('policy', ['off', 'medium', 'high'])
+def test_openrouter_invalid_calendar_or_nonascii_snapshot_rejects(suffix, policy):
+    with pytest.raises(ProviderAccessError, match='unknown.*OpenRouter'):
+        prompt_cache_fields(policy, 'openai/gpt-6-luna-' + suffix, base_url=OPENROUTER, subscription=False)
+
+
+@pytest.mark.parametrize('suffix', ['2024-02-29', '20240229', '2099-12-31', '20991231'])
+def test_openrouter_valid_calendar_snapshot_not_frozen_to_catalog(suffix):
+    assert prompt_cache_fields('medium', 'openai/gpt-6-luna-' + suffix, base_url=OPENROUTER, subscription=False) == {'prompt_cache_options': {'mode': 'explicit', 'ttl': '30m'}}
+
+
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+@pytest.mark.parametrize('invalid_billing', [{'id': 42}, {'id': 'invalid generation id'}, {'id': 'synthetic-token'}, {'request_id': 'invalid request id'}, {'usage_cost': -1}])
+def test_openrouter_billing_failure_preserves_valid_cache_usage(mode, invalid_billing):
+    usage = {'input_tokens': 1200, 'output_tokens': 2, 'input_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}} if mode == 'responses' else {'prompt_tokens': 1200, 'completion_tokens': 2, 'prompt_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}}
+    data = {'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Ok'}]}]} if mode == 'responses' else {'choices': [{'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': 'Ok'}}]}
+    data['usage'] = usage
+    if 'usage_cost' in invalid_billing:
+        usage['cost'] = invalid_billing['usage_cost']
+    else:
+        data.update(invalid_billing)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda sent: httpx.Response(200, json=data))) as client:
+            with pytest.raises(ProviderAccessError, match='invalid billing metadata') as caught:
+                await complete_text(client=client, base_url=OPENROUTER, access_token='synthetic-token', subscription=False, api_mode=mode, request=request('medium', selection='openai/gpt-6-luna'))
+            assert caught.value.usage.input_tokens == 1200
+            assert caught.value.usage.output_tokens == 2
+            assert caught.value.usage.cached_input_tokens == 1000
+            assert caught.value.usage.cache_write_tokens == 200
     asyncio.run(run())
