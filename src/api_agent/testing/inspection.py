@@ -6,6 +6,7 @@ import threading
 import time
 
 from .processes import disposal_complete, finalize
+from .suite_lock import CleanupLeaseOwner, retain_suite_cleanup
 
 
 class InspectionDirectory:
@@ -22,7 +23,7 @@ class InspectionDirectory:
             self.temporary.cleanup()
 
 
-class IntegrationInspection:
+class IntegrationInspection(CleanupLeaseOwner):
     """Own a specific pytest process group until acknowledged inspection cleanup."""
     def __init__(self, process, directory, event_file, reader, *, on_event=None, repo='', liveness_fd=None,
                  registry=None):
@@ -54,6 +55,7 @@ class IntegrationInspection:
             if registry is not None and self in registry:
                 registry.remove(self)
             raise
+        retain_suite_cleanup(self)
 
     def _rows(self):
         try:
@@ -105,6 +107,7 @@ class IntegrationInspection:
         self.directory.temporary.cleanup()
         self.closed = True
         self.pending = False
+        self._acknowledge_closed()
 
     def _watch(self):
         while True:

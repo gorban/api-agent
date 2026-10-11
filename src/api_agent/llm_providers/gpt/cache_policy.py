@@ -19,6 +19,17 @@ _OPENROUTER_FAMILIES = frozenset({
 })
 
 
+def _family(selection):
+    snapshot = re.fullmatch(r'(.+)-([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{8})', selection)
+    if snapshot is not None:
+        try:
+            date.fromisoformat(snapshot[2])
+        except ValueError:
+            return selection
+        return snapshot[1]
+    return selection
+
+
 def prompt_cache_fields(policy, selection, *, base_url, subscription):
     if policy is None or policy == '':
         return {}
@@ -33,15 +44,7 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
         raise ProviderAccessError('unsupported', f'The GPT subscription route cannot {requested}; use medium for automatic caching or an empty policy for provider defaults.')
     base = validate_base_url(base_url)
     if base == _OPENROUTER_BASE:
-        family = selection
-        snapshot = re.fullmatch(r'(.+)-([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{8})', selection)
-        if snapshot is not None:
-            try:
-                date.fromisoformat(snapshot[2])
-            except ValueError:
-                pass
-            else:
-                family = snapshot[1]
+        family = _family(selection)
         if not family.startswith('openai/') or family[7:] not in _OPENROUTER_FAMILIES:
             raise ProviderAccessError('unsupported', 'Prompt-cache policy support is unknown for this OpenRouter GPT selection; use an empty policy for provider defaults.')
         if policy == 'off':
@@ -51,8 +54,8 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
         return {'prompt_cache_options': {'mode': 'explicit', 'ttl': '30m'}}
     if base != OFFICIAL_BASE_URL:
         raise ProviderAccessError('unsupported', 'LLM_CACHE_POLICY controls are not verified for this compatible backend; use an empty policy for provider defaults.')
-    version = re.fullmatch(r'gpt-(\d+)(?:\.(\d+))?(?:-[a-z0-9]+)*', selection)
-    if version is not None and (int(version[1]), int(version[2] or 0)) >= (5, 6):
+    family = _family(selection)
+    if family in _OPENROUTER_FAMILIES or family == 'gpt-5.6':
         if policy == 'off':
             return {'prompt_cache_options': {'mode': 'explicit'}}
         return {'prompt_cache_options': {'mode': 'implicit', 'ttl': '30m'}}
@@ -60,7 +63,6 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
         raise ProviderAccessError('unsupported', 'This GPT selection cannot disable prompt caching; use an empty policy for provider defaults.')
     # Documented families and their dated snapshots; unknown families do not
     # inherit retention capabilities from a similar-looking identifier.
-    family = re.sub(r'-\d{4}-\d{2}-\d{2}$', '', selection)
     if family in _EXTENDED:
         return {'prompt_cache_retention': '24h' if policy == 'high' or family in ('gpt-5.5', 'gpt-5.5-pro') else 'in_memory'}
     raise ProviderAccessError('unsupported', 'Prompt-cache policy support is unknown for this GPT selection; use an empty policy for provider defaults.')

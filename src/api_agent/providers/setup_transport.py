@@ -99,6 +99,17 @@ def _encode(value):
     return raw
 
 
+def _content_frame(evidence):
+    """Optional evidence has its own post-redaction bound, never a result gate."""
+    if (type(evidence) is not dict or set(evidence) != {'phase', 'content'}
+            or evidence['phase'] not in ('request', 'response') or type(evidence['content']) is not dict):
+        return None
+    try:
+        return _encode(dict(version=1, status='evidence', **evidence))
+    except ContractError:
+        return None
+
+
 async def _read(reader):
     try:
         return _decode(await reader.readline())
@@ -358,8 +369,17 @@ class SetupServer(_Owner):
                         from .costs import validate_quote
                         peer.writer.write(_encode(dict(version=1, status='cost', quote=validate_quote(quote))))
                     exporter = getattr(self._registry, 'export_content', lambda *args: ())
-                    for evidence in exporter(peer.binding, request, result):
-                        peer.writer.write(_encode(dict(version=1, status='evidence', **evidence)))
+                    try:
+                        phases = set()
+                        for evidence in exporter(peer.binding, request, result):
+                            frame = _content_frame(evidence)
+                            if frame is not None and evidence['phase'] not in phases:
+                                phases.add(evidence['phase'])
+                                peer.writer.write(frame)
+                    except Exception:
+                        # Content capture is optional; completed result/usage and
+                        # mandatory cleanup retain their original behavior.
+                        pass
             finally:
                 async with report_timeout('Setup request cancellation', self._timeout) as budget:
                     await _drain(peer.jobs, budget.remaining, self._cancel_requested)

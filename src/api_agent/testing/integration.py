@@ -21,7 +21,7 @@ import time
 from .collection import CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
 from .processes import finalize
-from .suite_lock import suite_locked
+from .suite_lock import suite_locked, retain_suite_cleanup
 
 
 @dataclass(frozen=True)
@@ -204,6 +204,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     backend = SetupBackend(config, context.owner_root,
                         unattended_index_source=unattended_index_source,
                         password_manager_registry=manager_registry, interaction=interaction, quota_observer=quota_observer)
+                    retain_suite_cleanup(backend)
                     backend_descriptor = backend.start()
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
