@@ -17,7 +17,7 @@
 
 ## Presentation and acceptance
 
-- [x] Compact Est. $ in integration/E2E selection and after completed Execution time; hide costs during live execution. Known zero-call tests blank; unknown dash. Deduplicate group overlaps in selected total and label incomplete totals.
+- [x] Compact Est. $ in integration/E2E selection and after completed Execution time; hide costs during live execution. Known zero-call tests blank; unknown/incomplete groups dash. Deduplicate group overlaps; display Selected estimate: not enough historical data whenever any selected test is unknown, without a partial numeric subtotal, asterisk or incomplete suffix. Complete positive estimates below one millionth of a dollar display < $0.000001 in the selected total rather than rounding to zero.
 - [x] Keep prediction and completed accounting evidence in finalized artifacts, including basis/count/freshness/rounding/variation and original versus derived values. Refresh compatible rows without disturbing search/selection/focus/fixed timing. Per user review, omit the cost-details shortcut and popup; i remains ordinary query text during search.
 - [x] Reuse shared helpers for future E2E wiring. Unit tests remain outside cost history/Allure.
 - [x] Deterministic tests cover zero/spike/threshold/insufficient/calibration bounds, prices/aliases/missing revisions/retries/overlaps/resets/interrupted recording/late duplicate uploads, malformed/stale/bounded pricing, integrity/privacy and worker boundaries. Independent adversarial reviews, all applicable units at exact 100% lines/branches, wheels and public-boundary checks.

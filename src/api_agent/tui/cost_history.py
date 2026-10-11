@@ -3,20 +3,24 @@ from .test_results import compact_cost
 
 
 def cost_cell(prediction):
+    if prediction.get('incomplete'):
+        return '—'
     if prediction.get('known_zero'):
         return ''
     return compact_cost(prediction.get('estimated_cost_usd'))
 
 
 def total_cell(snapshot, ids):
-    total = snapshot.total(set(ids))
-    value = cost_cell(total)
-    return value + (' *' if total.get('incomplete') and value != '—' else '')
+    return cost_cell(snapshot.total(set(ids)))
 
 
 def selected_summary(snapshot, ids):
     total = snapshot.total(set(ids))
     amount = cost_cell(total)
-    return ('Selected estimate: $' + amount if amount not in {'', '—'} else
-            'Selected estimate: ' + ('no inference calls' if amount == '' else '—')) + (
-                ' (incomplete; some tests unknown)' if total.get('incomplete') else '')
+    if amount == '—':
+        label = 'not enough historical data'
+    elif amount == '':
+        label = 'no inference calls'
+    else:
+        label = '< $' + amount[1:] if amount.startswith('<') else '$' + amount
+    return 'Selected estimate: ' + label
