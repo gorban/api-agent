@@ -70,7 +70,7 @@ def test_new_openai_selection_mapping(policy, selection):
     result = prompt_cache_fields(policy, selection, base_url=BASE+'/', subscription=False)
     expected = {} if not policy else {'prompt_cache_options': {'mode':'explicit'} if policy=='off' else {'mode':'implicit', 'ttl':'30m'}}
     assert result == expected
-    if not policy:
+    if policy in (None, '', 'medium'):
         assert prompt_cache_fields(policy,selection,base_url=BASE,subscription=True)=={}
     else:
         with pytest.raises(ProviderAccessError, match='subscription route'):
@@ -83,8 +83,7 @@ def test_documented_older_retention(selection, medium):
     assert prompt_cache_fields('high',selection,base_url=BASE,subscription=False)=={'prompt_cache_retention':'24h'}
     with pytest.raises(ProviderAccessError, match='cannot disable'):
         prompt_cache_fields('off',selection,base_url=BASE,subscription=False)
-    with pytest.raises(ProviderAccessError, match='subscription route'):
-        prompt_cache_fields('medium',selection,base_url=BASE,subscription=True)
+    assert prompt_cache_fields('medium',selection,base_url=BASE,subscription=True)=={}
 
 
 @pytest.mark.parametrize('selection', ['gpt-example','gpt-4.1-nano','gpt-4.10','gpt-5.50example','openai/gpt-6.1-sol'])
@@ -240,7 +239,7 @@ def test_direct_factory_uses_config_and_explicit_request_override(monkeypatch,au
     monkeypatch.setattr(inference,'complete_text',complete)
     adapter=GPTProvider({'GPT_AUTH_MODE':auth,'GPT_API_MODE':'responses','LLM_CACHE_POLICY':configured})
     req=request(explicit)
-    if auth == 'subscription' and effective:
+    if auth == 'subscription' and effective in ('off', 'high'):
         with pytest.raises(ProviderAccessError, match='subscription route'):
             asyncio.run(adapter.acomplete(req,auth='secret'))
         assert not sent
@@ -376,3 +375,51 @@ def test_openrouter_billing_failure_preserves_valid_cache_usage(mode, invalid_bi
             assert caught.value.usage.cached_input_tokens == 1000
             assert caught.value.usage.cache_write_tokens == 200
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('policy', [None, '', 'medium', 'off', 'high'])
+def test_subscription_cache_payload_and_rejection_before_http(policy):
+    sent = []
+    def transport(outbound):
+        sent.append(json.loads(outbound.content))
+        data = {'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Ok'}]}], 'usage': {'input_tokens': 1027, 'output_tokens': 2, 'input_tokens_details': {'cached_tokens': 1024}}}
+        return httpx.Response(200, text='data: ' + json.dumps({'type': 'response.completed', 'response': data}) + '\n\n', headers={'content-type': 'text/event-stream'})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            return await complete_text(client=client, base_url=BASE, access_token='synthetic-token', subscription=True, api_mode='responses', request=request(policy))
+    if policy in ('off', 'high'):
+        with pytest.raises(ProviderAccessError, match='subscription route cannot'):
+            asyncio.run(run())
+        assert sent == []
+    else:
+        returned = asyncio.run(run())
+        assert returned.payload.content[0].text == 'Ok'
+        assert returned.usage.cached_input_tokens == 1024
+        assert len(sent) == 1
+        assert sent[0] == {'model': 'gpt-6.1-sol', 'input': [{'role': 'user', 'content': 'Ok'}], 'store': False, 'stream': True}
+
+
+@pytest.mark.parametrize('explicit', [None, 'medium', 'off', 'high'])
+def test_subscription_medium_through_backend_and_explicit_override(tmp_path, monkeypatch, explicit):
+    from api_agent.testing import provider_setup
+    from api_agent.testing.setup_backend import SetupBackend
+    from api_agent.providers.setup_transport import SetupClient
+    adapter = GPTProvider({'GPT_AUTH_MODE': 'subscription', 'LLM_CACHE_POLICY': 'medium'})
+    adapter.asetup = AsyncMock(return_value=AsyncMock(return_value='secret'))
+    adapter.acomplete = AsyncMock(return_value=LLMResult(Message('assistant', (TextContent('Ok'),))))
+    monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(implementation=adapter, aclose=AsyncMock())))
+    backend = SetupBackend({'LLM_PROVIDER': 'synthetic', 'LLM_CACHE_POLICY': 'medium'}, tmp_path)
+    client = SetupClient(backend.start())
+    try:
+        if explicit in ('off', 'high'):
+            with pytest.raises(ProviderAccessError, match='subscription route cannot'):
+                client.complete(request(explicit))
+            adapter.asetup.assert_not_awaited()
+            adapter.acomplete.assert_not_awaited()
+        else:
+            assert client.complete(request(explicit)).payload.content[0].text == 'Ok'
+            assert adapter.acomplete.call_args.args[0].payload.generation.cache_policy == 'medium'
+            adapter.asetup.assert_awaited_once()
+    finally:
+        client.close()
+        backend.close()

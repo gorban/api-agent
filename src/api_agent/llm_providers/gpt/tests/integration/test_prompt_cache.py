@@ -31,8 +31,8 @@ def test_prompt_cache_1027_tokens(integration_config, request):
     base = OFFICIAL_BASE_URL if subscription else validate_base_url(values.get('GPT_BASE_URL', OFFICIAL_BASE_URL))
     if base not in (OFFICIAL_BASE_URL, 'https://openrouter.ai/api/v1'):
         pytest.skip('This cache-hit test requires an official OpenAI or canonical OpenRouter GPT route.')
-    if subscription and policy:
-        pytest.skip('GPT subscription does not support explicit cache presets.')
+    if subscription and policy == 'high':
+        pytest.skip('GPT subscription cannot request extended cache retention.')
     selection = request.getfixturevalue('llm_selection')
     # Bound acceptance to known cache-capable families.
     model = selection.removeprefix('openai/')

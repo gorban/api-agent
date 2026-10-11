@@ -53,7 +53,7 @@ def run(provider, values=None, selection='openai/gpt-6-luna'):
     return fixtures
 
 
-@pytest.mark.parametrize('values', [{'LLM_CACHE_POLICY': 'off'}, {'GPT_AUTH_MODE': 'subscription', 'LLM_CACHE_POLICY': 'medium'}, {'GPT_BASE_URL': 'https://compatible.example/v1'}])
+@pytest.mark.parametrize('values', [{'LLM_CACHE_POLICY': 'off'}, {'GPT_AUTH_MODE': 'subscription', 'LLM_CACHE_POLICY': 'high'}, {'GPT_BASE_URL': 'https://compatible.example/v1'}])
 def test_integration_skip_happens_before_selection_discovery_or_auth(values):
     fixtures = Fixtures(OwnedProvider([]))
     config = {'GPT_AUTH_MODE': 'api_key'} | values
@@ -71,7 +71,7 @@ def test_unsupported_family_or_namespace_skips_before_inference(values, selectio
     assert provider.requests == []
 
 
-@pytest.mark.parametrize('values,selection', [({}, 'openai/gpt-6-luna'), ({'LLM_CACHE_POLICY': 'medium'}, 'openai/gpt-6-luna'), ({'LLM_CACHE_POLICY': 'high'}, 'openai/gpt-6-luna'), ({'GPT_AUTH_MODE': 'subscription'}, 'gpt-6-luna'), ({'GPT_BASE_URL': 'https://api.openai.com/v1'}, 'gpt-6.1-sol')])
+@pytest.mark.parametrize('values,selection', [({}, 'openai/gpt-6-luna'), ({'LLM_CACHE_POLICY': 'medium'}, 'openai/gpt-6-luna'), ({'LLM_CACHE_POLICY': 'high'}, 'openai/gpt-6-luna'), ({'GPT_AUTH_MODE': 'subscription'}, 'gpt-6-luna'), ({'GPT_AUTH_MODE': 'subscription', 'LLM_CACHE_POLICY': 'medium'}, 'gpt-6-luna'), ({'GPT_BASE_URL': 'https://api.openai.com/v1'}, 'gpt-6.1-sol')])
 def test_exact_1027_input_repeated_immutably_and_both_usage_costs_preserved(values, selection):
     provider = OwnedProvider([result(0, 1024), result(1024)])
     fixtures = run(provider, values, selection)

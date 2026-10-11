@@ -26,7 +26,7 @@ cost_affecting = true
 type = "str"
 enum = ["", "off", "medium", "high"]
 default = ""
-help = "Prompt-cache policy. Empty uses upstream automatic defaults. Off disables caching; medium/high request supported retention. Supported GPT-5.6/6/6.1 API-key families use 30m on official OpenAI and canonical https://openrouter.ai/api/v1 (namespaced openai/ IDs, including openai/gpt-6-luna). OpenRouter marks the final text block as a cache breakpoint; OpenAI GPT caching requires at least 1024 prompt tokens. Eligible older official models use in_memory/24h. GPT subscription requires empty. Unsupported policies fail before inference. This controls prompt caching, not login state or answer reuse."
+help = "Prompt-cache policy. Empty uses upstream automatic defaults. Off disables caching; medium/high request supported retention. Supported GPT-5.6/6/6.1 API-key families use 30m on official OpenAI and canonical https://openrouter.ai/api/v1 (namespaced openai/ IDs, including openai/gpt-6-luna). OpenRouter marks the final text block as a cache breakpoint; OpenAI GPT caching requires at least 1024 prompt tokens. Eligible older official models use in_memory/24h. GPT subscription medium permits automatic caching without explicit controls or a guaranteed lifetime; empty keeps upstream defaults, while off/high are unsupported. Unsupported policies fail before inference. This controls prompt caching, not login state or answer reuse."
 
 [fields.TRACE_MODE]
 type = "str"
