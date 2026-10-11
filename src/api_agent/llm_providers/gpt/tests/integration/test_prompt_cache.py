@@ -12,10 +12,17 @@ reporting differs from the explicit API-key boundary. Assert greater than 90%
 reuse for that route without relaxing the 1027-token API-key acceptance.
 No tokenizer download,
 calibration inference, or retry occurs in this test.
+
+Each attempt starts with a fresh UUID4 encoded as 32 space-separated A-P
+letters (one letter per hexadecimal digit). This puts 122 random bits before
+any shared text and preserves the calibrated token budget. The passage is
+shortened by the nonce header's 33 tokens. Both calls reuse the same nonce;
+the first must report zero cache reads, so old runs cannot warm this test.
 """
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from uuid import uuid4
 
 import pytest
 
@@ -46,8 +53,12 @@ class PromptCacheCase:
     expectation: CacheExpectation
 
 
-def _prompt_text(expectation):
-    text = Path(__file__).with_name('prompt_cache.txt').read_text()
+def _new_prompt_nonce():
+    return ' '.join('ABCDEFGHIJKLMNOP'[int(digit, 16)] for digit in uuid4().hex)
+
+
+def _prompt_text(expectation, nonce):
+    text = Path(__file__).with_name('prompt_cache.txt').read_text().replace('{run_nonce}', nonce)
     prefix, question = text.rsplit('What is the capital', 1)
     return prefix * expectation.prefix_repetitions + 'What is the capital' + question
 
@@ -73,7 +84,7 @@ def prepare_prompt_cache_case(values, fixtures):
     except ProviderAccessError as error:
         pytest.skip(error.message)
     expectation = _EXPECTATIONS[auth_mode]
-    supplied = LLMRequest(selection, CompletionRequest((Message('user', (TextContent(_prompt_text(expectation)),)),)))
+    supplied = LLMRequest(selection, CompletionRequest((Message('user', (TextContent(_prompt_text(expectation, _new_prompt_nonce())),)),)))
     return PromptCacheCase(fixtures.getfixturevalue('llm_provider'), supplied, expectation)
 
 
@@ -96,9 +107,14 @@ def assert_cached_prefix_reused(result, case):
     assert cached >= case.expectation.minimum_cached_tokens, 'Repeated request did not report ' + case.expectation.cache_requirement + '.'
 
 
+def assert_prefix_started_cold(result):
+    assert result.usage.cached_input_tokens == 0, 'First request did not report zero cached input tokens for its fresh prefix.'
+
+
 def test_prompt_cache(prompt_cache_case):
     warm = prompt_cache_case.provider.complete(prompt_cache_case.request)
     assert_prompt_processed(warm, prompt_cache_case)
+    assert_prefix_started_cold(warm)
     repeated = prompt_cache_case.provider.complete(prompt_cache_case.request)
     assert_prompt_processed(repeated, prompt_cache_case)
     assert_cached_prefix_reused(repeated, prompt_cache_case)
