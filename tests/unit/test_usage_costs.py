@@ -29,13 +29,13 @@ def test_frozen_prices_and_calibrated_total_preserve_cached_and_reasoning_subset
     assert prices['reasoning_tokens'] == pytest.approx(.000015)
     assert prices['total_tokens'] == price_usage(card, 'gpt-6-luna', evidence['calls'][0]['usage'])
     costs = category_costs(evidence, card, 1)
-    assert costs['input_tokens'] == pytest.approx(8.2/33.2)
-    assert costs['output_tokens'] == pytest.approx(25/33.2)
+    assert costs['input_tokens'] == pytest.approx(8/33.2)
+    assert costs['output_tokens'] == pytest.approx(10/33.2)
     assert costs['cache_read_tokens'] == pytest.approx(.2/33.2)
     assert costs['reasoning_tokens'] == pytest.approx(15/33.2)
     assert costs['cache_creation_tokens'] == 0
     assert costs['total_tokens'] == pytest.approx(1)
-    assert costs['input_tokens'] + costs['output_tokens'] == pytest.approx(1)
+    assert math.fsum(costs[field] for field in USAGE_COST_FIELDS[:-1]) == pytest.approx(1)
     assert costs['cache_read_tokens'] + costs['reasoning_tokens'] > 0
     assert evidence == raw
 
@@ -59,6 +59,9 @@ def test_multiple_models_and_attempts_use_summed_prices_not_raw_token_proportion
     weights = [price_usage_parts(card, item['quote']['accounting']['actual_model'], item['usage']) for item in evidence['calls']]
     costs = category_costs(evidence, card, .42)
     total = math.fsum(weight['total_tokens'] for weight in weights)
+    for weight in weights:
+        weight['input_tokens'] -= weight['cache_read_tokens'] + weight['cache_creation_tokens']
+        weight['output_tokens'] -= weight['reasoning_tokens']
     for field in USAGE_COST_FIELDS:
         if field == 'cache_creation_tokens':
             assert costs[field] == 0
@@ -72,7 +75,7 @@ def test_legacy_unknown_revision_uses_quote_snapshot_and_catalog_id(card):
     evidence = row(call(actual=False))
     evidence['calls'][0]['quote']['accounting']['rate_card']['models']['gpt-6-luna']['input'] = .0001
     costs = category_costs(evidence, card, 1)
-    assert costs['input_tokens'] == pytest.approx(.0080002/.0080252)
+    assert costs['input_tokens'] == pytest.approx(.008/.0080252)
     assert evidence['calls'][0]['quote']['accounting']['actual_model'] is None
 
 
@@ -106,13 +109,14 @@ def test_known_zero_calls_zero_prices_and_unknown_reasoning_remain_distinct():
     assert category_costs(row(), None, 1) == dict.fromkeys(USAGE_COST_FIELDS)
     zero = call(usage={'input_tokens':0,'output_tokens':0,'cached_input_tokens':0,'reasoning_tokens':0})
     costs = category_costs(row(zero), bundled_rate_card(), 0)
-    assert costs == {field:None if field == 'cache_creation_tokens' else 0 for field in USAGE_COST_FIELDS}
+    assert costs == dict.fromkeys(USAGE_COST_FIELDS, 0)
     assert category_costs(row(zero), bundled_rate_card(), 1) == dict.fromkeys(USAGE_COST_FIELDS)
     evidence = row(call())
     evidence['calls'][0]['usage']['reasoning_tokens'] = None
     costs = category_costs(evidence, bundled_rate_card(), .02)
-    assert costs['reasoning_tokens'] is None and costs['total_tokens'] == .02
-    assert costs['input_tokens'] + costs['output_tokens'] == pytest.approx(.02)
+    assert costs['reasoning_tokens'] == 0 and costs['total_tokens'] == .02
+    assert math.fsum(costs[field] for field in USAGE_COST_FIELDS[:-1]) == pytest.approx(.02)
+    assert evidence['calls'][0]['usage']['reasoning_tokens'] is None
 
 
 @pytest.mark.parametrize('second_estimate', [.3, None])

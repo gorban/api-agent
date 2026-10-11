@@ -1,9 +1,29 @@
 """Token-category allocations of the already-finalized test and suite estimates."""
 from copy import deepcopy
+from dataclasses import replace
 import math
 
 from api_agent.providers.costs import valid_amount
 from api_agent.providers.rates import USAGE_COST_FIELDS, price_usage_parts
+
+
+def allocation_weights(card, model, usage):
+    """Disjoint estimated weights; unknown writes stay in ordinary input.
+
+    This never replaces raw usage or qualifies missing-price history. Only the
+    already-known total is distributed: unreported writes use input-rate weights,
+    and unreported reasoning stays in the output-rate bucket.
+    """
+    from api_agent.providers.llm import Usage
+    observed = Usage(**usage)
+    estimated = replace(observed, cache_write_tokens=observed.cache_write_tokens or 0,
+                        reasoning_tokens=observed.reasoning_tokens or 0)
+    parts = price_usage_parts(card, model, estimated)
+    if parts['total_tokens'] is not None:
+        parts['input_tokens'] = max(0., math.fsum((parts['input_tokens'],
+            -parts['cache_read_tokens'], -parts['cache_creation_tokens'])))
+        parts['output_tokens'] = max(0., parts['output_tokens'] - parts['reasoning_tokens'])
+    return parts
 
 
 def test_category_costs(row, card, estimate):
@@ -28,7 +48,7 @@ def test_category_costs(row, card, estimate):
         if prices is None or model is None or call.get('usage') is None:
             return unavailable
         try:
-            parts = price_usage_parts(prices, model, call['usage'])
+            parts = allocation_weights(prices, model, call['usage'])
         except (ValueError, TypeError):
             return unavailable
         if parts['total_tokens'] is None:
@@ -49,7 +69,18 @@ def attach_category_costs(report, artifact):
         costs = report['test_costs'][row['test_id']]
         categories = test_category_costs(row, artifact['rate_card'], costs.get('estimated_cost_usd'))
         costs['category_costs_usd'] = categories
+        costs['category_costs_version'] = 2
+        costs['category_cost_assumptions'] = (['unreported_cache_writes_at_input_rate']
+            if categories['total_tokens'] is not None and any(
+                call.get('usage', {}).get('cache_write_tokens') is None
+                and (call.get('usage', {}).get('input_tokens') or 0) > (call.get('usage', {}).get('cached_input_tokens') or 0)
+                for call in row.get('calls', ())) else [])
         row['stabilized_estimate']['category_costs_usd'] = deepcopy(categories)
+        row['stabilized_estimate']['category_costs_version'] = 2
+        row['stabilized_estimate']['category_cost_assumptions'] = costs['category_cost_assumptions'].copy()
         parts.append(categories)
     report['category_costs_usd'] = {field: None if any(part[field] is None for part in parts)
         else math.fsum(part[field] for part in parts) for field in USAGE_COST_FIELDS}
+    report['category_costs_version'] = 2
+    report['category_cost_assumptions'] = sorted({assumption for costs in report.get('test_costs', {}).values()
+        for assumption in costs.get('category_cost_assumptions', ())})
