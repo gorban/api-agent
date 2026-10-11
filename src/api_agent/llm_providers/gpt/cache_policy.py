@@ -25,7 +25,12 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
     if type(policy) is not str or policy not in ('off', 'medium', 'high'):
         raise ProviderAccessError('invalid_request', 'LLM_CACHE_POLICY must be empty, off, medium or high.')
     if subscription:
-        raise ProviderAccessError('unsupported', 'The GPT subscription route does not support explicit prompt-cache policy; use an empty policy for provider defaults.')
+        if policy == 'medium':
+            # Subscription rejects explicit cache controls. Medium permits its
+            # automatic caching without claiming an enforceable lifetime.
+            return {}
+        requested = 'disable caching' if policy == 'off' else 'request extended cache retention'
+        raise ProviderAccessError('unsupported', f'The GPT subscription route cannot {requested}; use medium for automatic caching or an empty policy for provider defaults.')
     base = validate_base_url(base_url)
     if base == _OPENROUTER_BASE:
         family = selection
