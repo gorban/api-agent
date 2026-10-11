@@ -58,7 +58,7 @@ def test_disabled_start_does_not_unlock_terminal_recording(start):
         validate_recorded_integration([object()], config, accepted=True)
 
 
-@pytest.mark.parametrize('mode,debug', [('e2e', False), ('e2e', True), ('integration', False)])
+@pytest.mark.parametrize('mode,debug', [('e2e', False), ('e2e', True), ('integration', False), ('integration', True)])
 def test_rejection_describes_only_the_selected_mode(mode, debug):
     stderr = StringIO()
     args = ['--tui-mode=' + mode, '--no-std-in', '--allure-s3-bucket=synthetic',
@@ -70,8 +70,8 @@ def test_rejection_describes_only_the_selected_mode(mode, debug):
     expected = ('NO_STD_IN=True with TUI_MODE=e2e requires explicit START=E2E. '
                 'Use --start=E2E to accept execution, or --no-std-in=False for interactive acceptance; '
                 'collection-only is still allowed via --collect-only.' if mode == 'e2e' else
-                'NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E or DEBUG=True. '
-                'Use --start to execute, --debug for browser investigation, or --no-std-in=False for interactive selection; '
+                'NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E. '
+                'Use --start to execute, or --no-std-in=False for interactive selection; '
                 'collection-only is still allowed via --collect-only.')
     with patch.dict('os.environ', {}, clear=True), patch('sys.stderr', stderr), patch('api_agent.config.read_dotenv', return_value={}), patch('api_agent.config.dotenv.read_dotenv', return_value={}), patch('api_agent.runtime.worktrees.verify_worktrees'), patch('api_agent.runtime.dependencies.ensure_environment') as prepare:
         assert main(args, base_root=ROOT) == 2

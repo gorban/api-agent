@@ -30,7 +30,7 @@ def test_terminal_lost_worker_overrides_successful_publication(monkeypatch, caps
                                persisted=True, exit_code=0)
     monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', lambda *a, **k: recorded)
     monkeypatch.setattr(os, 'environ', {})
-    status = main(['--tui-mode=integration', '--no-std-in', '--debug',
+    status = main(['--tui-mode=integration', '--no-std-in', '--start=True', '--debug',
                    '--allure-s3-bucket=synthetic'], base_root=Path(__file__).resolve().parents[2])
     assert status == 3
     evidence = capsys.readouterr().out

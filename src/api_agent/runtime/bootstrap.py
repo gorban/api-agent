@@ -180,8 +180,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                   'Use --start=E2E to accept execution, or --no-std-in=False for interactive acceptance; '
                                   'collection-only is still allowed via --collect-only.')
                 else:
-                    errors.append('NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E or DEBUG=True. '
-                                  'Use --start to execute, --debug for browser investigation, or --no-std-in=False for interactive selection; '
+                    errors.append('NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E. '
+                                  'Use --start to execute, or --no-std-in=False for interactive selection; '
                                   'collection-only is still allowed via --collect-only.')
             if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'cleanup-containers', 'unattended-auth'}:
                 errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')

@@ -16,6 +16,8 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
         return {}
     if type(policy) is not str or policy not in ('off', 'medium', 'high'):
         raise ProviderAccessError('invalid_request', 'LLM_CACHE_POLICY must be empty, off, medium or high.')
+    if subscription:
+        raise ProviderAccessError('unsupported', 'The GPT subscription route does not support explicit prompt-cache policy; use an empty policy for provider defaults.')
     if validate_base_url(base_url) != OFFICIAL_BASE_URL:
         raise ProviderAccessError('unsupported', 'LLM_CACHE_POLICY controls are not verified for this compatible backend; use an empty policy for provider defaults.')
     version = re.fullmatch(r'gpt-(\d+)(?:\.(\d+))?(?:-[a-z0-9]+)*', selection)
@@ -23,8 +25,6 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
         if policy == 'off':
             return {'prompt_cache_options': {'mode': 'explicit'}}
         return {'prompt_cache_options': {'mode': 'implicit', 'ttl': '30m'}}
-    if subscription:
-        raise ProviderAccessError('unsupported', 'This subscription selection does not support explicit prompt-cache policy; use an empty policy for provider defaults.')
     if policy == 'off':
         raise ProviderAccessError('unsupported', 'This GPT selection cannot disable prompt caching; use an empty policy for provider defaults.')
     # Documented families and their dated snapshots; unknown families do not

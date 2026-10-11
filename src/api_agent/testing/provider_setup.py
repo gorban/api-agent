@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import traceback
 from uuid import uuid4
 
 import pytest
@@ -283,7 +284,7 @@ class IntegrationLLM:
         from .inference_usage import publish
         call_id = publish(request)
         try:
-            result = self.loop.run_until_complete(self._complete(request))
+            result = self._run_private(self._complete(request))
             publish(request, result, call_id=call_id)
             return result
         except SetupPrerequisiteError as error:
@@ -293,7 +294,7 @@ class IntegrationLLM:
         if self.closed:
             raise ContractError('Integration provider setup is closed.')
         try:
-            return self.loop.run_until_complete(self._describe())
+            return self._run_private(self._describe())
         except SetupPrerequisiteError as error:
             pytest.skip(str(error))
 
@@ -301,9 +302,27 @@ class IntegrationLLM:
         if self.closed:
             raise ContractError('Integration provider setup is closed.')
         try:
-            self.loop.run_until_complete(self._ensure())
+            self._run_private(self._ensure())
         except SetupPrerequisiteError as error:
             pytest.skip(str(error))
+
+    def _run_private(self, awaitable):
+        """Preserve stack locations/errors without exporting provider frame locals."""
+        try:
+            return self.loop.run_until_complete(awaitable)
+        except BaseException as error:
+            pending, seen = [error], set()
+            while pending:
+                item = pending.pop()
+                if id(item) in seen:
+                    continue
+                seen.add(id(item))
+                traceback.clear_frames(item.__traceback__)
+                if isinstance(item, BaseExceptionGroup):
+                    pending.extend(item.exceptions)
+                pending.extend(value for value in (item.__cause__, item.__context__)
+                               if value is not None)
+            raise
 
     async def _close(self):
         if self.interaction is not None:
@@ -401,10 +420,12 @@ def _worker_interaction(data):
 
 @pytest.fixture(scope='session')
 def llm_selection():
-    value = _read_snapshot()['config'].get('INTEGRATION_LLM_SELECTION')
-    if value is None or value == '':
-        pytest.skip('Set INTEGRATION_LLM_SELECTION to an explicit selection before the request test.')
-    return value
+    from .provider_tests import request_selection
+    data = _read_snapshot()
+    try:
+        return request_selection(data['config'], owner_root=data['owner_root'])
+    except SetupPrerequisiteError as error:
+        pytest.skip(str(error))
 
 
 @pytest.fixture(scope='session')

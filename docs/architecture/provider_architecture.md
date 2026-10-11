@@ -110,7 +110,7 @@ All loaded, non-skipped integrations should be runnable with valid supported com
 
 Core aggregates token counts, optional quota/reset snapshots and provider-returned finite nonnegative currency estimates. Pricing and quota-to-currency conversion belong to the provider. Missing values remain unavailable rather than measured zero; per-prompt currency requires a nonzero prompt count. Bracket the selected parallel workload once, count user turns rather than internal nodes, and disclose possible unrelated account consumption. See [session/usage lifecycle](../prds/implementation_plan_a7.md).
 
-Allure records integration/E2E, including authentication/setup failures, from the first run. Unit tests remain excluded. Capture all-tab current-state browser failure evidence before teardown, with credential-safe attachments; successful response evidence follows the maximized/top-first rules. Human E2E acceptance remains mandatory. Ordinary integration requires interactive Start; an explicit integration DEBUG invocation permits serial NO_STD_IN execution with browser interaction and retained inspection. This exception does not authorize noninteractive E2E execution.
+Allure records integration/E2E, including authentication/setup failures, from the first run. Unit tests remain excluded. Capture all-tab current-state browser failure evidence before teardown, with credential-safe attachments; successful response evidence follows the maximized/top-first rules. E2E requires its human-acceptance screen or explicit START=E2E. Integration requires interactive Start or explicit START=True/E2E for NO_STD_IN execution, including DEBUG. DEBUG runs serially with browser interaction and retained inspection; it does not supply execution acceptance.
 
 ## Acceptance
 

@@ -92,7 +92,7 @@ an implemented-mode pass.
 
 To inspect provider login, use DEBUG with selected integration tests:
 ```bash
-./launch.py --tui-mode integration --no-std-in --debug \
+./launch.py --tui-mode integration --no-std-in --start=True --debug \
   api-agent::tests/integration/test_llm_discovery.py
 ```
 

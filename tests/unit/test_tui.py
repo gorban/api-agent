@@ -629,7 +629,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             await pilot.pause()
             assert relaunched.screen.kind == 'defaults'
             table = relaunched.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET', 'ALLURE_S3_BUCKET', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV', 'INTEGRATION_LLM_SELECTION']
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['TRACE_MODE', 'TRACE_TARGET', 'ALLURE_S3_BUCKET', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV']
     asyncio.run(scenario())
 
 

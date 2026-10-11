@@ -255,9 +255,9 @@ def test_foreign_base_and_provider_results_record_without_identity_collisions(tm
     assert histories[0] == histories[1]
 
 
-def test_debug_allows_explicit_noninteractive_integration_and_disables_parallel_workers(tmp_path):
+def test_debug_explicit_start_disables_parallel_workers(tmp_path):
     context, test, config = fixture(tmp_path)
-    config.update(DEBUG=True, NO_STD_IN=True, TEST_PARALLEL_JOBS=8)
+    config.update(DEBUG=True, NO_STD_IN=True, START='True', TEST_PARALLEL_JOBS=8)
     base_runner = fake_runner()
     def runner(*args, **kwargs):
         assert kwargs['parallel_jobs'] == 0
@@ -270,3 +270,17 @@ def test_debug_allows_explicit_noninteractive_integration_and_disables_parallel_
             recorded.validate_recorded_integration([test], config | overrides, accepted=True)
     with pytest.raises(PermissionError):
         recorded.validate_recorded_integration([test], config, accepted=False)
+
+
+@pytest.mark.parametrize('debug', [False, True])
+@pytest.mark.parametrize('start', [None, '', 'False', 'True', 'E2E'])
+def test_terminal_recording_requires_start_even_with_debug(tmp_path, debug, start):
+    _, test, config = fixture(tmp_path)
+    config.update(DEBUG=debug, NO_STD_IN=True)
+    if start is not None:
+        config['START'] = start
+    if start in ('True', 'E2E'):
+        assert recorded.validate_recorded_integration([test], config, accepted=True) == (test,)
+    else:
+        with pytest.raises(PermissionError, match='Start acceptance'):
+            recorded.validate_recorded_integration([test], config, accepted=True)

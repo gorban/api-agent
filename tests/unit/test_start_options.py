@@ -60,7 +60,7 @@ def test_supported_mode_start_true(mode):
 
 
 @pytest.mark.parametrize('mode,debug,conflict', [('unit',False,True), ('run-local',False,True),
-    ('allure',False,True), ('deployment-logs',False,True), ('integration',True,True),
+    ('allure',False,True), ('deployment-logs',False,True), ('integration',True,False),
     ('integration',False,False), ('e2e',False,False), ('config-cleanup',False,False)])
 def test_explicit_false_conflicts_only_with_automatic_execution(mode, debug, conflict):
     argv = ['--tui-mode='+mode, '--no-std-in', *(['--debug'] if debug else [])]
