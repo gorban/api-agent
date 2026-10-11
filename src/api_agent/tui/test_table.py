@@ -38,20 +38,34 @@ class TestTable(DataTable):
         tail) takes over. Only the hidden right edge of preceding cells is marked.
         """
         normal = super()._render_line(y, x1, x2, base_style)
-        if not self.sticky_timing or len(self.columns) != 3 or not normal.text.strip():
+        if not self.sticky_timing or len(self.columns) not in (3, 4) or not normal.text.strip():
             return normal
         width = self.scrollable_content_region.width
-        preview_width = len('Execution time') + 2 * self.cell_padding
-        timing_start = sum(column.get_render_width(self) for column in self.ordered_columns[:-1])
-        if width <= preview_width or timing_start - x1 <= width - preview_width:
+        timing_width = len('Execution time') + 2 * self.cell_padding
+        starts = [0]
+        for column in self.ordered_columns:
+            starts.append(starts[-1] + column.get_render_width(self))
+        timing_start = starts[2]
+        cost_width = self.ordered_columns[3].get_render_width(self) if len(self.columns) == 4 else 0
+        if width <= timing_width + cost_width:
             return normal
-        boundary = width - preview_width
-        edge = normal.crop(boundary - 1, boundary)
-        ellipsis = Strip([Segment('…', next(iter(edge)).style)])
-        preview = super()._render_line(y, timing_start, timing_start + preview_width,
-                                       base_style).crop(0, preview_width)
-        return Strip.join((normal.crop(0, boundary - 1), ellipsis, preview,
-                           normal.crop(width)))
+        cost = None
+        if cost_width and starts[3] - x1 > width - cost_width:
+            cost = super()._render_line(y, starts[3], starts[4], base_style).crop(0, cost_width)
+        available = width - cost_width if cost is not None else width
+        if timing_start - x1 > available - timing_width:
+            boundary = available - timing_width
+            edge = normal.crop(boundary - 1, boundary)
+            ellipsis = Strip([Segment('…', next(iter(edge)).style)])
+            preview = super()._render_line(y, timing_start, timing_start + timing_width,
+                                           base_style).crop(0, timing_width)
+            parts = [normal.crop(0, boundary - 1), ellipsis, preview]
+        else:
+            parts = [normal.crop(0, available)]
+        if cost is not None:
+            parts.append(cost)
+        parts.append(normal.crop(width))
+        return Strip.join(parts)
 
     @property
     def selected_row_indices(self):

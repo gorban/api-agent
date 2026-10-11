@@ -275,3 +275,59 @@ def test_client_rejects_extra_fields_in_completed_result():
             await client._exchange('complete',{})
         assert client._writer.writes[0]['action']=='complete'
     asyncio.run(scenario())
+
+
+def test_provider_cost_quote_crosses_real_ipc_and_revoked_lease_cannot_read():
+    async def scenario():
+        owner=SimpleNamespace(ensure_ready=AsyncMock(),complete=AsyncMock(return_value=RESULT),aclose=AsyncMock(),
+                              quote_cost=lambda *a:{'list_cost_usd':.01,'payment':None})
+        registry=SetupRegistry('op','selected',lambda:owner)
+        server=SetupServer(registry,CAP); endpoint=await server.start()
+        client=SetupClient(endpoint)
+        try:
+            assert await asyncio.to_thread(client.complete,REQUEST)==RESULT
+            assert client.cost_quote=={'list_cost_usd':.01,'payment':None}
+            binding=client._binding.copy()
+            await registry.revoke(binding)
+            with pytest.raises(SessionClosedError):registry.quote_cost(binding,REQUEST,RESULT)
+        finally:
+            await asyncio.to_thread(client.close)
+            await server.aclose();await registry.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('observed', [True,False,'error'])
+def test_local_snapshot_brackets_requests_once_and_failures_are_optional(tmp_path,monkeypatch,observed):
+    from datetime import datetime,timedelta,timezone
+    from api_agent.telemetry.usage import QuotaSnapshot
+    from api_agent.testing import provider_setup,quota_events
+    now=datetime.now(timezone.utc);rows=[]
+    snapshots=[QuotaSnapshot(1,'w',now+timedelta(days=1),now),QuotaSnapshot(2,'w',now+timedelta(days=1),now+timedelta(seconds=1))]
+    snap=AsyncMock(side_effect=snapshots if observed!='error' else RuntimeError('secret diagnostic'))
+    impl=SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),acomplete=AsyncMock(return_value=RESULT),asnapshot=snap)
+    monkeypatch.setattr(provider_setup,'aload_provider',AsyncMock(return_value=SimpleNamespace(implementation=impl,aclose=AsyncMock())))
+    monkeypatch.setattr(quota_events,'publish',lambda *a:rows.append(a))
+    subject=IntegrationLLM({'LLM_PROVIDER':'synthetic'},tmp_path,quota_observer=(lambda *a:rows.append(a)) if observed is True else None)
+    subject.ensure_ready();subject.ensure_ready()
+    assert subject.complete(REQUEST)==RESULT
+    subject.close()
+    assert snap.await_count==2
+    assert impl.asetup.await_count==1 and impl.acomplete.await_count==1
+    assert rows==([] if observed=='error' else list(zip(('before','after'),snapshots)))
+
+
+@pytest.mark.parametrize('frames', [
+    [{'version':1,'status':'cost','quote':{'list_cost_usd':1,'payment':None},'extra':1}],
+    [{'version':1,'status':'cost','quote':{'list_cost_usd':1,'payment':None}}]*2])
+def test_ipc_rejects_ambiguous_or_extra_cost_frames(frames):
+    from api_agent.providers.setup_transport import _encode
+    async def scenario():
+        client=SetupClient({'version':1,'host':'127.0.0.1','port':12345,'capability':CAP})
+        reader=asyncio.StreamReader()
+        for frame in frames:reader.feed_data(_encode(frame))
+        client._reader=reader
+        client._writer=SimpleNamespace(write=lambda data:None,drain=AsyncMock())
+        with pytest.raises(ContractError,match='cost response'):
+            await client._exchange('complete',{})
+        client._writer=None
+    asyncio.run(scenario())

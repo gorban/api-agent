@@ -132,6 +132,28 @@ class RunRecorder:
         self._results.append({'file': filename, 'status': result.status})
         return filename
 
+    def attach_test_artifacts(self, artifacts):
+        """Add frozen per-test accounting before manifest hashes are calculated."""
+        if self._finalized:
+            raise RuntimeError('Run already finalized')
+        for result in self._results:
+            path = self.directory / result['file']
+            row = json.loads(path.read_bytes())
+            artifact = artifacts.get(result['file'])
+            if artifact is not None:
+                name = self.record_artifact(f'{uuid4()}-cost.json', json.dumps(artifact, allow_nan=False).encode())
+                row['attachments'].append({'name': 'Test cost estimate', 'source': name, 'type': 'application/json'})
+                temporary = self.directory / f'.{uuid4()}.tmp'
+                try:
+                    with temporary.open('xb') as stream:
+                        stream.write(json.dumps(row, sort_keys=True).encode())
+                    temporary.replace(path)
+                except (OSError, ValueError):
+                    self._write_failed = True
+                    raise
+                finally:
+                    temporary.unlink(missing_ok=True)
+
     def finalize(self, metadata=None, *, status=None, shared_artifacts=()):
         if self._finalized:
             raise RuntimeError('Run already finalized')

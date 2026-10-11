@@ -365,6 +365,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 table.add_columns("Setting", "Effective value", "Source")
             elif self.kind == "test-results":
                 table.add_columns("Status", "Test", "Execution time")
+                if self.app.mode in {'integration', 'e2e'} and self.app.unit_result is not None:
+                    table.add_column('Est. $', width=9)
             elif self.kind == "containers":
                 table.add_columns("Selected", "ID", "Name", "Image", "Status")
             elif self.kind == "cleanup":
@@ -867,6 +869,9 @@ class ApiAgentApp(App[int]):
         self.integration_exit_status = None
         self.recording_cleanup = None
         self.unit_result = None
+        self.test_costs = {}
+        self.suite_usage = {}
+        self.starting_quota = None
         self.test_run = None
         self.unit_rows = {}
         self.test_components = {}
@@ -1390,6 +1395,9 @@ class ApiAgentApp(App[int]):
         self.test_run = TestRunLifecycle()
         self.collection_cancel = self.test_run.cancel_event
         self.unit_result = None
+        self.test_costs = {}
+        self.suite_usage = {}
+        self.starting_quota = None
         self.unit_stopped = self.test_run.stopped
         self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
         self.show_unit_results(self.unit_progress())
@@ -1428,6 +1436,9 @@ class ApiAgentApp(App[int]):
 
     def finish_test_run(self):
         self.test_run.finish()
+        if (self.unit_result is not None and self.screen_stack and isinstance(self.screen, WorkbenchScreen)
+                and self.screen.kind == 'test-results'):
+            self.show_unit_results()
         self.refresh_bindings()
 
     async def _run_integrations(self):
@@ -1465,6 +1476,7 @@ class ApiAgentApp(App[int]):
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
                         active, accepted=True, interaction=interaction,
                         content_policy=content_policy,
+                        usage_output=lambda text: self.call_from_thread(self.receive_usage, text, generation),
                         unattended_index_source=getattr(resolved.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         on_event=lambda event: self.call_from_thread(self.integration_event, event, generation),
                         cancel_event=self.collection_cancel)
@@ -1479,6 +1491,8 @@ class ApiAgentApp(App[int]):
             self.inspection_lost |= self.inspections.lost
             self.inspection_failed = self.inspection_lost or any(getattr(handle, 'pending', False) for handle in self.inspections.handles if not handle.closed)
             self.unit_result = recorded.execution
+            self.suite_usage = getattr(recorded, 'usage', {})
+            self.test_costs = self.suite_usage.get('test_costs', {})
             self.integration_persisted = getattr(recorded, 'persisted', True)
             for test in self.unit_result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
@@ -1496,6 +1510,8 @@ class ApiAgentApp(App[int]):
             if recorded is not None:
                 handles.extend(getattr(recorded.execution, 'inspections', ()))
                 self.unit_result = recorded.execution
+                self.suite_usage = getattr(recorded, 'usage', {})
+                self.test_costs = self.suite_usage.get('test_costs', {})
                 self.integration_persisted = getattr(recorded, 'persisted', True)
                 self.integration_exit_status = recorded.exit_code
             # The cancelled executor await must transfer every late owner before
@@ -1531,6 +1547,8 @@ class ApiAgentApp(App[int]):
                 self.inspections = InspectionGroup(handles)
                 self.inspection_lost |= self.inspections.lost
                 self.unit_result = recorded.execution
+                self.suite_usage = getattr(recorded, 'usage', {})
+                self.test_costs = self.suite_usage.get('test_costs', {})
                 self.integration_exit_status = recorded.exit_code
                 self.integration_persisted = recorded.persisted
                 self.inspection_failed = True
@@ -1628,8 +1646,17 @@ class ApiAgentApp(App[int]):
             self.screen.refresh_bindings()
         return closed and cleaned
 
+    def receive_usage(self, text, generation):
+        if generation is self._inspection_generation and '\n' not in text:
+            self.starting_quota = text
+            if self.test_run_active() and isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'test-results':
+                self.screen.query_one('#body', Static).update(self.unit_progress())
+
     def unit_progress(self):
-        return progress_summary(self.mode or "unit", self.unit_rows)
+        result = progress_summary(self.mode or "unit", self.unit_rows)
+        if self.starting_quota is not None:
+            result.append('\n' + self.starting_quota)
+        return result
 
     def unit_event(self, event):
         if event.kind in {'inspection_closed', 'inspection_lost', 'inspection_cleanup_pending'}:
@@ -1687,13 +1714,23 @@ class ApiAgentApp(App[int]):
                     summary += f'\nTest operation: FAIL — runner or reporting failed outside individual test outcomes (exit status {runner_status}).'
             else:
                 from api_agent.testing.runner import format_unit_summary
-                summary = format_unit_summary(self.unit_result)
+                summary = format_unit_summary(self.unit_result, include_elapsed=False)
+        if self.unit_result is not None and self.suite_usage:
+            from api_agent.telemetry.usage_output import final_usage_text
+            summary += '\n' + final_usage_text(self.suite_usage)
         if self.unit_result is not None and self.mode == 'integration':
             if self.inspections.active:
                 summary += '\nDebug inspection: open — tests and publication have finished. Press e to end inspection.'
             if self.inspection_failed or self.recording_cleanup is not None:
                 summary += '\nInspection cleanup: FAIL — worker lost or cleanup pending; press e to retry cleanup.'
+        if self.unit_result is not None and self.test_run is not None:
+            from .test_results import completed_summary
+            summary = completed_summary(summary, self.test_run.elapsed)
         rows = ordered_result_rows(self.unit_rows, completed=self.unit_result is not None)
+        if self.mode in {'integration', 'e2e'} and self.unit_result is not None:
+            from .test_results import compact_cost
+            rows = [(key, (*cells, compact_cost(self.test_costs.get(key, {}).get('estimated_cost_usd'))))
+                    for key, cells in rows]
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             screen = self.screen
             screen.body, screen.rows = summary, rows
@@ -1711,6 +1748,8 @@ class ApiAgentApp(App[int]):
         screen.query_one("#body", Static).update(screen.body)
         screen.refresh_suite_timer()
         table = screen.query_one(DataTable)
+        if screen.test_run_complete and self.mode in {'integration', 'e2e'} and len(table.columns) == 3:
+            table.add_column('Est. $', width=9)
         reconcile_results_table(table, screen.rows, completed=screen.test_run_complete)
         if screen.test_run_complete and screen.style_results:
             screen.style_results()

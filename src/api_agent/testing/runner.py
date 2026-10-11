@@ -51,6 +51,7 @@ class UnitRunResult:
     output: str
     cancelled: bool = False
     require_full_coverage: bool = True
+    elapsed: float | None = None
 
 
 _PLUGIN = r'''
@@ -101,6 +102,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     Callbacks run on the calling thread. Cancellation terminates and reaps only
     owned process groups. Nonzero also signals skipped/incomplete selected tests.
     """
+    started_at = time.monotonic()
     tests = tuple(dict((test.id, test) for test in tests).values())
     if not tests:
         raise CollectionError('Cannot execute an empty unit selection')
@@ -281,12 +283,12 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     failed |= cancelled or any(r.status != 'passed' for r in results.values()) or (require_full_coverage and any(not a.complete for a in areas))
     for area in areas:
         raw(area.repo, f'{area.repo}::{area.file}: lines {area.line_percent:.2f}% ({area.covered_lines}/{area.num_statements}), branches {area.branch_percent:.2f}% ({area.covered_branches}/{area.num_branches})\n')
-    result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled, require_full_coverage)
+    result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled, require_full_coverage, time.monotonic() - started_at)
     emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))
     return result
 
 
-def format_unit_summary(result):
+def format_unit_summary(result, *, include_elapsed=True):
     """The same precise final accounting for terminal and interactive views."""
     passed = sum(test.status == 'passed' for test in result.tests)
     coverage_only_failure = (bool(result.tests) and passed == len(result.tests)
@@ -294,7 +296,8 @@ def format_unit_summary(result):
                              and any(not area.complete for area in result.coverage))
     state = ('CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0
              else 'Coverage FAIL' if coverage_only_failure else 'FAIL')
-    lines = [format_test_summary('unit', result.tests, state=state)]
+    lines = [format_test_summary('unit', result.tests, state=state,
+                               elapsed=result.elapsed if include_elapsed else None)]
     if not result.require_full_coverage:
         lines.append('Partial selection: coverage is informational.')
     if result.coverage and all(area.complete for area in result.coverage):

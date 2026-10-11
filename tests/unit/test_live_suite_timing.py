@@ -147,3 +147,69 @@ def test_timing_preview_scroll_resize_and_mouse_metadata(tmp_path):
             table.clear(columns=True)
             assert table._render_line(0, 0, table.size.width, Style()).text.strip() == ''
     asyncio.run(scenario())
+
+
+def test_completed_summary_and_terminal_share_elapsed_units():
+    from rich.text import Text
+    from api_agent.testing.contracts import format_test_summary
+    from api_agent.tui.test_results import completed_summary, compact_cost
+    assert completed_summary(Text('Unit results: PASS.\nCode coverage: 100%.'),61)=='Unit results: PASS — 1m 1s total.\nCode coverage: 100%.'
+    assert '1m 1s total.' in format_test_summary('integration',[type('Outcome',(),{'status':'passed'})()],state='PASS',elapsed=61)
+    assert compact_cost(None)=='—' and compact_cost(.0000001)=='<0.000001'
+    assert compact_cost(.00001234)=='0.000012' and compact_cost(100)=='100.00'
+
+
+def test_integration_cost_preview_follows_timing_and_keeps_identity(tmp_path):
+    async def scenario():
+        app=fixture(tmp_path,'integration')
+        async with app.run_test(size=(95,30)) as pilot:
+            await pilot.pause()
+            app.unit_result=UnitRunResult(0,(),(), '',require_full_coverage=False)
+            app.show('test-results','Results','Progress',rows=[('one',('PASSED','base::t.py::test_'+'long_'*50,'1m 2s'))])
+            await pilot.pause()
+            table=app.screen.query_one(TestTable)
+            table.update_cell('one',list(table.columns)[3],'0.123456')
+            width=table.scrollable_content_region.width
+            assert 'Execution time' in table.render_line(0).text[:width]
+            assert 'Est. $' in table.render_line(0).text[:width]
+            assert table.render_line(1).text[:width].rstrip().endswith('0.123456')
+            assert '…' in table.render_line(1).text[:width]
+            assert table.get_row_at(0)[1].startswith('base::t.py::test_')
+            table.scroll_to(x=table.max_scroll_x,animate=False)
+            await pilot.pause()
+            assert '0.123456' in table.render_line(1).text[:width]
+            await pilot.resize_terminal(20,30)
+            await pilot.pause()
+            assert '…' not in table.render_line(0).text
+    asyncio.run(scenario())
+
+
+def test_live_cost_column_hidden_and_final_cost_summary_visible(tmp_path):
+    async def scenario():
+        from api_agent.testing.integration import IntegrationRunResult
+        from api_agent.testing.contracts import TestResult
+        app=fixture(tmp_path,'integration')
+        identity=TestIdentity('base::t.py::test','base','t.py','t.py::test')
+        async with app.run_test(size=(95,40)) as pilot:
+            await pilot.pause()
+            app.test_run=TestRunLifecycle();app.unit_rows={identity.id:('RUNNING',identity.id,'1s')}
+            app.show_unit_results(app.unit_progress());await pilot.pause()
+            table=app.screen.query_one(TestTable)
+            assert len(table.columns)==3
+            app.receive_usage('Starting quota used: 12.000%',object())
+            assert app.starting_quota is None
+            app.receive_usage('multiple\nlines',app._inspection_generation)
+            assert app.starting_quota is None
+            app.receive_usage('Starting quota used: 12.000%',app._inspection_generation)
+            assert '12.000%' in app.screen.query_one('#body',Static).content.plain
+            app.unit_result=IntegrationRunResult(0,(TestResult(identity,'passed',1),),'')
+            app.suite_usage={'estimated_cost_usd':.01,'cost_basis':'quota_payment','prompt_count':1}
+            app.test_costs={identity.id:{'estimated_cost_usd':.01}}
+            app.unit_rows[identity.id]=('PASSED',identity.id,'1.000s')
+            app.finish_test_run();await pilot.pause()
+            assert len(table.columns)==4 and table.get_row_at(0)[3]=='0.010000'
+            assert 'Estimated cost: $0.010' in app.screen.query_one('#body',Static).content.plain
+            assert ' total.' in app.screen.query_one('#body',Static).content.plain.splitlines()[0]
+            app.receive_usage('Starting quota used: 14.000%',app._inspection_generation)
+            assert 'Estimated cost: $0.010' in app.screen.query_one('#body',Static).content.plain
+    asyncio.run(scenario())

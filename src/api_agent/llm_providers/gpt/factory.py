@@ -49,6 +49,9 @@ class GPTProvider:
         self.allow_browser_interaction = config.get("NO_STD_IN") is False or inspection is not None
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
+        self.payment_usd = config.get('LLM_PAY_PERIOD_LIMIT', 100.0)
+        self.quota_period = config.get('LLM_QUOTA_PERIOD', 'week')
+        self.pay_period = config.get('LLM_PAY_PERIOD', 'month')
         self.browsers = []
         self.closed = False
 
@@ -172,6 +175,20 @@ class GPTProvider:
             return await complete_text(client=client, base_url=base, access_token=auth,
                                        subscription=self.auth_mode == "subscription", api_mode=self.api_mode,
                                        request=request)
+
+    async def asnapshot(self, *, auth=None):
+        if self.closed:
+            raise ContractError('GPT provider is closed.')
+        if self.auth_mode != 'subscription':
+            return None
+        from .quota import read_snapshot
+        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
+            return await read_snapshot(client, auth, quota_seconds=86400 if self.quota_period == 'day' else 604800)
+
+    def quote_cost(self, request, result):
+        from .pricing import quote
+        return quote(request, result, direct=self.auth_mode == 'subscription' or self.base_url == 'https://api.openai.com/v1',
+                     subscription=self.auth_mode == 'subscription', payment_usd=self.payment_usd, quota_seconds=86400 if self.quota_period == 'day' else 604800, pay_period=self.pay_period)
 
     async def aclose(self):
         self.closed = True

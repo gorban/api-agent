@@ -243,6 +243,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             execution = run_launched_integration(context, tests, result.values, accepted=True,
                 content_policy=ContentPolicy.from_config(result),
                 interaction=TerminalInteraction(),
+                usage_output=lambda line: print(line, flush=True) if '\n' not in line else None,
                 unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                 output=lambda chunk: print(chunk, end='', flush=True))
             from api_agent.testing.inspection_controls import finish_terminal_inspection

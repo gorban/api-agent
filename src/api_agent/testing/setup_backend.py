@@ -20,7 +20,7 @@ class _SetupOwner:
             unattended_index_source=backend.unattended_index_source,
             loop=asyncio.get_running_loop(),
             password_manager_registry=backend.password_manager_registry,
-            interaction=backend.interaction)
+            interaction=backend.interaction, quota_observer=backend.quota_observer)
 
     async def ensure_ready(self):
         await self.provider._ensure()
@@ -34,6 +34,10 @@ class _SetupOwner:
     def export_content(self, request, result=None):
         from .inference_content import export_content
         return export_content(self.provider.emissions, request, result)
+
+    def quote_cost(self, request, result):
+        from api_agent.providers.costs import quote_cost
+        return quote_cost(self.provider.provider.implementation, request, result)
 
     async def validate_request(self, request):
         await self.provider._preflight(request)
@@ -55,7 +59,8 @@ class SetupBackend:
     retains_browser = False
 
     def __init__(self, config, owner_root, *, unattended_index_source=None,
-                 password_manager_registry=None, interaction=None):
+                 password_manager_registry=None, interaction=None, quota_observer=None):
+        self.quota_observer = quota_observer
         self.interaction = interaction
         self._config = deepcopy(dict(config))
         if self._config.get('DEBUG'):

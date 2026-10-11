@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import math
 import os
 import re
 from .declarations import UNSET
@@ -63,14 +64,23 @@ def convert_value(declaration, value, *, external, anchors):
             if not re.fullmatch(r'[+-]?\d+', value):
                 raise ValueError('expected integer')
             value = int(value)
+        elif kind == 'float':
+            try:
+                value = float(value)
+            except ValueError:
+                raise ValueError('expected finite number') from None
         elif kind == 'jsonobject':
             try:
                 value = json.loads(value)
             except ValueError:
                 raise ValueError('expected JSON object') from None
-    expected = {'bool': bool, 'int': int, 'str': str, 'path': str, 'jsonobject': dict}[kind]
+    if kind == 'float' and type(value) is int:
+        value = float(value)
+    expected = {'bool': bool, 'int': int, 'float': float, 'str': str, 'path': str, 'jsonobject': dict}[kind]
     if type(value) is not expected:
         raise ValueError(f'expected {kind}')
+    if kind == 'float' and not math.isfinite(value):
+        raise ValueError('expected finite number')
     if kind == 'path' and not value.strip():
         if not declaration.allow_empty:
             raise ValueError('expected nonempty path')
@@ -78,9 +88,9 @@ def convert_value(declaration, value, *, external, anchors):
     if declaration.enum and value not in declaration.enum:
         raise ValueError('expected one of ' + format_enum_values(declaration.enum))
     if declaration.validation == 'nonnegative' and value < 0:
-        raise ValueError('expected nonnegative integer')
+        raise ValueError('expected nonnegative number' if kind == 'float' else 'expected nonnegative integer')
     if declaration.validation == 'positive' and value <= 0:
-        raise ValueError('expected positive integer')
+        raise ValueError('expected positive number' if kind == 'float' else 'expected positive integer')
     if declaration.validation == 'resolution' and not re.fullmatch(r'[1-9]\d*x[1-9]\d*', value):
         raise ValueError('expected positive WIDTHxHEIGHT')
     if declaration.validation == 'regex':

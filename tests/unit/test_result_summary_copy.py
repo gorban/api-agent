@@ -84,7 +84,8 @@ def test_reporting_failure_is_distinct_from_passing_tests(tmp_path, persisted):
             await pilot.press('s')
             await pilot.pause(.3)
             text = app.screen.query_one('#body', Static).content
-            assert text.plain.splitlines()[0] == 'Integration results: PASS — 1/1 passed (100.00%).'
+            assert text.plain.splitlines()[0].startswith('Integration results: PASS — 1/1 passed (100.00%) — ')
+            assert text.plain.splitlines()[0].endswith(' total.')
             assert text.spans[0].style == 'green'
             message = 'Test operation: FAIL' if persisted else 'Allure publication: FAIL'
             assert message in text.plain

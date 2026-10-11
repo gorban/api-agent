@@ -61,8 +61,11 @@ def finish_terminal_inspection(recorded, output):
         primary = None
         try:
             output(format_test_summary('integration', execution.tests,
-                state='CANCELLED' if execution.cancelled else None))
+                state='CANCELLED' if execution.cancelled else None, elapsed=getattr(recorded, 'elapsed', None)))
             output('Allure publication: ' + ('PASS' if recorded.persisted else 'FAIL'))
+            if getattr(recorded, 'usage', None):
+                from api_agent.telemetry.usage_output import final_usage_text
+                output(final_usage_text(recorded.usage))
             if group.active:
                 if any(not handle.closed and getattr(handle, 'retains_browser', True) for handle in group.handles):
                     output('Debug inspection remains open. Tests and publication have finished; close the browser windows or press Ctrl+C to end inspection.')

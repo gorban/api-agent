@@ -193,3 +193,29 @@ def test_interrupt_after_failure_adds_interrupted_suite_outcome(tmp_path):
     rows = [json.loads(path.read_text()) for path in tmp_path.glob('*-result.json')]
     assert len(rows) == 2
     assert any(row.get('statusDetails', {}).get('message') == 'Test interrupted' for row in rows)
+
+
+def test_cost_attachment_and_result_rewrite_precede_manifest_hash(tmp_path):
+    run=RunRecorder(tmp_path,identity());filename=run.record_test(result())
+    run.attach_test_artifacts({})
+    cost={'estimated_cost_usd':.25,'cost_per_prompt_usd':.125,'prompt_count':2,'basis':'quota_payment'}
+    run.attach_test_artifacts({filename:cost})
+    row=json.loads((tmp_path/filename).read_bytes())
+    attachment=row['attachments'][0]
+    assert attachment['name']=='Test cost estimate'
+    assert json.loads((tmp_path/attachment['source']).read_bytes())==cost
+    manifest=run.finalize()
+    assert manifest['files'][filename]==hashlib.sha256((tmp_path/filename).read_bytes()).hexdigest()
+    with pytest.raises(RuntimeError):run.attach_test_artifacts({})
+
+
+def test_cost_attachment_failure_cannot_publish_partial_run(tmp_path,monkeypatch):
+    from pathlib import Path
+    run=RunRecorder(tmp_path,identity());filename=run.record_test(result())
+    original=(tmp_path/filename).read_bytes()
+    def fail(*a,**kw):raise OSError('write denied')
+    monkeypatch.setattr(Path,'replace',fail)
+    with pytest.raises(OSError):run.attach_test_artifacts({filename:{'estimated_cost_usd':1}})
+    assert (tmp_path/filename).read_bytes()==original
+    assert not list(tmp_path.glob('.*.tmp'))
+    with pytest.raises(RuntimeError,match='incomplete'):run.finalize()

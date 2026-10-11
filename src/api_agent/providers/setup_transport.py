@@ -345,6 +345,10 @@ class SetupServer(_Owner):
             try:
                 if (action == 'complete' and not peer.writer.is_closing()
                         and not disconnected.done()):
+                    quote = getattr(self._registry, 'quote_cost', lambda *args: None)(peer.binding, request, result) if result is not None else None
+                    if quote is not None:
+                        from .costs import validate_quote
+                        peer.writer.write(_encode(dict(version=1, status='cost', quote=validate_quote(quote))))
                     exporter = getattr(self._registry, 'export_content', lambda *args: ())
                     for evidence in exporter(peer.binding, request, result):
                         peer.writer.write(_encode(dict(version=1, status='evidence', **evidence)))
@@ -430,6 +434,7 @@ class SetupClient:
         self._cancel_requested = set()
         self._lock = threading.RLock()
         self.evidence = []
+        self.cost_quote = None
 
     def _context(self):
         if self._pid != os.getpid():
@@ -458,6 +463,7 @@ class SetupClient:
     async def _exchange(self, action, request=None):
         if action == 'complete':
             self.evidence = []
+            self.cost_quote = None
         frame = dict(version=1, action=action, timeout=self._timeout, capability=self._descriptor['capability'])
         if action == 'register':
             frame.update(worker_id=self._worker, attempt=1)
@@ -472,6 +478,12 @@ class SetupClient:
             if type(response.get('version')) is not int or response['version'] != 1:
                 raise ContractError('Invalid setup response')
             status = response.get('status')
+            if status == 'cost' and action == 'complete':
+                from .costs import validate_quote
+                if set(response) != {'version', 'status', 'quote'} or self.cost_quote is not None:
+                    raise ContractError('Invalid cost response')
+                self.cost_quote = validate_quote(response['quote'])
+                continue
             if status == 'evidence' and action == 'complete':
                 if (set(response) != {'version', 'status', 'phase', 'content'}
                         or response['phase'] not in ('request', 'response')
@@ -552,6 +564,7 @@ class SetupClient:
         from .inference import request_to_wire
         with self._lock:
             self.evidence = []
+            self.cost_quote = None
             return self._run_request('complete', request_to_wire(request))
 
     def _run_request(self, action, request=None):

@@ -169,6 +169,13 @@ class SetupRegistry(_Owner):
         exporter = getattr(self._owner, 'export_content', None)
         return exporter(request, result) if callable(exporter) else ()
 
+    def quote_cost(self, binding, request, result):
+        self._check()
+        if self._lease(binding)['revoked']:
+            raise SessionClosedError('Setup lease is revoked')
+        method = getattr(self._owner, 'quote_cost', None)
+        return method(request, result) if callable(method) else None
+
     async def _describe(self):
         with independent_timeout_scope():
             method = getattr(self._owner, 'describe', None)

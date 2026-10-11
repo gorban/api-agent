@@ -5,7 +5,7 @@ from typing import Any, Mapping
 import tomllib
 
 UNSET = object()
-TYPES = {'bool', 'int', 'str', 'path', 'jsonobject'}
+TYPES = {'bool', 'int', 'float', 'str', 'path', 'jsonobject'}
 
 @dataclass(frozen=True)
 class FieldDeclaration:
@@ -60,10 +60,10 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
             raise ValueError(f'{name}: allow_empty requires path or int type')
         if spec.get('validation') not in (None, 'nonnegative', 'positive', 'resolution', 'regex'):
             raise ValueError(f'{name}: unknown validation rule')
-        if spec.get('validation') == 'nonnegative' and spec['type'] != 'int':
-            raise ValueError(f'{name}: nonnegative validation requires int type')
-        if spec.get('validation') == 'positive' and spec['type'] != 'int':
-            raise ValueError(f'{name}: positive validation requires int type')
+        if spec.get('validation') == 'nonnegative' and spec['type'] not in {'int', 'float'}:
+            raise ValueError(f'{name}: nonnegative validation requires int or float type')
+        if spec.get('validation') == 'positive' and spec['type'] not in {'int', 'float'}:
+            raise ValueError(f'{name}: positive validation requires int or float type')
         if spec.get('validation') == 'resolution' and spec['type'] != 'str':
             raise ValueError(f'{name}: resolution validation requires str type')
         if spec.get('validation') == 'regex' and spec['type'] != 'str':
