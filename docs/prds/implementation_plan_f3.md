@@ -18,7 +18,7 @@
 ## Presentation and acceptance
 
 - [x] Compact Est. $ in integration/E2E selection and after completed Execution time; hide costs during live execution. Known zero-call tests blank; unknown dash. Deduplicate group overlaps in selected total and label incomplete totals.
-- [x] Add i Cost details using selectable-text/copy popup; search still treats i as query text. Include basis/count/age/freshness/rounding/variation and completed original versus derived values. Refresh compatible rows without disturbing search/selection/focus/fixed timing.
+- [x] Keep prediction and completed accounting evidence in finalized artifacts, including basis/count/freshness/rounding/variation and original versus derived values. Refresh compatible rows without disturbing search/selection/focus/fixed timing. Per user review, omit the cost-details shortcut and popup; i remains ordinary query text during search.
 - [x] Reuse shared helpers for future E2E wiring. Unit tests remain outside cost history/Allure.
 - [x] Deterministic tests cover zero/spike/threshold/insufficient/calibration bounds, prices/aliases/missing revisions/retries/overlaps/resets/interrupted recording/late duplicate uploads, malformed/stale/bounded pricing, integrity/privacy and worker boundaries. Independent adversarial reviews, all applicable units at exact 100% lines/branches, wheels and public-boundary checks.
 - [ ] Human review through deterministic replay and existing Allure history. No additional paid inference is needed for this batch.

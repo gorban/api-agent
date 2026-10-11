@@ -138,12 +138,6 @@ class EstimateSnapshot:
                 'known_count': len(known), 'unknown_count': len(rows) - len(known),
                 'known_zero': bool(rows) and all(row.get('known_zero') for row in rows)}
 
-    def details(self, ids):
-        rows = '\n'.join(f"{identity}: {self.predictions.get(identity, {}).get('basis', 'unavailable')} ({self.predictions.get(identity, {}).get('sample_count', 0)} samples); estimate USD {self.predictions.get(identity, {}).get('estimated_cost_usd')}; latest {self.predictions.get(identity, {}).get('freshness') or 'unknown'}; age seconds {freshness_age(self.predictions.get(identity, {}).get('freshness'), self.now)}; spread USD {self.predictions.get(identity, {}).get('variation')}; calibration {key(self.predictions.get(identity, {}).get('calibration'))}" for identity in dict.fromkeys(ids))
-        card = self.card or {}
-        rates = {model: rate for model, rate in list(card.get('models', {}).items())[:10]}
-        return rows + f"\nStandard text rates {key(rates)}.\nRates: {card.get('source', 'unavailable')}; verified {card.get('verified_at', 'unknown')}; fallback {card.get('fallback', 'unknown')}; USD per token. Calibration requires at least 3 clean suites and rounding bounds within ±25%."
-
     def complete(self, artifact):
         """Stabilize observed use with calibration frozen before this suite began."""
         quota = artifact.get('quota') or {}
@@ -191,14 +185,6 @@ def calibration_key(artifact):
     return key({'window_id': ((artifact.get('quota') or {}).get('before') or {}).get('window_id'), 'policy': (artifact.get('quota') or {}).get('payment_policy'), 'rate_card': epoch,
                 'compatibility': sorted({key(row.get('compatibility')) for row in artifact.get('tests', [])}),
                 'model_signatures': sorted({call_signature(row) for row in artifact.get('tests', []) if call_signature(row) is not None})})
-
-
-def freshness_age(stamp, now):
-    try:
-        date = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
-        return max(0, (now - date).total_seconds())
-    except (ValueError, TypeError, AttributeError):
-        return None
 
 
 def payment_per_point(policy, *, now=None):

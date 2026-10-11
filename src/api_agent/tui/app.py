@@ -411,8 +411,6 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 if binding.key.rsplit('+', 1)[-1] in {'left', 'right'}:
                     self._bindings.bind(binding.key, f'edit_search_query({binding.action!r})',
                                         show=False, priority=True)
-        if self.kind in {"tests", "test-results"} and self.app.cost_estimator is not None:
-            self._bindings.bind("i", "cost_details", "Cost details")
         if self.kind == "test-results":
             self._bindings.bind("e", "end_inspection", "End inspection")
             self.set_interval(.25, self.refresh_suite_timer)
@@ -589,19 +587,6 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         table.focus()
         self.refresh_bindings()
 
-    def action_cost_details(self):
-        table = self.query_one(TestTable)
-        keys = table.selected_row_keys
-        if self.kind == 'tests':
-            rows = {row.id: row for row in self.selection_rows()}
-            ids = set().union(*(rows[key].members for key in keys))
-        else:
-            ids = set(keys)
-        from .cost_history import completed_details
-        text = completed_details(self.app.cost_estimator, ids,
-                                 self.app.test_costs if self.test_run_complete else {})
-        self.app.push_screen(SettingHelpDialog('Cost details', text))
-
     def check_action(self, action, parameters):
         # Textual evaluates underlying screen bindings while a modal is open.
         # Their contextual actions must not inspect the modal as this screen.
@@ -614,9 +599,6 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if self.test_search is not None and action not in {'copy_value', 'copy_selected_text', 'toggle_selection'}:
             return (action == 'start_selected' and isinstance(self.app.focused, Button)
                     and self.app.focused.id == 'continue')
-        if action == 'cost_details':
-            return (self.app.cost_estimator is not None and isinstance(self.app.focused, TestTable)
-                    and (self.kind == 'tests' or self.test_run_complete))
         if action in {'search_forward', 'search_backward'}:
             return self.kind == 'tests'
         if action == "toggle_selection":
