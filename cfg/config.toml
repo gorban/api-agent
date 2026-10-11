@@ -12,7 +12,7 @@ version = 1
 type = "str"
 enum = ["", "off", "medium", "high"]
 default = ""
-help = "Prompt-cache policy. Empty uses provider defaults; off disables prompt caching; medium uses the shortest supported retention; high uses the longest supported retention. Providers reject policies they cannot honor. Newer OpenAI selections use 30m for both medium and high; eligible older selections use in_memory or 24h. This does not change authentication-state caching or cache completed answers."
+help = "Prompt-cache policy. Empty uses provider defaults; off disables prompt caching; medium uses the shortest supported retention; high uses the longest supported retention. Providers reject policies they cannot honor. GPT subscription requires empty policy. Newer OpenAI API-key selections use 30m for both medium and high; eligible older selections use in_memory or 24h. This does not change authentication-state caching or cache completed answers."
 
 [fields.TRACE_MODE]
 type = "str"
@@ -170,7 +170,7 @@ COLLECT_ONLY = false
 type = "bool"
 default = false
 acknowledge_default = false
-help = "Integration authentication debug: run serially and retain provider login browsers until their windows are closed. With NO_STD_IN, selected integration tests can start without terminal input; browser login can still require human interaction. E2E requires its human-acceptance screen unless explicitly accepted with START=E2E."
+help = "Integration authentication debug: run serially and retain provider login browsers until their windows are closed. NO_STD_IN integration still requires START=True/E2E; browser login can still require human interaction. E2E requires its human-acceptance screen unless explicitly accepted with START=E2E."
 [fields.DEBUG.applies_when]
 TUI_MODE = "integration"
 COLLECT_ONLY = false
@@ -316,8 +316,3 @@ type = "str"
 default = "https://localhost:8443"
 review_optional = true
 help = "HTTPS origin of the agent's Django backend serving its HTTP API. Local operations bind its port on loopback; frontend and provider callback URLs are configured separately."
-
-[fields.INTEGRATION_LLM_SELECTION]
-type = "str"
-review_optional = true
-help = "Explicit LLM selection for the small integration request test. Unset or empty skips that test; no discovery permission is required. Select an identifier supported by the chosen provider/account/endpoint. The test sends one short prompt with a small output bound and performs no automatic retries."

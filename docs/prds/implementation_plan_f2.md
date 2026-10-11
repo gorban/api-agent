@@ -112,10 +112,14 @@ live catalog scenarios and inference-format permissions remain pending.
   and rejection before decompression. Reject selected-credential echoes in
   successful output, including controls that could later expose the credential.
   No retries or endpoint/account/mode fallback are used.
-- [x] Add the optional explicit INTEGRATION_LLM_SELECTION and generic
-  test_llm_request integration. Missing selection skips; actual remote rejection
-  fails. Capture attempted turns and returned token totals in recorded suite
+- [x] Add generic test_llm_request integration with provider-owned authored
+  request selections. Remove the inference-selection runtime setting and its
+  spending opt-in: integration execution may use tokens after normal start gates.
+  The bundled provider supplies subscription/API-key cases without requiring
+  discovery permission; actual remote rejection fails. Capture attempted turns and returned token totals in recorded suite
   history without prompt/output/auth content; retain unknown counters.
+- [ ] Periodically review integration/E2E tests for value and selectively mark
+  low-value cases skipped by default; do not require a separate inference opt-in.
 - [ ] Complete the separate live compatibility and human checkpoints above.
   Text transport unit coverage is not live account or funding acceptance.
 - [ ] Extend transports and consumer wire contracts for tools/structured output
@@ -163,3 +167,9 @@ preview requirements, including its unsupported-option restrictions.
   adapter, with capability-specific integration coverage. Follow the separately
   approved personal live-call budget; broader live inference remains a separate
   human checkpoint.
+
+## Subscription cache and diagnostic follow-up
+
+- [x] Reject every explicit cache preset on the subscription route before authentication or inference, including newer selections: a real request rejected `prompt_cache_options`. Empty retains provider defaults; documented API-key mappings remain separate. Advertise no explicit cache-policy capability for subscription.
+- [x] Clear unwound provider traceback locals before pytest records failures, including cause/context cycles and exception-group children. Preserve stack locations and safe upstream error details. Exercise serial, parallel and actual DEBUG subprocess recording with controlled credentials and detect disabled clearing through isolated mutations.
+- [x] Require START=True/E2E at both launch and recording boundaries for NO_STD_IN integrations, including DEBUG. DEBUG changes inspection ownership, not spending acceptance.

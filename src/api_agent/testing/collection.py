@@ -7,7 +7,6 @@ import subprocess
 import time
 import sys
 import tempfile
-import tomllib
 from .processes import finalize
 
 
@@ -147,6 +146,7 @@ def _validate_provider_suite(root, suite):
 def provider_integration_suites(context, config):
     """Read selected providers' declarative suites without loading their factories."""
     from api_agent.providers.loading import provider_location, ProviderError
+    from .provider_tests import load_test_declaration
     suites = {}
     for name in ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER'):
         selected = config.get(name)
@@ -158,20 +158,10 @@ def provider_integration_suites(context, config):
         except ProviderError as exc:
             raise CollectionError(f'Invalid selected provider: {name}') from exc
         root = factory.parent
-        manifest = root / 'cfg/tests.toml'
-        if not manifest.exists():
+        tests = load_test_declaration(root)
+        if tests is None:
             continue
-        if not manifest.resolve().is_relative_to(root):
-            raise CollectionError(f'Provider test declaration escapes its root: {manifest}')
-        try:
-            data = tomllib.loads(manifest.read_text(encoding='utf-8'))
-        except (OSError, ValueError) as exc:
-            raise CollectionError(f'Cannot read provider test declaration: {manifest}') from exc
-        tests = data.get('tests')
-        if (set(data) != {'version', 'tests'} or type(data.get('version')) is not int
-                or data['version'] != 1 or not isinstance(tests, dict)
-                or set(tests) != {'integration'} or not isinstance(tests['integration'], list)):
-            raise CollectionError(f'Invalid provider test declaration: {manifest}')
+        manifest = root / 'cfg/tests.toml'
         for entry in tests['integration']:
             if not isinstance(entry, str) or not entry.strip() or Path(entry).is_absolute():
                 raise CollectionError(f'Provider integration suites require relative paths: {manifest}')

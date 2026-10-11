@@ -269,7 +269,7 @@ def test_subscription_rejects_explicit_token_limit_and_advertises_no_limit_featu
     from api_agent.llm_providers.gpt.factory import GPTProvider
     with pytest.raises(ProviderAccessError,match='does not support max_output_tokens'):
         run(subscription=True,req=request())
-    assert GPTProvider({'GPT_AUTH_MODE':'subscription'}).capabilities.features==('cache_policy',)
+    assert GPTProvider({'GPT_AUTH_MODE':'subscription'}).capabilities.features==()
     assert GPTProvider({'GPT_AUTH_MODE':'api_key'}).capabilities.features==('max_output_tokens','cache_policy')
 
 

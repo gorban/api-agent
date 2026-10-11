@@ -105,9 +105,9 @@ def test_default_selection_and_resolved_fresh_override(tmp_path, monkeypatch):
 
 def test_unreadable_manifest(tmp_path, monkeypatch):
     selected = make_provider(tmp_path / 'provider')
-    def unreadable(path, **kwargs):
+    def unreadable(path, *args, **kwargs):
         raise OSError('unreadable')
-    monkeypatch.setattr(Path, 'read_text', unreadable)
+    monkeypatch.setattr('api_agent.testing.provider_tests.os.open', unreadable)
     with pytest.raises(CollectionError, match='Cannot read'):
         provider_integration_suites(context(tmp_path), {'LLM_PROVIDER': selected})
 

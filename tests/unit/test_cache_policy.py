@@ -69,7 +69,11 @@ def test_new_openai_selection_mapping(policy, selection):
     result = prompt_cache_fields(policy, selection, base_url=BASE+'/', subscription=False)
     expected = {} if not policy else {'prompt_cache_options': {'mode':'explicit'} if policy=='off' else {'mode':'implicit', 'ttl':'30m'}}
     assert result == expected
-    assert prompt_cache_fields(policy,selection,base_url=BASE,subscription=True)==expected
+    if not policy:
+        assert prompt_cache_fields(policy,selection,base_url=BASE,subscription=True)=={}
+    else:
+        with pytest.raises(ProviderAccessError, match='subscription route'):
+            prompt_cache_fields(policy,selection,base_url=BASE,subscription=True)
 
 
 @pytest.mark.parametrize('selection,medium', [('gpt-4.1','in_memory'), ('gpt-4.1-2025-04-14','in_memory'), ('gpt-5.4','in_memory'), ('gpt-5.5','24h'), ('gpt-5.5-pro','24h')])
@@ -78,7 +82,7 @@ def test_documented_older_retention(selection, medium):
     assert prompt_cache_fields('high',selection,base_url=BASE,subscription=False)=={'prompt_cache_retention':'24h'}
     with pytest.raises(ProviderAccessError, match='cannot disable'):
         prompt_cache_fields('off',selection,base_url=BASE,subscription=False)
-    with pytest.raises(ProviderAccessError, match='subscription selection'):
+    with pytest.raises(ProviderAccessError, match='subscription route'):
         prompt_cache_fields('medium',selection,base_url=BASE,subscription=True)
 
 
@@ -213,6 +217,11 @@ def test_direct_factory_uses_config_and_explicit_request_override(monkeypatch,au
     monkeypatch.setattr(inference,'complete_text',complete)
     adapter=GPTProvider({'GPT_AUTH_MODE':auth,'GPT_API_MODE':'responses','LLM_CACHE_POLICY':configured})
     req=request(explicit)
+    if auth == 'subscription' and effective:
+        with pytest.raises(ProviderAccessError, match='subscription route'):
+            asyncio.run(adapter.acomplete(req,auth='secret'))
+        assert not sent
+        return
     assert asyncio.run(adapter.acomplete(req,auth='secret'))==result
     assert sent[0].payload.generation.cache_policy==effective
     assert req.payload.generation.cache_policy==explicit

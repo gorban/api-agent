@@ -39,11 +39,22 @@ shared discovery; operation disposal drains the catalog before releasing auth.
 
 ## Text-request checkpoint
 
-`INTEGRATION_LLM_SELECTION` supplies the explicit selection for the small generic
-request integration. Missing or empty skips only that test. It sends one short
+The selected provider's `cfg/tests.toml` supplies authored `request_selections`
+for the small generic request integration. Each entry has `selected_llm` and a
+`when` table matching effective settings (scalar values or lists of alternatives);
+the first match wins. This is test metadata, not a runtime configuration setting
+or spending opt-in. A provider without a matching case skips that unsupported
+test; the bundled GPT provider supplies cases for both authentication modes.
+It sends one short
 user turn, requires completed nonempty assistant text, and does not require
 catalog permission. Worker request/result codecs reject unsupported features,
 malformed values and aggregate sizes before provider execution or result return.
+
+Integration tests may spend tokens. Interactive users start selected tests;
+noninteractive integration requires `START=True` (also accepts `START=E2E`),
+and noninteractive E2E requires `START=E2E`. There is no additional inference
+selection acknowledgement. Keep small tests valuable; periodic default-skip
+review is a later task.
 
 Authentication stays with the selected operation owner. Completed usage and
 attempted user turns reach the suite's CSV/summary artifacts through content-free

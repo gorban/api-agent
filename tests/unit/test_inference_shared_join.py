@@ -134,15 +134,67 @@ def test_worker_local_complete_closed_and_prerequisite(tmp_path, monkeypatch):
         local.close()
 
 
-@pytest.mark.parametrize('selection',[None,'','gpt-explicit'])
-def test_selection_fixture_skips_missing_and_preserves_explicit(monkeypatch, selection):
+@pytest.mark.parametrize('available', [True, False])
+def test_selection_fixture_uses_provider_test_case_or_missing_capability(monkeypatch, available):
     from api_agent.testing import provider_setup
-    monkeypatch.setattr(provider_setup,'_read_snapshot',lambda: {'config': {'INTEGRATION_LLM_SELECTION':selection}})
-    if selection:
-        assert provider_setup.llm_selection.__wrapped__() == selection
+    from api_agent.testing import provider_tests
+    config = {'LLM_PROVIDER': 'synthetic.py:factory'}
+    monkeypatch.setattr(provider_setup,'_read_snapshot',lambda: {'config': config, 'owner_root': '/synthetic'})
+    def selection(values, *, owner_root):
+        assert values == config and owner_root == '/synthetic'
+        if not available:
+            raise SetupPrerequisiteError('no test case')
+        return 'provider-test-selection'
+    monkeypatch.setattr(provider_tests, 'request_selection', selection)
+    if available:
+        assert provider_setup.llm_selection.__wrapped__() == 'provider-test-selection'
     else:
-        with pytest.raises(pytest.skip.Exception,match='explicit selection'):
+        with pytest.raises(pytest.skip.Exception,match='no test case'):
             provider_setup.llm_selection.__wrapped__()
+
+
+@pytest.mark.parametrize('grouped', [False, True])
+def test_local_failure_preserves_stack_and_error_chain_without_credential_locals(tmp_path, grouped):
+    credential = 'synthetic-truncated-credential-' * 100
+    failures = []
+    async def raises_with_credentials():
+        access_token = credential
+        try:
+            raise ValueError('safe inner failure')
+        except ValueError as inner:
+            failures.append(inner)
+            error = ProviderAccessError('authorization', 'safe upstream rejection', status=401)
+            error.__cause__ = inner
+            inner.__cause__ = error  # A diagnostic chain may contain a cycle.
+            raise error
+    async def raises_group():
+        try:
+            await raises_with_credentials()
+        except ProviderAccessError as error:
+            children = [error]
+        # Raise outside the except block so group context cannot mask missing
+        # traversal of children.
+        raise ExceptionGroup('safe grouped failure', children)
+    local = IntegrationLLM({}, tmp_path)
+    try:
+        with pytest.raises(ExceptionGroup if grouped else ProviderAccessError) as result:
+            local._run_private(raises_group() if grouped else raises_with_credentials())
+        error = result.value.exceptions[0] if grouped else result.value
+        if grouped:
+            assert result.value.__cause__ is None and result.value.__context__ is None
+        assert error.status == 401 and error.message == 'safe upstream rejection'
+        assert error.__cause__ is failures[0]
+        locations = []
+        for error in (error, failures[0]):
+            trace = error.__traceback__
+            while trace is not None:
+                if trace.tb_frame.f_code.co_name == 'raises_with_credentials':
+                    locations.append(trace.tb_frame.f_code.co_name)
+                    assert not trace.tb_frame.f_locals
+                trace = trace.tb_next
+        assert locations == ['raises_with_credentials', 'raises_with_credentials']
+    finally:
+        local.close()
 
 
 @pytest.mark.parametrize('kind',['shared','registry'])
