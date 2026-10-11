@@ -4,9 +4,9 @@ from api_agent.telemetry.usage_output import starting_usage_line, final_usage_te
 def test_usage_lines_measured_zero_and_unavailable():
     report = {'pct_used_before': 10.0, 'pct_used_after': 10.0, 'pct_point_delta': 0.0,
               'prompt_count': 0, 'pct_used_per_prompt': '0.000', 'reset_countdown_hms': '01:02:03'}
-    assert starting_usage_line(report) == 'Starting quota used: 10.000%'
+    assert starting_usage_line(report) == 'Starting quota used: 10%'
     text = final_usage_text(report)
-    assert 'Quota change: 0.000%' in text
+    assert 'Quota change: 0%' in text
     assert 'Quota points per turn: unavailable' in text
     assert 'other activity invalidates it' in text
     assert 'Quota change: unavailable' in final_usage_text({'pct_used_before': 1, 'prompt_count': 2, 'quota_unavailable_reason': 'changed_window'})
@@ -21,7 +21,7 @@ def test_output_fallback_per_prompt_and_start_unavailable():
 def test_cost_is_provider_supplied_not_quota_delta():
     text = final_usage_text({'pct_point_delta': 3.0, 'prompt_count': 2,
                             'estimated_cost_usd': 0.02, 'cost_per_prompt_usd': 0.01})
-    assert 'Quota change: 3.000%' in text
+    assert 'Quota change: 3%' in text
     assert 'This suite cost: $0.020' in text
     assert 'Cost per turn: $0.010' in text
     assert '$3.000' not in text
@@ -132,7 +132,7 @@ def test_reset_notice_preserves_observations_and_token_based_cost():
               'quota_unavailable_reason':'negative_delta', 'estimated_cost_usd':.23,
               'cost_basis':'historical_quota'}
     output = final_usage_text(report)
-    assert 'Starting quota used: 99.000%' in output and 'Final quota used: 1.000%' in output
+    assert 'Starting quota used: 99%' in output and 'Final quota used: 1%' in output
     assert 'Quota change: unavailable' in output and QUOTA_RESET_NOTE in output
     assert 'This suite cost: $0.230' in output
     assert output.index(QUOTA_RESET_NOTE) < output.index('Cost basis: historical_quota')
@@ -162,7 +162,7 @@ def test_quota_failure_is_explicit_and_valid_snapshots_override_display():
     assert 'Final quota used: Error: Quota response did not include the configured quota window.' in final_usage_text(report)
     now = datetime.now(timezone.utc)
     usage.observe_snapshot('before', QuotaSnapshot(0, 'window', now + timedelta(days=1), now))
-    assert starting_usage_line(usage.report()) == 'Starting quota used: 0.000%'
+    assert starting_usage_line(usage.report()) == 'Starting quota used: 0%'
     assert usage.report()['quota_errors']['before'] == {'code':'http', 'status':401}
 
 

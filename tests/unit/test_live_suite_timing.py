@@ -196,14 +196,14 @@ def test_live_cost_column_hidden_and_final_cost_summary_visible(tmp_path):
             app.show_unit_results(app.unit_progress());await pilot.pause()
             table=app.screen.query_one(TestTable)
             assert len(table.columns)==3
-            app.receive_usage('Starting quota used: 12.000%',object())
+            app.receive_usage('Starting quota used: 12%',object())
             assert app.starting_quota is None
             app.receive_usage('',app._inspection_generation)
             assert app.starting_quota is None
             app.receive_usage('multiple\nlines',app._inspection_generation)
             assert app.starting_quota is None
-            app.receive_usage('Starting quota used: 12.000%',app._inspection_generation)
-            assert '12.000%' in app.screen.query_one('#body',Static).content.plain
+            app.receive_usage('Starting quota used: 12%',app._inspection_generation)
+            assert '12%' in app.screen.query_one('#body',Static).content.plain
             app.receive_usage('Starting quota used: Error: Quota endpoint returned HTTP 401.',app._inspection_generation)
             shown = app.screen.query_one('#body',Static).content
             assert shown.plain.endswith('Starting quota used: Error: Quota endpoint returned HTTP 401.')
@@ -216,6 +216,6 @@ def test_live_cost_column_hidden_and_final_cost_summary_visible(tmp_path):
             assert len(table.columns)==4 and table.get_row_at(0)[3]=='0.010000'
             assert 'This suite cost: $0.010' in app.screen.query_one('#body',Static).content.plain
             assert ' total.' in app.screen.query_one('#body',Static).content.plain.splitlines()[0]
-            app.receive_usage('Starting quota used: 14.000%',app._inspection_generation)
+            app.receive_usage('Starting quota used: 14%',app._inspection_generation)
             assert 'This suite cost: $0.010' in app.screen.query_one('#body',Static).content.plain
     asyncio.run(scenario())

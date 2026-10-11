@@ -95,8 +95,8 @@ def test_owned_order_and_fresh_configuration(tmp_path):
     asyncio.run(scenario())
     assert rig.events == ['services-start', 'auth', 'gateway-start', 'quota',
                          'pytest-drained', 'quota', 'refresh-stop', 'gateway-close', 'persist', 'services-release']
-    assert lines[0] == 'Starting quota used: 10.000%'
-    assert 'Final quota used: 12.000%' in lines[1]
+    assert lines[0] == 'Starting quota used: 10%'
+    assert 'Final quota used: 12%' in lines[1]
 
 
 def test_attended_without_quota_owner(tmp_path):

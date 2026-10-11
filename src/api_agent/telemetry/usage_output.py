@@ -11,7 +11,7 @@ def number(value):
 
 
 def percentage(value):
-    return f'{value:.3f}%' if number(value) else 'unavailable'
+    return f'{value:.0f}%' if number(value) else 'unavailable'
 
 
 def money(value):
