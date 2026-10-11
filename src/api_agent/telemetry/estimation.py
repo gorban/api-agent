@@ -94,6 +94,32 @@ def reported_charge(row):
     return math.fsum(amounts)
 
 
+def execution_cost(row, card, *, frozen_fallback=False):
+    """Prefer qualified charges per call, keeping list-price fallback separate."""
+    from api_agent.providers.costs import valid_amount
+    calls = row.get('calls')
+    if (row.get('calls_complete') is not True or not isinstance(calls, list)
+            or row.get('observed_call_count', len(calls)) != len(calls)):
+        return None, 'unavailable'
+    amounts, bases = [], set()
+    for call in calls:
+        single = {'calls_complete': True, 'calls': [call]}
+        amount = reported_charge(single)
+        basis = 'reported_charge'
+        if amount is None:
+            amount = priced(single, card)
+            if amount is None and frozen_fallback:
+                recorded = (call.get('quote') or {}).get('list_cost_usd')
+                if valid_amount(recorded):
+                    amount = recorded
+            basis = 'list_price'
+        if amount is None:
+            return None, 'unavailable'
+        amounts.append(amount)
+        bases.add(basis)
+    return math.fsum(amounts), next(iter(bases)) if len(bases) == 1 else 'mixed' if bases else 'list_price'
+
+
 def overlapping_quota(artifact, records):
     quota = artifact.get('quota') or {}
     if not clean_quota(quota):
@@ -218,9 +244,12 @@ class EstimateSnapshot:
                         and all(type(step) in (int, float) and math.isfinite(step) and step > 0 for step in steps)
                         and sum(steps) / 2 <= delta * .25):
                     scale, basis = delta * payment_per_point(policy, now=self.now) / math.fsum(known), 'current_quota'
-        charges = {row['test_id']: reported_charge(row) for row in artifact['tests']}
-        return {identity: {'estimated_cost_usd': charges[identity] if charges[identity] is not None else None if amount is None else amount * scale,
-                           'known_zero': any(row['test_id'] == identity and row.get('calls_complete') is True and row.get('observed_call_count') == 0 and not row['calls'] for row in artifact['tests']), 'basis': 'reported_charge' if charges[identity] is not None else 'unavailable' if amount is None else basis,
+        execution = {row['test_id']: execution_cost(row, self.card, frozen_fallback=True) for row in artifact['tests']}
+        charges = {row['test_id']: execution[row['test_id']] for row in artifact['tests']
+                   if any(reported_charge({'calls_complete': True, 'calls': [call]}) is not None
+                          for call in row.get('calls') or ())}
+        return {identity: {'estimated_cost_usd': charges[identity][0] if identity in charges else None if amount is None else amount * scale,
+                           'known_zero': any(row['test_id'] == identity and row.get('calls_complete') is True and row.get('observed_call_count') == 0 and not row['calls'] for row in artifact['tests']), 'basis': charges[identity][1] if identity in charges else 'unavailable' if amount is None else basis,
                            'sample_count': self.predictions.get(identity, {}).get('sample_count', 0), 'calibration': deepcopy(calibration_details),
                            'ignored_cost_settings': tuple(self.ignored_settings or ())}
                 for identity, amount in amounts.items()}
@@ -303,10 +332,8 @@ def predictions_for(tests, records, card, fingerprints, compatibility, *, ignore
                     if not row.get('outcomes') or row['outcomes'][-1] != 'passed':
                         continue
                     signature = call_signature(row)
-                    amount = priced(row, card) if signature is not None else None
-                    if amount is None and signature is not None:
-                        amount = reported_charge(row)
-                        reported_samples |= amount is not None
+                    amount, sample_basis = execution_cost(row, card) if signature is not None else (None, 'unavailable')
+                    reported_samples |= amount is not None and sample_basis in ('reported_charge', 'mixed')
                     if amount is not None:
                         samples.append(amount)
                         quota_eligible.append(quota_allowed(row))

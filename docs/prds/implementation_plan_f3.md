@@ -146,3 +146,11 @@ Verification: 5,037/5,037 combined unit tests pass with exact per-file 100% line
 - [x] Human-review rebuilding the cache from S3, then empty-history behavior after an explicitly requested S3/cache reset. Verify the complete secondary backup and restore the original history while excluding the temporary review run from both S3 and SQLite. Preserve immutable original bytes and the stable suite-lock sidecar. No reset/restore product feature is claimed.
 
 These checks do not close the separate reset-crossing display, category-cost, selected-account shared-metering, account-pooling or future E2E acceptance tasks above.
+
+
+## Review repairs: recording and cost ownership
+
+- [x] Preserve validated numeric cache-write counts through the recording parent's credential scrubber, callbacks, immutable call evidence, the unchanged ten-column CSV and reopened history, with content capture enabled and disabled. Missing historical observations remain unknown; do not rewrite original reports.
+- [x] Retain the exclusive suite descriptor through acknowledged backend/worker cleanup after runner return, exceptions and cancellation. A second Start remains blocked while owned inference resists cancellation or disposal is pending; release synchronously after the last owner acknowledges cleanup. Preserve native process-death release, stale-context rejection and inert history/collection.
+- [x] Prefer qualified per-request charges over competing token prices in completed historical averages and predictions. For missing billing, add only that request's permitted frozen/current price fallback; never discard other requests' charges or use an aggregate price to hide an unavailable request. Preserve raw billing and list-price equivalents separately, pre-Start predictions, calibration and tiny-charge rules.
+- [x] Add recorded-parent/CSV/rebuilt-history controls, known-price first/two-sample charge comparisons, mixed billing recording and unavailable-request cases. Exercise a cancellation-resistant inference body and multiple cleanup owners against the real kernel lease; isolated mutations verify the intended guards.

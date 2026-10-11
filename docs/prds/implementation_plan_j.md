@@ -20,3 +20,8 @@
 - [ ] Generate configuration/usage documentation explaining conservative default scrubbing and explicit local-test opt-in. Include this gate in manual review and the implementation report; no successful test of one logger proves all emission paths are covered.
 
 - [ ] Apply the [provider boundary](../architecture/provider_architecture.md) to every selected adapter: register provider-declared sensitive fields/values before routes, transports, logs or traces emit. Keep opaque tokens and credential values out even with LOG_CONTENT=True; retain necessary Allure response/error evidence without exposing authentication secrets. Verify synthetic provider emissions and failed setup/disposal paths.
+
+
+## Optional inference content export
+
+- [x] Bound optional shared-transport evidence after credential redaction and omit malformed/oversized frames. Duplicate or failed optional exports cannot replace an already completed result or token usage. Keep mandatory result validation and owned cancellation/disposal intact, and prove identical execution with content enabled/disabled using actual loopback transport.

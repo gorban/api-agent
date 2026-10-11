@@ -50,7 +50,7 @@ _STATUSES = frozenset({'ok', 'success', 'error', 'failed', 'cancelled', 'pending
 _EVENTS = frozenset({'start', 'end', 'retry', 'error', 'cancel', 'stream', 'flush'})
 _COUNTS = frozenset({'input_tokens', 'output_tokens', 'total_tokens', 'token_count',
                      'retry_count', 'chunk_count', 'attempt', 'http_status',
-                     'cached_input_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'reasoning_tokens'})
+                     'cached_input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'cache_creation_tokens', 'reasoning_tokens'})
 _DURATIONS = frozenset({'duration_ms', 'duration_seconds'})
 _IDS = frozenset({'correlation_id', 'request_id', 'trace_id', 'span_id', 'run_id'})
 

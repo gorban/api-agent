@@ -114,6 +114,8 @@ def _result_body(data, responses, token):
         for row in data['output']:
             if type(row) is not dict:
                 raise _invalid()
+            if row.get('status') not in (None, 'completed'):
+                raise _invalid('GPT inference returned an unfinished output item.')
             if row.get('type') == 'reasoning':
                 continue
             if row.get('type') != 'message' or row.get('role') != 'assistant' or type(row.get('content')) is not list:

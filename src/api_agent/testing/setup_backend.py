@@ -47,7 +47,10 @@ class _SetupOwner:
         self.provider.closed = True
 
 
-class SetupBackend:
+from .suite_lock import CleanupLeaseOwner
+
+
+class SetupBackend(CleanupLeaseOwner):
     """Initialization is inert; start allocates IPC, the first request loads setup.
 
     Pending disposal also implements the existing consumer cleanup-handle seam.
@@ -198,6 +201,7 @@ class SetupBackend:
                 return
             if self.loop is None and (self.thread is None or not self.thread.is_alive()):
                 self.closed = True
+                self._acknowledge_closed()
                 return
             try:
                 if not self._disposed:
@@ -219,6 +223,7 @@ class SetupBackend:
                     raise self._receipt() from None
                 self.closed = True
                 self.pending = False
+                self._acknowledge_closed()
             except BaseException as error:
                 self.pending = True
                 if isinstance(error, Exception):

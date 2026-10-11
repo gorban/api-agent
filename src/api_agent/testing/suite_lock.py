@@ -1,7 +1,7 @@
 """One local suite owns execution/accounting; idle launchers remain independent."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 import asyncio
 import errno
@@ -9,7 +9,7 @@ import inspect
 import os
 import stat
 import sys
-from threading import get_ident
+from threading import get_ident, RLock
 
 from api_agent.telemetry.history import cache_path
 
@@ -39,6 +39,31 @@ class _Lease:
     thread: int
     task: object
     active: bool = True
+    fd: int | None = None
+    owners: set = field(default_factory=set, repr=False)
+    guard: object = field(default_factory=RLock, repr=False)
+
+    def retain(self, identifier):
+        with self.guard:
+            if identifier in self.owners:
+                return False
+            self.owners.add(identifier)
+            return True
+
+    def release(self, identifier):
+        with self.guard:
+            self.owners.discard(identifier)
+            self._close_if_finished()
+
+    def finish(self):
+        with self.guard:
+            self.active = False
+            self._close_if_finished()
+
+    def _close_if_finished(self):
+        if not self.active and not self.owners and self.fd is not None:
+            fd, self.fd = self.fd, None
+            os.close(fd)
 
     def owns_context(self):
         current = _task()
@@ -47,6 +72,40 @@ class _Lease:
                 and (current is self.task if current is not None else
                      get_ident() == self.thread or
                      (delegate is not None and delegate[0] is self and delegate[1] == get_ident())))
+
+
+class CleanupLeaseOwner:
+    """Owned cleanup calls its acknowledgement only after disposal completes."""
+    def _when_closed(self, callback):
+        with self._lock:
+            if self.closed:
+                callback()
+            else:
+                callbacks = getattr(self, '_cleanup_callbacks', [])
+                callbacks.append(callback)
+                self._cleanup_callbacks = callbacks
+
+    def _acknowledge_closed(self):
+        callbacks = getattr(self, '_cleanup_callbacks', ())
+        self._cleanup_callbacks = []
+        for callback in callbacks:
+            callback()
+
+
+def retain_suite_cleanup(owner):
+    """Transfer the current OS lease to an acknowledged cleanup owner."""
+    lease = _CURRENT.get()
+    subscribe = getattr(owner, '_when_closed', None)
+    if lease is None or not lease.owns_context() or not callable(subscribe):
+        return
+    identifier = id(owner)
+    if not lease.retain(identifier):
+        return
+    try:
+        subscribe(lambda: lease.release(identifier))
+    except BaseException:
+        lease.release(identifier)
+        raise
 
 
 def _lock(fd):
@@ -63,11 +122,12 @@ def _lock(fd):
 
 @contextmanager
 def suite_lock():
-    """Fail before work starts; release on return, interruption or process death.
+    """Fail before work starts; hold through pending cleanup or process death.
 
     Reuse a lease only within its owner execution context, including the async
     owner's worker thread. Independent threads/tasks must acquire their own lock.
-    Closing the non-inherited descriptor releases the OS lock; a remaining file
+    Retained cleanup releases the descriptor only on acknowledgement; process
+    death also releases the non-inherited OS lock. A remaining file
     is harmless and is never interpreted as an active/stale PID marker.
     """
     lease = _CURRENT.get()
@@ -89,18 +149,18 @@ def suite_lock():
             if error.errno not in {errno.EACCES, errno.EAGAIN}:
                 raise
             raise SuiteBusyError('Another test suite is running. Wait for it to finish or stop it before starting this suite.') from None
-        lease = _Lease(os.getpid(), get_ident(), _task())
+        lease = _Lease(os.getpid(), get_ident(), _task(), fd=fd)
         acquired = lease
         token = _CURRENT.set(lease)
         try:
             yield
         finally:
-            lease.active = False
             _CURRENT.reset(token)
     finally:
         if acquired is not None:
-            acquired.active = False
-        os.close(fd)
+            acquired.finish()
+        else:
+            os.close(fd)
 
 
 def suite_locked(function):
