@@ -23,8 +23,10 @@ def response(subscription):
                            headers={'content-type': 'text/event-stream'}) if subscription else httpx.Response(200, json=data))
 
 
-@pytest.mark.parametrize('subscription,key', [(True, KEY), (True, None), (False, KEY)])
-def test_wire_affinity_and_usage_preservation(subscription, key):
+@pytest.mark.parametrize('subscription,key,expected_affinity', [
+    (True, KEY, {'prompt_cache_key': KEY}), (True, None, {}), (False, KEY, {}),
+])
+def test_wire_affinity_and_usage_preservation(subscription, key, expected_affinity):
     sent = []
     def handle(request):
         sent.append(request)
@@ -37,10 +39,9 @@ def test_wire_affinity_and_usage_preservation(subscription, key):
     result = asyncio.run(run())
     assert result.usage.cached_input_tokens == 3840 and result.usage.cache_write_tokens == 0
     body = json.loads(sent[0].content)
-    if subscription and key:
-        assert sent[0].headers['session-id'] == body['prompt_cache_key'] == key
-    else:
-        assert 'session-id' not in sent[0].headers and 'prompt_cache_key' not in body
+    assert {name: value for name, value in body.items() if name == 'prompt_cache_key'} == expected_affinity
+    assert {name: value for name, value in sent[0].headers.items() if name == 'session-id'} == {
+        'session-id': value for value in expected_affinity.values()}
     assert 'session_id' not in sent[0].headers and 'conversation_id' not in sent[0].headers
     assert 'prompt_cache_options' not in body and 'prompt_cache_retention' not in body
     assert body['input'] == [{'role': 'user', 'content': 'Say Paris'}]
@@ -63,8 +64,8 @@ def test_invalid_affinity_rejected_before_http(key):
     assert sent == []
 
 
-@pytest.mark.parametrize('mode', ['subscription', 'api_key'])
-def test_provider_reuses_affinity_across_calls_and_isolates_instances(mode, monkeypatch):
+@pytest.mark.parametrize('mode,expected_affinity_positions', [('subscription', (0, 0, 1)), ('api_key', ())])
+def test_provider_reuses_affinity_across_calls_and_isolates_instances(mode, expected_affinity_positions, monkeypatch):
     sent, clients = [], []
     original = httpx.AsyncClient
     def handle(request):
@@ -89,9 +90,8 @@ def test_provider_reuses_affinity_across_calls_and_isolates_instances(mode, monk
     asyncio.run(run())
     assert len(clients) == len(sent) == 3 and all(value.is_closed for value in clients)
     keys = [json.loads(value.content).get('prompt_cache_key') for value in sent]
-    if mode == 'subscription':
-        assert keys == [provider.cache_session_id, provider.cache_session_id, other.cache_session_id]
-        assert [value.headers['session-id'] for value in sent] == keys
-    else:
-        assert keys == [None, None, None]
-        assert all('session-id' not in value.headers for value in sent)
+    identities = (provider.cache_session_id, other.cache_session_id)
+    expected = [identities[position] for position in expected_affinity_positions]
+    assert [value for value in keys if value is not None] == expected
+    assert [value.headers['session-id'] for value in sent if 'session-id' in value.headers] == expected
+    assert sum('prompt_cache_key' in json.loads(value.content) for value in sent) == len(expected)
