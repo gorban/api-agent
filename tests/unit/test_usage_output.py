@@ -121,3 +121,22 @@ def test_current_run_cost_and_frozen_historical_average_are_distinct():
     assert historical_average((costs[0], {})) is None
     assert historical_average(({'advance_prediction':{'estimated_cost_usd':True}},)) is None
     assert historical_average((costs[2],)) == 0
+
+
+def test_reset_notice_preserves_observations_and_token_based_cost():
+    from api_agent.telemetry.usage_output import QUOTA_RESET_NOTE
+    from api_agent.tui.test_results import test_details
+    from types import SimpleNamespace
+    report = {'before': {'pct_used':99}, 'after': {'pct_used':1},
+              'pct_used_before':99, 'pct_used_after':1, 'pct_point_delta':None,
+              'quota_unavailable_reason':'negative_delta', 'estimated_cost_usd':.23,
+              'cost_basis':'historical_quota'}
+    output = final_usage_text(report)
+    assert 'Starting quota used: 99.000%' in output and 'Final quota used: 1.000%' in output
+    assert 'Quota change: unavailable' in output and QUOTA_RESET_NOTE in output
+    assert 'This suite cost: $0.230' in output
+    assert output.index(QUOTA_RESET_NOTE) < output.index('Cost basis: historical_quota')
+    result = SimpleNamespace(identity=SimpleNamespace(id='test'), duration=1, status='passed', traceback='')
+    detailed = test_details(result, report, {'estimated_cost_usd':.23, 'basis':'historical_quota'})
+    assert QUOTA_RESET_NOTE in detailed.plain and 'This test cost: $0.230' in detailed.plain
+    assert detailed.plain.endswith('PASSED')

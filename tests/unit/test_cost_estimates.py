@@ -165,3 +165,15 @@ def test_terminal_completed_summary_includes_same_frozen_cost_accounting():
     assert finish_terminal_inspection(recorded,lines.append)
     assert lines[0]=='Integration results: PASS — 1/1 passed (100.00%) — 1m 1s total.'
     assert 'This suite cost: $0.0000006' in lines[2] and 'Cost basis: list_price' in lines[2]
+
+
+@pytest.mark.parametrize('usage', [{'pct_point_delta':-99},
+    {'pct_point_delta':2, 'quota_unavailable_reason':'changed_window'},
+    {'pct_point_delta':2, 'before':{'pct_used':99}, 'after':{'pct_used':1}}])
+def test_discontinuous_quota_never_creates_raw_or_negative_cost(usage):
+    ledger = CostLedger()
+    ledger.record('call', 'test', priced(.23, PAYMENT))
+    report = ledger.report(usage, {'test':1})
+    assert report['raw_quota_cost_usd'] is None
+    assert report['estimated_cost_usd'] == .23 and report['cost_basis'] == 'list_price'
+    assert report['test_costs']['test']['estimated_cost_usd'] == .23

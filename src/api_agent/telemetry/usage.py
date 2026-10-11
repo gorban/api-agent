@@ -223,6 +223,7 @@ class SuiteUsage:
                 'pct_used_before': None if before is None or not _valid_pct(before.pct_used) else before.pct_used,
                 'pct_used_after': None if after is None or not _valid_pct(after.pct_used) else after.pct_used,
                 'pct_point_delta': delta, 'quota_unavailable_reason': reason,
+                'raw_quota_cost_usd': None,
                 'estimated_cost_usd': estimate, 'cost_per_prompt_usd': None if estimate is None or prompts == 0 else estimate / prompts,
                 'pct_used_per_prompt': None if per_prompt is None else f'{per_prompt:.3f}',
                 'prompt_counts': counts, 'prompt_count': prompts,

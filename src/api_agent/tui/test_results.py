@@ -26,12 +26,15 @@ def compact_cost(value):
 
 
 def test_details(result, usage, cost, *, historical_tokens=False):
-    from api_agent.telemetry.usage_output import tokens_text, money, historical_average
+    from api_agent.telemetry.usage_output import tokens_text, money, historical_average, QUOTA_RESET_NOTE
+    from api_agent.telemetry.estimation import quota_reset_observed
     lines = [result.identity.id, '', f'Execution time: {result.duration:.3f}s',
              f"This test cost: {money(cost.get('estimated_cost_usd'))}",
              f"  Historical average: {money(historical_average((cost,)))}"]
     if historical_tokens:
         lines.append('Earlier compatible runs have recorded token usage.')
+    if quota_reset_observed(usage):
+        lines.append(QUOTA_RESET_NOTE)
     if cost.get('basis'):
         lines.append(f"Cost basis: {cost['basis']}")
     lines.append(tokens_text(usage, result.identity.id))

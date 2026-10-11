@@ -546,3 +546,31 @@ def test_repository_root_resolution_is_shared_by_picker_refresh(tmp_path):
     assert refreshed.context is context
     assert refreshed.fingerprints == snapshot.fingerprints
     assert refreshed.predictions == snapshot.predictions
+
+
+def test_sqlite_retains_reset_evidence_but_picker_and_rebuild_exclude_it(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from api_agent.testing.cost_history import HistoricalEstimator, allocation_scope
+    settings, manifest, payload = binding_run()
+    artifact = json.loads(payload)
+    artifact['quota'].update(pct_point_delta=None, quota_unavailable_reason='changed_window')
+    artifact['quota']['after']['reset_at'] = '2026-12-01T00:00:00Z'
+    payload = json.dumps(artifact).encode()
+    manifest['files']['accounting.json'] = sha256(payload).hexdigest()
+    monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda *a, **kw: 'c' * 64)
+    test = SimpleNamespace(id='t', node_id='test.py::test[one]')
+    now = datetime(2026, 10, 10, tzinfo=timezone.utc)
+    for rebuild in (False, True):
+        if rebuild:
+            (tmp_path / 'reset-history.sqlite3').unlink()
+        cache = HistoryCache(tmp_path / 'reset-history.sqlite3')
+        cache.ingest('origin', manifest, payload)
+        assert cache.records('origin') == [(manifest, artifact)]
+        cache.bind('origin', allocation_scope(settings), manifest['run_id'])
+        assert cache.bound_window('origin', allocation_scope(settings), now) is None
+        snapshot = HistoricalEstimator([test], settings, cache, 'origin', 'repo', bundled_rate_card(), now=now)
+        assert snapshot.records == []
+        assert snapshot.predictions['t']['estimated_cost_usd'] is None
+        assert snapshot.predictions['t']['sample_count'] == 0
+        assert snapshot.synchronize().predictions['t']['estimated_cost_usd'] is None
+        cache.close()

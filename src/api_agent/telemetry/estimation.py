@@ -22,6 +22,30 @@ def key(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'))
 
 
+def quota_reset_observed(quota):
+    """Exclude discontinuous allocation evidence, retaining it for diagnostics."""
+    if quota.get('quota_unavailable_reason') in {'changed_window', 'reset_boundary_crossed', 'negative_delta'}:
+        return True
+    if type(quota.get('pct_point_delta')) in (int, float) and quota['pct_point_delta'] < 0:
+        return True
+    before, after = quota.get('before') or {}, quota.get('after') or {}
+    for field in ('window_id', 'reset_at'):
+        if before.get(field) is not None and after.get(field) is not None and before[field] != after[field]:
+            return True
+    if (type(before.get('pct_used')) in (int, float) and type(after.get('pct_used')) in (int, float)
+            and after['pct_used'] < before['pct_used']):
+        return True
+    for snapshot in (before, after):
+        try:
+            captured = datetime.fromisoformat(snapshot['captured_at'].replace('Z', '+00:00'))
+            reset = datetime.fromisoformat(snapshot['reset_at'].replace('Z', '+00:00'))
+            if captured >= reset:
+                return True
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+    return False
+
+
 def priced(row, card):
     from api_agent.providers.rates import price_usage
     calls = row.get('calls')
@@ -65,7 +89,7 @@ def clean_quota(quota):
         start = datetime.fromisoformat(before['captured_at'].replace('Z', '+00:00'))
         end = datetime.fromisoformat(after['captured_at'].replace('Z', '+00:00'))
         reset = datetime.fromisoformat(after['reset_at'].replace('Z', '+00:00'))
-        return (not quota.get('quota_unavailable_reason') and not quota.get('contaminated')
+        return (not quota_reset_observed(quota) and not quota.get('quota_unavailable_reason') and not quota.get('contaminated')
                 and before['window_id'] is not None and before['window_id'] == after['window_id']
                 and before['reset_at'] == after['reset_at'] and start.tzinfo is not None
                 and end.tzinfo is not None and reset.tzinfo is not None and start <= end < reset)
@@ -79,6 +103,8 @@ def calibration(records, card, *, overlap_records=None):
     for manifest, artifact in (records if overlap_records is None else overlap_records):
         try:
             quota = artifact.get('quota') or {}
+            if quota_reset_observed(quota):
+                continue
             start = datetime.fromisoformat((quota.get('before') or {})['captured_at'].replace('Z', '+00:00'))
             end = datetime.fromisoformat((quota.get('after') or {})['captured_at'].replace('Z', '+00:00'))
             if start.tzinfo is None or end.tzinfo is None or end < start:
@@ -211,6 +237,8 @@ def predictions_for(tests, records, card, fingerprints, compatibility):
         samples, signatures, zeroes, finished, quota_eligible = [], set(), [], [], []
         has_token_history = False
         for manifest, artifact in records:
+            if quota_reset_observed(artifact.get('quota') or {}):
+                continue
             for row in artifact.get('tests', []):
                 if (compatibility_complete(compatibility) and row.get('compatibility') == compatibility and fingerprints.get(test.id) is not None
                         and row.get('source_fingerprint') == fingerprints[test.id] and row.get('node_id') == test.node_id):
