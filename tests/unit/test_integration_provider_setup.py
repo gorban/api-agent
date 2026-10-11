@@ -265,7 +265,8 @@ def test_selected_invalid_combination_skips_shared_setup(tmp_path, jobs):
               'GPT_AUTH_MODE': 'subscription', 'GPT_API_MODE': 'completions', 'GPT_STATE_DIR': state,
               'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
               'ALLURE_RESULTS_DIR': tmp_path / 'allure', 'TEST_PARALLEL_JOBS': jobs}
-    selected = collect_tests(context, 'integration', config=config)
+    # Exercise this synthetic suite independently of bundled provider additions.
+    selected = collect_tests(context, 'integration', ('base::tests/integration/test_ready.py',), config=config)
     assert len(selected) == 1
     recorded = run_recorded_integration(context, selected, config, accepted=True,
         storage=SimpleNamespace(persist=lambda *args: None))
