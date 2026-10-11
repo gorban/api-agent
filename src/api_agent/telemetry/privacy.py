@@ -49,7 +49,8 @@ _STATUSES = frozenset({'ok', 'success', 'error', 'failed', 'cancelled', 'pending
                        'running', 'completed', 'retry', 'timeout'})
 _EVENTS = frozenset({'start', 'end', 'retry', 'error', 'cancel', 'stream', 'flush'})
 _COUNTS = frozenset({'input_tokens', 'output_tokens', 'total_tokens', 'token_count',
-                     'retry_count', 'chunk_count', 'attempt', 'http_status'})
+                     'retry_count', 'chunk_count', 'attempt', 'http_status',
+                     'cached_input_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'reasoning_tokens'})
 _DURATIONS = frozenset({'duration_ms', 'duration_seconds'})
 _IDS = frozenset({'correlation_id', 'request_id', 'trace_id', 'span_id', 'run_id'})
 
@@ -70,8 +71,9 @@ class EmissionBoundary:
     their ``str``/``repr`` methods are never invoked.
     """
 
-    def __init__(self, policy=ContentPolicy(), *, secrets=(), assigned_ids=()):
+    def __init__(self, policy=ContentPolicy(), *, secrets=(), assigned_ids=(), preserve_json_text=False):
         self.policy = policy
+        self.preserve_json_text = preserve_json_text
         self._secrets = set()
         self._assigned_ids = set()
         for secret in secrets:
@@ -93,7 +95,7 @@ class EmissionBoundary:
     def _text(self, value):
         for secret in sorted(self._secrets, key=len, reverse=True):
             value = value.replace(secret, '[REDACTED]')
-        return value
+        return re.sub(r'(?i)\bbearer\s+(?!\[redacted\](?=$|[\s,;\"\'}]))[^\s,;\"\'}]+', 'Bearer [REDACTED]', value)
 
     def _json(self, value, seen, depth):
         if depth > 20:
@@ -135,7 +137,7 @@ class EmissionBoundary:
                         continue
                     if normalized_secret in encoded:
                         return '[REDACTED]'
-                return encoded
+                return value if self.preserve_json_text and json.loads(encoded) == parsed else encoded
             return scrubbed
         if type(value) is int and not -_MAX_JSON_INTEGER <= value <= _MAX_JSON_INTEGER:
             return _DROP
@@ -193,6 +195,11 @@ class EmissionBoundary:
                 result[self._text(key)] = clean
         return result
 
+    def content_export(self, payload):
+        """Explicit evidence callers retain content but share credential rules."""
+        return EmissionBoundary(ContentPolicy(True), secrets=tuple(self._secrets),
+                                preserve_json_text=True).export(payload)
+
     @staticmethod
     def exception(error):
         """Fixed classifications only: no messages, class names, locals or stacks."""
@@ -223,10 +230,17 @@ class OwnedLogFilter(logging.Filter):
         if record.exc_info:
             clean.update(self.boundary.exception(record.exc_info[1]))
         # Formatters can access every LogRecord attribute. Remove arbitrary extras
-        # and source paths/stack text, as well as message interpolation arguments.
+        # and stack text/interpolation arguments; source metadata needs opt-in.
         level = record.levelno if record.levelno in (10, 20, 30, 40, 50) else 20
         safe = logging.LogRecord('api_agent', level, '', 0,
                                  json.dumps(clean, ensure_ascii=False), (), None)
+        if self.boundary.policy.allow_content:
+            for name in ('pathname', 'filename', 'module', 'funcName'):
+                value = record.__dict__.get(name)
+                if type(value) is str:
+                    safe.__dict__[name] = self.boundary._text(value)
+            if type(record.lineno) is int and record.lineno >= 0:
+                safe.lineno = record.lineno
         safe.threadName = 'runtime'
         safe.processName = 'runtime'
         safe.taskName = None

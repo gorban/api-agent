@@ -31,6 +31,10 @@ class _SetupOwner:
     async def complete(self, request):
         return await self.provider._complete(request)
 
+    def export_content(self, request, result=None):
+        from .inference_content import export_content
+        return export_content(self.provider.emissions, request, result)
+
     async def validate_request(self, request):
         await self.provider._preflight(request)
 

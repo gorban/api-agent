@@ -1451,6 +1451,8 @@ class ApiAgentApp(App[int]):
             self.show_unit_results(self.unit_progress())
             resolved = self.session.result()
             active = dict(resolved.values)
+            from api_agent.telemetry.privacy import ContentPolicy
+            content_policy = ContentPolicy.from_config(resolved)
             from api_agent.testing.requirements import plan_integration_requirements
             if plan_integration_requirements(self.selection.selected_tests).requires_pack_api and not self.check_operation_start():
                 return
@@ -1462,6 +1464,7 @@ class ApiAgentApp(App[int]):
                 try:
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
                         active, accepted=True, interaction=interaction,
+                        content_policy=content_policy,
                         unattended_index_source=getattr(resolved.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         on_event=lambda event: self.call_from_thread(self.integration_event, event, generation),
                         cancel_event=self.collection_cancel)

@@ -55,17 +55,19 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                              usage_output=None,
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
-                             unattended_index_source=None, interaction=None):
+                             unattended_index_source=None, interaction=None, content_policy=None):
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
     A quota-fetch failure is unavailable data; result-persistence failure fails
     the operation. Raw pytest evidence sinks must apply their own approved
     evidence/secret policy, as documented by the integration runner.
-    Allure evidence is separate from diagnostic LOG_CONTENT. Register dynamically
-    obtained credentials on the supplied boundary before emitting test evidence.
+    Raw inference attachments require LOG_CONTENT=True; failure diagnostics and
+    accounting remain independent. Register credentials before emitting evidence.
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
+    if content_policy is not None:
+        config = dict(config, LOG_CONTENT=content_policy.allow_content)
     identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
     with ExitStack() as resources:
         local_directory = config.get('ALLURE_RESULTS_DIR')
@@ -83,6 +85,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'))
         usage = SuiteUsage(identity.run_id, cost_estimator=cost_estimator)
         seen = set()
+        content = {}
         persisted = False
         manifest = None
         usage_summary = None
@@ -113,7 +116,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 label = ('provider:' + os.path.relpath(test.root, context.base_root)
                          if test.root is not None else test.repo)
                 test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
-            recorder.record_test(replace(result, identity=test))
+            recorder.record_test(replace(result, identity=test),
+                                 attachments=content.pop(result.identity.id, ()))
             seen.add(result.identity.id)
 
         def after(result):
@@ -169,6 +173,15 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if row.kind == 'inference_usage':
                 from .inference_usage import capture
                 capture(row, usage)
+            if row.kind == 'inference_content':
+                if config.get('LOG_CONTENT') is not True:
+                    return
+                from .inference_content import content_attachment
+                attachment = content_attachment(row, evidence_boundary)
+                content.setdefault(row.identity.id, []).append(attachment)
+                data = json.loads(row.text)
+                data['content'] = json.loads(attachment[1])
+                row = replace(row, text=json.dumps(data, ensure_ascii=False))
             if on_event is not None:
                 on_event(row)
 

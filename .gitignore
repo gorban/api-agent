@@ -12,6 +12,8 @@ build/
 .env.*
 artifacts/
 /token_usage.csv
+/token_usage.csv.lock
+/token_usage.csv.legacy*
 .certs/
 
 .provider-state/

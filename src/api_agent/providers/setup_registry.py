@@ -161,6 +161,14 @@ class SetupRegistry(_Owner):
                     lease['waiters'].discard(waiter)
                     self._cancel_requested.discard(waiter)
 
+    def export_content(self, binding, request, result=None):
+        self._check()
+        lease = self._lease(binding)
+        if lease['revoked']:
+            raise SessionClosedError('Setup lease is revoked')
+        exporter = getattr(self._owner, 'export_content', None)
+        return exporter(request, result) if callable(exporter) else ()
+
     async def _describe(self):
         with independent_timeout_scope():
             method = getattr(self._owner, 'describe', None)
