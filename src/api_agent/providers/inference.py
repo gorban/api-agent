@@ -63,7 +63,7 @@ def request_to_wire(request):
 
 
 def result_from_wire(row):
-    if type(row) is not dict or set(row) != {'text', 'outcome', 'usage'}:
+    if type(row) is not dict or not {'text', 'outcome', 'usage'} <= set(row) or set(row) - {'text', 'outcome', 'usage', 'actual_model', 'service_tier', 'serving_revision'}:
         _fail()
     text = _text(row['text'], 65536)
     if type(row['outcome']) is not str or row['outcome'] not in ('completed', 'length', 'refused'):
@@ -74,7 +74,7 @@ def result_from_wire(row):
     if any(value is not None and (type(value) is not int or not 0 <= value <= 2147483647) for value in usage.values()):
         _fail()
     try:
-        result = LLMResult(Message('assistant', (TextContent(text),)), Usage(**usage), row['outcome'])
+        result = LLMResult(Message('assistant', (TextContent(text),)), Usage(**usage), row['outcome'], row.get('actual_model'), row.get('service_tier'), row.get('serving_revision'))
     except ValueError:
         _fail()
     _size(row)
@@ -88,5 +88,8 @@ def result_to_wire(result):
     row = dict(text=result.payload.content[0].text, outcome=result.outcome,
         usage={name: getattr(result.usage, name) for name in
                ('input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens')})
+    for name in ('actual_model', 'service_tier', 'serving_revision'):
+        if getattr(result, name) is not None:
+            row[name] = getattr(result, name)
     result_from_wire(row)
     return row

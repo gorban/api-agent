@@ -263,6 +263,12 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 Binding("pagedown", "failure_page_down", "Page down"),
                 *SelectedTextCopy.COPY_BINDINGS]
 
+    def on_screen_resume(self):
+        pending = getattr(self.app, '_pending_cost_refresh', None)
+        if pending is self.app.selection and self.kind == 'tests':
+            self.app._pending_cost_refresh = None
+            self.call_after_refresh(self.app.refresh_rows)
+
     @property
     def focus_chain(self):
         chain = super().focus_chain
@@ -374,6 +380,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 table.add_columns("Setting", "Effective value", "Source")
             else:
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
+                if self.kind == "tests" and self.app.cost_estimator is not None:
+                    table.add_column("Est. $", width=11)
             for key, cells in self.rows:
                 table.add_row(*(literal_cell(cell) for cell in cells), key=key)
             if self.kind == "defaults":
@@ -403,6 +411,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 if binding.key.rsplit('+', 1)[-1] in {'left', 'right'}:
                     self._bindings.bind(binding.key, f'edit_search_query({binding.action!r})',
                                         show=False, priority=True)
+        if self.kind in {"tests", "test-results"} and self.app.cost_estimator is not None:
+            self._bindings.bind("i", "cost_details", "Cost details")
         if self.kind == "test-results":
             self._bindings.bind("e", "end_inspection", "End inspection")
             self.set_interval(.25, self.refresh_suite_timer)
@@ -493,6 +503,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if self.test_search is not None:
             self.test_search.toggle_many(keys)
             self.render_search_rows()
+            self.app.refresh_cost_summary()
         else:
             self.app.selection.toggle_many(keys)
             self.app.refresh_rows()
@@ -505,14 +516,13 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         stable_rows = not reset_cursor and [row.key.value for row in table.ordered_rows] == [row.id for row in rows]
         if stable_rows:
             for row in rows:
-                cells = ('✓' if row.selected else '', row.label, f'{row.count}/{row.total}', row.kind)
+                cells = self.app.selection_cells(row)
                 for column, value in zip(table.columns, cells):
                     table.update_cell(row.id, column, literal_cell(value))
         else:
             table.clear()
             for row in rows:
-                table.add_row(literal_cell('✓' if row.selected else ''), literal_cell(row.label),
-                              literal_cell(f'{row.count}/{row.total}'), literal_cell(row.kind), key=row.id)
+                table.add_row(*(literal_cell(cell) for cell in self.app.selection_cells(row)), key=row.id)
         if rows:
             matches = [index for index, row in enumerate(rows) if row.kind != 'other']
             if reset_cursor:
@@ -573,12 +583,24 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         table.clear()
         rows = self.selection_rows()
         for row in rows:
-            table.add_row(literal_cell('✓' if row.selected else ''), literal_cell(row.label),
-                          literal_cell(f'{row.count}/{row.total}'), literal_cell(row.kind), key=row.id)
+            table.add_row(*(literal_cell(cell) for cell in self.app.selection_cells(row)), key=row.id)
         table.move_cursor(row=next((i for i, row in enumerate(rows) if row.id == selected), min(cursor, len(rows) - 1)))
         self.query_one('#error', Static).update('')
         table.focus()
         self.refresh_bindings()
+
+    def action_cost_details(self):
+        table = self.query_one(TestTable)
+        keys = table.selected_row_keys
+        if self.kind == 'tests':
+            rows = {row.id: row for row in self.selection_rows()}
+            ids = set().union(*(rows[key].members for key in keys))
+        else:
+            ids = set(keys)
+        from .cost_history import completed_details
+        text = completed_details(self.app.cost_estimator, ids,
+                                 self.app.test_costs if self.test_run_complete else {})
+        self.app.push_screen(SettingHelpDialog('Cost details', text))
 
     def check_action(self, action, parameters):
         # Textual evaluates underlying screen bindings while a modal is open.
@@ -592,6 +614,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if self.test_search is not None and action not in {'copy_value', 'copy_selected_text', 'toggle_selection'}:
             return (action == 'start_selected' and isinstance(self.app.focused, Button)
                     and self.app.focused.id == 'continue')
+        if action == 'cost_details':
+            return (self.app.cost_estimator is not None and isinstance(self.app.focused, TestTable)
+                    and (self.kind == 'tests' or self.test_run_complete))
         if action in {'search_forward', 'search_backward'}:
             return self.kind == 'tests'
         if action == "toggle_selection":
@@ -869,6 +894,7 @@ class ApiAgentApp(App[int]):
         self.integration_exit_status = None
         self.recording_cleanup = None
         self.unit_result = None
+        self.cost_estimator = None
         self.test_costs = {}
         self.suite_usage = {}
         self.starting_quota = None
@@ -1476,6 +1502,7 @@ class ApiAgentApp(App[int]):
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
                         active, accepted=True, interaction=interaction,
                         content_policy=content_policy,
+                        **self.historical_runner_options(runner),
                         usage_output=lambda text: self.call_from_thread(self.receive_usage, text, generation),
                         unattended_index_source=getattr(resolved.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         on_event=lambda event: self.call_from_thread(self.integration_event, event, generation),
@@ -1728,8 +1755,8 @@ class ApiAgentApp(App[int]):
             summary = completed_summary(summary, self.test_run.elapsed)
         rows = ordered_result_rows(self.unit_rows, completed=self.unit_result is not None)
         if self.mode in {'integration', 'e2e'} and self.unit_result is not None:
-            from .test_results import compact_cost
-            rows = [(key, (*cells, compact_cost(self.test_costs.get(key, {}).get('estimated_cost_usd'))))
+            from .cost_history import cost_cell
+            rows = [(key, (*cells, cost_cell(self.test_costs.get(key, {}))))
                     for key, cells in rows]
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             screen = self.screen
@@ -1805,10 +1832,59 @@ class ApiAgentApp(App[int]):
         except (ValueError, OSError) as error:
             self.screen.query_one('#error', Static).update(str(error))
 
+    def historical_runner_options(self, runner):
+        import inspect
+        parameters = inspect.signature(runner).parameters
+        if 'historical_estimator' in parameters or any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            return {'historical_estimator': self.cost_estimator}
+        return {}
+
+    def selection_cells(self, row):
+        cells = ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)
+        if self.cost_estimator is not None:
+            from .cost_history import total_cell
+            cells += (total_cell(self.cost_estimator, row.members),)
+        return cells
+
+    def refresh_cost_summary(self):
+        if (self.cost_estimator is not None and isinstance(self.screen, WorkbenchScreen)
+                and self.screen.kind == "tests"):
+            from .cost_history import selected_summary
+            self.screen.query_one('#body', Static).update(
+                'Toggle groups or individual tests with Enter. Press s to start selected tests.\n' +
+                selected_summary(self.cost_estimator, self.selection.selected_ids))
+
+    async def synchronize_cost_history(self, snapshot, selection):
+        try:
+            replacement = await asyncio.to_thread(snapshot.synchronize)
+        except Exception:
+            return
+        if (self.cost_estimator is snapshot and self.selection is selection and not self.test_run_active()
+                and any(isinstance(screen, WorkbenchScreen) and screen.kind == 'tests' for screen in self.screen_stack)):
+            self.cost_estimator = replacement or snapshot
+            if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'tests':
+                self.refresh_rows()
+            else:
+                # A modal temporarily covers the same picker. Keep its result
+                # and redraw once the original picker becomes active again.
+                self._pending_cost_refresh = selection
+
     def show_selection(self):
-        rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
+        self.cost_estimator = None
+        if self.mode in {'integration', 'e2e'}:
+            try:
+                from api_agent.testing.cost_history import estimator_for
+                self.cost_estimator = estimator_for(self.context, self.selection.tests, self.session.result().values)
+            except Exception:
+                pass
+        rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
         actions = (("continue", "(s) Start selected tests"),)
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows)
+        if self.cost_estimator is not None:
+            self.call_after_refresh(self.refresh_cost_summary)
+            self.run_worker(self.synchronize_cost_history(self.cost_estimator, self.selection),
+                            group='cost-history', exclusive=True)
 
     def show_cleanup(self):
         rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
@@ -1850,12 +1926,15 @@ class ApiAgentApp(App[int]):
                 table.update_cell("container-all", column, "✓" if ids <= self.container_marked else "")
 
     def refresh_rows(self):
+        if self.screen.kind == "tests" and self.selection is None:
+            return
         table = self.screen.query_one(DataTable)
         if self.screen.kind == 'tests' and self.screen.test_search is not None:
             self.screen.render_search_rows()
+            self.refresh_cost_summary()
             return
         if self.screen.kind == "tests":
-            rows = [(row.id, ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)) for row in self.selection.groups()]
+            rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
         else:
             rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
         if self.screen.kind == "cleanup":
@@ -1880,6 +1959,7 @@ class ApiAgentApp(App[int]):
             for column, value in zip(table.columns, cells):
                 table.update_cell(key, column, literal_cell(value))
         self.screen.refresh_bindings()
+        self.refresh_cost_summary()
 
     def delete_assignment(self, name):
         try:

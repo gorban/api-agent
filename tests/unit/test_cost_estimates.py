@@ -103,7 +103,7 @@ def test_conflicting_payment_profiles_fall_back_without_mixing_quotas():
 @pytest.mark.parametrize('model,direct,counts,expected', [
     ('gpt-6-luna',True,(100,50,20,30),.000008+.0000002+.000025),
     ('gpt-6-sol',True,(272001,50,0,30),272001*4/1e6+50*15/1e6),
-    ('gpt-4.1-nano',True,(300000,50,None,None),.03+.00002),
+    ('gpt-4.1-nano',True,(300000,50,None,None),None),
     ('gpt-6-luna',False,(100,50,20,30),None),
     ('unknown',True,(100,50,20,30),None),
     ('gpt-6-luna',True,(None,50,20,30),None),

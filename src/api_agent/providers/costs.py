@@ -8,7 +8,7 @@ def valid_amount(value):
 
 
 def validate_quote(quote):
-    if (type(quote) is not dict or set(quote) != {'list_cost_usd', 'payment'}
+    if (type(quote) is not dict or set(quote) not in ({'list_cost_usd', 'payment'}, {'list_cost_usd', 'payment', 'accounting'})
             or (quote['list_cost_usd'] is not None and not valid_amount(quote['list_cost_usd']))):
         raise ContractError('Invalid provider cost quote')
     payment = quote['payment']
@@ -18,6 +18,9 @@ def validate_quote(quote):
             or type(payment['quota_seconds']) is not int or not 0 < payment['quota_seconds'] <= 31536000
             or payment['period'] not in ('quota', 'calendar_month', 'day', 'week')):
         raise ContractError('Invalid quota payment policy')
+    if 'accounting' in quote:
+        from api_agent.telemetry.accounting import validate_metadata
+        validate_metadata(quote['accounting'])
     return quote
 
 

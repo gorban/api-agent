@@ -32,8 +32,11 @@ def test_allure_results_retain_same_frozen_usage(tmp_path, status):
     assert payload['quota_unavailable_reason'] == 'missing_snapshot'
     for file in completed.directory.glob('*-result.json'):
         attachment = json.loads(file.read_bytes())['attachments']
-        assert attachment == [{'name': 'Suite usage', 'source': 'usage-summary.json', 'type': 'application/json'}]
-        assert json.loads((completed.directory / attachment[0]['source']).read_bytes()) == completed.usage
+        assert {item['name'] for item in attachment} == {'Test cost estimate', 'Suite usage', 'Immutable accounting'}
+        usage_attachment = next(item for item in attachment if item['name'] == 'Suite usage')
+        assert json.loads((completed.directory / usage_attachment['source']).read_bytes()) == completed.usage
+        accounting_attachment = next(item for item in attachment if item['name'] == 'Immutable accounting')
+        assert json.loads((completed.directory / accounting_attachment['source']).read_bytes())['run_id'] == completed.identity.run_id
         assert completed.manifest['files'][file.name] == hashlib.sha256(file.read_bytes()).hexdigest()
     assert completed.persisted
 

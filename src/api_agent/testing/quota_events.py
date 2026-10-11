@@ -28,7 +28,7 @@ def capture(event, observe):
     if type(data) is not dict or set(data) != {'phase','snapshot'} or data['phase'] not in ('before','after'):
         raise ValueError('Invalid quota event')
     row=data['snapshot']
-    if type(row) is not dict or set(row) != {'pct_used','window_id','reset_at','captured_at'}:
+    if type(row) is not dict or set(row) not in ({'pct_used','window_id','reset_at','captured_at'}, {'pct_used','window_id','reset_at','captured_at','pct_step'}):
         raise ValueError('Invalid quota event')
-    snapshot=QuotaSnapshot(row['pct_used'],row['window_id'],datetime.fromisoformat(row['reset_at']),datetime.fromisoformat(row['captured_at']))
+    snapshot=QuotaSnapshot(row['pct_used'],row['window_id'],datetime.fromisoformat(row['reset_at']),datetime.fromisoformat(row['captured_at']),row.get('pct_step'))
     observe(data['phase'], validate_snapshot(snapshot))

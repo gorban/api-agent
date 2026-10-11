@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
@@ -35,10 +36,13 @@ def _valid_pct(value: object) -> bool:
 def _snapshot_json(snapshot: QuotaSnapshot | None) -> dict | None:
     if snapshot is None:
         return None
-    return {'pct_used': snapshot.pct_used if _valid_pct(snapshot.pct_used) else None,
+    row = {'pct_used': snapshot.pct_used if _valid_pct(snapshot.pct_used) else None,
             'window_id': snapshot.window_id,
             'reset_at': None if snapshot.reset_at is None else snapshot.reset_at.isoformat(),
             'captured_at': snapshot.captured_at.isoformat()}
+    if snapshot.pct_step is not None:
+        row['pct_step'] = snapshot.pct_step
+    return row
 
 
 def _utc(value: datetime) -> datetime:
@@ -53,8 +57,11 @@ class QuotaSnapshot:
     window_id: str | None
     reset_at: datetime | None
     captured_at: datetime
+    pct_step: float | None = None
 
     def __post_init__(self):
+        if self.pct_step is not None and (not _valid_pct(self.pct_step) or self.pct_step == 0):
+            raise ValueError('percentage step must be positive and at most 100')
         object.__setattr__(self, 'captured_at', _utc(self.captured_at))
         if self.reset_at is not None:
             object.__setattr__(self, 'reset_at', _utc(self.reset_at))
@@ -73,13 +80,35 @@ class SuiteUsage:
         self._rows: dict[tuple[str, str, str], dict[str, int | None]] = {}
         self._unknown: dict[tuple[str, str, str], set[str]] = {}
         self._prompts: dict[tuple[str, str], str] = {}
+        self.inference_calls = {}
+        self.contaminated = False
         self._lock = RLock()
         from .costs import CostLedger
         self._costs = CostLedger()
 
+    def mark_quota_contaminated(self):
+        """Retain known unrelated consumption; raw observations remain available."""
+        with self._lock:
+            self.contaminated = True
+
     def add_cost(self, call_id, session_id, quote=None):
         with self._lock:
             self._costs.record(call_id, session_id, quote)
+
+    def record_inference(self, call_id, session_id, evidence):
+        """Retain validated content-free call facts without double accounting."""
+        with self._lock:
+            prior = self.inference_calls.get(call_id)
+            value = deepcopy(evidence)
+            value['test_id'] = session_id
+            if prior is not None:
+                if (prior['test_id'] != session_id or any(prior.get(key) != value.get(key)
+                        for key in ('call_id', 'selection', 'started_at', 'attempt', 'turn_id', 'turn_kind'))):
+                    raise ValueError('Conflicting inference identity')
+                if (prior.get('usage') is not None or prior.get('finished_at') is not None) and prior != value:
+                    raise ValueError('Conflicting inference evidence')
+            self.inference_calls[call_id] = value
+            return prior != value
 
     def add_usage(self, *, provider: str, model: str, session_id: str,
                   llm_calls: int = 1, input_tokens: int | None = None,
@@ -193,7 +222,7 @@ class SuiteUsage:
                 'estimated_cost_usd': estimate, 'cost_per_prompt_usd': None if estimate is None or prompts == 0 else estimate / prompts,
                 'pct_used_per_prompt': None if per_prompt is None else f'{per_prompt:.3f}',
                 'prompt_counts': counts, 'prompt_count': prompts,
-                'concurrent_consumption_possible': True,
+                'concurrent_consumption_possible': True, 'contaminated': self.contaminated,
                 'reset_countdown_seconds': reset_seconds,
                 'reset_countdown_hms': None if reset_seconds is None else f'{reset_seconds // 3600:02d}:{reset_seconds // 60 % 60:02d}:{reset_seconds % 60:02d}',
                 'usage_rows': rows}
@@ -204,11 +233,13 @@ class SuiteUsage:
                 report.update(self._costs.report(report, prompts_by_session, now=now))
         return report
 
-    def write_csv(self, run_csv: Path, external_csv: Path | None = None) -> None:
+    def write_csv(self, run_csv: Path, external_csv: Path | None = None, *, evidence_boundary=None) -> None:
         """Write the run artifact and optionally append to the shared usage CSV."""
         run_csv = Path(run_csv)
         run_csv.parent.mkdir(parents=True, exist_ok=True)
         rows = self.rows()
+        if evidence_boundary is not None:
+            rows = [evidence_boundary.content_export(row) for row in rows]
         with open(run_csv, 'w', newline='') as stream:
             writer = csv.DictWriter(stream, fieldnames=CSV_COLUMNS)
             writer.writeheader()

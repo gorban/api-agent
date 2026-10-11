@@ -26,6 +26,7 @@ class FieldDeclaration:
     acknowledge_default: bool = True
     pack_only: bool = False
     validation: str | None = None
+    cost_affecting: bool = False
     default_source: str = 'shared_default'
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         if set(spec) - allowed or spec.get('type') not in TYPES:
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
-        for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only'):
+        for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only', 'cost_affecting'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
         if spec.get('override_if_present') and not spec.get('override'):

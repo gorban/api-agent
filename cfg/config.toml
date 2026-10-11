@@ -15,12 +15,14 @@ default = '(?:openai/)?gpt-6(?:\.\d+)*-(?:luna|haiku|sol)(?:-\d{4}-\d{2}-\d{2})?
 help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows GPT-6 Luna, Haiku and Sol, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
 
 [fields.LLM_DEFAULT_MODEL]
+cost_affecting = true
 type = "str"
 validation = "regex"
 default = '(?:openai/)?gpt-6(?:\.\d+)*-luna(?:-\d{4}-\d{2}-\d{2})?'
 help = "Full model-ID regular expression for the default model. A single allowed match is selected directly. Multiple matches must share a provider-described family and comparable versions; select the unique highest version. No match, missing comparison metadata or a highest-version tie errors rather than switching models. Default selects GPT-6 Luna. Automatic resolution requires catalog access; explicit allowed model calls do not."
 
 [fields.LLM_CACHE_POLICY]
+cost_affecting = true
 type = "str"
 enum = ["", "off", "medium", "high"]
 default = ""
@@ -356,3 +358,9 @@ type = "float"
 validation = "nonnegative"
 default = 100.0
 help = "USD payment/allocation limit per LLM_PAY_PERIOD for subscription estimates. A quota delta consumes that fraction of the payment allocated to one quota window. This is an estimate assuming exclusive account use, not an invoice. API-key authentication uses list prices instead."
+
+[fields.TEST_COST_HISTORY_DAYS]
+type = "int"
+validation = "positive"
+default = 7
+help = "Days of compatible finalized integration/E2E accounting history used for advance cost predictions and subscription calibration. Cached history appears immediately; background synchronization never starts services or login. Older records remain preserved but are outside this estimation window."

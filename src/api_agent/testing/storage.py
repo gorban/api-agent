@@ -96,14 +96,14 @@ class RunStorage:
             os.unlink(temporary, dir_fd=directory_fd)
 
     @staticmethod
-    def _read_source(path, *, directory_fd=None):
+    def _read_source(path, *, directory_fd=None, max_bytes=None):
         """Reject links and nonregular staging entries before any blocking read."""
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd)
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise StorageError('Could not persist Allure run')
             with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-                return stream.read()
+                return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
         finally:
             os.close(descriptor)
 
@@ -155,7 +155,7 @@ class RunStorage:
             raise StorageError('Could not persist Allure run') from None
         return self._key(repo, run_id, 'manifest.json')
 
-    def history(self, repo):
+    def history(self, repo, *, max_pages=1000, budget=None):
         """Return finalized manifests ordered by finish time and run ID."""
         if not isinstance(repo, str) or not repo or repo in {'.', '..'} or any(c in repo for c in '/\\\0'):
             raise ValueError('Invalid repository')
@@ -167,14 +167,18 @@ class RunStorage:
             seen_tokens = set()
             pages = 0
             while True:
+                if budget is not None and budget.remaining == 0:
+                    raise TimeoutError()
                 pages += 1
-                if pages > 1000:
+                if pages > max_pages:
                     raise ValueError('History page limit exceeded')
                 kwargs = {'Bucket': self.bucket, 'Prefix': prefix}
                 if token:
                     kwargs['ContinuationToken'] = token
                 page = client.list_objects_v2(**kwargs)
                 for entry in page.get('Contents', ()):
+                    if budget is not None and budget.remaining == 0:
+                        raise TimeoutError()
                     key = entry['Key']
                     if not key.startswith(prefix) or not key.endswith('/manifest.json'):
                         continue
@@ -218,3 +222,22 @@ class RunStorage:
     def latest(self, repo):
         rows = self.history(repo)
         return rows[-1] if rows else None
+
+    def accounting_history(self, repo, *, budget=None):
+        """Reconcile every finalized manifest, including late uploads, without media."""
+        from api_agent.telemetry.history import MAX_BYTES
+        for manifest in self.history(repo, max_pages=1000, budget=budget):
+            if budget is not None and budget.remaining == 0:
+                raise TimeoutError()
+            if 'accounting.json' not in manifest['files']:
+                continue
+            try:
+                body = self._client().get_object(Bucket=self.bucket, Key=self._key(repo, manifest['run_id'], 'accounting.json'))['Body']
+                try:
+                    payload = body.read(MAX_BYTES + 1)
+                finally:
+                    body.close()
+                if len(payload) <= MAX_BYTES and hashlib.sha256(payload).hexdigest() == manifest['files']['accounting.json']:
+                    yield manifest, payload
+            except Exception:
+                continue

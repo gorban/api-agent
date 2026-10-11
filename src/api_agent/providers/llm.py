@@ -177,8 +177,13 @@ class LLMResult:
     payload: Message = field(repr=False)
     usage: Usage = field(default_factory=Usage)
     outcome: Literal["completed", "length", "tool_calls", "refused"] = "completed"
+    actual_model: str | None = None
+    service_tier: str | None = None
+    serving_revision: str | None = None
 
     def __post_init__(self):
+        _require(all(value is None or (type(value) is str and 0 < len(value) <= 200 and value.isprintable()) for value in (self.service_tier, self.serving_revision)))
+        _require(self.actual_model is None or (type(self.actual_model) is str and 0 < len(self.actual_model) <= 200 and self.actual_model.isprintable()))
         _require(isinstance(self.payload, Message) and self.payload.role == "assistant" and isinstance(self.usage, Usage) and type(self.outcome) is str and self.outcome in {"completed", "length", "tool_calls", "refused"})
 
 
