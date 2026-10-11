@@ -204,3 +204,37 @@ def test_worker_evidence_to_allure_accounting_and_display(tmp_path,monkeypatch):
     assert restored['tests'][0]['stabilized_estimate']['estimated_cost_usd']==.0000036
     cache.close()
     assert 'private-secret' not in path.read_text()
+
+
+def test_completed_average_includes_first_sample_and_deduplicates():
+    current = dict(artifact(), run_id='current')
+    first = EstimateSnapshot({})
+    averages = first.completed_averages(current, first.complete(current))
+    assert averages['t']['estimated_cost_usd'] == .0000036
+    assert averages['t']['sample_count'] == 1
+    prior = dict(artifact(.0000072), run_id='prior')
+    snapshot = EstimateSnapshot({'t': {'estimated_cost_usd': .0000072}},
+        records=[({}, prior), ({}, current)])
+    average = snapshot.completed_averages(current, snapshot.complete(current))['t']
+    assert average['estimated_cost_usd'] == pytest.approx(.0000054)
+    assert average['sample_count'] == 2
+    assert average['variation'] == .0000036
+    assert snapshot.predictions['t']['estimated_cost_usd'] == .0000072
+    assert snapshot.complete(current)['t']['estimated_cost_usd'] == .0000036
+    # API-key dollars must never be scaled by quota calibration.
+    unscaled = snapshot.completed_averages(current, {'t': {'calibration': {'scale_factor': 10}}})['t']
+    assert {name: value for name, value in unscaled.items() if name != 'freshness'} == {name: value for name, value in average.items() if name != 'freshness'}
+
+
+@pytest.mark.parametrize('change', ['failed', 'incomplete', 'tiny', 'reset', 'missing_compatibility'])
+def test_ineligible_completion_does_not_become_a_monetary_sample(change):
+    current = artifact()
+    if change == 'failed': current['tests'][0]['outcomes'] = ['failed']
+    elif change == 'incomplete': current['tests'][0]['calls_complete'] = False
+    elif change == 'tiny': current = artifact(.0000001)
+    elif change == 'reset': current['quota'] = {'pct_point_delta': -1}
+    else: current['tests'][0]['compatibility'] = None
+    snapshot = EstimateSnapshot({})
+    prediction = snapshot.completed_averages(current, snapshot.complete(current))['t']
+    assert prediction['estimated_cost_usd'] is None
+    assert prediction['sample_count'] == 0

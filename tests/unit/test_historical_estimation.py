@@ -313,3 +313,21 @@ def test_reset_evidence_does_not_invalidate_other_suites_by_overlap():
     card = bundled_rate_card()
     assert calibration(history + [bad], card) == calibration(history, card)
     assert calibration(history, card, overlap_records=history + [bad]) == calibration(history, card)
+
+
+def test_completed_average_preserves_frozen_calibration():
+    card = bundled_rate_card()
+    history = records()
+    current = deepcopy(history[0][1])
+    current['tests'][0] = row(3000)
+    snapshot = EstimateSnapshot({}, records=history, card=card)
+    stabilized = snapshot.complete(current)
+    average = snapshot.completed_averages(current, stabilized)['t']
+    scale = stabilized['t']['calibration']['scale_factor']
+    assert average['sample_count'] == 4
+    assert average['estimated_cost_usd'] == pytest.approx(priced(row(1500), card) * scale)
+    assert average['variation'] == pytest.approx(priced(row(2000), card) * scale)
+    assert average['calibration'] == stabilized['t']['calibration']
+    assert average['basis'] == 'historical_quota'
+    assert stabilized['t']['estimated_cost_usd'] == pytest.approx(priced(row(3000), card) * scale)
+    assert snapshot.records == history

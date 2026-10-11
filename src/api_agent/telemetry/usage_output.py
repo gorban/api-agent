@@ -46,8 +46,8 @@ def quota_observed(report):
 
 
 def historical_average(costs):
-    """Sum frozen advance predictions; absent/incomplete history stays unavailable."""
-    amounts = [(cost.get('advance_prediction') or {}).get('estimated_cost_usd') for cost in costs]
+    """Prefer post-run history; retain legacy advance-only reports as recorded."""
+    amounts = [(cost.get('historical_average', cost.get('advance_prediction')) or {}).get('estimated_cost_usd') for cost in costs]
     return math.fsum(amounts) if amounts and all(number(value) for value in amounts) else None
 
 

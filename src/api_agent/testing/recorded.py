@@ -171,13 +171,14 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             from api_agent.telemetry.accounting import build_accounting
             artifact = build_accounting(identity, tests, config, usage, result.tests, estimator=estimator, summary=usage_summary, context=context)
             stabilized = estimator.complete(artifact)
+            completed_averages = estimator.completed_averages(artifact, stabilized)
             # Preserve the initial raw allocation while publishing separately
             # derived completion estimates from this suite's frozen estimator.
             test_costs = usage_summary.setdefault('test_costs', {})
             for test in artifact['tests']:
                 key = test['test_id']
                 original = test_costs.get(key, {})
-                derived = stabilized.get(key, {})
+                derived = {**stabilized.get(key, {}), 'historical_average': completed_averages.get(key)}
                 test_costs[key] = {**original, **derived,
                     'raw_quota_cost_usd': test['raw_quota_cost_usd'],
                     'list_cost_usd': test['list_cost_usd'],
