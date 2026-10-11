@@ -145,13 +145,15 @@ preview requirements, including its unsupported-option restrictions.
   transport mappings. Map common output limits to supported request fields;
   account for reasoning tokens sharing the output budget. Reject unsupported
   options explicitly, including subscription server output caps.
-- [ ] Implement the core-owned LLM_CACHE_TTL enum (`0`, `5m`, `60m`) through
-  this adapter's advertised prompt-cache capabilities. Reject any policy the
-  selected authentication/API route and selection cannot honor, including `0`
-  where disabled caching cannot be enforced. Do not change the shared enum,
-  silently substitute durations, or equate omitted cache instructions with
-  disabled server caching. Record available cache reads/writes and keep unknown
-  values unknown; response-result and authentication caching remain separate.
+- [x] Implement core LLM_CACHE_POLICY presets: empty omits controls; off disables
+  prompt caching on supported newer official OpenAI selections; medium/high
+  select the shortest/longest documented retention. Newer selections map both
+  enabled presets to implicit/30m; documented older families map to in_memory/24h,
+  while selections supporting only 24h map both to it. Subscription never sends
+  the unsupported old retention field. Unverified compatible backends, unknown
+  selections and older off reject explicitly before credentials/inference.
+  Configured policies cross the ordinary backend and DEBUG local consumer;
+  explicit request policies win. Authentication and answer caching stay separate.
 - [ ] Add bounded image content to shared requests and worker frames, with
   provider-owned Chat Completions/Responses mappings and selection validation.
   Check media type, size, supported detail and safe source handling before

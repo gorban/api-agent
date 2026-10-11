@@ -40,7 +40,8 @@ class GPTProvider:
         self.inspection = inspection
         self.auth_mode = config.get("GPT_AUTH_MODE", "subscription")
         self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
-                                                 features=() if self.auth_mode == "subscription" else ("max_output_tokens",))
+                                                 features=("cache_policy",) if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy"))
+        self.cache_policy = config.get('LLM_CACHE_POLICY')
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.base_url = config.get("GPT_BASE_URL", "https://api.openai.com/v1")
@@ -147,10 +148,21 @@ class GPTProvider:
             return await discover_selections(client=client, base_url=base, access_token=auth,
                                               subscription=self.auth_mode == "subscription")
 
+    def validate_request(self, request):
+        """Validate selected cache support before retrieving authentication."""
+        from api_agent.providers.cache_policy import configured_request
+        from .inference import validate_text_request
+        request = configured_request(request, self.cache_policy)
+        base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
+        validate_text_request(base_url=base, access_token='preflight-validation',
+                              subscription=self.auth_mode == 'subscription', api_mode=self.api_mode, request=request)
+
     async def acomplete(self, request, *, auth=None):
         if self.closed:
             raise ContractError("GPT provider is closed.")
         from .inference import complete_text, validate_text_request
+        from api_agent.providers.cache_policy import configured_request
+        request = configured_request(request, self.cache_policy)
         if not isinstance(self.auth_mode, str) or self.auth_mode not in {'subscription', 'api_key'}:
             raise ContractError('GPT_AUTH_MODE must be subscription or api_key.')
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url

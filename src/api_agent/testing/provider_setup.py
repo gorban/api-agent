@@ -239,7 +239,12 @@ class IntegrationLLM:
                 return self.owner
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
                                                  credentials=credentials, describe=getattr(implementation, 'adescribe', None),
-                                                 complete=getattr(implementation, 'acomplete', None))
+                                                 complete=getattr(implementation, 'acomplete', None),
+                                                 validate_request=lambda request: self._validate_request(implementation, request))
+
+    def _validate_request(self, implementation, request):
+        from api_agent.providers.cache_policy import validate_provider_request
+        validate_provider_request(implementation, request)
 
     def _selected_identity(self, config=None):
         config = self.config if config is None else config
@@ -260,9 +265,16 @@ class IntegrationLLM:
             await self._prepare_setup()
         return await self._shared_setup.describe(selected_identity=self._selected_identity())
 
-    async def _complete(self, request):
+    async def _preflight(self, request):
+        from api_agent.providers.cache_policy import configured_request
+        request = configured_request(request, self.config.get('LLM_CACHE_POLICY'))
         async with self._setup_lock:
             await self._prepare_setup()
+        self._validate_request(self.provider.implementation, request)
+        return request
+
+    async def _complete(self, request):
+        request = await self._preflight(request)
         return await self._shared_setup.complete(request, selected_identity=self._selected_identity())
 
     def complete(self, request):

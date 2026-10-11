@@ -14,7 +14,19 @@ Use `aload_provider` inside an event loop. Synchronous loading rejects active-lo
 
 `LLMRequest` carries `selected_llm`, a `CompletionRequest` and an optional request ID. Requests contain ordered messages, optional tools, generation options and optional structured-output schema. Message roles are system/user/assistant/tool. Text, tool calls and tool results use separate immutable carriers. Tool arguments remain a transport-neutral string; adapters interpret them. Schema strings must parse as finite JSON objects.
 
-Available selections advertise `tools`, `structured`, `temperature` and `max_output_tokens` where supported. Call `AvailableSelection.validate(request)` before invoking the transport; unsupported selection/features raise a safe `OperationalError("unsupported")`. Concrete adapters must not silently discard requested features.
+Available selections advertise `tools`, `structured`, `temperature`, `max_output_tokens` and `cache_policy` where supported. Call `AvailableSelection.validate(request)` before invoking the transport; unsupported selection/features raise a safe `OperationalError("unsupported")`. Concrete adapters must not silently discard requested features.
+
+`GenerationOptions.cache_policy` is None (provider defaults), off, medium
+(shortest supported retention), or high (longest supported retention). The shared
+LLM_CACHE_POLICY setting defaults to empty, normalizes to None, and applies only
+when the call has no explicit policy. Providers must reject unsupported
+policies rather than silently substitute them. Empty omits upstream cache controls;
+it does not assert caching is disabled. Authentication caches and completed-answer
+caches are separate. The integration owner checks advertised cache support and
+calls optional synchronous `validate_request(request)` before authentication.
+That hook is pure and must raise a safe error on unsupported request options.
+The backend performs this preflight before readiness, without cancelling another
+consumer's already-running authentication.
 
 `LLMResult` holds an assistant message, outcome (completed/length/tool_calls/refused) and usage. Counts may be unknown (`None`), including when a transport supplies no data. Input totals include cached input; output totals include reasoning. These subsets are not added again to totals and cannot exceed their known totals. There is no inferred price or invented zero usage.
 

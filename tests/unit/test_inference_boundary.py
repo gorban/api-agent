@@ -8,7 +8,7 @@ from api_agent.providers.llm import CompletionRequest, GenerationOptions, LLMReq
 
 
 def request_row():
-    return dict(selected_llm='gpt-example', request_id='request', messages=[{'role': 'user', 'text': 'Ok'}], max_output_tokens=128)
+    return dict(selected_llm='gpt-example', request_id='request', messages=[{'role': 'user', 'text': 'Ok'}], max_output_tokens=128, cache_policy=None)
 
 
 def result_row():

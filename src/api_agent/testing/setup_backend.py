@@ -31,6 +31,9 @@ class _SetupOwner:
     async def complete(self, request):
         return await self.provider._complete(request)
 
+    async def validate_request(self, request):
+        await self.provider._preflight(request)
+
     async def aclose(self):
         await self.provider._close()
         self.provider.closed = True

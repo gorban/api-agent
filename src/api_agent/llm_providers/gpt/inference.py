@@ -7,6 +7,7 @@ from api_agent.providers.llm import LLMRequest, LLMResult, Message, TextContent,
 from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.progress import component_timeout
 from .discovery import _endpoint, _failure, _authentication_type
+from .cache_policy import prompt_cache_fields
 
 _LIMIT = 1048576
 _TIMEOUT = 60
@@ -241,7 +242,10 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     if api_mode not in ('responses', 'completions') or (subscription and api_mode != 'responses'):
         raise ProviderAccessError('invalid_request', 'GPT subscription inference requires responses mode.')
     base_url = _endpoint(base_url, access_token, subscription)
-    return base_url, _payload(request, api_mode, subscription)
+    body = _payload(request, api_mode, subscription)
+    body.update(prompt_cache_fields(request.payload.generation.cache_policy, request.selected_llm,
+                                  base_url=base_url, subscription=subscription))
+    return base_url, body
 
 
 async def complete_text(*, client, base_url, access_token, subscription, api_mode, request):

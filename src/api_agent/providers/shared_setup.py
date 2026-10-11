@@ -58,7 +58,7 @@ class SharedSetupOwner(_Owner):
     Failed checkpoints remain failed for this operation: replay requires a new
     operation owner. This is deliberately not a cross-process registry.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, timeout=5):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, validate_request=None, timeout=5):
         super().__init__(timeout)
         if (not isinstance(operation_id, str) or not operation_id
                 or not isinstance(selected_identity, str) or not selected_identity
@@ -75,6 +75,7 @@ class SharedSetupOwner(_Owner):
         self._describe = describe
         self._catalog = None
         self._complete = complete
+        self._validate_request = validate_request
         self._calls = set()
 
     @property
@@ -131,6 +132,9 @@ class SharedSetupOwner(_Owner):
     async def complete(self, request, *, selected_identity=None):
         from .inference import request_to_wire, result_to_wire
         request_to_wire(request)
+        self._check()
+        if self._validate_request is not None:
+            self._validate_request(request)
         await self.ensure_ready(selected_identity=selected_identity)
         if not callable(self._complete):
             from .contracts import SetupPrerequisiteError
