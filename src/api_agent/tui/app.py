@@ -1061,7 +1061,7 @@ class ApiAgentApp(App[int]):
         self.review_names.intersection_update(self.schema.fields)
         self.review_names.update(self.configuration_pending())
         rows = []
-        for name in self.schema.fields:
+        for name in sorted(self.schema.fields):
             if (not self.schema.fields[name].acknowledge_default or name not in self.review_names
                     or (name not in active and name not in default_names)):
                 continue
