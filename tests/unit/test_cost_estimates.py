@@ -164,4 +164,4 @@ def test_terminal_completed_summary_includes_same_frozen_cost_accounting():
     lines=[]
     assert finish_terminal_inspection(recorded,lines.append)
     assert lines[0]=='Integration results: PASS — 1/1 passed (100.00%) — 1m 1s total.'
-    assert 'Actual cost (estimated): $0.0000006' in lines[2] and 'Cost basis: list_price' in lines[2]
+    assert 'This suite cost: $0.0000006' in lines[2] and 'Cost basis: list_price' in lines[2]

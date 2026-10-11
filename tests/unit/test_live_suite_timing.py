@@ -208,8 +208,8 @@ def test_live_cost_column_hidden_and_final_cost_summary_visible(tmp_path):
             app.unit_rows[identity.id]=('PASSED',identity.id,'1.000s')
             app.finish_test_run();await pilot.pause()
             assert len(table.columns)==4 and table.get_row_at(0)[3]=='0.010000'
-            assert 'Actual cost (estimated): $0.010' in app.screen.query_one('#body',Static).content.plain
+            assert 'This suite cost: $0.010' in app.screen.query_one('#body',Static).content.plain
             assert ' total.' in app.screen.query_one('#body',Static).content.plain.splitlines()[0]
             app.receive_usage('Starting quota used: 14.000%',app._inspection_generation)
-            assert 'Actual cost (estimated): $0.010' in app.screen.query_one('#body',Static).content.plain
+            assert 'This suite cost: $0.010' in app.screen.query_one('#body',Static).content.plain
     asyncio.run(scenario())
