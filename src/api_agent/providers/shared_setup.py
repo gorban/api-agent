@@ -8,7 +8,7 @@ import asyncio
 
 from .contracts import ContractError, SessionClosedError
 from .sessions import _Owner, _drain, _spawn
-from .control import OperationalError, CleanupPendingError
+from .control import OperationalError, CleanupPendingError, finish_cleanup
 from .progress import independent_timeout_scope
 
 
@@ -58,7 +58,7 @@ class SharedSetupOwner(_Owner):
     Failed checkpoints remain failed for this operation: replay requires a new
     operation owner. This is deliberately not a cross-process registry.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, timeout=5):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, timeout=5):
         super().__init__(timeout)
         if (not isinstance(operation_id, str) or not operation_id
                 or not isinstance(selected_identity, str) or not selected_identity
@@ -74,6 +74,8 @@ class SharedSetupOwner(_Owner):
         self._disposal_started = False
         self._describe = describe
         self._catalog = None
+        self._complete = complete
+        self._calls = set()
 
     @property
     def selected_identity(self):
@@ -126,6 +128,32 @@ class SharedSetupOwner(_Owner):
         catalog_to_wire(result)
         return result
 
+    async def complete(self, request, *, selected_identity=None):
+        from .inference import request_to_wire, result_to_wire
+        request_to_wire(request)
+        await self.ensure_ready(selected_identity=selected_identity)
+        if not callable(self._complete):
+            from .contracts import SetupPrerequisiteError
+            raise SetupPrerequisiteError('The selected LLM provider has no text completion capability.')
+        async def invoke(*, auth):
+            result = await self._complete(request, auth=auth)
+            self._check()
+            result_to_wire(result)
+            return result
+        task = _spawn(self._owner.call(invoke))
+        self._calls.add(task)
+        try:
+            result = await asyncio.shield(task)
+            self._check()
+            return result
+        finally:
+            try:
+                await finish_cleanup(_drain([task], self._timeout, self._cancel_requested))
+            finally:
+                if task.done():
+                    self._calls.discard(task)
+                    self._cancel_requested.discard(task)
+
     async def aclose(self):
         self._context()
         if self._credentials is not None:
@@ -133,6 +161,7 @@ class SharedSetupOwner(_Owner):
         await super().aclose()
 
     async def _dispose(self):
+        await _drain(self._calls, self._timeout, self._cancel_requested)
         await _drain([task for task in (self._ready, self._catalog) if task is not None],
                      self._timeout, self._cancel_requested)
         if not self._disposal_started:

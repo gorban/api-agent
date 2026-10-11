@@ -23,7 +23,7 @@ This is the early exception to deferred public demo applications. Build a replac
 - [ ] Cover all four authentication/API combinations with deterministic tests: three accepted, subscription/completions rejected before any side effect. Test absent/incomplete/multiple vault descriptors and empty/nonempty retrieved passwords in API-key mode, zero API-key retrieval in subscription mode, conditional defaults and explicit overrides, no credential fallback, inactive subscription settings, OAuth endpoint binding and both transports through one unchanged renderer. API mode/account changes cannot reuse stale clients or auth sessions. Complete applicable unit/coverage checks before code commits.
 - [ ] Human-review contributed settings and personal funding/transport, then verify no-inference discovery before the first small personal GPT renderer call. Record integration/E2E history from the first live run, preserving interactive gates and human E2E acceptance.
 
-This task chooses no particular GPT variant. Live authentication-only setup has been verified; no inference request has been made. Demo UI/API implementations remain deferred and are not prerequisites for this provider.
+This task chooses no particular GPT variant. Live authentication and catalog subsets have been verified; text completion transports have deterministic proofs, with live inference acceptance recorded separately. Demo UI/API implementations remain deferred and are not prerequisites for this provider.
 
 ## Configuration acceptance matrix
 
@@ -34,7 +34,7 @@ This task chooses no particular GPT variant. Live authentication-only setup has 
 | api_key | responses | Valid with a valid selected vault login whose password is a nonempty API key, and supporting endpoint/selection |
 | api_key | completions | Valid with a valid selected vault login whose password is a nonempty API key, and supporting endpoint/selection |
 
-All GPT settings are provider-contributed and use normal effective-pack defaults and .env/environment/CLI precedence. Subscription/responses authentication and selected-password API-key setup in both valid API modes are implemented; subscription/completions rejects before side effects. API-key setup validates credential acquisition, not remote key validity, permissions or expiration. Missing attended key acquisition remains an explicit prerequisite. No-inference discovery is implemented through the loaded provider and shared backend/worker boundary; live catalog acceptance remains pending. Inference transports are not implemented.
+All GPT settings are provider-contributed and use normal effective-pack defaults and .env/environment/CLI precedence. Subscription/responses authentication and selected-password API-key setup in both valid API modes are implemented; subscription/completions rejects before side effects. API-key setup validates credential acquisition, not remote key validity, permissions or expiration. Missing attended key acquisition remains an explicit prerequisite. No-inference discovery is implemented through the loaded provider and shared backend/worker boundary; live catalog acceptance remains pending. Text completion transports are implemented; broader tools, structured output and public incremental streaming remain separate work.
 
 ## Vault and replaceability acceptance
 
@@ -47,7 +47,7 @@ All GPT settings are provider-contributed and use normal effective-pack defaults
 - [x] Validate the declared authentication/API enums and reject subscription/completions before authentication/client/request activity, preserving explicit overrides. No credential-mode fallback is used. API-key setup also validates its endpoint before credential access; authorized request consumers remain pending above.
 - [x] Derive credential-role declarations from the selected provider; the included GPT provider defaults to LLM User in both authentication modes. Switching modes preserves its configured entries and selected index, without prompting for another role or executing factories. Provider changes still rebind contributed configuration and roles. Selected-password API-key acquisition is implemented; live acceptance remains open.
 - [x] Prepare managed browser dependencies and matching Chromium lazily for uncached GPT login; help/collection and cached reuse do not launch browsers. Selected-provider dependency manifests remain in contract hardening.
-- [x] Complete observed subscription OAuth/login, verified account binding, protected cache reuse and owned refresh/disposal through launch.py. See [connection tasks](implementation_plan_f2a.md) and [setup proof](implementation_plan_f2b.md). Full sign-out/revocation UI and inference transports are still open.
+- [x] Complete observed subscription OAuth/login, verified account binding, protected cache reuse and owned refresh/disposal through launch.py. See [connection tasks](implementation_plan_f2a.md) and [setup proof](implementation_plan_f2b.md). Full sign-out/revocation UI and richer inference capabilities remain open; the text-completion subset is recorded below.
 - [x] Verify base and external-pack provider selection/declaration replacement with deterministic TUI checks; unchanged inference-consumer proof remains pending.
 
 ## Shared role and indexed accounts
@@ -80,7 +80,7 @@ Most users configure one provider/authentication mode and one LLM User entry per
 
 ## Minimal inference integration checkpoint
 
-- [ ] Implement the smallest shared LLM-request integration through the loaded provider and owned session, using a short prompt and bounded output. Prove the transports with deterministic unit tests before live checks. Supply an explicit GPT selection so this test does not require catalog permission; keep discovery as its own integration.
+- [x] Implement the smallest shared LLM-request integration through the loaded provider and owned session, using a short prompt and bounded output. Prove the transports with deterministic unit tests before live checks. Supply an explicit GPT selection so this test does not require catalog permission; keep discovery as its own integration.
 - [ ] Verify subscription Responses first, then API-key Chat Completions and, when funded, API-key Responses against compatible endpoints. Use the same consumer assertion and generic result/usage contracts. Keep repeated live checks limited to the approved personal account and spending plan maintained outside this repository.
 - [ ] Exercise deliberately unfunded or exhausted API-key access in both API formats, preserving the actual upstream message, HTTP status, code/type and available request identifier through test details and Allure. Distinguish observed billing/credit rejection from permission rejection; never manufacture a quota diagnosis or fall back to another account, endpoint or authentication mode. A normal request integration fails on rejection; a dedicated rejection test passes only when it asserts that expected error behavior.
 - [ ] Record each live outcome and unavailable funded combination separately; a funding-limited deferred check is not transport acceptance. Use the verified subscription Responses route for subsequent development while retaining deterministic coverage of both API-key transports.
@@ -93,3 +93,34 @@ subscription/public-catalog rejection and shared deadline isolation. The wheel
 builds and its relocated catalog/factory contract loads without authentication.
 The expired/replacement API-key discovery walkthrough is human-approved; other
 live catalog scenarios and inference-format permissions remain pending.
+
+## Completed text transport subset
+
+- [x] Add `complete(request)` to ordinary shared and serial DEBUG integration
+  consumers using the existing LLMRequest/LLMResult/Usage contract. Keep explicit
+  inference independent of catalog permission, never cache results, and stop
+  cancelled calls before returning cancellation. Revoked leases reject replies;
+  completed tasks leave both execution and cancellation tracking.
+- [x] Implement bounded identity JSON API-key Responses/Chat Completions and
+  subscription SSE Responses. Subscription binds to the official endpoint, uses
+  store=false/stream=true, maps system instructions to developer, and requires
+  response.completed. It omits unsupported server token caps and rejects an
+  explicit cap; limits are local response bytes and deadlines. API-key access
+  uses a small default output cap (128), with explicit supported caps available.
+- [x] Preserve sanitized direct-admission detail as well as error objects,
+  HTTP status/code/type/request identifiers, strict JSON/SSE terminal validation
+  and rejection before decompression. Reject selected-credential echoes in
+  successful output, including controls that could later expose the credential.
+  No retries or endpoint/account/mode fallback are used.
+- [x] Add the optional explicit INTEGRATION_LLM_SELECTION and generic
+  test_llm_request integration. Missing selection skips; actual remote rejection
+  fails. Capture attempted turns and returned token totals in recorded suite
+  history without prompt/output/auth content; retain unknown counters.
+- [ ] Complete the separate live compatibility and human checkpoints above.
+  Text transport unit coverage is not live account or funding acceptance.
+- [ ] Extend transports and consumer wire contracts for tools/structured output
+  and incremental streams before advertising those capabilities. Keep this
+  checkpoint's capabilities limited to describe/complete and supported options.
+
+Protocol follows the official OpenAI Responses, Chat Completions and subscription
+preview requirements, including its unsupported-option restrictions.

@@ -279,7 +279,7 @@ COLLECT_ONLY = false
 [fields.LLM_PROVIDER]
 type = "str"
 review_optional = true
-help = "Replaceable LLMProvider version-1 factory (file.py:factory). The bundled GPT provider currently supports lazy personal subscription setup; inference is a later capability. Any adapter implementing that interface may replace it."
+help = "Replaceable LLMProvider version-1 factory (file.py:factory). The bundled GPT provider supports lazy subscription/API-key setup, authenticated catalog discovery and text completion. Any adapter implementing that interface may replace it."
 
 [fields.LLM_CREDENTIAL_ROLE]
 type = "str"
@@ -310,3 +310,8 @@ type = "str"
 default = "https://localhost:8443"
 review_optional = true
 help = "HTTPS origin of the agent's Django backend serving its HTTP API. Local operations bind its port on loopback; frontend and provider callback URLs are configured separately."
+
+[fields.INTEGRATION_LLM_SELECTION]
+type = "str"
+review_optional = true
+help = "Explicit LLM selection for the small integration request test. Unset or empty skips that test; no discovery permission is required. Select an identifier supported by the chosen provider/account/endpoint. The test sends one short prompt with a small output bound and performs no automatic retries."

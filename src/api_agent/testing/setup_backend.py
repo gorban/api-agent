@@ -28,6 +28,9 @@ class _SetupOwner:
     async def describe(self):
         return await self.provider._describe()
 
+    async def complete(self, request):
+        return await self.provider._complete(request)
+
     async def aclose(self):
         await self.provider._close()
         self.provider.closed = True

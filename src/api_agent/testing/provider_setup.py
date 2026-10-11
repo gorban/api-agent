@@ -238,7 +238,8 @@ class IntegrationLLM:
                                              interactive=index is None and (self.inspection is not None or not self._provider_config.get('NO_STD_IN', False)))
                 return self.owner
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
-                                                 credentials=credentials, describe=getattr(implementation, 'adescribe', None))
+                                                 credentials=credentials, describe=getattr(implementation, 'adescribe', None),
+                                                 complete=getattr(implementation, 'acomplete', None))
 
     def _selected_identity(self, config=None):
         config = self.config if config is None else config
@@ -258,6 +259,23 @@ class IntegrationLLM:
         async with self._setup_lock:
             await self._prepare_setup()
         return await self._shared_setup.describe(selected_identity=self._selected_identity())
+
+    async def _complete(self, request):
+        async with self._setup_lock:
+            await self._prepare_setup()
+        return await self._shared_setup.complete(request, selected_identity=self._selected_identity())
+
+    def complete(self, request):
+        if self.closed:
+            raise ContractError('Integration provider setup is closed.')
+        from .inference_usage import publish
+        call_id = publish(request)
+        try:
+            result = self.loop.run_until_complete(self._complete(request))
+            publish(request, result, call_id=call_id)
+            return result
+        except SetupPrerequisiteError as error:
+            pytest.skip(str(error))
 
     def describe(self):
         if self.closed:
@@ -330,6 +348,13 @@ class RemoteIntegrationLLM:
         self.loop.set_default_executor(ThreadPoolExecutor(max_workers=1,
             thread_name_prefix='api-agent-setup-client'))
 
+    def complete(self, request):
+        from .inference_usage import publish
+        call_id = publish(request)
+        result = self._request(lambda: self.client.complete(request))
+        publish(request, result, call_id=call_id)
+        return result
+
     def describe(self):
         return self._request(self.client.describe)
 
@@ -360,6 +385,14 @@ def _worker_interaction(data):
         return None
     from api_agent.auth.interaction_transport import InteractionClient
     return InteractionClient(data['interaction'])
+
+
+@pytest.fixture(scope='session')
+def llm_selection():
+    value = _read_snapshot()['config'].get('INTEGRATION_LLM_SELECTION')
+    if value is None or value == '':
+        pytest.skip('Set INTEGRATION_LLM_SELECTION to an explicit selection before the request test.')
+    return value
 
 
 @pytest.fixture(scope='session')

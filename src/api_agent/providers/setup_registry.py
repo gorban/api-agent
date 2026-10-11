@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from .contracts import ContractError, SessionClosedError
 from .sessions import _Owner, _spawn, _drain
 from .progress import independent_timeout_scope
+from .control import finish_cleanup
 
 
 _KEYS = frozenset(('version', 'operation_id', 'selected_identity', 'worker_id', 'attempt'))
@@ -121,6 +122,32 @@ class SetupRegistry(_Owner):
         finally:
             await _drain([waiter], self._timeout, self._cancel_requested)
             lease['waiters'].discard(waiter)
+
+    async def complete(self, binding, request):
+        from .inference import request_to_wire, result_to_wire
+        request_to_wire(request)
+        await self.ensure_ready(binding)
+        method = getattr(self._owner, 'complete', None)
+        if not callable(method):
+            from .contracts import SetupPrerequisiteError
+            raise SetupPrerequisiteError('The selected LLM provider has no text completion capability.')
+        lease = self._lease(binding)
+        waiter = _spawn(method(request))
+        lease['waiters'].add(waiter)
+        try:
+            result = await asyncio.shield(waiter)
+            self._check()
+            if lease['revoked']:
+                raise SessionClosedError('Setup lease is revoked')
+            result_to_wire(result)
+            return result
+        finally:
+            try:
+                await finish_cleanup(_drain([waiter], self._timeout, self._cancel_requested))
+            finally:
+                if waiter.done():
+                    lease['waiters'].discard(waiter)
+                    self._cancel_requested.discard(waiter)
 
     async def _describe(self):
         with independent_timeout_scope():
