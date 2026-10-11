@@ -126,7 +126,7 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
         assert len(csv.splitlines()) == 3
         assert sum(row.kind=='inference_usage' for row in events)==4
         assert sum(row['total_tokens'] for row in usage['usage_observations']) == 6
-        assert '  input: 4 — ' in console[-1] and '\n  output: 2 — ' in console[-1]
+        assert '  input: 4' in console[-1] and '\n  output: 2' in console[-1]
         artifact = json.loads((result.directory/'accounting.json').read_text())
         assert [row['calls'][0]['usage']['input_tokens'] for row in artifact['tests']] == [2,2]
         assert [row['calls'][0]['usage']['output_tokens'] for row in artifact['tests']] == [1,1]
@@ -143,7 +143,8 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
             assert 'total (input + output): 6 — $0.0000012' in console[-1]
         else:
             assert all(value is None for value in usage['category_costs_usd'].values())
-            assert 'input: 4 — unavailable' in console[-1]
+            assert '  input: 4\n  output: 2\n' in console[-1]
+            assert ' — unavailable' not in console[-1]
         if status == 200 and failure_usage:
             assert all(row['outcomes'] == ['failed'] for row in artifact['tests'])
             assert 'Synthetic failure after completed inference' in result.execution.output

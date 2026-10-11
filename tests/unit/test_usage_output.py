@@ -1,4 +1,5 @@
 from api_agent.telemetry.usage_output import starting_usage_line, final_usage_text
+import pytest
 
 
 def test_usage_lines_measured_zero_and_unavailable():
@@ -8,7 +9,8 @@ def test_usage_lines_measured_zero_and_unavailable():
     text = final_usage_text(report)
     assert 'Quota change: 0%' in text
     assert 'Quota points per turn: unavailable' in text
-    assert 'other activity invalidates it' in text
+    assert 'Cost attribution assumes' not in text
+    assert 'Quota reset countdown (HH:MM:SS): 01:02:03' in text
     assert 'Quota change: unavailable' in final_usage_text({'pct_used_before': 1, 'prompt_count': 2, 'quota_unavailable_reason': 'changed_window'})
 
 
@@ -38,15 +40,15 @@ def test_actual_token_totals_retain_known_counts_without_double_counting_subsets
         output_tokens=4, cache_read_tokens=0, cache_creation_tokens=0, reasoning_tokens=2)
     report = usage.report()
     assert tokens_text(report) == ('Tokens this run:\n'
-        '  input: 1,202 — unavailable\n  output: 14 — unavailable\n  cached input: 1,000 — unavailable\n'
-        '  cache write: 0 — unavailable\n  reasoning: 5 — unavailable\n  total (input + output): 1,216 — unavailable\n'
+        '  input: 1,202\n  output: 14\n  cached input: 1,000\n'
+        '  cache write: 0\n  reasoning: 5\n  total (input + output): 1,216\n'
         '  Cached input and cache writes are included in input; reasoning is included in output.')
     assert final_usage_text(report).endswith(tokens_text(report))
-    assert 'total (input + output): 1,210 — unavailable' in tokens_text(report, 'first')
-    assert 'total (input + output): 6 — unavailable' in tokens_text(report, 'second')
+    assert 'total (input + output): 1,210' in tokens_text(report, 'first')
+    assert 'total (input + output): 6' in tokens_text(report, 'second')
     assert has_tokens(report, 'first') and has_tokens(report, 'second')
     assert not has_tokens(report, 'absent')
-    assert 'total (input + output): 0 — unavailable' in tokens_text(report, 'absent')
+    assert 'total (input + output): 0' in tokens_text(report, 'absent')
 
 
 def test_unknown_failed_calls_do_not_erase_reported_spend_or_claim_zero():
@@ -59,14 +61,14 @@ def test_unknown_failed_calls_do_not_erase_reported_spend_or_claim_zero():
     report = usage.report()
     # CSV keeps unavailable aggregates; display retains known lower bounds.
     assert report['usage_rows'][0]['total_tokens'] is None
-    assert 'total (input + output): 16 + unknown — unavailable' in tokens_text(report, 'first')
+    assert 'total (input + output): 16 + unknown' in tokens_text(report, 'first')
     assert 'input: 11 + unknown' in tokens_text(report)
     assert has_tokens(report, 'first') and not has_tokens(report, 'second')
-    assert 'total (input + output): unavailable — unavailable' in tokens_text(report, 'second')
+    assert 'total (input + output): unavailable' in tokens_text(report, 'second')
     assert report['unmeasured_calls'] == {'second':1}
     assert 'cached input: unavailable' in tokens_text(report)
     legacy = {'usage_rows':[{'session_id':'first', 'input_tokens':2, 'output_tokens':3, 'total_tokens':5}]}
-    assert has_tokens(legacy, 'first') and 'total (input + output): 5 — unavailable' in tokens_text(legacy, 'first')
+    assert has_tokens(legacy, 'first') and 'total (input + output): 5' in tokens_text(legacy, 'first')
 
 
 def test_each_count_displays_its_scoped_cost_and_identifies_subset_amounts():
@@ -79,11 +81,11 @@ def test_each_count_displays_its_scoped_cost_and_identifies_subset_amounts():
             'cache_read_tokens':0,'cache_creation_tokens':None,'reasoning_tokens':.0000016,'total_tokens':.00001}}}}
     assert tokens_text(report).splitlines() == ['Tokens this run:',
         '  input: 10 — $0.200', '  output: 5 — $0.800', '  cached input: 2 — $0.010',
-        '  cache write: 0 — unavailable', '  reasoning: 1 — $0.160', '  total (input + output): 15 — $1.000',
+        '  cache write: 0', '  reasoning: 1 — $0.160', '  total (input + output): 15 — $1.000',
         '  Cached input and cache writes are included in input; reasoning is included in output.']
     assert tokens_text(report, 'one').splitlines() == ['Tokens this run:',
         '  input: 10 — $0.000002', '  output: 5 — $0.000008', '  cached input: 2 — $0.000',
-        '  cache write: 0 — unavailable', '  reasoning: 1 — $0.0000016', '  total (input + output): 15 — $0.00001',
+        '  cache write: 0', '  reasoning: 1 — $0.0000016', '  total (input + output): 15 — $0.00001',
         '  Cached input and cache writes are included in input; reasoning is included in output.']
 
 
@@ -113,14 +115,58 @@ def test_current_run_cost_and_frozen_historical_average_are_distinct():
     costs = [{'estimated_cost_usd':1, 'advance_prediction':{'estimated_cost_usd':.7}},
              {'estimated_cost_usd':2, 'advance_prediction':{'estimated_cost_usd':.1}},
              {'estimated_cost_usd':0, 'advance_prediction':{'estimated_cost_usd':0}}]
-    report = {'estimated_cost_usd':3, 'test_costs':dict(zip(('one','two','zero'),costs))}
+    report = {'estimated_cost_usd':3, 'prompt_count':2, 'test_costs':dict(zip(('one','two','zero'),costs))}
     assert 'This suite cost: $3.000\n  Historical average: $0.800' in final_usage_text(report)
+    assert 'Cost per turn: unavailable\n  Historical average: $0.400' in final_usage_text(report)
     assert isclose(historical_average(costs), .8)
     assert historical_average(()) is None
     assert historical_average(({'advance_prediction':None},)) is None
     assert historical_average((costs[0], {})) is None
     assert historical_average(({'advance_prediction':{'estimated_cost_usd':True}},)) is None
     assert historical_average((costs[2],)) == 0
+
+
+@pytest.mark.parametrize('report,expected', [
+    ({'pct_point_delta':0}, 'quota did not change'),
+    ({}, 'unavailable'),
+    ({'pct_point_delta':False}, 'unavailable'),
+    ({'pct_point_delta':1}, 'unavailable'),
+    ({'pct_point_delta':0, 'quota_unavailable_reason':'changed_window'}, 'unavailable'),
+    ({'pct_point_delta':0, 'before':{'pct_used':99}, 'after':{'pct_used':1}}, 'unavailable'),
+])
+def test_unknown_cost_explains_only_valid_unchanged_quota_in_suite_and_test_details(report, expected):
+    from types import SimpleNamespace
+    from api_agent.tui.test_results import test_details
+    report = {**report, 'prompt_count':1, 'cost_basis':'unavailable'}
+    output = final_usage_text(report)
+    assert f'This suite cost: {expected}\n  Historical average: {expected}\nCost per turn: {expected}\n  Historical average: {expected}' in output
+    assert 'Cost basis:' not in output
+    result = SimpleNamespace(identity=SimpleNamespace(id='test'), duration=1, status='passed', traceback='')
+    detailed = test_details(result, report, {'basis':'unavailable'}).plain
+    assert f'This test cost: {expected}\n  Historical average: {expected}' in detailed
+    assert 'Cost basis:' not in detailed
+
+
+@pytest.mark.parametrize('average', [0, .6])
+def test_zero_quota_preserves_known_historical_and_completed_estimates(average):
+    from api_agent.telemetry.usage_output import displayed_cost
+    report = {'pct_point_delta':0, 'prompt_count':2, 'estimated_cost_usd':.02,
+              'cost_per_prompt_usd':.01, 'cost_basis':'list_price',
+              'test_costs':{'test':{'advance_prediction':{'estimated_cost_usd':average}}}}
+    output = final_usage_text(report)
+    assert 'This suite cost: $0.020' in output and 'Cost per turn: $0.010' in output
+    assert f'  Historical average: ${average:.3f}' in output
+    assert f'Cost per turn: $0.010\n  Historical average: ${average / 2:.3f}' in output
+    assert 'quota did not change' not in output
+    assert displayed_cost(0, report) == '$0.000'
+
+
+def test_zero_tokens_hide_even_known_category_prices_and_unknown_prices_have_no_suffix():
+    from api_agent.telemetry.usage_output import tokens_text
+    report = {'usage_rows':[{'input_tokens':0, 'output_tokens':5}],
+              'category_costs_usd':{'input_tokens':0, 'output_tokens':None}}
+    assert '  input: 0\n  output: 5\n' in tokens_text(report)
+    assert ' — ' not in tokens_text(report)
 
 
 def test_reset_notice_preserves_observations_and_token_based_cost():
