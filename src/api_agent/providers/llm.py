@@ -6,7 +6,7 @@ from typing import Literal
 from .control import OperationalError
 
 
-LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens"})
+LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy"})
 
 
 def _require(condition: bool) -> None:
@@ -89,10 +89,14 @@ class Tool:
 class GenerationOptions:
     max_output_tokens: int | None = None
     temperature: float | None = None
+    cache_policy: Literal["off", "medium", "high"] | None = None
 
     def __post_init__(self):
         _require(self.max_output_tokens is None or (type(self.max_output_tokens) is int and self.max_output_tokens > 0))
         _require(self.temperature is None or (type(self.temperature) in {int, float} and math.isfinite(self.temperature) and self.temperature >= 0))
+        _require(self.cache_policy is None or (type(self.cache_policy) is str and self.cache_policy in {"", "off", "medium", "high"}))
+        if self.cache_policy == "":
+            object.__setattr__(self, 'cache_policy', None)
 
 
 @dataclass(frozen=True)
@@ -136,7 +140,7 @@ class AvailableSelection:
                      for value in (self.max_output_tokens, self.context_length)))
 
     def validate(self, request: "LLMRequest") -> None:
-        required = {name for name, enabled in (("tools", bool(request.payload.tools) or any(message.calls or message.results for message in request.payload.messages)), ("structured", request.payload.structured is not None), ("temperature", request.payload.generation.temperature is not None), ("max_output_tokens", request.payload.generation.max_output_tokens is not None)) if enabled}
+        required = {name for name, enabled in (("tools", bool(request.payload.tools) or any(message.calls or message.results for message in request.payload.messages)), ("structured", request.payload.structured is not None), ("temperature", request.payload.generation.temperature is not None), ("max_output_tokens", request.payload.generation.max_output_tokens is not None), ("cache_policy", request.payload.generation.cache_policy is not None)) if enabled}
         if request.selected_llm != self.selected_llm or not required.issubset(self.features):
             raise OperationalError("unsupported")
 

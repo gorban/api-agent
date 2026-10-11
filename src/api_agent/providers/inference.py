@@ -23,13 +23,15 @@ def _size(value):
 
 
 def request_from_wire(row):
-    if type(row) is not dict or set(row) != {'selected_llm', 'messages', 'max_output_tokens', 'request_id'}:
+    if type(row) is not dict or set(row) != {'selected_llm', 'messages', 'max_output_tokens', 'cache_policy', 'request_id'}:
         _fail()
     _text(row['selected_llm'], 200, identifier=True)
     _text(row['request_id'], 200)
     if row['request_id'] and not row['request_id'].isprintable():
         _fail()
     if row['max_output_tokens'] is not None and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 4096):
+        _fail()
+    if row['cache_policy'] is not None and (type(row['cache_policy']) is not str or row['cache_policy'] not in ('off', 'medium', 'high')):
         _fail()
     if type(row['messages']) is not list or not 1 <= len(row['messages']) <= 64:
         _fail()
@@ -41,7 +43,7 @@ def request_from_wire(row):
         messages.append(Message(item['role'], (TextContent(_text(item['text'], 32768)),)))
     _size(row)
     return LLMRequest(row['selected_llm'], CompletionRequest(tuple(messages),
-        generation=GenerationOptions(max_output_tokens=row['max_output_tokens'])), row['request_id'])
+        generation=GenerationOptions(max_output_tokens=row['max_output_tokens'], cache_policy=row['cache_policy'])), row['request_id'])
 
 
 def request_to_wire(request):
@@ -54,7 +56,8 @@ def request_to_wire(request):
             _fail()
         rows.append({'role': message.role, 'text': message.content[0].text})
     row = dict(selected_llm=request.selected_llm, messages=rows,
-               max_output_tokens=request.payload.generation.max_output_tokens, request_id=request.request_id)
+               max_output_tokens=request.payload.generation.max_output_tokens,
+               cache_policy=request.payload.generation.cache_policy, request_id=request.request_id)
     request_from_wire(row)
     return row
 

@@ -8,6 +8,12 @@
 # configuration; explicit .env, environment and CLI assignments still work.
 version = 1
 
+[fields.LLM_CACHE_POLICY]
+type = "str"
+enum = ["", "off", "medium", "high"]
+default = ""
+help = "Prompt-cache policy. Empty uses provider defaults; off disables prompt caching; medium uses the shortest supported retention; high uses the longest supported retention. Providers reject policies they cannot honor. Newer OpenAI selections use 30m for both medium and high; eligible older selections use in_memory or 24h. This does not change authentication-state caching or cache completed answers."
+
 [fields.TRACE_MODE]
 type = "str"
 enum = ["", "LangFuse", "OTEL"]

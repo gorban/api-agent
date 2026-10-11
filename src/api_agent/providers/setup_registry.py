@@ -69,16 +69,19 @@ class SetupRegistry(_Owner):
             raise ContractError('Setup binding is outside operation')
         return lease
 
+    def _create_owner(self):
+        if self._owner is None:
+            owner = self._factory()
+            self._owner = owner
+            # A returned disposer transfers ownership even when readiness is invalid.
+            if callable(getattr(owner, 'aclose', None)):
+                self._resources.append((owner, 'aclose'))
+            if not callable(getattr(owner, 'ensure_ready', None)) or not callable(getattr(owner, 'aclose', None)):
+                raise ContractError('Invalid setup owner')
+
     async def _checkpoint(self):
         with independent_timeout_scope():
-            if self._owner is None:
-                owner = self._factory()
-                self._owner = owner
-                # A returned disposer transfers ownership even when readiness is invalid.
-                if callable(getattr(owner, 'aclose', None)):
-                    self._resources.append((owner, 'aclose'))
-                if not callable(getattr(owner, 'ensure_ready', None)) or not callable(getattr(owner, 'aclose', None)):
-                    raise ContractError('Invalid setup owner')
+            self._create_owner()
             self._check()
             await self._owner.ensure_ready()
             self._check()
@@ -126,13 +129,22 @@ class SetupRegistry(_Owner):
     async def complete(self, binding, request):
         from .inference import request_to_wire, result_to_wire
         request_to_wire(request)
-        await self.ensure_ready(binding)
-        method = getattr(self._owner, 'complete', None)
-        if not callable(method):
-            from .contracts import SetupPrerequisiteError
-            raise SetupPrerequisiteError('The selected LLM provider has no text completion capability.')
+        self._check()
         lease = self._lease(binding)
-        waiter = _spawn(method(request))
+        if lease['revoked']:
+            raise SessionClosedError('Setup lease is revoked')
+        async def invoke():
+            self._create_owner()
+            preflight = getattr(self._owner, 'validate_request', None)
+            if preflight is not None:
+                await preflight(request)
+            await self.ensure_ready(binding)
+            method = getattr(self._owner, 'complete', None)
+            if not callable(method):
+                from .contracts import SetupPrerequisiteError
+                raise SetupPrerequisiteError('The selected LLM provider has no text completion capability.')
+            return await method(request)
+        waiter = _spawn(invoke())
         lease['waiters'].add(waiter)
         try:
             result = await asyncio.shield(waiter)
