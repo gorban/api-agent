@@ -193,6 +193,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             usage_summary['cost_basis'] = next(iter(bases)) if len(bases) == 1 else 'mixed' if bases else 'no_llm_calls'
             total, prompts = usage_summary['estimated_cost_usd'], usage_summary['prompt_count']
             usage_summary['cost_per_prompt_usd'] = None if total is None or not prompts else total / prompts
+            from api_agent.telemetry.usage_costs import attach_category_costs
+            attach_category_costs(usage_summary, artifact)
             from api_agent.telemetry.accounting import validate_accounting
             artifact = validate_accounting(evidence_boundary.content_export(artifact))
             recorder.record_artifact('accounting.json', json.dumps(artifact, allow_nan=False).encode())

@@ -11,6 +11,8 @@ def percentage(value):
 
 
 def money(value):
+    if number(value) and 0 < value < 1e-9:
+        return f'${value:.3g}'
     return (f'${value:.9f}'.rstrip('0') if 0 < value < .001 else f'${value:.3f}') if number(value) else 'unavailable'
 
 
@@ -35,6 +37,7 @@ def tokens_text(report, test_id=None):
             if test_id is None or row.get('session_id') == test_id]
     unmeasured = report.get('unmeasured_calls', {})
     unknown_calls = sum(unmeasured.values()) if test_id is None else unmeasured.get(test_id, 0)
+    costs = (report if test_id is None else report.get('test_costs', {}).get(test_id, {})).get('category_costs_usd', {})
     parts = []
     for field, label in TOKEN_LABELS:
         values = [row.get(field) for row in rows]
@@ -43,8 +46,9 @@ def tokens_text(report, test_id=None):
                    or any(field in row.get('unknown_fields', ()) for row in rows))
         value = (f'{sum(known):,}' + (' + unknown' if unknown else '') if known or not unknown
                  else 'unavailable')
-        parts.append(f'{label} {value}')
-    return 'Tokens: ' + ' · '.join(parts)
+        parts.append(f'{label} {value} — {money(costs.get(field))}')
+    return ('Tokens: ' + ' · '.join(parts)
+            + '\nCached input and reasoning are included in input/output totals.')
 
 
 def final_usage_text(report):
