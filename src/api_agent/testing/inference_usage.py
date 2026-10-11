@@ -25,7 +25,7 @@ def user_turn(identifier, kind='initial'):
 from api_agent.providers.inference import request_to_wire, result_to_wire
 
 
-def publish(request, result=None, *, call_id=None, quote=None, failed=False, attempt=None):
+def publish(request, result=None, *, call_id=None, quote=None, failed=False, attempt=None, error=None):
     path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
     node = os.environ.get('PYTEST_CURRENT_TEST')
     if not path or not node:
@@ -34,8 +34,12 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
     call_id = str(uuid4()) if call_id is None else call_id
     now = datetime.now(timezone.utc).isoformat()
     started = _STARTS.setdefault(call_id, now)
+    from dataclasses import asdict
+    from api_agent.providers.contracts import ProviderAccessError
+    reported = error.usage if isinstance(error, ProviderAccessError) else None
     row = {'call_id': call_id, 'selection': selection,
-           'usage': None if result is None else result_to_wire(result)['usage']}
+           'usage': (asdict(reported) if reported is not None else None)
+                    if result is None else result_to_wire(result)['usage']}
     if result is not None:
         for name in ('actual_model', 'service_tier', 'serving_revision'):
             if getattr(result, name) is not None:

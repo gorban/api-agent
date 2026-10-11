@@ -71,7 +71,8 @@ def test_errors_preserve_safe_detail_and_exclude_secret_response_fields(status, 
     assert error.code == 'denied' and error.type == 'permission_error' and error.request_id == 'req-123'
     assert 'Models permission denied' in str(error)
     assert TOKEN not in repr(error) + repr(vars(error)) and 'private.example' not in str(error)
-    assert set(vars(error)) == {'kind', 'execution', 'retry_after', 'status', 'code', 'type', 'request_id', 'message'}
+    assert set(vars(error)) == {'kind', 'execution', 'retry_after', 'status', 'code', 'type', 'request_id', 'message', 'usage'}
+    assert error.usage is None
 
 
 @pytest.mark.parametrize('scheme', ['HTTPS', 'hTtPs', 'HTTP'])

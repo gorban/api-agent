@@ -17,7 +17,8 @@ def _invalid(message='GPT inference returned an invalid result.'):
     return ProviderAccessError('unknown', message)
 
 
-def _rejection(status, data, request_id, token, authentication_type=None):
+def _rejection(status, data, request_id, token, authentication_type=None, *, responses=True):
+    reported = data.get('usage') if type(data) is dict else None
     if type(data) is dict and type(data.get('detail')) is str and 'error' not in data:
         data = {'error': {'message': data['detail']}}
     error = _failure(status, data, request_id, token, authentication_type)
@@ -25,7 +26,7 @@ def _rejection(status, data, request_id, token, authentication_type=None):
         error.message = 'GPT inference was rejected.'
         error.args = (error.message,)
     error.execution = 'possibly_executed'
-    return error
+    return _reported_usage(error, reported, responses)
 
 
 def _size(text):
@@ -75,13 +76,34 @@ def _usage(data, responses):
     if any(row is not None and type(row) is not dict for row in (input_details, output_details)):
         raise _invalid()
     try:
-        return Usage(data.get(input_name), data.get(output_name), (input_details or {}).get('cached_tokens'),
-                     (output_details or {}).get('reasoning_tokens'))
+        usage = Usage(data.get(input_name), data.get(output_name), (input_details or {}).get('cached_tokens'),
+                      (output_details or {}).get('reasoning_tokens'))
+        if any(value is not None and value > 2147483647 for value in (usage.input_tokens,
+                usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens)):
+            raise ValueError('Usage exceeded its limit')
+        return usage
     except ValueError:
         raise _invalid() from None
 
 
+def _reported_usage(error, data, responses):
+    if data is not None:
+        try:
+            error.usage = _usage(data, responses)
+        except ProviderAccessError:
+            pass
+    return error
+
+
 def _result(data, responses, token):
+    try:
+        return _result_body(data, responses, token)
+    except ProviderAccessError as error:
+        _reported_usage(error, data.get('usage') if type(data) is dict else None, responses)
+        raise
+
+
+def _result_body(data, responses, token):
     if type(data) is not dict:
         raise _invalid()
     text, outcome = [], 'completed'
@@ -191,9 +213,17 @@ def _sse(body, token, request_id):
         values = [line[5:].lstrip(' ') for line in block.split('\n') if line.startswith('data:')]
         if not values:
             continue
-        data = _json('\n'.join(values))
+        try:
+            data = _json('\n'.join(values))
+        except ProviderAccessError as error:
+            if final is not None:
+                error.usage = final.usage
+            raise
         if type(data) is not dict or type(data.get('type')) is not str or final is not None:
-            raise _invalid()
+            error = _invalid()
+            if final is not None:
+                error.usage = final.usage
+            raise error
         kind = data['type']
         if kind in ('response.created', 'response.in_progress'):
             response = data.get('response')
@@ -228,7 +258,8 @@ def _sse(body, token, request_id):
         if kind in ('response.failed', 'response.incomplete', 'error'):
             response = data.get('response')
             if kind == 'response.incomplete':
-                raise _invalid('GPT inference returned an incomplete response.')
+                raise _reported_usage(_invalid('GPT inference returned an incomplete response.'),
+                                      response.get('usage') if type(response) is dict else None, True)
             failure = response if type(response) is dict else data
             if kind == 'error' and 'error' not in failure:
                 failure = {'error': failure}
@@ -237,7 +268,11 @@ def _sse(body, token, request_id):
             response = data.get('response')
             if response_id is not None and (type(response) is not dict or response.get('id') != response_id):
                 raise _invalid('GPT inference terminal response identity changed.')
-            final = _stream_completed(response, added, completed, token)
+            try:
+                final = _stream_completed(response, added, completed, token)
+            except ProviderAccessError as error:
+                _reported_usage(error, response.get('usage') if type(response) is dict else None, True)
+                raise
     if final is None:
         raise _invalid('GPT inference stream ended before completion.')
     return final
@@ -277,7 +312,7 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
                     except ProviderAccessError:
                         data = None
                     raise _rejection(response.status_code, data, request_id, access_token,
-                                   _authentication_type(response.headers.get('www-authenticate')))
+                                   _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
                 if subscription:
                     if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
                         raise _invalid('GPT subscription inference requires an event stream.')

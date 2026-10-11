@@ -131,12 +131,14 @@ def test_unattended_failure_guidance_uses_launch_index_source(tmp_path, monkeypa
             await pilot.press('enter')
             await pilot.pause()
             assert app.screen.kind == 'test-failure'
-            assert app.screen.body.startswith(test.id + '\n\nFailed to get credentials for unattended access.')
-            assert 'Failed to get credentials for unattended access.' in app.screen.body
-            assert ('Clear .env configuration' in app.screen.body) is (source == 'dotenv')
-            assert ('stop passing the override' in app.screen.body) is (source != 'dotenv')
-            assert 'private CLI output' not in app.screen.body
-            assert 'Password-manager username retrieval is unavailable.' in app.screen.body
+            body = app.screen.body.plain
+            assert body.startswith(test.id + '\n\nExecution time: 0.100s')
+            assert '\n\nFailed to get credentials for unattended access.' in body
+            assert 'Failed to get credentials for unattended access.' in body
+            assert ('Clear .env configuration' in body) is (source == 'dotenv')
+            assert ('stop passing the override' in body) is (source != 'dotenv')
+            assert 'private CLI output' not in body
+            assert 'Password-manager username retrieval is unavailable.' in body
     asyncio.run(scenario())
 
 

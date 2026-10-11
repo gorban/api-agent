@@ -140,6 +140,9 @@ def _error(error, capability=None):
     if isinstance(error, ProviderAccessError):
         details = {name: getattr(error, name) for name in ('status', 'code', 'type', 'request_id')}
         details['kind'] = error.kind
+        if error.usage is not None:
+            from dataclasses import asdict
+            details['usage'] = asdict(error.usage)
         message = error.message if capability is None else error.message.replace(capability, '[redacted]')
         if capability is not None:
             details = {name: value.replace(capability, '[redacted]') if isinstance(value, str) else value
@@ -168,11 +171,19 @@ def _raise_error(frame):
     if frame.get('category') == 'provider':
         if (set(frame) != {'version', 'status', 'category', 'index_source', 'message', 'details'}
                 or frame['index_source'] is not None or type(frame['details']) is not dict
-                or set(frame['details']) != {'kind', 'status', 'code', 'type', 'request_id'}):
+                or set(frame['details']) not in ({'kind', 'status', 'code', 'type', 'request_id'},
+                                                {'kind', 'status', 'code', 'type', 'request_id', 'usage'})):
             raise ContractError('Invalid provider response')
         details = frame['details'].copy()
         kind = details.pop('kind')
         try:
+            if 'usage' in details:
+                from .llm import Usage
+                usage = details['usage']
+                if (type(usage) is not dict or set(usage) !=
+                        {'input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens'}):
+                    raise ContractError('Invalid provider response')
+                details['usage'] = Usage(**usage)
             error = ProviderAccessError(kind, frame['message'], **details)
         except ValueError:
             raise ContractError('Invalid provider response') from None

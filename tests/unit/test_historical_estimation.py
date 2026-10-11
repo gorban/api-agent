@@ -239,3 +239,20 @@ def test_account_windows_never_pool_calibration():
     for index, (_, artifact) in enumerate(history):
         artifact['quota']['before']['window_id'] = artifact['quota']['after']['window_id'] = f'account-{index}'
     assert calibration(history, bundled_rate_card()) == {}
+
+
+def test_token_history_is_independent_of_prices_and_pass_status_but_requires_compatibility():
+    card = bundled_rate_card()
+    test = SimpleNamespace(id='t', node_id='test.py::test[one]')
+    value = row()
+    value['outcomes'] = ['failed']
+    value['calls'][0]['quote'] = None
+    history = [({}, {'tests':[value]})]
+    prediction = predictions_for([test], history, card, {'t':'hash'}, compat())['t']
+    assert prediction['has_token_history'] and prediction['sample_count'] == 0
+    assert prediction['estimated_cost_usd'] is None
+    assert not predictions_for([test], history, card, {'t':'other'}, compat())['t']['has_token_history']
+    value['calls'][0]['usage'] = None
+    assert not predictions_for([test], history, card, {'t':'hash'}, compat())['t']['has_token_history']
+    value['calls'][0]['usage'] = {'input_tokens':0, 'output_tokens':0}
+    assert not predictions_for([test], history, card, {'t':'hash'}, compat())['t']['has_token_history']

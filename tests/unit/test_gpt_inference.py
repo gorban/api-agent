@@ -489,3 +489,73 @@ def test_stream_finished_first_item_cannot_hide_unfinished_second_item():
     assert events[-1]['response']['output']==[]
     with pytest.raises(ProviderAccessError,match='unfinished or missing output items'):
         run_events(events)
+
+
+@pytest.mark.parametrize('responses', [True, False])
+def test_invalid_result_preserves_reported_tokens_without_changing_the_error(responses):
+    data = result(responses)
+    if responses:
+        data['output'] = []
+    else:
+        data['choices'][0]['message']['content'] = ''
+    with pytest.raises(ProviderAccessError) as caught:
+        run(httpx.Response(200, json=data), api_mode='responses' if responses else 'completions')
+    assert caught.value.usage.input_tokens == 3 and caught.value.usage.output_tokens == 1
+    assert caught.value.message == 'GPT inference returned an invalid result.'
+
+
+@pytest.mark.parametrize('responses', [True, False])
+def test_http_failure_can_report_usage_and_keeps_original_rejection(responses):
+    data = {'detail':'Actual rejection', 'usage':result(responses)['usage']}
+    with pytest.raises(ProviderAccessError) as caught:
+        run(httpx.Response(403, json=data, headers={'x-request-id':'req-safe'}),
+            api_mode='responses' if responses else 'completions')
+    error = caught.value
+    assert error.status == 403 and error.request_id == 'req-safe'
+    assert 'Actual rejection' in error.message
+    assert error.usage.input_tokens == 3 and error.usage.output_tokens == 1
+
+
+@pytest.mark.parametrize('kind', ['response.failed','response.incomplete','response.completed'])
+def test_terminal_stream_failures_keep_reported_spend(kind):
+    events = streamed_events()
+    terminal = events[-1]
+    terminal['type'] = kind
+    if kind == 'response.failed':
+        terminal['response']['error'] = {'message':'Actual stream rejection'}
+    elif kind == 'response.completed':
+        events.pop(-2)  # Unfinished output after a call that still reports spend.
+    with pytest.raises(ProviderAccessError) as caught:
+        run_events(events)
+    assert caught.value.usage.input_tokens == 3 and caught.value.usage.output_tokens == 1
+    if kind == 'response.failed':
+        assert 'Actual stream rejection' in caught.value.message
+    elif kind == 'response.incomplete':
+        assert 'incomplete response' in caught.value.message
+    else:
+        assert 'unfinished or missing output' in caught.value.message
+
+
+def test_malformed_failure_usage_never_replaces_the_original_error():
+    with pytest.raises(ProviderAccessError) as caught:
+        run(httpx.Response(403, json={'error':{'message':'Actual rejection'}, 'usage':{'input_tokens':True}}))
+    assert caught.value.usage is None and 'Actual rejection' in caught.value.message
+
+
+def test_oversized_reported_usage_is_rejected_without_masking_failure():
+    data = result()
+    data['usage']['input_tokens'] = 2147483648
+    with pytest.raises(ProviderAccessError) as caught:
+        run(httpx.Response(200, json=data))
+    assert caught.value.usage is None and caught.value.kind == 'unknown'
+    with pytest.raises(ProviderAccessError) as caught:
+        run(httpx.Response(403, json={'error':{'message':'Actual rejection'}, 'usage':data['usage']}))
+    assert caught.value.usage is None and 'Actual rejection' in caught.value.message
+
+
+@pytest.mark.parametrize('suffix', ['data: {"type":"response.completed"}\n\n', 'data: not-json\n\n'])
+def test_failure_after_valid_terminal_keeps_its_validated_usage(suffix):
+    terminal = 'data: ' + json.dumps({'type':'response.completed','response':result()}) + '\n\n'
+    with pytest.raises(ProviderAccessError) as caught:
+        run(httpx.Response(200, text=terminal + suffix, headers={'content-type':'text/event-stream'}), subscription=True)
+    assert caught.value.usage.input_tokens == 3 and caught.value.usage.output_tokens == 1

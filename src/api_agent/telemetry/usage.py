@@ -79,6 +79,7 @@ class SuiteUsage:
         self.after: QuotaSnapshot | None = None
         self._rows: dict[tuple[str, str, str], dict[str, int | None]] = {}
         self._unknown: dict[tuple[str, str, str], set[str]] = {}
+        self._known: dict[tuple[str, str, str], dict[str, int]] = {}
         self._prompts: dict[tuple[str, str], str] = {}
         self.inference_calls = {}
         self.contaminated = False
@@ -130,13 +131,16 @@ class SuiteUsage:
         with self._lock:
             row = self._rows.setdefault(key, {'llm_calls': 0, **{k: None for k in _TOKEN_FIELDS}})
             unknown = self._unknown.setdefault(key, set())
+            known = self._known.setdefault(key, {})
             row['llm_calls'] += llm_calls
             for field, value in values.items():
                 if value is None:
                     unknown.add(field)
                     row[field] = None
-                elif field not in unknown:
-                    row[field] = (row[field] or 0) + value
+                else:
+                    known[field] = known.get(field, 0) + value
+                    if field not in unknown:
+                        row[field] = (row[field] or 0) + value
 
     def record_prompt(self, *, turn_id: str, prompt_id: str, kind: str) -> bool:
         if kind not in _PROMPT_KINDS or any(type(x) is not str or not x for x in (turn_id, prompt_id)):
@@ -227,6 +231,14 @@ class SuiteUsage:
                 'reset_countdown_hms': None if reset_seconds is None else f'{reset_seconds // 3600:02d}:{reset_seconds // 60 % 60:02d}:{reset_seconds % 60:02d}',
                 'usage_rows': rows}
         with self._lock:
+            report['usage_observations'] = [dict(row, **self._known[(row['llm_provider'], row['llm_model'], row['session_id'])],
+                unknown_fields=sorted(self._unknown[(row['llm_provider'], row['llm_model'], row['session_id'])]))
+                for row in rows]
+            report['unmeasured_calls'] = {}
+            for call in self.inference_calls.values():
+                if call.get('usage') is None:
+                    session = call['test_id']
+                    report['unmeasured_calls'][session] = report['unmeasured_calls'].get(session, 0) + 1
             if any(quote is not None for _, quote in self._costs.calls.values()):
                 prompts_by_session = {session: sum(key[0] == session for key in self._prompts)
                                       for session, _ in self._costs.calls.values()}

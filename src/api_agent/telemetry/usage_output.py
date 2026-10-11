@@ -18,11 +18,40 @@ def starting_usage_line(report):
     return f"Starting quota used: {percentage(report.get('pct_used_before'))}"
 
 
+TOKEN_LABELS = (('input_tokens', 'input'), ('output_tokens', 'output'),
+                ('cache_read_tokens', 'cached input'), ('cache_creation_tokens', 'cache write'),
+                ('reasoning_tokens', 'reasoning'), ('total_tokens', 'total'))
+
+
+def has_tokens(report, test_id):
+    return any(type(row.get(field)) is int and row[field] > 0
+               for row in report.get('usage_observations', report.get('usage_rows', ())) if row.get('session_id') == test_id
+               for field, _ in TOKEN_LABELS)
+
+
+def tokens_text(report, test_id=None):
+    """Cached/reasoning counts are subsets, never added to total tokens."""
+    rows = [row for row in report.get('usage_observations', report.get('usage_rows', ()))
+            if test_id is None or row.get('session_id') == test_id]
+    unmeasured = report.get('unmeasured_calls', {})
+    unknown_calls = sum(unmeasured.values()) if test_id is None else unmeasured.get(test_id, 0)
+    parts = []
+    for field, label in TOKEN_LABELS:
+        values = [row.get(field) for row in rows]
+        known = [value for value in values if type(value) is int and value >= 0]
+        unknown = (unknown_calls > 0 or len(known) != len(values)
+                   or any(field in row.get('unknown_fields', ()) for row in rows))
+        value = (f'{sum(known):,}' + (' + unknown' if unknown else '') if known or not unknown
+                 else 'unavailable')
+        parts.append(f'{label} {value}')
+    return 'Tokens: ' + ' · '.join(parts)
+
+
 def final_usage_text(report):
     delta = report.get('pct_point_delta')
     count = report.get('prompt_count', 0)
     per_turn = delta / count if number(delta) and type(count) is int and count > 0 else None
-    lines = [starting_usage_line(report),
+    lines = [tokens_text(report), starting_usage_line(report),
              f"Final quota used: {percentage(report.get('pct_used_after'))}",
              f'Quota change: {percentage(delta)}',
              f'Full user turns: {count}',

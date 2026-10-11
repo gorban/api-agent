@@ -11,12 +11,15 @@ import pytest
 @pytest.mark.parametrize('mode', ['responses','completions'])
 @pytest.mark.parametrize('status', [200,403])
 @pytest.mark.parametrize('log_content', [False, True])
-def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_path, monkeypatch, jobs, debug, mode, status, log_content):
+@pytest.mark.parametrize('failure_usage', [False, True])
+def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_path, monkeypatch, jobs, debug, mode, status, log_content, failure_usage):
     from api_agent.auth import credentials
     from api_agent.llm_providers.gpt import factory
     from api_agent.testing import provider_setup
     from api_agent.testing.collection import collect_tests
     from api_agent.testing.recorded import run_recorded_integration
+    from api_agent.providers import rates
+    monkeypatch.setattr(rates, 'freeze_pricing', lambda *args: rates.bundled_rate_card())
     secret_fragment = 'synthetic-inference-secret-not-exported'
     key = secret_fragment * 40
     response_text = 'Ok /var/app/renderer.py'
@@ -39,11 +42,15 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
         assert json.loads(request.content)['model'] == 'gpt-4.1-nano'
         assert request.url.path.endswith('/responses' if mode == 'responses' else '/chat/completions')
         if status != 200:
-            return httpx.Response(status,json={'error': {'message':'Request permission denied '+key+' Bearer\nsecondary-synthetic-secret', 'code':'denied','type':'permission'}},headers={'x-request-id':'request-safe'})
+            data = {'error': {'message':'Request permission denied '+key+' Bearer\nsecondary-synthetic-secret', 'code':'denied','type':'permission'}}
+            if failure_usage:
+                data['usage'] = ({'input_tokens':2,'output_tokens':1} if mode == 'responses' else
+                                 {'prompt_tokens':2,'completion_tokens':1})
+            return httpx.Response(status, json=data, headers={'x-request-id':'request-safe'})
         if mode == 'responses':
-            data = dict(status='completed',output=[dict(type='message',role='assistant',content=[dict(type='output_text',text=response_text)])],usage=dict(input_tokens=2,output_tokens=1))
+            data = dict(status='completed',output=[dict(type='message',role='assistant',content=[dict(type='output_text',text=response_text)])],usage=dict(input_tokens=2,output_tokens=1,input_tokens_details={'cached_tokens':0},output_tokens_details={'reasoning_tokens':0}))
         else:
-            data = dict(choices=[dict(finish_reason='stop',message=dict(role='assistant',content=response_text))],usage=dict(prompt_tokens=2,completion_tokens=1))
+            data = dict(choices=[dict(finish_reason='stop',message=dict(role='assistant',content=response_text))],usage=dict(prompt_tokens=2,completion_tokens=1,prompt_tokens_details={'cached_tokens':0},completion_tokens_details={'reasoning_tokens':0}))
         return httpx.Response(status,json=data)
     monkeypatch.setattr(httpx,'AsyncClient',lambda **kwargs: real_client(transport=httpx.MockTransport(respond),**kwargs))
     original = provider_setup.aload_provider
@@ -56,17 +63,22 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
     suite = base/'tests/integration'
     suite.mkdir(parents=True)
     body = 'from os import environ\n' + (Path(__file__).parents[1]/'integration/test_llm_request.py').read_text().replace("'Answer with exactly: Ok'", "environ['SYNTHETIC_TEST_PROMPT']")
+    if status == 200 and failure_usage:
+        body += '    raise AssertionError("Synthetic failure after completed inference")\n'
     (suite/'test_request.py').write_text(body+'\ndef test_second(llm_selection,llm_provider):\n    test_llm_request(llm_selection,llm_provider)\n')
     if debug:
         # Install controlled adapters inside the real supervised worker, rather
         # than assuming parent-process monkeypatches cross subprocess boundaries.
         data = ({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':response_text}]}],
-                 'usage':{'input_tokens':2,'output_tokens':1}} if mode == 'responses' else
+                 'usage':{'input_tokens':2,'output_tokens':1,'input_tokens_details':{'cached_tokens':0},'output_tokens_details':{'reasoning_tokens':0}}} if mode == 'responses' else
                 {'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':response_text}}],
-                 'usage':{'prompt_tokens':2,'completion_tokens':1}})
+                 'usage':{'prompt_tokens':2,'completion_tokens':1,'prompt_tokens_details':{'cached_tokens':0},'completion_tokens_details':{'reasoning_tokens':0}}})
         if status != 200:
             data = {'error':{'message':'Request permission denied '+key+' Bearer\nsecondary-synthetic-secret',
                              'code':'denied','type':'permission'}}
+            if failure_usage:
+                data['usage'] = ({'input_tokens':2,'output_tokens':1} if mode == 'responses' else
+                                 {'prompt_tokens':2,'completion_tokens':1})
         (suite/'conftest.py').write_text(f'''
 import json
 import httpx
@@ -93,11 +105,11 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
         UNATTENDED_AUTH={'password_manager':{'manager':'keeper','cli_path':'synthetic-cli'},
         'roles':{'LLM User':[{'vault':'synthetic-vault','user':'selected-entry'}]}},TUI_MODE='integration',DEBUG=debug,ALLURE_S3_BUCKET='synthetic',ALLURE_RESULTS_DIR=tmp_path/'allure',TEST_PARALLEL_JOBS=jobs)
     selected = [test for test in collect_tests(context,'integration',config=config) if test.repo == 'base']
-    events = []
-    result = run_recorded_integration(context,selected,config,accepted=True,storage=SimpleNamespace(persist=lambda d,m:None),on_event=events.append)
-    expected = 'passed' if status == 200 else 'failed'
+    events, console = [], []
+    result = run_recorded_integration(context,selected,config,accepted=True,storage=SimpleNamespace(persist=lambda d,m:None),on_event=events.append, usage_output=console.append)
+    expected = 'passed' if status == 200 and not failure_usage else 'failed'
     assert result.persisted and [test.status for test in result.execution.tests] == [expected,expected]
-    assert result.exit_code == (0 if status == 200 else 1)
+    assert result.exit_code == (0 if expected == 'passed' else 1)
     if debug:
         # The supervised DEBUG driver runs in a separate process; request/auth
         # assertions execute there and failures return through actual reports.
@@ -109,12 +121,26 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
     usage = json.loads((result.directory/'usage-summary.json').read_text())
     assert usage['prompt_count'] == 2
     csv = (result.directory/'token-usage.csv').read_text()
-    if status == 200:
+    if status == 200 or failure_usage:
         assert 'selected-llm,gpt-4.1-nano,1,' in csv
         assert len(csv.splitlines()) == 3
         assert sum(row.kind=='inference_usage' for row in events)==4
+        assert sum(row['total_tokens'] for row in usage['usage_observations']) == 6
+        assert 'Tokens: input 4 · output 2' in console[-1]
+        artifact = json.loads((result.directory/'accounting.json').read_text())
+        assert [row['calls'][0]['usage']['input_tokens'] for row in artifact['tests']] == [2,2]
+        assert [row['calls'][0]['usage']['output_tokens'] for row in artifact['tests']] == [1,1]
+        if status == 200:
+            assert all(row['list_cost_usd'] > 0 for row in artifact['tests'])
+        if status == 200 and failure_usage:
+            assert all(row['outcomes'] == ['failed'] for row in artifact['tests'])
+            assert 'Synthetic failure after completed inference' in result.execution.output
+        if status != 200:
+            assert all(row['calls'][0]['outcome'] == 'failed' for row in artifact['tests'])
     else:
         assert len(csv.splitlines())==1
+        assert len(usage['unmeasured_calls']) == 2
+        assert 'total unavailable' in console[-1]
         assert 'HTTP status: 403' in result.execution.output and 'Request permission denied' in result.execution.output
         assert 'code: denied' in result.execution.output and 'request ID: request-safe' in result.execution.output
     artifacts = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
