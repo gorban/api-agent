@@ -20,6 +20,7 @@ from .contracts import TestResult
 from .integration import run_integration_tests
 from .recording import RunIdentity, RunRecorder
 from .storage import RunStorage
+from .suite_lock import suite_locked
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ def validate_recorded_integration(tests, config, *, accepted=False, no_std_in=Fa
     return tests
 
 
+@suite_locked
 def run_recorded_integration(context, tests, config, *, accepted=False, no_std_in=False,
                              storage=None, quota_fetcher=None, prepare=None, finish=None,
                              usage_output=None,

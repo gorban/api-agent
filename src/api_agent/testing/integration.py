@@ -21,6 +21,7 @@ import time
 from .collection import CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
 from .processes import finalize
+from .suite_lock import suite_locked
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ sys.exit(code)
 '''
 
 
+@suite_locked
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
