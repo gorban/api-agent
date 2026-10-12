@@ -105,6 +105,7 @@ def test_optional_recording_destinations_are_reviewable_without_becoming_require
         # Exercise the real metadata through the TUI without unrelated settings.
         app.schema = replace(app.schema, fields={**app.schema.fields,
                             **{name: schema.fields[name] for name in names},
+                            'COLLECT_ONLY': schema.fields['COLLECT_ONLY'],
                             'TOKEN_USAGE_CSV_ENABLED': replace(schema.fields['TOKEN_USAGE_CSV_ENABLED'],
                                                                acknowledge_default=False)})
         app.session.schema = app.schema

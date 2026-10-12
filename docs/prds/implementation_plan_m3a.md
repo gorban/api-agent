@@ -26,6 +26,22 @@ source order after discovery. Validate each batch against its effective sibling
 controllers; preserve contribution ownership and precedence between files.
 An invalid earlier contribution must not disappear behind a later override.
 This does not permit unknown controllers declared only in a later file.
+Mixed immediate/deferred siblings retain same-file controller lookup context
+without exposing pending fields during discovery. Capture effective immediate
+declarations and revalidate them after discovery without replaying old defaults
+or applying later self-constraints to those old defaults. Validate active and
+captured declarations against final controller constraints across all source
+batches, including later controller tightening. A missing controller target
+keeps its dependent predicate invalid; preserve source authority and the final
+selector guard.
+Only same-file pending controllers absent from the current schema defer their
+predicate value conversion until target inheritance. Predicate structure/name
+checks and immediate field defaults remain validated. This includes empty
+integer/path controller values and nested predicates; final actual constraints
+must still authorize them.
+Empty integer controllers resolve to `None` and match an empty predicate value;
+an omitted controller remains distinct. Scalar, list and nested predicates use
+the same comparison in configuration, review and accounting consumers.
 
 - [x] Pure manifest reader, active-kind selector and additive selected-provider dependency API, with synthetic active/inactive provider checks. The bundled GPT provider declares its HTTP/auth dependencies and an optional browser group. Per-capability browser-group selection remains a future refinement.
 - [x] Relocated synthetic whole-pack check covers manifest, primary schema, provider schema, defaults, selected factory files and production tree without executing a factory.
@@ -35,7 +51,7 @@ This does not permit unknown controllers declared only in a later file.
 - [x] Independent adversarial review, including direct-URL/options rejection, explicit authority, valid validator strengthening and same-source rebootstrap. Different declaration sources require an explicit override even when their values match.
 - [x] Human acceptance of relocated declarations, configuration review and selected dependency preparation, recorded October 12, 2026.
 
-Follow-up repairs passed independent adversarial review, seven isolated mutation
+Earlier follow-up repairs passed independent adversarial review, seven isolated mutation
 controls and 5,572 base unit tests with exact per-file 100% line/branch coverage.
 The wheel builds and its extracted relocated pack includes the selected
 factory's declarations without importing it. Shared execution finalization,
