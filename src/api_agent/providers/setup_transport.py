@@ -1,7 +1,7 @@
 """Capability-protected readiness/catalog IPC; authentication stays backend-local."""
 import asyncio
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import hmac
 import json
 import math
@@ -14,7 +14,7 @@ from uuid import uuid4
 from .contracts import (ContractError, InteractionRequiredError, SessionClosedError,
                         SetupPrerequisiteError, UnattendedCredentialError, ProviderAccessError)
 from .progress import (ComponentProgress, component_timeout, independent_timeout_scope,
-                       progress_sink, report_timeout, _sink)
+                       progress_sink, report_timeout, _sink, _scope)
 from .sessions import _Owner, _spawn, _drain, _consume
 from .control import CleanupPendingError, OperationalError, KINDS
 
@@ -451,6 +451,9 @@ class SetupClient:
         self._worker = _identifier(str(uuid4()) if worker_id is None else worker_id)
         self._timeout = _timeout(timeout)
         self._cleanup_timeout = min(_timeout(cleanup_timeout), self._timeout)
+        self._progress_timeouts = {}
+        self._progress_components = {}
+        self._progress_parents = {}
         self._pid = os.getpid()
         self._thread = None
         self._loop = self._reader = self._writer = self._binding = None
@@ -481,10 +484,45 @@ class SetupClient:
             event = ComponentProgress(**value)
         except (ValueError, TypeError):
             raise ContractError('Invalid setup progress') from None
+        try:
+            budget = _scope.get()
+            if budget is not None:
+                # Backend scopes are independent of any one waiter's cancellation.
+                # Their display still belongs under this waiter's current scope.
+                # Translate the first observed entry budget, not every heartbeat:
+                # remote elapsed also covers a component begun before this waiter.
+                timeout = event.timeout
+                if timeout is not None and budget.remaining is not None:
+                    timeouts = self._progress_timeouts
+                    if event.id not in timeouts:
+                        timeouts[event.id] = min(timeout, max(0, budget.remaining + event.elapsed))
+                    timeout = timeouts[event.id]
+                event = replace(event, timeout=timeout)
+                if event.active:
+                    self._progress_components[event.id] = event
+                else:
+                    self._progress_components.pop(event.id, None)
+                # A late waiter can see a child before its parent's next
+                # heartbeat. Anchor missing ancestors locally, then reconnect
+                # existing children when their real parent arrives or departs.
+                parents = {identifier: item.parent_id if item.parent_id in self._progress_components else budget.id
+                           for identifier, item in self._progress_components.items()}
+                repaired = [replace(item, parent_id=parents[identifier])
+                            for identifier, item in self._progress_components.items()
+                            if identifier != event.id and self._progress_parents.get(identifier) != parents[identifier]]
+                self._progress_parents = parents
+                parent = event.parent_id if event.parent_id in self._progress_components else budget.id
+                event = replace(event, parent_id=parent)
+            else:
+                repaired = []
+        except (ValueError, TypeError):
+            raise ContractError('Invalid setup progress') from None
         callback = _sink.get()
         if callback is not None:
             try:
                 callback(event)
+                for item in repaired:
+                    callback(item)
             except Exception:
                 pass
 
@@ -548,10 +586,18 @@ class SetupClient:
 
     async def _ensure(self, action='ready', request=None):
         async with component_timeout('Worker shared setup', self._timeout):
-            if self._writer is None:
-                self._reader, self._writer = await asyncio.open_connection(self._descriptor['host'], self._descriptor['port'], limit=MAX_FRAME)
-                await self._exchange('register')
-            return await self._exchange(action, request)
+            self._progress_timeouts.clear()
+            self._progress_components.clear()
+            self._progress_parents.clear()
+            try:
+                if self._writer is None:
+                    self._reader, self._writer = await asyncio.open_connection(self._descriptor['host'], self._descriptor['port'], limit=MAX_FRAME)
+                    await self._exchange('register')
+                return await self._exchange(action, request)
+            finally:
+                self._progress_timeouts.clear()
+                self._progress_components.clear()
+                self._progress_parents.clear()
 
 
     async def _close(self):

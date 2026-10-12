@@ -34,4 +34,11 @@ state, provider objects, and browser objects remain in the backend process.
   backend transition, including independent worker disconnect. Human
   inspection remains an acceptance gate.
 - [x] Independent adversarial review and controlled native browser/worker lifetime checks.
-- [ ] Human inspection of the retained original browser and launcher cleanup.
+- [x] Relay independent backend timing beneath each waiting worker's display scope.
+  Preserve remote parent relationships and elapsed clocks; clip a timed child's
+  entry allowance to the tightest local ancestor's remaining time, then freeze
+  that allowance across updates. Late subscribers retain the component's existing
+  elapsed time. Removing a child restores its ancestor's continuing clock and
+  original entry allowance. Display translation does not shorten shared backend
+  work or let one waiter's cancellation cancel a sibling's authentication.
+- [ ] Human inspection of the retained original browser, nested live timing and launcher cleanup.
