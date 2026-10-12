@@ -54,7 +54,8 @@ def test_actual_runner_transfers_lease_to_retained_backend_until_retry_acknowled
     assert_competing_suite_allowed()
 
 
-def test_cancellation_resistant_inference_keeps_kernel_lease_until_disposal_ack(tmp_path,monkeypatch):
+@pytest.mark.parametrize('initial_owner_budget', [.04, 2], ids=['expired-owner-budget', 'live-owner-budget'])
+def test_cancellation_resistant_inference_keeps_kernel_lease_until_disposal_ack(tmp_path,monkeypatch,initial_owner_budget):
     from api_agent.providers.setup_transport import SetupClient
     from api_agent.providers.llm import CompletionRequest,LLMRequest,LLMResult,Message,TextContent,Usage
     entered,stopped=threading.Event(),threading.Event()
@@ -88,22 +89,29 @@ def test_cancellation_resistant_inference_keeps_kernel_lease_until_disposal_ack(
         with locks.suite_lock():
             locks.retain_suite_cleanup(backend)
             descriptor=backend.start()
-            backend.cleanup_timeout=backend.server._timeout=backend.registry._timeout=.04
+            backend.cleanup_timeout=.04
+            backend.server._timeout=backend.registry._timeout=initial_owner_budget
             future=executor.submit(inference,descriptor)
             assert entered.wait(timeout=2)
             with pytest.raises(CleanupPendingError):
                 backend.close()
+            first_cleanup = backend._close_future
         assert not stopped.is_set() and backend.pending and not backend.closed
         assert_competing_suite_blocked()
     finally:
         release.set()
-        assert stopped.wait(timeout=2)
         # The client must also acknowledge its disconnected lease before the
         # backend's next disposal attempt; finishing the body alone is earlier.
-        future.exception(timeout=2)
-        backend.cleanup_timeout=backend.server._timeout=backend.registry._timeout=2
-        backend.close()
-        executor.shutdown(wait=True)
+        try:
+            assert stopped.wait(timeout=2)
+            future.exception(timeout=2)
+            assert isinstance(first_cleanup.exception(timeout=2), (type(None), CleanupPendingError))
+        finally:
+            backend.cleanup_timeout=backend.server._timeout=backend.registry._timeout=2
+            try:
+                backend.close()
+            finally:
+                executor.shutdown(wait=True)
     assert future.done() and backend.closed and not backend.thread.is_alive()
     assert_competing_suite_allowed()
 
