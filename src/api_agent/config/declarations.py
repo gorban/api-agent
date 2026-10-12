@@ -83,9 +83,14 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
                                                declared_keys=declared_keys, **spec)
     schema = ConfigSchema(declarations)
     controlling_fields = dict(base_schema.fields) if base_schema else {}
-    controlling_fields.update(declarations)
+    # Value validation sees inherited safety metadata, while the original
+    # declaration retains which keys were explicit for composition authority.
+    effective = {name: _inherit_constraints(controlling_fields[name], declaration)
+                 if name in controlling_fields and declaration.override else declaration
+                 for name, declaration in declarations.items()}
+    controlling_fields.update(effective)
     from .resolve import convert_value
-    for declaration in declarations.values():
+    for declaration in effective.values():
         for enum_value in declaration.enum:
             convert_value(replace(declaration, enum=()), enum_value, external=False, anchors=None)
         for predicate in (declaration.applies_when, declaration.required_when):
@@ -99,6 +104,13 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         for value in defaults:
             convert_value(declaration, value, external=False, anchors=None)
     return schema
+
+
+def _inherit_constraints(previous, declaration):
+    inherited = ('required', 'required_when', 'allow_empty', 'validation',
+                 'enum', 'pack_only', 'cost_affecting')
+    return replace(declaration, **{key: getattr(previous, key) for key in inherited
+                                  if key not in declaration.declared_keys})
 
 def _validate_predicate(predicate, fields):
     if not isinstance(predicate, dict):
@@ -153,11 +165,7 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                     raise ValueError(f'{name}: override must preserve the shared type')
                 # Omitted safety metadata retains its previous authority. Explicit
                 # changes may tighten it, but cannot remove an existing constraint.
-                inherited = ('required', 'required_when', 'allow_empty', 'validation',
-                             'enum', 'pack_only', 'cost_affecting')
-                declaration = replace(declaration, **{
-                    key: getattr(previous, key) for key in inherited
-                    if key not in declaration.declared_keys})
+                declaration = _inherit_constraints(previous, declaration)
                 if (previous.required and not declaration.required
                         or previous.required_when and declaration.required_when != previous.required_when
                         or not previous.allow_empty and declaration.allow_empty

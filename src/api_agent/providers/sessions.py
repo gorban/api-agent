@@ -441,7 +441,9 @@ class LLMSessionOwner(_Owner):
         finally:
             await stream.aclose()
 
-    async def _dispose(self) -> None:
+    async def settle_execution(self) -> None:
+        """Stop detached calls/setup while retaining auth for final accounting."""
+        self._context()
         pending = list(self._calls)
         if self._initializing is not None:
             pending.append(self._initializing)
@@ -449,6 +451,9 @@ class LLMSessionOwner(_Owner):
                      lambda task: task in self._calls or task is self._initializing)
         for stream in tuple(self._streams):
             await stream.aclose()
+
+    async def _dispose(self) -> None:
+        await self.settle_execution()
         if not self._disposal_started:
             await self._release_rejected_auth()
         failed = False

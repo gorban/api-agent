@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import shutil
+import stat
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -52,6 +53,41 @@ def _platform_package():
     return f'@openai/codex-{system}-{machine}' if system and machine else None
 
 
+def _file_chunks(path, *, limit, cancelled=None, mode_mask=0o022):
+    """Read bounded regular files without blocking on replacement FIFOs."""
+    if cancelled is not None and cancelled():
+        raise ValueError('Native client validation cancelled')
+    before = path.lstat()
+    def trusted(info):
+        return (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and (not hasattr(os, 'getuid') or info.st_uid == os.getuid())
+                and not info.st_mode & mode_mask and info.st_size <= limit)
+    if not trusted(before):
+        raise ValueError('Untrusted native client file')
+    flags = os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    with os.fdopen(os.open(path, flags), 'rb') as handle:
+        opened = os.fstat(handle.fileno())
+        if (not trusted(opened)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise ValueError('Untrusted native client file replacement')
+        size = 0
+        while True:
+            if cancelled is not None and cancelled():
+                raise ValueError('Native client validation cancelled')
+            chunk = handle.read(min(1024 * 1024, limit + 1 - size))
+            size += len(chunk)
+            if size > limit:
+                raise ValueError('Native client files exceed size limit')
+            if not chunk:
+                return
+            yield chunk
+
+
+def _metadata(path, *, limit, cancelled=None, mode_mask=0o022):
+    return json.loads(b''.join(_file_chunks(path, limit=limit, cancelled=cancelled,
+                                           mode_mask=mode_mask)))
+
+
 def _content_fingerprint(root, package, *, cancelled=None):
     entries = []
     count = total_size = 0
@@ -88,11 +124,8 @@ def _content_fingerprint(root, package, *, cancelled=None):
             if info.st_size > 256 * 1024 * 1024 or total_size > 512 * 1024 * 1024:
                 raise ValueError('Native client files exceed size limit')
             content = sha256()
-            with path.open('rb') as handle:
-                while chunk := handle.read(1024 * 1024):
-                    if cancelled is not None and cancelled():
-                        raise ValueError('Native client validation cancelled')
-                    content.update(chunk)
+            for chunk in _file_chunks(path, limit=256 * 1024 * 1024, cancelled=cancelled):
+                content.update(chunk)
             value = b'file:' + content.digest()
         else:
             raise ValueError('Untrusted native client file type')
@@ -113,7 +146,7 @@ def _seal_install(root, package, *, cancelled=None):
 
 def _verify_install(root, package, *, sealed=True, cancelled=None):
     try:
-        lock = json.loads((root / 'package-lock.json').read_text())
+        lock = _metadata(root / 'package-lock.json', limit=1024 * 1024, cancelled=cancelled)
         entries = lock['packages']
         primary = entries['node_modules/@openai/codex']
         native = entries[f'node_modules/{package}']
@@ -132,9 +165,7 @@ def _verify_install(root, package, *, sealed=True, cancelled=None):
         fingerprint = _content_fingerprint(root, package, cancelled=cancelled)
         if sealed:
             marker = root / 'validation.json'
-            if marker.is_symlink() or marker.stat().st_mode & 0o077:
-                return None
-            if json.loads(marker.read_text()) != {'version': _CODEX_VERSION, 'package': package,
+            if _metadata(marker, limit=4096, cancelled=cancelled, mode_mask=0o077) != {'version': _CODEX_VERSION, 'package': package,
                                                    'fingerprint': fingerprint}:
                 return None
         return script

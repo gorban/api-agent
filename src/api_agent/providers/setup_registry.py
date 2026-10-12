@@ -193,10 +193,21 @@ class SetupRegistry(_Owner):
         lease['revoked'] = True
         await _drain(lease['waiters'], self._timeout, self._cancel_requested)
 
-    async def _dispose(self):
+    async def _stop_consumers(self):
         for lease in self._leases.values():
             lease['revoked'] = True
         await _drain([waiter for lease in self._leases.values() for waiter in lease['waiters']],
                      self._timeout, self._cancel_requested)
         await _drain([task for task in (self._ready, self._catalog) if task is not None], self._timeout, self._cancel_requested)
+
+    async def finish_execution(self):
+        """Revoke consumers and settle setup before accounting publication."""
+        self._context()
+        self._closed = True
+        await self._stop_consumers()
+        if self._owner is not None:
+            await self._owner.finish_execution()
+
+    async def _dispose(self):
+        await self._stop_consumers()
         await self._release()

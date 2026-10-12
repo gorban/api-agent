@@ -34,6 +34,8 @@ def fake_host(monkeypatch, tmp_path):
             events.append('provider-close')
             if state.provider_failure:
                 raise RuntimeError('synthetic private cleanup')
+        async def _finish_execution(self):
+            events.append('finish-execution')
     class Server:
         def __init__(self, registry, capability, *, timeout):
             self.registry = registry

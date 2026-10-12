@@ -136,6 +136,9 @@ def test_complete_relocated_pack_reads_manifests_and_schemas_without_factory_imp
     (original / 'src/provider-dependencies.toml').write_text(
         'version = 1\ndependencies = ["synthetic-client>=1"]\n')
     (original / 'src/factory.py').write_text('raise RuntimeError("must remain inert")\n')
+    (original / 'src/cfg').mkdir()
+    (original / 'src/cfg/config.toml').write_text(
+        'version = 1\n[fields.FACTORY_FLAG]\ntype = "bool"\ndefault = true\n')
     installed = tmp_path / 'installed' / 'pack'
     shutil.copytree(original, installed)
 
@@ -146,10 +149,16 @@ def test_complete_relocated_pack_reads_manifests_and_schemas_without_factory_imp
     assert context.production_paths == (installed / 'src',)
     assert schema.fields['SYNTHETIC_FLAG'].default is True
     assert schema.fields['SYNTHETIC_MODE'].default == 'enabled'
+    assert schema.fields['FACTORY_FLAG'].default is True
     assert schema.fields['UI_NX_APP'].default == 'synthetic-ui'
     assert len(selected) == 1
     assert selected[0].root == installed / 'src'
     assert selected[0].requirements() == ('synthetic-client>=1',)
+    (installed / 'src/cfg/config.toml').write_text(
+        'version = 1\n[fields.FACTORY_FLAG]\ntype = "invalid"\n')
+    with pytest.raises(ValueError, match='invalid type'):
+        inspect_relocated_pack(base, installed)
+    (installed / 'src/cfg/config.toml').write_text('version = 1\n')
     (installed / 'src/provider-dependencies.toml').write_text('version = 1\ndependencies = [42]\n')
     with pytest.raises(ValueError, match='nonempty requirement strings'):
         inspect_relocated_pack(base, installed)

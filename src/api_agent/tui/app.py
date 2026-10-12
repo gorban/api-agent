@@ -41,7 +41,23 @@ def display(value):
 
 
 class ButtonFooter(GroupedUserFooter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._composition_lock = asyncio.Lock()
+
+    async def recompose(self):
+        # Concurrent binding updates can otherwise mount two sets of children
+        # after both removals finish, including the same tab hint identifier.
+        async with self._composition_lock:
+            await super().recompose()
+
+    async def _compose(self):
+        async with self._composition_lock:
+            await super()._compose()
+
     def compose(self) -> ComposeResult:
+        if self._pruning or not self.screen.is_active:
+            return
         buttons = [button for button in self.screen.query(Button)
                    if button.visible and all(node.display for node in (button, *button.ancestors))]
         if self._bindings_ready and buttons:

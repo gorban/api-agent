@@ -49,9 +49,7 @@ class _SetupOwner:
         self.provider.closed = True
 
     async def finish_execution(self):
-        if (getattr(self.provider, '_quota_before', False)
-                and not getattr(self.provider, '_quota_after', False)):
-            await self.provider._capture_quota('after')
+        await self.provider._finish_execution()
 
 
 from .suite_lock import CleanupLeaseOwner
@@ -221,9 +219,8 @@ class SetupBackend(CleanupLeaseOwner):
             async with report_timeout('Shared setup execution finish', self.cleanup_timeout):
                 if self.server is not None:
                     await self.server.aclose()
-                owner = getattr(self.registry, '_owner', None)
-                if owner is not None:
-                    await owner.finish_execution()
+                if self.registry is not None:
+                    await self.registry.finish_execution()
         except BaseException as error:
             if not isinstance(error, Exception):
                 return error

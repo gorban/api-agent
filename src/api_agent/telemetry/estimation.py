@@ -163,6 +163,8 @@ def quota_window(quota):
 
 def quota_interval(quota):
     """Parse overlap evidence without applying sample eligibility filters."""
+    if quota_reset_observed(quota):
+        return None
     try:
         allocation = quota_allocation(quota)
         window = quota_window(quota)

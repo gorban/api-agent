@@ -121,3 +121,29 @@ def test_positive_validation_can_strengthen_nonnegative():
     weaker = schema_from_dict({'version': 1, 'fields': {'COUNT': {'type': 'int', 'override': True, 'validation': 'nonnegative'}}})
     with pytest.raises(ValueError, match='weakens'):
         compose_schema(compose_schema(base, extension), weaker)
+
+
+@pytest.mark.parametrize('name', ['UNIT_TEST_PARALLEL_JOBS', 'ALLURE_RESULTS_DIR'])
+@pytest.mark.parametrize('conditional', [False, True])
+def test_empty_override_defaults_use_inherited_constraints(name, conditional):
+    shared = load_shared_schema()
+    previous = shared.fields[name]
+    spec = {'type': previous.type, 'override': True}
+    if previous.anchor:
+        spec['anchor'] = previous.anchor
+    spec.update({'conditional_defaults': [{'when': {}, 'value': ''}]} if conditional else {'default': ''})
+
+    extension = schema_from_dict({'version': 1, 'fields': {name: spec}}, base_schema=shared)
+    effective = compose_schema(shared, extension).fields[name]
+
+    assert effective.allow_empty
+    assert 'allow_empty' not in extension.fields[name].declared_keys
+    assert (effective.conditional_defaults[0]['value'] if conditional else effective.default) == ''
+
+
+@pytest.mark.parametrize('conditional', [False, True])
+def test_empty_standalone_integer_default_remains_invalid(conditional):
+    spec = {'type': 'int'}
+    spec.update({'conditional_defaults': [{'when': {}, 'value': ''}]} if conditional else {'default': ''})
+    with pytest.raises(ValueError, match='expected int'):
+        _schema({'COUNT': spec})

@@ -164,10 +164,22 @@ class SharedSetupOwner(_Owner):
             self._credentials.revoke()
         await super().aclose()
 
-    async def _dispose(self):
+    async def _stop_tasks(self):
         await _drain(self._calls, self._timeout, self._cancel_requested)
         await _drain([task for task in (self._ready, self._catalog) if task is not None],
                      self._timeout, self._cancel_requested)
+
+    async def settle_execution(self):
+        """Drain shielded checkpoints before the session's final measurements."""
+        self._context()
+        await self._stop_tasks()
+        if self._owner is not None:
+            await self._owner.settle_execution()
+
+    async def _dispose(self):
+        # Equivalent third-party session owners need only call/aclose. Their
+        # aclose below owns any nested setup; prepublication uses our session.
+        await self._stop_tasks()
         if not self._disposal_started:
             self._disposal_started = True
             # Reverse release order keeps credential helpers until auth stops.

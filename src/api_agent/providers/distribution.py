@@ -117,10 +117,9 @@ def inspect_relocated_pack(base_root: Path, pack_root: Path):
     schema = compose_schema(shared,
                             load_declarations(context.config_path, base_schema=shared,
                                               source='pack_default'), context.defaults)
-    for path in context.provider_config_paths:
-        schema = compose_schema(schema,
-                                load_declarations(path, base_schema=schema,
-                                                  source='pack_default'))
+    from api_agent.providers.loading import bootstrap_schema
+    schema = bootstrap_schema(schema, [], {}, {}, owner_root=context.owner_root,
+                              configuration_paths=context.provider_config_paths)
     # Check file-backed factory defaults after relocation; no module is loaded.
     from api_agent.config.declarations import UNSET
     from api_agent.providers.loading import provider_location

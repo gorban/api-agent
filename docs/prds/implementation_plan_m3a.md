@@ -9,6 +9,12 @@
 
 ## Acceptance and remaining join
 
+Relocated-pack inspection uses the same inert provider discovery as launch,
+including each selected factory's own declarations, contributed selectors and
+cycle checks. Valid empty override defaults are checked after omitted safety
+constraints inherit, for both static and conditional defaults. Standalone
+malformed defaults and explicit constraint weakening remain invalid.
+
 - [x] Pure manifest reader, active-kind selector and additive selected-provider dependency API, with synthetic active/inactive provider checks. The bundled GPT provider declares its HTTP/auth dependencies and an optional browser group. Per-capability browser-group selection remains a future refinement.
 - [x] Relocated synthetic whole-pack check covers manifest, primary schema, provider schema, defaults, selected factory files and production tree without executing a factory.
 - [x] Explicit field override authority and focused weakening checks preserve normal pack default precedence. Selected provider declarations must state `override = true` for existing fields; bundled GPT does so for its shared credential role.
@@ -16,3 +22,10 @@
 - [x] Build a wheel and verify the extracted, relocated package resolves its bundled demo pack, primary schema, selected factory and selected provider manifest without importing the factory. The archive carries the declarations and manifest.
 - [x] Independent adversarial review, including direct-URL/options rejection, explicit authority, valid validator strengthening and same-source rebootstrap. Different declaration sources require an explicit override even when their values match.
 - [x] Human acceptance of relocated declarations, configuration review and selected dependency preparation, recorded October 12, 2026.
+
+Follow-up repairs passed independent adversarial review, seven isolated mutation
+controls and 5,572 base unit tests with exact per-file 100% line/branch coverage.
+The wheel builds and its extracted relocated pack includes the selected
+factory's declarations without importing it. Shared execution finalization,
+bounded native-cache reads and reset-overlap controls also pass. This offline
+verification does not complete deferred live native-account/meter acceptance.

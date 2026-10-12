@@ -18,4 +18,10 @@ Automatic native provisioning targets Linux and macOS x64/arm64 hosts, with Node
 
 - [ ] Add automatic Windows native quota-client provisioning only after its file ACL checks, managed cache, and executable launch have been verified on Windows with controlled and live setup checks.
 
+Cache metadata reads are bounded to 1 MiB for the package lock and 4 KiB for
+the sealed marker. File descriptors must identify an owned regular file with
+safe permissions and match the pre-open identity. Nonblocking/no-follow opens
+reject replacement FIFOs and links; cancellation is checked while hashing and
+reading. Invalid cache metadata remains an optional accounting failure.
+
 Public protocol basis: [Codex app-server documentation](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server) and the installed public Codex 0.160.1 app-server schema for `account/read`, `account/login/start`, `account/login/completed`, and `account/rateLimits/read`. [OpenAI's Codex CLI example](https://developers.openai.com/cookbook/examples/codex/build_iterative_repair_loops_with_codex) recommends pinning the CLI version for reproducibility. Protocol and installation availability may change; unsupported responses remain unavailable accounting, never zero usage.
