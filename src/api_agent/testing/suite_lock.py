@@ -46,6 +46,7 @@ class _Lease:
     guard: object = field(default_factory=RLock, repr=False)
 
     closing: object = field(default=None, repr=False)
+    receipts: dict = field(default_factory=dict, repr=False)
 
     def retain(self, identifier):
         with self.guard:
@@ -134,30 +135,88 @@ def retain_suite_cleanup(owner):
         raise
 
 
+def _cleanup_receipts(error):
+    """Enumerate direct and attached duties, once each, including cycles."""
+    from api_agent.providers.control import CleanupPendingError
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, CleanupPendingError) and callable(error.retry):
+            yield error
+        error = getattr(error, 'cleanup_pending', None)
+
+
 def retain_cleanup_receipt(error):
-    """Retain outer adapters' retry receipts before their suite context exits."""
-    from api_agent.providers.control import CleanupPendingError
+    """Retain every outer adapter duty before its suite context exits."""
     lease = _CURRENT.get()
-    pending = error if isinstance(error, CleanupPendingError) else getattr(error, 'cleanup_pending', None)
-    if (lease is None or not lease.owns_context() or not isinstance(pending, CleanupPendingError)
-            or not callable(pending.retry) or not lease.retain(id(pending))):
+    if lease is None or not lease.owns_context():
         return
-    _bind_cleanup_receipt(pending, lease, id(pending))
+    for pending in _cleanup_receipts(error):
+        _bind_cleanup_receipt(pending, lease)
 
 
-def _bind_cleanup_receipt(pending, lease, identifier):
-    from api_agent.providers.control import CleanupPendingError
-    retry = pending.retry
-    async def acknowledged_retry(*args, **kwargs):
-        try:
-            await retry(*args, **kwargs)
-        except BaseException as error:
-            following = error if isinstance(error, CleanupPendingError) else getattr(error, 'cleanup_pending', None)
-            if isinstance(following, CleanupPendingError) and following is not pending:
-                _bind_cleanup_receipt(following, lease, identifier)
-            raise
-        lease.release(identifier)
-    pending.retry = acknowledged_retry
+def _bind_cleanup_receipt(pending, lease):
+    with lease.guard:
+        identifier = id(pending)
+        if identifier not in lease.receipts:
+            lease.retain(identifier)
+            state = _ReceiptRetention(pending, lease)
+            lease.receipts[identifier] = state
+            pending.retry = state.retry
+        return lease.receipts[identifier]
+
+
+class _ReceiptRetention:
+    """One cleanup duty; successor duties must all acknowledge its replacement."""
+    def __init__(self, pending, lease):
+        self.pending, self.lease = pending, lease
+        self.original_retry = pending.retry
+        self.disposed = self.acknowledged = False
+        self.successors = set()
+        self.parents = []
+        self.notifying = False
+
+    def _acknowledge(self):
+        with self.lease.guard:
+            if not self.acknowledged:
+                self.lease.release(id(self.pending))
+                self.acknowledged = True
+            if self.notifying:
+                return
+            self.notifying = True
+            try:
+                while self.parents:
+                    self.parents[0]._successor_finished(self)
+                    del self.parents[0]
+            finally:
+                self.notifying = False
+
+    def _successor_finished(self, state):
+        self.successors.discard(state)
+        if not self.successors:
+            self.disposed = True
+            self._acknowledge()
+
+    async def retry(self, *args, **kwargs):
+        if not self.disposed:
+            try:
+                await self.original_retry(*args, **kwargs)
+            except BaseException as error:
+                following = tuple(_bind_cleanup_receipt(pending, self.lease)
+                                  for pending in _cleanup_receipts(error))
+                # A direct self receipt still describes this original duty.
+                # Distinct attachments always remain independent lease owners.
+                if following and self not in following:
+                    with self.lease.guard:
+                        self.successors.update(following)
+                        for state in following:
+                            if self not in state.parents:
+                                state.parents.append(self)
+                            if state.acknowledged:
+                                state._acknowledge()
+                raise
+            self.disposed = True
+        self._acknowledge()
 
 
 def _lock(fd):

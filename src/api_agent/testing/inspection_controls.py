@@ -1,13 +1,24 @@
 """Shared consumer ownership for completed runs with retained inspection."""
 
 
+def cleanup_active(handle):
+    """Resource closure does not acknowledge a pending suite release."""
+    return (not handle.closed or getattr(handle, 'pending', False)
+            or bool(getattr(handle, '_cleanup_callbacks', ())))
+
+
 class InspectionGroup:
     def __init__(self, handles=()):
         self.handles = tuple(handles)
 
     @property
     def active(self):
-        return any(not handle.closed for handle in self.handles)
+        return any(cleanup_active(handle) for handle in self.handles)
+
+    @property
+    def pending(self):
+        return any(getattr(handle, 'pending', False) or (handle.closed and cleanup_active(handle))
+                   for handle in self.handles)
 
     @property
     def lost(self):
@@ -29,7 +40,7 @@ class InspectionGroup:
         """End inspection synchronously; retain every unacknowledged handle."""
         interruption = None
         for handle in self.handles:
-            if handle.closed:
+            if not cleanup_active(handle):
                 continue
             try:
                 acknowledged = handle.end_inspection()
