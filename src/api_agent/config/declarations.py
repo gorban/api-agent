@@ -165,6 +165,7 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                    overrides: Mapping[str, Any] | None = None) -> ConfigSchema:
     fields = dict(shared.fields)
     if extension:
+        effective_overrides = []
         for name, declaration in extension.fields.items():
             if declaration.override_if_present and name not in fields:
                 continue
@@ -185,10 +186,14 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                         or previous.pack_only and not declaration.pack_only
                         or previous.cost_affecting and not declaration.cost_affecting):
                     raise ValueError(f'{name}: override weakens an existing field constraint')
-                _validate_values(declaration, {**fields, name: declaration})
+                effective_overrides.append(declaration)
             elif declaration.override:
                 raise ValueError(f'{name}: override has no shared field')
             fields[name] = declaration
+        # A predicate may reference a sibling declared later in the same file.
+        # Validate only after all effective controller constraints are composed.
+        for declaration in effective_overrides:
+            _validate_values(declaration, fields)
     from .resolve import convert_value
     for name, value in (overrides or {}).items():
         if name not in fields:

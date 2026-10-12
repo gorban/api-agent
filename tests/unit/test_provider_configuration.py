@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_agent.config import load_shared_schema, resolve_config, schema_from_dict
+from api_agent.config import compose_schema, load_shared_schema, resolve_config, schema_from_dict
 from api_agent.config.session import ConfigSession
 from api_agent.providers.loading import bootstrap_schema, load_provider, provider_location
 
@@ -26,6 +26,87 @@ def selected_base(location, extra=None):
     if extra:
         fields.update(schema_from_dict({'version': 1, 'fields': extra}, source='pack_default').fields)
     return type(load_shared_schema())(fields)
+
+
+def sibling_controller_provider(tmp_path, predicate, controller_first):
+    controller = '[fields.MODE]\ntype="bool"\ndefault=true\n'
+    override = '[fields.TEST_PARALLEL_JOBS]\ntype="int"\noverride=true\ndefault=7\n' + predicate + '\n'
+    text = controller + override if controller_first else override + controller
+    return configured_provider(tmp_path, text)
+
+
+@pytest.mark.parametrize('controller_first', [False, True])
+@pytest.mark.parametrize(('predicate', 'expected_jobs'), [
+    ('applies_when={MODE=true}', 7),
+    ('required_when={MODE=true}', 7),
+    ('conditional_defaults=[{when={MODE=true},value=9}]', 9),
+])
+def test_provider_override_accepts_a_sibling_controller_in_either_order(tmp_path, predicate, expected_jobs, controller_first):
+    provider = sibling_controller_provider(tmp_path, predicate, controller_first)
+
+    schema = bootstrap_schema(selected_base(str(provider / 'provider.py') + ':factory'),
+        [], {}, {}, owner_root=tmp_path)
+    resolved = resolve_config(schema, environ={}, dotenv={}, anchors={'owner_root': tmp_path})
+
+    assert schema.fields['MODE'].type == 'bool'
+    assert resolved.values['MODE'] is True
+    assert resolved.values['TEST_PARALLEL_JOBS'] == expected_jobs
+    assert schema.fields['TEST_PARALLEL_JOBS'].validation == 'nonnegative'
+
+
+@pytest.mark.parametrize('predicate', [
+    'applies_when={MODE=true}',
+    'required_when={MODE=true}',
+    'conditional_defaults=[{when={MODE=true},value=9}]',
+])
+def test_help_accepts_controller_declared_after_provider_override(tmp_path, monkeypatch, capsys, predicate):
+    import os
+    from unittest.mock import patch
+    from api_agent.runtime.bootstrap import main
+    provider = sibling_controller_provider(tmp_path, predicate, controller_first=False)
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+
+    with patch.dict(os.environ, {}, clear=True):
+        status = main(['--help', '--llm-provider=' + str(provider / 'provider.py') + ':factory'],
+            base_root=Path(__file__).resolve().parents[2], _worktrees_verified=True)
+
+    output = capsys.readouterr()
+    assert status == 0
+    assert output.err == ''
+    assert 'Usage: ./launch.py [OPTIONS] [TEST SELECTORS]' in output.out
+    assert 'All declared configuration values also accept CLI options' in output.out
+
+
+def inherited_controller_override(expected, controller_first):
+    controlled = {'type': 'int', 'override': True, 'default': 2,
+        'conditional_defaults': [{'when': {'MODE': expected}, 'value': 3}]}
+    controller = {'type': 'int', 'override': True, 'default': 0}
+    pairs = [('VALUE', controlled), ('MODE', controller)]
+    return schema_from_dict({'version': 1, 'fields': dict(reversed(pairs) if controller_first else pairs)})
+
+
+def nonnegative_controller_schema():
+    return schema_from_dict({'version': 1, 'fields': {
+        'VALUE': {'type': 'int'}, 'MODE': {'type': 'int', 'validation': 'nonnegative'}}})
+
+
+@pytest.mark.parametrize('controller_first', [False, True])
+def test_override_predicate_uses_final_inherited_controller_validation(controller_first):
+    extension = inherited_controller_override(0, controller_first)
+
+    schema = compose_schema(nonnegative_controller_schema(), extension)
+    resolved = resolve_config(schema, environ={}, dotenv={})
+
+    assert schema.fields['MODE'].validation == 'nonnegative'
+    assert resolved.values == {'VALUE': 3, 'MODE': 0}
+
+
+@pytest.mark.parametrize('controller_first', [False, True])
+def test_override_predicate_rejects_invalid_final_controller_value(controller_first):
+    extension = inherited_controller_override(-1, controller_first)
+
+    with pytest.raises(ValueError, match='nonnegative'):
+        compose_schema(nonnegative_controller_schema(), extension)
 
 
 @pytest.mark.parametrize('kind', ['int', 'path'])
