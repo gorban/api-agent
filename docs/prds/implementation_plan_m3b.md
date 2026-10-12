@@ -18,6 +18,13 @@ state, provider objects, and browser objects remain in the backend process.
   must stop before the accounting snapshot is frozen. Unconfirmed settlement
   blocks publication and preserves its cleanup receipt; late setup cannot emit
   a new starting-quota observation after finalization.
+  Settlement also revokes credential reads and confirms actual helper work has
+  stopped. A failed barrier may deliver partial test diagnostics, but must not
+  invoke final recording, freeze accounting, or publish storage manifests.
+  Consumer retry acknowledges both backend disposal and retained cleanup
+  receipts before releasing suite exclusion. Preserve original receipts across
+  error-link replacement, include later recording duties, and avoid retrying
+  the consumer's own group recursively; failed retries remain recoverable.
   Explicit shutdown or closing all windows disposes the backend and emits the
   existing inspection event, with a retry receipt if cleanup is unconfirmed.
   A stopped creating loop is restarted for bounded inspection wait and cleanup;

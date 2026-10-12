@@ -114,6 +114,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     backend = None
     interaction_server = None
     interruption = None
+    publication_error = None
     callback_failed = cancelled = failed = False
     disabled = set()
 
@@ -398,6 +399,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 backend.close()
             except BaseException as error:
                 inspections.append(backend)
+                publication_error = error
                 if not isinstance(error, Exception) and interruption is None:
                     interruption = error
                 if interruption is not None:
@@ -412,12 +414,19 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             if backend is not None and config is not None and config.get('DEBUG'):
                 try:
                     backend.prepare_publication()
-                except Exception:
+                except Exception as error:
                     chunks.append('Shared setup execution cleanup pending; retry required.\n')
+                    # Per-test diagnostics already went to on_result. Final
+                    # immutable accounting cannot be published while setup
+                    # still owns work that can emit observations.
+                    publication_error = error
                     failed = True
             failed |= callback_failed or any(test.status not in {'passed', 'skipped'} for test in results.values())
             result = IntegrationRunResult(130 if cancelled else int(failed),
                                           tuple(results[test.id] for test in tests), ''.join(chunks), cancelled, tuple(inspections))
+            if publication_error is not None:
+                publication_error.execution = result
+                raise publication_error
             # Publication is inside the ownership guard: an interrupt must not
             # lose a worker whose handle has not yet returned to the caller.
             call('after_run', after_run, result)
@@ -439,6 +448,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             abort_inspections()
             # Failed emergency disposal still needs a reviewable retry handle.
             primary.inspections = tuple(inspections)
+            from .inspection_controls import preserve_cleanup_receipts
+            preserve_cleanup_receipts(primary)
             raise primary
         if interruption is not None:
             interruption.inspections = tuple(inspections)

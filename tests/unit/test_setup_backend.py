@@ -592,10 +592,16 @@ def test_original_interrupt_keeps_pending_backend_after_secondary_disposal_failu
     context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path)
     primary = KeyboardInterrupt('original publication or startup interrupt')
     secondary = KeyboardInterrupt('cleanup interrupt') if cleanup_interrupted else RuntimeError('private cleanup')
-    backend = SimpleNamespace(closed=False, pending=True, lost=False,
+    backend = SimpleNamespace(closed=False, pending=False, lost=False,
         start=lambda: {'version': 1, 'host': '127.0.0.1', 'port': 32123, 'capability': 'a' * 32},
-        close=lambda: (_ for _ in ()).throw(RuntimeError('private close')),
-        abort=lambda: (_ for _ in ()).throw(secondary))
+        close=lambda: (_ for _ in ()).throw(RuntimeError('private close')))
+    def abort():
+        backend.pending = True
+        raise secondary
+    def prepare():
+        if backend.pending:
+            raise RuntimeError('Synthetic settlement is still pending')
+    backend.abort, backend.prepare_publication = abort, prepare
     monkeypatch.setattr(setup_backend, 'SetupBackend', lambda *a, **k: backend)
     monkeypatch.setattr(integration, 'collect_tests', lambda *a, **k: (identity,))
     finalized = []
@@ -613,7 +619,7 @@ def test_original_interrupt_keeps_pending_backend_after_secondary_disposal_failu
         if primary_boundary == 'publication':
             raise primary
     with pytest.raises(KeyboardInterrupt) as caught:
-        integration.run_integration_tests(context, (identity,), config={}, accepted=True, after_run=publish)
+        integration.run_integration_tests(context, (identity,), config={'DEBUG': True}, accepted=True, after_run=publish)
     assert caught.value is primary and caught.value.inspections == (backend,)
     assert not backend.closed and backend.pending
     assert len(finalized) == int(primary_boundary == 'publication')

@@ -37,7 +37,11 @@ class RevocableCredentials(_Owner):
             self._reads.add(task)
             task.add_done_callback(self._reads.discard)
             result = await asyncio.shield(task)
-        except (asyncio.CancelledError, ContractError, SessionClosedError, OperationalError, CleanupPendingError):
+        except asyncio.CancelledError:
+            if self._closed and not asyncio.current_task().cancelling():
+                raise SessionClosedError('Credential binding is revoked') from None
+            raise
+        except (ContractError, SessionClosedError, OperationalError, CleanupPendingError):
             raise
         except Exception:
             raise OperationalError("unknown") from None
@@ -172,9 +176,13 @@ class SharedSetupOwner(_Owner):
     async def settle_execution(self):
         """Drain shielded checkpoints before the session's final measurements."""
         self._context()
+        if self._credentials is not None:
+            self._credentials.revoke()
         await self._stop_tasks()
         if self._owner is not None:
             await self._owner.settle_execution()
+        if self._credentials is not None:
+            await self._credentials.aclose()
 
     async def _dispose(self):
         # Equivalent third-party session owners need only call/aclose. Their

@@ -1,4 +1,75 @@
 """Shared consumer ownership for completed runs with retained inspection."""
+import asyncio
+from threading import Lock
+
+
+class ReceiptInspection:
+    """Expose a retained cleanup receipt through the existing consumer actions."""
+    lost = False
+    retains_browser = False
+
+    def __init__(self, error):
+        from .suite_lock import _cleanup_receipts
+        self.error = error
+        self._receipts = tuple(_cleanup_receipts(error))
+        self.closed = False
+        self._guard = Lock()
+
+    @property
+    def pending(self):
+        return not self.closed
+
+    async def aclose(self):
+        from api_agent.providers.contracts import ContractError
+        from .suite_lock import _cleanup_receipts
+        if not self._guard.acquire(blocking=False):
+            raise ContractError('Cleanup receipt recovery is already running.')
+        try:
+            if self.closed:
+                return
+            recording = getattr(self.error, 'recording_prerequisites', None)
+            seen = set()
+            receipts = (*self._receipts, *_cleanup_receipts(self.error),
+                *_cleanup_receipts(getattr(recording, 'pending_cleanup', None)))
+            for pending in receipts:
+                group = getattr(pending, 'inspection_group', None)
+                # Cancellation can attach this consumer's own group retry.
+                # Retrying it from here would recursively revisit ourselves.
+                if (id(pending) in seen or group is not None and
+                        any(handle is self for handle in group.handles)):
+                    continue
+                seen.add(id(pending))
+                await pending.retry()
+            self.closed = True
+        finally:
+            self._guard.release()
+
+    def end_inspection(self):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(self.aclose())
+            except Exception:
+                return False
+            return True
+        return False  # Synchronous consumers must offload from an active loop.
+
+    def abort(self):
+        return self.end_inspection()
+
+    def wait_closed(self):
+        if not self.end_inspection():
+            raise self.error
+
+
+def preserve_cleanup_receipts(error):
+    from .suite_lock import _cleanup_receipts
+    if not any(_cleanup_receipts(error)):
+        return
+    handles = tuple(getattr(error, 'inspections', ()))
+    if not any(isinstance(handle, ReceiptInspection) and handle.error is error for handle in handles):
+        error.inspections = (*handles, ReceiptInspection(error))
 
 
 def cleanup_active(handle):

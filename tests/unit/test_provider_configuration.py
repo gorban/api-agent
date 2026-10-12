@@ -28,6 +28,78 @@ def selected_base(location, extra=None):
     return type(load_shared_schema())(fields)
 
 
+@pytest.mark.parametrize('kind', ['int', 'path'])
+@pytest.mark.parametrize('conditional', [False, True])
+def test_late_override_empty_defaults_inherit_the_selected_target(tmp_path, kind, conditional):
+    anchor = '\nanchor="owner_root"' if kind == 'path' else ''
+    provider = configured_provider(tmp_path,
+        f'[fields.LATE]\ntype="{kind}"\nallow_empty=true{anchor}\n')
+    late = tmp_path / 'late.toml'
+    value = 'conditional_defaults=[{when={},value=""}]' if conditional else 'default=""'
+    late.write_text(f'version=1\n[fields.LATE]\ntype="{kind}"\n'
+                    f'override=true\noverride_if_present=true{anchor}\n{value}\n')
+
+    schema = bootstrap_schema(selected_base(str(provider / 'provider.py') + ':factory'),
+        [], {}, {}, owner_root=tmp_path, configuration_paths=(late,))
+
+    field = schema.fields['LATE']
+    assert field.allow_empty
+    assert 'allow_empty' not in field.declared_keys
+    assert (field.conditional_defaults[0]['value'] if conditional else field.default) == ''
+
+
+@pytest.mark.parametrize(('spec', 'message'), [
+    ('type="int"\ndefault="invalid"', 'expected int'),
+    ('type="int"\ndefault=-1', 'positive'),
+    ('type="int"\nvalidation="nonnegative"\ndefault=1', 'weakens'),
+    ('type="str"\ndefault="seven"', 'preserve the shared type'),
+])
+def test_late_override_constraints_are_checked_after_discovery(tmp_path, spec, message):
+    provider = configured_provider(tmp_path,
+        '[fields.LATE]\ntype="int"\nvalidation="positive"\nallow_empty=true\n')
+    late = tmp_path / 'late.toml'
+    late.write_text(f'version=1\n[fields.LATE]\noverride=true\noverride_if_present=true\n{spec}\n')
+    with pytest.raises(ValueError, match=message):
+        bootstrap_schema(selected_base(str(provider / 'provider.py') + ':factory'),
+            [], {}, {}, owner_root=tmp_path, configuration_paths=(late,))
+
+
+def deferred_predicate_schema(tmp_path, expected):
+    provider = configured_provider(tmp_path, '[fields.LATE]\ntype="int"\nallow_empty=true\n')
+    late = tmp_path / 'late.toml'
+    late.write_text('version=1\n[fields.LATE]\ntype="int"\noverride=true\noverride_if_present=true\n'
+                    f'conditional_defaults=[{{when={{any=[{{DEBUG={expected}}}]}},value=""}}]\n')
+    return bootstrap_schema(selected_base(str(provider / 'provider.py') + ':factory'),
+        [], {}, {}, owner_root=tmp_path, configuration_paths=(late,))
+
+
+def test_deferred_predicate_retains_typed_nested_condition(tmp_path):
+    field = deferred_predicate_schema(tmp_path, 'false').fields['LATE']
+    assert field.allow_empty
+    assert field.conditional_defaults[0]['when'] == {'any': [{'DEBUG': False}]}
+
+
+def test_deferred_predicate_rejects_invalid_controller_value(tmp_path):
+    with pytest.raises(ValueError, match='expected bool'):
+        deferred_predicate_schema(tmp_path, '"invalid"')
+
+
+@pytest.mark.parametrize('conditional', [False, True])
+def test_incompatible_provider_type_has_a_controlled_launcher_diagnostic(tmp_path, monkeypatch, capsys, conditional):
+    import os
+    from unittest.mock import patch
+    from api_agent.runtime.bootstrap import main
+    value = 'conditional_defaults=[{when={},value="seven"}]' if conditional else 'default="seven"'
+    provider = configured_provider(tmp_path,
+        f'[fields.TEST_PARALLEL_JOBS]\ntype="str"\noverride=true\n{value}\n')
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+    with patch.dict(os.environ, {}, clear=True):
+        status = main(['--help', '--llm-provider=' + str(provider / 'provider.py') + ':factory'],
+                      base_root=Path(__file__).resolve().parents[2], _worktrees_verified=True)
+    assert status == 2
+    assert 'Launch error: TEST_PARALLEL_JOBS: override must preserve the shared type' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('external_pack', [False, True])
 def test_gpt_state_default_displays_and_saves_the_runtime_path(tmp_path, monkeypatch, external_pack):
     from api_agent.config.dotenv import read_dotenv

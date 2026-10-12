@@ -414,7 +414,7 @@ def test_finish_run_disposes_auth_before_retaining_creating_loop(tmp_path):
     provider.loop.run_until_complete(setup())
     try:
         provider.finish_run()
-        assert events == ['auth', 'provider', 'credential']
+        assert events == ['credential', 'auth', 'provider']
         assert not provider.loop.is_closed() and not provider.closed
         assert provider in p._inspection_providers
         assert not provider._credential_tasks
@@ -523,6 +523,38 @@ def test_cancelled_worker_helper_drain_waits_for_true_completion(tmp_path):
             await close
         await worker._close()
         assert task.done() and not task.cancelled()
+        assert not worker._credential_tasks
+    try:
+        worker.loop.run_until_complete(scenario())
+    finally:
+        worker.close()
+
+
+def test_unsettled_helper_is_not_cancelled_or_acknowledged(tmp_path, monkeypatch):
+    worker = p.IntegrationLLM({}, tmp_path)
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def helper():
+            entered.set()
+            await release.wait()
+        task = asyncio.create_task(helper())
+        worker._credential_tasks.add(task)
+        task.add_done_callback(worker._credential_tasks.discard)
+        await entered.wait()
+        async def unresolved(tasks, *, timeout):
+            assert timeout <= 5
+            return set(), set(tasks)
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(p.asyncio, 'wait', unresolved)
+                with pytest.raises(ContractError, match='Credential helpers remain active'):
+                    await worker._finish_execution()
+            assert not task.done() and not task.cancelled()
+            assert task in worker._credential_tasks
+        finally:
+            release.set()
+            await task
+        await worker._finish_execution()
         assert not worker._credential_tasks
     try:
         worker.loop.run_until_complete(scenario())

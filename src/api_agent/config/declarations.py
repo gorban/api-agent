@@ -89,30 +89,40 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
                  if name in controlling_fields and declaration.override else declaration
                  for name, declaration in declarations.items()}
     controlling_fields.update(effective)
-    from .resolve import convert_value
     for declaration in effective.values():
-        for enum_value in declaration.enum:
-            convert_value(replace(declaration, enum=()), enum_value, external=False, anchors=None)
-        for predicate in (declaration.applies_when, declaration.required_when):
-            _validate_predicate(predicate, controlling_fields)
-        defaults = [] if declaration.default is UNSET else [declaration.default]
-        for conditional in declaration.conditional_defaults:
-            if not isinstance(conditional, dict) or set(conditional) != {'when', 'value'}:
-                raise ValueError(f'{declaration.name}: conditional default needs when and value')
-            _validate_predicate(conditional['when'], controlling_fields)
-            defaults.append(conditional['value'])
-        for value in defaults:
-            convert_value(declaration, value, external=False, anchors=None)
+        deferred = declaration.override_if_present and (base_schema is None or declaration.name not in base_schema.fields)
+        _validate_values(declaration, controlling_fields, deferred=deferred)
     return schema
 
 
 def _inherit_constraints(previous, declaration):
+    if declaration.type != previous.type:
+        raise ValueError(f'{declaration.name}: override must preserve the shared type')
     inherited = ('required', 'required_when', 'allow_empty', 'validation',
                  'enum', 'pack_only', 'cost_affecting')
     return replace(declaration, **{key: getattr(previous, key) for key in inherited
                                   if key not in declaration.declared_keys})
 
-def _validate_predicate(predicate, fields):
+def _validate_values(declaration, fields, *, deferred=False):
+    """Check structure now; late overrides need their target's value rules."""
+    from .resolve import convert_value
+    if not deferred:
+        for enum_value in declaration.enum:
+            convert_value(replace(declaration, enum=()), enum_value, external=False, anchors=None)
+    for predicate in (declaration.applies_when, declaration.required_when):
+        _validate_predicate(predicate, fields, validate_values=not deferred)
+    defaults = [] if declaration.default is UNSET else [declaration.default]
+    for conditional in declaration.conditional_defaults:
+        if not isinstance(conditional, dict) or set(conditional) != {'when', 'value'}:
+            raise ValueError(f'{declaration.name}: conditional default needs when and value')
+        _validate_predicate(conditional['when'], fields, validate_values=not deferred)
+        defaults.append(conditional['value'])
+    if not deferred:
+        for value in defaults:
+            convert_value(declaration, value, external=False, anchors=None)
+
+
+def _validate_predicate(predicate, fields, *, validate_values=True):
     if not isinstance(predicate, dict):
         raise ValueError('Predicate must be a controlling-field equals table')
     for name, expected in predicate.items():
@@ -120,13 +130,14 @@ def _validate_predicate(predicate, fields):
             if not isinstance(expected, list) or not expected:
                 raise ValueError('Predicate any requires a nonempty array of tables')
             for branch in expected:
-                _validate_predicate(branch, fields)
+                _validate_predicate(branch, fields, validate_values=validate_values)
             continue
         if name not in fields:
             raise ValueError(f'Unknown controlling field {name}')
         from .resolve import convert_value
-        for value in expected if isinstance(expected, list) else [expected]:
-            convert_value(fields[name], value, external=False, anchors=None)
+        if validate_values:
+            for value in expected if isinstance(expected, list) else [expected]:
+                convert_value(fields[name], value, external=False, anchors=None)
 
 def load_declarations(path: str | Path, *, base_schema: ConfigSchema | None = None,
                       source: str = 'shared_default') -> ConfigSchema:
@@ -161,8 +172,6 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                 if not declaration.override:
                     raise ValueError(f'{name}: shared-field replacement requires override = true')
                 previous = fields[name]
-                if declaration.type != previous.type:
-                    raise ValueError(f'{name}: override must preserve the shared type')
                 # Omitted safety metadata retains its previous authority. Explicit
                 # changes may tighten it, but cannot remove an existing constraint.
                 declaration = _inherit_constraints(previous, declaration)
@@ -176,11 +185,7 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                         or previous.pack_only and not declaration.pack_only
                         or previous.cost_affecting and not declaration.cost_affecting):
                     raise ValueError(f'{name}: override weakens an existing field constraint')
-                from .resolve import convert_value
-                if declaration.default is not UNSET:
-                    convert_value(declaration, declaration.default, external=False, anchors=None)
-                for conditional in declaration.conditional_defaults:
-                    convert_value(declaration, conditional['value'], external=False, anchors=None)
+                _validate_values(declaration, {**fields, name: declaration})
             elif declaration.override:
                 raise ValueError(f'{name}: override has no shared field')
             fields[name] = declaration
