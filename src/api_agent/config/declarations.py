@@ -37,7 +37,8 @@ class ConfigSchema:
     version: int = 1
 
 def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
-                     base_schema: ConfigSchema | None = None) -> ConfigSchema:
+                     base_schema: ConfigSchema | None = None,
+                     predicate_context: ConfigSchema | None = None) -> ConfigSchema:
     if set(data) - {'version', 'fields'} or type(data.get('version')) is not int or data['version'] != 1:
         raise ValueError('Configuration declaration requires version = 1 and fields only')
     if not isinstance(data.get('fields', {}), dict):
@@ -82,14 +83,17 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
         declarations[name] = FieldDeclaration(name=name, default_source=source,
                                                declared_keys=declared_keys, **spec)
     schema = ConfigSchema(declarations)
-    controlling_fields = dict(base_schema.fields) if base_schema else {}
+    controlling_fields = {name: declaration for name, declaration in predicate_context.fields.items()
+        if declaration.override_if_present} if predicate_context else {}
+    actual_fields = dict(base_schema.fields) if base_schema else {}
+    controlling_fields.update(actual_fields)
     # Value validation sees inherited safety metadata, while the original
     # declaration retains which keys were explicit for composition authority.
-    effective = {name: _inherit_constraints(controlling_fields[name], declaration)
-                 if name in controlling_fields and declaration.override else declaration
+    effective = {name: _inherit_constraints(actual_fields[name], declaration)
+                 if name in actual_fields and declaration.override else declaration
                  for name, declaration in declarations.items()}
     controlling_fields.update(effective)
-    pending_controllers = {name for name, declaration in effective.items()
+    pending_controllers = {name for name, declaration in controlling_fields.items()
         if declaration.override_if_present and (base_schema is None or name not in base_schema.fields)}
     for declaration in effective.values():
         deferred = declaration.override_if_present and (base_schema is None or declaration.name not in base_schema.fields)
@@ -146,9 +150,10 @@ def _validate_predicate(predicate, fields, *, validate_values=True, pending_cont
                 convert_value(fields[name], value, external=False, anchors=None)
 
 def load_declarations(path: str | Path, *, base_schema: ConfigSchema | None = None,
-                      source: str = 'shared_default') -> ConfigSchema:
+                      source: str = 'shared_default', predicate_context: ConfigSchema | None = None) -> ConfigSchema:
     with Path(path).open('rb') as handle:
-        return schema_from_dict(tomllib.load(handle), base_schema=base_schema, source=source)
+        return schema_from_dict(tomllib.load(handle), base_schema=base_schema, source=source,
+                                predicate_context=predicate_context)
 
 def shared_declaration_path(base_root: Path | None = None) -> Path:
     """Locate human-edited source declarations or their bundled wheel copy."""
@@ -167,12 +172,9 @@ def load_shared_schema(base_root: Path | None = None) -> ConfigSchema:
     fields['LLM_PROVIDER'] = replace(fields['LLM_PROVIDER'], default=str(factory) + ':factory')
     return ConfigSchema(fields)
 
-def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
-                   overrides: Mapping[str, Any] | None = None, *,
-                   predicate_context: ConfigSchema | None = None) -> ConfigSchema:
+def _compose_fields(shared: ConfigSchema, extension: ConfigSchema | None = None) -> ConfigSchema:
     fields = dict(shared.fields)
     if extension:
-        effective_overrides = []
         for name, declaration in extension.fields.items():
             if declaration.override_if_present and name not in fields:
                 continue
@@ -193,19 +195,29 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
                         or previous.pack_only and not declaration.pack_only
                         or previous.cost_affecting and not declaration.cost_affecting):
                     raise ValueError(f'{name}: override weakens an existing field constraint')
-                effective_overrides.append(declaration)
             elif declaration.override:
                 raise ValueError(f'{name}: override has no shared field')
             fields[name] = declaration
-        # A predicate may reference a sibling declared later in the same file.
-        # Validate only after all effective controller constraints are composed.
-        # Pending same-file controllers are lookup context, never live fields.
-        validation_fields = {name: declaration for name, declaration in predicate_context.fields.items()
-                             if declaration.override_if_present} if predicate_context else {}
-        pending_controllers = set(validation_fields) - fields.keys()
-        validation_fields.update(fields)
-        for declaration in effective_overrides:
-            _validate_values(declaration, validation_fields, pending_controllers=pending_controllers)
+    return ConfigSchema(fields)
+
+
+def _validate_schema(schema, predicate_context=None):
+    # A predicate may reference a sibling declared later in the same file.
+    # Pending same-file controllers are lookup context, never live fields.
+    context = {name: declaration for name, declaration in predicate_context.fields.items()
+               if declaration.override_if_present} if predicate_context else {}
+    pending = set(context) - schema.fields.keys()
+    context.update(schema.fields)
+    for declaration in schema.fields.values():
+        _validate_values(declaration, context, pending_controllers=pending)
+
+
+def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
+                   overrides: Mapping[str, Any] | None = None, *,
+                   predicate_context: ConfigSchema | None = None) -> ConfigSchema:
+    schema = _compose_fields(shared, extension)
+    _validate_schema(schema, predicate_context)
+    fields = dict(schema.fields)
     from .resolve import convert_value
     for name, value in (overrides or {}).items():
         if name not in fields:

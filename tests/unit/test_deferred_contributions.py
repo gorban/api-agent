@@ -262,7 +262,9 @@ def test_pending_controller_context_is_lookup_only(tmp_path):
     assert 'MODE' not in immediate.fields
     assert immediate.fields['VALUE'].default == 'plain'
     assert len(pending) == 1 and set(pending[0].overrides.fields) == {'MODE'}
-    assert pending[0].immediate == (immediate.fields['VALUE'],)
+    assert pending[0].source.fields['VALUE'].default == immediate.fields['VALUE'].default
+    assert pending[0].introduced == frozenset()
+    assert not pending[0].provider
 
 
 def test_direct_composition_does_not_grant_pending_controller_context(tmp_path):

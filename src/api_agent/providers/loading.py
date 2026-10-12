@@ -175,13 +175,19 @@ def provider_location(location, *, owner_root=None):
 @dataclass(frozen=True)
 class _PendingContribution:
     overrides: object
-    immediate: tuple
+    source: object
+    introduced: frozenset
+    provider: bool
+    owner_root: object
 
 
-def contribution_schema(declaration, base_schema, *, deferred=None):
+def contribution_schema(declaration, base_schema, *, deferred=None, _provider=False, _owner_root=None):
     """Expose compatible provider defaults as effective pack declarations."""
     from api_agent.config.declarations import ConfigSchema, load_declarations, compose_schema
-    contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default')
+    prior = ConfigSchema({name: value for batch in (deferred or ())
+        for name, value in batch.overrides.fields.items()})
+    contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default',
+                                    predicate_context=prior)
     contributed = ConfigSchema({name: replace(value, contribution_origin=Path(declaration).resolve())
                                 for name, value in contributed.fields.items()})
     pending = ConfigSchema({})
@@ -198,14 +204,50 @@ def contribution_schema(declaration, base_schema, *, deferred=None):
     if unchanged:
         contributed = ConfigSchema({name: declaration for name, declaration in contributed.fields.items()
                                     if name not in unchanged})
-    schema = compose_schema(base_schema, contributed, predicate_context=pending)
+    context = ConfigSchema({**prior.fields, **pending.fields})
+    schema = compose_schema(base_schema, contributed, predicate_context=context)
     if deferred is not None:
-        # Revalidate original effective declarations; replay would overwrite
-        # legitimate later defaults and their owning source.
+        # Preserve raw authority and file order for final composition.
         deferred.append(_PendingContribution(pending,
-            tuple(schema.fields[name] for name in contributed.fields)))
+            ConfigSchema({**contributed.fields, **pending.fields}),
+            frozenset(contributed.fields.keys() - base_schema.fields.keys()), _provider, _owner_root))
     return schema
 
+
+
+def _replay_contributions(base, contributions):
+    """Compose original files in order after discovered targets are known."""
+    from api_agent.config.declarations import ConfigSchema, _compose_fields, _validate_values
+    fields = dict(base.fields)
+    waiting = set()
+    promoted = {}
+    for index, batch in enumerate(contributions):
+        for name in batch.introduced:
+            if batch.provider and name in waiting and name not in fields:
+                fields[name] = batch.source.fields[name]
+                promoted[name] = index
+        waiting.update(batch.overrides.fields.keys() - fields.keys())
+    schema = ConfigSchema(fields) if promoted else base
+    captured = []
+    for index, batch in enumerate(contributions):
+        declarations = {name: value for name, value in batch.source.fields.items()
+                        if promoted.get(name) != index}
+        schema = _compose_fields(schema, ConfigSchema(declarations))
+        captured.extend(schema.fields[name] for name in declarations if name in schema.fields)
+        captured.extend(batch.source.fields[name] for name, origin in promoted.items() if origin == index)
+    # Every file's effective values remain accountable, even if a later source
+    # replaces them. Predicates use the complete, final controller constraints.
+    for declaration in (*schema.fields.values(), *captured):
+        _validate_values(declaration, schema.fields)
+    return schema
+
+
+def _canonicalize_contribution(contributions, name, declaration):
+    """Retain a provider selector's owned path through ordered replay."""
+    batch = contributions[-1]
+    source = dict(batch.source.fields)
+    source[name] = replace(source[name], default=declaration.default)
+    contributions[-1] = replace(batch, source=type(batch.source)(source))
 
 def provider_schema(location, base_schema, *, owner_root=None, deferred=None):
     """Resolve contributed declarations before creating executable adapters."""
@@ -215,7 +257,7 @@ def provider_schema(location, base_schema, *, owner_root=None, deferred=None):
         return base_schema
     if not declaration.resolve().is_relative_to(path.parent):
         raise ProviderError('provider_configuration_escape')
-    return contribution_schema(declaration, base_schema, deferred=deferred)
+    return contribution_schema(declaration, base_schema, deferred=deferred, _provider=True, _owner_root=path.parent)
 
 
 def release_modules(name):
@@ -367,11 +409,12 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
     owners = {name: owner_root for name in selectors}
     for path in configuration_paths:
         previous = set(schema.fields)
-        schema = contribution_schema(path, schema, deferred=deferred)
+        schema = contribution_schema(path, schema, deferred=deferred, _owner_root=owner_root)
         for name in set(schema.fields) - previous:
             if name.endswith('_PROVIDER'):
                 owners[name] = owner_root
     processed = {}
+    discovered = {}
     paths = set()
     while True:
         pending = False
@@ -396,6 +439,7 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
                 raise ProviderError('provider_selection_cycle')
             paths.add((path, factory))
             processed[name] = selected
+            discovered[name] = (path, factory)
             previous = dict(schema.fields)
             schema = provider_schema(str(path) + ':' + factory, schema, deferred=deferred)
             for added, field in schema.fields.items():
@@ -409,22 +453,12 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
                         if separator and not Path(default_path).is_absolute():
                             fields[added] = replace(field, default=str((path.parent / default_path).resolve()) + ':' + default_factory)
                         schema = type(schema)(fields)
+                        _canonicalize_contribution(deferred, added, schema.fields[added])
             options = parse_options(schema, argv).values
             pending = True
         if not pending:
-            from api_agent.config.declarations import ConfigSchema, compose_schema, _validate_values
-            validation = []
-            for contribution in deferred:
-                schema = compose_schema(schema, contribution.overrides)
-                effective = (*contribution.immediate, *(schema.fields[name]
-                    for name in contribution.overrides.fields if name in schema.fields))
-                for declaration in effective:
-                    _validate_values(declaration, schema.fields)
-                validation.extend(effective)
-            # Later sources may tighten a controller without replacing every
-            # dependent field. Check both active and captured declarations.
-            for declaration in (*schema.fields.values(), *validation):
-                _validate_values(declaration, schema.fields)
+            from api_agent.config.declarations import ConfigSchema
+            schema = _replay_contributions(base_schema, deferred)
             # Discovery is intentionally fixed before optional late overrides.
             # Compare *resolved* selections, including conditional defaults, and
             # do not let HELP/applicability hide a changed graph from this guard.
@@ -448,6 +482,21 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
                 anchors={'owner_root': owner_root}, interactive=True)
             for name in selectors:
                 effective = resolved.values.get(name)
-                if (effective or name in processed) and effective != processed.get(name):
+                if bool(effective) != (name in processed):
                     raise ProviderError('provider_selection_cycle')
+                if effective:
+                    origin = schema.fields[name].contribution_origin
+                    final_owner = next((batch.owner_root for batch in reversed(deferred)
+                        if name in batch.source.fields and
+                        batch.source.fields[name].contribution_origin == origin), owner_root)
+                    # Explicit input was resolved in the discovered selector's
+                    # scope; a new default retains its contributing owner's root.
+                    if resolved.fields[name].source not in {'shared_default', 'pack_default'}:
+                        final_owner = owners.get(name, owner_root)
+                    try:
+                        final_location = provider_location(effective, owner_root=final_owner)
+                    except ProviderError:
+                        raise ProviderError('provider_selection_cycle') from None
+                    if final_location != discovered[name]:
+                        raise ProviderError('provider_selection_cycle')
             return schema
