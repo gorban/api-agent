@@ -179,7 +179,9 @@ def contribution_schema(declaration, base_schema, *, deferred=None):
     contributed = ConfigSchema({name: replace(value, contribution_origin=Path(declaration).resolve())
                                 for name, value in contributed.fields.items()})
     if deferred is not None:
-        deferred.extend(value for value in contributed.fields.values() if value.override_if_present)
+        # Keep sibling overrides together without merging distinct source files.
+        deferred.append(ConfigSchema({name: value for name, value in contributed.fields.items()
+                                      if value.override_if_present}))
         contributed = ConfigSchema({name: value for name, value in contributed.fields.items()
                                     if not value.override_if_present})
     # An already composed schema may be supplied as a fresh session baseline.
@@ -398,8 +400,8 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
             pending = True
         if not pending:
             from api_agent.config.declarations import ConfigSchema, compose_schema
-            for declaration in deferred:
-                schema = compose_schema(schema, ConfigSchema({declaration.name: declaration}))
+            for contribution in deferred:
+                schema = compose_schema(schema, contribution)
             # Discovery is intentionally fixed before optional late overrides.
             # Compare *resolved* selections, including conditional defaults, and
             # do not let HELP/applicability hide a changed graph from this guard.
