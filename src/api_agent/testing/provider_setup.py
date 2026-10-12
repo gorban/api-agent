@@ -397,6 +397,14 @@ class IntegrationLLM:
             self.interaction.cancel()
         if self._shared_setup is not None:
             await self._shared_setup.settle_execution()
+        if self._credential_tasks:
+            # Never cancel to_thread tasks: cancellation would acknowledge the
+            # wrapper while the actual CLI/helper keeps running.
+            from api_agent.providers.progress import report_timeout
+            async with report_timeout('Credential helper settlement', 5) as budget:
+                _, pending = await asyncio.wait(self._credential_tasks, timeout=budget.remaining)
+            if pending:
+                raise ContractError('Credential helpers remain active; final accounting is pending.')
         if self._quota_before and not self._quota_after and self.owner is not None:
             await self._capture_quota('after')
 

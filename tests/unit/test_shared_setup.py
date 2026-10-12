@@ -156,6 +156,56 @@ def test_stubborn_credential_task_retained_until_retry():
     asyncio.run(scenario())
 
 
+def test_caller_cancellation_is_preserved_after_credential_revocation():
+    async def scenario():
+        entered = asyncio.Event()
+        async def reader():
+            entered.set()
+            await asyncio.Event().wait()
+        credentials = RevocableCredentials('op', reader)
+        waiter = asyncio.create_task(credentials())
+        await entered.wait()
+        credentials.revoke()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await credentials.aclose()
+        assert not credentials._reads
+    asyncio.run(scenario())
+
+
+def test_settlement_drains_shielded_reads_without_disposing_authentication():
+    async def scenario():
+        entered, release, stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def reader():
+            entered.set()
+            try:
+                await release.wait()
+            finally:
+                stopped.set()
+            return 'synthetic-value'
+        async def call(callback):
+            return await callback(auth=object())
+        child = SimpleNamespace(call=call, settle_execution=AsyncMock(), aclose=AsyncMock())
+        shared = SharedSetupOwner('op', 'selected', lambda credentials: child, credentials=reader)
+        await shared.ensure_ready()
+        read = asyncio.create_task(shared._credentials())
+        await entered.wait()
+        try:
+            await shared.settle_execution()
+            assert stopped.is_set() and shared._credentials._closed
+            assert not shared._credentials._reads
+            with pytest.raises(SessionClosedError):
+                await read
+            child.aclose.assert_not_awaited()
+        finally:
+            release.set()
+            await shared.aclose()
+            await asyncio.gather(read, return_exceptions=True)
+        child.aclose.assert_awaited_once()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('args', [('', 'id', lambda _: None), ('op', '', lambda _: None), ('op', 'id', None)])
 def test_invalid_binding(args):
     with pytest.raises(ContractError):

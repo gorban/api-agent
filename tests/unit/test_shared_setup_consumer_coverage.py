@@ -47,19 +47,21 @@ def test_fresh_cleanup_interrupt_retains_original_and_backend(tmp_path, monkeypa
         return SimpleNamespace(stdout=StringIO(), returncode=0, poll=lambda: 0)
     monkeypatch.setattr(integration.subprocess, 'Popen', child)
     monkeypatch.setattr(integration, 'finalize', Mock())
-    publications = []
+    publications, diagnostics = [], []
     def publish(result):
         publications.append(result)
+    def diagnostic(result):
+        diagnostics.append(result)
         if boundary == 'cancelled_abort':
             cancellation.set()
     with pytest.raises(KeyboardInterrupt) as caught:
         integration.run_integration_tests(context, (identity,), accepted=True, config={},
-            after_run=publish, cancel_event=cancellation)
+            after_run=publish, on_result=diagnostic, cancel_event=cancellation)
     assert caught.value is primary and caught.value.inspections == (backend,)
-    assert len(publications) == 1 and publications[0].tests[0].status == 'passed'
-    assert publications[0].inspections == (backend,)
+    assert publications == []
+    assert len(diagnostics) == 1 and diagnostics[0].status == 'passed'
     assert not backend.closed and backend.pending
-    assert backend.abort.call_count == (2 if boundary == 'cancelled_abort' else 0)
+    assert backend.abort.call_count == (2 if boundary == 'cancelled_abort' else 1)
 
 
 def test_terminal_pending_backend_does_not_claim_retained_browser(tmp_path):

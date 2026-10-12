@@ -43,14 +43,21 @@ def test_actual_runner_transfers_lease_to_retained_backend_until_retry_acknowled
     monkeypatch.setattr(integration,'finalize',lambda *a,**k:None)
     context=SimpleNamespace(base_root=tmp_path,owner_root=tmp_path)
     try:
-        result=integration.run_integration_tests(context,(test,),accepted=True,config={})
-        assert result.exit_code==1 and result.inspections==(backend,)
+        with pytest.raises(CleanupPendingError) as caught:
+            integration.run_integration_tests(context,(test,),accepted=True,config={})
+        result = caught.value.execution
+        assert result.exit_code==1 and caught.value.inspections[0] is backend
         assert backend.pending and not backend.closed and backend.thread.is_alive()
         assert_competing_suite_blocked()
     finally:
         fake_host.server_failure=False
         backend.close()
     assert backend.closed and not backend.thread.is_alive()
+    assert_competing_suite_blocked()
+    from api_agent.testing.inspection_controls import InspectionGroup
+    group = InspectionGroup(caught.value.inspections)
+    assert group.active and group.close(force=True)
+    assert not group.active
     assert_competing_suite_allowed()
 
 

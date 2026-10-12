@@ -471,7 +471,7 @@ def test_debug_publication_callback_cannot_reenter_runner_operation(tmp_path):
     assert len(result.inspections) == 1 and result.inspections[0].closed
 
 
-def test_debug_prepublication_failure_publishes_failed_result_and_retains_retry_owner(tmp_path, monkeypatch):
+def test_debug_prepublication_failure_keeps_diagnostics_without_final_publication(tmp_path, monkeypatch):
     from api_agent.providers.control import CleanupPendingError
     from api_agent.testing.setup_backend import SetupBackend
 
@@ -506,16 +506,50 @@ def test_debug_prepublication_failure_publishes_failed_result_and_retains_retry_
     with pytest.raises(CleanupPendingError) as caught:
         run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True}, after_run=publish)
 
-    assert order == ['prepare', 'after_run', 'close']
-    assert len(published) == 1 and published[0].exit_code == 1
-    assert [row.status for row in published[0].tests] == ['passed']
-    assert 'Shared setup execution cleanup pending; retry required.' in published[0].output
-    backend = published[0].inspections[0]
-    assert caught.value.inspections == (backend,)
+    assert order == ['prepare', 'close']
+    assert published == []
+    diagnostic = caught.value.execution
+    assert diagnostic.exit_code == 1
+    assert [row.status for row in diagnostic.tests] == ['passed']
+    assert 'Shared setup execution cleanup pending; retry required.' in diagnostic.output
+    backend = diagnostic.inspections[0]
+    assert caught.value.inspections[0] is backend
+    from api_agent.testing.inspection_controls import InspectionGroup
     assert backend.pending and not backend.closed
     backend.close()
     assert order[-1] == 'close' and close_attempts == 2
     assert backend.closed and not backend.pending
+    assert InspectionGroup(caught.value.inspections).close(force=True)
+
+
+def test_nondebug_cleanup_failure_also_blocks_final_publication(tmp_path, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing.setup_backend import SetupBackend
+    base = fixture_repo(tmp_path / 'base', 'def test_ok():\n    assert True\n')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    published, diagnostics = [], []
+    original_close = SetupBackend.close
+    blocked = True
+    def cleanup(owner):
+        if blocked:
+            owner.pending = True
+            raise owner._receipt()
+        return original_close(owner)
+    monkeypatch.setattr(SetupBackend, 'close', cleanup)
+    with pytest.raises(CleanupPendingError) as caught:
+        run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': False},
+            after_run=published.append, on_result=diagnostics.append)
+    assert published == []
+    assert len(diagnostics) == 1 and diagnostics[0].status == 'passed'
+    assert caught.value.execution.exit_code == 1
+    backend = caught.value.inspections[0]
+    assert backend.pending and not backend.closed
+    blocked = False
+    backend.close()
+    assert backend.closed and not backend.pending
+    from api_agent.testing.inspection_controls import InspectionGroup
+    assert InspectionGroup(caught.value.inspections).close(force=True)
 
 
 def test_run_complete_transfers_live_worker_before_publication(tmp_path, monkeypatch):
