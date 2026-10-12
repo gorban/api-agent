@@ -160,6 +160,8 @@ class IntegrationInspection(CleanupLeaseOwner):
         while time.monotonic() < deadline:
             with self._lock:
                 if self.closed:
+                    self._acknowledge_closed()
+                    self.pending = False
                     return True
                 if any(row.get('kind') == 'inspection_cleanup_pending' and row.get('attempt') == attempt
                        for row in self._rows()):
@@ -183,7 +185,16 @@ class IntegrationInspection(CleanupLeaseOwner):
             if deadline is not None and time.monotonic() >= deadline:
                 return False
             time.sleep(.03)
-        return True
+        with self._lock:
+            try:
+                self._acknowledge_closed()
+            except BaseException as error:
+                self.pending = True
+                if not isinstance(error, Exception):
+                    raise
+                return False
+            self.pending = False
+            return True
 
     def abort(self):
         """Synchronous emergency cleanup of this registered owned process group."""

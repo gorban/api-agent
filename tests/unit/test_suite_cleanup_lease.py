@@ -85,6 +85,7 @@ def test_cancellation_resistant_inference_keeps_kernel_lease_until_disposal_ack(
         finally:
             client.close()
     executor=ThreadPoolExecutor(max_workers=1)
+    future = first_cleanup = None
     try:
         with locks.suite_lock():
             locks.retain_suite_cleanup(backend)
@@ -103,16 +104,20 @@ def test_cancellation_resistant_inference_keeps_kernel_lease_until_disposal_ack(
         # The client must also acknowledge its disconnected lease before the
         # backend's next disposal attempt; finishing the body alone is earlier.
         try:
-            assert stopped.wait(timeout=2)
-            future.exception(timeout=2)
-            assert isinstance(first_cleanup.exception(timeout=2), (type(None), CleanupPendingError))
+            if future is not None:
+                future.exception(timeout=2)
+            if first_cleanup is not None:
+                assert isinstance(first_cleanup.exception(timeout=2), (type(None), CleanupPendingError))
         finally:
-            backend.cleanup_timeout=backend.server._timeout=backend.registry._timeout=2
+            backend.cleanup_timeout = 2
+            for owner in (backend.server, backend.registry):
+                if owner is not None:
+                    owner._timeout = 2
             try:
                 backend.close()
             finally:
                 executor.shutdown(wait=True)
-    assert future.done() and backend.closed and not backend.thread.is_alive()
+    assert future.done() and stopped.is_set() and backend.closed and not backend.thread.is_alive()
     assert_competing_suite_allowed()
 
 

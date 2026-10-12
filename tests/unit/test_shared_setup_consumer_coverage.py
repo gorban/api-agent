@@ -71,7 +71,8 @@ def test_terminal_pending_backend_does_not_claim_retained_browser(tmp_path):
         assert lines[1] == 'Allure publication: PASS'
         assert 'cleanup remains pending' in lines[2]
         assert not any('browser' in line.lower() or 'Debug inspection' in line for line in lines)
-        backend.closed = True
+        backend.close()
+        assert backend.closed and not backend.pending
     backend.wait_closed = Mock(side_effect=dispose)
     backend.end_inspection = Mock()
     execution = integration.IntegrationRunResult(1, (TestResult(identity, 'passed'),), '', inspections=(backend,))

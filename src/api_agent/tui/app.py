@@ -1498,7 +1498,7 @@ class ApiAgentApp(App[int]):
             from api_agent.testing.inspection_controls import InspectionGroup
             self.inspections = InspectionGroup(getattr(recorded.execution, 'inspections', ()))
             self.inspection_lost |= self.inspections.lost
-            self.inspection_failed = self.inspection_lost or any(getattr(handle, 'pending', False) for handle in self.inspections.handles if not handle.closed)
+            self.inspection_failed = self.inspection_lost or self.inspections.pending
             self.unit_result = recorded.execution
             self.suite_usage = getattr(recorded, 'usage', {})
             self.test_costs = self.suite_usage.get('test_costs', {})
