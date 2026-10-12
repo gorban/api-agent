@@ -781,3 +781,96 @@ def test_cancel_rpc_has_own_deadline_after_presenter_failure(client, monkeypatch
 
     assert asyncio.run(setup.prepare_quota_client(CONNECTION, interactive=True, present_login=present)) == QuotaReadError('request')
     assert process.written[-1]['method'] == 'account/login/cancel'
+
+
+@pytest.mark.parametrize('relative', ['package-lock.json', 'validation.json'])
+def test_fifo_metadata_is_rejected_and_the_owned_verifier_exits(tmp_path, relative):
+    import multiprocessing
+    import os
+    if not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO control requires POSIX')
+    package = '@openai/codex-linux-x64'
+    root = tmp_path / 'client'
+    _installed_tree(root, package)
+    metadata = root / relative
+    metadata.unlink()
+    os.mkfifo(metadata, 0o600)
+    context = multiprocessing.get_context('fork')
+    parent, child = context.Pipe(duplex=False)
+    process = context.Process(target=lambda: child.send(setup._verify_install(root, package)))
+
+    process.start()
+    process.join(1)
+    stopped = not process.is_alive()
+    if not stopped:
+        process.terminate()
+        process.join(1)
+
+    assert stopped, 'Quota metadata verifier blocked on a FIFO'
+    assert process.exitcode == 0 and parent.poll() and parent.recv() is None
+    parent.close()
+    child.close()
+
+
+@pytest.mark.parametrize('replacement', ['fifo', 'regular', 'symlink'])
+def test_metadata_replacement_is_rejected_before_reading(tmp_path, monkeypatch, replacement):
+    import os
+    path = tmp_path / 'metadata.json'
+    path.write_text('{}')
+    original_open = os.open
+    def swapped_open(selected, flags):
+        selected.rename(tmp_path / 'original.json')
+        if replacement == 'fifo':
+            os.mkfifo(selected, 0o600)
+        elif replacement == 'regular':
+            selected.write_text('{}')
+        else:
+            selected.symlink_to(tmp_path / 'original.json')
+        return original_open(selected, flags)
+    monkeypatch.setattr(setup.os, 'open', swapped_open)
+
+    with pytest.raises((ValueError, OSError)):
+        setup._metadata(path, limit=4096)
+
+
+@pytest.mark.parametrize(('relative', 'limit'), [('package-lock.json', 1024 * 1024), ('validation.json', 4096)])
+def test_oversized_metadata_is_rejected_before_parsing(tmp_path, relative, limit):
+    root = tmp_path / 'client'
+    package = '@openai/codex-linux-x64'
+    _installed_tree(root, package)
+    with (root / relative).open('wb') as handle:
+        handle.truncate(limit + 1)
+
+    assert setup._verify_install(root, package) is None
+
+
+def test_metadata_read_observes_cancellation(tmp_path):
+    path = tmp_path / 'metadata.json'
+    path.write_text('{}')
+    with pytest.raises(ValueError, match='cancelled'):
+        setup._metadata(path, limit=4096, cancelled=lambda: True)
+
+
+def test_file_growth_cannot_exceed_read_limit(tmp_path, monkeypatch):
+    path = tmp_path / 'growing.json'
+    path.write_bytes(b'{}')
+    original_fdopen = setup.os.fdopen
+    def grown_file(descriptor, mode):
+        stream = original_fdopen(descriptor, mode)
+        original_read = stream.read
+        def read(size):
+            path.write_bytes(b'x' * 10)
+            return original_read(size)
+        stream.read = read
+        return stream
+    monkeypatch.setattr(setup.os, 'fdopen', grown_file)
+    with pytest.raises(ValueError, match='size limit'):
+        setup._metadata(path, limit=4)
+
+
+def test_metadata_read_cancels_between_bounded_chunks(tmp_path):
+    path = tmp_path / 'metadata.json'
+    path.write_text('{}')
+    checks = iter([False, False, True])
+    with pytest.raises(ValueError, match='cancelled'):
+        setup._metadata(path, limit=4096, cancelled=lambda: next(checks))

@@ -49,7 +49,7 @@ def test_publication_without_started_server_and_empty_inspection_waiters(tmp_pat
     async def finish_execution():
         calls.append('quota')
 
-    backend.registry = SimpleNamespace(_owner=SimpleNamespace(finish_execution=finish_execution))
+    backend.registry = SimpleNamespace(finish_execution=finish_execution)
 
     async def drive():
         assert await backend._prepare_publication() is None
@@ -660,6 +660,9 @@ def test_recorded_remote_fixture_publishes_before_backend_inspection_opens(monke
                     browser=SimpleNamespace(is_connected=lambda: True),
                     context=SimpleNamespace(pages=pages)))
             await self._capture_quota('before')
+
+        async def _finish_execution(self):
+            await self._capture_quota('after')
 
         async def _close(self):
             pass

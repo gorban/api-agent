@@ -14,6 +14,10 @@ state, provider objects, and browser objects remain in the backend process.
   Stop remaining worker calls and capture the final provider quota before
   usage/accounting and Allure publication; retain authentication and browser
   ownership through publication and dispose them afterward.
+  Detached readiness, catalog, calls and shielded authentication initialization
+  must stop before the accounting snapshot is frozen. Unconfirmed settlement
+  blocks publication and preserves its cleanup receipt; late setup cannot emit
+  a new starting-quota observation after finalization.
   Explicit shutdown or closing all windows disposes the backend and emits the
   existing inspection event, with a retry receipt if cleanup is unconfirmed.
   A stopped creating loop is restarted for bounded inspection wait and cleanup;

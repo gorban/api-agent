@@ -127,6 +127,7 @@ class IntegrationLLM:
         self._quota_lock = asyncio.Lock()
         self._quota_observer = quota_observer
         self._quota_before = self._quota_after = False
+        self._execution_finished = False
         self._retained_owners = []
         self._credential_tasks = set()
         self.closed = False
@@ -257,6 +258,8 @@ class IntegrationLLM:
 
     async def _capture_quota(self, phase):
         async with self._quota_lock:
+            if phase == 'before' and self._execution_finished:
+                return
             if getattr(self, '_quota_' + phase):
                 return
             setattr(self, '_quota_' + phase, True)
@@ -388,12 +391,18 @@ class IntegrationLLM:
                                if value is not None)
             raise
 
-    async def _close(self):
+    async def _finish_execution(self):
+        self._execution_finished = True
         if self.interaction is not None:
             self.interaction.cancel()
+        if self._shared_setup is not None:
+            await self._shared_setup.settle_execution()
+        if self._quota_before and not self._quota_after and self.owner is not None:
+            await self._capture_quota('after')
+
+    async def _close(self):
         try:
-            if self._quota_before and not self._quota_after and self.owner is not None:
-                await self._capture_quota('after')
+            await self._finish_execution()
             await self._release_retained()
             if self._shared_setup is not None:
                 await self._shared_setup.aclose()

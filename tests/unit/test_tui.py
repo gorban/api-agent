@@ -942,6 +942,43 @@ def test_button_footer_tab_hint_precedes_shortcuts_without_binding(tmp_path):
     asyncio.run(scenario())
 
 
+def test_concurrent_footer_recomposition_mounts_one_tab_hint(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            app.show_menu()
+            await pilot.pause()
+            footer = app.screen.query_one('Footer')
+            with footer._context():
+                await asyncio.gather(*(footer.recompose() for _ in range(4)))
+            assert len(footer.query('#tab-select-hint')) == 1
+            assert footer.children[0].id == 'tab-select-hint'
+    asyncio.run(scenario())
+
+
+def test_pruning_footer_has_no_new_children():
+    from api_agent.tui.app import ButtonFooter
+    footer = ButtonFooter()
+    footer._pruning = True
+    assert list(footer.compose()) == []
+
+
+def test_inactive_screen_footer_has_no_new_children(tmp_path):
+    from api_agent.tui.app import WorkbenchScreen
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            previous = app.screen
+            footer = previous.query_one('Footer')
+            app.push_screen(WorkbenchScreen('menu', 'Review'))
+            await pilot.pause()
+            with footer._context():
+                assert list(footer.compose()) == []
+    asyncio.run(scenario())
+
+
 def test_cleanup_both_dotenvs_hidden_setting_and_default_review(tmp_path):
     from api_agent.config.session import ConfigSession
 

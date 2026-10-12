@@ -107,6 +107,7 @@ def test_provider_snapshot_prepares_missing_client_and_matches_attended_login(mo
     llm = object.__new__(IntegrationLLM)
     llm._quota_lock = asyncio.Lock()
     llm._quota_before = llm._quota_after = False
+    llm._execution_finished = False
     llm.provider = SimpleNamespace(implementation=subject)
     llm.owner = Owner()
     llm._quota_observer = lambda phase, snapshot: observed.append((phase, snapshot))

@@ -238,3 +238,21 @@ def test_unknown_run_identity_in_overlap_inventory_still_blocks_known_samples():
     other = record(4, before='2026-10-01T00:30:00Z', after='2026-10-01T01:30:00Z')
     other[1].pop('run_id')
     assert calibration(history, CARD, overlap_records=history + [other]) == {}
+
+
+@pytest.mark.parametrize('reason', [None, 'negative_delta'])
+def test_same_allocation_reset_does_not_contaminate_other_suites(reason):
+    history = [record(run) for run in (1, 2, 3)]
+    reset = record(4, before='2026-10-01T00:30:00Z', after='2026-10-01T01:30:00Z')
+    quota = reset[1]['quota']
+    quota['before']['pct_used'] = 99
+    quota['after']['pct_used'] = 1
+    quota['pct_point_delta'] = None
+    quota['quota_unavailable_reason'] = reason
+
+    result = calibration(history, CARD, overlap_records=history + [reset])
+
+    assert result == calibration(history, CARD)
+    assert next(iter(result.values()))['sample_count'] == 3
+    assert not overlapping_quota(history[0][1], [reset])
+    assert not overlapping_quota(reset[1], history)
