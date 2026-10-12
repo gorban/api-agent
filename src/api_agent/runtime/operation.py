@@ -12,6 +12,21 @@ from api_agent.providers.control import CleanupPendingError
 from .tasks import settle as _settle, offload as _offload
 
 
+async def retry_owned_cleanup(owner, pending):
+    """Keep the caller's receipt through disposal and outer acknowledgement.
+
+    A disposal callback can clear the owner's handle before a retained suite
+    lease finishes releasing. Restore that handle if acknowledgement fails or
+    is interrupted, without replacing a distinct newly assigned cleanup duty.
+    """
+    try:
+        await pending.retry()
+    except BaseException:
+        if owner.pending_cleanup is None:
+            owner.pending_cleanup = pending
+        raise
+
+
 @dataclass(frozen=True)
 class CallbackEndpoint:
     origin: str

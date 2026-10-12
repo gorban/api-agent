@@ -1589,6 +1589,7 @@ class ApiAgentApp(App[int]):
 
     def inspection_cleanup_receipt(self):
         from api_agent.providers.control import CleanupPendingError
+        from api_agent.runtime.operation import retry_owned_cleanup
         from api_agent.runtime.tasks import offload
         group = self.inspections
         recording = self.recording_cleanup
@@ -1598,7 +1599,7 @@ class ApiAgentApp(App[int]):
             cleaned = True
             if pending is not None:
                 try:
-                    await pending.retry()
+                    await retry_owned_cleanup(recording, pending)
                 except Exception:
                     cleaned = False
             closed = await offload(group.close, force=True)
@@ -1632,8 +1633,9 @@ class ApiAgentApp(App[int]):
             return True
         cleaned = True
         if self.recording_cleanup is not None:
+            from api_agent.runtime.operation import retry_owned_cleanup
             try:
-                await self.recording_cleanup.pending_cleanup.retry()
+                await retry_owned_cleanup(self.recording_cleanup, self.recording_cleanup.pending_cleanup)
             except Exception:
                 cleaned = False
             else:
