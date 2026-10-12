@@ -192,3 +192,86 @@ def test_active_environment_recognizes_physical_alias_and_missing_path(tmp_path,
     assert not active_environment(tmp_path / 'absent')
     monkeypatch.setattr('api_agent.runtime.dependencies.sys.prefix', str(target))
     assert active_environment(target)
+
+
+def test_missing_host_parser_hands_off_to_existing_environment_before_reading_manifests(tmp_path, monkeypatch):
+    from api_agent.runtime import dependencies
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False)
+    python = tmp_path / '.venv/bin/python'
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr(dependencies, '_requirement_types', lambda: (_ for _ in ()).throw(OSError('missing parser')))
+    with patch.object(dependencies, 'requirements', side_effect=AssertionError('host cannot parse yet')), \
+         patch.object(dependencies.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as probe, \
+         patch.object(dependencies.subprocess, 'call', return_value=7) as launch:
+        assert dependencies.ensure_environment(context, ['--tui-mode=unit', '--collect-only']) == 7
+    assert probe.call_count == 1
+    assert probe.call_args.args[0][0] == str(python)
+    assert launch.call_args.args[0][-2:] == ['--tui-mode=unit', '--collect-only']
+
+
+@pytest.mark.parametrize('uv', ['uv', None])
+def test_fresh_validator_bootstrap_uses_seeded_environment_not_manifest_requirements(tmp_path, monkeypatch, uv):
+    from api_agent.runtime.dependencies import _prepare_requirement_parser
+    environment = tmp_path / '.venv'
+    python = environment / 'bin/python'
+    monkeypatch.setattr('api_agent.runtime.dependencies.shutil.which', lambda _: uv)
+    with patch('api_agent.runtime.dependencies.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run:
+        _prepare_requirement_parser(environment, python)
+    create, probe = [call.args[0] for call in run.call_args_list]
+    assert create[-1] == str(environment)
+    assert ('--seed' in create) is bool(uv)
+    assert create[:2] == ['uv', 'venv'] if uv else create[1:3] == ['-m', 'venv']
+    assert probe[0] == str(python)
+    assert not any('install' in command for command in (create, probe))
+
+
+@pytest.mark.parametrize('uv', ['uv', None])
+def test_missing_target_parser_installs_only_fixed_validator_then_verifies(tmp_path, monkeypatch, uv):
+    from api_agent.runtime.dependencies import _prepare_requirement_parser
+    python = tmp_path / 'bin/python'
+    python.parent.mkdir()
+    python.touch()
+    monkeypatch.setattr('api_agent.runtime.dependencies.shutil.which', lambda _: uv)
+    replies = [SimpleNamespace(returncode=3), SimpleNamespace(returncode=0), SimpleNamespace(returncode=0)]
+    if not uv:
+        replies.insert(1, SimpleNamespace(returncode=0))
+    with patch('api_agent.runtime.dependencies.subprocess.run', side_effect=replies) as run:
+        _prepare_requirement_parser(tmp_path, python)
+    commands = [call.args[0] for call in run.call_args_list]
+    installer = commands[-2]
+    assert installer[-1] == 'packaging>=24,<27'
+    assert installer[:3] == ['uv', 'pip', 'install'] if uv else installer[:4] == [str(python), '-m', 'pip', 'install']
+    assert commands[0] == commands[-1]
+    if not uv:
+        assert commands[1] == [str(python), '-m', 'ensurepip']
+
+
+def test_validator_probe_failure_never_becomes_installation_intent(tmp_path):
+    from api_agent.runtime.dependencies import _prepare_requirement_parser
+    python = tmp_path / 'python'
+    python.touch()
+    with patch('api_agent.runtime.dependencies.subprocess.run', side_effect=[
+            SimpleNamespace(returncode=1), SimpleNamespace(returncode=0), SimpleNamespace(returncode=0)]) as run:
+        with pytest.raises(OSError, match='Cannot verify the dependency validator'):
+            _prepare_requirement_parser(tmp_path, python)
+    assert run.call_count == 1
+
+
+def test_validator_still_missing_after_installation_prevents_handoff(tmp_path):
+    from api_agent.runtime.dependencies import _prepare_requirement_parser
+    python = tmp_path / 'python'
+    python.touch()
+    with patch('api_agent.runtime.dependencies.shutil.which', return_value='uv'), \
+         patch('api_agent.runtime.dependencies.subprocess.run', side_effect=[
+             SimpleNamespace(returncode=3), SimpleNamespace(returncode=0), SimpleNamespace(returncode=3)]):
+        with pytest.raises(OSError, match='remains unavailable'):
+            _prepare_requirement_parser(tmp_path, python)
+
+
+@pytest.mark.parametrize('failure', [OSError('unavailable'), __import__('subprocess').TimeoutExpired('probe', 20)])
+def test_validator_probe_transport_error_is_a_launcher_error(tmp_path, failure):
+    from api_agent.runtime.dependencies import _requirement_parser_status
+    with patch('api_agent.runtime.dependencies.subprocess.run', side_effect=failure):
+        with pytest.raises(OSError, match='Cannot verify the dependency validator'):
+            _requirement_parser_status(tmp_path / 'python')
