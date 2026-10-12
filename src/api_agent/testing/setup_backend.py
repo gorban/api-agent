@@ -198,6 +198,8 @@ class SetupBackend(CleanupLeaseOwner):
     def close(self):
         with self._lock:
             if self.closed:
+                self._acknowledge_closed()
+                self.pending = False
                 return
             if self.loop is None and (self.thread is None or not self.thread.is_alive()):
                 self.closed = True

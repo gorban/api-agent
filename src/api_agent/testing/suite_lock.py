@@ -1,4 +1,6 @@
 """One local suite owns execution/accounting; idle launchers remain independent."""
+from _thread import start_new_thread
+from concurrent.futures import Future
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -43,6 +45,8 @@ class _Lease:
     owners: set = field(default_factory=set, repr=False)
     guard: object = field(default_factory=RLock, repr=False)
 
+    closing: object = field(default=None, repr=False)
+
     def retain(self, identifier):
         with self.guard:
             if identifier in self.owners:
@@ -62,8 +66,21 @@ class _Lease:
 
     def _close_if_finished(self):
         if not self.active and not self.owners and self.fd is not None:
-            fd, self.fd = self.fd, None
-            os.close(fd)
+            # Only this disposal task touches the numeric descriptor. Interrupting
+            # its acknowledgement never resubmits close against a reused fd.
+            if self.closing is None:
+                ticket = Future()
+                try:
+                    self.closing = ticket
+                    start_new_thread(_dispose_descriptor, (self.fd, ticket))
+                except BaseException:
+                    # A cancelled launch ticket prevents even a delayed thread
+                    # from disposing the fd; a running ticket owns close once.
+                    if ticket.cancel():
+                        self.closing = None
+                    raise
+            self.closing.result()
+            self.fd = None
 
     def owns_context(self):
         current = _task()
@@ -72,6 +89,14 @@ class _Lease:
                 and (current is self.task if current is not None else
                      get_ident() == self.thread or
                      (delegate is not None and delegate[0] is self and delegate[1] == get_ident())))
+
+
+def _dispose_descriptor(fd, acknowledgement):
+    # Native closerange ignores close errors and has no Python callback between
+    # the syscall and completion. Signals interrupt the caller, not this thread.
+    if acknowledgement.set_running_or_notify_cancel():
+        os.closerange(fd, fd + 1)
+        acknowledgement.set_result(None)
 
 
 class CleanupLeaseOwner:
@@ -86,10 +111,11 @@ class CleanupLeaseOwner:
                 self._cleanup_callbacks = callbacks
 
     def _acknowledge_closed(self):
-        callbacks = getattr(self, '_cleanup_callbacks', ())
-        self._cleanup_callbacks = []
-        for callback in callbacks:
-            callback()
+        # Called under the owner's lifecycle lock (which need not be reentrant).
+        callbacks = getattr(self, '_cleanup_callbacks', [])
+        while callbacks:
+            callbacks[0]()
+            del callbacks[0]
 
 
 def retain_suite_cleanup(owner):
@@ -106,6 +132,32 @@ def retain_suite_cleanup(owner):
     except BaseException:
         lease.release(identifier)
         raise
+
+
+def retain_cleanup_receipt(error):
+    """Retain outer adapters' retry receipts before their suite context exits."""
+    from api_agent.providers.control import CleanupPendingError
+    lease = _CURRENT.get()
+    pending = error if isinstance(error, CleanupPendingError) else getattr(error, 'cleanup_pending', None)
+    if (lease is None or not lease.owns_context() or not isinstance(pending, CleanupPendingError)
+            or not callable(pending.retry) or not lease.retain(id(pending))):
+        return
+    _bind_cleanup_receipt(pending, lease, id(pending))
+
+
+def _bind_cleanup_receipt(pending, lease, identifier):
+    from api_agent.providers.control import CleanupPendingError
+    retry = pending.retry
+    async def acknowledged_retry(*args, **kwargs):
+        try:
+            await retry(*args, **kwargs)
+        except BaseException as error:
+            following = error if isinstance(error, CleanupPendingError) else getattr(error, 'cleanup_pending', None)
+            if isinstance(following, CleanupPendingError) and following is not pending:
+                _bind_cleanup_receipt(following, lease, identifier)
+            raise
+        lease.release(identifier)
+    pending.retry = acknowledged_retry
 
 
 def _lock(fd):
@@ -169,12 +221,20 @@ def suite_locked(function):
         @wraps(function)
         async def asynchronous(*args, **kwargs):
             with suite_lock():
-                return await function(*args, **kwargs)
+                try:
+                    return await function(*args, **kwargs)
+                except BaseException as error:
+                    retain_cleanup_receipt(error)
+                    raise
         return asynchronous
     @wraps(function)
     def synchronous(*args, **kwargs):
         with suite_lock():
-            return function(*args, **kwargs)
+            try:
+                return function(*args, **kwargs)
+            except BaseException as error:
+                retain_cleanup_receipt(error)
+                raise
     return synchronous
 
 
