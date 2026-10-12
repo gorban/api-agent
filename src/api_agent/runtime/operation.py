@@ -18,6 +18,7 @@ async def retry_owned_cleanup(owner, pending):
     A disposal callback can clear the owner's handle before a retained suite
     lease finishes releasing. Restore that handle if acknowledgement fails or
     is interrupted, without replacing a distinct newly assigned cleanup duty.
+    Once acknowledged, retire only this receipt so the owner can be reused.
     """
     try:
         await pending.retry()
@@ -25,6 +26,9 @@ async def retry_owned_cleanup(owner, pending):
         if owner.pending_cleanup is None:
             owner.pending_cleanup = pending
         raise
+    else:
+        if owner.pending_cleanup is pending:
+            owner.pending_cleanup = None
 
 
 @dataclass(frozen=True)
