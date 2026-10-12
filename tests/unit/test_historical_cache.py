@@ -49,7 +49,7 @@ def test_new_accounting_identifies_transport_equivalent_estimator():
     manifest, _ = fixture()
     usage = SimpleNamespace(inference_calls={}, report=lambda: {})
     artifact = build_accounting(SimpleNamespace(run_id=manifest['run_id']), [], {}, usage, [])
-    assert artifact['estimator_version'] == 4
+    assert artifact['version'] == 2 and artifact['estimator_version'] == 5
 
 
 def test_transaction_verified_idempotent_and_origin(tmp_path, monkeypatch):
@@ -91,7 +91,7 @@ def test_adapter_degrades_without_cache_or_auth(tmp_path, monkeypatch):
     context = SimpleNamespace(owner_root=tmp_path, base_root=tmp_path)
     test = SimpleNamespace(id='t', root=None, node_id='test.py::t')
     class Bad:
-        def records(self, origin): raise OSError('private response')
+        def records(self, origin, **bounds): raise OSError('private response')
     snapshot = estimator_for(context, [test], {}, cache=Bad(), rate_card=bundled_rate_card())
     assert snapshot.predictions['t']['estimated_cost_usd'] is None
     assert snapshot.synchronize() is snapshot
@@ -143,18 +143,18 @@ def test_adapter_policy_qualified(tmp_path, monkeypatch):
     from test_historical_estimation import records, compat
     now = __import__('datetime').datetime(2026, 10, 10, tzinfo=__import__('datetime').timezone.utc)
     history = records()
-    settings = dict(compat(), TEST_COST_HISTORY_DAYS=30, _COST_QUOTA_WINDOW_ID='window')
+    settings = dict(compat(), TEST_COST_HISTORY_DAYS=30, _COST_QUOTA_WINDOW_ID='window', _COST_QUOTA_ALLOCATION_ID='c' * 64)
     actual = compatibility(settings)
     for _, artifact in history:
         artifact['tests'][0]['compatibility'] = actual
         artifact['tests'][0]['calls'][0]['quote']['accounting']['compatibility'] = actual
     class Cache:
-        def records(self, origin): return history
+        def records(self, origin, **bounds): return history
     monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test, **kwargs: 'hash')
     test = SimpleNamespace(id='t', node_id='test.py::test[one]', root=None)
     snapshot = HistoricalEstimator([test], settings, Cache(), 'origin', 'repo', bundled_rate_card(), now=now)
     assert snapshot.predictions['t']['basis'] == 'historical_quota'
-    no_account = dict(settings); no_account.pop('_COST_QUOTA_WINDOW_ID')
+    no_account = dict(settings); no_account.pop('_COST_QUOTA_WINDOW_ID'); no_account.pop('_COST_QUOTA_ALLOCATION_ID')
     unknown_account = HistoricalEstimator([test], no_account, Cache(), 'origin', 'repo', bundled_rate_card(), now=now)
     assert unknown_account.predictions['t']['basis'] == 'historical_list_price'
     assert unknown_account.config.get('_COST_QUOTA_WINDOW_ID') is None
@@ -183,12 +183,12 @@ def test_adapter_unqualified_and_unknown_prediction(tmp_path, monkeypatch):
     from test_historical_estimation import records, compat
     from datetime import datetime, timezone
     history = records()
-    settings = dict(compat(), TEST_COST_HISTORY_DAYS=30, _COST_QUOTA_WINDOW_ID='window'); actual = compatibility(settings)
+    settings = dict(compat(), TEST_COST_HISTORY_DAYS=30, _COST_QUOTA_WINDOW_ID='window', _COST_QUOTA_ALLOCATION_ID='c' * 64); actual = compatibility(settings)
     for _, artifact in history:
         artifact['tests'][0]['compatibility'] = actual
         artifact['tests'][0]['calls'][0]['quote']['accounting']['compatibility'] = actual
     class Cache:
-        def records(self, origin): return history
+        def records(self, origin, **bounds): return history
         def ingest(self, *args): pytest.fail('Oversized data ingested')
     monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test, **kwargs: 'hash')
     tests = [SimpleNamespace(id='t', node_id='test.py::test[one]'), SimpleNamespace(id='other', node_id='test.py::other')]
@@ -314,7 +314,7 @@ def test_api_key_history_never_scales_with_same_compatibility(tmp_path, monkeypa
     from test_historical_estimation import records, compat, row
     from datetime import datetime, timezone
     history = records()
-    settings = dict(compat(), TEST_COST_HISTORY_DAYS=30, _COST_QUOTA_WINDOW_ID='window')
+    settings = dict(compat(), TEST_COST_HISTORY_DAYS=30, _COST_QUOTA_WINDOW_ID='window', _COST_QUOTA_ALLOCATION_ID='c' * 64)
     actual = compatibility(settings)
     for _, artifact in history:
         artifact['tests'][0]['compatibility'] = actual
@@ -323,9 +323,9 @@ def test_api_key_history_never_scales_with_same_compatibility(tmp_path, monkeypa
     api['node_id'] = 'test.py::api'
     api['compatibility'] = actual
     api['calls'][0]['quote']['accounting'].update(compatibility=actual, billing_mode='api_key')
-    history.append((dict(history[-1][0], finished_at='2026-10-04T01:00:00Z'), dict(history[-1][1], tests=[api])))
+    history.append((dict(history[-1][0], finished_at='2026-10-04T01:00:00Z'), dict(history[-1][1], run_id=str(uuid4()), tests=[api])))
     class Cache:
-        def records(self, origin): return history
+        def records(self, origin, **bounds): return history
     monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda test, **kwargs: 'hash')
     snapshot = HistoricalEstimator([SimpleNamespace(id='t', node_id=api['node_id'])], settings, Cache(), 'origin', 'repo', bundled_rate_card(), now=datetime(2026, 10, 10, tzinfo=timezone.utc))
     assert snapshot.predictions['t']['basis'] == 'historical_list_price'
@@ -346,7 +346,7 @@ def binding_run(day=1, billing='subscription'):
     manifest, _ = fixture()
     template_manifest, artifact = deepcopy(records()[day - 1])
     manifest.update(template_manifest)
-    artifact.update(version=1, estimator_version=1, run_id=manifest['run_id'])
+    artifact.update(version=2, estimator_version=5, run_id=manifest['run_id'])
     artifact['quota']['payment_month'] = None
     test = artifact['tests'][0]
     test.update(source_fingerprint='c' * 64, compatibility=compatibility(settings), attempts=2, original_estimate=None,
@@ -357,7 +357,6 @@ def binding_run(day=1, billing='subscription'):
     call['quote'].update(list_cost_usd=.0001, payment=None)
     test['calls'] = [dict(_evidence(), **{})]
     test['calls'][0].update(call, test_id='t')
-    for snapshot in (artifact['quota']['before'], artifact['quota']['after']): snapshot['pct_used'] = 1
     payload = json.dumps(artifact).encode()
     manifest['files']['accounting.json'] = sha256(payload).hexdigest()
     return settings, manifest, payload
@@ -534,7 +533,7 @@ def test_repository_root_resolution_is_shared_by_picker_refresh(tmp_path):
         artifact['tests'][0]['compatibility'] = compatibility(settings)
         artifact['tests'][0]['calls'][0]['quote']['accounting']['compatibility'] = compatibility(settings)
     class Cache:
-        def records(self, origin): return histories
+        def records(self, origin, **bounds): return histories
     snapshot = HistoricalEstimator([test], settings, Cache(), 'origin', 'repo', bundled_rate_card(),
                                    now=datetime(2026,10,10,tzinfo=timezone.utc), context=context)
     assert snapshot.fingerprints['t'] == expected

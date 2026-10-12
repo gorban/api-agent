@@ -155,13 +155,14 @@ class RunStorage:
             raise StorageError('Could not persist Allure run') from None
         return self._key(repo, run_id, 'manifest.json')
 
-    def history(self, repo, *, max_pages=1000, budget=None):
+    def history(self, repo, *, max_pages=100, budget=None, require_accounting=False):
         """Return finalized manifests ordered by finish time and run ID."""
         if not isinstance(repo, str) or not repo or repo in {'.', '..'} or any(c in repo for c in '/\\\0'):
             raise ValueError('Invalid repository')
         prefix = f'{self.prefix}/{repo}/'
         rows = []
         try:
+            from api_agent.telemetry.history import MAX_BYTES
             client = self._client()
             token = None
             seen_tokens = set()
@@ -170,7 +171,7 @@ class RunStorage:
                 if budget is not None and budget.remaining == 0:
                     raise TimeoutError()
                 pages += 1
-                if pages > max_pages:
+                if max_pages is not None and pages > max_pages:
                     raise ValueError('History page limit exceeded')
                 kwargs = {'Bucket': self.bucket, 'Prefix': prefix}
                 if token:
@@ -185,11 +186,11 @@ class RunStorage:
                     try:
                         body = client.get_object(Bucket=self.bucket, Key=key)['Body']
                         try:
-                            data = body.read(1_000_001)
+                            data = body.read(MAX_BYTES + 1)
                         finally:
                             body.close()
-                        if len(data) > 1_000_000:
-                            continue
+                        if len(data) > MAX_BYTES:
+                            raise ValueError('Oversized history manifest')
                         manifest = json.loads(data)
                         valid_id = str(UUID(manifest.get('run_id'))) == manifest.get('run_id')
                         finished = datetime.fromisoformat(manifest.get('finished_at').replace('Z', '+00:00'))
@@ -202,13 +203,19 @@ class RunStorage:
                             len(digest) == 64 and all(c in '0123456789abcdef' for c in digest)
                             for name, digest in files.items())
                     except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+                        if require_accounting:
+                            raise StorageError('Could not load Allure history') from None
                         continue
                     if (manifest.get('schema') == 1 and manifest.get('repo') == repo and valid_id and valid_time and
                             manifest.get('mode') in {'integration', 'e2e'} and
                             key == self._key(repo, manifest['run_id'], 'manifest.json') and
                             manifest.get('status') in {'completed', 'interrupted', 'failed'} and
                             valid_files):
+                        if require_accounting and 'accounting.json' not in files:
+                            raise StorageError('Could not load Allure history')
                         rows.append((finished.astimezone(timezone.utc), manifest))
+                    elif require_accounting:
+                        raise StorageError('Could not load Allure history')
                 if not page.get('IsTruncated'):
                     break
                 token = page['NextContinuationToken']
@@ -226,18 +233,20 @@ class RunStorage:
     def accounting_history(self, repo, *, budget=None):
         """Reconcile every finalized manifest, including late uploads, without media."""
         from api_agent.telemetry.history import MAX_BYTES
-        for manifest in self.history(repo, max_pages=1000, budget=budget):
+        for manifest in self.history(repo, budget=budget, require_accounting=True,
+                                     max_pages=None if budget is not None else 100):
             if budget is not None and budget.remaining == 0:
                 raise TimeoutError()
             if 'accounting.json' not in manifest['files']:
-                continue
+                raise StorageError('Could not load Allure history')
             try:
                 body = self._client().get_object(Bucket=self.bucket, Key=self._key(repo, manifest['run_id'], 'accounting.json'))['Body']
                 try:
                     payload = body.read(MAX_BYTES + 1)
                 finally:
                     body.close()
-                if len(payload) <= MAX_BYTES and hashlib.sha256(payload).hexdigest() == manifest['files']['accounting.json']:
-                    yield manifest, payload
+                if len(payload) > MAX_BYTES or hashlib.sha256(payload).hexdigest() != manifest['files']['accounting.json']:
+                    raise StorageError('Could not load Allure history')
+                yield manifest, payload
             except Exception:
-                continue
+                raise StorageError('Could not load Allure history') from None

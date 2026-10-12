@@ -8,7 +8,7 @@ import sys
 from weakref import finalize
 from threading import RLock
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 MAX_BYTES = 2_000_000
 
@@ -64,15 +64,54 @@ class HistoryCache:
         self.lock = RLock()
         self.connection = sqlite3.connect(path, timeout=0.1, check_same_thread=False)
         self._finalizer = finalize(self, self.connection.close)
-        self.connection.execute('CREATE TABLE IF NOT EXISTS history (origin TEXT, run_id TEXT, digest TEXT, manifest TEXT, accounting TEXT, PRIMARY KEY(origin, run_id, digest))')
-        with self.connection:
-            self.connection.execute('DELETE FROM history WHERE (origin,run_id) IN (SELECT origin,run_id FROM history GROUP BY origin,run_id HAVING COUNT(*)>1)')
-            self.connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS immutable_run ON history(origin,run_id)')
-            self.connection.execute('CREATE TABLE IF NOT EXISTS allocation_bindings (origin TEXT, scopehash TEXT, run_id TEXT, PRIMARY KEY(origin,scopehash))')
-            columns = {row[1] for row in self.connection.execute('PRAGMA table_info(allocation_bindings)')}
-            if 'digest' not in columns:
-                self.connection.execute('DROP TABLE allocation_bindings')
-                self.connection.execute('CREATE TABLE allocation_bindings (origin TEXT, scopehash TEXT, run_id TEXT, manifest_digest TEXT, digest TEXT, PRIMARY KEY(origin,scopehash))')
+        try:
+            with self.connection:
+                self.connection.execute('BEGIN IMMEDIATE')
+                self.connection.execute('CREATE TABLE IF NOT EXISTS history (origin TEXT, run_id TEXT, digest TEXT, manifest TEXT, accounting TEXT, PRIMARY KEY(origin, run_id, digest))')
+                indexes = {row[1]: row for row in self.connection.execute('PRAGMA index_list(history)')}
+                if 'immutable_run' in indexes:
+                    index = indexes['immutable_run']
+                    columns = tuple(row[2] for row in self.connection.execute('PRAGMA index_info(immutable_run)'))
+                    if index[2] != 1 or index[4] != 0 or columns != ('origin', 'run_id'):
+                        raise ValueError('Invalid immutable run index')
+                else:
+                    duplicate = self.connection.execute('SELECT 1 FROM history GROUP BY origin,run_id HAVING COUNT(*)>1 LIMIT 1').fetchone()
+                    if duplicate is not None:
+                        raise ValueError('Conflicting immutable run')
+                    self.connection.execute('CREATE UNIQUE INDEX immutable_run ON history(origin,run_id)')
+                self.connection.execute('CREATE TABLE IF NOT EXISTS history_finish (origin TEXT, run_id TEXT, digest TEXT, finished_utc TEXT, PRIMARY KEY(origin,run_id,digest))')
+                missing = ('SELECT h.origin,h.run_id,h.digest,h.manifest,h.accounting FROM history h '
+                           'LEFT JOIN history_finish f ON (f.origin=h.origin AND f.run_id=h.run_id AND f.digest=h.digest) '
+                           'WHERE f.run_id IS NULL')
+                for origin, run_id, digest, encoded, accounting in self.connection.execute(missing):
+                    try:
+                        manifest = validate_manifest(json.loads(encoded))
+                        if (sha256(encoded.encode()).hexdigest() != digest or manifest['run_id'] != run_id
+                                or sha256(accounting.encode()).hexdigest() != manifest['files']['accounting.json']):
+                            continue
+                        from api_agent.telemetry.accounting import validate_accounting
+                        if validate_accounting(json.loads(accounting))['run_id'] != run_id:
+                            continue
+                        finished = self._utc_key(datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')))
+                        self.connection.execute('INSERT OR REPLACE INTO history_finish VALUES (?,?,?,?)', (origin, run_id, digest, finished))
+                    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+                        continue
+                self.connection.execute('CREATE INDEX IF NOT EXISTS history_finish_window ON history_finish(finished_utc,origin)')
+                self.connection.execute('CREATE INDEX IF NOT EXISTS history_origin_window ON history_finish(origin,finished_utc)')
+                self.connection.execute('CREATE TABLE IF NOT EXISTS allocation_bindings (origin TEXT, scopehash TEXT, run_id TEXT, PRIMARY KEY(origin,scopehash))')
+                columns = {row[1] for row in self.connection.execute('PRAGMA table_info(allocation_bindings)')}
+                if 'digest' not in columns:
+                    self.connection.execute('DROP TABLE allocation_bindings')
+                    self.connection.execute('CREATE TABLE allocation_bindings (origin TEXT, scopehash TEXT, run_id TEXT, manifest_digest TEXT, digest TEXT, PRIMARY KEY(origin,scopehash))')
+        except BaseException:
+            self._finalizer()
+            raise
+
+    @staticmethod
+    def _utc_key(value):
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError('History bounds require timezone-aware datetimes')
+        return value.astimezone(timezone.utc).isoformat(timespec='microseconds')
 
     def ingest(self, origin, manifest, payload):
         from api_agent.telemetry.accounting import validate_accounting
@@ -89,29 +128,49 @@ class HistoryCache:
         encoded = json.dumps(manifest, sort_keys=True, separators=(',', ':'))
         if len(encoded) > MAX_BYTES:
             raise ValueError('Oversized manifest')
+        finished = self._utc_key(datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')))
         with self.lock, self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
-            existing = self.connection.execute('SELECT manifest FROM history WHERE origin=? AND run_id=?', (origin, run_id)).fetchone()
-            if existing is not None and existing[0] != encoded:
-                raise ValueError('Conflicting immutable run')
-            self.connection.execute('INSERT OR IGNORE INTO history VALUES (?,?,?,?,?)', (origin, run_id, sha256(encoded.encode()).hexdigest(), encoded, payload.decode('utf-8')))
-            self.connection.execute('UPDATE history SET accounting=? WHERE origin=? AND run_id=?', (payload.decode('utf-8'), origin, run_id))
+            existing = self.connection.execute('SELECT digest,manifest,accounting FROM history WHERE origin=? AND run_id=?', (origin, run_id)).fetchall()
+            if existing:
+                if len(existing) != 1 or existing[0] != (sha256(encoded.encode()).hexdigest(), encoded, payload.decode('utf-8')):
+                    raise ValueError('Conflicting immutable run')
+                self.connection.execute('INSERT OR REPLACE INTO history_finish VALUES (?,?,?,?)',
+                                        (origin, run_id, existing[0][0], finished))
+                return
+            self.connection.execute('INSERT INTO history VALUES (?,?,?,?,?)',
+                                    (origin, run_id, sha256(encoded.encode()).hexdigest(), encoded, payload.decode('utf-8')))
+            self.connection.execute('INSERT OR REPLACE INTO history_finish VALUES (?,?,?,?)',
+                                    (origin, run_id, sha256(encoded.encode()).hexdigest(), finished))
 
-    def records(self, origin=None):
-        query = 'SELECT run_id, digest, manifest, accounting FROM history'
-        arguments = ()
+    def records(self, origin=None, *, since=None, until=None, run_id=None):
+        query = ('SELECT h.run_id, h.digest, h.manifest, h.accounting, f.finished_utc FROM history h '
+                 'JOIN history_finish f ON (f.origin=h.origin AND f.run_id=h.run_id AND f.digest=h.digest)')
+        conditions, arguments = [], []
+        if since is not None:
+            conditions.append('f.finished_utc>=?')
+            arguments.append(self._utc_key(since))
+        if until is not None:
+            conditions.append('f.finished_utc<=?')
+            arguments.append(self._utc_key(until))
         if origin is not None:
-            query += ' WHERE origin=?'
-            arguments = (origin,)
+            conditions.append('h.origin=?')
+            arguments.append(origin)
+        if run_id is not None:
+            conditions.append('h.run_id=?')
+            arguments.append(run_id)
+        if conditions:
+            query += ' WHERE ' + ' AND '.join(conditions)
         with self.lock:
             rows = []
             from api_agent.telemetry.accounting import validate_accounting
-            for stored_run_id, digest, manifest, accounting in self.connection.execute(query + ' ORDER BY run_id,digest LIMIT 5000', arguments):
+            for stored_run_id, digest, manifest, accounting, stored_finish in self.connection.execute(query + ' ORDER BY f.finished_utc,h.run_id,h.digest', arguments):
                 try:
                     if sha256(manifest.encode()).hexdigest() != digest:
                         continue
                     manifest = validate_manifest(json.loads(manifest))
-                    if stored_run_id != manifest['run_id']:
+                    if (stored_run_id != manifest['run_id'] or stored_finish != self._utc_key(
+                            datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')))):
                         continue
                     if sha256(accounting.encode()).hexdigest() != manifest['files']['accounting.json']:
                         continue
@@ -124,7 +183,7 @@ class HistoryCache:
             return rows
 
     def bind(self, origin, scopehash, run_id):
-        records = [(manifest, artifact) for manifest, artifact in self.records(origin) if manifest['run_id'] == run_id]
+        records = self.records(origin, run_id=run_id)
         if (not isinstance(scopehash, str) or len(scopehash) != 64 or any(c not in '0123456789abcdef' for c in scopehash)
                 or not records or not binding_eligible(records[0][1])):
             return
@@ -133,17 +192,28 @@ class HistoryCache:
             digest = binding_digest(origin, scopehash, run_id, manifest_digest)
             self.connection.execute('INSERT OR REPLACE INTO allocation_bindings VALUES (?,?,?,?,?)', (origin, scopehash, run_id, manifest_digest, digest))
 
-    def bound_window(self, origin, scopehash, now):
+    def _bound_identity(self, origin, scopehash, now):
         with self.lock:
             binding = self.connection.execute('SELECT run_id,manifest_digest,digest FROM allocation_bindings WHERE origin=? AND scopehash=?', (origin, scopehash)).fetchone()
         if binding is None or binding[2] != binding_digest(origin, scopehash, binding[0], binding[1]):
             return None
-        for manifest, artifact in self.records(origin):
+        for manifest, artifact in self.records(origin, run_id=binding[0]):
             quota = artifact.get('quota') or {}
             if (manifest['run_id'] == binding[0] and sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == binding[1] and binding_eligible(artifact)
                     and datetime.fromisoformat(quota['after']['reset_at'].replace('Z', '+00:00')) > now):
-                return quota['before']['window_id']
+                allocation = quota['before'].get('allocation_id')
+                if allocation and allocation == quota['after'].get('allocation_id'):
+                    return quota['before']['window_id'], allocation
+                return quota['before']['window_id'], None
         return None
+
+    def bound_window(self, origin, scopehash, now):
+        bound = self._bound_identity(origin, scopehash, now)
+        return bound[0] if bound else None
+
+    def bound_allocation(self, origin, scopehash, now):
+        bound = self._bound_identity(origin, scopehash, now)
+        return bound[1] if bound else None
 
     def close(self):
         self._finalizer()

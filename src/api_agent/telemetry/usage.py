@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
 import math
+import re
+from uuid import UUID
 from pathlib import Path
 from threading import RLock
 from typing import Callable
@@ -42,6 +44,8 @@ def _snapshot_json(snapshot: QuotaSnapshot | None) -> dict | None:
             'captured_at': snapshot.captured_at.isoformat()}
     if snapshot.pct_step is not None:
         row['pct_step'] = snapshot.pct_step
+    row['allocation_id'] = snapshot.allocation_id
+    row['observation_id'] = snapshot.observation_id
     return row
 
 
@@ -58,6 +62,8 @@ class QuotaSnapshot:
     reset_at: datetime | None
     captured_at: datetime
     pct_step: float | None = None
+    allocation_id: str | None = None
+    observation_id: str | None = None
 
     def __post_init__(self):
         if self.pct_step is not None and (not _valid_pct(self.pct_step) or self.pct_step == 0):
@@ -67,6 +73,15 @@ class QuotaSnapshot:
             object.__setattr__(self, 'reset_at', _utc(self.reset_at))
         if self.window_id is not None and (type(self.window_id) is not str or not self.window_id):
             raise ValueError('window_id must be nonempty text or None')
+        if self.allocation_id is not None and (type(self.allocation_id) is not str or re.fullmatch(r'[0-9a-f]{64}', self.allocation_id) is None):
+            raise ValueError('allocation_id must be a lowercase SHA-256 digest or None')
+        if self.observation_id is not None:
+            try:
+                canonical = type(self.observation_id) is str and str(UUID(self.observation_id)) == self.observation_id
+            except ValueError:
+                canonical = False
+            if not canonical:
+                raise ValueError('observation_id must be a canonical UUID or None')
 
 
 @dataclass(frozen=True)
@@ -231,6 +246,9 @@ class SuiteUsage:
             reason = 'invalid_percentage'
         elif before.window_id is None or after.window_id is None or before.reset_at is None or after.reset_at is None:
             reason = 'missing_window_identifier'
+        elif (before.allocation_id is not None and after.allocation_id is not None
+              and before.allocation_id != after.allocation_id):
+            reason = 'changed_allocation'
         elif before.window_id != after.window_id or before.reset_at != after.reset_at:
             reason = 'changed_window'
         elif after.captured_at < before.captured_at:

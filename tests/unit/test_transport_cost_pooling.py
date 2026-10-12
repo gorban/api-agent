@@ -95,7 +95,7 @@ def test_quota_calibration_pools_modes_but_not_accounts():
     assert result['basis'] == 'historical_quota'
     assert result['ignored_cost_settings'] == IGNORED
     assert result['estimated_cost_usd'] == pytest.approx(.5)
-    history[1][1]['quota']['before']['window_id'] = history[1][1]['quota']['after']['window_id'] = 'other-account'
+    history[1][1]['quota']['before']['allocation_id'] = history[1][1]['quota']['after']['allocation_id'] = 'd' * 64
     assert calibration(history, card, ignored_settings=IGNORED) == {}
 
 
@@ -112,6 +112,7 @@ def test_picker_and_allocation_binding_use_the_same_mode_equivalence(monkeypatch
     class Cache:
         def records(self, origin): return history
         def bound_window(self, *args): return 'window'
+        def bound_allocation(self, *args): return 'c' * 64
     monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda *args, **kwargs: 'hash')
     test = SimpleNamespace(id='t', node_id='test.py::test[one]')
     estimator = HistoricalEstimator([test], settings, Cache(), 'origin', 'repo', bundled_rate_card(),
@@ -157,7 +158,7 @@ def test_sqlite_reopen_pools_legacy_mode_hashes_without_rewriting_artifacts(tmp_
         row = artifact['tests'][0]
         row['compatibility'] = compatibility(settings)
         row['calls'][0]['quote']['accounting']['compatibility'] = compatibility(settings)
-        artifact['quota']['after']['pct_used'] = 2
+        artifact['quota']['after']['pct_used'] = 1
         payload = json.dumps(artifact).encode()
         manifest['files']['accounting.json'] = sha256(payload).hexdigest()
         original.append((manifest, artifact))
@@ -195,6 +196,7 @@ def test_api_key_predictions_ignore_credential_index_but_keep_transport_metadata
     class Cache:
         def records(self, origin): return history
         def bound_window(self, *args): return None
+        def bound_allocation(self, *args): return None
     monkeypatch.setattr('api_agent.telemetry.accounting.source_fingerprint', lambda *args, **kwargs: 'hash')
     test = SimpleNamespace(id='t', node_id='test.py::test[one]')
     snapshots = []

@@ -23,4 +23,7 @@ def selected_summary(snapshot, ids):
         label = 'no inference calls'
     else:
         label = '< $' + amount[1:] if amount.startswith('<') else '$' + amount
-    return 'Selected estimate: ' + label
+    summary = 'Selected estimate: ' + label
+    if getattr(snapshot, 'sync_unavailable', False):
+        summary += ' (history refresh incomplete)'
+    return summary

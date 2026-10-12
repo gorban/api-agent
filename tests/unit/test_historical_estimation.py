@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from uuid import NAMESPACE_URL, uuid5
 import pytest
 
 from api_agent.providers.rates import bundled_rate_card
@@ -18,7 +19,7 @@ def row(cost=1000):
 def records(delta=1, step=.1):
     card = bundled_rate_card()
     return [(dict(status='completed', started_at=f'2026-10-{day:02d}T00:00:00Z', finished_at=f'2026-10-{day:02d}T01:00:00Z'),
-             dict(rate_card=card, quota=dict(before={'pct_step': step, 'captured_at': f'2026-10-{day:02d}T00:00:00Z', 'window_id': 'window', 'reset_at': '2026-11-01T00:00:00Z'}, after={'pct_step': step, 'captured_at': f'2026-10-{day:02d}T01:00:00Z', 'window_id': 'window', 'reset_at': '2026-11-01T00:00:00Z'}, pct_point_delta=delta,
+             dict(run_id=str(uuid5(NAMESPACE_URL, f'quota-suite-{day}')), rate_card=card, quota=dict(before={'allocation_id': 'c' * 64, 'observation_id': str(uuid5(NAMESPACE_URL, f'quota-before-{day}')), 'pct_used': 0, 'pct_step': step, 'captured_at': f'2026-10-{day:02d}T00:00:00Z', 'window_id': 'window', 'reset_at': '2026-11-01T00:00:00Z'}, after={'allocation_id': 'c' * 64, 'observation_id': str(uuid5(NAMESPACE_URL, f'quota-after-{day}')), 'pct_used': delta, 'pct_step': step, 'captured_at': f'2026-10-{day:02d}T01:00:00Z', 'window_id': 'window', 'reset_at': '2026-11-01T00:00:00Z'}, pct_point_delta=delta,
                   payment_policy={'usd': 100, 'quota_seconds': 604800, 'period': 'quota'}, quota_unavailable_reason=None), tests=[row()])) for day in (1, 2, 3)]
 
 
@@ -75,6 +76,8 @@ def test_calibration_zero_and_spike_and_bounds():
     history[0][1]['quota']['pct_point_delta'] = 0
     history[1][1]['quota']['pct_point_delta'] = 0
     history[2][1]['quota']['pct_point_delta'] = 3
+    for _, artifact in history:
+        artifact['quota']['after']['pct_used'] = artifact['quota']['pct_point_delta']
     assert calibration(history, card)
     history[1][1]['quota']['before']['captured_at'] = history[0][1]['quota']['before']['captured_at']
     assert calibration(history, card) == {}
@@ -234,10 +237,10 @@ def test_billing_mode_revision_and_details_age_calibration():
     assert predictions_for([test], mixed, bundled_rate_card(), {'t': 'hash'}, compat())['t']['estimated_cost_usd'] is None
 
 
-def test_account_windows_never_pool_calibration():
+def test_individually_unqualified_allocations_never_pool_calibration():
     history = records()
     for index, (_, artifact) in enumerate(history):
-        artifact['quota']['before']['window_id'] = artifact['quota']['after']['window_id'] = f'account-{index}'
+        artifact['quota']['before']['allocation_id'] = artifact['quota']['after']['allocation_id'] = str(index) * 64
     assert calibration(history, bundled_rate_card()) == {}
 
 
@@ -309,6 +312,9 @@ def test_reset_completed_estimate_uses_measured_tokens_not_invalid_quota(calibra
 def test_reset_evidence_does_not_invalidate_other_suites_by_overlap():
     history = records()
     bad = deepcopy(history[0])
+    bad[1]['run_id'] = str(uuid5(NAMESPACE_URL, 'independent-reset-suite'))
+    for phase in ('before', 'after'):
+        bad[1]['quota'][phase]['allocation_id'] = 'd' * 64
     bad[1]['quota']['quota_unavailable_reason'] = 'changed_window'
     card = bundled_rate_card()
     assert calibration(history + [bad], card) == calibration(history, card)
@@ -319,6 +325,7 @@ def test_completed_average_preserves_frozen_calibration():
     card = bundled_rate_card()
     history = records()
     current = deepcopy(history[0][1])
+    current['run_id'] = str(uuid5(NAMESPACE_URL, 'current-new-suite'))
     current['tests'][0] = row(3000)
     snapshot = EstimateSnapshot({}, records=history, card=card)
     stabilized = snapshot.complete(current)

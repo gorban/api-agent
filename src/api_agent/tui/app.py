@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 import sys
 import threading
@@ -1823,8 +1824,27 @@ class ApiAgentApp(App[int]):
         parameters = inspect.signature(runner).parameters
         if 'historical_estimator' in parameters or any(
                 parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            if getattr(self.cost_estimator, 'picker_configuration', None) is not None:
+                # Start freezes a current clock/window even if settings stayed
+                # unchanged while this picker was open.
+                self.cost_estimator = self.fresh_cost_estimator()
             return {'historical_estimator': self.cost_estimator}
         return {}
+
+    def fresh_cost_estimator(self):
+        from api_agent.testing.cost_history import estimator_for
+        values = self.session.result().values
+        snapshot = estimator_for(self.context, self.selection.tests, values)
+        snapshot.picker_configuration = deepcopy(values)
+        return snapshot
+
+    def refresh_cost_configuration(self):
+        snapshot = self.cost_estimator
+        saved = getattr(snapshot, 'picker_configuration', None)
+        if saved is not None and saved != self.session.result().values:
+            self.cost_estimator = self.fresh_cost_estimator()
+            return True
+        return False
 
     def selection_cells(self, row):
         cells = ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)
@@ -1848,20 +1868,25 @@ class ApiAgentApp(App[int]):
             return
         if (self.cost_estimator is snapshot and self.selection is selection and not self.test_run_active()
                 and any(isinstance(screen, WorkbenchScreen) and screen.kind == 'tests' for screen in self.screen_stack)):
-            self.cost_estimator = replacement or snapshot
+            changed = self.refresh_cost_configuration()
+            if not changed:
+                self.cost_estimator = replacement or snapshot
+                self.cost_estimator.picker_configuration = getattr(snapshot, 'picker_configuration', None)
             if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'tests':
                 self.refresh_rows()
             else:
                 # A modal temporarily covers the same picker. Keep its result
                 # and redraw once the original picker becomes active again.
                 self._pending_cost_refresh = selection
+            if changed:
+                self.run_worker(self.synchronize_cost_history(self.cost_estimator, selection),
+                                group='cost-history', exclusive=True)
 
     def show_selection(self):
         self.cost_estimator = None
         if self.mode in {'integration', 'e2e'}:
             try:
-                from api_agent.testing.cost_history import estimator_for
-                self.cost_estimator = estimator_for(self.context, self.selection.tests, self.session.result().values)
+                self.cost_estimator = self.fresh_cost_estimator()
             except Exception:
                 pass
         rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]

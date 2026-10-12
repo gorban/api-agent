@@ -20,11 +20,13 @@ def test_accounting_only_verified_and_late_upload(monkeypatch):
     oversized = {'run_id': 'three', 'files': {'accounting.json': sha256(b' ' * (MAX_BYTES + 1)).hexdigest()}}
     corrupt = {'run_id': 'four', 'files': {'accounting.json': sha256(b'good').hexdigest()}}
     monkeypatch.setattr(storage, 'history', lambda repo, **kwargs: [good, missing, oversized, corrupt])
-    assert list(storage.accounting_history('repo')) == []
+    from api_agent.testing.storage import StorageError
+    with pytest.raises(StorageError): list(storage.accounting_history('repo'))
     client.objects['allure/repo/one/accounting.json'] = b'{}'
     client.objects['allure/repo/three/accounting.json'] = b' ' * (MAX_BYTES + 1)
     client.objects['allure/repo/four/accounting.json'] = b'bad'
-    assert list(storage.accounting_history('repo')) == [(good, b'{}')]
+    with pytest.raises(StorageError): list(storage.accounting_history('repo'))
+    monkeypatch.setattr(storage, 'history', lambda repo, **kwargs: [good])
     assert list(storage.accounting_history('repo')) == [(good, b'{}')]
     assert all(key.endswith('/accounting.json') for key in client.requested)
 

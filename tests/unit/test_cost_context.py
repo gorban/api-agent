@@ -106,7 +106,7 @@ def test_invalid_precision_is_not_inferred(step):
 def test_optional_precision_preserves_old_snapshot_shape():
     instant = datetime.now(timezone.utc)
     snapshot = QuotaSnapshot(1,'opaque',None,instant)
-    assert set(_snapshot_json(snapshot)) == {'pct_used','window_id','reset_at','captured_at'}
+    assert set(_snapshot_json(snapshot)) == {'pct_used','window_id','reset_at','captured_at','allocation_id','observation_id'}
     assert _snapshot_json(QuotaSnapshot(1,'opaque',None,instant,.1))['pct_step'] == .1
 
 
