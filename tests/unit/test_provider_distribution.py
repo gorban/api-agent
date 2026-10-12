@@ -219,7 +219,7 @@ def test_requirement_parser_fails_closed_without_parser_or_string(monkeypatch):
             raise ImportError('not installed')
         return original_import(name, *args, **kwargs)
     monkeypatch.setattr(builtins, '__import__', missing_parsers)
-    with pytest.raises(RuntimeError, match='needs packaging or pip'):
+    with pytest.raises(OSError, match='needs packaging or pip'):
         _parsed_requirement('synthetic-client>=1')
 
 

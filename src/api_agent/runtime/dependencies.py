@@ -9,15 +9,21 @@ import sys
 import tomllib
 
 
-def _parsed_requirement(raw):
-    """Validate installer arguments before any environment mutation."""
+def _requirement_types():
+    """Use an installed standards parser, including pip's bundled copy."""
     try:
         from packaging.requirements import Requirement, InvalidRequirement
     except ImportError:
         try:
             from pip._vendor.packaging.requirements import Requirement, InvalidRequirement
         except ImportError as exc:
-            raise RuntimeError('Requirement validation needs packaging or pip before setup') from exc
+            raise OSError('Requirement validation needs packaging or pip') from exc
+    return Requirement, InvalidRequirement
+
+
+def _parsed_requirement(raw):
+    """Validate manifest installer arguments before dependency preparation."""
+    Requirement, InvalidRequirement = _requirement_types()
     if type(raw) is not str:
         raise ValueError('Dependency requirement must be a PEP 508 string')
     try:
@@ -134,6 +140,11 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
     root = context.pack_root if context.external_pack else context.base_root
     environment = root / '.venv'
     python = environment / 'bin/python'
+    try:
+        _requirement_types()
+    except OSError:
+        _prepare_requirement_parser(environment, python)
+        return _relaunch(context, python, argv)
     wanted = requirements(context, collect=collect, groups=groups,
                           selected_provider_manifests=selected_provider_manifests)
     fingerprint = hashlib.sha256(json.dumps(wanted).encode()).hexdigest()
@@ -155,6 +166,10 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
         marker.write_text(fingerprint + '\n')
     if active_environment(environment):
         return None
+    return _relaunch(context, python, argv)
+
+
+def _relaunch(context, python, argv):
     pack_arguments = [] if getattr(context, 'show_pack_bootstrap', False) else [
         '--resource-pack-dir', str(context.pack_root)]
     # The parent already completed the gate; this is an internal interpreter handoff,
@@ -169,3 +184,45 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
     return subprocess.call([str(python), '-c', handoff, str(context.base_root / 'launch.py'),
                             *pack_arguments,
                             '--_launcher-root', str(getattr(context, 'launcher_root', None) or context.base_root), *argv], env=os.environ.copy())
+
+
+_PARSER_PROBE = """
+try:
+    import packaging.requirements
+except ImportError:
+    try:
+        import pip._vendor.packaging.requirements
+    except ImportError:
+        raise SystemExit(3)
+"""
+
+
+def _prepare_requirement_parser(environment, python):
+    """Bootstrap only a fixed validator; no manifest arguments reach installers."""
+    uv = shutil.which('uv')
+    if not python.is_file():
+        print(f'Preparing dependency validator in {environment}...', file=sys.stderr, flush=True)
+        command = ([uv, 'venv', '--seed', '--python', sys.executable, str(environment)] if uv else
+                   [sys.executable, '-m', 'venv', str(environment)])
+        subprocess.run(command, check=True, stdout=sys.stderr, stderr=sys.stderr)
+    status = _requirement_parser_status(python)
+    if status == 0:
+        return
+    if status != 3:
+        raise OSError('Cannot verify the dependency validator in the target interpreter')
+    if not uv:
+        subprocess.run([str(python), '-m', 'ensurepip'], check=True,
+                       stdout=sys.stderr, stderr=sys.stderr)
+    command = ([uv, 'pip', 'install', '--python', str(python), 'packaging>=24,<27'] if uv else
+               [str(python), '-m', 'pip', 'install', 'packaging>=24,<27'])
+    subprocess.run(command, check=True, stdout=sys.stderr, stderr=sys.stderr)
+    if _requirement_parser_status(python) != 0:
+        raise OSError('Dependency validator remains unavailable after preparation')
+
+
+def _requirement_parser_status(python):
+    try:
+        return subprocess.run([str(python), '-c', _PARSER_PROBE],
+                              capture_output=True, timeout=20, check=False).returncode
+    except (subprocess.TimeoutExpired, OSError) as error:
+        raise OSError('Cannot verify the dependency validator in the target interpreter') from error
