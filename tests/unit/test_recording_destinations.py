@@ -145,7 +145,8 @@ def test_saved_empty_destinations_are_acknowledged_and_suppress_startup_review(t
         names = ('TOKEN_USAGE_CSV_ENABLED', 'TOKEN_USAGE_CSV', 'ALLURE_RESULTS_DIR', 'ALLURE_SECONDARY_DIR')
         app = tui_fixture(tmp_path)
         app.schema = replace(app.schema, fields={**app.schema.fields,
-                            **{name: shared.fields[name] for name in names}})
+                            **{name: shared.fields[name] for name in names},
+                            'COLLECT_ONLY': shared.fields['COLLECT_ONLY']})
         app.session.schema = app.schema
         app.context.anchors['owner_root'] = tmp_path
         async with app.run_test(size=(100, 35)) as pilot:

@@ -172,16 +172,23 @@ def provider_location(location, *, owner_root=None):
     return path, factory
 
 
+@dataclass(frozen=True)
+class _PendingContribution:
+    overrides: object
+    immediate: tuple
+
+
 def contribution_schema(declaration, base_schema, *, deferred=None):
     """Expose compatible provider defaults as effective pack declarations."""
     from api_agent.config.declarations import ConfigSchema, load_declarations, compose_schema
     contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default')
     contributed = ConfigSchema({name: replace(value, contribution_origin=Path(declaration).resolve())
                                 for name, value in contributed.fields.items()})
+    pending = ConfigSchema({})
     if deferred is not None:
         # Keep sibling overrides together without merging distinct source files.
-        deferred.append(ConfigSchema({name: value for name, value in contributed.fields.items()
-                                      if value.override_if_present}))
+        pending = ConfigSchema({name: value for name, value in contributed.fields.items()
+                                if value.override_if_present})
         contributed = ConfigSchema({name: value for name, value in contributed.fields.items()
                                     if not value.override_if_present})
     # An already composed schema may be supplied as a fresh session baseline.
@@ -191,7 +198,13 @@ def contribution_schema(declaration, base_schema, *, deferred=None):
     if unchanged:
         contributed = ConfigSchema({name: declaration for name, declaration in contributed.fields.items()
                                     if name not in unchanged})
-    return compose_schema(base_schema, contributed)
+    schema = compose_schema(base_schema, contributed, predicate_context=pending)
+    if deferred is not None:
+        # Revalidate original effective declarations; replay would overwrite
+        # legitimate later defaults and their owning source.
+        deferred.append(_PendingContribution(pending,
+            tuple(schema.fields[name] for name in contributed.fields)))
+    return schema
 
 
 def provider_schema(location, base_schema, *, owner_root=None, deferred=None):
@@ -399,9 +412,19 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
             options = parse_options(schema, argv).values
             pending = True
         if not pending:
-            from api_agent.config.declarations import ConfigSchema, compose_schema
+            from api_agent.config.declarations import ConfigSchema, compose_schema, _validate_values
+            validation = []
             for contribution in deferred:
-                schema = compose_schema(schema, contribution)
+                schema = compose_schema(schema, contribution.overrides)
+                effective = (*contribution.immediate, *(schema.fields[name]
+                    for name in contribution.overrides.fields if name in schema.fields))
+                for declaration in effective:
+                    _validate_values(declaration, schema.fields)
+                validation.extend(effective)
+            # Later sources may tighten a controller without replacing every
+            # dependent field. Check both active and captured declarations.
+            for declaration in (*schema.fields.values(), *validation):
+                _validate_values(declaration, schema.fields)
             # Discovery is intentionally fixed before optional late overrides.
             # Compare *resolved* selections, including conditional defaults, and
             # do not let HELP/applicability hide a changed graph from this guard.

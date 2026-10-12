@@ -89,9 +89,12 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
                  if name in controlling_fields and declaration.override else declaration
                  for name, declaration in declarations.items()}
     controlling_fields.update(effective)
+    pending_controllers = {name for name, declaration in effective.items()
+        if declaration.override_if_present and (base_schema is None or name not in base_schema.fields)}
     for declaration in effective.values():
         deferred = declaration.override_if_present and (base_schema is None or declaration.name not in base_schema.fields)
-        _validate_values(declaration, controlling_fields, deferred=deferred)
+        _validate_values(declaration, controlling_fields, deferred=deferred,
+                         pending_controllers=pending_controllers)
     return schema
 
 
@@ -103,26 +106,28 @@ def _inherit_constraints(previous, declaration):
     return replace(declaration, **{key: getattr(previous, key) for key in inherited
                                   if key not in declaration.declared_keys})
 
-def _validate_values(declaration, fields, *, deferred=False):
+def _validate_values(declaration, fields, *, deferred=False, pending_controllers=()):
     """Check structure now; late overrides need their target's value rules."""
     from .resolve import convert_value
     if not deferred:
         for enum_value in declaration.enum:
             convert_value(replace(declaration, enum=()), enum_value, external=False, anchors=None)
     for predicate in (declaration.applies_when, declaration.required_when):
-        _validate_predicate(predicate, fields, validate_values=not deferred)
+        _validate_predicate(predicate, fields, validate_values=not deferred,
+                            pending_controllers=pending_controllers)
     defaults = [] if declaration.default is UNSET else [declaration.default]
     for conditional in declaration.conditional_defaults:
         if not isinstance(conditional, dict) or set(conditional) != {'when', 'value'}:
             raise ValueError(f'{declaration.name}: conditional default needs when and value')
-        _validate_predicate(conditional['when'], fields, validate_values=not deferred)
+        _validate_predicate(conditional['when'], fields, validate_values=not deferred,
+                            pending_controllers=pending_controllers)
         defaults.append(conditional['value'])
     if not deferred:
         for value in defaults:
             convert_value(declaration, value, external=False, anchors=None)
 
 
-def _validate_predicate(predicate, fields, *, validate_values=True):
+def _validate_predicate(predicate, fields, *, validate_values=True, pending_controllers=()):
     if not isinstance(predicate, dict):
         raise ValueError('Predicate must be a controlling-field equals table')
     for name, expected in predicate.items():
@@ -130,12 +135,13 @@ def _validate_predicate(predicate, fields, *, validate_values=True):
             if not isinstance(expected, list) or not expected:
                 raise ValueError('Predicate any requires a nonempty array of tables')
             for branch in expected:
-                _validate_predicate(branch, fields, validate_values=validate_values)
+                _validate_predicate(branch, fields, validate_values=validate_values,
+                                    pending_controllers=pending_controllers)
             continue
         if name not in fields:
             raise ValueError(f'Unknown controlling field {name}')
         from .resolve import convert_value
-        if validate_values:
+        if validate_values and name not in pending_controllers:
             for value in expected if isinstance(expected, list) else [expected]:
                 convert_value(fields[name], value, external=False, anchors=None)
 
@@ -162,7 +168,8 @@ def load_shared_schema(base_root: Path | None = None) -> ConfigSchema:
     return ConfigSchema(fields)
 
 def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
-                   overrides: Mapping[str, Any] | None = None) -> ConfigSchema:
+                   overrides: Mapping[str, Any] | None = None, *,
+                   predicate_context: ConfigSchema | None = None) -> ConfigSchema:
     fields = dict(shared.fields)
     if extension:
         effective_overrides = []
@@ -192,8 +199,13 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
             fields[name] = declaration
         # A predicate may reference a sibling declared later in the same file.
         # Validate only after all effective controller constraints are composed.
+        # Pending same-file controllers are lookup context, never live fields.
+        validation_fields = {name: declaration for name, declaration in predicate_context.fields.items()
+                             if declaration.override_if_present} if predicate_context else {}
+        pending_controllers = set(validation_fields) - fields.keys()
+        validation_fields.update(fields)
         for declaration in effective_overrides:
-            _validate_values(declaration, fields)
+            _validate_values(declaration, validation_fields, pending_controllers=pending_controllers)
     from .resolve import convert_value
     for name, value in (overrides or {}).items():
         if name not in fields:

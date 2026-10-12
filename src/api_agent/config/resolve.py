@@ -106,10 +106,15 @@ def convert_value(declaration, value, *, external, anchors):
         value = path.resolve()
     return value
 
+def _expected_matches(actual, expected):
+    # Empty optional integers resolve to None; missing controllers stay UNSET.
+    return actual == expected or actual is None and expected == ''
+
+
 def _matches(predicate, values):
     return all(any(_matches(branch, values) for branch in expected) if name == 'any'
-               else (values.get(name, UNSET) in expected if isinstance(expected, list)
-                     else values.get(name, UNSET) == expected)
+               else (any(_expected_matches(values.get(name, UNSET), value) for value in expected)
+                     if isinstance(expected, list) else _expected_matches(values.get(name, UNSET), expected))
                for name, expected in predicate.items())
 
 def _controllers(predicate):
