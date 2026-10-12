@@ -21,6 +21,11 @@ Compose all sibling fields and their inherited constraints before validating
 effective override predicates. Controller declaration order in a single file
 must not affect applicability, requiredness, conditional defaults or inert help;
 typed controller validation and override authority remain enforced.
+Retain deferred siblings as one contribution-file batch and replay batches in
+source order after discovery. Validate each batch against its effective sibling
+controllers; preserve contribution ownership and precedence between files.
+An invalid earlier contribution must not disappear behind a later override.
+This does not permit unknown controllers declared only in a later file.
 
 - [x] Pure manifest reader, active-kind selector and additive selected-provider dependency API, with synthetic active/inactive provider checks. The bundled GPT provider declares its HTTP/auth dependencies and an optional browser group. Per-capability browser-group selection remains a future refinement.
 - [x] Relocated synthetic whole-pack check covers manifest, primary schema, provider schema, defaults, selected factory files and production tree without executing a factory.
