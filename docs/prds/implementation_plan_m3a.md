@@ -15,4 +15,4 @@
 - [x] Accepted integration startup passes selected active provider manifest descriptors to the environment gate; consumer controls verify inactive selections and inert help/collection. The future local-operation seam uses the same activation matrix.
 - [x] Build a wheel and verify the extracted, relocated package resolves its bundled demo pack, primary schema, selected factory and selected provider manifest without importing the factory. The archive carries the declarations and manifest.
 - [x] Independent adversarial review, including direct-URL/options rejection, explicit authority, valid validator strengthening and same-source rebootstrap. Different declaration sources require an explicit override even when their values match.
-- [ ] Human acceptance of relocated declarations, configuration review and selected dependency preparation.
+- [x] Human acceptance of relocated declarations, configuration review and selected dependency preparation, recorded October 12, 2026.

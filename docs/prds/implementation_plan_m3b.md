@@ -41,4 +41,4 @@ state, provider objects, and browser objects remain in the backend process.
   elapsed time. Removing a child restores its ancestor's continuing clock and
   original entry allowance. Display translation does not shorten shared backend
   work or let one waiter's cancellation cancel a sibling's authentication.
-- [ ] Human inspection of the retained original browser, nested live timing and launcher cleanup.
+- [x] Human acceptance of retained original-browser inspection, nested timing and launcher cleanup, recorded October 12, 2026. Timeout retention, original-page attachment, finalized reporting and closure were observed; the display repair has deterministic transport/ancestor controls.
