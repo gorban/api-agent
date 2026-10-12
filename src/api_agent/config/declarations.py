@@ -28,6 +28,8 @@ class FieldDeclaration:
     validation: str | None = None
     cost_affecting: bool = False
     default_source: str = 'shared_default'
+    declared_keys: frozenset[str] = frozenset()
+    contribution_origin: Path | None = field(default=None, repr=False)
 
 @dataclass(frozen=True)
 class ConfigSchema:
@@ -41,13 +43,14 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
     if not isinstance(data.get('fields', {}), dict):
         raise ValueError('Configuration declaration requires a fields table')
     declarations = {}
-    allowed = set(FieldDeclaration.__dataclass_fields__) - {'name', 'default_source'}
+    allowed = set(FieldDeclaration.__dataclass_fields__) - {'name', 'default_source', 'declared_keys', 'contribution_origin'}
     for name, spec in data.get('fields', {}).items():
         if not name.isidentifier() or name != name.upper() or not isinstance(spec, dict):
             raise ValueError(f'Invalid configuration field {name!r}')
         if set(spec) - allowed or spec.get('type') not in TYPES:
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
+        declared_keys = frozenset(spec)
         for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only', 'cost_affecting'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
@@ -76,7 +79,8 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
             raise ValueError(f'{name}: help must be text')
         spec['enum'] = tuple(spec.get('enum', ()))
         spec['conditional_defaults'] = tuple(spec.get('conditional_defaults', ()))
-        declarations[name] = FieldDeclaration(name=name, default_source=source, **spec)
+        declarations[name] = FieldDeclaration(name=name, default_source=source,
+                                               declared_keys=declared_keys, **spec)
     schema = ConfigSchema(declarations)
     controlling_fields = dict(base_schema.fields) if base_schema else {}
     controlling_fields.update(declarations)
@@ -144,8 +148,31 @@ def compose_schema(shared: ConfigSchema, extension: ConfigSchema | None = None,
             if name in fields:
                 if not declaration.override:
                     raise ValueError(f'{name}: shared-field replacement requires override = true')
-                if declaration.type != fields[name].type:
+                previous = fields[name]
+                if declaration.type != previous.type:
                     raise ValueError(f'{name}: override must preserve the shared type')
+                # Omitted safety metadata retains its previous authority. Explicit
+                # changes may tighten it, but cannot remove an existing constraint.
+                inherited = ('required', 'required_when', 'allow_empty', 'validation',
+                             'enum', 'pack_only', 'cost_affecting')
+                declaration = replace(declaration, **{
+                    key: getattr(previous, key) for key in inherited
+                    if key not in declaration.declared_keys})
+                if (previous.required and not declaration.required
+                        or previous.required_when and declaration.required_when != previous.required_when
+                        or not previous.allow_empty and declaration.allow_empty
+                        or previous.validation is not None and declaration.validation != previous.validation
+                           and (previous.validation, declaration.validation) != ('nonnegative', 'positive')
+                        or previous.enum and (not declaration.enum or
+                                              any(value not in previous.enum for value in declaration.enum))
+                        or previous.pack_only and not declaration.pack_only
+                        or previous.cost_affecting and not declaration.cost_affecting):
+                    raise ValueError(f'{name}: override weakens an existing field constraint')
+                from .resolve import convert_value
+                if declaration.default is not UNSET:
+                    convert_value(declaration, declaration.default, external=False, anchors=None)
+                for conditional in declaration.conditional_defaults:
+                    convert_value(declaration, conditional['value'], external=False, anchors=None)
             elif declaration.override:
                 raise ValueError(f'{name}: override has no shared field')
             fields[name] = declaration

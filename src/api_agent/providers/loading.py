@@ -176,13 +176,20 @@ def contribution_schema(declaration, base_schema, *, deferred=None):
     """Expose compatible provider defaults as effective pack declarations."""
     from api_agent.config.declarations import ConfigSchema, load_declarations, compose_schema
     contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default')
+    contributed = ConfigSchema({name: replace(value, contribution_origin=Path(declaration).resolve())
+                                for name, value in contributed.fields.items()})
     if deferred is not None:
         deferred.extend(value for value in contributed.fields.values() if value.override_if_present)
         contributed = ConfigSchema({name: value for name, value in contributed.fields.items()
                                     if not value.override_if_present})
-    fields = {name: replace(value, override=True) if name in base_schema.fields else value
-              for name, value in contributed.fields.items()}
-    return compose_schema(base_schema, ConfigSchema(fields))
+    # An already composed schema may be supplied as a fresh session baseline.
+    # Identical declarations are inert, not grants to replace another owner.
+    unchanged = {name for name, declaration in contributed.fields.items()
+                 if base_schema.fields.get(name) == declaration}
+    if unchanged:
+        contributed = ConfigSchema({name: declaration for name, declaration in contributed.fields.items()
+                                    if name not in unchanged})
+    return compose_schema(base_schema, contributed)
 
 
 def provider_schema(location, base_schema, *, owner_root=None, deferred=None):

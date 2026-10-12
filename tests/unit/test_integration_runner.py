@@ -442,16 +442,80 @@ def test_api_marker_survives_collection_and_blocks_runner_before_side_effects(tm
     check.assert_called_once_with(ctx, {'TUI_MODE': 'integration'})
 
 
-def test_debug_is_serial_and_streams_inspection_output(tmp_path):
-    base = fixture_repo(tmp_path / 'base', 'def test_ok():\n    print("inspection-ready")\n')
+def test_debug_runs_parallel_workers_and_streams_output(tmp_path):
+    base = fixture_repo(tmp_path / 'base',
+        'def test_first():\n    print("inspection-first")\n'
+        'def test_second():\n    print("inspection-second")\n')
     ctx = context(base)
     selected = collect_tests(ctx, 'integration')
-    result = run_integration_tests(ctx, selected, accepted=True, parallel_jobs=8,
+    result = run_integration_tests(ctx, selected, accepted=True, parallel_jobs=2,
         config={'DEBUG': True})
-    assert result.exit_code == 0 and result.tests[0].status == 'passed'
-    assert 'inspection-ready' in result.output
-    assert 'collected 1 item' in result.output
-    assert 'workers [' not in result.output
+    assert result.exit_code == 0 and all(test.status == 'passed' for test in result.tests)
+    assert '2 workers [2 items]' in result.output
+
+
+def test_debug_publication_callback_cannot_reenter_runner_operation(tmp_path):
+    from api_agent.testing.suite_lock import SuiteBusyError
+    base = fixture_repo(tmp_path / 'base', 'def test_ok():\n    assert True\n')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    refused = []
+
+    def after(_):
+        with pytest.raises(SuiteBusyError, match='already active'):
+            run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True})
+        refused.append(True)
+
+    result = run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True}, after_run=after)
+    assert result.exit_code == 0 and refused == [True]
+    assert len(result.inspections) == 1 and result.inspections[0].closed
+
+
+def test_debug_prepublication_failure_publishes_failed_result_and_retains_retry_owner(tmp_path, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing.setup_backend import SetupBackend
+
+    base = fixture_repo(tmp_path / 'base', 'def test_ok():\n    assert True\n')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    order = []
+    published = []
+    original_close = SetupBackend.close
+    close_attempts = 0
+
+    def fail_prepublication(owner):
+        order.append('prepare')
+        owner.pending = True
+        raise owner._receipt()
+
+    def interrupted_close(owner):
+        nonlocal close_attempts
+        close_attempts += 1
+        order.append('close')
+        if close_attempts == 1:
+            raise RuntimeError('synthetic disposal interruption')
+        return original_close(owner)
+
+    monkeypatch.setattr(SetupBackend, 'prepare_publication', fail_prepublication)
+    monkeypatch.setattr(SetupBackend, 'close', interrupted_close)
+
+    def publish(result):
+        order.append('after_run')
+        published.append(result)
+
+    with pytest.raises(CleanupPendingError) as caught:
+        run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True}, after_run=publish)
+
+    assert order == ['prepare', 'after_run', 'close']
+    assert len(published) == 1 and published[0].exit_code == 1
+    assert [row.status for row in published[0].tests] == ['passed']
+    assert 'Shared setup execution cleanup pending; retry required.' in published[0].output
+    backend = published[0].inspections[0]
+    assert caught.value.inspections == (backend,)
+    assert backend.pending and not backend.closed
+    backend.close()
+    assert order[-1] == 'close' and close_attempts == 2
+    assert backend.closed and not backend.pending
 
 
 def test_run_complete_transfers_live_worker_before_publication(tmp_path, monkeypatch):
@@ -472,19 +536,23 @@ def test_retained():
     ctx = context(base)
     selected = collect_tests(ctx, 'integration')
     events, publication = [], []
+    def worker(run):
+        return next(handle for handle in run.inspections if hasattr(handle, 'process'))
     result = run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True},
         on_event=events.append, after_run=lambda run: publication.append(
-            (run.tests[0].status, run.inspections[0].process.poll(), run.inspections[0].closed)))
+            (run.tests[0].status, worker(run).process.poll(), worker(run).closed)))
     assert result.exit_code == 0
     assert publication == [('passed', None, False)]
-    assert len(result.inspections) == 1
-    handle = result.inspections[0]
+    assert len([handle for handle in result.inspections if hasattr(handle, 'process')]) == 1
+    handle = worker(result)
     assert any(event.kind == 'inspection_open' and event.text == 'http://127.0.0.1:1234' for event in events)
     assert handle.end_inspection(timeout=5)
     assert handle.wait_closed(timeout=1)
     assert handle.closed and handle.process.poll() == 0
     assert any(event.kind == 'inspection_closed' for event in events)
     assert not Path(handle.directory.temporary.name).exists()
+    for remaining in result.inspections:
+        remaining.end_inspection()
 
 
 def test_retained_worker_abrupt_exit_cleans_registered_group(tmp_path):
@@ -504,10 +572,12 @@ def test_retained():
     events = []
     result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
         config={'DEBUG': True}, on_event=events.append)
-    handle = result.inspections[0]
+    handle = next(handle for handle in result.inspections if hasattr(handle, 'process'))
     handle.process.kill()
     assert handle.wait_closed(timeout=5)
     assert any(event.kind == 'inspection_lost' for event in events)
+    for remaining in result.inspections:
+        remaining.end_inspection()
 
 
 def test_real_offline_browser_driver_survives_published_results(tmp_path):
@@ -538,13 +608,14 @@ def test_browser():
     result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
         config={'DEBUG': True}, after_run=lambda row: published.append(row.tests[0].status))
     assert published == ['passed'], result.output
-    handle = result.inspections[0]
+    handle = next(handle for handle in result.inspections if hasattr(handle, 'process'))
     try:
         assert not handle.closed and handle.process.poll() is None
         assert handle.end_inspection(timeout=10)
         assert handle.process.poll() == 0
     finally:
-        handle.abort()
+        for remaining in result.inspections:
+            remaining.abort()
 
 
 def test_worker_cleanup_pending_requires_explicit_retry(tmp_path):
@@ -569,7 +640,7 @@ def test_browser():
 ''')
     ctx = context(base)
     result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True, config={'DEBUG': True})
-    handle = result.inspections[0]
+    handle = next(handle for handle in result.inspections if hasattr(handle, 'process'))
     try:
         assert handle.end_inspection(timeout=5) is False
         assert handle.pending and not handle.closed
@@ -577,7 +648,8 @@ def test_browser():
         assert handle.end_inspection(timeout=5) is True
         assert handle.closed and handle.process.poll() == 0
     finally:
-        handle.abort()
+        for remaining in result.inspections:
+            remaining.abort()
 
 
 def test_launcher_liveness_eof_stops_only_registered_worker_group(tmp_path):
@@ -600,13 +672,15 @@ def test_browser():
     events = []
     result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
         config={'DEBUG': True}, on_event=events.append)
-    handle = result.inspections[0]
+    handle = next(handle for handle in result.inspections if hasattr(handle, 'process'))
     # Closing the sole writer produces the same EOF as abrupt launcher exit.
     os.close(handle.liveness_fd)
     handle.liveness_fd = None
     assert handle.wait_closed(timeout=5)
     assert handle.process.poll() < 0
     assert any(event.kind == 'inspection_lost' for event in events)
+    for remaining in result.inspections:
+        remaining.end_inspection()
 
 
 def test_browser_already_closed_at_run_complete_is_not_protocol_error(tmp_path):

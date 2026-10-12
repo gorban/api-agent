@@ -1,4 +1,5 @@
 """Lazy personal subscription authentication through the provider boundary."""
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -61,6 +62,10 @@ class GPTProvider:
         self.quota_period = config.get('LLM_QUOTA_PERIOD', 'week')
         self.pay_period = config.get('LLM_PAY_PERIOD', 'month')
         self.browsers = []
+        self.quota_interactive = False
+        self.quota_executable = None
+        self.quota_preparation_error = None
+        self.quota_prepared_identity = None
         self.closed = False
 
     @staticmethod
@@ -148,6 +153,7 @@ class GPTProvider:
             raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
         session = OwnedSubscriptionSession(store, profile)
         self.sessions.append(session)
+        self.quota_interactive = bool(interactive)
         return session
 
     async def adescribe(self, *, auth=None):
@@ -184,6 +190,47 @@ class GPTProvider:
                                        subscription=self.auth_mode == "subscription", api_mode=self.api_mode,
                                        request=request, cache_session_id=self.cache_session_id)
 
+    async def aprepare_accounting(self, *, auth=None):
+        """Prepare optional native quota access before the short snapshot budget."""
+        if self.closed:
+            raise ContractError('GPT provider is closed.')
+        if self.auth_mode != 'subscription':
+            return None
+        from api_agent.telemetry.usage import QuotaReadError
+        from .quota_setup import prepare_quota_client
+        connections = ConnectionStore(self.state_dir).list()
+        matches = [connection for connection in connections if connection.access_token == auth]
+        if len(matches) != 1:
+            return QuotaReadError('identity')
+        connection = matches[0]
+        # Recheck each preparation request, including after a prior failure.
+        # A changed selected account may have a different native match.
+        self.quota_preparation_error = None
+        self.quota_prepared_identity = (connection.email.strip().casefold(), getattr(connection, 'subject', None))
+
+        async def present_login(url):
+            options = {'inspection': self.inspection} if self.inspection is not None else {}
+            browser = subscription_browser(**options)
+            self.browsers.append(browser)
+            session = await browser.start()
+            await session.page.goto(url, wait_until='domcontentloaded')
+            return session
+
+        try:
+            prepared = await prepare_quota_client(
+                connection, interactive=self.quota_interactive,
+                present_login=present_login if self.quota_interactive else None)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            prepared = QuotaReadError('request')
+        if isinstance(prepared, QuotaReadError):
+            self.quota_executable = None
+            self.quota_preparation_error = prepared
+            return prepared
+        self.quota_executable = prepared
+        return None
+
     async def asnapshot(self, *, auth=None):
         if self.closed:
             raise ContractError('GPT provider is closed.')
@@ -195,7 +242,13 @@ class GPTProvider:
         matches = [connection for connection in connections if connection.access_token == auth]
         if len(matches) != 1:
             return QuotaReadError('identity')
-        return await read_quota(matches[0], period=self.quota_period)
+        connection = matches[0]
+        if (self.quota_preparation_error is not None
+                and self.quota_prepared_identity == (connection.email.strip().casefold(), getattr(connection, 'subject', None))):
+            return self.quota_preparation_error
+        if self.quota_executable is not None:
+            return await read_quota(connection, period=self.quota_period, executable=self.quota_executable)
+        return await read_quota(connection, period=self.quota_period)
 
     def quote_cost(self, request, result):
         from .pricing import quote

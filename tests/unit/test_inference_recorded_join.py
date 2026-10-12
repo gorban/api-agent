@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 
-@pytest.mark.parametrize('jobs,debug', [(0,False),(2,False),(0,True)])
+@pytest.mark.parametrize('jobs,debug', [(0,False),(2,False),(0,True),(2,True)])
 @pytest.mark.parametrize('mode', ['responses','completions'])
 @pytest.mark.parametrize('status', [200,403])
 @pytest.mark.parametrize('log_content', [False, True])
@@ -66,39 +66,6 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
     if status == 200 and failure_usage:
         body += '    raise AssertionError("Synthetic failure after completed inference")\n'
     (suite/'test_request.py').write_text(body+'\ndef test_second(llm_selection,llm_provider):\n    test_llm_request(llm_selection,llm_provider)\n')
-    if debug:
-        # Install controlled adapters inside the real supervised worker, rather
-        # than assuming parent-process monkeypatches cross subprocess boundaries.
-        data = ({'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':response_text}]}],
-                 'usage':{'input_tokens':2,'output_tokens':1,'input_tokens_details':{'cached_tokens':0},'output_tokens_details':{'reasoning_tokens':0}}} if mode == 'responses' else
-                {'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':response_text}}],
-                 'usage':{'prompt_tokens':2,'completion_tokens':1,'prompt_tokens_details':{'cached_tokens':0},'completion_tokens_details':{'reasoning_tokens':0}}})
-        if status != 200:
-            data = {'error':{'message':'Request permission denied '+key+' Bearer\nsecondary-synthetic-secret',
-                             'code':'denied','type':'permission'}}
-            if failure_usage:
-                data['usage'] = ({'input_tokens':2,'output_tokens':1} if mode == 'responses' else
-                                 {'prompt_tokens':2,'completion_tokens':1})
-        (suite/'conftest.py').write_text(f'''
-import json
-import httpx
-from api_agent.auth import credentials
-key = {key!r}
-credentials.get_password = lambda *args, **kwargs: key
-def forbidden(*args, **kwargs):
-    raise AssertionError("Unexpected credential fallback")
-credentials.get_username = forbidden
-credentials.get_totp = forbidden
-real_client = httpx.AsyncClient
-def respond(request):
-    if request.method == "GET":
-        return httpx.Response(401) if "authorization" not in request.headers else httpx.Response(200, json={{"data": [{{"id": "gpt-4.1-nano"}}]}})
-    assert request.method == "POST" and "/models" not in request.url.path
-    assert request.headers["authorization"] == "Bearer " + key
-    assert json.loads(request.content)["model"] == "gpt-4.1-nano"
-    return httpx.Response({status!r}, json={data!r}, headers={{"x-request-id":"request-safe"}})
-httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(respond), **kwargs)
-''')
     context = SimpleNamespace(base_root=base,owner_root=base,suite_paths=lambda mode: [suite])
     config = dict(LLM_DEFAULT_MODEL='gpt-4.1-nano', LLM_ALLOWED_MODELS='gpt-4.*', LLM_PROVIDER=str(Path(factory.__file__).resolve())+':factory',LLM_CREDENTIAL_ROLE='LLM User',
         LOG_CONTENT=log_content,GPT_AUTH_MODE='api_key',GPT_API_MODE=mode,UNATTENDED_USER_INDEX=0,
@@ -110,13 +77,10 @@ httpx.AsyncClient = lambda **kwargs: real_client(transport=httpx.MockTransport(r
     expected = 'passed' if status == 200 and not failure_usage else 'failed'
     assert result.persisted and [test.status for test in result.execution.tests] == [expected,expected]
     assert result.exit_code == (0 if expected == 'passed' else 1)
-    if debug:
-        # The supervised DEBUG driver runs in a separate process; request/auth
-        # assertions execute there and failures return through actual reports.
-        assert not reads and not requests and not loaded
-    else:
-        assert reads == [('synthetic-vault','selected-entry')] and sum(request.method == 'POST' for request in requests)==2 and len(loaded)==1
-        assert loaded[0].closed and not loaded[0].implementation.sessions
+    assert reads == [('synthetic-vault','selected-entry')]
+    assert sum(request.method == 'POST' for request in requests)==2
+    assert len(loaded)==1
+    assert loaded[0].closed and not loaded[0].implementation.sessions
     assert result.usage['prompt_count'] == 2
     usage = json.loads((result.directory/'usage-summary.json').read_text())
     assert usage['prompt_count'] == 2

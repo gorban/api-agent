@@ -224,7 +224,19 @@ def test_debug_run_captures_one_registry_across_repository_suites(tmp_path, monk
     replacement = pack / 'replacement.py'
     replacement.write_text((pack / 'adapter.py').read_text().replace(
         'return [cli, kind,', "return [cli, 'changed-command', kind,"))
-    captured, snapshots, calls, workers, finalized, errors = [], [], [], [], [], []
+    captured, snapshots, calls, workers, providers, finalized, errors = [], [], [], [], [], [], []
+    original_provider = provider_setup.IntegrationLLM
+    class CredentialProbe(original_provider):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._credential_loaded = False
+            providers.append(self)
+        async def _ensure(self):
+            if not self._credential_loaded:
+                scoped = self._credentials(0)
+                assert await scoped(0, 'password') == 'synthetic-key'
+                self._credential_loaded = True
+    monkeypatch.setattr(provider_setup, 'IntegrationLLM', CredentialProbe)
     real_discovery = managers.registry_for_context
     def discover(selected_context):
         registry = real_discovery(selected_context)
@@ -258,8 +270,7 @@ def test_debug_run_captures_one_registry_across_repository_suites(tmp_path, monk
                         self.returncode = 1
                     else:
                         workers.append(worker)
-                        scoped = worker._credentials(0)
-                        assert worker.loop.run_until_complete(scoped(0, 'password')) == 'synthetic-key'
+                        worker.ensure_ready()
                 finally:
                     fixture.close()
             node = args[-1]
@@ -283,15 +294,18 @@ def test_debug_run_captures_one_registry_across_repository_suites(tmp_path, monk
     assert all(snapshot['password_manager_definitions'] == provider_setup._manager_definitions(captured[0])
                for snapshot in snapshots)
     assert all(snapshot['password_manager_pack_root'] == str(pack) for snapshot in snapshots)
-    expected_calls = 2 if change == 'unchanged' else 0 if change == 'before_first' else 1
+    expected_workers = 2 if change == 'unchanged' else 0 if change == 'before_first' else 1
+    expected_calls = int(expected_workers > 0)
     assert calls == [['/synthetic/fixture-cli', 'password', 'Example', 'account']] * expected_calls
-    assert len(workers) == expected_calls and all(worker.closed and worker.loop.is_closed() for worker in workers)
+    assert len(workers) == expected_workers and all(worker.client._closed and worker.loop.is_closed() for worker in workers)
+    assert len(providers) == expected_calls
+    assert all(provider.password_manager_registry is captured[0] for provider in providers)
     if change == 'unchanged':
         assert result.exit_code == 0 and all(item.status == 'passed' for item in result.tests)
         assert errors == []
     else:
         assert result.exit_code == 1 and result.tests[-1].status == 'error'
-        assert len(errors) == 2 - expected_calls
+        assert len(errors) == 2 - expected_workers
         assert all(error == 'Password manager declarations changed after launch; restart through launch.py.'
                    for error in errors)
         assert 'declarations changed after launch' in result.tests[-1].traceback

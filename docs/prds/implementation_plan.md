@@ -37,7 +37,7 @@ At the October 8 checkpoint, 2,758/2,758 combined unit tests passed with exact 1
 
 ## Current provider architecture
 
-- [ ] Complete [consumer contract hardening](implementation_plan_m3.md) before freezing the version-1 surface or adding further consumers. Shared LLM data, operational errors, managed streams and synthetic ownership proofs are complete; selected dependencies, cross-process credentials/debug lifetime, installed-pack relocation and declaration authority remain open.
+- [ ] Complete [consumer contract hardening](implementation_plan_m3.md) before freezing the version-1 surface or adding further consumers. Shared LLM data, operational errors, managed streams and synthetic ownership proofs are complete; selected dependency descriptors, shared integration DEBUG ownership, relocated resource validation and declaration authority are implemented. Executable installed-pack consumers, richer scoped invocation and cross-platform disposal remain in the linked conformance checklist.
 - [ ] Build the early [included personal GPT provider](implementation_plan_f2.md) through the same replaceable LLM interface. Public demo UI/Nx apps and demo API servers/providers are later work; separately owned external pack providers can exercise generic core during early live acceptance. Synthetic fixtures prove interchangeability without a live demo backend.
 - [ ] Complete generic factory, configuration, capability, route and lifecycle composition. See [shared provider contracts](implementation_plan_m.md).
 - [ ] Build the included generic GraphQL provider with a separately selected upstream extension, and prove an outside-path API replacement. See [GraphQL provider](implementation_plan_m1.md).

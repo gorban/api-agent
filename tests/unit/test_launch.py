@@ -248,11 +248,13 @@ def test_noninteractive_debug_integration_dispatch_and_prepare_failure(monkeypat
     from types import SimpleNamespace
     monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *a, **k: None)
     monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
-    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *a, **k: ['selected'])
+    from api_agent.testing.collection import TestIdentity
+    selected = TestIdentity('base::test.py::selected', 'base', 'test.py', 'test.py::selected')
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *a, **k: [selected])
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **k: None)
     calls = []
     def run(context, tests, config, **kwargs):
-        assert tuple(tests) == ('selected',) and config['DEBUG'] and config['NO_STD_IN']
+        assert tuple(tests) == (selected,) and config['DEBUG'] and config['NO_STD_IN']
         assert kwargs['accepted'] is True
         assert kwargs['unattended_index_source'] == 'cli'
         kwargs['output']('raw evidence\n')

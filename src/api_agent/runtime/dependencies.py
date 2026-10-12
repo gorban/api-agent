@@ -3,14 +3,33 @@ from pathlib import Path
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 import tomllib
 
 
-def requirements(context, *, collect=False, groups=()):
+def _parsed_requirement(raw):
+    """Validate installer arguments before any environment mutation."""
+    try:
+        from packaging.requirements import Requirement, InvalidRequirement
+    except ImportError:
+        try:
+            from pip._vendor.packaging.requirements import Requirement, InvalidRequirement
+        except ImportError as exc:
+            raise RuntimeError('Requirement validation needs packaging or pip before setup') from exc
+    if type(raw) is not str:
+        raise ValueError('Dependency requirement must be a PEP 508 string')
+    try:
+        parsed = Requirement(raw)
+    except InvalidRequirement as exc:
+        raise ValueError('Dependency requirement is not a valid PEP 508 string') from None
+    if parsed.url:
+        raise ValueError('Direct URL requirements need explicit verification')
+    return parsed
+
+
+def requirements(context, *, collect=False, groups=(), selected_provider_manifests=()):
     dependencies = []
     found_groups = set()
     for root in dict.fromkeys((context.base_root, context.pack_root)):
@@ -27,33 +46,46 @@ def requirements(context, *, collect=False, groups=()):
                 selected.extend(optional[group])
         for requirement in selected:
             # Source loading supplies the base itself; install only external tools.
-            name = re.split(r'[<>=!~;\[ ]', requirement, maxsplit=1)[0].lower().replace('_', '-')
+            name = _parsed_requirement(requirement).name.lower().replace('_', '-')
             if name != 'api-agent':
                 dependencies.append(requirement)
     if missing_groups := set(groups) - found_groups:
         raise ValueError(f'Unknown optional dependency group(s): {", ".join(sorted(missing_groups))}')
+    # Callers pass only manifests for operation-active providers. Discovery and
+    # collection do not select executable providers or prepare their packages.
+    from api_agent.providers.distribution import ProviderDependencyManifest
+    for manifest in selected_provider_manifests:
+        if not isinstance(manifest, ProviderDependencyManifest):
+            raise TypeError('Selected providers require dependency manifest descriptors')
+        dependencies.extend(manifest.requirements())
     if collect:
         dependencies.extend(('pytest>=8,<10', 'pytest-cov>=6,<8', 'pytest-xdist>=3,<4'))
+    for requirement in dependencies:
+        _parsed_requirement(requirement)
     return tuple(dict.fromkeys(dependencies))
 
 
 def _installed_requirements(python, wanted):
     """Probe the target interpreter; a fingerprint alone cannot prove installation."""
     for requirement in wanted:
-        if re.search(r'\s@\s', requirement):
-            raise ValueError(f'Direct URL requirement needs explicit verification: {requirement}')
+        _parsed_requirement(requirement)
     script = '''
 import importlib.metadata as metadata
 import json, sys
-from packaging.requirements import Requirement
-from packaging.utils import canonicalize_name
-from packaging.markers import default_environment
+try:
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    from packaging.markers import default_environment
+except ImportError:
+    from pip._vendor.packaging.requirements import Requirement
+    from pip._vendor.packaging.utils import canonicalize_name
+    from pip._vendor.packaging.markers import default_environment
 result = []
 seen = set()
 def check(raw, extra=''):
     req = Requirement(raw)
     if req.url:
-        raise ValueError(f'Direct URL requirement needs explicit verification: {raw}')
+        raise ValueError('Direct URL requirements need explicit verification')
     environment = default_environment()
     environment['extra'] = extra
     if req.marker and not req.marker.evaluate(environment):
@@ -82,8 +114,8 @@ print(json.dumps(result))
         probe = subprocess.run([str(python), '-c', script, json.dumps(wanted)],
                                capture_output=True, text=True, timeout=20, check=True)
         return tuple(json.loads(probe.stdout))
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError, json.JSONDecodeError):
-        return wanted
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise OSError('Cannot verify dependencies in the target interpreter') from exc
 
 
 def active_environment(environment):
@@ -97,15 +129,13 @@ def active_environment(environment):
         return False
 
 
-def ensure_environment(context, argv, *, collect=False, groups=()):
+def ensure_environment(context, argv, *, collect=False, groups=(), selected_provider_manifests=()):
     """Return a relaunched command's status, or None in the ready local venv."""
     root = context.pack_root if context.external_pack else context.base_root
     environment = root / '.venv'
     python = environment / 'bin/python'
-    wanted = requirements(context, collect=collect, groups=groups)
-    for requirement in wanted:
-        if re.search(r'\s@\s', requirement):
-            raise ValueError(f'Direct URL requirement needs explicit verification: {requirement}')
+    wanted = requirements(context, collect=collect, groups=groups,
+                          selected_provider_manifests=selected_provider_manifests)
     fingerprint = hashlib.sha256(json.dumps(wanted).encode()).hexdigest()
     marker = environment / '.api-agent-dependencies'
     missing = _installed_requirements(python, wanted) if python.is_file() and wanted else wanted

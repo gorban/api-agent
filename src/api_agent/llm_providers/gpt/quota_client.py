@@ -14,6 +14,18 @@ from api_agent.providers.costs import period_seconds
 from api_agent.telemetry.usage import QuotaReadError, QuotaSnapshot
 
 
+_NATIVE_ENV_KEYS = (
+    'PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'WINDIR',
+    'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'XDG_CONFIG_HOME',
+    'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_HOME',
+)
+
+
+def native_environment():
+    """Pass only native-client runtime state, never application credentials."""
+    return {key: os.environ[key] for key in _NATIVE_ENV_KEYS if key in os.environ}
+
+
 async def _rpc(process, identifier, method, params=None):
     frame = {'id': identifier, 'method': method}
     if params is not None:
@@ -87,14 +99,12 @@ async def _close(starting):
         await process.wait()
 
 
-async def read_quota(connection, *, period):
+async def read_quota(connection, *, period, executable=None):
     """Use only a matching, already signed-in client; never initiate login."""
-    executable = shutil.which('codex')
+    executable = executable or shutil.which('codex')
     if not executable or not connection.email.strip():
         return QuotaReadError('source')
-    env = os.environ.copy()
-    for key in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'ACCESS_TOKEN'):
-        env.pop(key, None)
+    env = native_environment()
     starting = asyncio.create_task(asyncio.create_subprocess_exec(
         executable, 'app-server', '--listen', 'stdio://',
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,

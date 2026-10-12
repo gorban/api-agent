@@ -58,6 +58,26 @@ def test_read_matching_native_account_preserves_integer_precision_and_route(clie
     assert all(key not in options['env'] for key in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'ACCESS_TOKEN'))
     assert options['stderr'] == asyncio.subprocess.DEVNULL and options['limit'] == 65536
 
+
+def test_prepared_executable_bypasses_path_search_but_rechecks_account(client, monkeypatch):
+    monkeypatch.setattr(q.shutil, 'which', lambda name: pytest.fail('Unexpected PATH lookup'))
+    client[0].frames[1]['result'] = {'account': {'type': 'chatgpt', 'email': 'other@example.test'}}
+    result = asyncio.run(q.read_quota(CONNECTION, period='week', executable='/managed/codex'))
+    assert result == QuotaReadError('source')
+    assert client[1][0][0][0] == '/managed/codex'
+    assert all(frame['method'] != 'account/rateLimits/read' for frame in client[0].written)
+
+
+def test_native_child_environment_excludes_unrelated_secrets(client, monkeypatch):
+    monkeypatch.setenv('API_AGENT_APP_TOKEN', 'private-app-token')
+    monkeypatch.setenv('NODE_OPTIONS', '--require /private/hook.js')
+    monkeypatch.setenv('npm_config_registry', 'https://private.example/')
+    monkeypatch.setenv('CODEX_HOME', '/synthetic/codex-home')
+    assert isinstance(asyncio.run(q.read_quota(CONNECTION, period='week')), QuotaSnapshot)
+    env = client[1][0][1]['env']
+    assert env['CODEX_HOME'] == '/synthetic/codex-home'
+    assert all(key not in env for key in ('API_AGENT_APP_TOKEN', 'NODE_OPTIONS', 'npm_config_registry'))
+
 @pytest.mark.parametrize('email, executable', [('', '/codex'), ('x@test', None)])
 def test_missing_source_never_starts_process(client, monkeypatch, email, executable):
     monkeypatch.setattr(q.shutil, 'which', lambda _: executable)

@@ -105,7 +105,9 @@ class QuotaReadError:
                 'response': 'Quota endpoint returned an invalid response.',
                 'window': 'Quota response did not include the configured quota window.',
                 'request': 'Quota request failed or timed out.',
-                'source': 'Quota requires Codex CLI signed in to the selected ChatGPT account.'}[self.code]
+                'source': ('Quota requires a matching Codex CLI login. On Linux/macOS, install Node.js/npm for launcher-managed CLI setup, '
+                           'or install Codex CLI and sign in with the selected ChatGPT account. '
+                           'Unattended runs need an existing matching native login.')}[self.code]
 
     def to_json(self):
         return {'code': self.code, 'status': self.status}

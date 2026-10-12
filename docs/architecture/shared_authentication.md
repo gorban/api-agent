@@ -1,6 +1,6 @@
 # Shared integration authentication
 
-Ordinary integration runs use one lazy authentication backend for the selected provider and account. Base, resource-pack and selected-provider suites share that backend, including parallel pytest workers. Requesting the `llm_provider` fixture is inert; `ensure_ready()` acquires authentication; `describe()` additionally verifies remote catalog access; `complete(request)` executes an explicit text request without listing first.
+Ordinary and DEBUG integration runs use one lazy authentication backend for the selected provider and account. Base, resource-pack and selected-provider suites share that backend, including parallel pytest workers. Requesting the `llm_provider` fixture is inert; `ensure_ready()` acquires authentication; `describe()` additionally verifies remote catalog access; `complete(request)` executes an explicit text request without listing first.
 
 ## Ownership
 
@@ -18,13 +18,13 @@ The versioned protocol listens on an ephemeral IPv4 loopback port. Its operation
 
 Approved prerequisite and interaction errors retain their actionable explanations. Provider-normalized access errors preserve safe upstream messages, HTTP status, code/type and request identifiers. Unknown failures use a fixed diagnostic. Component timing is relayed to waiting tests with neutral component labels and remapped identifiers; nested budgets and elapsed time remain available without sending provider-supplied identifiers or names.
 
-The backend is disposed before suite publication. Failed disposal retains a cleanup handle and the creating loop for retry. Existing terminal/TUI cleanup consumers own that handle until disposal is acknowledged; it does not represent a retained browser.
+Ordinary backend disposal precedes publication. DEBUG stops and drains worker calls, captures the final quota, then publishes results while retaining the authentication/inspection owner. Provider disposal afterward leaves only inspected browsers alive. Terminal/TUI consumers own every unacknowledged cleanup handle and the suite lease until confirmed disposal; closing all windows starts the same synchronous cleanup path. Failed cleanup retains the creating loop and retry receipt.
 
 Worker socket disposal and its acknowledgement use fresh bounded cleanup scopes, independent of the readiness request. An expired request cannot consume those cleanup budgets. Successful cleanup preserves the request failure and revokes the disconnected lease before session teardown; genuinely unconfirmed disposal still retains a retry owner.
 
 ## Current boundary
 
-DEBUG keeps the existing serial worker-local browser inspection path. Moving retained debug browsers to the shared backend remains a separate task. Ordinary integration acceptance and the human E2E gate are unchanged. This backend supports readiness, catalog discovery and text completion. Each completion is a separate owned call; results are never cached. Cancelling or disconnecting a worker stops its inference before acknowledging disposal, without cancelling shared authentication. API execution, tools, structured output and public incremental streaming remain later consumer contracts.
+DEBUG uses configured parallel workers and one backend-owned inspection service. Its original contexts/pages remain inspectable after workers exit or inspection clients disconnect. A stopped backend loop is restarted for bounded cleanup, inspection waiters are owned independently, and publication callbacks cannot start a second runner operation. Controlled Linux launcher-termination proof covers only recorded owned driver/browser identities; broader platform recovery remains a follow-up. Ordinary integration acceptance and the human E2E gate are unchanged. This backend supports readiness, catalog discovery and text completion. Each completion is a separate owned call; results are never cached. Cancelling or disconnecting a worker stops its inference before acknowledging disposal, without cancelling shared authentication. API execution, tools, structured output and public incremental streaming remain later consumer contracts.
 
 Help, units and collection do not start this backend. Integration startup allocates its communication resources after prerequisite preparation; it loads no provider or browser until a test requests readiness, discovery or completion.
 

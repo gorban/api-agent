@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import pytest
 from api_agent.runtime.dependencies import ensure_environment, requirements, _installed_requirements
 
 
@@ -103,11 +104,11 @@ def test_failed_probe_repairs_then_verifies_before_marker(tmp_path):
          patch('api_agent.runtime.dependencies.shutil.which', return_value='uv'), \
          patch('api_agent.runtime.dependencies.subprocess.call', return_value=0):
         from api_agent.runtime.dependencies import _installed_requirements
-        assert _installed_requirements(environment / 'bin/python', ('packaging>=24',)) == ('packaging>=24',)
+        with pytest.raises(OSError, match='Cannot verify dependencies'):
+            _installed_requirements(environment / 'bin/python', ('packaging>=24',))
     with patch('api_agent.runtime.dependencies.shutil.which', return_value='uv'), \
          patch('api_agent.runtime.dependencies._installed_requirements', return_value=('packaging>=24',)), \
          patch('api_agent.runtime.dependencies.subprocess.run'):
-        import pytest
         with pytest.raises(OSError, match='remain unavailable'):
             ensure_environment(context, [])
         assert not (environment / '.api-agent-dependencies').exists()

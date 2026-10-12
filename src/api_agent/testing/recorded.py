@@ -252,7 +252,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 on_event(row)
 
         execution = runner(context, tests, accepted=True, no_std_in=False, config=config,
-                           parallel_jobs=0 if config.get('DEBUG') else config.get('TEST_PARALLEL_JOBS', 8),
+                           parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
                            before_run=before, on_result=record, after_run=after,
                            on_event=event, output=output, cancel_event=cancel_event,
                            unattended_index_source=unattended_index_source,
