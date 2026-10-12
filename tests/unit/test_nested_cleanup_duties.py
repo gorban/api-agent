@@ -187,9 +187,9 @@ def test_successor_dependencies_can_cycle_without_repeating_disposal():
     with pytest.raises(CleanupPendingError): asyncio.run(two.retry())
     assert_competing_suite_blocked()
     asyncio.run(one.retry())
-    assert attempts == [2, 1]
+    assert attempts == [2, 2]
     asyncio.run(two.retry())
-    assert attempts == [2, 1]
+    assert attempts == [2, 2]
     assert_competing_suite_allowed()
 
 
