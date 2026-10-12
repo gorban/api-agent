@@ -17,6 +17,10 @@ malformed defaults and explicit constraint weakening remain invalid.
 Late-target overrides defer effective value checks until selected-provider
 discovery supplies their target constraints. Known and deferred incompatible
 types must reject before validators inherit, with a controlled launcher error.
+Compose all sibling fields and their inherited constraints before validating
+effective override predicates. Controller declaration order in a single file
+must not affect applicability, requiredness, conditional defaults or inert help;
+typed controller validation and override authority remain enforced.
 
 - [x] Pure manifest reader, active-kind selector and additive selected-provider dependency API, with synthetic active/inactive provider checks. The bundled GPT provider declares its HTTP/auth dependencies and an optional browser group. Per-capability browser-group selection remains a future refinement.
 - [x] Relocated synthetic whole-pack check covers manifest, primary schema, provider schema, defaults, selected factory files and production tree without executing a factory.
