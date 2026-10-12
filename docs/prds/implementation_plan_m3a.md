@@ -29,6 +29,10 @@ and an invalid earlier contribution cannot disappear behind it. Only an actual
 selected-provider introduction can supply an earlier optional override target;
 an ordinary later new field remains at its own source position. Keep canonical
 selector paths tied to their contributing owner and preserve final graph guards.
+Capture each selector's directory at discovery. Later provider declarations may
+change defaults and their owning directory, but cannot change the discovery
+scope of explicit .env, environment, CLI or interactive inputs. Canonical final
+comparisons use that captured scope and still reject different/invalid targets.
 Pending controllers are lookup-only context, never live fields or authority.
 Unknown controllers first declared in a later file remain unsupported unless
 already present in earlier pending context. Missing actual targets invalidate
@@ -73,3 +77,18 @@ Source-order/direct-API repair verification:
   The wheel and extracted inert declaration checks pass. The 391-file
   intended index and commit metadata pass the content-bound public audit.
   No live inference is needed for these declaration checks.
+
+Captured-selector scope verification:
+
+- [x] Capture each selected target's discovery directory before later defaults
+  change ownership. Four explicit-input sources retain this scope, including
+  relative selectors, existing/missing shadow files and real inert help.
+- [x] Fourteen additional controls pass; independent review passes 237 focused
+  tests. Isolated mutations detect restoring mutable ownership and dropping the
+  canonical target check. Equivalent defaults retain their own source directory;
+  genuinely changed targets remain rejected.
+- [x] Renewed full gate: 5,811 units plus 27 subtests, exact 100% lines/branches
+  across 132 measured files (17,520 statements, 6,442 branches). The wheel and
+  extracted inert tests for all explicit sources, both shadow cases and actual
+  help pass. Whitespace, the 391-file indexed boundary audit and commit metadata
+  checks pass. No live authentication or inference is required.

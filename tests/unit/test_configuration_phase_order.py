@@ -215,3 +215,95 @@ def test_deferred_selector_rejects_invalid_target_with_controlled_cycle_error(tm
 
     with pytest.raises(ProviderError, match='^provider_selection_cycle$'):
         discover(prepared)
+
+
+EXPLICIT_SCOPE_INPUTS = [
+    ([], {'LLM_PROVIDER': 'llm.py:factory'}, {}, {}),
+    ([], {}, {'LLM_PROVIDER': 'llm.py:factory'}, {}),
+    (['--llm-provider=llm.py:factory'], {}, {}, {}),
+    ([], {}, {}, {'LLM_PROVIDER': 'llm.py:factory'}),
+]
+
+
+def changed_selector_owner_pack(tmp_path, *, shadow=False):
+    from api_agent.runtime.resource_pack import load_launch_context
+    prepared = deferred_pack(tmp_path, PREDICATES[0], 1, False)
+    (prepared.pack / 'llm.py').write_text("raise AssertionError('factory must stay inert')\n")
+    api = prepared.pack / 'api'
+    (api / 'cfg').mkdir(parents=True)
+    (api / 'provider.py').write_text("raise AssertionError('factory must stay inert')\n")
+    if shadow:
+        (api / 'llm.py').write_text("raise AssertionError('shadow factory must stay inert')\n")
+    (api / 'cfg/config.toml').write_text('version=1\n[fields.LLM_PROVIDER]\ntype="str"\n'
+        'override=true\ndefault="../llm.py:factory"\n'
+        '[fields.API_REQUIRED]\ntype="str"\nrequired=true\n')
+    (prepared.pack / 'config.toml').write_text('version=1\n[fields.LLM_PROVIDER]\ntype="str"\n'
+        f'override=true\ndefault="{prepared.pack / "llm.py"}:factory"\n'
+        '[fields.API_PROVIDER]\ntype="str"\noverride=true\ndefault="api/provider.py:factory"\n')
+    (prepared.pack / 'pack.toml').write_text('version=1\nid="fixture"\nconfig="config.toml"\n')
+    prepared.context = load_launch_context(prepared.base, prepared.pack)
+    shared = load_shared_schema(prepared.base)
+    prepared.initial = compose_schema(shared, load_declarations(prepared.context.config_path, base_schema=shared))
+    return prepared
+
+
+@pytest.mark.parametrize('argv,environment,dotenv,override', EXPLICIT_SCOPE_INPUTS,
+                         ids=['environment', 'dotenv', 'cli', 'interactive'])
+@pytest.mark.parametrize('shadow', [False, True], ids=['missing-shadow', 'existing-shadow'])
+def test_explicit_selector_scope_survives_later_default_owner_change(tmp_path, argv, environment, dotenv, override, shadow):
+    from api_agent.providers.loading import bootstrap_schema
+    prepared = changed_selector_owner_pack(tmp_path, shadow=shadow)
+
+    schema = bootstrap_schema(prepared.initial, ['--help', *argv], environment, dotenv, override,
+        owner_root=prepared.context.owner_root)
+    resolved = resolve_config(schema, argv=argv, environ=environment, dotenv=dotenv,
+        overrides=override, anchors=prepared.context.anchors)
+
+    assert schema.fields['API_REQUIRED'].required
+    assert schema.fields['LLM_PROVIDER'].default == str(prepared.pack / 'llm.py') + ':factory'
+    assert schema.fields['LLM_PROVIDER'].contribution_origin == (prepared.pack / 'api/cfg/config.toml').resolve()
+    assert resolved.values['LLM_PROVIDER'] == 'llm.py:factory'
+
+
+def test_actual_help_retains_explicit_relative_selector_discovery_scope(tmp_path, monkeypatch, capsys):
+    prepared = changed_selector_owner_pack(tmp_path, shadow=True)
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+
+    with patch.dict(os.environ, {}, clear=True):
+        status = main(['--help', '--llm-provider=llm.py:factory'], base_root=prepared.base,
+            resource_pack_dir=prepared.pack, _worktrees_verified=True)
+
+    output = capsys.readouterr()
+    assert status == 0 and not output.err
+    assert 'Usage: ./launch.py [OPTIONS] [TEST SELECTORS]' in output.out
+
+
+def test_equivalent_default_selector_retains_its_contributing_scope(tmp_path):
+    from api_agent.providers.loading import bootstrap_schema
+    prepared = changed_selector_owner_pack(tmp_path, shadow=True)
+
+    schema = bootstrap_schema(prepared.initial, [], {}, {}, owner_root=prepared.context.owner_root)
+
+    assert schema.fields['API_REQUIRED'].required
+    assert schema.fields['LLM_PROVIDER'].default == str(prepared.pack / 'llm.py') + ':factory'
+    assert schema.fields['LLM_PROVIDER'].contribution_origin == (prepared.pack / 'api/cfg/config.toml').resolve()
+
+
+@pytest.mark.parametrize('argv,environment,dotenv,override', EXPLICIT_SCOPE_INPUTS,
+                         ids=['environment', 'dotenv', 'cli', 'interactive'])
+def test_captured_explicit_scope_still_rejects_a_changed_canonical_target(tmp_path, monkeypatch, argv, environment, dotenv, override):
+    from dataclasses import replace
+    from api_agent.config import resolve as resolver
+    from api_agent.providers.loading import ProviderError, bootstrap_schema
+    prepared = changed_selector_owner_pack(tmp_path, shadow=True)
+    original = resolver.resolve_config
+
+    def changed_resolution(*args, **kwargs):
+        result = original(*args, **kwargs)
+        return replace(result, values={**result.values, 'LLM_PROVIDER': 'api/llm.py:factory'})
+
+    monkeypatch.setattr(resolver, 'resolve_config', changed_resolution)
+
+    with pytest.raises(ProviderError, match='^provider_selection_cycle$'):
+        bootstrap_schema(prepared.initial, argv, environment, dotenv, override,
+            owner_root=prepared.context.owner_root)
