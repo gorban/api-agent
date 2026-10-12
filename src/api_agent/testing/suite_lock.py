@@ -198,6 +198,13 @@ class _ReceiptRetention:
             self._acknowledge()
 
     async def retry(self, *args, **kwargs):
+        await self._retry(args, kwargs, set())
+
+    async def _retry(self, args, kwargs, ancestors):
+        # Ancestors have already completed their own disposal before visiting
+        # successors. A cycle needs no second invocation of that same body.
+        if self in ancestors:
+            return
         if not self.disposed:
             try:
                 await self.original_retry(*args, **kwargs)
@@ -216,6 +223,10 @@ class _ReceiptRetention:
                                 state._acknowledge()
                 raise
             self.disposed = True
+        # Stable receipts remain supported: settle observations left by earlier
+        # failed attempts through their real retry, including distinct duties.
+        for state in tuple(self.successors):
+            await state._retry((), {}, ancestors | {self})
         self._acknowledge()
 
 
