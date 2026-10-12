@@ -415,6 +415,7 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
                 owners[name] = owner_root
     processed = {}
     discovered = {}
+    discovery_owners = {}
     paths = set()
     while True:
         pending = False
@@ -434,12 +435,14 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
                 continue
             if not selected:
                 continue
-            path, factory = provider_location(selected, owner_root=owners.get(name, owner_root))
+            selection_owner = owners.get(name, owner_root)
+            path, factory = provider_location(selected, owner_root=selection_owner)
             if (path, factory) in paths:
                 raise ProviderError('provider_selection_cycle')
             paths.add((path, factory))
             processed[name] = selected
             discovered[name] = (path, factory)
+            discovery_owners[name] = selection_owner
             previous = dict(schema.fields)
             schema = provider_schema(str(path) + ':' + factory, schema, deferred=deferred)
             for added, field in schema.fields.items():
@@ -492,7 +495,7 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
                     # Explicit input was resolved in the discovered selector's
                     # scope; a new default retains its contributing owner's root.
                     if resolved.fields[name].source not in {'shared_default', 'pack_default'}:
-                        final_owner = owners.get(name, owner_root)
+                        final_owner = discovery_owners[name]
                     try:
                         final_location = provider_location(effective, owner_root=final_owner)
                     except ProviderError:
