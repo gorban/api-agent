@@ -8,6 +8,7 @@ completion events run on their monitor thread. ``after_run`` receives the
 final result after pytest completes; debug inspection handles retain owned workers.
 """
 from dataclasses import dataclass
+from functools import wraps
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,23 @@ from .collection import CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
 from .processes import finalize
 from .suite_lock import suite_locked, retain_suite_cleanup
+
+_RUNNER_OPERATION = threading.local()
+
+
+def _admit_operation(function):
+    """Adapters may nest, but a callback cannot launch a second runner operation."""
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        from .suite_lock import SuiteBusyError
+        if getattr(_RUNNER_OPERATION, 'active', False):
+            raise SuiteBusyError('An integration operation is already active in this owner.')
+        _RUNNER_OPERATION.active = True
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _RUNNER_OPERATION.active = False
+    return guarded
 
 
 @dataclass(frozen=True)
@@ -71,6 +89,7 @@ sys.exit(code)
 
 
 @suite_locked
+@_admit_operation
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
@@ -199,12 +218,14 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
                     break
-                if config is not None and not config.get('DEBUG') and backend is None:
+                if config is not None and backend is None:
                     from .setup_backend import SetupBackend
                     backend = SetupBackend(config, context.owner_root,
                         unattended_index_source=unattended_index_source,
                         password_manager_registry=manager_registry, interaction=interaction, quota_observer=quota_observer)
                     retain_suite_cleanup(backend)
+                    if config.get('DEBUG'):
+                        inspections.append(backend)
                     backend_descriptor = backend.start()
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
@@ -222,7 +243,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
                     if config is not None and config.get('DEBUG'):
                         args.append('-s')
-                    elif parallel_jobs:
+                    if parallel_jobs:
                         args += ['-n', str(parallel_jobs)]
                     args.extend(selected)
                     liveness_read = liveness_write = None
@@ -372,7 +393,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     finally:
         if interaction_server is not None:
             interaction_server.close()
-        if backend is not None:
+        if backend is not None and not (config is not None and config.get('DEBUG')):
             try:
                 backend.close()
             except BaseException as error:
@@ -388,12 +409,22 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             for test in tests:
                 if test.id not in results:
                     finish(test.repo, test, [], 'cancelled' if cancelled else 'error')
+            if backend is not None and config is not None and config.get('DEBUG'):
+                try:
+                    backend.prepare_publication()
+                except Exception:
+                    chunks.append('Shared setup execution cleanup pending; retry required.\n')
+                    failed = True
             failed |= callback_failed or any(test.status not in {'passed', 'skipped'} for test in results.values())
             result = IntegrationRunResult(130 if cancelled else int(failed),
                                           tuple(results[test.id] for test in tests), ''.join(chunks), cancelled, tuple(inspections))
             # Publication is inside the ownership guard: an interrupt must not
             # lose a worker whose handle has not yet returned to the caller.
             call('after_run', after_run, result)
+            if backend is not None and config is not None and config.get('DEBUG'):
+                for endpoint in backend.finish_run():
+                    emit(RunnerEvent('inspection_open', text=endpoint))
+                backend.watch_inspection(lambda kind: emit(RunnerEvent(kind)))
             check_cancellation()
             result = IntegrationRunResult(130 if cancelled else int(result.exit_code != 0 or callback_failed or failed),
                                           result.tests, ''.join(chunks), cancelled, result.inspections)

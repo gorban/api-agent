@@ -57,7 +57,7 @@ def test_gpt_state_default_displays_and_saves_the_runtime_path(tmp_path, monkeyp
 
 
 def test_provider_defaults_win_and_explicit_values_remain_highest(tmp_path):
-    root = configured_provider(tmp_path, '[fields.LIMIT]\ntype="int"\ndefault=7\nrequired=true\n')
+    root = configured_provider(tmp_path, '[fields.LIMIT]\ntype="int"\noverride=true\ndefault=7\nrequired=true\n')
     base = selected_base('adapter/provider.py:create', {'LIMIT': {'type': 'int', 'default': 2}})
     schema = bootstrap_schema(base, [], {}, {}, owner_root=tmp_path)
     assert schema.fields['LIMIT'].required
@@ -75,10 +75,24 @@ def test_provider_defaults_win_and_explicit_values_remain_highest(tmp_path):
 
 
 def test_provider_cannot_replace_a_field_with_an_incompatible_type(tmp_path):
-    configured_provider(tmp_path, '[fields.LIMIT]\ntype="str"\ndefault="seven"\n')
+    configured_provider(tmp_path, '[fields.LIMIT]\ntype="str"\noverride=true\ndefault="seven"\n')
     with pytest.raises(ValueError, match='override must preserve the shared type'):
         bootstrap_schema(selected_base('adapter/provider.py:create', {'LIMIT': {'type': 'int'}}),
                          [], {}, {}, owner_root=tmp_path)
+
+
+def test_provider_existing_field_requires_explicit_authority_during_bootstrap(tmp_path):
+    configured_provider(tmp_path, '[fields.LIMIT]\ntype="int"\ndefault=7\n')
+    with pytest.raises(ValueError, match='requires override = true'):
+        bootstrap_schema(selected_base('adapter/provider.py:create', {'LIMIT': {'type': 'int'}}),
+                         [], {}, {}, owner_root=tmp_path)
+
+
+def test_bundled_provider_explicit_overrides_compose_during_bootstrap():
+    shared = load_shared_schema()
+    combined = bootstrap_schema(shared, [], {}, {})
+    assert combined.fields['LLM_CREDENTIAL_ROLE'].default == 'LLM User'
+    assert combined.fields['UNATTENDED_USER_INDEX'].validation == 'nonnegative'
 
 
 def test_explicit_provider_choices_override_declared_selection(tmp_path):
@@ -134,8 +148,8 @@ def test_declared_component_order_is_shared_by_help_and_editable_session(tmp_pat
     (base / 'cfg/config.toml').write_bytes((Path(__file__).parents[2] / 'cfg/config.toml').read_bytes())
     pack.mkdir()
     (pack / 'config.toml').write_text('version=1\n[fields.LIMIT]\ntype="int"\ndefault=2\n')
-    (pack / 'first.toml').write_text('version=1\n[fields.LIMIT]\ntype="int"\ndefault=7\n')
-    (pack / 'last.toml').write_text('version=1\n[fields.LIMIT]\ntype="int"\ndefault=9\n')
+    (pack / 'first.toml').write_text('version=1\n[fields.LIMIT]\ntype="int"\noverride=true\ndefault=7\n')
+    (pack / 'last.toml').write_text('version=1\n[fields.LIMIT]\ntype="int"\noverride=true\ndefault=9\n')
     (pack / 'pack.toml').write_text('version=1\nid="fixture"\nconfig="config.toml"\n[providers]\nconfigs=["first.toml","last.toml"]\n')
     monkeypatch.setattr('os.environ', {})
     assert main(['--help', '--limit=10'], base_root=base, resource_pack_dir=pack,
@@ -149,6 +163,38 @@ def test_declared_component_order_is_shared_by_help_and_editable_session(tmp_pat
     assert session.result().fields['LIMIT'].source == 'pack_default'
     session.set_value('LIMIT', '12', persist=True)
     assert session.result().values['LIMIT'] == 12
-    (pack / 'last.toml').write_text('version=1\n[fields.LIMIT]\ntype="int"\ndefault=10\n')
+    (pack / 'last.toml').write_text('version=1\n[fields.LIMIT]\ntype="int"\noverride=true\ndefault=10\n')
     session.unset_saved('LIMIT')
     assert session.result().values['LIMIT'] == 10
+
+
+def test_same_provider_schema_can_be_reapplied_without_granting_another_owner_authority(tmp_path):
+    root = configured_provider(tmp_path, '[fields.LIMIT]\ntype="int"\ndefault=7\n')
+    base = selected_base(str(root / 'provider.py') + ':create')
+    combined = bootstrap_schema(base, [], {}, {}, owner_root=tmp_path)
+    reloaded = bootstrap_schema(combined, [], {}, {}, owner_root=tmp_path)
+    assert reloaded.fields['LIMIT'].default == 7
+    assert reloaded.fields['LIMIT'].contribution_origin == (root / 'cfg/config.toml').resolve()
+
+    other = tmp_path / 'other'
+    (other / 'cfg').mkdir(parents=True)
+    (other / 'provider.py').write_text("raise AssertionError('must remain inert')\n")
+    (other / 'cfg/config.toml').write_bytes((root / 'cfg/config.toml').read_bytes())
+    with pytest.raises(ValueError, match='requires override = true'):
+        bootstrap_schema(combined, [], {}, {}, {'LLM_PROVIDER': str(other / 'provider.py') + ':create'},
+                         owner_root=tmp_path)
+
+
+def test_identical_pack_field_still_requires_explicit_provider_override(tmp_path):
+    configured_provider(tmp_path, '[fields.LIMIT]\ntype="int"\ndefault=7\n')
+    base = selected_base('adapter/provider.py:create', {'LIMIT': {'type': 'int', 'default': 7}})
+    with pytest.raises(ValueError, match='requires override = true'):
+        bootstrap_schema(base, [], {}, {}, owner_root=tmp_path)
+
+
+def test_dependency_diagnostic_never_echoes_requirement_credentials():
+    from api_agent.runtime.dependencies import _parsed_requirement
+    with pytest.raises(ValueError) as failure:
+        _parsed_requirement('demo @ https://account:synthetic-password@example.invalid/package.whl')
+    assert 'synthetic-password' not in str(failure.value)
+    assert 'account' not in str(failure.value)

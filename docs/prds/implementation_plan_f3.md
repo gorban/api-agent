@@ -121,6 +121,8 @@ Accuracy batch verification: 5,518 combined unit tests pass (5,331 base, 187 pac
 
 ## Subscription quota route correction
 
+Execution-only client preparation, matching and separate native sign-in are tracked in [the quota-client requirements](implementation_plan_f3a.md). Human shared-meter verification remains separate.
+
 - [x] Remove unsupported ChatGPT backend polling with the public-API application token. Read optional quota through the documented local client with its own existing login, matched to the selected connection email; never transfer either credential into the other inference route. Generic snapshots, safe quota errors and historical accounting remain supported.
 - [x] Require regression coverage for token-priced no-op behavior, account mismatch/change, configured day/week windows, observed zero, quantization, malformed/bounded RPC output, environment-key exclusion, deadline/cancellation and synchronous child disposal. Retain closed-provider rejection. Validate the live quota source without inference/token spend.
 

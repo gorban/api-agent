@@ -251,8 +251,14 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
             selected_groups.append('reports')
         if config.values.get('TRACE_MODE'):
             selected_groups.append('tracing')
+        from api_agent.api.composition import activation_kinds
+        from api_agent.providers.distribution import selected_manifests
+        active = activation_kinds(config.values)
+        manifests = selected_manifests(config.values, owner_root=getattr(context, 'owner_root', context.base_root),
+                                       active_kinds=active)
+        options = {'selected_provider_manifests': manifests} if manifests else {}
         status = ensure_environment(context, argv, collect=collect,
-                                    groups=tuple(dict.fromkeys(selected_groups)))
+                                    groups=tuple(dict.fromkeys(selected_groups)), **options)
         if status is not None:
             raise RuntimeError('interpreter_handoff_required')
 

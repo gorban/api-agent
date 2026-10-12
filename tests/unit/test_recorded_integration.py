@@ -266,12 +266,12 @@ def test_foreign_base_and_provider_results_record_without_identity_collisions(tm
     assert histories[0] == histories[1]
 
 
-def test_debug_without_start_disables_parallel_workers(tmp_path):
+def test_debug_without_start_uses_configured_parallel_workers(tmp_path):
     context, test, config = fixture(tmp_path)
     config.update(DEBUG=True, NO_STD_IN=True, TEST_PARALLEL_JOBS=8)
     base_runner = fake_runner()
     def runner(*args, **kwargs):
-        assert kwargs['parallel_jobs'] == 0
+        assert kwargs['parallel_jobs'] == 8
         return base_runner(*args, **kwargs)
     result = recorded.run_recorded_integration(context, [test], config, accepted=True,
         no_std_in=True, storage=Storage(), runner=runner)

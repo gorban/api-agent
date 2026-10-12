@@ -69,7 +69,7 @@ def test_api_contributes_nested_owner_relative_selection_without_import(tmp_path
 
 
 def test_nested_selection_cannot_rebind_its_parent(tmp_path):
-    api = source(tmp_path, 'raise AssertionError()\n', '[fields.API_PROVIDER]\ntype="str"\ndefault=""\n')
+    api = source(tmp_path, 'raise AssertionError()\n', '[fields.API_PROVIDER]\ntype="str"\noverride=true\ndefault=""\n')
     base = ConfigSchema({'API_PROVIDER': FieldDeclaration('API_PROVIDER', 'str', default=api)})
     with pytest.raises(ProviderError, match='cycle'):
         bootstrap_schema(base, [], {}, {})

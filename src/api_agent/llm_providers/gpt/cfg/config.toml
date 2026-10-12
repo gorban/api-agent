@@ -5,7 +5,7 @@ cost_affecting = true
 type = "str"
 enum = ["subscription", "api_key"]
 default = "subscription"
-help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key mode uses only the selected LLM User password as its key and sets up without a browser. Attended key acquisition is deferred; there is no fallback. Subscription quota readings optionally use an installed Codex CLI already signed in to the same selected account; this does not change inference authentication."
+help = "Personal subscription sign-in. If you choose subscription, also choose responses for GPT_API_MODE. API-key mode uses only the selected LLM User password as its key and sets up without a browser. Attended key acquisition is deferred; there is no fallback. Subscription quota readings optionally use a matching native Codex CLI login. launch.py can prepare it on Linux/macOS and present separate attended sign-in; unattended runs require an existing native login. This does not change inference authentication."
 
 [fields.GPT_API_MODE]
 cost_affecting = false
@@ -37,6 +37,8 @@ help = "Application display-name hint for first ChatGPT subscription registratio
 
 [fields.LLM_CREDENTIAL_ROLE]
 type = "str"
+override = true
+override_if_present = true
 acknowledge_default = false
 default = "LLM User"
 help = "LLM credential role for the selected provider and authentication mode. Subscription uses the entry username for cached-account matching and observed login pages, retrieving password/TOTP only when requested. API-key mode uses only the selected LLM User entry password as its key, with browser-free setup. Attended key acquisition is deferred; there is no fallback. Match the selected entry to the configured provider/mode; changing an account index does not change that configuration. Repeat a resource-pack account at matching indexes if several LLM entries use the same pack identity. Attended subscription login remains available through Skip."

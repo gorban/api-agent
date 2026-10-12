@@ -237,7 +237,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             from api_agent.testing.launched import run_launched_integration
             from api_agent.telemetry.privacy import ContentPolicy
             tests = collect_tests(context, 'integration', result.positionals, config=result.values)
-            print('Integration debug: serial execution; provider login may require browser interaction.'
+            print('Integration debug: shared authentication; provider login may require browser interaction.'
                   if result.values.get('DEBUG') else 'Integration tests: provider login may require browser interaction.', flush=True)
             from api_agent.auth.terminal_interaction import TerminalInteraction
             execution = run_launched_integration(context, tests, result.values, accepted=True,
@@ -300,7 +300,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'START': '--start: start the selected TUI operation after normal startup checks; --start=E2E explicitly accepts E2E execution without its human-review screen.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
-        'DEBUG': '--debug: retain integration login browsers; allows serial --no-std-in integration debugging.',
+        'DEBUG': '--debug: retain integration login browsers; allows --no-std-in integration debugging.',
         'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select a zero-based account; --unattended-user-index= uses manual login for this run.',
     }
     for name, description in callouts.items():

@@ -103,7 +103,7 @@ _inspection_providers = []
 
 
 class IntegrationLLM:
-    """One worker-local operation; this does not implement backend-wide IPC."""
+    """Creating-loop operation owner; shared consumers reach it through the backend."""
     def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None,
                  password_manager_registry=None, password_manager_pack_root=None, interaction=None, quota_observer=None):
         from api_agent.auth.interaction_transport import OwnedInteraction
@@ -267,6 +267,12 @@ class IntegrationLLM:
             from api_agent.telemetry.usage import QuotaReadError
             try:
                 from api_agent.providers.progress import component_timeout
+                prepare = getattr(self.provider.implementation, 'aprepare_accounting', None)
+                if phase == 'before' and callable(prepare):
+                    # Execution-only native preparation is distinct from a short
+                    # measurement. Parent operation deadlines still cap this scope.
+                    async with component_timeout('Provider accounting preparation', 330):
+                        await self.owner.call(prepare)
                 async with component_timeout('Provider quota snapshot', 3):
                     snapshot = await self.owner.call(method)
                 if snapshot is not None:
@@ -498,6 +504,7 @@ def llm_provider():
     """Requesting the fixture is inert; ensure_ready is the authentication gate."""
     data = _read_snapshot()
     if 'setup_backend' in data:
+        _worker_manager_registry(data)
         provider = RemoteIntegrationLLM(data['setup_backend'])
     else:
         provider = IntegrationLLM(data['config'], data['owner_root'],

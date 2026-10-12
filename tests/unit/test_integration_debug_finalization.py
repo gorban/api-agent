@@ -49,9 +49,11 @@ def test_publication_interrupt_reaps_transferred_worker(tmp_path, callback):
             integration.run_integration_tests(context, tests, accepted=True,
                 config={'DEBUG': True}, after_run=after, on_event=event)
         assert error.value.inspections == tuple(handles)
-        assert len(handles) == 1
-        assert handles[0].closed and handles[0].process.poll() is not None
-        assert not Path(handles[0].directory.temporary.name).exists()
+        workers = [handle for handle in handles if isinstance(handle, inspection.IntegrationInspection)]
+        assert len(workers) == 1
+        assert all(handle.closed for handle in handles)
+        assert workers[0].process.poll() is not None
+        assert not Path(workers[0].directory.temporary.name).exists()
     finally:
         for handle in handles:
             handle.abort()
@@ -71,9 +73,10 @@ def test_cancellation_during_publication_reaps_before_return(tmp_path, callback)
         config={'DEBUG': True}, cancel_event=cancelled, after_run=after, on_event=event)
     try:
         assert result.cancelled and result.exit_code == 130
-        assert len(result.inspections) == 1
-        assert result.inspections[0].closed
-        assert result.inspections[0].process.poll() is not None
+        workers = [handle for handle in result.inspections if isinstance(handle, inspection.IntegrationInspection)]
+        assert len(workers) == 1
+        assert all(handle.closed for handle in result.inspections)
+        assert workers[0].process.poll() is not None
     finally:
         for handle in result.inspections:
             handle.abort()
@@ -94,7 +97,7 @@ def test_natural_close_during_transfer_preserves_passed_outcome(tmp_path, monkey
     result = integration.run_integration_tests(context, tests, accepted=True, config={'DEBUG': True})
     assert result.exit_code == 0, result.output
     assert result.tests[0].status == 'passed'
-    assert result.inspections[0].closed
+    assert all(handle.closed for handle in result.inspections)
 
 
 def test_interrupt_after_initialization_transfer_cannot_strand_handle(tmp_path, monkeypatch):
@@ -148,7 +151,7 @@ def test_startup_failure_reaps_worker_and_closes_liveness_pipe(tmp_path, monkeyp
     monkeypatch.setattr(threading.Thread, 'start', start)
     result = integration.run_integration_tests(context, tests, accepted=True, config={'DEBUG': True})
     assert result.exit_code == 1
-    assert result.inspections == ()
+    assert all(handle.closed for handle in result.inspections)
     assert pipes
     for descriptors in pipes:
         for descriptor in descriptors:

@@ -97,14 +97,123 @@ def test_unstarted_host_has_no_thread_or_disposal_side_effects(fake_host):
     backend = fake_host.backend
     backend.close()
     assert backend.closed and backend.thread is None and not fake_host.events
+    assert backend.finish_run() == () and backend.run_complete
     assert backend.end_inspection()
     backend.wait_closed()
     backend.abort()
 
 
-def test_debug_host_is_rejected_before_allocation(tmp_path):
-    with pytest.raises(ContractError, match='worker-local'):
-        setup_backend.SetupBackend({'DEBUG': True}, tmp_path)
+def test_debug_host_is_inert_before_allocation(tmp_path):
+    backend = setup_backend.SetupBackend({'DEBUG': True}, tmp_path)
+    assert backend.debug and backend.thread is None
+    backend.close()
+    assert backend.closed
+
+
+def test_debug_finish_without_retained_session_is_idempotent(tmp_path):
+    backend = setup_backend.SetupBackend({'DEBUG': True}, tmp_path)
+    backend.start()
+    assert backend.finish_run() == ()
+    assert backend.run_complete and backend.closed and not backend.inspection_open
+    assert backend.finish_run() == ()
+
+
+def test_debug_finish_failure_retains_original_cleanup_owner(fake_host):
+    state = fake_host
+    backend = state.backend
+    backend.debug = True
+    backend.start()
+    checkpoint(backend)
+    state.server_failure = True
+    with pytest.raises(CleanupPendingError) as caught:
+        backend.finish_run()
+    assert caught.value.inspections == (backend,)
+    assert backend.pending and not backend.closed
+    with pytest.raises(CleanupPendingError):
+        backend.finish_run()
+    state.server_failure = False
+    backend.close()
+
+
+def test_debug_finish_interrupt_preserves_cancellation_and_receipt(fake_host):
+    backend = fake_host.backend
+    backend.debug = True
+    backend.start()
+    checkpoint(backend)
+    original = backend.server.aclose
+    async def interrupt():
+        raise KeyboardInterrupt
+    backend.server.aclose = interrupt
+    with pytest.raises(KeyboardInterrupt) as caught:
+        backend.finish_run()
+    assert caught.value.inspections == (backend,)
+    assert caught.value.cleanup_pending.owners == (backend,)
+    backend.server.aclose = original
+    backend.close()
+
+
+def test_prepublication_server_failure_retains_backend_cleanup_for_retry(fake_host):
+    state = fake_host
+    backend = state.backend
+    backend.start()
+    checkpoint(backend)
+    state.server_failure = True
+    with pytest.raises(CleanupPendingError) as caught:
+        backend.prepare_publication()
+    assert caught.value.inspections == (backend,)
+    assert backend.pending and not backend.closed
+    state.server_failure = False
+    backend.close()
+    assert backend.closed and not backend.pending
+
+
+def test_prepublication_is_idempotent_and_closed_host_needs_no_work(fake_host):
+    state = fake_host
+    backend = state.backend
+    backend.start()
+    checkpoint(backend)
+    backend.prepare_publication()
+    backend.prepare_publication()
+    assert state.events.count('server-close') == 1
+    backend.close()
+    backend.prepare_publication()
+    assert state.events.count('server-close') == 2
+
+
+def test_ordinary_finish_run_disposes_without_inspection(fake_host):
+    backend = fake_host.backend
+    backend.start()
+    assert backend.finish_run() == ()
+    assert backend.run_complete and backend.closed
+
+
+def test_pending_prepublication_does_not_start_another_attempt(fake_host):
+    state = fake_host
+    backend = state.backend
+    backend.start()
+    state.server_failure = True
+    with pytest.raises(CleanupPendingError):
+        backend.prepare_publication()
+    with pytest.raises(CleanupPendingError):
+        backend.prepare_publication()
+    assert state.events.count('server-close') == 1
+    state.server_failure = False
+    backend.close()
+
+
+def test_prepublication_interrupt_preserves_original_cleanup_receipt(fake_host):
+    backend = fake_host.backend
+    backend.start()
+    original = backend.server.aclose
+    async def interrupt():
+        raise KeyboardInterrupt
+    backend.server.aclose = interrupt
+    with pytest.raises(KeyboardInterrupt) as caught:
+        backend.prepare_publication()
+    assert caught.value.inspections == (backend,)
+    assert caught.value.cleanup_pending.owners == (backend,)
+    backend.server.aclose = original
+    backend.close()
 
 
 @pytest.mark.parametrize('failure', ['provider', 'server'])
@@ -211,7 +320,10 @@ def test_remote_fixture_is_inert_and_closes_lease_on_same_owned_thread(tmp_path,
         def close(self):
             events.append(('close', threading.get_ident()))
     monkeypatch.setattr(setup_transport, 'SetupClient', Client)
-    monkeypatch.setattr(provider_setup, '_read_snapshot', lambda: {'setup_backend': {'fixture': True}})
+    from api_agent.auth.managers import load_manager_registry
+    monkeypatch.setattr(provider_setup, '_read_snapshot', lambda: {
+        'setup_backend': {'fixture': True},
+        'password_manager_definitions': provider_setup._manager_definitions(load_manager_registry())})
     values = provider_setup.llm_provider.__wrapped__()
     remote = next(values)
     assert events == []
@@ -310,10 +422,13 @@ def test_join_timeout_preserves_disposed_loop_ack_without_duplicate_cleanup(fake
             backend.close()
         assert backend._disposed and not backend.closed and backend.pending
         assert backend.loop.is_closed()
+        with pytest.raises(CleanupPendingError):
+            backend.close()
+        assert not backend.closed and backend.pending
     finally:
         monkeypatch.setattr(thread, 'is_alive', original_alive)
     backend.close()
-    assert backend.closed and not backend.pending and len(joined) == 2
+    assert backend.closed and not backend.pending and len(joined) == 3
     assert fake_host.events.count('server-close') == 1
 
 
