@@ -154,7 +154,7 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
             raw_quota_cost_usd=costs.get('estimated_cost_usd') if costs.get('basis') == 'quota_payment' else None,
             prediction=prediction, stabilized_estimate=None, calls_complete=calls_complete,
             observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id))))
-    artifact = dict(version=1, estimator_version=4, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
+    artifact = dict(version=2, estimator_version=5, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
                     quota=quota, tests=records)
     validate_accounting(artifact)
     return artifact
@@ -162,8 +162,8 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
 
 def validate_accounting(value):
     if (type(value) is not dict or set(value) != {'version', 'estimator_version', 'run_id', 'rate_card', 'quota', 'tests'}
-            or type(value['version']) is not int or value['version'] != 1
-            or type(value['estimator_version']) is not int or value['estimator_version'] not in (1, 2, 3, 4) or not _uuid(value['run_id'])
+            or type(value['version']) is not int or value['version'] not in (1, 2)
+            or type(value['estimator_version']) is not int or value['estimator_version'] not in ((1, 2, 3, 4) if value['version'] == 1 else (5,)) or not _uuid(value['run_id'])
             or type(value['quota']) is not dict or set(value['quota']) not in ({'before', 'after', 'pct_point_delta',
                 'quota_unavailable_reason', 'payment_policy', 'payment_month'}, {'before', 'after', 'pct_point_delta',
                 'quota_unavailable_reason', 'payment_policy', 'payment_month', 'contaminated'}) or type(value['tests']) is not list):
@@ -178,8 +178,17 @@ def validate_accounting(value):
         raise ContractError('Invalid quota delta')
     for snapshot in (quota['before'], quota['after']):
         if snapshot is not None:
-            if type(snapshot) is not dict or set(snapshot) not in ({'pct_used', 'window_id', 'reset_at', 'captured_at'}, {'pct_used', 'window_id', 'reset_at', 'captured_at', 'pct_step'}):
+            expected = {'pct_used', 'window_id', 'reset_at', 'captured_at'}
+            if value['version'] == 2:
+                expected |= {'allocation_id', 'observation_id'}
+            if type(snapshot) is not dict or set(snapshot) not in (expected, expected | {'pct_step'}):
                 raise ContractError('Invalid quota snapshot')
+            if value['version'] == 2:
+                allocation = snapshot['allocation_id']
+                if allocation is not None and (type(allocation) is not str or len(allocation) != 64 or any(char not in '0123456789abcdef' for char in allocation)):
+                    raise ContractError('Invalid quota allocation identity')
+                if snapshot['observation_id'] is not None and not _uuid(snapshot['observation_id']):
+                    raise ContractError('Invalid quota observation identity')
             if snapshot['pct_used'] is not None and (not valid_amount(snapshot['pct_used']) or snapshot['pct_used'] > 100):
                 raise ContractError('Invalid quota percentage')
             if not _timestamp(snapshot['captured_at']) or not _timestamp(snapshot['reset_at'], nullable=True) or not _identifier(snapshot['window_id'], nullable=True):

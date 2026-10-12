@@ -358,7 +358,7 @@ def test_back_to_selection_immediately_reads_new_local_history(tmp_path, monkeyp
             await app.workers.wait_for_complete()
             await pilot.pause()
             assert app.screen.kind == 'tests'
-            assert counts == [0, 1]
+            assert counts == [0, 0, 1]
             assert str(app.screen.query_one(TestTable).get_row_at(0)[4]) == '2.000000'
             assert app.selection.selected_ids == {test.id for test in tests}
     try:

@@ -184,8 +184,8 @@ def _artifact(tmp_path):
 
 @pytest.mark.parametrize('mutate', [lambda a: a.update(version=0), lambda a: a.update(rate_card={}),
  lambda a: a['quota'].update(pct_point_delta=101), lambda a: a['quota'].update(before={}),
- lambda a: a['quota'].update(before=dict(pct_used=101, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00')),
- lambda a: a['quota'].update(before=dict(pct_used=1, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00',pct_step=0)),
+ lambda a: a['quota'].update(before=dict(allocation_id=None, observation_id=None, pct_used=101, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00')),
+ lambda a: a['quota'].update(before=dict(allocation_id=None, observation_id=None, pct_used=1, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00',pct_step=0)),
  lambda a: a['tests'][0].update(source_fingerprint='0'*63), lambda a: a['tests'][0].update(source_fingerprint='g'*64),
  lambda a: a['tests'][0].update(source_fingerprint=True), lambda a: a['tests'][0].update(outcomes=['invalid']),
  lambda a: a['tests'][0].update(original_estimate=-1), lambda a: a['tests'][0].update(attempts=2),
@@ -200,8 +200,8 @@ def test_artifact_rejections(tmp_path, mutate):
 def test_artifact_estimates_quota_and_metadata(tmp_path, monkeypatch):
     value = _artifact(tmp_path)
     value['rate_card'] = rates.bundled_rate_card()
-    value['quota']['before'] = dict(pct_used=None, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00',pct_step=1)
-    value['quota']['after'] = dict(pct_used=1, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00')
+    value['quota']['before'] = dict(allocation_id=None, observation_id=None, pct_used=None, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00',pct_step=1)
+    value['quota']['after'] = dict(allocation_id=None, observation_id=None, pct_used=1, window_id=None, reset_at=None,captured_at='2026-01-01T00:00:00+00:00')
     value['quota']['payment_policy'] = dict(usd=100, quota_seconds=604800, period='quota')
     assert accounting.validate_accounting(value) is value
     evidence = _evidence()
@@ -251,7 +251,7 @@ def test_uuid_times_and_context_metadata(tmp_path):
     assert not accounting._timestamp('invalid')
     assert not accounting._timestamp(None)
     value = _artifact(tmp_path)
-    value['quota']['before'] = dict(pct_used=1, window_id=None, reset_at=None,captured_at=None)
+    value['quota']['before'] = dict(allocation_id=None, observation_id=None, pct_used=1, window_id=None, reset_at=None,captured_at=None)
     with pytest.raises(ContractError, match='quota identity/time'):
         accounting.validate_accounting(value)
     metadata = dict(version=1, requested_model='x',catalog_model='x',actual_model=None,serving_revision=None,service_tier='standard',billing_mode='api_key',rate_card=None,compatibility=accounting.compatibility({}))

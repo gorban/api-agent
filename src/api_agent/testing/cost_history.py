@@ -46,13 +46,18 @@ class HistoricalEstimator(EstimateSnapshot):
         from api_agent.telemetry.accounting import compatibility, source_fingerprint
         self.context = context
         self.tests, self.config, self.cache = tuple(tests), dict(config), cache
-        self.now = now or datetime.now(timezone.utc)
+        self._fixed_now = now is not None
+        self.now = now if now is not None else datetime.now(timezone.utc)
         ignored_settings = config.get('_COST_IGNORED_SETTINGS')
         self.scope = allocation_scope(config)
         if 'UNATTENDED_AUTH' in config:
             self.config.pop('_COST_QUOTA_WINDOW_ID', None)
+            self.config.pop('_COST_QUOTA_ALLOCATION_ID', None)
             config = self.config
         if self.scope is not None and cache is not None:
+            allocation = cache.bound_allocation(origin, self.scope, self.now)
+            if allocation is not None:
+                self.config['_COST_QUOTA_ALLOCATION_ID'] = allocation
             window = cache.bound_window(origin, self.scope, self.now)
             if window is not None:
                 self.config['_COST_QUOTA_WINDOW_ID'] = window
@@ -60,11 +65,25 @@ class HistoricalEstimator(EstimateSnapshot):
         self.origin, self.repo, self.storage = origin, repo, storage
         fingerprints = {test.id: source_fingerprint(test, context=context) for test in tests}
         self.fingerprints, self.compatibility = fingerprints, compatibility(config)
-        records = cache.records(origin) if cache is not None else []
         cutoff = self.now - timedelta(days=config.get('TEST_COST_HISTORY_DAYS', 7))
-        records = [(manifest, artifact) for manifest, artifact in records if cutoff <= datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')) <= self.now
-                   and not quota_reset_observed(artifact.get('quota') or {})]
-        overlap_records = cache.records(None) if cache is not None else []
+        def window_records(selected_origin, *, since=cutoff, until=self.now):
+            if cache is None:
+                return []
+            if isinstance(HistoryCache, type) and isinstance(cache, HistoryCache):
+                return cache.records(selected_origin, since=since, until=until)
+            # Compatibility for in-memory estimators supplied by callers and tests.
+            return [(manifest, artifact) for manifest, artifact in cache.records(selected_origin)
+                    if (since is None or since <= datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')))
+                    and (until is None or datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')) <= until)]
+        records = [(manifest, artifact) for manifest, artifact in window_records(origin)
+                   if not quota_reset_observed(artifact.get('quota') or {})]
+        # An older interval may overlap a long in-window suite. It remains
+        # contamination evidence without contributing an old pricing sample.
+        starts = [datetime.fromisoformat(snapshot['captured_at'].replace('Z', '+00:00'))
+                  for _, artifact in records
+                  if isinstance(snapshot := (artifact.get('quota') or {}).get('before'), dict)
+                  and isinstance(snapshot.get('captured_at'), str)]
+        overlap_records = window_records(None, since=min(starts, default=cutoff), until=None)
         predictions = predictions_for(tests, records, card, fingerprints, self.compatibility,
                                       ignored_settings=ignored_settings)
         # A policy is learned only from exactly compatible successful histories.
@@ -73,19 +92,23 @@ class HistoricalEstimator(EstimateSnapshot):
             policy = (artifact.get('quota') or {}).get('payment_policy')
             if policy and any(matching_compatibility(row.get('compatibility'), ignored_settings) == matching_compatibility(self.compatibility, ignored_settings) for row in artifact.get('tests', [])):
                 policies[key(policy)] = policy
-        if len(policies) == 1 and config.get('_COST_QUOTA_WINDOW_ID') is not None:
+        if len(policies) == 1 and config.get('_COST_QUOTA_ALLOCATION_ID') is not None:
             policy = next(iter(policies.values()))
             groups = calibration(records, card, overlap_records=overlap_records, ignored_settings=ignored_settings)
-            group = calibration_key({'rate_card': card, 'quota': {'payment_policy': policy, 'before': {'window_id': config['_COST_QUOTA_WINDOW_ID']}}, 'tests': [{'compatibility': self.compatibility}]}, ignored_settings=ignored_settings)
+            group = calibration_key({'rate_card': card, 'quota': {'payment_policy': policy, 'before': {'allocation_id': config['_COST_QUOTA_ALLOCATION_ID']}}, 'tests': [{'compatibility': self.compatibility}]}, ignored_settings=ignored_settings)
             expected = json.loads(group)
-            qualified = [(candidate, value) for candidate, value in groups.items() if all(json.loads(candidate)[name] == expected[name] for name in ('window_id', 'policy', 'rate_card', 'compatibility'))]
-            if len(qualified) == 1:
-                for row in predictions.values():
-                    if row['estimated_cost_usd'] is not None and row.get('quota_eligible') is True and row.get('call_signature') in json.loads(qualified[0][0])['model_signatures']:
-                        row['estimated_cost_usd'] *= qualified[0][1]['pct_per_usd'] * payment_per_point(policy, now=self.now)
-                        row['basis'] = 'historical_quota'
-                        row['variation'] *= qualified[0][1]['pct_per_usd'] * payment_per_point(policy, now=self.now)
-                        row['calibration'] = dict(qualified[0][1], scale_factor=qualified[0][1]['pct_per_usd'] * payment_per_point(policy, now=self.now), provenance=json.loads(qualified[0][0]))
+            qualified = [(candidate, value) for candidate, value in groups.items() if all(json.loads(candidate)[name] == expected[name] for name in ('policy', 'rate_card', 'compatibility'))]
+            for row in predictions.values():
+                matching = [(candidate, fit) for candidate, fit in qualified
+                            if row.get('call_signature') in json.loads(candidate)['model_signatures']]
+                if (row['estimated_cost_usd'] is not None and row.get('quota_eligible') is True
+                        and len(matching) == 1):
+                    candidate, fit = matching[0]
+                    scale = fit['pct_per_usd'] * payment_per_point(policy, now=self.now)
+                    row['estimated_cost_usd'] *= scale
+                    row['basis'] = 'historical_quota'
+                    row['variation'] *= scale
+                    row['calibration'] = dict(fit, scale_factor=scale, provenance=json.loads(candidate))
         super().__init__(predictions, records=records, card=card, overlap_records=overlap_records, now=self.now,
                          ignored_settings=ignored_settings)
 
@@ -102,7 +125,7 @@ class HistoricalEstimator(EstimateSnapshot):
         except Exception:
             error = True
         try:
-            replacement = HistoricalEstimator(self.tests, self.config, self.cache, self.origin, self.repo, self.card, self.storage, self.now, context=self.context)
+            replacement = HistoricalEstimator(self.tests, self.config, self.cache, self.origin, self.repo, self.card, self.storage, self.now if self._fixed_now else None, context=self.context)
             replacement.sync_unavailable = error
             return replacement
         except Exception:

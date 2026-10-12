@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import os
 import shutil
+from uuid import uuid4
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import settle
@@ -57,9 +58,12 @@ def _snapshot(data, subject, period, now):
     if (type(percent) is not int or not 0 <= percent <= 100
             or type(reset) is not int or not now.timestamp() < reset <= 253402300799):
         return QuotaReadError('response')
+    meter = f'codex:{period}'
     account = sha256(subject.encode()).hexdigest()[:32]
+    allocation_id = sha256(json.dumps(['api-agent/quota-allocation/v1', meter, subject], separators=(',', ':')).encode()).hexdigest()
     return QuotaSnapshot(percent, f'codex:{account}:{minutes}:{reset}',
-                         datetime.fromtimestamp(reset, timezone.utc), now, pct_step=1)
+                         datetime.fromtimestamp(reset, timezone.utc), now, pct_step=1,
+                         allocation_id=allocation_id, observation_id=str(uuid4()))
 
 
 async def _close(starting):
