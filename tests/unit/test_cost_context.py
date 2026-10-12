@@ -133,7 +133,8 @@ def test_provider_fingerprint_is_content_and_symbol_not_location(tmp_path, monke
 
 def test_inactive_request_field_is_explicitly_distinct_from_missing(tmp_path, monkeypatch):
     ctx = context(tmp_path)
-    mocked_schema(monkeypatch, [FieldDeclaration('ENDPOINT','str',cost_affecting=True,applies_when={'MODE':'key'})])
+    mocked_schema(monkeypatch, [FieldDeclaration('MODE', 'str'),
+        FieldDeclaration('ENDPOINT','str',cost_affecting=True,applies_when={'MODE':'key'})])
     inactive = cost_config(ctx, {'MODE':'subscription'})
     assert inactive['_COST_REQUEST_SETTINGS'] == {'ENDPOINT':sha256(b'inactive').hexdigest()}
     assert cost_config(ctx, {'MODE':'key'})['_COST_REQUEST_SETTINGS'] is None

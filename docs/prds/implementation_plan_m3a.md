@@ -21,24 +21,21 @@ Compose all sibling fields and their inherited constraints before validating
 effective override predicates. Controller declaration order in a single file
 must not affect applicability, requiredness, conditional defaults or inert help;
 typed controller validation and override authority remain enforced.
-Retain deferred siblings as one contribution-file batch and replay batches in
-source order after discovery. Validate each batch against its effective sibling
-controllers; preserve contribution ownership and precedence between files.
-An invalid earlier contribution must not disappear behind a later override.
-This does not permit unknown controllers declared only in a later file.
-Mixed immediate/deferred siblings retain same-file controller lookup context
-without exposing pending fields during discovery. Capture effective immediate
-declarations and revalidate them after discovery without replaying old defaults
-or applying later self-constraints to those old defaults. Validate active and
-captured declarations against final controller constraints across all source
-batches, including later controller tightening. A missing controller target
-keeps its dependent predicate invalid; preserve source authority and the final
-selector guard.
-Only same-file pending controllers absent from the current schema defer their
-predicate value conversion until target inheritance. Predicate structure/name
-checks and immediate field defaults remain validated. This includes empty
-integer/path controller values and nested predicates; final actual constraints
-must still authorize them.
+Preserve each accepted contribution's original source position across immediate
+and deferred phases. Replay raw declarations in that order after discovery;
+retain effective own constraints and validate every captured declaration against
+final controller constraints. A valid later default/constraint tightening wins,
+and an invalid earlier contribution cannot disappear behind it. Only an actual
+selected-provider introduction can supply an earlier optional override target;
+an ordinary later new field remains at its own source position. Keep canonical
+selector paths tied to their contributing owner and preserve final graph guards.
+Pending controllers are lookup-only context, never live fields or authority.
+Unknown controllers first declared in a later file remain unsupported unless
+already present in earlier pending context. Missing actual targets invalidate
+dependent predicates. Validate all fields returned by direct composition,
+including newly added fields, against actual fields or explicit pending context;
+never return a dangling predicate. Validate inherited defaults/types, empty
+integer/path values and nested predicates without weakening constraints.
 Empty integer controllers resolve to `None` and match an empty predicate value;
 an omitted controller remains distinct. Scalar, list and nested predicates use
 the same comparison in configuration, review and accounting consumers.
@@ -57,3 +54,22 @@ The wheel builds and its extracted relocated pack includes the selected
 factory's declarations without importing it. Shared execution finalization,
 bounded native-cache reads and reset-overlap controls also pass. This offline
 verification does not complete deferred live native-account/meter acceptance.
+
+Source-order/direct-API repair verification:
+
+- [x] Preserve all immediate/deferred file pairings, valid later tightening,
+  contribution identity and lookup-only pending controllers. Only selected
+  provider introductions supply provisional targets; ordinary introductions
+  retain their source position. Equivalent canonical selector targets are
+  accepted in their owning scope; different/invalid targets remain rejected.
+- [x] Direct composition, contribution and provider-schema APIs reject missing
+  controllers on new fields across all three predicate forms, with successful
+  actual-controller controls. Earlier invalid declarations remain detectable.
+- [x] Fifty new controls and 320 independent focused tests pass. Isolated
+  mutations detect missing direct validation, ordinary-field promotion,
+  raw selector comparison and wrong explicit-selector ownership.
+- [x] Renewed full public gate: 5,797 unit tests plus 27 subtests; exact 100%
+  lines/branches across 132 measured files (17,517 statements, 6,442 branches).
+  The wheel and extracted inert declaration checks pass. The 391-file
+  intended index and commit metadata pass the content-bound public audit.
+  No live inference is needed for these declaration checks.

@@ -111,6 +111,7 @@ def resource_pack_schema():
         'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User', 'acknowledge_default': False, 
                                     'applies_when': {'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'], 'COLLECT_ONLY': False}}}},
         base_schema=shared, source='pack_default')
+    extension = compose_schema(shared, extension)
     if 'UNATTENDED_USER_INDEX' not in extension.fields:
         selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
             'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
@@ -122,15 +123,8 @@ def resource_pack_schema():
         'type': 'str', 'required': True, 'applies_when': {
             'TUI_MODE': ['run-local', 'integration', 'e2e'], 'COLLECT_ONLY': False}}}},
         base_schema=shared, source='pack_default')
-    if 'UNATTENDED_USER_INDEX' not in extension.fields:
-        selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
-            'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
-            'applies_when': {
-                'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
-                'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
-        extension = compose_schema(extension, selection)
     extension = compose_schema(extension, token)
-    return compose_schema(shared, extension)
+    return extension
 
 def test_json_resolution_index_validation_and_secret_diagnostics(tmp_path):
     result = resolve_config(resource_pack_schema(), environ={**AUTH, 'TUI_MODE': 'e2e',
@@ -200,14 +194,15 @@ def test_resource_pack_local_defaults_and_shared_user_index(tmp_path):
         'UNATTENDED_SECONDARY_USER': {'type': 'str', 'default': 'Resource Pack User',
                                     'applies_when': {'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'], 'COLLECT_ONLY': False}}}},
         base_schema=shared, source='pack_default')
+    composed = compose_schema(shared, extension)
     if 'UNATTENDED_USER_INDEX' not in extension.fields:
         selection = schema_from_dict({'version': 1, 'fields': {'UNATTENDED_USER_INDEX': {
             'type': 'int', 'validation': 'nonnegative', 'acknowledge_default': False,
             'applies_when': {
                 'TUI_MODE': ['run-local', 'integration', 'e2e', 'unattended-auth'],
                 'COLLECT_ONLY': False}}}}, base_schema=shared, source='pack_default')
-        extension = compose_schema(extension, selection)
-    schema = compose_schema(shared, extension)
+        composed = compose_schema(composed, selection)
+    schema = composed
     result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'run-local', 'RUN_UI': 'True',
                             'UNATTENDED_USER_INDEX': '1', 'PACK_TEST_TOKEN': 'synthetic-secret', 'UI_SOURCE_DIR': str(tmp_path / 'ui')}, anchors={'owner_root': tmp_path})
     result.raise_for_errors()
