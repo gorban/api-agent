@@ -573,3 +573,61 @@ def test_sqlite_retains_reset_evidence_but_picker_and_rebuild_exclude_it(tmp_pat
         assert snapshot.predictions['t']['sample_count'] == 0
         assert snapshot.synchronize().predictions['t']['estimated_cost_usd'] is None
         cache.close()
+
+
+def tracked_history_cache(tmp_path, monkeypatch):
+    import sqlite3
+    from api_agent.telemetry import history
+
+    closed = []
+
+    class TrackedConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(self)
+            super().close()
+
+    original_connect = sqlite3.connect
+    monkeypatch.setattr(history.sqlite3, 'connect',
+                        lambda *args, **kwargs: original_connect(*args, factory=TrackedConnection, **kwargs))
+    return HistoryCache(tmp_path / 'history.sqlite3'), closed
+
+
+def assert_connection_closed_once(connection, closed):
+    import sqlite3
+
+    assert closed == [connection]
+    with pytest.raises(sqlite3.ProgrammingError, match='closed database'):
+        connection.execute('SELECT 1')
+
+
+def test_history_cache_explicit_close_is_immediate_and_idempotent(tmp_path, monkeypatch):
+    import gc
+    import weakref
+
+    cache, closed = tracked_history_cache(tmp_path, monkeypatch)
+    connection = cache.connection
+    cache_ref = weakref.ref(cache)
+
+    cache.close()
+    cache.close()
+
+    assert_connection_closed_once(connection, closed)
+    del cache
+    gc.collect()
+    assert cache_ref() is None
+    assert_connection_closed_once(connection, closed)
+
+
+def test_history_cache_collection_closes_connection_once(tmp_path, monkeypatch):
+    import gc
+    import weakref
+
+    cache, closed = tracked_history_cache(tmp_path, monkeypatch)
+    connection = cache.connection
+    cache_ref = weakref.ref(cache)
+
+    del cache
+    gc.collect()
+
+    assert cache_ref() is None
+    assert_connection_closed_once(connection, closed)

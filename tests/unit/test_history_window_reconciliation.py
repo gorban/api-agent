@@ -392,9 +392,11 @@ def test_failed_legacy_migration_closes_connection_once_and_retains_rows(tmp_pat
     with pytest.raises(ValueError, match='Conflicting immutable run'):
         HistoryCache(path)
     assert len(closed) == 1
-    with original_connect(path) as connection:
+    with closing(original_connect(path)) as connection, connection:
         assert connection.execute('SELECT COUNT(*) FROM history').fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='history_finish'").fetchone()[0] == 0
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
 
 
 def test_interrupted_migration_closes_connection_and_rolls_back(tmp_path, monkeypatch):
@@ -423,9 +425,11 @@ def test_interrupted_migration_closes_connection_and_rolls_back(tmp_path, monkey
     with pytest.raises(KeyboardInterrupt):
         HistoryCache(path)
     assert len(closed) == 1
-    with original_connect(path) as connection:
+    with closing(original_connect(path)) as connection, connection:
         assert connection.execute('SELECT COUNT(*) FROM history').fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='history_finish'").fetchone()[0] == 0
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
 
 
 @pytest.mark.parametrize('index_sql,duplicate', [
@@ -453,3 +457,5 @@ def test_migration_rejects_untrusted_named_immutable_index(tmp_path, index_sql, 
     with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute('SELECT COUNT(*) FROM history').fetchone()[0] == (2 if duplicate else 1)
         assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='history_finish'").fetchone()[0] == 0
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")

@@ -85,7 +85,7 @@ The SQLite index uses normalized UTC finish-time bounds and preserves original m
 
 Accuracy batch verification: 5,518 combined unit tests pass (5,331 base, 187 pack), with exact 100% lines/branches in all 133 measured files. Both wheels and the public-boundary audit pass. Three implementation lanes received separate adversarial reviews, followed by reviewed picker/recording joins. Five isolated mutations detect allocation-change cost, unproven continuity, unweighted account pooling, digest bypass and stale Start predictions. Synthetic replay verifies shared versus independent boundaries and seven/thirty/seven-day indexed cache queries without modifying original history.
 
-- [ ] Diagnose intermittent SQLite ResourceWarnings observed during the full unit run, distinguishing raw fixture connections from estimator/cache lifecycle. The targeted history/cache run with allocation tracing and the normal-finalizer control emit no such warning; do not suppress diagnostics or infer complete resource closure from coverage alone.
+- [x] Diagnose and repair SQLite connection warnings without suppression; see [cache lifecycle verification](implementation_plan_f3b.md).
 
 
 ## Quota reset during execution
