@@ -16,7 +16,7 @@
 - [x] Reproducible disposable installation proof and permanent deterministic controls for ownership, relative imports, invocation and disposal.
 - [x] Independent adversarial review with isolated mutations detecting source-path fallback, omitted invocation and omitted disposal.
 - [x] Applicable unit tests at exact 100% measured line/branch coverage, wheel and public-boundary/metadata checks.
-- [ ] Human review of the executable evidence and remaining conformance limits.
+- [x] Human review of the executable evidence and remaining conformance limits.
 
 ## Verified scope
 
@@ -49,4 +49,6 @@ The original delivery gate passed 5,818 units plus 27 subtests, exact 100% lines
 
 Persistent fixture-owned module and factory markers are checked immediately after pack inspection and selected-manifest discovery, then checked for their expected occurrence after intentional loading. Sixteen installed controls simulate an eager module import or factory invocation that fully retires its modules before returning from either discovery boundary, across all four lifecycle modes. Each must fail with the corresponding immediate discovery assertion, rather than a later lifecycle failure. This prevents residual-module checks from falsely certifying inertness.
 
-The discovery repair passes all 21 installed tests against a freshly built wheel. Independent review verifies all 16 eager-execution cases fail at the exact immediate guard; isolating and disabling that guard makes each counterfactual pass, with competing later checks neutralized. The renewed public gate passes 5,850 tests plus 27 subtests with exact 100% lines/branches across 133 files (17,575 statements, 6,450 branches). The wheel and 397-file indexed public-boundary/metadata audit pass; production source is unchanged. Human acceptance remains open.
+The discovery repair passes all 21 installed tests against a freshly built wheel. Independent review verifies all 16 eager-execution cases fail at the exact immediate guard; isolating and disabling that guard makes each counterfactual pass, with competing later checks neutralized. The renewed public gate passes 5,850 tests plus 27 subtests with exact 100% lines/branches across 133 files (17,575 statements, 6,450 branches). The wheel and 397-file indexed public-boundary/metadata audit pass; production source is unchanged. Human acceptance is complete for this installed-loader slice.
+
+The user reported successful reviewed-wheel and normal-launcher replays, reviewed what each proves and the remaining application/runner/platform limits, and explicitly accepted the human review. Broader installed application conformance remains separate.
