@@ -53,3 +53,12 @@ state, provider objects, and browser objects remain in the backend process.
   original entry allowance. Display translation does not shorten shared backend
   work or let one waiter's cancellation cancel a sibling's authentication.
 - [x] Human acceptance of retained original-browser inspection, nested timing and launcher cleanup, recorded October 12, 2026. Timeout retention, original-page attachment, finalized reporting and closure were observed; the display repair has deterministic transport/ancestor controls.
+
+## Deterministic publication verification
+
+- [x] Synchronize publication tests on entry into real pending authentication before expiring a readiness waiter. Connection/registration scheduling must not determine that prerequisite; native timeout/error and client-disposal paths remain real.
+- [x] Bound fixture startup separately from expected expiry, preserve early failures and reject unexpected success. Drain helper requests and settle signals on failure/interruption; assert disposal inside the running loop, closed client/backend loops and stopped backend threads.
+- [x] Prove startup delayed beyond the old short deadline, missing-entry/error/cancellation paths, and preserved settlement/cleanup-receipt/quota invariants with focused mutations.
+- [x] Verify repeated serial and parallel controls plus full exact unit line/branch coverage at both exercised and configured concurrency; retain failed evidence and require independent review.
+
+The fixture uses a real readiness exchange with native timeout armed only after actual pending setup entry. Independent review detects eight targeted mutations, including missing awaited request drainage before loop shutdown; early-error, watchdog, cancellation and interrupted/deferred teardown controls pass. The four original test bodies remain unchanged. Twenty serial original-case repetitions pass (80 checks), as do 288 focused cases at each of sixteen and thirty-two workers. Full units pass 5,976 cases plus 27 subtests at each worker count, with exact 100% line/branch coverage across 134 files. Offline wheel/license and public-boundary/metadata checks pass. Production deadlines, transport and configuration are unchanged.
