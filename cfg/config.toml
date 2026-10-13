@@ -173,6 +173,15 @@ help = "Unit-test worker override. Empty inherits TEST_PARALLEL_JOBS; 0 runs uni
 TUI_MODE = "unit"
 COLLECT_ONLY = false
 
+[fields.UNIT_COVERAGE_FULL]
+type = "bool"
+default = false
+acknowledge_default = false
+help = "Show the complete unit coverage table, including fully covered files and every missing line/branch. Default output previews at most 20 incomplete files. Complete JSON and HTML reports are retained under artifacts/unit/ in the active repository either way."
+[fields.UNIT_COVERAGE_FULL.applies_when]
+TUI_MODE = "unit"
+COLLECT_ONLY = false
+
 [fields.E2E_RERUNS]
 help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires its human-acceptance screen or explicit START=E2E. Set to 0 to turn off."
 type = "int"

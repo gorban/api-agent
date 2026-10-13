@@ -1,5 +1,7 @@
 # Python TUI
 
+Unit coverage disclosure and retained drill-down reports: [requirements](implementation_plan_a9.md).
+
 ## Completed B1 review slice
 
 - [x] Implement configuration row-by-row default acceptance/typed edits and conditional revalidation, real `.env` cleanup, Textual mode/focus/footer controls, real pytest collection/selector filtering, overlapping All/tag/file/test selection, and prompt cancellation. At B1, controlled execution and authentication setup were unavailable; the completed follow-through below supersedes that limitation without closing the full application/E2E tasks. Human checkpoint B1 accepted on 2026-10-04 after iterative user review and suite-discovery verification; future unavailable operations remain open.

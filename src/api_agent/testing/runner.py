@@ -10,10 +10,12 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 
 from .collection import CollectionError, TestIdentity, collect_tests
 from .processes import finalize
 from .suite_lock import suite_locked
+from .coverage_reports import CoverageReport, coverage_table, retain_report
 
 
 def unit_parallel_jobs(config):
@@ -30,6 +32,8 @@ class CoverageArea:
     num_statements: int
     covered_branches: int
     num_branches: int
+    missing_lines: tuple[int, ...] = ()
+    missing_branches: tuple[tuple[int, int], ...] = ()
 
     @property
     def line_percent(self):
@@ -53,6 +57,8 @@ class UnitRunResult:
     cancelled: bool = False
     require_full_coverage: bool = True
     elapsed: float | None = None
+    coverage_reports: tuple[CoverageReport, ...] = ()
+    coverage_full: bool = False
 
 
 _PLUGIN = r'''
@@ -76,10 +82,13 @@ if os.environ.get('API_AGENT_COVERAGE_OUTPUT'):
     from coverage import Coverage
     coverage = Coverage(data_file=os.environ['COVERAGE_FILE'], config_file=False)
     coverage.load()
-    coverage.json_report(morfs=[str(path) for source in json.loads(os.environ['API_AGENT_COVERAGE_SOURCE'])
-                               for path in Path(source).rglob('*.py')],
+    files = [str(path) for source in json.loads(os.environ['API_AGENT_COVERAGE_SOURCE'])
+             for path in Path(source).rglob('*.py')]
+    coverage.json_report(morfs=files,
                          omit=['*/tests/*'],
                          outfile=os.environ['API_AGENT_COVERAGE_OUTPUT'])
+    coverage.html_report(morfs=files, omit=['*/tests/*'],
+                         directory=os.environ['API_AGENT_COVERAGE_HTML'])
 sys.exit(status)
 '''
 
@@ -98,7 +107,7 @@ def _production_sources(context, root):
 
 
 @suite_locked
-def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True):
+def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False):
     """Run selected collected identities once; preserve owner configs and full source scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
@@ -123,6 +132,9 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
     env['PYTHONUNBUFFERED'] = '1'
     chunks, results, areas = [], {}, []
+    retained = []
+    report_root = owner / 'artifacts' / 'unit' / uuid.uuid4().hex
+    report_destinations = {repo: report_root / str(index) for index, repo in enumerate(roots)}
     failed = cancelled = False
 
     def emit(event):
@@ -154,14 +166,16 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             has_code = bool(sources)
             env.pop('API_AGENT_COVERAGE_OUTPUT', None)
             env.pop('API_AGENT_COVERAGE_SOURCE', None)
+            env.pop('API_AGENT_COVERAGE_HTML', None)
             if has_code:
                 config = Path(temporary) / 'coverage.ini'
                 config.write_text('[run]\nbranch = true\nomit = */tests/*\n[report]\ninclude_namespace_packages = true\n')
                 env['API_AGENT_COVERAGE_OUTPUT'] = str(coverage)
                 env['API_AGENT_COVERAGE_SOURCE'] = json.dumps([str(source) for source in sources])
+                env['API_AGENT_COVERAGE_HTML'] = str(Path(temporary) / 'html')
                 args += ['--cov-config=' + str(config)]
                 args += ['--cov=' + str(source) for source in sources]
-                args += ['--cov-branch', '--cov-report=term-missing', '--cov-report=json:' + str(coverage)]
+                args += ['--cov-branch', '--cov-report=']
                 env['COVERAGE_FILE'] = str(Path(temporary) / '.coverage')
             if parallel_jobs:
                 args += ['-n', str(parallel_jobs)]
@@ -248,9 +262,12 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                     data = json.loads(coverage.read_text())
                     for file, row in sorted(data['files'].items()):
                         s = row['summary']
-                        areas.append(CoverageArea(repo, file, s['covered_lines'], s['num_statements'], s.get('covered_branches', 0), s.get('num_branches', 0)))
+                        areas.append(CoverageArea(repo, file, s['covered_lines'], s['num_statements'], s.get('covered_branches', 0), s.get('num_branches', 0),
+                                                  tuple(row.get('missing_lines', ())), tuple(tuple(edge) for edge in row.get('missing_branches', ()))))
                     if not data['files']:
                         failed = True
+                    else:
+                        retained.append(retain_report(repo, temporary, report_destinations[repo]))
                 except (OSError, ValueError, KeyError, TypeError) as exc:
                     failed = True
                     raw(repo, f'Coverage report unavailable: {exc}\n')
@@ -270,22 +287,26 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                 coverage.set_option("run:disable_warnings", ["no-data-collected"])
                 coverage.start()
                 coverage.stop()
+                coverage.save()
                 report = Path(temporary) / 'coverage.json'
-                coverage.json_report(morfs=[str(path) for source in sources for path in source.rglob('*.py')], omit=['*/tests/*'], outfile=str(report))
+                files = [str(path) for source in sources for path in source.rglob('*.py')]
+                coverage.json_report(morfs=files, omit=['*/tests/*'], outfile=str(report))
+                coverage.html_report(morfs=files, omit=['*/tests/*'], directory=str(Path(temporary) / 'html'))
                 data = json.loads(report.read_text())
                 for file, row in sorted(data['files'].items()):
                     summary = row['summary']
                     areas.append(CoverageArea(repo, file, summary['covered_lines'], summary['num_statements'],
-                                              summary.get('covered_branches', 0), summary.get('num_branches', 0)))
+                                              summary.get('covered_branches', 0), summary.get('num_branches', 0),
+                                              tuple(row.get('missing_lines', ())), tuple(tuple(edge) for edge in row.get('missing_branches', ()))))
+                retained.append(retain_report(repo, temporary, report_destinations[repo]))
         except Exception as exc:
             failed = True
             raw(repo, f'Coverage report unavailable for unselected owner: {exc}\n')
     for test in tests:
         results.setdefault(test.id, TestResult(test, 'cancelled' if cancelled else 'error'))
     failed |= cancelled or any(r.status != 'passed' for r in results.values()) or (require_full_coverage and any(not a.complete for a in areas))
-    for area in areas:
-        raw(area.repo, f'{area.repo}::{area.file}: lines {area.line_percent:.2f}% ({area.covered_lines}/{area.num_statements}), branches {area.branch_percent:.2f}% ({area.covered_branches}/{area.num_branches})\n')
-    result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled, require_full_coverage, time.monotonic() - started_at)
+    result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled, require_full_coverage, time.monotonic() - started_at,
+                           tuple(retained), coverage_full)
     emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))
     return result
 
@@ -302,12 +323,10 @@ def format_unit_summary(result, *, include_elapsed=True):
                                elapsed=result.elapsed if include_elapsed else None)]
     if not result.require_full_coverage:
         lines.append('Partial selection: coverage is informational.')
-    if result.coverage and all(area.complete for area in result.coverage):
-        lines.append('Code coverage: lines 100% · branches 100%.')
-    for area in result.coverage:
-        if area.complete:
-            continue
-        lines.append(f'{area.repo}::{area.file}: lines {area.line_percent:.2f}% ({area.covered_lines}/{area.num_statements}), branches {area.branch_percent:.2f}% ({area.covered_branches}/{area.num_branches})' + (' [below 100%]' if not area.complete else ''))
+    lines.extend(coverage_table(result.coverage, full=result.coverage_full))
+    for report in result.coverage_reports:
+        lines.extend((f'{report.repo} coverage JSON: {report.json_path}',
+                      f'{report.repo} coverage HTML: {report.html_path}'))
     for repo in dict.fromkeys(test.identity.repo for test in result.tests):
         if not any(area.repo == repo for area in result.coverage):
             lines.append(f'{repo}: no measured code files (or coverage report unavailable; see output).')

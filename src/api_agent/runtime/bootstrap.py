@@ -224,6 +224,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             tests = collect_tests(context, 'unit', result.positionals)
             execution = run_unit_tests(context, tests, output=lambda chunk: print(chunk, end='', flush=True),
                                        parallel_jobs=unit_parallel_jobs(result.values),
+                                       coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
                                        require_full_coverage=not result.positionals)
             print()
             print(format_unit_summary(execution))
@@ -301,6 +302,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
         'DEBUG': '--debug: retain integration login browsers; allows --no-std-in integration debugging.',
+        'UNIT_COVERAGE_FULL': '--unit-coverage-full: show every unit coverage row; JSON/HTML reports are retained either way.',
         'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select a zero-based account; --unattended-user-index= uses manual login for this run.',
     }
     for name, description in callouts.items():

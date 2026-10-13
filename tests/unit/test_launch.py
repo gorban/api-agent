@@ -29,6 +29,18 @@ class LaunchTests(unittest.TestCase):
                 self.assertEqual(main(['--no-std-in', '--tui-mode=unit',
                                        '--test-parallel-jobs=11', *extra], base_root=ROOT), 0)
                 self.assertEqual(run.call_args.kwargs['parallel_jobs'], expected)
+                self.assertIs(run.call_args.kwargs['coverage_full'], False)
+
+    def test_terminal_unit_full_coverage_option_reaches_runner(self):
+        from api_agent.testing.runner import UnitRunResult
+        with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', StringIO()), \
+                patch('api_agent.config.read_dotenv', return_value={}), \
+                patch('api_agent.runtime.worktrees.verify_worktrees'), \
+                patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+                patch('api_agent.testing.collection.collect_tests', return_value=[]), \
+                patch('api_agent.testing.runner.run_unit_tests', return_value=UnitRunResult(0, (), (), '')) as run:
+            self.assertEqual(main(['--no-std-in', '--tui-mode=unit', '--unit-coverage-full'], base_root=ROOT), 0)
+            self.assertIs(run.call_args.kwargs['coverage_full'], True)
 
     def test_raw_unit_summary_has_separator_without_changing_shared_formatter(self):
         from api_agent.testing.runner import CoverageArea, UnitRunResult, format_unit_summary
