@@ -1,5 +1,7 @@
 # Tracing before the first Ok graph run
 
+Current routing and attribution: [endpoint-only tracing and shared collector requirements](implementation_plan_k1.md). No reporting installation-ID/registration step is required.
+
 ## Completed declaration slice
 
 - [x] Add optional TRACE_MODE/TRACE_TARGET with generic optional-review metadata, conditional local endpoint defaults, dynamic review updates, and LOG_CONTENT=False. Live exporters, content gating and Compose lifecycle remain tasks below.
@@ -24,7 +26,7 @@
 - [ ] Before the first Ok integration/E2E run, wire LangGraph, node and provider tracing to the selected backend/target. Disabled mode creates no exporter or tracer containers. Correlate session/suite/test/attempt identifiers and token metrics; flush on completion, cancellation and shutdown. LangFuse may require public/secret keys; declare appropriate conditional authentication configuration when implementing, with headless local provisioning and no secrets in trace payloads.
 - [ ] Design local tracing setup from the public [Langfuse Docker Compose documentation](https://langfuse.com/self-hosting/deployment/docker-compose) and [headless initialization documentation](https://langfuse.com/self-hosting/administration/headless-initialization). Pin the selected upstream release and use its documented dependency stack and initialization settings to provision a local project and API keys. Keep credentials out of committed configuration and trace payloads.
 - [ ] Add separate Compose `langfuse` and `otel` profiles. When tracing is enabled and the effective target equals that mode's local default endpoint, start/reuse its local stack; remote/custom targets start no local tracer. Use Jaeger all-in-one for the local OTEL route, exposing OTLP HTTP port 4318 and UI port 16686. Verify the selected supported image and pin it when implementing.
-- [ ] For local runs, stop tracer containers started/owned by that local invocation when quitting the TUI. Do not stop a reused tracer owned by another active invocation. For integration/E2E, retain the stack after completion for inspection and reuse on later runs; check health/configuration before reuse, reject incompatible stacks, and record ownership/configuration metadata.
+- [ ] Follow [shared session lifecycle](implementation_plan_h2a2.md): retain local stacks after test completion for inspection while a session/operation needs them; stop managed tracer containers after the last session and active operation release. Keep volumes and traces on normal shutdown. Custom/production collector targets remain outside local management; preserve verified configuration and ownership during reuse.
 - [ ] Implement the [LOG_CONTENT emission gate](implementation_plan_j.md) before exporting the first Ok trace. Declare default False now. Only explicitly supplied True permits user/LLM/tool content; credentials remain excluded even with True. Verify omitted/default/False scrubbing and explicit-True behavior for both backends.
 - [ ] Add deterministic config/lifecycle/export tests and targeted human-reviewed integration checks for both backends before the Ok milestone. Confirm retained test traces remain viewable, subsequent tests reuse the stack, remote tracing starts no container, and local-run shutdown respects ownership.
 
