@@ -44,6 +44,11 @@ def test_real_owner_execution_results_output_and_coverage(tmp_path):
     assert all(r.status == 'passed' for r in result.tests)
     assert result.exit_code == 1  # pack production was never imported
     assert {a.repo for a in result.coverage} == {'base', 'pack'}
+    assert {report.repo for report in result.coverage_reports} == {'base', 'pack'}
+    assert len({report.json_path.parent for report in result.coverage_reports}) == 2
+    assert all(report.json_path.is_relative_to(pack / 'artifacts/unit')
+               and report.json_path.is_file() and report.html_path.is_file()
+               for report in result.coverage_reports)
     assert ''.join(output) == result.output
     assert 'passed' in result.output
     assert {e.kind for e in events} >= {'started', 'test_started', 'test_finished', 'output', 'finished'}
@@ -135,10 +140,13 @@ def test_unselected_owner_still_measures_all_production(tmp_path):
     result = run_unit_tests(ctx, selected)
     assert result.exit_code == 1
     assert any(area.repo == 'pack' and area.covered_lines == 0 for area in result.coverage)
+    assert {report.repo for report in result.coverage_reports} == {'base', 'pack'}
+    assert all(report.json_path.is_file() and report.html_path.is_file()
+               for report in result.coverage_reports)
     from api_agent.testing.runner import format_unit_summary
     summary = format_unit_summary(result)
     assert '1/1 passed' in summary and 'FAIL' in summary
-    assert '[below 100%]' in summary and 'branches' in summary
+    assert 'files below 100%' in summary and 'branches' in summary
 
 
 def test_owner_coverage_omissions_cannot_hide_namespace_files(tmp_path):

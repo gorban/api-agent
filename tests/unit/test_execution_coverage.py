@@ -196,6 +196,10 @@ def fake_execution(monkeypatch, ctx, *, reports=(), coverage='valid', exit_code=
             if coverage == 'empty': document = {'files': {}}
             if coverage == 'branch-gap': document['files']['src/code.py']['summary']['covered_branches'] = 1
             Path(destination).write_text(json.dumps(document))
+            Path(kwargs['env']['COVERAGE_FILE']).touch()
+            html = Path(kwargs['env']['API_AGENT_COVERAGE_HTML'])
+            html.mkdir()
+            (html / 'index.html').write_text('Synthetic coverage report')
         return SimpleNamespace(stdout=io.StringIO(output), returncode=exit_code, poll=lambda: exit_code)
     monkeypatch.setattr(runner.subprocess, 'Popen', popen)
     return test, stops
@@ -318,10 +322,19 @@ def test_unselected_production_owner_report_is_measured_or_fails_explicitly(monk
     test,_=fake_execution(monkeypatch,ctx,reports=[report()])
     calls=[]
     class Coverage:
-        def __init__(self,**kwargs):assert kwargs['source']==[str(pack/'src')]
+        def __init__(self,**kwargs):
+            assert kwargs['source']==[str(pack/'src')]
+            self.data_file = Path(kwargs['data_file'])
         def set_option(self,*args):calls.append('configure')
         def start(self):calls.append('start')
         def stop(self):calls.append('stop')
+        def save(self):
+            self.data_file.write_bytes(b'synthetic coverage database')
+        def html_report(self,*,morfs,omit,directory):
+            assert morfs == [str(pack/'src/uncovered.py')]
+            assert omit == ['*/tests/*']
+            Path(directory).mkdir()
+            (Path(directory)/'index.html').write_text('Synthetic uncovered owner')
         def json_report(self,*,morfs,outfile,omit):
             assert morfs==[str(pack/'src/uncovered.py')]
             assert omit == ['*/tests/*']

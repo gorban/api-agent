@@ -1445,6 +1445,7 @@ class ApiAgentApp(App[int]):
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
                 parallel_jobs=unit_parallel_jobs(self.session.result().values),
+                coverage_full=self.session.result().values.get('UNIT_COVERAGE_FULL', False),
                 require_full_coverage=self.selection.groups()[0].selected)
             self.unit_result = result
             for test in result.tests:
