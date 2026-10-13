@@ -2,7 +2,7 @@
 
 Follow [provider architecture](../architecture/provider_architecture.md) for ownership and the approved browser contracts. This grouping covers generic core; the [GraphQL implementation](implementation_plan_m1.md), [upstream extension](implementation_plan_m2.md) and [LLM adapter](implementation_plan_f1.md) have separate implementation/test owners.
 
-Shared reporting identity and publication-only access: [contract requirements](implementation_plan_h2a1.md).
+Shared reporting: [identity and publication-only access](implementation_plan_h2a1.md) · [session lifecycle, persistent storage and management](implementation_plan_h2a2.md).
 
 ## Foundation already present
 
