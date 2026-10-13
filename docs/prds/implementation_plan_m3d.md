@@ -9,6 +9,7 @@
 - Preserve resolved pack/provider ownership, explicit setting precedence, capability validation, private module isolation and cleanup. An inactive synthetic provider must not import or run. No real authentication, browser, inference or network service is needed.
 - Verify both successful disposal and a relevant failed-start/invocation cleanup path; reject a closed consumer and invalid factory/capability. Assertions must demonstrate actual invocation and module/resource retirement, not merely a zero process exit code.
 - Confirm installed dependency descriptors describe only selected providers. This does not complete future operation-specific dependency preparation, native platform guarantees or UI/LangGraph consumers.
+- Observe durable fixture-owned active module/factory markers immediately after both pack inspection and selected-manifest discovery. They must remain absent even if an eager execution retires all modules. Verify their expected occurrence after intentional loading, including failed-factory/capability paths, and prove both discovery boundaries reject module-only execution and factory invocation across the lifecycle modes.
 
 ## Acceptance
 
@@ -19,7 +20,7 @@
 
 ## Verified scope
 
-Five deterministic tests build a local wheel from declared development tools,
+Twenty-one deterministic tests build a local wheel from declared development tools,
 create clean standard-library virtual environments and install it using pip
 with no index, dependencies or cache. Isolated consumers verify distribution
 metadata and module origins, run from an unrelated directory and cannot use the
@@ -42,4 +43,10 @@ five cases and rejects eight source/invocation/disposal/module/installer
 mutations. The existing MIT-licensed build backend is also declared in the dev
 extra so offline test builds need no host build-tool cache.
 
-The full public gate passes 5,818 units plus 27 subtests, exact 100% lines/branches across 132 measured files (17,520 statements, 6,442 branches). The wheel, whitespace and 394-file indexed public-boundary audit pass. Three unrelated fork diagnostics remain; the preceding cache lifecycle repair leaves no SQLite ResourceWarnings. No production source repair was needed.
+The original delivery gate passed 5,818 units plus 27 subtests, exact 100% lines/branches across 132 measured files (17,520 statements, 6,442 branches). The wheel, whitespace and 394-file indexed public-boundary audit pass. Three unrelated fork diagnostics remain; the preceding cache lifecycle repair leaves no SQLite ResourceWarnings. No production source repair was needed.
+
+## Active discovery observation
+
+Persistent fixture-owned module and factory markers are checked immediately after pack inspection and selected-manifest discovery, then checked for their expected occurrence after intentional loading. Sixteen installed controls simulate an eager module import or factory invocation that fully retires its modules before returning from either discovery boundary, across all four lifecycle modes. Each must fail with the corresponding immediate discovery assertion, rather than a later lifecycle failure. This prevents residual-module checks from falsely certifying inertness.
+
+The discovery repair passes all 21 installed tests against a freshly built wheel. Independent review verifies all 16 eager-execution cases fail at the exact immediate guard; isolating and disabling that guard makes each counterfactual pass, with competing later checks neutralized. The renewed public gate passes 5,850 tests plus 27 subtests with exact 100% lines/branches across 133 files (17,575 statements, 6,450 branches). The wheel and 397-file indexed public-boundary/metadata audit pass; production source is unchanged. Human acceptance remains open.

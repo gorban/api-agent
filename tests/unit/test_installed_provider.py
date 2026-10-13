@@ -17,6 +17,8 @@ from api_agent.providers.progress import report_timeout_sync
 
 
 PROVIDER = '''
+from pathlib import Path
+Path(__file__).parents[1].joinpath('active-import-ran').touch()
 import asyncio
 from .local import answer
 from api_agent.providers.contracts import APIResult, ProviderCapabilities
@@ -40,6 +42,7 @@ class Adapter:
         self.events.append('disposed')
 
 def factory(config, services):
+    Path(__file__).parents[1].joinpath('active-factory-ran').touch()
     return Adapter(config, services)
 '''
 
@@ -65,7 +68,12 @@ assert Path(distribution.locate_file('')).resolve().is_relative_to(installed)
 for module in (api_agent, loading):
     assert Path(module.__file__).resolve().is_relative_to(installed)
 base = Path(api_agent.__file__).parent
+def assert_inert_discovery(stage):
+    assert not (pack / 'active-factory-ran').exists(), stage + ': active factory executed during discovery'
+    assert not (pack / 'active-import-ran').exists(), stage + ': active module executed during discovery'
+
 context, schema = inspect_relocated_pack(base, pack)
+assert_inert_discovery('inspect_relocated_pack')
 assert context.owner_root == pack
 assert context.production_paths == (pack / 'src',)
 assert schema.fields['SYNTHETIC_VALUE'].default == 'default'
@@ -77,6 +85,7 @@ assert resolved.fields['SYNTHETIC_VALUE'].source == 'cli'
 assert not any(name.startswith('_api_agent_provider_') for name in sys.modules)
 values = {'API_PROVIDER': 'src/factory.py:factory', 'UI_PROVIDER': 'inactive/factory.py:factory'}
 manifests = selected_manifests(values, owner_root=pack, active_kinds={'api'})
+assert_inert_discovery('selected_manifests')
 assert len(manifests) == 1
 assert manifests[0].root == pack / 'src'
 assert manifests[0].requirements() == ('synthetic-client>=1',)
@@ -135,9 +144,45 @@ async def exercise():
     assert events.count('disposed') == 1
 
 asyncio.run(exercise())
+assert (pack / 'active-import-ran').is_file()
+assert (pack / 'active-factory-ran').is_file() == (mode != 'invalid_factory')
 assert not (pack / 'inactive-ran').exists()
 print('installed lifecycle verified:' + mode)
 '''
+
+
+PREMATURE_EXECUTION = '''
+def discovery_with_early_execution(original_discovery, action, *args, **kwargs):
+    result = original_discovery(*args, **kwargs)
+    events = []
+    # The missing factory imports its module but cannot invoke the factory.
+    target = 'missing' if action == 'module' else 'factory'
+    try:
+        owner = loading.load_provider('src/factory.py:' + target, {},
+                                      {'owner_root': pack, 'events': events}, kind='api')
+    except loading.ProviderError as error:
+        assert action == 'module'
+        assert str(error) == 'provider_initialization_failed'
+    else:
+        assert action == 'factory'
+        asyncio.run(owner.aclose())
+    assert events == {'module': [], 'factory': ['factory', 'disposed']}[action]
+    assert (pack / 'active-import-ran').is_file()
+    assert (pack / 'active-factory-ran').is_file() == (action == 'factory')
+    assert not any(name.startswith('_api_agent_provider_') for name in sys.modules)
+    return result
+'''
+
+
+def eager_discovery_consumer(stage, action):
+    """Simulate a completed eager load with no residual modules at either boundary."""
+    anchor = {'inspect_relocated_pack': 'context, schema = inspect_relocated_pack(base, pack)',
+              'selected_manifests': "manifests = selected_manifests(values, owner_root=pack, active_kinds={'api'})"}[stage]
+    wrapper = (PREMATURE_EXECUTION + '\noriginal_discovery = ' + stage + '\n' + stage
+               + ' = lambda *args, **kwargs: discovery_with_early_execution(original_discovery, '
+               + repr(action) + ', *args, **kwargs)\n')
+    assert CONSUMER.count(anchor) == 1
+    return CONSUMER.replace(anchor, wrapper + anchor, 1)
 
 
 def run(command, *, cwd):
@@ -222,6 +267,22 @@ def test_installed_provider_lifecycle(installed_wheel, relocated_pack, mode):
                   str(original), str(repository), mode], cwd=consumer_cwd)
 
     assert output.strip() == 'installed lifecycle verified:' + mode
+
+
+@pytest.mark.parametrize('stage', ['inspect_relocated_pack', 'selected_manifests'])
+@pytest.mark.parametrize('action', ['module', 'factory'])
+@pytest.mark.parametrize('mode', ['success', 'invocation_failure', 'invalid_factory', 'invalid_capability'])
+def test_installed_discovery_rejects_early_execution_after_module_cleanup(installed_wheel, relocated_pack, stage, action, mode):
+    python, environment, repository, _ = installed_wheel
+    pack, original, consumer_cwd = relocated_pack
+    consumer = eager_discovery_consumer(stage, action)
+
+    with pytest.raises(AssertionError, match=stage + ': active ' + action + ' executed during discovery'):
+        run([str(python), '-I', '-c', consumer, str(environment), str(pack),
+             str(original), str(repository), mode], cwd=consumer_cwd)
+
+    assert (pack / 'active-import-ran').is_file()
+    assert (pack / 'active-factory-ran').is_file() == (action == 'factory')
 
 
 def test_hostile_installer_environment_cannot_redirect_installation(installed_wheel, tmp_path, monkeypatch):
