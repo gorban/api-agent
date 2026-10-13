@@ -33,6 +33,7 @@ class LaunchContext:
     bootstrap_explicit: bool = False
     service_name: str = "api-agent"
     provider_config_paths: tuple[Path, ...] = ()
+    shared_dotenv_paths: tuple[Path, ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -87,7 +88,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -120,6 +121,14 @@ def load_launch_context(
         if source.suffix != '.toml' or not source.is_file():
             raise ResourcePackError('providers.configs must name existing TOML declarations')
         provider_configs.append(source)
+    configuration = data.get("configuration", {})
+    if not isinstance(configuration, dict) or set(configuration) - {"dotenv"}:
+        raise ResourcePackError("configuration must contain only a dotenv array")
+    dotenv_paths = configuration.get("dotenv", [])
+    if not isinstance(dotenv_paths, list):
+        raise ResourcePackError("configuration.dotenv must be an array of relative paths")
+    shared_dotenv_paths = tuple(dict.fromkeys(
+        _relative_path(entry, pack, "configuration.dotenv") for entry in dotenv_paths))
     declared_tests = data.get("tests", {})
     if not isinstance(defaults, dict) or not isinstance(declared_tests, dict):
         raise ResourcePackError("Resource-pack defaults and tests must be TOML tables")
@@ -178,4 +187,5 @@ def load_launch_context(
         tuple(dict.fromkeys(production_paths)),
         service_name=service_name,
         provider_config_paths=tuple(dict.fromkeys(provider_configs)),
+        shared_dotenv_paths=shared_dotenv_paths,
     )

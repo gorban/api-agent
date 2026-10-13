@@ -188,3 +188,38 @@ def test_resource_pack_service_identity_is_cwd_independent(tmp_path, monkeypatch
     manifest.write_text('service_name="synthetic-api"\n' + manifest.read_text())
     monkeypatch.chdir(tmp_path)
     assert load_launch_context(base, pack).service_name == 'synthetic-api'
+
+
+@pytest.mark.parametrize('configuration', ['', '[configuration]\n', '[configuration]\ndotenv=[]\n'])
+def test_empty_shared_configuration_is_optional(tmp_path, configuration):
+    base = tmp_path / 'base'
+    make_pack(base / 'demo')
+    with (base / 'demo/pack.toml').open('a') as stream:
+        stream.write(configuration)
+    assert load_launch_context(base).shared_dotenv_paths == ()
+
+
+@pytest.mark.parametrize('entry', [
+    'configuration=7', 'configuration={unknown=[]}',
+    'configuration={dotenv="bad"}', 'configuration={dotenv=[7]}',
+    'configuration={dotenv=[""]}', 'configuration={dotenv=["  "]}',
+    'configuration={dotenv=["/absolute.env"]}',
+])
+def test_malformed_shared_configuration_is_rejected(tmp_path, entry):
+    base = tmp_path / 'base'
+    make_pack(base / 'demo')
+    (base / 'demo/pack.toml').write_text(
+        'version=1\nid="fixture"\nconfig="config.toml"\n' + entry + '\n')
+    with pytest.raises(ResourcePackError, match='configuration'):
+        load_launch_context(base)
+
+
+def test_shared_paths_resolve_against_pack_and_deduplicate_missing_files(tmp_path, monkeypatch):
+    base, pack = tmp_path / 'base', tmp_path / 'product'
+    make_pack(base / 'demo')
+    make_pack(pack)
+    with (pack / 'pack.toml').open('a') as stream:
+        stream.write('[configuration]\ndotenv=["../common/.env","optional.env","../common/.env"]\n')
+    monkeypatch.chdir(base)
+    context = load_launch_context(base, pack)
+    assert context.shared_dotenv_paths == (tmp_path / 'common/.env', pack / 'optional.env')

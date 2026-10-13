@@ -383,3 +383,38 @@ def test_allowed_empty_integer_default_acknowledgement_round_trips(tmp_path, def
     assert restarted.result().values['INDEX'] == expected
     assert restarted.result().errors == ()
     assert restarted.default_candidates() == []
+
+
+def test_shared_layers_precedence_provenance_targets_and_clear(session, tmp_path):
+    common, launcher = tmp_path / 'common', tmp_path / 'launcher'
+    common.mkdir()
+    launcher.mkdir()
+    shared = common / '.env'
+    session.context.shared_dotenv_paths = (shared, session.context.base_root / '.env', shared)
+    session.context.launcher_root = launcher
+    paths = (session.context.base_root / '.env', shared, launcher / '.env', session.context.pack_root / '.env')
+    assert session.target_paths == paths
+    for value, path in enumerate(paths, 2):
+        path.write_text(f'VALUE={value}\n')
+    assert session.result().values['VALUE'] == 5
+    session.delete_keys(['VALUE'])
+    shared.write_text('VALUE=7\n')
+    assert session.result().values['VALUE'] == 7
+    assert session.result().fields['VALUE'].source == session._source(shared)
+    assert session.saved_path('VALUE') == shared
+    session.switch_target(shared)
+    session.set_value('VALUE', '8', persist=True)
+    assert read_dotenv(shared)['VALUE'] == '8'
+    assert session.saved_path('VALUE') == shared
+    session.unset_saved('VALUE')
+    assert session.result().values['VALUE'] == 1
+    assert session.saved_path('VALUE') is None
+
+
+def test_missing_shared_file_is_inert_and_environment_cli_choices_win(session, tmp_path):
+    session.context.shared_dotenv_paths = (tmp_path / 'missing.env',)
+    assert session.result().values['VALUE'] == 1
+    session.environ['VALUE'] = '3'
+    session.argv = ('--value=4',)
+    assert session.result().values['VALUE'] == 4
+    assert session.set_value('VALUE', '5').values['VALUE'] == 5

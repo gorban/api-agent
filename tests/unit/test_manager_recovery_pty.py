@@ -307,13 +307,19 @@ print('value')
     assert not stat.exists() or stat.read_text().split()[2] == 'Z'
 
 
-def test_shared_scope_does_not_carry_short_limit_into_human_recovery(tmp_path):
+def test_shared_scope_does_not_carry_short_limit_into_human_recovery(tmp_path, monkeypatch):
     from api_agent.auth.credentials import get_password
     from api_agent.providers.progress import progress_sink, report_timeout_sync
     path = tmp_path / 'keeper'
     path.write_text(f'#!{sys.executable}\nimport sys,getpass,time\nif not sys.stdin.isatty():\n print("Persistent login failed", file=sys.stderr);sys.exit(1)\ntime.sleep(.1)\nassert getpass.getpass("Password: ") == "master-secret"\nprint("value")\n')
     path.chmod(0o700)
     source = dict(manager='keeper', cli_path=str(path), vault='vault', user='user')
+    # The short budget measures retrieval, not interpreter startup. Force the
+    # known logged-out precondition, then exercise actual PTY recovery beyond it.
+    from api_agent.auth.credentials import CredentialLoginRequiredError
+    def logged_out(*args, **kwargs):
+        raise CredentialLoginRequiredError('Keeper login required.')
+    monkeypatch.setattr('api_agent.auth.credentials._run', logged_out)
     records = []
     with progress_sink(records.append), report_timeout_sync('Enclosing operation', 2):
         assert get_password(source, timeout=.08, interaction=Interaction([Reply('input', 'master-secret')])) == 'value'

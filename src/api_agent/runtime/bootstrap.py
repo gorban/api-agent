@@ -147,6 +147,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                 overrides=context.defaults)
         dotenv = {}
         for path in dict.fromkeys((context.base_root / '.env',
+                                  *context.shared_dotenv_paths,
                                   (context.launcher_root or context.base_root) / '.env',
                                   context.dotenv_path)):
             dotenv.update(read_dotenv(path))
