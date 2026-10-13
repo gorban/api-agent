@@ -183,3 +183,48 @@ def test_endpoint_preserves_dns_near_numeric_hosts(host):
     endpoint = ReportingEndpoint(value)
 
     assert endpoint.value == value + "/"
+
+
+@pytest.mark.parametrize("value", [
+    "http://[v1.fe]", "https://[vF.example]:443/", "http://[v0.0]",
+    "http://[v123.foo-bar]", "http://[v1.localhost]",
+])
+def test_endpoint_rejects_unsupported_bracketed_literals(value):
+    with pytest.raises(ValueError) as error:
+        ReportingEndpoint(value)
+
+    assert str(error.value) == "Invalid reporting endpoint."
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("http://v1.fe", "http://v1.fe/"),
+    ("https://vF.example:443/", "https://vf.example/"),
+    ("http://[::1]:80", "http://[::1]/"),
+    ("http://[::ffff:7f00:1]/", "http://[::ffff:127.0.0.1]/"),
+])
+def test_endpoint_preserves_supported_authority_categories(value, expected):
+    endpoint = ReportingEndpoint(value)
+
+    assert endpoint.value == expected
+
+
+@pytest.mark.parametrize("host", [
+    "0x", "0X", "127.0.0.0x", "127.0x.0.1", "0x.127.0.1",
+    "0x.0x.0x.0x", "0X.0X.0X.0X",
+])
+def test_endpoint_rejects_empty_hex_numeric_components(host):
+    with pytest.raises(ValueError) as error:
+        ReportingEndpoint(f"http://{host}")
+
+    assert str(error.value) == "Invalid reporting endpoint."
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__
+
+
+@pytest.mark.parametrize("host", ["0x.example", "127.0x.example", "0x.0x.example"])
+def test_endpoint_preserves_dns_near_empty_hex_components(host):
+    endpoint = ReportingEndpoint(f"http://{host}")
+
+    assert endpoint.value == f"http://{host}/"
