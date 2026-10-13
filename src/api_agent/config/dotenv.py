@@ -14,9 +14,19 @@ def decode_value(value):
         except ValueError:
             raise ValueError('invalid escaped quoted value') from None
     if value.startswith(('"', "'")):
-        if len(value) < 2 or value[-1] != value[0]:
-            raise ValueError('unclosed quoted value')
-        value = value[1:-1]
+        quote = value[0]
+        escaped = False
+        for index, character in enumerate(value[1:], 1):
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                suffix = value[index + 1:]
+                if suffix and not (suffix[0].isspace() and suffix.lstrip().startswith('#')):
+                    raise ValueError('invalid quoted value suffix')
+                return value[1:index]
+        raise ValueError('unclosed quoted value')
     return value
 
 def read_dotenv(path):

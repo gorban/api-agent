@@ -88,7 +88,8 @@ class ConfigSession:
         base = self.context.base_root / '.env'
         pack = self.context.pack_root / '.env'
         launcher = getattr(self.context, 'launcher_root', None) or self.context.base_root
-        paths = [base, Path(launcher) / '.env']
+        paths = [base, *getattr(self.context, 'shared_dotenv_paths', ()),
+                 Path(launcher) / '.env']
         if self.context.external_pack:
             paths.append(pack)
         return tuple(dict.fromkeys(paths))
