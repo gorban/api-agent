@@ -59,9 +59,9 @@ def _normalize_endpoint(value):
     port = parts.port
     if parts.netloc.endswith(":") or port == 0:
         raise ValueError
-    if ":" in host:
+    if parts.netloc.startswith("["):
         host = "[" + str(ipaddress.IPv6Address(host)) + "]"
-    elif re.fullmatch(r"(?:[0-9]+|0x[0-9a-f]+)(?:\.(?:[0-9]+|0x[0-9a-f]+))*", host):
+    elif re.fullmatch(r"(?:[0-9]+|0x[0-9a-f]*)(?:\.(?:[0-9]+|0x[0-9a-f]*))*", host):
         host = str(ipaddress.IPv4Address(host))
     elif not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*", host) or len(host) > 253:
         raise ValueError
