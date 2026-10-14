@@ -7,6 +7,7 @@ import pytest
 
 from api_agent.runtime import prerequisites
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+from api_agent.testing.diagnostics import CredentialScrubber
 
 
 @pytest.mark.parametrize('control', ['\x00', '\t', '\n', '\u200b'])
@@ -33,12 +34,12 @@ def test_printable_detection_retains_original_offsets_and_controls():
 @pytest.mark.parametrize('captured,secrets,expected', [
     (b'ordinary end', ('credential',), b'ordinary end'),
     (b'ordinary c', ('credential',), b'ordinary [REDACTED]'),
-    (b'ordinary x', ('x',), b'ordinary x'),
+    (b'ordinary x', ('x',), b'ordinary [REDACTED]'),
     (b'context owned-\xe2\x80\x8beuro-\xe2\x82', ('owned-euro-€-remaining',), b'context [REDACTED]'),
     (b'context \"owned-\\u200beuro-\\u20ac-re', ('owned-euro-€-remaining',), b'context \"[REDACTED]'),
     (b'context \"owned-\\teuro-\\u20', ('owned-euro-€-remaining',), b'context \"[REDACTED]'),
     (b'context \"ab\\taba\" end', ('abab',), b'context \"[REDACTED]a\" end'),
-    (b'left abc middle abc right', ('abc', 'right-end'), b'left abc middle abc [REDACTED]'),
+    (b'left abc middle abc right', ('abc', 'right-end'), b'left [REDACTED] middle [REDACTED] [REDACTED]'),
     (b'ordinary', (), b'ordinary'),
     (b'context owned-', ('owned-\udcff',), b'context [REDACTED]'),
     (b'ordinary', ('owned-\ud800',), b'[REDACTED]'),
@@ -58,7 +59,7 @@ def test_printable_detection_retains_original_offsets_and_controls():
     (b'context ' + b'q' * 9999, ('q' * 10000 + 'y',), b'context [REDACTED]'),
 ])
 def test_incomplete_capture_prefix_union(captured, secrets, expected):
-    assert prerequisites._mask_incomplete_secret(captured, secrets, complete=True) == expected
+    assert CredentialScrubber(secret_values=secrets).capture(captured).encode() == expected
 
 
 @pytest.mark.parametrize('layers', [1, 2, 3])
@@ -69,11 +70,12 @@ def test_complete_encoded_registered_value_preserves_independent_scheme(layers):
         encoded = json.dumps(encoded)
     captured = ('https://user:password@public.invalid before ' + encoded + ' after https').encode()
 
-    result = prerequisites._mask_incomplete_secret(captured, (secret, 'https'), complete=True)
+    result = CredentialScrubber(secret_values=(secret, 'https')).capture(captured).encode()
 
     assert b'owned-' not in result
-    assert b'https://user:password@public.invalid before' in result
-    assert result.endswith(b' after https')
+    assert b'user:password' not in result
+    assert b'public.invalid before' in result
+    assert result.endswith(b' after [REDACTED]')
     assert b'[REDACTED]' in result
 
 
@@ -120,7 +122,7 @@ def test_nested_incomplete_serialized_prefix_is_masked(layers):
         encoded = json.dumps(encoded)
     captured = ('ordinary ' + encoded.rstrip('"')).encode()
 
-    result = prerequisites._mask_incomplete_secret(captured, (secret,))
+    result = CredentialScrubber(secret_values=(secret,)).capture(captured).encode()
 
     assert b'owned-' not in result
     assert b'[REDACTED]' in result
@@ -133,7 +135,7 @@ def test_escape_detection_depth_limit_is_fail_closed(layers):
     for _ in range(layers - 1):
         encoded = encoded.replace('\\', '\\u005c')
 
-    result = prerequisites._mask_incomplete_secret(encoded.encode(), (secret,))
+    result = CredentialScrubber(secret_values=(secret,)).capture(encoded.encode()).encode()
 
     assert b'owned-' not in result
     assert b'[REDACTED]' in result

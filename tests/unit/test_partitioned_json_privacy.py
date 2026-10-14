@@ -202,13 +202,34 @@ CONTROL_INSERTION_REPRESENTATIONS = [
 ]
 
 
-@pytest.mark.parametrize('secret, encoded', REGISTERED_REPRESENTATIONS + CONTROL_INSERTION_REPRESENTATIONS)
+JSON_SHAPE_CONTROL_REPRESENTATIONS = [
+    (json.dumps({'omega': 9}, separators=(',', ':')), json.dumps({'payload': {'ome' + control + 'ga': 9}}))
+    for control in ('\x00', '\t', '\u200b')
+] + [
+    (json.dumps(['synthetic-owned-json']), json.dumps({'payload': ['synthetic-' + control + 'owned-json']}))
+    for control in ('\x00', '\t', '\u200b')
+] + [
+    (json.dumps('synthetic-owned-json'), json.dumps({'note': 'synthetic-' + control + 'owned-json'}))
+    for control in ('\x00', '\t', '\u200b')
+]
+CONCEALED_SCHEME_REPRESENTATIONS = [
+    ('Bearer', 'Be' + control + 'arer synthetic-independent-secondary-auth')
+    for control in ('\t', '\n', '\r', '\x85', '\xa0', '\u2028', '\t\u200b')
+]
+
+
+@pytest.mark.parametrize('secret, encoded', REGISTERED_REPRESENTATIONS + CONTROL_INSERTION_REPRESENTATIONS
+                         + JSON_SHAPE_CONTROL_REPRESENTATIONS + CONCEALED_SCHEME_REPRESENTATIONS)
 @pytest.mark.parametrize('subscription', [None, False, True], ids=['constructed', 'json', 'sse'])
 @pytest.mark.parametrize('enabled', [False, True], ids=['off', 'enabled'])
 def test_registered_json_representation_ipc_and_recording(secret, encoded, subscription, enabled, tmp_path, monkeypatch):
     import test_partitioned_credentials
-    monkeypatch.setattr(test_partitioned_credentials, 'TOKEN', secret)
+    transport_secret = TOKEN if secret == 'Bearer' else secret
+    monkeypatch.setattr(test_partitioned_credentials, 'TOKEN', transport_secret)
     parts = (encoded[:6], encoded[6:])
+    if secret == 'Bearer':
+        scheme, separator, secondary = encoded.partition(' ')
+        parts = (scheme + separator, secondary)
 
     async def scenario():
         produced = []
@@ -222,7 +243,7 @@ def test_registered_json_representation_ipc_and_recording(secret, encoded, subsc
                 actual = await invoke(data, subscription, request)
             produced.append(actual)
             return actual
-        backend = content_boundary({'LOG_CONTENT': enabled, 'API_KEY': secret})
+        backend = content_boundary({'LOG_CONTENT': enabled, 'API_KEY': transport_secret, 'PASSWORD': secret})
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock(),
                                 export_content=lambda req, res: export_content(backend, req, res))
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
