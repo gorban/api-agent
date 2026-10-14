@@ -1,0 +1,23 @@
+# F2c — Bounded GPT admission retries
+
+The included GPT provider owns transport retries. Workflow semantic retries remain separate. The [official recovery contract](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery) identifies HTTP 503 `subscription_sharing_user_unavailable` as temporary subscriber/workspace information unavailability and recommends preserving credentials with bounded backoff.
+
+## Requirements and acceptance
+
+- [x] Retry only subscription Responses HTTP 503 with an exact structured `error.code` of `subscription_sharing_user_unavailable`. Start with this single allowlist entry. Optional message, type and parameter values must be strings or null, bounded respectively to 512, 100 and 200 characters; reject nested or oversized values before admission classification. A fully received JSON admission rejection containing only an error envelope has `execution=not_started`; retain its bounded, sanitized upstream details if retry cannot proceed or exhausts.
+- [x] Do not retry unknown codes/statuses, authentication or eligibility failures, API-key responses, malformed/oversized/compressed bodies, transport exceptions, success-stream errors, partial output, reported usage, response identities, or potentially executed outcomes. Never repeat workflow/tool execution. A request containing tool declarations remains safe only when the upstream rejection establishes that inference did not start.
+- [x] Keep the same selected credentials, endpoint, model, payload, session identity and cache policy across attempts. Preserve plain/rich result validation, reported usage and billing, privacy/redaction, response disposal and owned cancellation. Do not reauthenticate, rediscover models, change accounts, or cache inference results as part of recovery.
+- [x] Use successive delays of **1, 5, 15 and 30 seconds**, at most four retries after the initial request. One **120-second** provider component deadline covers every attempt and wait, clipped by all enclosing deadlines. Never refresh or extend a parent deadline. Preserve a minimum **20 seconds** for the next response: skip a delay if delay plus reserve will not fit, and recheck the reserve after waiting. A shorter enclosing budget admits only the prefix that fits.
+- [x] Make every delay cancellable; cancellation interrupts recovery without another HTTP request. A request timeout or ambiguous transport failure remains `possibly_executed`; no automatic replay follows it. Progress reports the single component across attempts and waits.
+- [x] Verify exact delay order and exhaustion, successful plain/structured/tool results after rejection, unchanged request/session/auth identity, ancestor clipping and elapsed request time, reserve boundaries and oversleep, HTTP/SSE/usage negatives, bounded safe failures, cancellation and response closure using synthetic transports and clocks. Restore each intended guard in focused mutation controls and retain exact line/branch coverage. No live inference or credential reads are required.
+
+## Completion evidence
+
+Focused verification: **430 tests pass** across inference, retry, rich inference, subscription cache affinity and reported billing; the GPT inference module has exact **100% line and branch coverage**. Synthetic tests verify all four delays, 120-second component/shorter ancestor budgets, request time and oversleep, cancellation, response disposal, safe exhaustion, plain/schema/tool results and negative HTTP/SSE/usage/transport outcomes. Seven isolated in-memory mutations reject removing the exact status, no-usage envelope, delay sequence, pre-wait reserve, post-wait reserve, ancestor HTTP budget and optional-field shape/bounds guards. Nine otherwise-valid admission cases detect restoring the malformed optional-field replay.
+
+- [x] Independent Sol high review and the repository-wide exact coverage gate complete: 6,020 units and 27 subtests; all 18,450 statements and 6,924 branches covered.
+- [ ] Human acceptance of the resulting bounded transient recovery. No additional live inference is required for deterministic acceptance.
+
+## Separate live cache finding
+
+The normal native launcher run passed the five core integrations but its existing provider-owned repeated-prefix cache test failed: the repeated successful request reported zero cached tokens instead of the required reuse. Keep that failure visible under [provider integration acceptance](implementation_plan_f2b.md). This batch does not relax that assertion or establish overall live-suite reliability; cache reuse requires separate investigation.

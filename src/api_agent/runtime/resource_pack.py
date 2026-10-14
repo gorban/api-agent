@@ -34,6 +34,7 @@ class LaunchContext:
     service_name: str = "api-agent"
     provider_config_paths: tuple[Path, ...] = ()
     shared_dotenv_paths: tuple[Path, ...] = ()
+    layout_path: Path | None = None
 
     @property
     def dotenv_path(self) -> Path:
@@ -88,7 +89,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -108,6 +109,16 @@ def load_launch_context(
     config = _relative_path(data.get("config"), pack, "config")
     if not config.is_file():
         raise ResourcePackError(f"Resource-pack configuration does not exist: {config}")
+    workflow = data.get('workflow')
+    layout_path = None
+    if workflow is not None:
+        if (type(workflow) is not dict or set(workflow) != {'version', 'layout'}
+                or type(workflow['version']) is not int or workflow['version'] != 1):
+            raise ResourcePackError('workflow must declare version=1 and a relative layout file')
+        layout_path = _relative_path(workflow['layout'], pack, 'workflow.layout')
+        if (layout_path.suffix != '.md' or not layout_path.is_file()
+                or not any(layout_path.is_relative_to(root) for root in (base, pack))):
+            raise ResourcePackError('workflow.layout must exist inside the selected pack or base artifact')
     defaults = data.get("defaults", {})
     providers = data.get('providers', {})
     if not isinstance(providers, dict) or set(providers) - {'configs'}:
@@ -188,4 +199,15 @@ def load_launch_context(
         service_name=service_name,
         provider_config_paths=tuple(dict.fromkeys(provider_configs)),
         shared_dotenv_paths=shared_dotenv_paths,
+        layout_path=layout_path,
     )
+
+
+def load_workflow(context, registry, conditions=None, *, config=None, services=None):
+    """Join an explicitly selected pack layout to an independently owned catalog."""
+    if context.layout_path is None:
+        raise ResourcePackError('The selected resource pack has no workflow declaration')
+    from api_agent.workflows import load_layout, Workflow
+    definition = load_layout(context.layout_path, base_root=context.base_root,
+                             pack_root=context.pack_root)
+    return Workflow(definition, registry, conditions, config=config, services=services)

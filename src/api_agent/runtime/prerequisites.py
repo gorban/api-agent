@@ -1,6 +1,7 @@
 """Owned prerequisite lifecycle with cross-process leases and bounded CLI calls."""
 from __future__ import annotations
 
+import asyncio
 import base64
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from pathlib import Path
 import re
 import selectors
 import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -22,14 +24,18 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from uuid import uuid4
 
 from api_agent.runtime.compose import controlled_engine_environment, snapshot_compose
-from api_agent.testing.processes import finalize
+from api_agent.testing.processes import disposal_complete, finalize
 
 CONFIG_LABEL = 'api-agent.config'
 _ID = re.compile(r'[0-9a-f]{64}')
 
 
 class PrerequisiteError(RuntimeError):
-    pass
+    """Safe public message with optional bounded evidence for local inspection."""
+
+    def __init__(self, message, *, local_details=""):
+        super().__init__(message)
+        self.local_details = local_details
 
 
 class PrerequisiteCancelled(PrerequisiteError):
@@ -117,16 +123,46 @@ def _check(deadline, cancelled, now):
 def run_command(command, *, environment, directory, deadline, cancelled,
                 now=time.monotonic):
     """Bound combined output while running; always reap the owned process group."""
-    _check(deadline, cancelled, now)
+    captured = {'stdout': bytearray(), 'stderr': bytearray()}
+    totals = {'stdout': 0, 'stderr': 0}
+    process = None
+
+    def evidence():
+        from api_agent.testing.diagnostics import CredentialScrubber, scrub_command
+        original_length = len(shlex.join(str(part) for part in command))
+        command_text = shlex.join(scrub_command(command, environment))
+        omitted = max(0, original_length - 4096)
+        command_text = command_text[:4096]
+        if omitted:
+            command_text += f' [truncated: {omitted} command characters omitted]'
+        status = process.returncode if process is not None else None
+        lines = [f'Command: {command_text}', f'Exit code: {status if status is not None else "unavailable"}']
+        scrubber = CredentialScrubber(environment)
+        for stream in ('stdout', 'stderr'):
+            # Keep the complete bounded capture until scrubbing so a registered
+            # value spanning reads or the tail boundary cannot expose its suffix.
+            safe = scrubber(captured[stream].decode('utf-8', errors='replace')).encode('utf-8')
+            tail = safe[-16384:].decode('utf-8', errors='ignore')
+            omitted = max(0, len(safe) - len(tail.encode('utf-8')))
+            lines.append(f'{stream} ({totals[stream]} bytes captured; {omitted} bytes omitted):')
+            lines.append(tail or '(no output captured)')
+        return '\n'.join(lines)
+
+    try:
+        _check(deadline, cancelled, now)
+    except PrerequisiteError as error:
+        error.local_details = evidence()
+        raise
     try:
         process = subprocess.Popen(command, cwd=directory, env=dict(environment),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     except OSError as error:
-        raise PrerequisiteError('Prerequisite command unavailable.') from error
+        raise PrerequisiteError('Prerequisite command unavailable.', local_details=evidence()) from error
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
     selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
     stdout, size = [], 0
+    primary_error = None
     try:
         while selector.get_map() or process.poll() is None:
             _check(deadline, cancelled, now)
@@ -141,6 +177,8 @@ def run_command(command, *, environment, directory, deadline, cancelled,
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
+                totals[key.data] += len(chunk)
+                captured[key.data].extend(chunk)
                 size += len(chunk)
                 if size > 8 * 1024 * 1024:
                     raise PrerequisiteError('Prerequisite command response exceeds the safe bound.')
@@ -149,6 +187,10 @@ def run_command(command, *, environment, directory, deadline, cancelled,
         if process.returncode:
             raise PrerequisiteError(f'Prerequisite command failed (exit {process.returncode}).')
         return b''.join(stdout).decode('utf-8', errors='replace')
+    except BaseException as error:
+        primary_error = error
+        error.local_details = evidence()
+        raise
     finally:
         selector.close()
         # Close captured pipes before TERM/KILL so cleanup cannot accumulate a
@@ -157,8 +199,93 @@ def run_command(command, *, environment, directory, deadline, cancelled,
         process.stderr.close()
         try:
             finalize(process)
-        except (OSError, TimeoutError, RuntimeError) as error:
-            raise PrerequisiteError('Prerequisite process group cleanup failed.') from error
+        except BaseException as error:
+            cleanup = PrerequisiteError('Prerequisite process group cleanup failed.', local_details=evidence())
+            cleanup.__cause__ = error
+            interruption = (primary_error if primary_error is not None and not isinstance(primary_error, Exception)
+                else error if not isinstance(error, Exception) else None)
+            if interruption is not None:
+                prior_causes = (primary_error,) if primary_error is not None and primary_error is not interruption else ()
+                interruption.diagnostic_errors = (*getattr(interruption, 'diagnostic_errors', ()), *prior_causes, cleanup)
+                interruption.local_details = evidence()
+                from api_agent.providers.control import CleanupPendingError
+                from api_agent.testing.suite_lock import _cleanup_receipts
+                duties = {}
+                successor_chains = {}
+                process_pending = not disposal_complete(process)
+                def add_duties(failure):
+                    added = []
+                    # Aggregate diagnostic attachment must not erase the original
+                    # successor chain used to decide whether a duty was replaced.
+                    if id(failure) not in successor_chains or getattr(failure, 'cleanup_pending', None) is not receipt:
+                        successor_chains[id(failure)] = (failure, tuple(_cleanup_receipts(failure)))
+                    for duty in successor_chains[id(failure)][1]:
+                        if duty is not receipt:
+                            if id(duty) not in duties:
+                                duties[id(duty)] = [duty, True]
+                            added.append(duty)
+                    receipt.receipts = tuple(state[0] for state in duties.values())
+                    return added
+                def update_owners():
+                    owners = [owner for duty, pending in duties.values() if pending for owner in duty.owners]
+                    if process_pending:
+                        owners.append(process)
+                    receipt.owners = tuple({id(owner): owner for owner in owners}.values())
+                retry_lock = asyncio.Lock()
+                async def retry_cleanup():
+                    # Cancellation waits for owned offloads to settle before this
+                    # lock admits a successor retry of the same receipt.
+                    try:
+                        async with retry_lock:
+                            await retry_owned_cleanup()
+                    except BaseException as retry_error:
+                        retry_error.cleanup_pending = receipt
+                        raise
+                async def retry_owned_cleanup():
+                    from api_agent.runtime.tasks import offload
+                    nonlocal process_pending
+                    failures = []
+                    for state in tuple(duties.values()):
+                        duty, pending = state
+                        if not pending:
+                            continue
+                        try:
+                            await duty.retry()
+                            state[1] = False
+                        except BaseException as retry_error:
+                            successors = add_duties(retry_error)
+                            if successors and all(successor is not duty for successor in successors):
+                                state[1] = False
+                            retry_error.cleanup_pending = receipt
+                            failures.append(retry_error)
+                    if process_pending and disposal_complete(process):
+                        process_pending = False
+                    if process_pending:
+                        try:
+                            await offload(finalize, process)
+                            process_pending = False
+                        except BaseException as retry_error:
+                            successors = add_duties(retry_error)
+                            if disposal_complete(process) or successors:
+                                process_pending = False
+                            retry_error.cleanup_pending = receipt
+                            failures.append(retry_error)
+                    update_owners()
+                    if failures:
+                        selected = next((failure for failure in failures if not isinstance(failure, Exception)), failures[0])
+                        secondary = tuple(failure for failure in failures if failure is not selected)
+                        selected.diagnostic_errors = (*getattr(selected, 'diagnostic_errors', ()), *secondary)
+                        raise selected
+                receipt = CleanupPendingError((), retry_cleanup)
+                add_duties(primary_error)
+                add_duties(error)
+                update_owners()
+                interruption.cleanup_pending = receipt
+                raise interruption
+            raise cleanup from error
+        finally:
+            if primary_error is not None:
+                primary_error.local_details = evidence()
 
 
 @contextmanager
@@ -266,7 +393,7 @@ urlopen = build_opener(ProxyHandler({}), _NoReadinessRedirect()).open
 def _readiness(profile, timeout, environment):
     url = {'langfuse': 'http://127.0.0.1:3000/api/public/projects',
            'otel': 'http://127.0.0.1:4318/v1/traces',
-           'localstack': 'http://127.0.0.1:4566/_localstack/health'}[profile]
+           'localstack': 'http://127.0.0.1:' + environment.get('SA_LOCALSTACK_PORT', '4566') + '/_localstack/health'}[profile]
     headers = {}
     data = None
     if profile == 'langfuse':
@@ -290,7 +417,7 @@ def _readiness(profile, timeout, environment):
                     return False
                 # ready.d runs after S3 begins serving. Wait for the controlled
                 # hook to finish before an idempotent exec, avoiding a create race.
-                with urlopen(Request('http://127.0.0.1:4566/_localstack/init/ready'), timeout=timeout) as ready:
+                with urlopen(Request('http://127.0.0.1:' + environment.get('SA_LOCALSTACK_PORT', '4566') + '/_localstack/init/ready'), timeout=timeout) as ready:
                     if ready.status != 200:
                         return False
                     stage = json.loads(ready.read(65536))

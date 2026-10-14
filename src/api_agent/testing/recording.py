@@ -81,7 +81,7 @@ class RunRecorder:
             raise ValueError('Artifact requires a distinct filename and bytes')
         return self._write(name, content)
 
-    def record_test(self, result: TestResult, attempt=1, attachments=()):
+    def record_test(self, result: TestResult, attempt=1, attachments=(), steps=None):
         if self._finalized:
             raise RuntimeError('Run already finalized')
         if not isinstance(result, TestResult) or result.identity.repo != self.identity.repo:
@@ -120,6 +120,8 @@ class RunRecorder:
             'attachments': attachment_rows,
             'start': started_ms, 'stop': stopped_ms,
         }
+        if steps is not None:
+            row['steps'] = self._evidence.content_export({'steps': steps})['steps']
         if result.status in {'cancelled', 'interrupted'}:
             row['statusDetails'] = {'message': 'Test interrupted'}
         elif status in {'failed', 'broken'}:

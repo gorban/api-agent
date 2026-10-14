@@ -102,7 +102,7 @@ def test_invalid_responses(data):
     {'choices':[{'finish_reason':'tool_calls','message':{'role':'assistant','content':'x'}}]},
     {'choices':[{'finish_reason':'stop','message':{'role':'user','content':'x'}}]},
     {'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':'x','tool_calls':[{}]}}]},
-    {'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':'x','refusal':'no'}}]}])
+])
 def test_invalid_completions(data):
     with pytest.raises(ProviderAccessError):
         run(httpx.Response(200,json=data),api_mode='completions')
@@ -269,8 +269,8 @@ def test_subscription_rejects_explicit_token_limit_and_advertises_no_limit_featu
     from api_agent.llm_providers.gpt.factory import GPTProvider
     with pytest.raises(ProviderAccessError,match='does not support max_output_tokens'):
         run(subscription=True,req=request())
-    assert GPTProvider({'GPT_AUTH_MODE':'subscription'}).capabilities.features==('cache_policy',)
-    assert GPTProvider({'GPT_AUTH_MODE':'api_key'}).capabilities.features==('max_output_tokens','cache_policy')
+    assert GPTProvider({'GPT_AUTH_MODE':'subscription'}).capabilities.features==('cache_policy','structured','tools')
+    assert GPTProvider({'GPT_AUTH_MODE':'api_key'}).capabilities.features==('max_output_tokens','cache_policy','structured','tools')
 
 
 @pytest.mark.parametrize('mode,key', [('responses','max_output_tokens'),('completions','max_completion_tokens')])
@@ -411,7 +411,7 @@ def test_stream_recovers_only_finished_items_after_successful_terminal_and_usage
     value,_=run_events(events);assert value.payload.content[0].text=='Ok'
 
 
-@pytest.mark.parametrize('mutation', ['missing_added','missing_done','no_terminal','unfinished_done','identity_mismatch','duplicate_added','duplicate_done','duplicate_id','index_gap','bad_index','negative_index','large_index','missing_index','bad_item','missing_id','long_id','control_id','tool','refusal','terminal_id','inprogress_id','bad_response_id','terminal_count','terminal_text','terminal_identity','terminal_shape','event_item_id','event_content_index','event_after_done','invalid_usage','protected_output'])
+@pytest.mark.parametrize('mutation', ['missing_added','missing_done','no_terminal','unfinished_done','identity_mismatch','duplicate_added','duplicate_done','duplicate_id','index_gap','bad_index','negative_index','large_index','missing_index','bad_item','missing_id','long_id','control_id','tool','terminal_id','inprogress_id','bad_response_id','terminal_count','terminal_text','terminal_identity','terminal_shape','event_item_id','event_content_index','event_after_done','invalid_usage','protected_output'])
 def test_stream_accumulator_rejects_inconsistent_or_partial_state(mutation):
     events=streamed_events()
     if mutation=='missing_added':events.pop(2)
@@ -559,3 +559,16 @@ def test_failure_after_valid_terminal_keeps_its_validated_usage(suffix):
     with pytest.raises(ProviderAccessError) as caught:
         run(httpx.Response(200, text=terminal + suffix, headers={'content-type':'text/event-stream'}), subscription=True)
     assert caught.value.usage.input_tokens == 3 and caught.value.usage.output_tokens == 1
+
+
+@pytest.mark.parametrize('responses', [False, True])
+def test_native_refusal_is_a_safe_accounted_outcome(responses):
+    data = result(responses)
+    if responses:
+        data['output'][0]['content'] = [dict(type='refusal', refusal='Cannot comply')]
+    else:
+        data['choices'][0]['message'].update(content=None, refusal='Cannot comply')
+    value = module._result(data, responses, TOKEN)
+    assert value.outcome == 'refused'
+    assert value.payload.content[0].text == 'Cannot comply'
+    assert value.usage.input_tokens == 3

@@ -2,12 +2,16 @@
 
 ``output`` and ``RunnerEvent(kind='output')`` are raw pytest evidence and may
 contain test data, including secrets. Callers must route them to an explicitly
-approved evidence sink. Runner-generated diagnostics are fixed, sanitized text.
+approved evidence sink. Emitted runner diagnostics are fixed, sanitized text.
+TestResult.local_diagnostic is transient captured evidence containing exception
+chains and command or worker output, for TUI or an explicitly credential-scrubbed
+CI terminal channel. Never put it in artifacts/events; reporting callbacks must
+select the explicit approved report fields.
 Run callbacks run synchronously on the calling thread; retained inspection
 completion events run on their monitor thread. ``after_run`` receives the
 final result after pytest completes; debug inspection handles retain owned workers.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import wraps
 import json
 import os
@@ -21,8 +25,10 @@ import time
 
 from .collection import CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
+from .diagnostics import format_exception
 from .processes import finalize
 from .suite_lock import suite_locked, retain_suite_cleanup
+from api_agent.providers.setup_transport import _diagnostic
 
 _RUNNER_OPERATION = threading.local()
 
@@ -98,8 +104,11 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
 
     ``accepted`` must represent the picker's explicit Continue action. This
     function never starts prerequisites itself; ``before_run`` is their hook.
-    No callback receives a raw exception. Pytest stdout and traceback remain
-    explicit test evidence in the result and event stream.
+    No callback receives a raw exception. ``on_result`` receives a transient
+    ``local_diagnostic`` field for TUI or explicitly scrubbed terminal display;
+    reporting callbacks must use explicit report fields and exclude this field
+    from artifacts/events. Pytest
+    stdout and traceback remain explicit test evidence in the result/event stream.
     """
     if no_std_in or accepted is not True:
         raise PermissionError('Interactive Continue is required for integration execution')
@@ -117,6 +126,36 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     publication_error = None
     callback_failed = cancelled = failed = False
     disabled = set()
+    diagnostics = {}
+    local_diagnostics = {}
+    reader_diagnostics = {}
+    stage = 'runner initialization'
+
+    def local_exception(boundary, error):
+        return format_exception(error, boundary)
+
+    def record_local(boundary, error, identities=tests):
+        local = local_exception(boundary, error)
+        for identity in identities:
+            local_diagnostics.setdefault(identity.id, []).append(local)
+
+    def enrich_local(result):
+        local = '\n\n'.join([*local_diagnostics.get(result.identity.id, ()),
+                               *reader_diagnostics.get(result.identity.id, ())])
+        if local and result.traceback:
+            local += '\n\nTest report diagnostic:\n' + result.traceback
+        return replace(result, local_diagnostic=local) if local else result
+
+    def final_tests():
+        return tuple(enrich_local(results[test.id]) for test in tests)
+
+    def diagnose(boundary, error, identities=tests):
+        text = _diagnostic(error, boundary)
+        local = local_exception(boundary, error)
+        for identity in identities:
+            diagnostics.setdefault(identity.id, []).append(text)
+            local_diagnostics.setdefault(identity.id, []).append(local)
+        return text
 
     def call(name, callback, *args):
         nonlocal callback_failed
@@ -124,10 +163,14 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             return
         try:
             callback(*args)
-        except Exception:
+        except Exception as error:
             callback_failed = True
             disabled.add(name)
             chunks.append(f'{name} callback failed; details withheld.\n')
+            if name == 'before_run':
+                chunks.append(diagnose('Integration prerequisites (before_run)', error) + '\n')
+            else:
+                record_local(f'Integration {name} callback', error)
 
     def emit(event):
         call('on_event', on_event, event)
@@ -145,6 +188,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             except BaseException as error:
                 if not isinstance(error, Exception) and interruption is None:
                     interruption = error
+                record_local('Integration inspection cleanup', error)
                 chunks.append('Inspection cleanup pending; retry required.\n')
                 failed = True
 
@@ -167,25 +211,34 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             status = 'passed'
         else:
             status = fallback
-        result = TestResult(identity, status, sum(float(row['duration']) for row in rows),
-                            '\n'.join(row['traceback'] for row in rows if row['traceback']))
+        traceback = '\n'.join(row['traceback'] for row in rows if row['traceback'])
+        if not traceback and status == 'error':
+            traceback = '\n\n'.join(diagnostics.get(identity.id, ())) or (
+                'Integration pytest report incomplete: no complete setup/call/teardown report was received. '
+                'No failure diagnostic was captured for this test.')
+        result = TestResult(identity, status, sum(float(row['duration']) for row in rows), traceback,
+                            '\n\n'.join(local_diagnostics.get(identity.id, ())))
+        result = enrich_local(result)
         results[identity.id] = result
         emit(RunnerEvent('test_finished', repo, identity, status, result.duration, result.traceback))
         call('on_result', on_result, result)
 
     emit(RunnerEvent('started'))
     try:
+        stage = 'Integration collection'
         try:
             available = {test.id: test for test in collect_tests(context, 'integration', cancel_event=cancel_event, **({'config': config} if config is not None else {}))}
-        except Exception:
-            raw('', 'Integration collection failed; details withheld.\n')
+        except Exception as error:
+            raw('', diagnose(stage, error) + '\n')
             failed = True
             available = None
         if available is not None:
             if any(available.get(test.id) != test for test in tests):
                 raise CollectionError('Integration selection contains identities outside the freshly collected integration suites')
             from .requirements import plan_integration_requirements
+            stage = 'Integration requirements validation'
             plan_integration_requirements(tests).validate(context, config or {})
+            stage = 'Integration runner configuration'
             base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
             roots = {base.name: base, owner.name: owner}
             if base != owner and base.name == owner.name:
@@ -205,6 +258,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 selected = {test.node_id: test for test in tests if test.repo == repo}
                 root = next(iter(selected.values())).root or roots.get(repo)
                 if root is None:
+                    for identity in selected.values():
+                        diagnostics[identity.id] = ['Integration owner resolution failed: no suite root is available.']
                     failed = True
                     break
                 if cancel_event is not None and cancel_event.is_set():
@@ -220,6 +275,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     cancelled = True
                     break
                 if config is not None and backend is None:
+                    stage = 'Integration shared setup backend startup'
                     from .setup_backend import SetupBackend
                     backend = SetupBackend(config, context.owner_root,
                         unattended_index_source=unattended_index_source,
@@ -228,6 +284,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     if config.get('DEBUG'):
                         inspections.append(backend)
                     backend_descriptor = backend.start()
+                stage = 'Integration pytest launch preparation'
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
                 with directory as temporary:
@@ -256,10 +313,10 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                                    stderr=subprocess.STDOUT, text=True,
                                                    start_new_session=os.name == 'posix',
                                                    **({'pass_fds': (liveness_read,)} if liveness_read is not None else {}))
-                    except OSError:
+                    except OSError as error:
                         if liveness_write is not None:
                             os.close(liveness_write)
-                        raw(repo, 'Cannot start integration pytest; details withheld.\n')
+                        raw(repo, diagnose('Integration pytest process startup', error, selected.values()) + '\n')
                         failed = True
                         continue
                     except BaseException:
@@ -269,15 +326,19 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     finally:
                         if liveness_read is not None:
                             os.close(liveness_read)
+                    stage = 'Integration pytest execution and report collection'
                     lines = queue.Queue()
                     discard_output = threading.Event()
-                    def read_output(process=process, lines=lines, discard_output=discard_output):
+                    reader_errors = []
+                    for identity in selected.values():
+                        reader_diagnostics[identity.id] = reader_errors
+                    def read_output(process=process, lines=lines, discard_output=discard_output, reader_errors=reader_errors):
                         try:
                             for line in process.stdout:
                                 if not discard_output.is_set():
                                     lines.put(line)
-                        except OSError:
-                            pass
+                        except OSError as error:
+                            reader_errors.append(local_exception('Integration pytest output reader', error))
                     reader = threading.Thread(target=read_output, daemon=True)
                     try:
                         reader.start()
@@ -290,12 +351,19 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                             process.stdout.close()
                         raise
                     offset, reports = 0, {}
+                    worker_output, dropped_output_chars = '', 0
                     run_complete = None
                     inspection_ready = False
                     def drain():
-                        nonlocal offset, failed, run_complete, inspection_ready
+                        nonlocal offset, failed, run_complete, inspection_ready, worker_output, dropped_output_chars
                         while not lines.empty():
-                            raw(repo, lines.get_nowait())
+                            chunk = lines.get_nowait()
+                            worker_output += chunk
+                            excess = max(0, len(worker_output) - 16384)
+                            dropped_output_chars += excess
+                            if excess:
+                                worker_output = worker_output[excess:]
+                            raw(repo, chunk)
                         try:
                             stream = event_file.open(encoding='utf-8')
                         except FileNotFoundError:
@@ -337,6 +405,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         emit(RunnerEvent('inference_usage', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'inference_content':
                                         emit(RunnerEvent('inference_content', repo, identity, text=json.dumps(row['data'])))
+                                    elif row['kind'] == 'workflow_evidence':
+                                        emit(RunnerEvent('workflow_evidence', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'component_progress':
                                         from api_agent.providers.progress import ComponentProgress
                                         component = ComponentProgress(**row['component'])
@@ -344,9 +414,19 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                     elif row['kind'] == 'report':
                                         reports.setdefault(identity.id, []).append(row)
                                         if row['phase'] == 'teardown':
-                                            finish(repo, identity, reports[identity.id])
-                                except (ValueError, KeyError, TypeError):
+                                            phases = {item['phase']: item for item in reports[identity.id]}
+                                            # Missing phases need the eventual worker exit diagnostic.
+                                            # Setup failures/skips legitimately have no call report.
+                                            setup = phases.get('setup', {})
+                                            if setup and ('call' in phases or setup.get('status') in {'failed', 'skipped'}):
+                                                finish(repo, identity, reports[identity.id])
+                                except (ValueError, KeyError, TypeError) as error:
+                                    record_local('Integration pytest report protocol', error, selected.values())
                                     raw(repo, 'Invalid integration test event; details withheld.\n')
+                                    for test in selected.values():
+                                        detail = 'Integration report protocol failed: invalid pytest event received.'
+                                        if detail not in diagnostics.setdefault(test.id, []):
+                                            diagnostics[test.id].append(detail)
                                     failed = True
                     try:
                         while process.poll() is None:
@@ -378,6 +458,20 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                     discard_output.set()
                     failed |= (run_complete if directory.retained else process.returncode) != 0
                     for identity in selected.values():
+                        rows = reports.get(identity.id, [])
+                        if not {'setup', 'call', 'teardown'}.issubset({row['phase'] for row in rows}):
+                            code = run_complete if directory.retained else process.returncode
+                            diagnostics.setdefault(identity.id, []).append(
+                                f'Integration pytest report incomplete: worker exit code {code}; '
+                                'no complete setup/call/teardown report was received. '
+                                'The worker ended without completing this test report.')
+                            local = f'Integration pytest report incomplete: worker exit code {code}.'
+                            if worker_output:
+                                local += '\nCaptured worker output (tail):\n'
+                                if dropped_output_chars:
+                                    local += f'[{dropped_output_chars} earlier characters omitted]\n'
+                                local += worker_output
+                            local_diagnostics.setdefault(identity.id, []).append(local)
                         finish(repo, identity, reports.get(identity.id, []), 'cancelled' if cancelled else 'error')
                 if cancelled:
                     break
@@ -389,7 +483,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             raise
         if isinstance(error, CollectionError):
             raise
-        raw('', 'Integration runner failed; details withheld.\n')
+        raw('', diagnose(stage, error) + '\n')
         failed = True
     finally:
         if interaction_server is not None:
@@ -404,6 +498,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     interruption = error
                 if interruption is not None:
                     interruption.inspections = tuple(inspections)
+                record_local('Integration shared setup backend cleanup', error)
                 chunks.append('Shared setup backend cleanup pending; retry required.\n')
                 failed = True
         try:
@@ -423,7 +518,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     failed = True
             failed |= callback_failed or any(test.status not in {'passed', 'skipped'} for test in results.values())
             result = IntegrationRunResult(130 if cancelled else int(failed),
-                                          tuple(results[test.id] for test in tests), ''.join(chunks), cancelled, tuple(inspections))
+                                          final_tests(), ''.join(chunks), cancelled, tuple(inspections))
             if publication_error is not None:
                 publication_error.execution = result
                 raise publication_error
@@ -436,11 +531,11 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 backend.watch_inspection(lambda kind: emit(RunnerEvent(kind)))
             check_cancellation()
             result = IntegrationRunResult(130 if cancelled else int(result.exit_code != 0 or callback_failed or failed),
-                                          result.tests, ''.join(chunks), cancelled, result.inspections)
+                                          final_tests(), ''.join(chunks), cancelled, result.inspections)
             emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))
             check_cancellation()
             result = IntegrationRunResult(130 if cancelled else int(result.exit_code != 0 or callback_failed or failed),
-                                          result.tests, ''.join(chunks), cancelled, result.inspections)
+                                          final_tests(), ''.join(chunks), cancelled, result.inspections)
         except BaseException as error:
             primary = interruption or error
             interruption = primary

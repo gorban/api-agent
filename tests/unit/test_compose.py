@@ -82,6 +82,19 @@ def test_remote_s3_does_not_request_stack():
     assert selected_profiles({'ALLURE_S3_ENDPOINT': 'https://s3.example:4566'}) == ()
 
 
+def test_owned_storage_uses_explicit_isolated_loopback_port():
+    plan = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_LOCALSTACK_PORT': 14566}, Scope())
+    assert plan.profiles == ('localstack',)
+    assert plan.environment['SA_LOCALSTACK_PORT'] == '14566'
+    assert selected_profiles({'ALLURE_S3_ENDPOINT': 'http://127.0.0.1:4566', 'ALLURE_LOCALSTACK_PORT': 14566}) == ()
+
+
+@pytest.mark.parametrize('port', [0, 65536, True, '14566', -1])
+def test_invalid_storage_port_is_rejected(port):
+    with pytest.raises(ComposeError, match='must be a port'):
+        plan_compose({'ALLURE_LOCALSTACK_PORT': port}, Scope())
+
+
 @pytest.mark.parametrize('mutation', ['labels', 'port', 'dependency', 'profile', 'image', 'override', 'volume'])
 def test_document_rejects_unowned_or_unsafe_configuration(mutation):
     plan = plan_compose({}, Scope())

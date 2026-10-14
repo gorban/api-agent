@@ -1,0 +1,114 @@
+{
+  "type": "object",
+  "properties": {
+    "user_input": {
+      "type": "string"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "original_input": {
+              "type": "string"
+            },
+            "route": {
+              "type": "string",
+              "enum": [
+                "skip",
+                "next_a",
+                "next_b"
+              ]
+            },
+            "ready": {
+              "type": "boolean"
+            },
+            "final_output": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "original_input",
+            "route",
+            "ready",
+            "final_output"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "feedback": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attempt": {
+      "type": "integer"
+    },
+    "max_passes": {
+      "type": "integer"
+    },
+    "upstream": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "original_input": {
+              "type": "string"
+            },
+            "route": {
+              "type": "string",
+              "enum": [
+                "skip",
+                "next_a",
+                "next_b"
+              ]
+            },
+            "ready": {
+              "type": "boolean"
+            },
+            "final_output": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "original_input",
+            "route",
+            "ready",
+            "final_output"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "user_input",
+    "previous",
+    "feedback",
+    "attempt",
+    "max_passes",
+    "upstream"
+  ],
+  "additionalProperties": false
+}

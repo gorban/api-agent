@@ -384,7 +384,10 @@ def test_event_directory_disappearance_respects_transferred_ownership(worker_har
         assert result.inspections[0].closed and result.tests[0].status == 'passed'
     else:
         assert result.tests[0].status == 'error'
-        assert 'Integration runner failed; details withheld.' in result.output
+        diagnostic = 'Integration pytest execution and report collection failure category: unavailable'
+        assert diagnostic in result.output
+        assert diagnostic in result.tests[0].traceback
+        assert 'Stack locations' in result.tests[0].traceback
 
 
 def test_postpublication_output_is_drained_without_growing_final_evidence(worker_harness, monkeypatch):
@@ -438,3 +441,26 @@ def test_initialization_interrupt_after_reports_reaps_untransferred_worker(worke
         state.run()
     assert captured.value.inspections == ()
     assert state.processes[0].stdout.closed
+
+
+def test_inspection_cleanup_retains_local_cause_after_report(worker_harness, monkeypatch):
+    import threading
+    state = worker_harness
+    state.retained = True
+    cancel = threading.Event()
+    originals = []
+    def fail_abort():
+        raise RuntimeError('synthetic local inspection cleanup cause')
+    def cancel_after_report(run):
+        for handle in run.inspections:
+            originals.append((handle, handle.abort))
+            monkeypatch.setattr(handle, 'abort', fail_abort)
+        cancel.set()
+    result = state.run(cancel_event=cancel, after_run=cancel_after_report)
+    assert result.exit_code == 130 and result.tests[0].status == 'passed'
+    assert 'synthetic local inspection cleanup cause' in result.tests[0].local_diagnostic
+    assert 'synthetic local inspection cleanup cause' not in result.output
+    assert all('synthetic local inspection cleanup cause' not in event.traceback for event in state.events)
+    for handle, original_abort in originals:
+        monkeypatch.setattr(handle, 'abort', original_abort)
+        handle.abort()

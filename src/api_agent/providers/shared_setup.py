@@ -142,7 +142,7 @@ class SharedSetupOwner(_Owner):
         await self.ensure_ready(selected_identity=selected_identity)
         if not callable(self._complete):
             from .contracts import SetupPrerequisiteError
-            raise SetupPrerequisiteError('The selected LLM provider has no text completion capability.')
+            raise SetupPrerequisiteError('The selected LLM provider has no completion capability.')
         async def invoke(*, auth):
             result = await self._complete(request, auth=auth)
             self._check()

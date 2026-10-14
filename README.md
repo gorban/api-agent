@@ -74,3 +74,12 @@ runs for GPT. For example, when this differs from your first run:
 
 Discovery checks remote credential acceptance and catalog access without inference.
 API-specific request tests also need coverage under each applicable mode.
+
+## Markdown workflow PoC
+
+The [workflow guide](docs/workflow_poc.md) covers the restricted Markdown grammar,
+inference-free validation and the permanent mandatory node-coverage fixture.
+Model-specific bounds are packaged with the fixture; [calibration refresh](docs/workflow_calibration.md)
+is explicit maintenance outside normal test collection. Normal coverage needs no
+local pilot file and rejects unsupported provider/model/settings without substitution. The useful GraphQL demonstration remains
+the next phase.

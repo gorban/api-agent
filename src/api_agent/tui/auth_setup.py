@@ -254,8 +254,11 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
                 Binding("[", "move_entry_up", "Move up"), Binding("]", "move_entry_down", "Move down"), Binding("s", "switch_target", "Switch .env"),
                 Binding("c", "close_view", "Close"), Binding("q", "quit_request", "Quit")]
 
-    def __init__(self, roles: tuple[str, ...]):
+    def __init__(self, roles: tuple[str, ...], *, startup=False):
         super().__init__()
+        self.startup = startup
+        self._bindings.key_to_bindings["c"] = [Binding(
+            "c", "close_view", "Close" if startup else "Close / menu")]
         self.roles = tuple(roles)
         self.entries = {role: [] for role in self.roles}
         self.manager = dict(DEFAULT_PASSWORD_MANAGER)
@@ -367,7 +370,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def _workflow_text(self):
         steps = [('s', 'Choose .env target'), (None, 'Select a role'), ('a', 'Add account'), (None, 'Enter vault name'),
                  (None, 'Enter login/item name'), ('Enter', 'Save'),
-                 (None, 'Repeat for more accounts'), ('e', 'Edit password manager'), ('c', 'Close setup')]
+                 (None, 'Repeat for more accounts'), ('e', 'Edit password manager'), ('c', 'Close' if self.startup else 'Close / menu')]
         style = f"bold {self.app.get_css_variables()['footer-key-foreground']}"
         numbered = []
         for index, (key, label) in enumerate(steps, 1):

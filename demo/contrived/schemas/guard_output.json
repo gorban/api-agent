@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "feedback": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "accepted",
+    "feedback"
+  ],
+  "additionalProperties": false
+}

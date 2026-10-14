@@ -4,6 +4,10 @@ id = "demo"
 owner = ".."
 config = "cfg/config.toml"
 
+[workflow]
+version = 1
+layout = "contrived/layout.md"
+
 [tests]
 unit = ["tests/unit"]
 integration = ["tests/integration"]

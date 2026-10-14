@@ -178,10 +178,13 @@ def test_bootstrap_keeps_terminal_pending_receipt_in_process(monkeypatch):
          patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
          patch('api_agent.testing.collection.collect_tests', return_value=[]), \
          patch('api_agent.testing.launched.run_launched_integration', side_effect=pending):
-        from api_agent.providers.control import CleanupPendingError
-        with pytest.raises(CleanupPendingError) as caught:
+        from api_agent.testing.diagnostics import TerminalDiagnosticError
+        with pytest.raises(TerminalDiagnosticError) as caught:
             main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
-    assert caught.value is pending and caught.value.inspections == (item,)
+    assert caught.value.cleanup_pending is pending
+    assert caught.value.inspections == (item,)
+    assert caught.value.owners is pending.owners and caught.value.retry is pending.retry
+    assert 'CleanupPendingError: cleanup pending' in str(caught.value)
 
 
 @pytest.mark.parametrize('failure', [KeyboardInterrupt, BrokenPipeError])
@@ -198,10 +201,15 @@ def test_bootstrap_does_not_drop_active_primary_cleanup_receipt(failure):
          patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
          patch('api_agent.testing.collection.collect_tests', return_value=[]), \
          patch('api_agent.testing.launched.run_launched_integration', side_effect=primary):
-        with pytest.raises(failure) as caught:
+        from api_agent.testing.diagnostics import TerminalDiagnosticError
+        expected = KeyboardInterrupt if failure is KeyboardInterrupt else TerminalDiagnosticError
+        with pytest.raises(expected) as caught:
             main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic'],
                  base_root=Path(__file__).parents[2])
-    assert caught.value is primary and caught.value.inspection_group.active
+    assert caught.value is not primary
+    assert caught.value.inspection_group is primary.inspection_group
+    assert caught.value.inspection_group.active
+    assert failure.__name__ in str(caught.value)
 
 
 @pytest.mark.parametrize('disposition', ['closed', 'pending', 'recording', 'recording_done'])
@@ -217,3 +225,58 @@ def test_bootstrap_pending_ownership_classification(disposition):
     else:
         error.recording_prerequisites = SimpleNamespace(pending_cleanup=object() if disposition == 'recording' else None)
     assert _retains_cleanup(error) == (disposition in {'pending', 'recording'})
+
+
+def test_pending_receipt_retains_both_cleanup_chains_and_retry_ownership():
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing.diagnostics import CredentialScrubber, format_exception
+    item = handle(pending=True)
+    end = RuntimeError('end failure password=synthetic-secret')
+    end.__cause__ = OSError('end inner cause')
+    abort = ValueError('abort failure')
+    item.end_inspection.side_effect = end
+    item.abort.side_effect = abort
+    item.wait_closed = Mock()
+    with pytest.raises(CleanupPendingError) as caught:
+        finish_terminal_inspection(result((item,)), lambda line: None)
+    diagnostic = CredentialScrubber()(format_exception(caught.value))
+    assert 'end failure' in diagnostic and 'end inner cause' in diagnostic and 'abort failure' in diagnostic
+    assert 'synthetic-secret' not in diagnostic and caught.value.inspections == (item,)
+    assert caught.value.inspection_group.active
+    item.end_inspection.side_effect = lambda: setattr(item, 'closed', True) or True
+    asyncio.run(caught.value.retry())
+    assert not caught.value.inspection_group.active
+
+
+def test_primary_interrupt_retains_secondary_cleanup_causes():
+    from api_agent.testing.diagnostics import format_exception
+    item = handle(pending=True)
+    primary = KeyboardInterrupt('primary inspection interruption')
+    item.wait_closed.side_effect = primary
+    item.end_inspection.side_effect = RuntimeError('secondary end failure')
+    item.abort.side_effect = ValueError('secondary abort failure')
+    with pytest.raises(KeyboardInterrupt) as caught:
+        finish_terminal_inspection(result((item,)), lambda line: None)
+    assert caught.value is primary
+    diagnostic = format_exception(primary)
+    assert 'secondary end failure' in diagnostic and 'secondary abort failure' in diagnostic
+    assert primary.inspection_group.active and primary.inspections == (item,)
+
+
+def test_inspection_interrupt_preserves_prior_diagnostics_and_deduplicates():
+    from api_agent.testing.diagnostics import format_exception
+    item = handle(pending=True)
+    item.wait_closed = Mock()
+    prior = OSError('prior command cleanup cause')
+    primary = KeyboardInterrupt('primary interruption')
+    primary.diagnostic_errors = (prior,)
+    item.end_inspection.side_effect = primary
+    item.abort.side_effect = ValueError('new abort cause')
+    with pytest.raises(KeyboardInterrupt) as caught:
+        finish_terminal_inspection(result((item,)), lambda line: None)
+    assert caught.value is primary
+    assert primary.diagnostic_errors[0] is prior
+    assert len({id(error) for error in primary.diagnostic_errors}) == len(primary.diagnostic_errors)
+    diagnostic = format_exception(primary)
+    assert 'prior command cleanup cause' in diagnostic and 'new abort cause' in diagnostic

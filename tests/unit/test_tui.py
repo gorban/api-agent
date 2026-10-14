@@ -72,7 +72,11 @@ def test_configuration_tables_sort_names_alphabetically(tmp_path, mode):
         })
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause()
-            assert app.screen.kind == ('cleanup' if mode else 'defaults')
+            assert app.screen.kind == 'defaults'
+            if mode:
+                await pilot.press('c')
+                await pilot.pause()
+                assert app.screen.kind == 'cleanup'
             table = app.screen.query_one(DataTable)
             assert [row.key.value for row in table.ordered_rows] == [
                 'ALLURE_RESULTS_DIR', 'LLM_CACHE_POLICY', 'TRACE_MODE']
@@ -85,6 +89,9 @@ def test_cleanup_context_and_deletion(tmp_path):
         app = fixture(tmp_path, "config-cleanup", {"COUNT": {"type": "int", "default": 4}, "OTHER": {"type": "str", "default": "fallback"}})
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause(0.4)
+            assert app.screen.kind == 'defaults'
+            await pilot.press('c')
+            await pilot.pause()
             assert app.screen.kind == "cleanup"
             table = app.screen.query_one(DataTable)
             assert "UNATTENDED_AUTH" not in [table.get_row_at(i)[1] for i in range(table.row_count)]
@@ -147,7 +154,7 @@ def test_e2e_picker_acceptance_and_unavailable(tmp_path):
     asyncio.run(scenario())
 
 
-def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
+def test_required_rows_allow_explicit_empty_and_startup_close_resumes_operation(tmp_path):
     async def scenario():
         app = fixture(tmp_path, "run-local", {"VALUE": {"type": "str", "required": True}, "COUNT": {"type": "int", "default": 4}})
         async with app.run_test(size=(100, 35)) as pilot:
@@ -158,9 +165,8 @@ def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
             assert not app.focused_default()
             await pilot.press("c")
             await pilot.pause(0.4)
-            await pilot.click("#mode-run-local")
-            await pilot.pause(0.4)
             assert app.screen.kind == "defaults"
+            assert "VALUE" in app.session.result().missing
             app.screen.query_one(DataTable).move_cursor(row=1)
             await pilot.press("e")
             await pilot.pause(0.4)
@@ -176,8 +182,6 @@ def test_required_rows_allow_explicit_empty_and_next_menu_blocks_run(tmp_path):
             assert app.screen.kind == "defaults"
             assert app.screen.query_one(DataTable).get_row_at(0)[2] == app.session._source(app.session.dotenv_path)
             await pilot.press("c")
-            await pilot.pause(0.4)
-            await pilot.click("#mode-run-local")
             await pilot.pause(0.4)
             assert app.screen.kind == "unavailable"
     asyncio.run(scenario())
@@ -215,17 +219,20 @@ def test_newly_active_invalid_value_blocks_collection(tmp_path):
     asyncio.run(scenario())
 
 
-def test_conditional_default_is_acknowledged_again(tmp_path):
+def test_conditional_default_allows_operation_without_acknowledgement(tmp_path):
     async def scenario():
-        app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 1, "conditional_defaults": [{"when": {"TUI_MODE": "integration"}, "value": 2}]}})
+        app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 1, "conditional_defaults": [{"when": {"TUI_MODE": "integration"}, "value": 2}]}},
+                      collector=lambda *args: [Identity("base", tmp_path, "test_sample.py", "test_sample", "integration")])
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(0.4)
             await pilot.press("c")
             await pilot.pause(0.4)
             await pilot.click("#mode-integration")
             await pilot.pause(0.4)
-            assert app.screen.kind == "defaults"
-            assert app.screen.query_one(DataTable).get_row_at(0)[1] == "2"
+            assert app.screen.kind == "tests"
+            assert app.session.result().values['COUNT'] == 2
+            assert 'COUNT' in app.configuration_pending()
+            assert not (tmp_path / '.env').exists()
     asyncio.run(scenario())
 
 
@@ -1050,6 +1057,12 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
             'OTHER': {'type': 'int', 'default': 1}})
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            await pilot.press('c')
+            await pilot.pause()
+            await app.choose('mode-config-cleanup')
+            await pilot.pause()
+            assert app.screen.kind == 'cleanup'
             table = app.screen.query_one(DataTable)
             def rows():
                 return {table.get_row_at(i)[1]: table.get_row_at(i) for i in range(table.row_count)}
@@ -1463,7 +1476,7 @@ def test_main_menu_disables_close_and_space_toggles_test_selection(tmp_path):
     asyncio.run(scenario())
 
 
-def test_explicit_unit_mode_bypasses_setup_and_defaults_and_renders_parameter_ids(tmp_path):
+def test_explicit_unit_mode_reviews_defaults_and_renders_parameter_ids(tmp_path):
     async def scenario():
         item = Identity('base::test.py::test_path[/absolute]', 'base', 'test.py', 'test.py::test_path[/absolute]')
         app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}},
@@ -1471,6 +1484,9 @@ def test_explicit_unit_mode_bypasses_setup_and_defaults_and_renders_parameter_id
         app.session.environ.pop('UNATTENDED_AUTH')
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(.3)
+            assert app.screen.kind == 'defaults'
+            await pilot.press('c')
+            await pilot.pause()
             assert app.screen.kind == 'tests'
             table = app.screen.query_one(DataTable)
             assert any(str(table.get_row_at(i)[1]) == item.id for i in range(table.row_count))

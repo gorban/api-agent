@@ -98,11 +98,13 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         storage = storage if storage is not None else RunStorage(
             config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),
             secondary_directory=config.get('ALLURE_SECONDARY_DIR') or None,
-            endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'))
+            endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'),
+                                 localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566))
         usage = SuiteUsage(identity.run_id, cost_estimator=cost_estimator)
         seen = set()
         recording_ids = {}
         content = {}
+        workflow_steps = {}
         persisted = False
         manifest = None
         usage_summary = None
@@ -135,7 +137,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                          if test.root is not None else test.repo)
                 test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
             filename = recorder.record_test(replace(result, identity=test),
-                                            attachments=content.pop(result.identity.id, ()))
+                                            attachments=content.pop(result.identity.id, ()),
+                                            steps=workflow_steps.pop(result.identity.id, None))
             recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)
 
@@ -231,6 +234,13 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 usage_output(starting_usage_line(usage.report()))
 
         def event(row):
+            if row.kind == 'workflow_evidence':
+                from api_agent.workflows.evidence import attachment
+                frozen = attachment(row, evidence_boundary)
+                content.setdefault(row.identity.id, []).append(frozen)
+                from .workflow_steps import scope_steps
+                lifecycle = json.loads(frozen[1]).get('events', [])
+                workflow_steps.setdefault(row.identity.id, []).extend(scope_steps(lifecycle))
             if row.kind == 'quota_snapshot':
                 from .quota_events import capture
                 capture(row, observe_quota)

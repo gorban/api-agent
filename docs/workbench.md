@@ -43,7 +43,23 @@ may be hidden here; their executable declarations and help remain available.
 - **e** edits a value; Enter saves. Enums and booleans use a picker.
 - **u** removes the saved assignment and restores its fallback.
 - **?** opens the setting's description.
-- **c** advances to the main menu.
+- **c Close** during startup or operation-required Review resumes the requested
+  mode after validating its requirements. Startup selectors survive until its first picker.
+  With no requested mode, Close opens the main menu.
+- **c Close / menu** returns to the main menu during manual review, including
+  review entered from Clear .env configuration.
+
+Startup and leaving Clear .env offer review of pending values. Menu operations
+use valid effective defaults without requiring you to save them. When an active
+required value is missing, the latest missing setting appears in red above the
+shortcut bar with its requirement context. This Review remains open on Close
+until active requirements are valid, then continues to the selected operation.
+Short terminals
+use a compact view to retain visible setting rows.
+
+Initial authentication setup closes through pending-value Review once; later
+setup from the menu closes directly to the menu. Initial setup uses **c Close**;
+menu setup uses **c Close / menu**.
 
 The table shows effective values and their sources. Saved values take effect
 immediately; later operations re-resolve settings. **s** switches the save target
@@ -91,3 +107,20 @@ When Git successfully confirms a newer worktree, startup requires explicit
 Missing Git or unverifiable worktree metadata silently skips the check. The
 gate never creates or changes worktrees. See [the provenance contract](prds/implementation_plan_a6.md)
 for recency rules and timestamp limitations.
+
+## Failure details
+
+Select a failed/error test and press Enter to read its reason before the execution
+and accounting summary. Local details include captured exception messages and
+chains, command exit status and stdout/stderr, or incomplete worker output.
+Captured output is bounded; omitted bytes/characters are identified explicitly.
+These transient local diagnostics are separate from sanitized exported reports.
+Close returns to the same test
+in the results list, with focus and scroll retained. The first completed display
+still selects the first failure.
+
+For CI, `--tui-mode integration --no-std-in --start [TEST_ID ...]` prints
+identified failure details to stderr even with `LOG_CONTENT=False`. It retains
+exception chains and command evidence while scrubbing known/configured credentials
+and recognizable credential syntax. It preserves paths, roles and operational
+reasons; tracing and inference attachments retain their existing policy.

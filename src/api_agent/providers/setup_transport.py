@@ -14,7 +14,7 @@ from uuid import uuid4
 from .contracts import (ContractError, InteractionRequiredError, SessionClosedError,
                         SetupPrerequisiteError, UnattendedCredentialError, ProviderAccessError)
 from .progress import (ComponentProgress, component_timeout, independent_timeout_scope,
-                       progress_sink, report_timeout, _sink, _scope)
+                       progress_sink, report_timeout, _sink, _scope, TimeoutBudget, _clock)
 from .sessions import _Owner, _spawn, _drain, _consume
 from .control import CleanupPendingError, OperationalError, KINDS
 
@@ -151,6 +151,9 @@ def _error(error, capability=None):
     if isinstance(error, ProviderAccessError):
         details = {name: getattr(error, name) for name in ('status', 'code', 'type', 'request_id')}
         details['kind'] = error.kind
+        default_execution = 'possibly_executed' if error.kind == 'unknown' else 'not_started'
+        if error.execution != default_execution:
+            details['execution'] = error.execution
         if error.usage is not None:
             from .inference import usage_to_wire
             details['usage'] = usage_to_wire(error.usage)
@@ -182,17 +185,21 @@ def _raise_error(frame):
     if frame.get('category') == 'provider':
         if (set(frame) != {'version', 'status', 'category', 'index_source', 'message', 'details'}
                 or frame['index_source'] is not None or type(frame['details']) is not dict
-                or set(frame['details']) not in ({'kind', 'status', 'code', 'type', 'request_id'},
-                                                {'kind', 'status', 'code', 'type', 'request_id', 'usage'})):
+                or set(frame['details']) - {'usage', 'execution'} != {'kind', 'status', 'code', 'type', 'request_id'}):
             raise ContractError('Invalid provider response')
         details = frame['details'].copy()
         kind = details.pop('kind')
+        execution = details.pop('execution', None)
         try:
+            if 'execution' in frame['details'] and (type(execution) is not str or execution not in ('not_started', 'possibly_executed', 'completed')):
+                raise ValueError()
             if 'usage' in details:
                 from .inference import result_from_wire
                 usage = details['usage']
                 details['usage'] = result_from_wire({'text': '', 'outcome': 'completed', 'usage': usage}).usage
             error = ProviderAccessError(kind, frame['message'], **details)
+            if execution is not None:
+                error.execution = execution
         except ValueError:
             raise ContractError('Invalid provider response') from None
         raise error
@@ -265,6 +272,11 @@ class SetupServer(_Owner):
     def _request(self, frame):
         action = frame.get('action')
         keys = {'version', 'capability', 'action', 'timeout'} | ({'worker_id', 'attempt'} if action == 'register' else {'binding'}) | ({'request'} if action == 'complete' else set())
+        if action == 'complete' and 'parent_id' in frame:
+            keys.add('parent_id')
+            parent = frame['parent_id']
+            if type(parent) is not str or re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', parent) is None:
+                raise ContractError('Invalid inference progress ancestry')
         if set(frame) != keys or type(frame['version']) is not int or frame['version'] != 1 or action not in ('register', 'ready', 'describe', 'complete', 'revoke'):
             raise ContractError('Invalid setup request')
         capability = _capability(frame['capability'])
@@ -403,8 +415,21 @@ class SetupServer(_Owner):
                     frame = await _read(peer.reader)
                     action = self._request(frame)
                     try:
-                        async with component_timeout('Shared setup readiness', min(self._request_timeout, frame['timeout'])):
-                            response = await self._dispatch(peer, frame, action)
+                        parent = frame.get('parent_id')
+                        scope = None
+                        if parent is not None:
+                            started = _clock()
+                            scope = TimeoutBudget(parent, None, started, started + frame['timeout'], frame['timeout'])
+                            self._ids[parent] = parent
+                        token = _scope.set(scope) if scope is not None else None
+                        try:
+                            name = 'Shared inference call' if action == 'complete' else 'Shared setup readiness'
+                            async with component_timeout(name, min(self._request_timeout, frame['timeout'])):
+                                response = await self._dispatch(peer, frame, action)
+                        finally:
+                            if token is not None:
+                                _scope.reset(token)
+                                self._ids.pop(parent, None)
                     except (SetupPrerequisiteError, InteractionRequiredError) as error:
                         response = _error(error, self._capability)
                     except Exception as error:
@@ -537,6 +562,14 @@ class SetupClient:
             frame['binding'] = self._binding
         if action == 'complete':
             frame['request'] = request
+            budget = _scope.get()
+            if budget is not None:
+                frame['parent_id'] = budget.id
+                remaining = budget.remaining
+                if remaining is not None:
+                    if remaining <= 0:
+                        raise ProviderAccessError('deadline', 'Inference call deadline expired.')
+                    frame['timeout'] = min(self._timeout, remaining)
         self._writer.write(_encode(frame))
         await self._writer.drain()
         while True:
@@ -585,7 +618,8 @@ class SetupClient:
             return
 
     async def _ensure(self, action='ready', request=None):
-        async with component_timeout('Worker shared setup', self._timeout):
+        name = 'Worker inference call' if action == 'complete' else 'Worker shared setup'
+        async with component_timeout(name, self._timeout):
             self._progress_timeouts.clear()
             self._progress_components.clear()
             self._progress_parents.clear()

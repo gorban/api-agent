@@ -4,6 +4,10 @@ This is the early exception to deferred public demo applications. Build a replac
 
 ## Checklist
 
+- [ ] Complete [Responses native metadata and continuation](implementation_plan_f2d.md): documented logprobs and assistant phases preserve replay, with independent review and the repository gate pending.
+
+- [ ] Complete [bounded GPT admission retries](implementation_plan_f2c.md): exact structured subscriber-information rejection, four budgeted waits and a 120-second enclosing provider limit.
+
 - [ ] Complete the [subscription connection foundation](implementation_plan_f2a.md) and [launch-managed lazy setup](implementation_plan_f2b.md), then the human sign-in checkpoint, before wiring real subscription inference. Normal users need only launch.py; keep saved OAuth accounts separate from vault API-key setup.
 - [x] Agree the authentication/API matrix with the user: support API-key access with `completions` or `responses`, and eligible subscription integration with `responses` only. Reject subscription plus `completions`; this approves the design, not a live call or completed implementation.
 - [x] Implement provider-contributed `GPT_AUTH_MODE` (`subscription`, `api_key`) and `GPT_API_MODE` (`completions`, `responses`) in [the bundled provider declaration](../../src/api_agent/llm_providers/gpt/cfg/config.toml), not shared core configuration. Default authentication to subscription for the preferred personal-plan route; conditionally default the API to responses for subscription and completions for API-key access. An explicit API value takes precedence and is never silently changed to repair an invalid combination.
@@ -211,3 +215,5 @@ Pricing sources, verified 2026-10-10: [Luna](https://developers.openai.com/api/d
 - [x] Reject explicitly unfinished assistant/reasoning output items in the shared terminal parser for both JSON Responses and terminal-only subscription SSE. Preserve compatible omitted item status and validated token usage in the safe failure; accumulated stream events must not be required to detect contradiction.
 - [x] Apply verified-family membership and ASCII calendar-valid snapshot handling consistently to official and compatible cache-control routes. Valid future snapshots of supported families remain eligible; unknown suffixes and impossible/non-ASCII dates fail before authentication or requests. Empty policy still delegates provider defaults; subscription medium still permits automatic caching.
 - [x] Preserve the human-approved unique prefix for each cache-test attempt, reuse that prefix for the two calls, and assert zero first-call cache reads followed by the route's required cache reuse. Discard the older pending two-file/branching rewrite and its backup as explicitly directed by the user.
+
+- [ ] Complete [partitioned credential protection](implementation_plan_f2e.md), including independent review and the repository gate.

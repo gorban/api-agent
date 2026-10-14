@@ -3,6 +3,7 @@ import sys
 
 from rich.text import Text
 from textual import events
+from textual.compose import compose
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
@@ -158,6 +159,18 @@ class GroupedUserFooter(Footer):
     GroupedUserFooter .shortcut-pair > Static { width: auto; height: 1; }
     GroupedUserFooter .user-cycle { padding-left: 1; }
     """
+
+    async def recompose(self):
+        # Binding callbacks may outlive startup or app shutdown transitions.
+        if not self.is_mounted or not self.is_attached or self._pruning:
+            return
+        async with self.batch():
+            if not self.app.is_running or not self.is_attached or self._pruning:
+                return
+            await self.remove_children(child for child in self.children
+                                       if not child.has_class("-textual-system"))
+            if self.app.is_running and self.is_attached and not self._pruning:
+                await self.mount_all(compose(self))
 
     def compose(self):
         widgets = list(super().compose())

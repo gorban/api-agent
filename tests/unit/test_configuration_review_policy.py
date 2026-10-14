@@ -100,10 +100,12 @@ def test_hidden_required_settings_fail_operation_without_config_recursion(tmp_pa
         app = fixture(tmp_path, 'integration' if explicit_mode else None, fields=fields, collector=collector)
         async with app.run_test() as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            await pilot.press('c')
+            await pilot.pause()
             if not explicit_mode:
-                assert app.screen.kind == 'defaults'
-                app.mode = 'integration'
-                await app.configure_operation(skip_defaults=True)
+                assert app.screen.kind == 'menu'
+                await app.choose('mode-integration')
                 await pilot.pause()
             assert app.screen.kind == 'error'
             assert app.screen.heading == 'Missing configuration'
@@ -125,6 +127,9 @@ def test_real_remote_langfuse_hidden_keys_report_error_without_startup(tmp_path)
                                'TRACE_TARGET':'https://trace.example.invalid'}
         app.session.context.anchors.update({key:tmp_path for key in ('owner_root','base_root','pack_root')})
         async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            await pilot.press('c')
             await pilot.pause()
             assert app.screen.kind == 'error'
             body = str(app.screen.query_one('#body', Static).content)

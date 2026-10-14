@@ -367,8 +367,10 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                             yield Checkbox("Remember my selection", id="remember-skip")
                     else:
                         yield Button(label, id=key)
-            if self.kind != "test-results":
+            if self.kind not in {"test-results", "defaults"}:
                 yield Static("", id="error", markup=False)
+        if self.kind == "defaults":
+            yield Static(app.configuration_review_blocker(), id="error", markup=False)
         if self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
             with Vertical(id="menu-bottom-bar"):
                 yield Static("Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.",
@@ -382,6 +384,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             yield search
 
     def on_mount(self):
+        if self.kind == "defaults":
+            self.set_class(self.size.height < 18, "compact-review")
         if self.rows:
             table = self.query_one(DataTable)
             if self.kind == "defaults":
@@ -405,6 +409,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 self.app.refresh_configuration_rows(self)
             table.move_cursor(row=next((i for i, (key, _) in enumerate(self.rows)
                                         if key == self.selected_row), 0))
+            if self.kind == "test-results":
+                table.results_completed = self.test_run_complete
             table.focus()
         elif self.kind == "input":
             control = self.query_one('#config-value')
@@ -434,10 +440,19 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             self.refresh_suite_timer()
             self.call_after_refresh(self.layout_test_results)
         if self.kind == "defaults":
-            self._bindings.bind("c", "close_view", "Next menu")
+            self._bindings.key_to_bindings["c"] = [Binding(
+                "c", "close_view", "Close" if self.app.startup_review or self.app.review_destination else "Close / menu")]
+            self.call_after_refresh(self.query_one("#workbench-content", VerticalScroll).scroll_home,
+                                    animate=False)
         self.refresh_bindings()
 
     def on_resize(self, event):
+        if self.kind == "defaults":
+            self.set_class(event.size.height < 18, "compact-review")
+            self.body = self.app.configuration_review_text()
+            self.query_one("#body", Static).update(self.body)
+            self.call_after_refresh(self.query_one("#workbench-content", VerticalScroll).scroll_home,
+                                    animate=False)
         if self.kind == "test-results":
             self.call_after_refresh(self.layout_test_results)
 
@@ -852,6 +867,10 @@ class ApiAgentApp(App[int]):
     Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
     Button:focus, Input:focus { border: heavy $accent; }
     DataTable { height: 1fr; min-height: 8; max-height: 100vh; margin-bottom: 1; }
+    .configuration-review DataTable { min-height: 3; }
+    .compact-review #identity { display: none; }
+    .compact-review DataTable { height: 3; }
+    .compact-review #heading, .compact-review #body, .compact-review DataTable { margin-bottom: 0; }
     #error { color: $error; height: auto; }
     QuitDialog, DeleteDialog, StopContainersDialog { align: center middle; background: $background 80%; }
     QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
@@ -919,6 +938,8 @@ class ApiAgentApp(App[int]):
         self.mode = None
         self.startup_mode = None
         self.auto_start_pending = False
+        self.review_destination = None
+        self.startup_review = True
         self.review_names = set()
         self.selection = None
         self.pending_test_selectors = tuple(self.session.result().positionals)
@@ -978,11 +999,19 @@ class ApiAgentApp(App[int]):
         self.auto_start_pending = bool(start_requested(result.values) and not result.values.get('COLLECT_ONLY'))
         self.startup_mode = mode.value if mode and (mode.explicit or self.auto_start_pending) else None
         self.mode = None if self.auto_start_pending else self.startup_mode
-        if self.mode is not None:
+        self.review_destination = self.startup_mode
+        if self.startup_mode == "unattended-auth" and not result.values.get("COLLECT_ONLY"):
+            self.review_destination = None
+            self.show_auth_setup(startup=True)
+            return
+        if self.mode is not None and (result.values.get("COLLECT_ONLY") or self.mode == "unattended-auth"):
             await self.enter_mode(skip_defaults=True)
             return
         if result.values.get("COLLECT_ONLY"):
             self.show_menu()
+            return
+        if self.mode is not None:
+            await self.start_configuration()
             return
         incomplete = self.auth_setup_needed()
         if incomplete and not result.values.get("SKIP_UNATTENDED_SETUP", False):
@@ -1047,20 +1076,18 @@ class ApiAgentApp(App[int]):
             self.show('error', 'Authentication setup configuration error', str(error),
                       (("menu", "Main menu"),))
             return
-        self.push_screen(AuthSetupScreen(roles),
+        self.push_screen(AuthSetupScreen(roles, startup=startup),
                          lambda changed: self.auth_setup_closed(changed, startup=startup))
 
     async def auth_setup_closed(self, changed, *, startup=False):
         if changed:
             self.operation_status = 0
         if startup:
-            self.mode = None
+            if self.mode == "unattended-auth":
+                self.mode = None
             await self.start_configuration()
         else:
-            if self.auto_start_pending:
-                await self.enter_mode(skip_defaults=True)
-            else:
-                self.show_menu()
+            self.show_menu()
 
     async def start_configuration(self):
         pending = self.configuration_pending()
@@ -1093,10 +1120,39 @@ class ApiAgentApp(App[int]):
             self.finish_configuration_review()
             return
         self.show("defaults", "Review configuration",
-                  "Review each setting: a saves its default immediately; e edits its value, then Enter saves to .env. "
-                  "Source identifies where each value comes from. c opens the next menu; required values still block execution.\n\n"
-                  "A developer may need overrides, or may save defaults as a point-in-time configuration for reproducing and comparing a run.",
+                  self.configuration_review_text(),
                   rows=rows, selected_row=selected_row)
+        self.screen.add_class("configuration-review")
+
+    def review_operation(self):
+        return self.mode or self.review_destination
+
+    def configuration_review_text(self):
+        missing = self.session.result().missing
+        reason = ("Required settings: " + ", ".join(missing) if missing else
+                  "Unsaved defaults are available to review; save or edit values as needed.")
+        if missing and len(reason) > max(24, self.size.width - 6):
+            reason = f"{len(missing)} required settings; see Required rows."
+        if self.size.height < 18:
+            if not missing:
+                reason = "Unsaved defaults; save or edit as needed."
+            return reason + ("\na save; e edit; c close." if self.startup_review or self.review_destination else "\na save; e edit; c close / menu.")
+        operation = self.review_operation()
+        destination = f"continue {operation}" if self.review_destination else "open the main menu"
+        return (reason + f"\na saves a default; e edits; c closes, then {destination}. "
+                "Required settings still block execution.")
+
+    def configuration_review_blocker(self):
+        """Explain the current execution gate, separately from optional review."""
+        operation = self.review_operation()
+        if operation == "config-cleanup":
+            return ""
+        result = self.session.result()
+        if result.missing:
+            name = result.missing[-1]
+            context = f"TUI_MODE={operation}" if operation else "the current configuration"
+            return f"{name} required for {context}."
+        return ""
 
     def configuration_rows(self):
         """Rebuild review membership from the current effective declaration set."""
@@ -1123,6 +1179,8 @@ class ApiAgentApp(App[int]):
 
     def refresh_configuration_rows(self, screen):
         """Refresh displayed values and contextual actions as one UI snapshot."""
+        screen.query_one("#body", Static).update(self.configuration_review_text())
+        screen.query_one("#error", Static).update(self.configuration_review_blocker())
         rows = self.configuration_rows()
         if not rows:
             self.finish_configuration_review()
@@ -1231,8 +1289,12 @@ class ApiAgentApp(App[int]):
         if self.mode is None:
             self.show_menu()
         elif self.mode == "config-cleanup":
+            self.review_destination = None
+            self.startup_review = False
             self.show_cleanup()
         elif self.mode == "cleanup-containers":
+            self.review_destination = None
+            self.startup_review = False
             self.show_containers()
             self.refresh_container_inventory()
         elif self.mode == "unattended-auth":
@@ -1241,7 +1303,8 @@ class ApiAgentApp(App[int]):
             await self.configure_operation(skip_defaults=skip_defaults)
 
     def finish_configuration_review(self):
-        if self.auto_start_pending:
+        if self.review_destination:
+            self.mode = self.review_destination
             self.run_worker(self.enter_mode(skip_defaults=True), group='startup-mode', exclusive=True)
         else:
             self.show_menu()
@@ -1251,6 +1314,8 @@ class ApiAgentApp(App[int]):
             return
         self.discard_finished_inspection()
         self.auto_start_pending = False
+        self.review_destination = None
+        self.startup_review = False
         # Keep acknowledged rows only for the current review, not later visits.
         self.review_names.clear()
         self.pending_test_selectors = ()
@@ -1341,12 +1406,15 @@ class ApiAgentApp(App[int]):
                           f"{name}: .env / environment {name} or --{name.lower().replace('_', '-')} VALUE"
                           for name in result.missing), (("menu", "Main menu"),))
             return
-        if result.missing or (not skip_defaults and self.configuration_pending(include_optional=False)):
+        if result.missing:
+            self.review_destination = self.mode
             await self.start_configuration()
             return
         if self.mode in {"unit", "integration", "e2e"}:
             await self.collect_tests()
         else:
+            self.review_destination = None
+            self.startup_review = False
             self.auto_start_pending = False
             if self.mode == "run-local" and not self.check_operation_start():
                 return
@@ -1361,6 +1429,8 @@ class ApiAgentApp(App[int]):
                                                                "config": self.session.result().values}))
 
     async def collect_tests(self):
+        self.review_destination = None
+        self.startup_review = False
         self.active_test_selectors = self.pending_test_selectors
         self.pending_test_selectors = ()
         self.collection_cancel = threading.Event()
@@ -1730,7 +1800,7 @@ class ApiAgentApp(App[int]):
                 for column, value in zip(table.columns, self.unit_rows[key]):
                     table.update_cell(key, column, literal_cell(value), update_width=True)
 
-    def show_unit_results(self, summary=None):
+    def show_unit_results(self, summary=None, *, selected_row=None, scroll_y=None):
         if summary is None:
             if self.mode in {'integration', 'e2e'}:
                 from api_agent.testing.contracts import format_test_summary
@@ -1762,12 +1832,21 @@ class ApiAgentApp(App[int]):
             from .cost_history import cost_cell
             rows = [(key, (*cells, cost_cell(self.test_costs.get(key, {}))))
                     for key, cells in rows]
+        if selected_row not in {key for key, _ in rows}:
+            scroll_y = None
         if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
             screen = self.screen
+            if getattr(screen, "results_run", None) is not self.unit_result and screen.query(DataTable):
+                screen.query_one(DataTable).results_completed = False
             screen.body, screen.rows = summary, rows
             self.call_after_refresh(self.update_test_results, screen)
         else:
-            self.show("test-results", f"{(self.mode or 'unit').capitalize()} test results", summary, rows=rows)
+            self.show("test-results", f"{(self.mode or 'unit').capitalize()} test results", summary, rows=rows, selected_row=selected_row)
+            if scroll_y is not None:
+                screen = self.screen
+                self.call_after_refresh(lambda: screen.query_one(DataTable).scroll_to(
+                    y=scroll_y, animate=False))
+        self.screen.results_run = self.unit_result
         self.screen.test_run_complete = self.unit_result is not None
         self.screen.style_results = self.style_unit_summary
         if self.unit_result is not None:
@@ -1935,13 +2014,17 @@ class ApiAgentApp(App[int]):
             from api_agent.telemetry.usage_output import has_tokens
             historical = (self.cost_estimator.predictions.get(key, {}).get('has_token_history', False)
                           if self.cost_estimator is not None else False)
-            if result and (result.status != 'passed' or has_tokens(self.suite_usage, key) or historical):
+            if result and (result.status != 'passed' or getattr(result, 'local_diagnostic', '')
+                           or has_tokens(self.suite_usage, key) or historical):
                 mode = (self.mode or 'unit').capitalize()
                 title = (f"{mode} test details" if result.status == 'passed' else
                          f"{mode} test skipped" if result.status == 'skipped' else f"{mode} test failure")
                 from .test_results import test_details
+                table = self.screen.query_one(DataTable)
+                return_scroll_y = table.scroll_y
                 self.show("test-failure", title, test_details(result, self.suite_usage,
                     self.test_costs.get(key, {}), historical_tokens=historical))
+                self.screen.result_return = (self.unit_result, key, return_scroll_y)
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
         elif self.screen.kind == "tests":
             self.selection.toggle(key)
@@ -2042,7 +2125,7 @@ class ApiAgentApp(App[int]):
                 self.mode = key[5:]
                 await self.enter_mode()
             elif key == "setup":
-                self.show_auth_setup(startup=self.mode is None)
+                self.show_auth_setup(startup=self.startup_review)
             elif key == "continue":
                 if self.inspection_cleanup_active():
                     await self.close_view()
@@ -2137,10 +2220,13 @@ class ApiAgentApp(App[int]):
             await self.start_configuration()
         elif self.screen.kind == "input":
             self.show_configuration()
-        elif self.screen.kind == "defaults" and self.auto_start_pending:
+        elif self.screen.kind == "defaults" and self.review_destination:
+            self.mode = self.review_destination
             await self.enter_mode(skip_defaults=True)
         elif self.screen.kind == "test-failure":
-            self.show_unit_results()
+            result, key, scroll_y = getattr(self.screen, "result_return", (None, None, None))
+            self.show_unit_results(selected_row=key if result is self.unit_result else None,
+                                   scroll_y=scroll_y if result is self.unit_result else None)
         elif self.screen.kind == "test-results" and self.unit_result is None:
             return
         elif self.screen.kind == "cleanup" and self.configuration_pending():

@@ -67,11 +67,13 @@ class Message:
     content: tuple[TextContent, ...] = field(default=(), repr=False)
     calls: tuple[ToolCall, ...] = field(default=(), repr=False)
     results: tuple[ToolResult, ...] = field(default=(), repr=False)
+    continuation: str | None = field(default=None, repr=False)
 
     def __post_init__(self):
         _require(type(self.role) is str and self.role in {"system", "user", "assistant", "tool"} and _items(self.content, TextContent) and _items(self.calls, ToolCall) and _items(self.results, ToolResult))
         _require(not self.calls or self.role == "assistant")
         _require(not self.results or self.role == "tool")
+        _require(self.continuation is None or (type(self.continuation) is str and bool(self.continuation) and self.role == "assistant"))
 
 
 @dataclass(frozen=True)

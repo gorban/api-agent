@@ -45,7 +45,7 @@ class RecordingPrerequisites:
         # Reports require storage only. Tracing/API profiles belong to their
         # independent operation owner and cannot be selected by this adapter.
         storage_config = {key: value for key, value in config.items()
-                          if key.startswith('ALLURE_S3_')}
+                          if key.startswith('ALLURE_S3_') or key == 'ALLURE_LOCALSTACK_PORT'}
         selected_plan = self.plan(storage_config)
         self._check_cancelled()
         self.owned_manager = self.manager(selected_plan, self.cancel_event.is_set)

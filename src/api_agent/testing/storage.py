@@ -17,9 +17,12 @@ class StorageError(RuntimeError):
 
 class RunStorage:
     def __init__(self, bucket, *, client=None, prefix='allure', secondary_directory=None,
-                 endpoint_url=None, region_name=None):
+                 endpoint_url=None, region_name=None, localstack_port=4566):
         if not bucket or not isinstance(bucket, str):
             raise ValueError('An S3 bucket is required')
+        if type(localstack_port) is not int or not 1 <= localstack_port <= 65535:
+            raise ValueError('LocalStack port must be an integer between 1 and 65535')
+        self.localstack_port = localstack_port
         self.bucket = bucket
         self.client = client
         self.prefix = prefix.strip('/')
@@ -35,7 +38,7 @@ class RunStorage:
             from botocore.config import Config
             endpoint = urlsplit(self.endpoint_url or '')
             local = (endpoint.scheme == 'http' and endpoint.hostname in {'localhost', '127.0.0.1'}
-                     and endpoint.port == 4566 and not endpoint.path.rstrip('/')
+                     and endpoint.port == self.localstack_port and not endpoint.path.rstrip('/')
                      and not endpoint.query and not endpoint.fragment and not endpoint.username
                      and not endpoint.password)
             credentials = {'aws_access_key_id': 'test', 'aws_secret_access_key': 'test'} if local else {}

@@ -62,9 +62,17 @@ def _endpoint(value):
     return parsed, port
 
 
-def _local_s3_endpoint(parsed, port):
+def _localstack_port(config):
+    port = config.get('ALLURE_LOCALSTACK_PORT')
+    port = 4566 if port is None else port
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ComposeError('ALLURE_LOCALSTACK_PORT must be a port from 1 to 65535.')
+    return port
+
+
+def _local_s3_endpoint(parsed, port, expected=4566):
     return (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1'}
-            and port == 4566 and not parsed.path.rstrip('/') and not parsed.query)
+            and port == expected and not parsed.path.rstrip('/') and not parsed.query)
 
 
 def selected_profiles(config):
@@ -83,14 +91,15 @@ def selected_profiles(config):
                 and parsed.path.rstrip('/') == path and not parsed.query):
             profiles.append('langfuse' if mode == 'LangFuse' else 'otel')
     localstack = config.get('ALLURE_S3_USE_LOCALSTACK', False)
+    localstack_port = _localstack_port(config)
     if type(localstack) is not bool:
         raise ComposeError('ALLURE_S3_USE_LOCALSTACK must be a boolean.')
     endpoint = config.get('ALLURE_S3_ENDPOINT')
     if localstack and endpoint is None:
-        endpoint = 'http://localhost:4566'
+        endpoint = f'http://localhost:{localstack_port}'
     if endpoint or localstack:
         parsed, port = _endpoint(endpoint)
-        is_local = _local_s3_endpoint(parsed, port)
+        is_local = _local_s3_endpoint(parsed, port, localstack_port)
         if localstack and not is_local:
             raise ComposeError('LocalStack selection requires its loopback S3 endpoint.')
         if is_local:
@@ -216,6 +225,7 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         command += ('--profile', profile)
     environment = {**controlled_engine_environment(engine_environment),
                    **local_development_environment(scope)}
+    environment['SA_LOCALSTACK_PORT'] = str(_localstack_port(config))
     hook = directory / 'localstack-ready.sh'
     try:
         if hook.is_symlink() or not hook.is_file():

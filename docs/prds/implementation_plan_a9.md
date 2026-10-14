@@ -18,3 +18,5 @@ JSON retains complete `missing_lines` and `missing_branches` arrays. HTML highli
 The public suite passed 5,834 tests and 27 subtests with exact 100% lines and branches across 133 measured files (17,575 statements, 6,450 branches). Independent adversarial checks rejected nine isolated mutations and verified exact near-100 gating, namespaces/active-provider scope, distinct owners/runs and partial-copy failures. Both real launcher variants passed five installed-provider tests; default output contained 20 rows, full output all 133, and both retained usable JSON/HTML. Wheel content, license and public-boundary verification passed. Human acceptance is complete for this coverage-disclosure slice.
 
 The user explicitly replied “Coverage approved” after the guided compact/full console output, retained JSON/HTML and interactive presentation walkthrough. This acceptance covers the coverage-disclosure scope.
+
+Configuration/startup navigation has its own [requirements grouping](implementation_plan_a9d.md).

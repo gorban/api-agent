@@ -18,4 +18,5 @@ def plan_integration_requirements(tests):
     Base/provider-only tests require no pack API. The same immutable marker
     survives collection, selection and execution verification.
     """
+    tests = tuple(tests)
     return IntegrationRequirementsPlan(any('requires_pack_api' in test.tags for test in tests))

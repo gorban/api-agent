@@ -1,5 +1,5 @@
 """Mode-independent per-test outcomes and runner events."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .collection import TestIdentity
 from api_agent.providers.progress import ComponentProgress
 
@@ -11,6 +11,8 @@ class TestResult:
     status: str
     duration: float = 0
     traceback: str = ''
+    # Captured TUI/credential-scrubbed CI evidence; never runner/report contracts.
+    local_diagnostic: str = field(default='', repr=False, compare=False)
 
 
 @dataclass(frozen=True)

@@ -319,7 +319,7 @@
         "SA_LOCALSTACK_READY_DIGEST": "${SA_LOCALSTACK_READY_DIGEST:?controlled local development value required}"
       },
       "ports": [
-        "127.0.0.1:4566:4566"
+        "127.0.0.1:${SA_LOCALSTACK_PORT:?controlled local development value required}:4566"
       ],
       "volumes": [
         "localstack-data:/persisted-data",

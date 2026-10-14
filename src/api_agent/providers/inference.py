@@ -23,6 +23,9 @@ def _size(value):
 
 
 def request_from_wire(row):
+    if type(row) is dict and 'version' in row:
+        from .rich_inference import request_from_wire as rich
+        return rich(row)
     if type(row) is not dict or set(row) != {'selected_llm', 'messages', 'max_output_tokens', 'cache_policy', 'request_id'}:
         _fail()
     _text(row['selected_llm'], 200, identifier=True)
@@ -47,12 +50,15 @@ def request_from_wire(row):
 
 
 def request_to_wire(request):
+    if isinstance(request, LLMRequest) and (request.payload.tools or request.payload.structured is not None):
+        from .rich_inference import request_to_wire as rich
+        return rich(request)
     if (not isinstance(request, LLMRequest) or request.payload.tools or request.payload.structured is not None
             or request.payload.generation.temperature is not None):
         _fail()
     rows = []
     for message in request.payload.messages:
-        if message.calls or message.results or len(message.content) != 1:
+        if message.calls or message.results or message.continuation is not None or len(message.content) != 1:
             _fail()
         rows.append({'role': message.role, 'text': message.content[0].text})
     row = dict(selected_llm=request.selected_llm, messages=rows,
@@ -63,6 +69,9 @@ def request_to_wire(request):
 
 
 def result_from_wire(row):
+    if type(row) is dict and 'version' in row:
+        from .rich_inference import result_from_wire as rich
+        return rich(row)
     if type(row) is not dict or not {'text', 'outcome', 'usage'} <= set(row) or set(row) - {'text', 'outcome', 'usage', 'actual_model', 'service_tier', 'serving_revision', 'billing'}:
         _fail()
     text = _text(row['text'], 65536)
@@ -93,7 +102,10 @@ def usage_to_wire(usage):
 
 
 def result_to_wire(result):
-    if (not isinstance(result, LLMResult) or result.payload.calls or result.payload.results
+    if isinstance(result, LLMResult) and result.payload.calls:
+        from .rich_inference import result_to_wire as rich
+        return rich(result)
+    if (not isinstance(result, LLMResult) or result.payload.calls or result.payload.results or result.payload.continuation is not None
             or len(result.payload.content) != 1):
         _fail()
     row = dict(text=result.payload.content[0].text, outcome=result.outcome,
