@@ -195,7 +195,14 @@ REGISTERED_REPRESENTATIONS = [
 ]
 
 
-@pytest.mark.parametrize('secret, encoded', REGISTERED_REPRESENTATIONS)
+CONTROL_INSERTION_REPRESENTATIONS = [
+    (TOKEN, json.dumps(container(TOKEN[:9] + control + TOKEN[9:])))
+    for control in ('\x00', '\t', '\u200b')
+    for container in (lambda text: text, lambda text: {'note': text}, lambda text: [text])
+]
+
+
+@pytest.mark.parametrize('secret, encoded', REGISTERED_REPRESENTATIONS + CONTROL_INSERTION_REPRESENTATIONS)
 @pytest.mark.parametrize('subscription', [None, False, True], ids=['constructed', 'json', 'sse'])
 @pytest.mark.parametrize('enabled', [False, True], ids=['off', 'enabled'])
 def test_registered_json_representation_ipc_and_recording(secret, encoded, subscription, enabled, tmp_path, monkeypatch):
@@ -234,7 +241,8 @@ def test_registered_json_representation_ipc_and_recording(secret, encoded, subsc
                 assert response['content']['message']['content'] == ['[REDACTED]']
             else:
                 assert rows == []
-            parent = EmissionBoundary(ContentPolicy(enabled))
+            parent = EmissionBoundary(ContentPolicy(enabled), secrets=(secret,))
+            assert parent.export({'parts': parts}) == ({'parts': ['[REDACTED]']} if enabled else {})
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(phase=row['phase'], content=row['content'], call_id=str(uuid4())))), parent) for row in rows]
             recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'), evidence_boundary=parent)
             name = recorder.record_test(TestResult(TestIdentity('owned-test', 'synthetic', 'owned.py', 'owned.py::test_owned'), 'passed', 0), attachments=attachments)
