@@ -212,6 +212,14 @@ JSON_SHAPE_CONTROL_REPRESENTATIONS = [
     (json.dumps('synthetic-owned-json'), json.dumps({'note': 'synthetic-' + control + 'owned-json'}))
     for control in ('\x00', '\t', '\u200b')
 ]
+ENCODED_KEY_REPRESENTATIONS = [
+    (TOKEN, json.dumps({key: 'ordinary'}))
+    for key in ('"' + TOKEN[:9] + '\\u' + format(ord(TOKEN[9]), '04x') + TOKEN[10:] + '"',
+                json.dumps('Bearer synthetic-owned-key-secondary'),
+                json.dumps(json.dumps('password')))
+]
+
+
 CONCEALED_SCHEME_REPRESENTATIONS = [
     ('Bearer', 'Be' + control + 'arer synthetic-independent-secondary-auth')
     for control in ('\t', '\n', '\r', '\x85', '\xa0', '\u2028', '\t\u200b')
@@ -219,7 +227,7 @@ CONCEALED_SCHEME_REPRESENTATIONS = [
 
 
 @pytest.mark.parametrize('secret, encoded', REGISTERED_REPRESENTATIONS + CONTROL_INSERTION_REPRESENTATIONS
-                         + JSON_SHAPE_CONTROL_REPRESENTATIONS + CONCEALED_SCHEME_REPRESENTATIONS)
+                         + JSON_SHAPE_CONTROL_REPRESENTATIONS + CONCEALED_SCHEME_REPRESENTATIONS + ENCODED_KEY_REPRESENTATIONS)
 @pytest.mark.parametrize('subscription', [None, False, True], ids=['constructed', 'json', 'sse'])
 @pytest.mark.parametrize('enabled', [False, True], ids=['off', 'enabled'])
 def test_registered_json_representation_ipc_and_recording(secret, encoded, subscription, enabled, tmp_path, monkeypatch):

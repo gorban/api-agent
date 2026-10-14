@@ -204,13 +204,29 @@ class EmissionBoundary:
         return (self._serialized_credential(encoded) or
                 self._decoded_value_credential(decoded, depth + 1))
 
+    def _key_credential(self, key, depth):
+        if depth > 20:
+            return True
+        if _credential_key(key):
+            return True
+        if not key.lstrip().startswith(('"', '{', '[')):
+            return False
+        try:
+            decoded = _parse_json(key)
+        except (_DuplicateJSONKey, RecursionError):
+            return True
+        except ValueError:
+            return False
+        return ((type(decoded) is str and self._key_credential(decoded, depth + 1)) or
+                self._decoded_text_credential(key, depth + 1))
+
     def _decoded_value_credential(self, value, depth):
         if depth > 20:
             return True
         if type(value) is str:
             return self._decoded_text_credential(value, depth)
         if type(value) is dict:
-            return any(_credential_key(key) or self._text(key) != key or
+            return any(self._key_credential(key, depth) or self._text(key) != key or
                        self._decoded_value_credential(item, depth + 1)
                        for key, item in value.items())
         if type(value) is list:
@@ -307,7 +323,7 @@ class EmissionBoundary:
         if type(value) is dict:
             result = {}
             for key, item in value.items():
-                if type(key) is not str or _credential_key(key):
+                if type(key) is not str or self._key_credential(key, depth):
                     continue
                 clean = self._json(item, seen, depth + 1)
                 if clean is not _DROP:
@@ -371,7 +387,7 @@ class EmissionBoundary:
             return {}
         result = {}
         for key, value in payload.items():
-            if type(key) is not str or _credential_key(key):
+            if type(key) is not str or self._key_credential(key, 0):
                 continue
             clean = (self._json(value, {id(payload)}, 0) if self.policy.allow_content
                      else self._metadata(key, value))
