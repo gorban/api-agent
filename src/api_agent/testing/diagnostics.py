@@ -13,7 +13,8 @@ import traceback
 
 from api_agent.config.resolve import ConfigResult
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary, _credential_key, _SECRET_KEYS
-from api_agent.telemetry.redaction import overlapping_ranges as _overlapping_ranges
+from api_agent.telemetry.redaction import (overlapping_ranges as _overlapping_ranges,
+                                          registered_text_ranges, concealed_bearer_ranges, printable_value)
 
 # These public accounting settings contain paths/controls, never credentials.
 _PUBLIC_KEYS = frozenset({'token_usage_csv', 'token_usage_csv_enabled', 'max_tokens',
@@ -38,7 +39,7 @@ _TRUNCATED_OPTION = re.compile(r'''(?P<prefix>--(?P<key>[A-Za-z][A-Za-z0-9_-]*)(
 
 
 def _secret_key(key):
-    key = key.rsplit('.', 1)[-1]
+    key = printable_value(key).rsplit('.', 1)[-1]
     normalized = re.sub(r'(?<=[a-z])(?=[A-Z])', '_', key).lower().replace('-', '_')
     return (not key.endswith(('Error', 'Exception')) and normalized not in _PUBLIC_KEYS
             and not normalized.endswith(_DESCRIPTOR_SUFFIXES)
@@ -87,11 +88,8 @@ class _RegisteredRanges:
     rewriting nor value masking can expose part of the original credential.
     """
 
-    def __init__(self, text, secrets):
-        ranges = []
-        for secret in secrets:
-            ranges.extend(_overlapping_ranges(text, secret))
-        self.ranges = self._merge(ranges)
+    def __init__(self, text, secrets, *, incomplete=False):
+        self.ranges = list(registered_text_ranges(text, secrets, incomplete=incomplete, credential_key=_secret_key))
 
     @staticmethod
     def _merge(ranges):
@@ -192,9 +190,22 @@ class CredentialScrubber:
                 self._register_config(item, credential)
 
     def __call__(self, text):
-        # Recognize complete credential syntax before registered values can
-        # erase a scheme, header name or other recognition boundary.
-        registered = _RegisteredRanges(text, self.boundary._secrets)
+        return self._scrub(text, _RegisteredRanges(text, self.boundary._secrets))
+
+    def capture(self, captured):
+        """Track complete and incomplete original credentials through edits."""
+        text = captured.decode('utf-8', errors='surrogateescape')
+        registered = _RegisteredRanges(text, self.boundary._secrets, incomplete=True)
+        clean = self._scrub(text, registered)
+        return clean.encode('utf-8', errors='surrogateescape').decode('utf-8', errors='replace')
+
+    def _scrub(self, text, registered):
+        # A wholly registered body contains no ordinary diagnostics or secondary
+        # credentials outside the protected range. Avoid futile syntax scans.
+        if registered.ranges == [(0, len(text))]:
+            return '[REDACTED]'
+        # Syntax and mapped registered ranges both originate from unchanged
+        # text. The tracker carries decoded spans through every later mutation.
         text = registered.sub(_STRUCTURED_AUTH, lambda match: match[1] + _masked(match[2]), text)
         text = registered.sub(_MULTIPART_AUTH, lambda match: match[1] + '[REDACTED]', text)
         text = registered.sub(_AUTH, lambda match: match[1] + match[2] + ' [REDACTED]', text)
@@ -232,7 +243,9 @@ class CredentialScrubber:
             '[REDACTED]' if _secret_key(match['key']) else match['value']) + match['marker'], text)
         text = registered.sub(_OPTION, option, text)
         text = registered.sub(_BARE_BEARER, lambda match: 'Bearer [REDACTED]', text)
-        return self.boundary._text(registered.redact(text))
+        text = registered.apply(text, [(start, stop, 'Bearer [REDACTED]')
+                                       for start, stop, _ in concealed_bearer_ranges(text)])
+        return registered.redact(text)
 
 
 def scrub_command(command, config=None):

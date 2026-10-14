@@ -13,7 +13,7 @@ import re
 from uuid import UUID
 
 from api_agent.config.resolve import ConfigResult
-from api_agent.telemetry.redaction import overlapping_ranges
+from api_agent.telemetry.redaction import overlapping_ranges, printable_value, registered_values, concealed_bearer_ranges, serialized_credential, registered_scalar, registered_json_value, _json_registrations, _contains_json_registration, JSONDepthError
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,7 @@ _BEARER = re.compile(r'(?i)\bbearer\s+(?!\[redacted\](?=$|[\s,;"\'}]))[^\s,;"\'}
 
 
 def _credential_key(key):
+    key = printable_value(key)
     normalized = re.sub(r'(?<=[a-z])(?=[A-Z])', '_', key).lower().replace('-', '_')
     if normalized in _COUNTS:
         return False
@@ -95,6 +96,7 @@ class EmissionBoundary:
         self.policy = policy
         self.preserve_json_text = preserve_json_text
         self._secrets = set()
+        self._registered_json = None
         self._assigned_ids = set()
         for secret in secrets:
             self.register_secret(secret)
@@ -116,7 +118,7 @@ class EmissionBoundary:
         # Collect every range from the original text. Replacing a registered
         # scheme or an inner Bearer token first can conceal the other guard.
         registered = []
-        for secret in self._secrets:
+        for secret in registered_values(self._secrets):
             registered.extend((start, end, None)
                               for start, end in overlapping_ranges(value, secret))
         # Detect inserted controls consistently with provider credential checks.
@@ -125,11 +127,12 @@ class EmissionBoundary:
             visible_offsets = [index for index, character in enumerate(value)
                                if character.isprintable()]
             visible = ''.join(value[index] for index in visible_offsets)
-            for secret in self._secrets:
+            for secret in registered_values(self._secrets):
                 registered.extend((visible_offsets[start], visible_offsets[end - 1] + 1, None)
                                   for start, end in overlapping_ranges(visible, secret))
             del visible_offsets, visible
         spans = list(registered)
+        spans.extend(concealed_bearer_ranges(value))
         for match in _BEARER.finditer(value):
             visible = ''.join(character for character in match.group()
                               if character.isprintable() or character.isspace())
@@ -175,14 +178,10 @@ class EmissionBoundary:
         """
         if any(secret in encoded for secret in self._secrets):
             return True
-        for secret in self._secrets:
-            try:
-                normalized_secret = json.dumps(_parse_json(secret), ensure_ascii=False)
-            except (ValueError, RecursionError):
-                continue
-            if normalized_secret in encoded:
-                return True
-        return False
+        try:
+            return serialized_credential(encoded, self._secrets)
+        except (ValueError, RecursionError):
+            return True
 
     def _decoded_text_credential(self, value, depth):
         """Check joined JSON representations without rewriting ordinary parts."""
@@ -226,11 +225,30 @@ class EmissionBoundary:
                      if type(item) is str]
             normalized = ''.join(item for item in parts if type(item) is str)
             return self._decoded_text_credential(normalized, depth + 1)
-        return str(value) in self._secrets
+        return registered_scalar(value, self._secrets)
+
+    def _json_registration_snapshot(self):
+        secrets = frozenset(self._secrets)
+        cached = self._registered_json
+        if cached is None or cached[0] != secrets:
+            cached = (secrets, _json_registrations(secrets))
+            self._registered_json = cached
+        return cached
+
+    def _registered_native(self, value):
+        try:
+            secrets, registrations = self._json_registration_snapshot()
+            return registered_json_value(value, secrets, registrations=registrations)
+        except (ValueError, RecursionError):
+            return True
 
     def _json(self, value, seen, depth):
         if depth > 20:
             return _DROP
+        # Compare each original JSON node before key filtering or syntax
+        # masking can fragment a registered container or quoted string.
+        if self._registered_native(value):
+            return '[REDACTED]' if type(value) is str else _DROP
         if type(value) is str:
             # Serialized JSON receives the same credential-key treatment.
             scrubbed = self._text(value)
@@ -244,6 +262,18 @@ class EmissionBoundary:
                 return _DROP
             except ValueError:
                 return scrubbed
+            # Preserve semantic serialized credentials before native child
+            # omission can turn their enclosing carrier into ordinary JSON.
+            try:
+                _, registrations = self._json_registration_snapshot()
+                if type(parsed) is not str and registrations and _contains_json_registration(parsed, registrations):
+                    return '[REDACTED]'
+            except JSONDepthError:
+                pass
+            except (ValueError, RecursionError):
+                return '[REDACTED]'
+            if type(parsed) is str and self._registered_native(parsed):
+                return '[REDACTED]'
             # Numeric JSON text is still text: redact secret substrings before
             # interpreting it as a primitive. Keep original object keys until
             # credential-key filtering, and decode escaped strings recursively.
@@ -268,9 +298,9 @@ class EmissionBoundary:
         if type(value) is int and not -_MAX_JSON_INTEGER <= value <= _MAX_JSON_INTEGER:
             return _DROP
         if value is None or type(value) in (bool, int):
-            return _DROP if str(value) in self._secrets else value
+            return _DROP if registered_scalar(value, self._secrets) else value
         if type(value) is float:
-            return value if math.isfinite(value) and str(value) not in self._secrets else _DROP
+            return value if math.isfinite(value) and not registered_scalar(value, self._secrets) else _DROP
         if type(value) not in (dict, list, tuple) or id(value) in seen:
             return _DROP
         seen = seen | {id(value)}
@@ -282,7 +312,7 @@ class EmissionBoundary:
                 clean = self._json(item, seen, depth + 1)
                 if clean is not _DROP:
                     result[self._text(key)] = clean
-            return result
+            return _DROP if self._registered_native(result) else result
         # Ordered text parts can reconstruct credentials absent from each part.
         text_parts = [item for item in value if type(item) is str]
         original_joined = ''.join(text_parts)
@@ -316,7 +346,7 @@ class EmissionBoundary:
             return ['[REDACTED]']
         if self._decoded_text_credential(sanitized_text, depth):
             return ['[REDACTED]']
-        return result
+        return _DROP if self._registered_native(result) else result
 
     def _metadata(self, key, value):
         if key == 'status' and type(value) is str and value in _STATUSES:
@@ -337,6 +367,8 @@ class EmissionBoundary:
     def export(self, payload):
         if type(payload) is not dict:
             return {}
+        if self._registered_native(payload):
+            return {}
         result = {}
         for key, value in payload.items():
             if type(key) is not str or _credential_key(key):
@@ -347,7 +379,7 @@ class EmissionBoundary:
                 clean = self._json(clean, set(), 0)
             if clean is not _DROP:
                 result[self._text(key)] = clean
-        return result
+        return {} if self._registered_native(result) else result
 
     def content_export(self, payload):
         """Explicit evidence callers retain content but share credential rules."""
