@@ -119,6 +119,16 @@ class EmissionBoundary:
         for secret in self._secrets:
             registered.extend((start, end, None)
                               for start, end in overlapping_ranges(value, secret))
+        # Detect inserted controls consistently with provider credential checks.
+        # Source offsets preserve ordinary controls outside matching ranges.
+        if not value.isprintable():
+            visible_offsets = [index for index, character in enumerate(value)
+                               if character.isprintable()]
+            visible = ''.join(value[index] for index in visible_offsets)
+            for secret in self._secrets:
+                registered.extend((visible_offsets[start], visible_offsets[end - 1] + 1, None)
+                                  for start, end in overlapping_ranges(visible, secret))
+            del visible_offsets, visible
         spans = list(registered)
         for match in _BEARER.finditer(value):
             visible = ''.join(character for character in match.group()
