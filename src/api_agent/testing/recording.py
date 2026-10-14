@@ -121,7 +121,7 @@ class RunRecorder:
             'start': started_ms, 'stop': stopped_ms,
         }
         if steps is not None:
-            row['steps'] = self._evidence.content_export({'steps': steps})['steps']
+            row['steps'] = self._evidence.content_export({'steps': steps}).get('steps', [])
         if result.status in {'cancelled', 'interrupted'}:
             row['statusDetails'] = {'message': 'Test interrupted'}
         elif status in {'failed', 'broken'}:

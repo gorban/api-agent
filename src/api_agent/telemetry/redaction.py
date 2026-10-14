@@ -92,7 +92,7 @@ def trailing_secret_prefix(captured, secret):
     return matched
 
 
-def detection_view(captured, *, strip_controls=True, decode_escapes=True):
+def detection_view(captured, *, strip_controls=True, decode_escapes=True, preserve_trailing_bytes=True):
     """Decode JSON escapes and retain compact original byte ranges."""
     from array import array
     text = captured.decode('utf-8', errors='surrogateescape')
@@ -126,7 +126,7 @@ def detection_view(captured, *, strip_controls=True, decode_escapes=True):
         for item in decoded:
             # Undecoded trailing UTF-8 bytes are significant credential-prefix
             # bytes, even though surrogateescape represents them as controls.
-            trailing_byte = (index >= trailing_start and 0xDC80 <= ord(item) <= 0xDCFF)
+            trailing_byte = (preserve_trailing_bytes and index >= trailing_start and 0xDC80 <= ord(item) <= 0xDCFF)
             # A decoded lone JSON surrogate is a nonprinting insertion, not
             # undecoded source UTF-8. Keeping surrogatepass bytes would hide
             # the otherwise recognizable prefix at a capture boundary.
@@ -160,7 +160,7 @@ def _credential_views(captured):
         decoded_starts, decoded_ends = _compose_offsets(local_starts, local_ends, starts, ends)
         if decoded != view:
             yield decoded, decoded_starts, decoded_ends
-        printable, local_starts, local_ends = detection_view(decoded, decode_escapes=False)
+        printable, local_starts, local_ends = detection_view(decoded, decode_escapes=False, preserve_trailing_bytes=False)
         if printable != decoded:
             printable_starts, printable_ends = _compose_offsets(
                 local_starts, local_ends, decoded_starts, decoded_ends)
@@ -196,14 +196,18 @@ def normalized_json(value, depth=0):
     if type(value) is dict:
         result = {}
         for key, item in value.items():
+            if type(key) is not str:
+                raise TypeError('JSON member keys must be strings.')
             normalized = printable_value(key)
             if normalized in result:
                 raise AmbiguousJSON('Normalized JSON members collide.')
             result[normalized] = normalized_json(item, depth + 1)
         return result
-    if type(value) is list:
+    if type(value) in (list, tuple):
         return [normalized_json(item, depth + 1) for item in value]
-    return value
+    if value is None or type(value) in (bool, int, float):
+        return value
+    raise TypeError('JSON values must use supported exact native types.')
 
 
 def _canonical_json(value):
@@ -253,9 +257,13 @@ def registered_json_value(value, secrets, *, registrations=None):
         return False
     try:
         return _canonical_json(normalized_json(value)) in registrations
-    except (TypeError, JSONDepthError):
-        # Unknown objects/non-string keys still follow the boundary's existing
-        # omission policy; JSON comparison must never stringify them.
+    except JSONDepthError:
+        return False
+    except AmbiguousJSON:
+        raise
+    except (TypeError, ValueError):
+        # Encoder limits and unsupported native values follow recursive
+        # omission; only ambiguous credential-bearing members fail closed.
         return False
 
 
