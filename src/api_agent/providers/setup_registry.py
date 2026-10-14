@@ -142,7 +142,7 @@ class SetupRegistry(_Owner):
             method = getattr(self._owner, 'complete', None)
             if not callable(method):
                 from .contracts import SetupPrerequisiteError
-                raise SetupPrerequisiteError('The selected LLM provider has no text completion capability.')
+                raise SetupPrerequisiteError('The selected LLM provider has no completion capability.')
             return await method(request)
         waiter = _spawn(invoke())
         lease['waiters'].add(waiter)

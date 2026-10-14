@@ -145,3 +145,36 @@ def test_post_acquisition_cancellation_publishes_before_rollback(tmp_path, monke
     assert completed.persisted and completed.exit_code == 130
     assert calls == ['published']
     assert manager.lease is None and not any(row['State']['Running'] for row in engine.records.values())
+
+
+@pytest.mark.parametrize('injected', [False, True])
+def test_requirement_validation_precedes_owner_acquisition(tmp_path, monkeypatch, injected):
+    context, test, config = fixture(tmp_path)
+    subject = owner([])
+    plan = SimpleNamespace(validate=Mock(side_effect=ValueError('invalid requirements')))
+    planner, factory = Mock(return_value=plan), Mock(return_value=subject)
+    monkeypatch.setattr(launched, 'plan_integration_requirements', planner)
+    monkeypatch.setattr(launched, 'local_recording_prerequisites', factory)
+    with pytest.raises(ValueError, match='invalid requirements'):
+        launched.run_launched_integration(context, [test], config, accepted=True,
+            prerequisites=subject if injected else None)
+    planner.assert_called_once_with((test,))
+    plan.validate.assert_called_once_with(context, config)
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize('requires_api', [False, True])
+def test_default_owner_uses_single_validated_requirement_plan(tmp_path, monkeypatch, requires_api):
+    context, test, config = fixture(tmp_path)
+    context.pack_root = context.owner_root
+    plan = SimpleNamespace(validate=Mock(), requires_pack_api=requires_api)
+    planner, factory = Mock(return_value=plan), Mock(return_value=owner([]))
+    monkeypatch.setattr(launched, 'plan_integration_requirements', planner)
+    monkeypatch.setattr(launched, 'local_recording_prerequisites', factory)
+    result = launched.run_launched_integration(context, [test], config, accepted=True,
+        storage=Storage(), runner=fake_runner())
+    assert result.exit_code == 0
+    planner.assert_called_once_with((test,))
+    plan.validate.assert_called_once_with(context, config)
+    expected = {'llm', 'api', 'upstream', 'access'} if requires_api else {'llm'}
+    assert factory.call_args.kwargs['provider_kinds'] == frozenset(expected)

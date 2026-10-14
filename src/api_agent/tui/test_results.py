@@ -28,9 +28,17 @@ def compact_cost(value):
 def test_details(result, usage, cost, *, historical_tokens=False):
     from api_agent.telemetry.usage_output import tokens_text, displayed_cost, historical_average, QUOTA_RESET_NOTE
     from api_agent.telemetry.estimation import quota_reset_observed
-    lines = [result.identity.id, '', f'Execution time: {result.duration:.3f}s',
+    local_diagnostic = getattr(result, 'local_diagnostic', '')
+    details = local_diagnostic or result.traceback or (
+        'ERROR — No failure diagnostic was captured for this test.'
+        if result.status == 'error' else result.status.upper())
+    failure = bool(local_diagnostic) or result.status in {'failed', 'error', 'broken'}
+    lines = [result.identity.id, '']
+    if failure:
+        lines.extend((details, ''))
+    lines.extend([f'Execution time: {result.duration:.3f}s',
              f"This test cost: {displayed_cost(cost.get('estimated_cost_usd'), usage)}",
-             f"  Historical average: {displayed_cost(historical_average((cost,)), usage)}"]
+             f"  Historical average: {displayed_cost(historical_average((cost,)), usage)}"])
     if historical_tokens:
         lines.append('Earlier compatible runs have recorded token usage.')
     if quota_reset_observed(usage):
@@ -38,11 +46,14 @@ def test_details(result, usage, cost, *, historical_tokens=False):
     if cost.get('basis') and cost['basis'] != 'unavailable':
         lines.append(f"Cost basis: {cost['basis']}")
     lines.append(tokens_text(usage, result.identity.id))
-    lines.extend(('', result.traceback or result.status.upper()))
+    if not failure:
+        lines.extend(('', details))
     text = Text('\n'.join(lines))
-    if not result.traceback:
+    if not (local_diagnostic or result.traceback):
         text.stylize('green' if result.status == 'passed' else 'dark_orange'
-                     if result.status == 'skipped' else 'red', len(text) - len(result.status))
+                     if result.status == 'skipped' else 'red',
+                     len(result.identity.id) + 2 if failure else len(text) - len(details),
+                     len(result.identity.id) + 2 + len(details) if failure else len(text))
     return text
 
 
@@ -102,8 +113,12 @@ def ordered_result_rows(rows, *, completed):
 
 def reconcile_results_table(table, rows, *, completed):
     """Keep the mounted table; replace rows only when identities/order change."""
-    keys = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
-    if keys != [key for key, _ in rows]:
+    keys = [row.key.value for row in table.ordered_rows]
+    selected = keys[table.cursor_row] if keys else None
+    scroll_y = table.scroll_y
+    first_completion = completed and not getattr(table, 'results_completed', False)
+    new_keys = [key for key, _ in rows]
+    if keys != new_keys:
         table.clear()
         for key, cells in rows:
             table.add_row(*(literal_cell(cell) for cell in cells), key=key)
@@ -111,8 +126,12 @@ def reconcile_results_table(table, rows, *, completed):
         for key, cells in rows:
             for column, value in zip(table.columns, cells):
                 table.update_cell(key, column, literal_cell(value))
-    if completed:
+    if first_completion or selected not in new_keys:
         table.move_cursor(row=0)
+    else:
+        table.move_cursor(row=new_keys.index(selected), scroll=False)
+        table.scroll_to(y=scroll_y, animate=False)
+    table.results_completed = completed
 
 
 def styled_summary(content, *, failed, skipped=False, neutral_details=False, green_prefixes=(), red_prefixes=()):

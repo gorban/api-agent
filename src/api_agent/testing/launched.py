@@ -8,6 +8,7 @@ from api_agent.runtime.ownership import StackScope
 from .prerequisites import local_recording_prerequisites
 from .recorded import validate_recorded_integration
 from .suite_lock import suite_locked
+from .requirements import plan_integration_requirements
 
 
 @suite_locked
@@ -21,12 +22,13 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     by their caller. Inspection handles transfer with the execution result.
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
+    plan = plan_integration_requirements(tests)
+    plan.validate(context, config)
     cancelled = options.setdefault('cancel_event', Event())
     if prerequisites is None:
         scope = StackScope.from_roots(context.base_root, context.pack_root)
-        from .requirements import plan_integration_requirements
         provider_kinds = {'llm'}
-        if plan_integration_requirements(tests).requires_pack_api:
+        if plan.requires_pack_api:
             provider_kinds.update(('api', 'upstream', 'access'))
         prerequisites = local_recording_prerequisites(context, scope=scope,
             ownership_directory=context.owner_root / 'artifacts' / 'prerequisites',

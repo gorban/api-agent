@@ -49,7 +49,7 @@ class GPTProvider:
         # including calls made with newly allocated HTTP clients.
         self.cache_session_id = str(uuid4())
         self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
-                                                 features=("cache_policy",) if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy"))
+                                                 features=("cache_policy", "structured", "tools") if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy", "structured", "tools"))
         self.cache_policy = config.get('LLM_CACHE_POLICY')
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")

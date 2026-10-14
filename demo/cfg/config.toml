@@ -7,3 +7,28 @@
 
 # Demo uses the shared configuration without product-specific extensions.
 version = 1
+
+[fields.WORKFLOW_LLM_TIMEOUT_SECONDS]
+type = "float"
+default = 120.0
+validation = "positive"
+acknowledge_default = false
+help = "Contrived producer inference timeout in seconds, clipped to enclosing deadlines."
+
+[fields.WORKFLOW_NODE_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+acknowledge_default = false
+help = "Optional per-node timeout in seconds; omitted nodes inherit enclosing deadlines."
+
+[fields.WORKFLOW_COMPONENT_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+acknowledge_default = false
+help = "Optional per-component timeout in seconds across all passes; omitted by default."
+
+[fields.WORKFLOW_GRAPH_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+acknowledge_default = false
+help = "Optional whole-graph timeout in seconds; omitted by default."

@@ -113,6 +113,9 @@ def test_pack_validator_failure_never_displays_secret(tmp_path, monkeypatch, cap
             app.context=app.session.context=context
             async with app.run_test() as pilot:
                 await pilot.pause()
+                assert app.screen.kind == 'defaults'
+                await pilot.press('c')
+                await pilot.pause()
                 assert app.screen.kind=='unavailable'
                 content=str(app.screen.query_one('#body',Static).content)
                 assert message in content

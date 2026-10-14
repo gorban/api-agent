@@ -1014,7 +1014,8 @@ def test_ready_hook_propagates_create_and_final_readability_failures(tmp_path, f
     (200, {'completed': True, 'scripts': [{'name': '10-api-agent-s3.sh', 'state': 'ERROR'}]}, False),
     (200, {'completed': True, 'scripts': [{'name': 'other.sh', 'state': 'SUCCESSFUL'}]}, False),
     (200, {'completed': True, 'scripts': [{'name': '10-api-agent-s3.sh', 'state': 'SUCCESSFUL'}]}, True)])
-def test_localstack_readiness_waits_for_automatic_selected_bucket_hook(monkeypatch, status, stage, expected):
+@pytest.mark.parametrize('port', ['4566', '14566'])
+def test_localstack_readiness_waits_for_automatic_selected_bucket_hook(monkeypatch, status, stage, expected, port):
     urls = []
     class Response:
         def __init__(self, status, body): self.status, self.body = status, body
@@ -1029,8 +1030,9 @@ def test_localstack_readiness_waits_for_automatic_selected_bucket_hook(monkeypat
             return Response(200, {'services': {'s3': 'available'}})
         return Response(status, stage)
     monkeypatch.setattr(p, 'urlopen', open_local)
-    assert p._readiness('localstack', .1, {}) is expected
-    assert urls == ['http://127.0.0.1:4566/_localstack/health', 'http://127.0.0.1:4566/_localstack/init/ready']
+    environment = {} if port == '4566' else {'SA_LOCALSTACK_PORT': port}
+    assert p._readiness('localstack', .1, environment) is expected
+    assert urls == [f'http://127.0.0.1:{port}/_localstack/health', f'http://127.0.0.1:{port}/_localstack/init/ready']
 
 
 @pytest.mark.parametrize('restart', [False, True])

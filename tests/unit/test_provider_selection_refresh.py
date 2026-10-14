@@ -55,6 +55,11 @@ def test_open_configuration_table_rebuilds_after_provider_switch(tmp_path, clean
             'LLM_PROVIDER': {'type': 'str', 'default': first, 'review_optional': True}})
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            if cleanup:
+                await pilot.press('c')
+                await pilot.pause()
+                assert app.screen.kind == 'cleanup'
             table = app.screen.query_one(DataTable)
             names = lambda: [row.key.value for row in table.ordered_rows]
             assert 'FIRST_REQUIRED' in names() and 'SECOND_REQUIRED' not in names()

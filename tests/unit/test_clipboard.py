@@ -96,6 +96,11 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
         monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            if mode == 'config-cleanup':
+                await pilot.press('c')
+                await pilot.pause()
+                assert app.screen.kind == 'cleanup'
             screen = app.screen
             table = screen.query_one(DataTable)
             if mode is None:

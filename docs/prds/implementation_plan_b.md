@@ -2,6 +2,9 @@
 
 ## Checklist
 
+The [Markdown workflow PoC](implementation_plan_b2.md) records the concrete
+grammar, permanent fixture and implementation acceptance gates.
+
 - [ ] Define declarative formats for configuration and LangGraph flow, and identify other behavior that should use executable descriptions during planning.
   - [ ] Let implementors choose and evolve the concrete configuration/pack declaration formats as they implement the consuming tasks. Make schemas versioned and runtime-validated, with examples and generated documentation for human review. Implement the fields needed now; include likely later fields together when their data/contracts are already known and convenient, without making inactive future features required. Review the resulting declarations through the parent implementation checkpoints rather than requiring a complete schema design before implementation.
   - [ ] Require a type for each configuration value and describe whether it is optional and whether it has a default. Use these declarations for the TUI/application type checks, missing-value handling, environment/CLI mapping, and generated configuration documentation.

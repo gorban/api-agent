@@ -271,7 +271,8 @@ def test_child_start_failure_returns_missing_error(tmp_path, monkeypatch):
     assert 'private path' not in result.output
 
 
-def test_synthetic_partial_and_corrupt_event_protocol(tmp_path, monkeypatch):
+@pytest.mark.parametrize('invalid_events', [1, 2])
+def test_synthetic_partial_and_corrupt_event_protocol(tmp_path, monkeypatch, invalid_events):
     base = fixture_repo(tmp_path / 'base')
     ctx = context(base)
     selected = collect_tests(ctx, 'integration')
@@ -281,15 +282,18 @@ def test_synthetic_partial_and_corrupt_event_protocol(tmp_path, monkeypatch):
 p = sys.argv[1]
 with open(p, 'a') as f:
  f.write('{"kind":"test_started","node":"unknown"}\\n')
- f.write('{bad json}\\n')
+ f.write('{bad json}\\n' * %s)
  f.write('{"kind":"unknown","node":"%s"}\\n')
  f.write('{"kind":"report","node":"%s","phase":"setup","status":"passed","duration":0.1,"traceback":""}\\n')
 print('synthetic')
-''' % (node, node)
+''' % (invalid_events, node, node)
     monkeypatch.setattr('api_agent.testing.integration._PLUGIN', script)
     result = run_integration_tests(ctx, selected, accepted=True)
     assert result.exit_code == 1 and result.tests[0].status == 'error'
-    assert 'Invalid integration test event' in result.output
+    assert result.output.count('Invalid integration test event') == invalid_events
+    assert result.tests[0].traceback.count('Integration report protocol failed: invalid pytest event received.') == 1
+    assert 'JSONDecodeError:' in result.tests[0].local_diagnostic
+    assert 'JSONDecodeError:' not in result.tests[0].traceback
 
 
 def test_finished_event_callback_failure_changes_status(tmp_path):

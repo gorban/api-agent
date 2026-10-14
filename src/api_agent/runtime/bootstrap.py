@@ -102,6 +102,9 @@ def resource_pack_main(argv=None, *, launcher_root):
 
 
 def _retains_cleanup(error):
+    from api_agent.providers.control import CleanupPendingError
+    if isinstance(error, CleanupPendingError):
+        return True
     group = getattr(error, 'inspection_group', None)
     if group is not None and group.active:
         return True
@@ -231,27 +234,61 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print(format_unit_summary(execution))
             return execution.exit_code
         if result.values.get('NO_STD_IN') and mode == 'integration' and automatically_started(result):
-            from api_agent.runtime.dependencies import ensure_environment
-            status = ensure_environment(context, argv, collect=True, groups=('dev',))
-            if status is not None:
-                return status
-            from api_agent.testing.collection import collect_tests
-            from api_agent.testing.launched import run_launched_integration
-            from api_agent.telemetry.privacy import ContentPolicy
-            tests = collect_tests(context, 'integration', result.positionals, config=result.values)
-            print('Integration debug: shared authentication; provider login may require browser interaction.'
-                  if result.values.get('DEBUG') else 'Integration tests: provider login may require browser interaction.', flush=True)
-            from api_agent.auth.terminal_interaction import TerminalInteraction
-            execution = run_launched_integration(context, tests, result.values, accepted=True,
-                content_policy=ContentPolicy.from_config(result),
-                interaction=TerminalInteraction(),
-                usage_output=lambda line: print(line, flush=True) if '\n' not in line else None,
-                unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
-                output=lambda chunk: print(chunk, end='', flush=True))
-            from api_agent.testing.inspection_controls import finish_terminal_inspection
-            if not finish_terminal_inspection(execution, lambda line: print(line, flush=True)):
-                return 3
-            return execution.exit_code
+            from api_agent.testing.diagnostics import CredentialScrubber, format_exception, terminal_exception
+            scrubber = CredentialScrubber(result.values)
+
+            def diagnostic_output(text):
+                print(scrubber(text), file=sys.stderr, flush=True)
+
+            pending_output = ''
+
+            def runner_output(chunk):
+                nonlocal pending_output
+                pending_output += chunk
+                lines = pending_output.split('\n')
+                pending_output = lines.pop()
+                for line in lines:
+                    print(scrubber(line), flush=True)
+
+            try:
+                from api_agent.runtime.dependencies import ensure_environment
+                status = ensure_environment(context, argv, collect=True, groups=('dev',))
+                if status is not None:
+                    return status
+                from api_agent.testing.collection import collect_tests
+                from api_agent.testing.launched import run_launched_integration
+                from api_agent.telemetry.privacy import ContentPolicy
+                tests = collect_tests(context, 'integration', result.positionals, config=result.values)
+                print('Integration debug: shared authentication; provider login may require browser interaction.'
+                      if result.values.get('DEBUG') else 'Integration tests: provider login may require browser interaction.', flush=True)
+                from api_agent.auth.terminal_interaction import TerminalInteraction
+                try:
+                    execution = run_launched_integration(context, tests, result.values, accepted=True,
+                        content_policy=ContentPolicy.from_config(result),
+                        interaction=TerminalInteraction(),
+                        usage_output=lambda line: print(scrubber(line), flush=True) if '\n' not in line else None,
+                        unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
+                        output=runner_output)
+                finally:
+                    if pending_output:
+                        print(scrubber(pending_output), end='', flush=True)
+                from api_agent.testing.inspection_controls import finish_terminal_inspection
+                if not finish_terminal_inspection(execution, lambda line: print(scrubber(line), flush=True),
+                                                  diagnostic_output=diagnostic_output):
+                    return 3
+                return execution.exit_code
+            except BaseException as error:
+                diagnostic_output(format_exception(error, boundary='Noninteractive integration execution'))
+                if _retains_cleanup(error):
+                    raise terminal_exception(error, scrubber,
+                        boundary='Noninteractive integration cleanup remains pending') from None
+                if isinstance(error, KeyboardInterrupt):
+                    return 130
+                if isinstance(error, (ValueError, OSError, WorktreeGateError, subprocess.CalledProcessError)):
+                    return 2
+                if isinstance(error, (SystemExit, GeneratorExit)):
+                    raise terminal_exception(error, scrubber) from None
+                return 1
         if result.values.get('NO_STD_IN'):
             if mode in {'run-local', 'e2e'}:
                 from api_agent.auth.extensions import validate_operation

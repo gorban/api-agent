@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "draft": {
+      "type": "object",
+      "properties": {
+        "original_input": {
+          "type": "string"
+        },
+        "route": {
+          "type": "string",
+          "enum": [
+            "skip",
+            "next_a",
+            "next_b"
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "final_output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "original_input",
+        "route",
+        "ready",
+        "final_output"
+      ],
+      "additionalProperties": false
+    },
+    "user_input": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "draft",
+    "user_input"
+  ],
+  "additionalProperties": false
+}

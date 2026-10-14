@@ -261,7 +261,8 @@ def test_noninteractive_debug_integration_dispatch_and_prepare_failure(monkeypat
     monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *a, **k: None)
     monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
     from api_agent.testing.collection import TestIdentity
-    selected = TestIdentity('base::test.py::selected', 'base', 'test.py', 'test.py::selected')
+    selected = TestIdentity('base::tests/integration/test_demo.py::test_selected', 'base',
+                            'tests/integration/test_demo.py', 'tests/integration/test_demo.py::test_selected')
     monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *a, **k: [selected])
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **k: None)
     calls = []

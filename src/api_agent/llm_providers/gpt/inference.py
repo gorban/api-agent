@@ -1,4 +1,5 @@
 """Bounded text inference; caller owns HTTP transport and selected authentication."""
+from asyncio import sleep
 import json
 from uuid import UUID
 
@@ -11,7 +12,10 @@ from .discovery import _endpoint, _failure, _authentication_type
 from .cache_policy import prompt_cache_fields
 
 _LIMIT = 1048576
-_TIMEOUT = 60
+_TIMEOUT = 120
+_RETRY_CODE = "subscription_sharing_user_unavailable"
+_RETRY_DELAYS = (1, 5, 15, 30)
+_RETRY_RESPONSE_RESERVE = 20
 
 
 def _invalid(message='GPT inference returned an invalid result.'):
@@ -41,6 +45,9 @@ def _payload(request, api_mode, subscription):
     if not isinstance(request, LLMRequest):
         raise ProviderAccessError('invalid_request', 'GPT inference requires an LLM request.')
     payload = request.payload
+    if payload.tools or payload.structured is not None:
+        from .rich import payload as rich_payload
+        return rich_payload(request, api_mode, subscription)
     if (payload.tools or payload.structured is not None or payload.generation.temperature is not None
             or any(row.calls or row.results or row.role == 'tool' for row in payload.messages)):
         raise ProviderAccessError('unsupported', 'GPT text inference does not support the requested feature.')
@@ -107,20 +114,31 @@ def _result(data, responses, token):
 def _result_body(data, responses, token):
     if type(data) is not dict:
         raise _invalid()
+    if (responses and isinstance(data.get('output'), list) and any(isinstance(item, dict) and item.get('type') == 'function_call' and 'call_id' in item for item in data['output'])) or (not responses and isinstance(data.get('choices'), list) and any(isinstance(item, dict) and item.get('finish_reason') == 'tool_calls' for item in data['choices'])):
+        from .rich import tool_result
+        return tool_result(data, responses, token)
     text, outcome = [], 'completed'
     if responses:
-        if data.get('status') != 'completed' or type(data.get('output')) is not list:
+        if data.get('status') not in ('completed', 'incomplete') or type(data.get('output')) is not list:
             raise _invalid('GPT inference did not complete successfully.')
+        if data['status'] == 'incomplete':
+            if type(data.get('incomplete_details')) is not dict or data['incomplete_details'].get('reason') != 'max_output_tokens':
+                raise _invalid('GPT inference did not complete successfully.')
+            outcome = 'length'
         for row in data['output']:
             if type(row) is not dict:
                 raise _invalid()
-            if row.get('status') not in (None, 'completed'):
+            if row.get('status') not in (None, 'completed') and not (outcome == 'length' and row.get('status') == 'incomplete'):
                 raise _invalid('GPT inference returned an unfinished output item.')
             if row.get('type') == 'reasoning':
                 continue
             if row.get('type') != 'message' or row.get('role') != 'assistant' or type(row.get('content')) is not list:
                 raise _invalid()
             for part in row['content']:
+                if type(part) is dict and part.get('type') == 'refusal' and type(part.get('refusal')) is str:
+                    text.append(part['refusal'])
+                    outcome = 'refused'
+                    continue
                 if type(part) is not dict or part.get('type') != 'output_text' or type(part.get('text')) is not str:
                     raise _invalid()
                 text.append(part['text'])
@@ -130,12 +148,15 @@ def _result_body(data, responses, token):
             raise _invalid()
         row = choices[0]
         message = row.get('message')
+        if type(message) is dict and type(message.get('refusal')) is str and message['refusal'] and row.get('finish_reason') == 'stop' and not message.get('tool_calls') and message.get('role') == 'assistant':
+            message = dict(message, content=message['refusal'], refusal=None)
+            outcome = 'refused'
         if (row.get('finish_reason') not in ('stop', 'length') or type(message) is not dict
                 or message.get('role') != 'assistant' or type(message.get('content')) is not str
                 or message.get('tool_calls') or message.get('refusal')):
             raise _invalid()
         text.append(message['content'])
-        outcome = 'length' if row['finish_reason'] == 'length' else 'completed'
+        outcome = 'length' if row['finish_reason'] == 'length' else outcome
     joined = ''.join(text)
     if token in joined or token in ''.join(character for character in joined if character.isprintable()):
         raise _invalid('GPT inference returned protected authentication content.')
@@ -189,7 +210,7 @@ def _stream_identity(item, *, finished=False):
     identifier = item.get('id')
     kind = item.get('type')
     if (type(identifier) is not str or not identifier or len(identifier) > 200
-            or not identifier.isprintable() or kind not in ('message', 'reasoning')):
+            or not identifier.isprintable() or kind not in ('message', 'reasoning', 'function_call')):
         raise _invalid()
     if finished and (item.get('status') != 'completed' and not (kind == 'reasoning' and item.get('status') is None)):
         raise _invalid('GPT inference returned an unfinished output item.')
@@ -209,7 +230,7 @@ def _stream_completed(response, added, completed, token):
                 raise _invalid('GPT inference terminal output conflicts with finished items.')
             for left, right in zip(terminal, recovered):
                 if (_stream_identity(left, finished=True) != _stream_identity(right, finished=True)
-                        or left.get('role') != right.get('role') or left.get('content') != right.get('content')):
+                        or any(left.get(key) != right.get(key) for key in ('role', 'content', 'phase', 'call_id', 'name', 'arguments', 'encrypted_content', 'summary'))):
                     raise _invalid('GPT inference terminal output conflicts with finished items.')
         response = dict(response, output=recovered)
     return _result(response, True, token)
@@ -224,6 +245,7 @@ def _sse(body, token, request_id):
         raise _invalid() from None
     final = None
     added, completed, identifiers = {}, {}, set()
+    arguments, argument_done, call_identity = {}, set(), {}
     response_id = None
     for block in text.split('\n\n'):
         values = [line[5:].lstrip(' ') for line in block.split('\n') if line.startswith('data:')]
@@ -259,14 +281,37 @@ def _sse(body, token, request_id):
                     raise _invalid('GPT inference stream contains duplicate output items.')
                 added[index] = identity
                 identifiers.add(identity[0])
+                if identity[1] == 'function_call':
+                    item = data['item']
+                    if type(item.get('call_id')) is not str or type(item.get('name')) is not str or item.get('arguments') not in (None, ''):
+                        raise _invalid('GPT inference stream contains invalid function identity.')
+                    call_identity[index] = (item['call_id'], item['name'])
             elif kind == 'response.output_item.done':
                 item = data.get('item')
                 if index not in added or index in completed or _stream_identity(item, finished=True) != added[index]:
                     raise _invalid('GPT inference stream contains inconsistent output items.')
+                if added[index][1] == 'function_call':
+                    if (item.get('call_id'), item.get('name')) != call_identity[index]:
+                        raise _invalid('GPT inference stream changed function identity.')
+                    if index in arguments and item.get('arguments') != arguments[index]:
+                        raise _invalid('GPT inference stream changed function arguments.')
                 completed[index] = item
             else:
                 if index not in added or index in completed or data.get('item_id') != added[index][0]:
                     raise _invalid('GPT inference stream contains inconsistent output identities.')
+                if kind in ('response.function_call_arguments.delta', 'response.function_call_arguments.done'):
+                    if added[index][1] != 'function_call' or index in argument_done:
+                        raise _invalid('GPT inference stream contains inconsistent function arguments.')
+                    fragment = data.get('delta' if kind.endswith('.delta') else 'arguments')
+                    if type(fragment) is not str:
+                        raise _invalid()
+                    if kind.endswith('.delta'):
+                        arguments[index] = arguments.get(index, '') + fragment
+                    else:
+                        if index in arguments and fragment != arguments[index]:
+                            raise _invalid('GPT inference stream changed function arguments.')
+                        arguments[index] = fragment
+                        argument_done.add(index)
                 if 'content_index' in data and (type(data['content_index']) is not int or not 0 <= data['content_index'] < 64):
                     raise _invalid()
         elif kind in ('response.output_item.added', 'response.output_item.done'):
@@ -274,6 +319,12 @@ def _sse(body, token, request_id):
         if kind in ('response.failed', 'response.incomplete', 'error'):
             response = data.get('response')
             if kind == 'response.incomplete':
+                if (type(response) is dict and type(response.get('incomplete_details')) is dict
+                        and response['incomplete_details'].get('reason') == 'max_output_tokens'):
+                    if response_id is not None and response.get('id') != response_id:
+                        raise _invalid('GPT inference terminal response identity changed.')
+                    final = _result(response, True, token)
+                    continue
                 raise _reported_usage(_invalid('GPT inference returned an incomplete response.'),
                                       response.get('usage') if type(response) is dict else None, True)
             failure = response if type(response) is dict else data
@@ -300,11 +351,15 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
         raise ProviderAccessError('invalid_request', 'GPT subscription inference requires responses mode.')
     base_url = _endpoint(base_url, access_token, subscription)
     body = _payload(request, api_mode, subscription)
+    from .rich import _protected
+    from api_agent.providers.rich_inference import continuation
+    if any(message.continuation is not None and _protected(continuation(message.continuation), access_token) for message in request.payload.messages):
+        raise ProviderAccessError('invalid_request', 'GPT provider continuation contains protected authentication content.')
     body.update(prompt_cache_fields(request.payload.generation.cache_policy, request.selected_llm,
                                   base_url=base_url, subscription=subscription))
     if base_url == 'https://openrouter.ai/api/v1' and request.payload.generation.cache_policy in ('medium', 'high'):
         rows = body['input' if api_mode == 'responses' else 'messages']
-        if not rows[-1]['content']:
+        if not rows[-1].get('content'):
             raise ProviderAccessError('unsupported', 'OpenRouter enabled prompt-cache presets require a nonempty final text message.')
         rows[-1]['content'] = [{'type': 'input_text' if api_mode == 'responses' else 'text',
                                'text': rows[-1]['content'], 'prompt_cache_breakpoint': {'mode': 'explicit'}}]
@@ -312,7 +367,7 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
 
 
 async def complete_text(*, client, base_url, access_token, subscription, api_mode, request, cache_session_id=None):
-    """One request, no discovery, retry, credential fallback or result cache."""
+    """Bounded inference with retries only for known pre-inference admission failures."""
     base_url, body = validate_text_request(base_url=base_url, access_token=access_token,
         subscription=subscription, api_mode=api_mode, request=request)
     headers = {'Authorization': 'Bearer ' + access_token, 'Accept-Encoding': 'identity'}
@@ -328,40 +383,23 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
         headers['session-id'] = cache_session_id
     try:
         async with component_timeout('GPT text inference', _TIMEOUT) as budget:
-            async with client.stream('POST', base_url + ('/responses' if api_mode == 'responses' else '/chat/completions'),
-                    json=body, headers=headers,
-                    follow_redirects=False, timeout=budget.remaining) as response:
-                if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
-                    raise _invalid('GPT inference returned unsupported content encoding.')
-                raw = bytearray()
-                async for chunk in response.aiter_bytes():
-                    if len(raw) + len(chunk) > _LIMIT:
-                        raise _invalid('GPT inference response exceeded its limit.')
-                    raw.extend(chunk)
-                request_id = response.headers.get('x-request-id')
-                if response.status_code != 200:
-                    try:
-                        data = _json(raw)
-                    except ProviderAccessError:
-                        data = None
-                    raise _rejection(response.status_code, data, request_id, access_token,
-                                   _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
-                if subscription:
-                    if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
-                        raise _invalid('GPT subscription inference requires an event stream.')
-                    return _sse(raw, access_token, request_id)
-                data = _json(raw)
-                result = _result(data, api_mode == 'responses', access_token)
-                if base_url == 'https://openrouter.ai/api/v1':
-                    from dataclasses import replace
-                    usage = _usage(data.get('usage'), api_mode == 'responses', router=True)
-                    try:
-                        billing = _billing(data, request_id, access_token)
-                    except ProviderAccessError as error:
-                        error.usage = usage
+            attempt = 0
+            while True:
+                try:
+                    return await _complete_attempt(client=client, base_url=base_url, headers=headers,
+                        body=body, subscription=subscription, api_mode=api_mode, request=request,
+                        access_token=access_token, budget=budget)
+                except ProviderAccessError as error:
+                    if (error.execution != 'not_started' or error.code != _RETRY_CODE
+                            or attempt == len(_RETRY_DELAYS)):
                         raise
-                    result = replace(result, usage=usage, billing=billing)
-                return result
+                    delay = _RETRY_DELAYS[attempt]
+                    if budget.remaining < delay + _RETRY_RESPONSE_RESERVE:
+                        raise
+                    await sleep(delay)
+                    if budget.remaining < _RETRY_RESPONSE_RESERVE:
+                        raise
+                    attempt += 1
     except (TimeoutError, httpx.TimeoutException):
         error = ProviderAccessError('deadline', 'GPT inference timed out.')
         error.execution = 'possibly_executed'
@@ -370,3 +408,61 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
         error = ProviderAccessError('unavailable', 'GPT inference transport is unavailable.')
         error.execution = 'possibly_executed'
         raise error from None
+
+
+def _admission_rejection(status, data, subscription):
+    """Recognize a bounded admission envelope without execution evidence."""
+    if not (subscription and status == 503 and type(data) is dict and set(data) == {'error'}
+            and type(data['error']) is dict
+            and set(data['error']) <= {'code', 'message', 'type', 'param'}
+            and data['error'].get('code') == _RETRY_CODE):
+        return False
+    for name, limit in (('message', 512), ('type', 100), ('param', 200)):
+        value = data['error'].get(name)
+        if value is not None and (type(value) is not str or len(value) > limit):
+            return False
+    return True
+
+
+async def _complete_attempt(*, client, base_url, headers, body, subscription, api_mode,
+                            request, access_token, budget):
+    """Own and close one HTTP response before the caller decides to retry."""
+    async with client.stream('POST', base_url + ('/responses' if api_mode == 'responses' else '/chat/completions'),
+            json=body, headers=headers,
+            follow_redirects=False, timeout=budget.remaining) as response:
+        if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
+            raise _invalid('GPT inference returned unsupported content encoding.')
+        raw = bytearray()
+        async for chunk in response.aiter_bytes():
+            if len(raw) + len(chunk) > _LIMIT:
+                raise _invalid('GPT inference response exceeded its limit.')
+            raw.extend(chunk)
+        request_id = response.headers.get('x-request-id')
+        if response.status_code != 200:
+            try:
+                data = _json(raw)
+            except ProviderAccessError:
+                data = None
+            error = _rejection(response.status_code, data, request_id, access_token,
+                               _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
+            if _admission_rejection(response.status_code, data, subscription):
+                error.execution = 'not_started'
+            raise error
+        if subscription:
+            if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
+                raise _invalid('GPT subscription inference requires an event stream.')
+            from .rich import validate_result
+            return validate_result(request, _sse(raw, access_token, request_id), access_token)
+        data = _json(raw)
+        result = _result(data, api_mode == 'responses', access_token)
+        if base_url == 'https://openrouter.ai/api/v1':
+            from dataclasses import replace
+            usage = _usage(data.get('usage'), api_mode == 'responses', router=True)
+            try:
+                billing = _billing(data, request_id, access_token)
+            except ProviderAccessError as error:
+                error.usage = usage
+                raise
+            result = replace(result, usage=usage, billing=billing)
+        from .rich import validate_result
+        return validate_result(request, result, access_token)

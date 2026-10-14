@@ -105,10 +105,12 @@ _inspection_providers = []
 class IntegrationLLM:
     """Creating-loop operation owner; shared consumers reach it through the backend."""
     def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None,
-                 password_manager_registry=None, password_manager_pack_root=None, interaction=None, quota_observer=None):
+                 password_manager_registry=None, password_manager_pack_root=None, interaction=None, quota_observer=None,
+                 skip_unavailable=True):
         from api_agent.auth.interaction_transport import OwnedInteraction
         self.interaction = None if interaction is None else OwnedInteraction(interaction)
         self.config = dict(config)
+        self.skip_unavailable = skip_unavailable
         from .inference_content import content_boundary
         self.emissions = content_boundary(self.config)
         self.owner_root = owner_root
@@ -349,6 +351,8 @@ class IntegrationLLM:
             return result
         except SetupPrerequisiteError as error:
             publish(request, result, call_id=call_id, failed=True)
+            if not self.skip_unavailable:
+                raise
             pytest.skip(str(error))
         except BaseException as error:
             publish(request, result, call_id=call_id, failed=True, error=error)
@@ -363,6 +367,8 @@ class IntegrationLLM:
         try:
             return self._run_private(self._describe())
         except SetupPrerequisiteError as error:
+            if not self.skip_unavailable:
+                raise
             pytest.skip(str(error))
 
     def ensure_ready(self):
@@ -371,6 +377,8 @@ class IntegrationLLM:
         try:
             self._run_private(self._ensure())
         except SetupPrerequisiteError as error:
+            if not self.skip_unavailable:
+                raise
             pytest.skip(str(error))
 
     def _run_private(self, awaitable):
@@ -585,8 +593,9 @@ class IntegrationRequirements:
     of the launch mapping. False and zero are provided values, not missing ones.
     Reasons name settings/requirements, never their potentially secret values.
     """
-    def __init__(self, values):
+    def __init__(self, values, owner_root=None):
         self.values = dict(values)
+        self.owner_root = owner_root
 
     def require(self, *names):
         missing = [name for name in names if self.values.get(name) is None or self.values.get(name) == '']
@@ -601,7 +610,8 @@ class IntegrationRequirements:
 @pytest.fixture(scope='session')
 def integration_config():
     """Require only settings used by this test, not unrelated suite settings."""
-    return IntegrationRequirements(_read_snapshot()['config'])
+    snapshot = _read_snapshot()
+    return IntegrationRequirements(snapshot['config'], snapshot['owner_root'])
 
 
 @pytest.hookimpl(wrapper=True)

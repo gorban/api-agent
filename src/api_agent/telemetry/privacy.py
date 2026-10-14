@@ -13,6 +13,7 @@ import re
 from uuid import UUID
 
 from api_agent.config.resolve import ConfigResult
+from api_agent.telemetry.redaction import overlapping_ranges
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,8 @@ _COUNTS = frozenset({'input_tokens', 'output_tokens', 'total_tokens', 'token_cou
 _DURATIONS = frozenset({'duration_ms', 'duration_seconds'})
 _IDS = frozenset({'correlation_id', 'request_id', 'trace_id', 'span_id', 'run_id'})
 
+_BEARER = re.compile(r'(?i)\bbearer\s+(?!\[redacted\](?=$|[\s,;"\'}]))[^\s,;"\'}]+')
+
 
 def _credential_key(key):
     normalized = re.sub(r'(?<=[a-z])(?=[A-Z])', '_', key).lower().replace('-', '_')
@@ -61,6 +64,23 @@ def _credential_key(key):
         return False
     return (normalized in _SECRET_KEYS or
             any(part in _SECRET_KEYS for part in normalized.split('_')))
+
+
+class _DuplicateJSONKey(ValueError):
+    pass
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJSONKey()
+        result[key] = value
+    return result
+
+
+def _parse_json(value):
+    return json.loads(value, object_pairs_hook=_unique_object)
 
 
 class EmissionBoundary:
@@ -93,9 +113,110 @@ class EmissionBoundary:
         self._secrets.add(secret)
 
     def _text(self, value):
-        for secret in sorted(self._secrets, key=len, reverse=True):
-            value = value.replace(secret, '[REDACTED]')
-        return re.sub(r'(?i)\bbearer\s+(?!\[redacted\](?=$|[\s,;\"\'}]))[^\s,;\"\'}]+', 'Bearer [REDACTED]', value)
+        # Collect every range from the original text. Replacing a registered
+        # scheme or an inner Bearer token first can conceal the other guard.
+        registered = []
+        for secret in self._secrets:
+            registered.extend((start, end, None)
+                              for start, end in overlapping_ranges(value, secret))
+        spans = list(registered)
+        for match in _BEARER.finditer(value):
+            visible = ''.join(character for character in match.group()
+                              if character.isprintable() or character.isspace())
+            # A trailing format/control character does not turn the public
+            # redaction sentinel into a new credential. A real suffix does.
+            if re.fullmatch(r'(?i)bearer\s+\[redacted\]', visible) is None:
+                spans.append((match.start(), match.end(), match.start() + 6))
+        # The printable view is detection-only. Original offsets preserve all
+        # unrelated controls and whitespace when a concealed scheme matches.
+        characters = []
+        offsets = []
+        for index, character in enumerate(value):
+            if character.isprintable() or character.isspace():
+                characters.append(character)
+                offsets.append(index)
+        printable = ''.join(characters)
+        spans.extend((offsets[match.start()], offsets[match.end() - 1] + 1,
+                      offsets[match.start() + 5] + 1)
+                     for match in _BEARER.finditer(printable))
+        merged = []
+        for start, end, scheme_end in sorted(spans, key=lambda span: (span[0], span[1])):
+            if merged and start < merged[-1][1]:
+                previous_start, previous_end, previous_scheme = merged[-1]
+                if start == previous_start and scheme_end is not None:
+                    previous_scheme = scheme_end
+                merged[-1] = (previous_start, max(previous_end, end), previous_scheme)
+            else:
+                merged.append((start, end, scheme_end))
+        for start, end, scheme_end in reversed(merged):
+            replacement = '[REDACTED]'
+            if (scheme_end is not None and
+                    not any(secret_start < scheme_end and secret_end > start
+                            for secret_start, secret_end, _ in registered) and
+                    not any(secret in 'Bearer [REDACTED]' for secret in self._secrets)):
+                replacement = 'Bearer [REDACTED]'
+            value = value[:start] + replacement + value[end:]
+        return value
+
+    def _serialized_credential(self, encoded):
+        """Share registered JSON representation checks across emission paths.
+
+        Bearer syntax belongs to decoded text, not its escaped JSON carrier.
+        """
+        if any(secret in encoded for secret in self._secrets):
+            return True
+        for secret in self._secrets:
+            try:
+                normalized_secret = json.dumps(_parse_json(secret), ensure_ascii=False)
+            except (ValueError, RecursionError):
+                continue
+            if normalized_secret in encoded:
+                return True
+        return False
+
+    def _decoded_text_credential(self, value, depth):
+        """Check joined JSON representations without rewriting ordinary parts."""
+        if depth > 20:
+            return True
+        if any(secret in value for secret in self._secrets):
+            return True
+        try:
+            decoded = _parse_json(value)
+        except _DuplicateJSONKey:
+            return True
+        except RecursionError:
+            return True
+        except ValueError:
+            return self._text(value) != value
+        try:
+            encoded = json.dumps(decoded, ensure_ascii=False)
+        except RecursionError:
+            return True
+        return (self._serialized_credential(encoded) or
+                self._decoded_value_credential(decoded, depth + 1))
+
+    def _decoded_value_credential(self, value, depth):
+        if depth > 20:
+            return True
+        if type(value) is str:
+            return self._decoded_text_credential(value, depth)
+        if type(value) is dict:
+            return any(_credential_key(key) or self._text(key) != key or
+                       self._decoded_value_credential(item, depth + 1)
+                       for key, item in value.items())
+        if type(value) is list:
+            joined = ''.join(item for item in value if type(item) is str)
+            if self._decoded_text_credential(joined, depth + 1):
+                return True
+            if any(self._decoded_value_credential(item, depth + 1) for item in value):
+                return True
+            # Apply existing part canonicalization for detection only. Numeric
+            # text omission can join a credential absent from the raw array.
+            parts = [self._json(item, set(), depth + 1) for item in value
+                     if type(item) is str]
+            normalized = ''.join(item for item in parts if type(item) is str)
+            return self._decoded_text_credential(normalized, depth + 1)
+        return str(value) in self._secrets
 
     def _json(self, value, seen, depth):
         if depth > 20:
@@ -106,7 +227,9 @@ class EmissionBoundary:
             if value in self._secrets:
                 return '[REDACTED]'
             try:
-                parsed = json.loads(value)
+                parsed = _parse_json(value)
+            except _DuplicateJSONKey:
+                return '[REDACTED]'
             except RecursionError:
                 return _DROP
             except ValueError:
@@ -128,16 +251,9 @@ class EmissionBoundary:
                         secret in value and any(char in secret for char in '"{}[],:')
                         for secret in self._secrets):
                     return '[REDACTED]'
-                if self._text(encoded) != encoded:
+                if self._serialized_credential(encoded):
                     return '[REDACTED]'
-                for secret in self._secrets:
-                    try:
-                        normalized_secret = json.dumps(json.loads(secret), ensure_ascii=False)
-                    except (ValueError, RecursionError):
-                        continue
-                    if normalized_secret in encoded:
-                        return '[REDACTED]'
-                return value if self.preserve_json_text and json.loads(encoded) == parsed else encoded
+                return value if self.preserve_json_text and _parse_json(encoded) == parsed else encoded
             return scrubbed
         if type(value) is int and not -_MAX_JSON_INTEGER <= value <= _MAX_JSON_INTEGER:
             return _DROP
@@ -157,11 +273,39 @@ class EmissionBoundary:
                 if clean is not _DROP:
                     result[self._text(key)] = clean
             return result
+        # Ordered text parts can reconstruct credentials absent from each part.
+        text_parts = [item for item in value if type(item) is str]
+        original_joined = ''.join(text_parts)
+        # Match contiguous JSON policy before interpreting incomplete parts.
+        # A harmless serialized redaction marker may contain escaped format
+        # bytes that resemble a credential suffix until the whole is decoded.
+        unchanged_json = False
+        try:
+            parsed = _parse_json(original_joined)
+        except (ValueError, RecursionError):
+            pass
+        else:
+            if type(parsed) in (dict, list, str) and re.search(r'(?i)\[redacted\]', original_joined):
+                checker = EmissionBoundary(ContentPolicy(True), secrets=tuple(self._secrets),
+                                           preserve_json_text=True)
+                unchanged_json = checker._json(original_joined, set(), depth + 1) == original_joined
+        joined = original_joined if unchanged_json else ''.join(self._text(item) for item in text_parts)
+        if (not unchanged_json and self._decoded_text_credential(original_joined, depth) and
+                self._text(original_joined) != joined):
+            return ['[REDACTED]']
+        if self._decoded_text_credential(joined, depth):
+            return ['[REDACTED]']
         result = []
         for item in value:
-            clean = self._json(item, seen, depth + 1)
+            clean = item if unchanged_json and type(item) is str else self._json(item, seen, depth + 1)
             if clean is not _DROP:
                 result.append(clean)
+        # Recursive JSON canonicalization can make previously separated text join.
+        sanitized_text = ''.join(item for item in result if type(item) is str)
+        if any(secret in sanitized_text for secret in self._secrets):
+            return ['[REDACTED]']
+        if self._decoded_text_credential(sanitized_text, depth):
+            return ['[REDACTED]']
         return result
 
     def _metadata(self, key, value):

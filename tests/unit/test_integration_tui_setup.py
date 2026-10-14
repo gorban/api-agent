@@ -132,7 +132,8 @@ def test_unattended_failure_guidance_uses_launch_index_source(tmp_path, monkeypa
             await pilot.pause()
             assert app.screen.kind == 'test-failure'
             body = app.screen.body.plain
-            assert body.startswith(test.id + '\n\nExecution time: 0.100s')
+            assert body.startswith(test.id + '\n\nFailed to get credentials for unattended access.')
+            assert body.index('Failed to get credentials') < body.index('Execution time: 0.100s')
             assert '\n\nFailed to get credentials for unattended access.' in body
             assert 'Failed to get credentials for unattended access.' in body
             assert ('Clear .env configuration' in body) is (source == 'dotenv')

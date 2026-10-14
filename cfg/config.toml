@@ -241,6 +241,16 @@ help = "Use managed local S3 for result history. True defaults the bucket to all
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
+[fields.ALLURE_LOCALSTACK_PORT]
+type = "int"
+default = 4566
+validation = "positive"
+acknowledge_default = false
+help = "Loopback host port for the owned LocalStack instance. Set ALLURE_S3_ENDPOINT to the same port when overriding it."
+[fields.ALLURE_LOCALSTACK_PORT.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
 [fields.ALLURE_S3_BUCKET]
 type = "str"
 conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "allure-results"}]

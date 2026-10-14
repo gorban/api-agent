@@ -354,7 +354,10 @@ def test_pack_requirement_marker_registered_for_worker():
     from unittest.mock import Mock
     config = Mock()
     p.pytest_configure(config)
-    config.addinivalue_line.assert_called_once_with("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
+    from unittest.mock import call
+    assert config.addinivalue_line.call_args_list == [
+        call("markers", "requires_pack_api: selected integration requires pack API/identity preflight"),
+    ]
 
 
 @pytest.mark.parametrize('endpoint', [None, 'http://127.0.0.1:12345'])

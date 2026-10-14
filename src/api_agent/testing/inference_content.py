@@ -21,6 +21,10 @@ def export_content(boundary, request, result=None):
     rows = [('request', request_to_wire(request))]
     if result is not None:
         rows.append(('response', result_to_wire(result)))
+    for _, content in rows:
+        messages = content.get('messages', [content['message']] if 'message' in content else [])
+        for message in messages:
+            message.pop('continuation', None)
     return tuple({'phase': phase, 'content': boundary.export(content)} for phase, content in rows)
 
 

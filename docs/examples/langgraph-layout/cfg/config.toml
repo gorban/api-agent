@@ -1,0 +1,44 @@
+# Example-only timing declarations. This file is not selected by the runtime.
+# Defaults illustrate the format, not an approved corporate timeout policy.
+# Production owners should commit their best confirmed defaults and preserve
+# existing calculated budgets during conversion.
+version = 1
+
+[fields.NODE_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+default = 60.0
+acknowledge_default = false
+help = "Example seconds for one ordinary node attempt; children inherit its remaining budget."
+
+[fields.LLM_CALL_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+default = 60.0
+acknowledge_default = false
+help = "Example seconds for one selected-provider LLM invocation, not the sum of a multi-call chain."
+
+[fields.GRAPHQL_CALL_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+default = 60.0
+acknowledge_default = false
+help = "Example seconds for one GraphQL tool invocation; group/graph ancestors may impose tighter remaining budgets."
+
+[fields.PLANNING_GROUP_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+acknowledge_default = false
+help = "Optional seconds for the entire planning/verification group across its attempts; omitted means no added group deadline."
+
+[fields.GRAPHQL_GROUP_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+acknowledge_default = false
+help = "Optional seconds for the query group across calls and verification attempts; an existing derived owner budget must be preserved separately."
+
+[fields.GRAPH_TIMEOUT_SECONDS]
+type = "float"
+validation = "positive"
+acknowledge_default = false
+help = "Optional whole-graph seconds; omission does not invent a global cap or remove existing owner deadlines."

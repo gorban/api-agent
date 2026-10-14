@@ -26,23 +26,34 @@ def accounting(test_id):
 
 
 @pytest.mark.parametrize('status,color', [('passed','green'),('skipped','dark_orange'),('failed','red')])
-def test_shared_details_metadata_precedes_status_or_full_failure_trace(status, color):
+def test_shared_details_prioritizes_failures_and_preserves_accounting(status, color):
     result = SimpleNamespace(identity=SimpleNamespace(id='test.py::test[one]'),
                              duration=1.234, status=status, traceback='')
     usage = accounting(result.identity.id)
     rendered = render_details(result, usage, {'estimated_cost_usd':.02, 'basis':'historical_quota',
         'advance_prediction':{'estimated_cost_usd':.05}})
-    assert rendered.plain.startswith(result.identity.id + '\n\nExecution time: 1.234s')
+    prefix = result.identity.id + '\n\n'
+    if status == 'failed':
+        assert rendered.plain.startswith(prefix + 'FAILED\n\nExecution time: 1.234s')
+    else:
+        assert rendered.plain.startswith(prefix + 'Execution time: 1.234s')
     assert 'This test cost: $0.020' in rendered.plain
     assert 'This test cost: $0.020\n  Historical average: $0.050' in rendered.plain
     assert 'Cost basis: historical_quota\n' + tokens_text(usage, result.identity.id) in rendered.plain
     assert 'non-cached input: 9 — $0.007' in rendered.plain and 'non-reasoning output: 4 — $0.0096' in rendered.plain
     assert 'total: 16 — $0.020' in rendered.plain and 'total: 16 — $0.100' not in rendered.plain
-    assert rendered.plain.endswith(tokens_text(usage, result.identity.id) + '\n\n' + status.upper())
+    ending = tokens_text(usage, result.identity.id)
+    if status != 'failed':
+        ending += '\n\n' + status.upper()
+    assert rendered.plain.endswith(ending)
     assert rendered.spans[-1].style == color
     result.traceback = 'AssertionError: failed\n  source.py:42\noriginal traceback'
     detailed = render_details(result, usage, {}, historical_tokens=True)
-    assert detailed.plain.endswith(result.traceback)
+    if status == 'failed':
+        assert detailed.plain.startswith(result.identity.id + '\n\n' + result.traceback)
+        assert detailed.plain.index(result.traceback) < detailed.plain.index('Execution time:')
+    else:
+        assert detailed.plain.endswith(result.traceback)
     assert 'This test cost: unavailable' in detailed.plain
     assert '  Historical average: unavailable' in detailed.plain
     assert detailed.plain.index('Earlier compatible runs') < detailed.plain.index('Tokens this run')
@@ -112,5 +123,5 @@ def test_failure_without_trace_still_opens_metadata_and_error_status(tmp_path):
             await pilot.press('enter')
             await pilot.pause()
             assert app.screen.kind == 'test-failure'
-            assert app.screen.body.plain.endswith('FAILED')
+            assert app.screen.body.plain.startswith(tests[0].id + '\n\nFAILED\n\nExecution time:')
     asyncio.run(scenario())

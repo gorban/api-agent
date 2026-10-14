@@ -114,7 +114,7 @@ def validate_evidence(value):
             or any(not _identifier(value[key], nullable=True) for key in ('actual_model', 'service_tier', 'serving_revision'))):
         raise ContractError('Invalid inference evidence')
     if (type(value['attempt']) is not int or not 1 <= value['attempt'] <= 1000
-            or value['outcome'] not in ('unknown', 'completed', 'length', 'refused', 'failed')
+            or value['outcome'] not in ('unknown', 'completed', 'length', 'refused', 'tool_calls', 'failed')
             or not _uuid(value['turn_id']) or value['turn_kind'] not in ('initial', 'clarification', 'approval')):
         raise ContractError('Invalid inference attempt')
     for key in ('started_at', 'finished_at'):

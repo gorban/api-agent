@@ -41,28 +41,35 @@ def test_clock_updates_without_test_events_and_hides_at_completion(tmp_path, mon
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             app.test_run = TestRunLifecycle()
-            app.unit_rows = {identity.id: ('PENDING', identity.id, '')}
-            app.show_unit_results(app.unit_progress())
-            await pilot.pause()
-            screen = app.screen
-            timer = screen.query_one('#suite-elapsed', Static)
-            table = screen.query_one(TestTable)
-            assert timer.display and timer.content == '0s'
-            assert '1 pending' in screen.query_one('#body', Static).content.plain
-            assert timer.region.y == screen.query_one('#body').region.y
-            assert timer.region.right == screen.query_one('#live-progress').content_region.right
-            clock[0] = 61
-            await pilot.pause(.3)
-            assert timer.content == '1m 1s' and app.focused is table
-            await pilot.resize_terminal(100, 35)
-            await pilot.pause()
-            assert timer.region.right == screen.query_one('#live-progress').content_region.right
-            app.finish_test_run()
-            await pilot.pause(.3)
-            assert not timer.display
-            app.unit_result = UnitRunResult(0, (), (), '', require_full_coverage=False)
-            screen.refresh_suite_timer()
-            assert not timer.display
+            try:
+                app.unit_rows = {identity.id: ('PENDING', identity.id, '')}
+                app.show_unit_results(app.unit_progress())
+                await pilot.pause()
+                screen = app.screen
+                timer = screen.query_one('#suite-elapsed', Static)
+                table = screen.query_one(TestTable)
+                assert timer.display and timer.content == '0s'
+                assert '1 pending' in screen.query_one('#body', Static).content.plain
+                assert timer.region.y == screen.query_one('#body').region.y
+                assert timer.region.right == screen.query_one('#live-progress').content_region.right
+                clock[0] = 61
+                deadline = asyncio.get_running_loop().time() + 3
+                while timer.content != '1m 1s' and asyncio.get_running_loop().time() < deadline:
+                    await pilot.pause(.05)
+                assert timer.content == '1m 1s' and app.focused is table
+                await pilot.resize_terminal(100, 35)
+                await pilot.pause()
+                assert timer.region.right == screen.query_one('#live-progress').content_region.right
+                app.finish_test_run()
+                deadline = asyncio.get_running_loop().time() + 3
+                while timer.display and asyncio.get_running_loop().time() < deadline:
+                    await pilot.pause(.05)
+                assert not timer.display
+                app.unit_result = UnitRunResult(0, (), (), '', require_full_coverage=False)
+                screen.refresh_suite_timer()
+                assert not timer.display
+            finally:
+                app.finish_test_run()
     asyncio.run(scenario())
 
 

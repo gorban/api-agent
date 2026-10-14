@@ -39,7 +39,7 @@ The [included personal GPT adapter](implementation_plan_f2.md) is early work; re
 
 - [ ] Document request metadata from independently established provider contracts. Providers own their upstream headers and validation; core supplies generic request and trace context without interpreting protocol-specific metadata.
 - [ ] Let each selected provider own request metadata across discovery, completion, streaming, retries and quota reads. Pass application/resource-pack identity and tracing context through generic services; provider declarations own any additional configuration.
-- [ ] Load optional provider request-metadata declarations through contributed configuration. Review contributed defaults before the first executable provider operation; core has no provider-specific metadata defaults.
+- [ ] Load optional provider request-metadata declarations through contributed configuration. Offer contributed defaults at interactive startup under [the configuration review policy](implementation_plan_a9d.md); valid effective defaults do not block menu operation entry; core has no provider-specific metadata defaults.
 - [ ] Before live provider operations, complete human configuration review, including contributed identity, authentication and storage/tracing settings. Imports, configuration review and collection do not call providers.
 - [ ] Prove attended and unattended LLM provider authentication using the [test-authentication tasks](implementation_plan_a4.md). During authentication-only integration, forbid inference and leave quota unavailable when not queried. Verify authenticated model-list response separately; an authentication token alone does not prove discovery.
 

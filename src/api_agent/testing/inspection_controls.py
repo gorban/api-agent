@@ -81,6 +81,7 @@ def cleanup_active(handle):
 class InspectionGroup:
     def __init__(self, handles=()):
         self.handles = tuple(handles)
+        self.diagnostic_errors = []
 
     @property
     def active(self):
@@ -100,6 +101,7 @@ class InspectionGroup:
         error = CleanupPendingError((self,), self.aclose)
         error.inspection_group = self
         error.inspections = self.handles
+        error.diagnostic_errors = tuple(self.diagnostic_errors)
         return error
 
     async def aclose(self):
@@ -116,6 +118,7 @@ class InspectionGroup:
             try:
                 acknowledged = handle.end_inspection()
             except BaseException as error:
+                self.diagnostic_errors.append(error)
                 if not isinstance(error, Exception):
                     interruption = interruption or error
                 acknowledged = False
@@ -123,16 +126,20 @@ class InspectionGroup:
                 try:
                     handle.abort()
                 except BaseException as error:
+                    self.diagnostic_errors.append(error)
                     if not isinstance(error, Exception):
                         interruption = interruption or error
         if interruption is not None:
             interruption.inspection_group = self
             interruption.inspections = self.handles
+            interruption.diagnostic_errors = tuple({id(item): item for item in (
+                *getattr(interruption, 'diagnostic_errors', ()), *self.diagnostic_errors)
+                if item is not interruption}.values())
             raise interruption
         return not self.active
 
 
-def finish_terminal_inspection(recorded, output):
+def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
     """Print completed results before waiting for the debug windows to close."""
     execution = getattr(recorded, 'execution', None)
     if execution is None:
@@ -142,6 +149,10 @@ def finish_terminal_inspection(recorded, output):
     try:
         primary = None
         try:
+            if diagnostic_output is not None:
+                from .diagnostics import result_diagnostics
+                for details in result_diagnostics(execution.tests):
+                    diagnostic_output(details)
             output(format_test_summary('integration', execution.tests,
                 state='CANCELLED' if execution.cancelled else None, elapsed=getattr(recorded, 'elapsed', None)))
             output('Allure publication: ' + ('PASS' if recorded.persisted else 'FAIL'))
@@ -174,4 +185,7 @@ def finish_terminal_inspection(recorded, output):
     except BaseException as error:
         error.inspection_group = group
         error.inspections = group.handles
+        error.diagnostic_errors = tuple({id(item): item for item in (
+            *getattr(error, 'diagnostic_errors', ()), *group.diagnostic_errors)
+            if item is not error}.values())
         raise
