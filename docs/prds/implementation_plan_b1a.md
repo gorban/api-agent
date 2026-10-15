@@ -40,3 +40,7 @@ Target wording, to publish with the implemented behavior:
 ```markdown
 Select **Run local** to start the app and open a managed browser with the Agent app, the configured UI provider (when enabled) for interacting with the agent's API, and any configured tracing viewer after it is ready. A final tab shows the [actual LangGraph flow](flow.md.html) used by this run.
 ```
+
+## Later dynamic inspection
+
+- [ ] After this static viewer and application/E2E evidence are delivered, extend this same host with [historical, recorded and live execution overlays](implementation_plan_b1c.md). Freeze attribution seams during runtime work; full inspection remains late before profiling. Static viewing retains its no-execution/no-auth behavior.

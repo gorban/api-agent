@@ -148,8 +148,8 @@ preview requirements, including its unsupported-option restrictions.
   identifiers, argument fragments, explicit completion/refusal/truncation states,
   cancellation and unknown usage after interrupted streams. Never execute a
   partially received tool call or automatically repeat a possibly executed turn.
-- [ ] Add configurable reasoning effort with per-selection validation and
-  transport mappings. Map common output limits to supported request fields;
+- [ ] Complete [reasoning controls](implementation_plan_f2f.md) before frontend integration.
+  Map output limits to supported request fields;
   account for reasoning tokens sharing the output budget. Reject unsupported
   options explicitly, including subscription server output caps.
 - [x] Implement core LLM_CACHE_POLICY presets: empty omits controls; off disables
