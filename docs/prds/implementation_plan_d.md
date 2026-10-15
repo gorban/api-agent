@@ -1,5 +1,7 @@
 # Allure reporting and persistent test results
 
+[Shared reporting service ownership and cache coordination](implementation_plan_h2.md).
+
 
 ## Current backend boundary
 

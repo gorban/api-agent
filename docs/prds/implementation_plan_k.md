@@ -1,5 +1,7 @@
 # Tracing before the first Ok graph run
 
+Startup browser tabs, automatic enabled-dashboard login and persistent interactive credentials: [dashboard requirements](implementation_plan_k2.md). This consumer join remains unimplemented.
+
 Current routing and attribution: [endpoint-only tracing and shared collector requirements](implementation_plan_k1.md). No reporting installation-ID/registration step is required.
 
 ## Completed declaration slice

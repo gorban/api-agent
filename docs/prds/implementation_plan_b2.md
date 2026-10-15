@@ -4,6 +4,12 @@ This grouping extends B/B1. Phase one implements a reusable Markdown workflow
 runtime and permanent contrived acceptance fixture. Phase two evolves the useful
 demo into verified API planning and rendering; it remains pending.
 
+The future `.md.html` resource/viewer format and migration gates are in
+[B1a](implementation_plan_b1a.md); completed phase-one checks remain completed.
+Its base migration explicitly includes this runtime's CLI, packaged permanent
+fixture, resource paths and fingerprints, with equivalence and relocated-wheel
+acceptance before retiring the old Layout paths.
+
 ## Requirements and acceptance
 
 - [x] [B2a — Layout/runtime contracts and inference](implementation_plan_b2a.md):

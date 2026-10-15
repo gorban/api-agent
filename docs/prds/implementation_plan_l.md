@@ -1,5 +1,7 @@
 # Container inventory and cleanup
 
+[Shared-service ownership and persistent-data cleanup policy](implementation_plan_h2.md).
+
 ## Completed inventory slice
 
 - [x] Implement live host inventory/count, selected stop confirmation, bounded engine calls, error handling and refresh. No containers were stopped during implementation. Ownership/profile integration and live human review remain below.

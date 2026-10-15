@@ -1,0 +1,12 @@
+# Local startup browser and authentication policy
+
+[Local-run contracts](implementation_plan_a5.md) · [Dashboard startup and login](implementation_plan_k2.md)
+
+- [ ] Local-run does not invoke test-runner authentication preflight. Always create one new headed startup browser independently of tracing mode or RUN_UI. RUN_UI controls frontend startup and its tab; disabled UI creates no frontend tab or pack UI hook. Dispatch the selected pack's optional authenticate hook for an actual UI session before user handoff. Follow [startup tabs and dashboard login](implementation_plan_k2.md). On-demand LLM authentication uses a separate lazy session; unattended login is headless unless RUN_UI or DEBUG makes it visible, and attended login is always visible. See [approved browser contracts](../architecture/provider_architecture.md).
+
+- [ ] The unused AUTH_BROWSER_DEBUG declaration is removed. Apply the shared non-E2E policy already implemented for GPT integration: unattended LLM login is headless unless RUN_UI or DEBUG is True; attended login is always headed. Debug retains the original context/browser/driver until explicit inspection cleanup. Local-run startup browser is always headed; RUN_UI controls the frontend service; E2E UI uses RUN_UI/E2E_DEBUG. Reuse shared owners rather than a separate local-run policy.
+
+- [ ] Offer opted-in same-browser agent inspection for local-run UI using the [shared retained-browser attachment task](implementation_plan_a3.md). Reuse its loopback endpoint, original-page identity, pause/ownership and explicit shutdown contracts. Keep UI and authentication-only inspection identities distinct. GPT authentication inspection already exposes its original page/context; extending the local UI seam must not open or inspect a substitute browser. MCP is not required for ordinary operation.
+
+- [ ] Dispatch optional resource-pack authentication for every newly created local UI session; do not add a separate Authenticated UI action. The pack owns login strategy and may delegate cookie preparation to its upstream extension. An absent/explicit no-op hook is valid; malformed hooks and preparation failures are explicit errors.
+  - [ ] Supply the ordinary mode, resolved account index or None for attended use, role-bound credentials and the actual BrowserSession. Hand the same context and updated active page to the user, with no background navigation left behind. Keep LLM login state separate. Ordinary non-session links may still use the host browser.
