@@ -123,10 +123,14 @@ def test_serialized_partition_ipc_frames_and_recording(shape, subscription, enab
     asyncio.run(scenario())
 
 
-def test_invisible_encoded_key_is_private_in_worker_frame_and_recording(tmp_path):
-    key = '\u200b' + json.dumps('password')
-    text = json.dumps({key: 'owned-secondary-credential', 'ordinary': 'safe'})
-    parts = (text[:11], text[11:])
+@pytest.mark.parametrize('key', ['\u200b' + json.dumps('password'),
+                                '\x00"Bearer \\u006fwned-secondary-credential"',
+                                '"Bearer \\u006fwned-secondary-credential"'])
+@pytest.mark.parametrize('cut', [1, 11])
+@pytest.mark.parametrize('leading_members', ['', '"ordinary":1,"ordinary":2,'])
+def test_invisible_encoded_key_is_private_in_worker_frame_and_recording(key, cut, leading_members, tmp_path):
+    text = '{' + leading_members + json.dumps({key: 'owned-secondary-credential', 'ordinary': 'safe'})[1:]
+    parts = (text[:cut], text[cut:])
 
     async def scenario():
         result = LLMResult(Message('assistant', tuple(TextContent(part) for part in parts),
@@ -140,7 +144,8 @@ def test_invisible_encoded_key_is_private_in_worker_frame_and_recording(tmp_path
         peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
         try:
             registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
-            await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
+            reply = await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
+            assert result_from_wire(reply['result']) == result
             evidence = [_decode(frame) for frame in frames if _decode(frame)['status'] == 'evidence']
             response = next(row for row in evidence if row['phase'] == 'response')
             assert 'owned-secondary-credential' not in json.dumps(response)

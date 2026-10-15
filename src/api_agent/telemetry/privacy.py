@@ -254,7 +254,7 @@ class EmissionBoundary:
             self._registered_json = cached
         return cached
 
-    def _registered_native(self, value):
+    def _registered_native(self, value, seen, depth):
         try:
             secrets, registrations = self._json_registration_snapshot()
             if registered_json_value(value, secrets, registrations=registrations):
@@ -262,7 +262,7 @@ class EmissionBoundary:
             if not registrations:
                 return False
             changed = [False]
-            admissible = self._admissible_original(value, set(), 0, changed)
+            admissible = self._admissible_original(value, seen, depth, changed)
             return (changed[0] and admissible is not _DROP and
                     registered_json_value(admissible, secrets, registrations=registrations))
         except (ValueError, RecursionError):
@@ -315,7 +315,7 @@ class EmissionBoundary:
             return _DROP
         # Compare each original JSON node before key filtering or syntax
         # masking can fragment a registered container or quoted string.
-        if self._registered_native(value):
+        if self._registered_native(value, seen, depth):
             return '[REDACTED]' if type(value) is str else _DROP
         if type(value) is str:
             # Serialized JSON receives the same credential-key treatment.
@@ -340,7 +340,7 @@ class EmissionBoundary:
                 pass
             except (ValueError, RecursionError):
                 return '[REDACTED]'
-            if type(parsed) is str and self._registered_native(parsed):
+            if type(parsed) is str and self._registered_native(parsed, set(), depth + 1):
                 return '[REDACTED]'
             # Numeric JSON text is still text: redact secret substrings before
             # interpreting it as a primitive. Keep original object keys until
@@ -380,7 +380,7 @@ class EmissionBoundary:
                 clean = self._json(item, seen, depth + 1)
                 if clean is not _DROP:
                     result[self._text(key)] = clean
-            return _DROP if self._registered_native(result) else result
+            return _DROP if self._registered_native(result, seen, depth) else result
         # Ordered text parts can reconstruct credentials absent from each part.
         text_parts = [item for item in value if type(item) is str]
         original_joined = ''.join(text_parts)
@@ -388,18 +388,24 @@ class EmissionBoundary:
         # A harmless serialized redaction marker may contain escaped format
         # bytes that resemble a credential suffix until the whole is decoded.
         unchanged_json = False
+        original_json = False
         try:
             parsed = _parse_json(original_joined)
-        except (ValueError, RecursionError):
+        except (_DuplicateJSONKey, RecursionError):
+            original_json = True
+        except ValueError:
             pass
         else:
+            original_json = True
             if type(parsed) in (dict, list, str) and re.search(r'(?i)\[redacted\]', original_joined):
                 checker = EmissionBoundary(ContentPolicy(True), secrets=tuple(self._secrets),
                                            preserve_json_text=True)
                 unchanged_json = checker._json(original_joined, set(), depth + 1) == original_joined
         joined = original_joined if unchanged_json else ''.join(self._text(item) for item in text_parts)
+        # Preserve positive structured verdicts before masking can damage JSON.
+        # Ordinary text still retains safe per-part masking where possible.
         if (not unchanged_json and self._decoded_text_credential(original_joined, depth) and
-                self._text(original_joined) != joined):
+                (original_json or self._text(original_joined) != joined)):
             return ['[REDACTED]']
         if self._decoded_text_credential(joined, depth):
             return ['[REDACTED]']
@@ -414,7 +420,7 @@ class EmissionBoundary:
             return ['[REDACTED]']
         if self._decoded_text_credential(sanitized_text, depth):
             return ['[REDACTED]']
-        return _DROP if self._registered_native(result) else result
+        return _DROP if self._registered_native(result, seen, depth) else result
 
     def _metadata(self, key, value):
         if key == 'status' and type(value) is str and value in _STATUSES:
@@ -435,7 +441,8 @@ class EmissionBoundary:
     def export(self, payload):
         if type(payload) is not dict:
             return {}
-        if self._registered_native(payload):
+        # Each child starts at zero, so the containing export root is at -1.
+        if self._registered_native(payload, set(), -1):
             return {}
         result = {}
         for key, value in payload.items():
@@ -447,7 +454,7 @@ class EmissionBoundary:
                 clean = self._json(clean, set(), 0)
             if clean is not _DROP:
                 result[self._text(key)] = clean
-        return {} if self._registered_native(result) else result
+        return {} if self._registered_native(result, set(), -1) else result
 
     def content_export(self, payload):
         """Explicit evidence callers retain content but share credential rules."""
