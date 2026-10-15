@@ -13,7 +13,7 @@ import re
 from uuid import UUID
 
 from api_agent.config.resolve import ConfigResult
-from api_agent.telemetry.redaction import overlapping_ranges, printable_value, registered_values, concealed_bearer_ranges, serialized_credential, registered_scalar, registered_json_value, _json_registrations, _contains_json_registration, JSONDepthError
+from api_agent.telemetry.redaction import overlapping_ranges, printable_value, registered_values, concealed_bearer_ranges, serialized_credential, registered_scalar, registered_json_value, _json_registrations, _contains_json_registration, _json_carriers, JSONDepthError
 
 
 @dataclass(frozen=True)
@@ -196,13 +196,34 @@ class EmissionBoundary:
         except RecursionError:
             return True
         except ValueError:
-            return self._text(value) != value
+            return self._text(value) != value or self._embedded_json_credential(value, depth)
         try:
             encoded = json.dumps(decoded, ensure_ascii=False)
         except RecursionError:
             return True
         return (self._serialized_credential(encoded) or
                 self._decoded_value_credential(decoded, depth + 1))
+
+    def _embedded_json_credential(self, value, depth, *, as_key=False):
+        """Recognize complete carriers without repairing malformed syntax."""
+        try:
+            for left, right, unfinished in _json_carriers(value):
+                if unfinished:
+                    continue
+                carrier = value[left:right]
+                try:
+                    decoded = _parse_json(carrier)
+                except (_DuplicateJSONKey, RecursionError):
+                    return True
+                except ValueError:
+                    continue
+                if as_key and type(decoded) is str and self._key_credential(decoded, depth + 1):
+                    return True
+                if self._decoded_text_credential(carrier, depth + 1):
+                    return True
+        except (ValueError, RecursionError):
+            return True
+        return False
 
     def _key_credential(self, key, depth):
         if depth > 20:
@@ -219,7 +240,7 @@ class EmissionBoundary:
         except (_DuplicateJSONKey, RecursionError):
             return True
         except ValueError:
-            return False
+            return self._embedded_json_credential(candidate, depth, as_key=True)
         return ((type(decoded) is str and self._key_credential(decoded, depth + 1)) or
                 self._decoded_text_credential(candidate, depth + 1))
 
@@ -255,6 +276,8 @@ class EmissionBoundary:
         return cached
 
     def _registered_native(self, value, seen, depth):
+        if not self._secrets:
+            return False
         try:
             secrets, registrations = self._json_registration_snapshot()
             if registered_json_value(value, secrets, registrations=registrations):
@@ -277,7 +300,16 @@ class EmissionBoundary:
         if depth > 20:
             changed[0] = True
             return _DROP
-        if value is None or type(value) in (str, bool):
+        if type(value) is str:
+            # Reuse ordinary export for text admission: JSON decoding can
+            # consume depth or discard an inadmissible numeric value. The
+            # empty-secret boundary never enters registered comparison again.
+            ordinary = EmissionBoundary(ContentPolicy(True), preserve_json_text=self.preserve_json_text)
+            if ordinary._json(value, set(), depth) is _DROP:
+                changed[0] = True
+                return _DROP
+            return value
+        if value is None or type(value) is bool:
             return value
         if type(value) is int:
             if -_MAX_JSON_INTEGER <= value <= _MAX_JSON_INTEGER:
@@ -329,7 +361,7 @@ class EmissionBoundary:
             except RecursionError:
                 return _DROP
             except ValueError:
-                return scrubbed
+                return '[REDACTED]' if self._embedded_json_credential(value, depth) else scrubbed
             # Preserve semantic serialized credentials before native child
             # omission can turn their enclosing carrier into ordinary JSON.
             try:
@@ -394,7 +426,7 @@ class EmissionBoundary:
         except (_DuplicateJSONKey, RecursionError):
             original_json = True
         except ValueError:
-            pass
+            original_json = self._embedded_json_credential(original_joined, depth)
         else:
             original_json = True
             if type(parsed) in (dict, list, str) and re.search(r'(?i)\[redacted\]', original_joined):
@@ -406,6 +438,8 @@ class EmissionBoundary:
         # Ordinary text still retains safe per-part masking where possible.
         if (not unchanged_json and self._decoded_text_credential(original_joined, depth) and
                 (original_json or self._text(original_joined) != joined)):
+            return ['[REDACTED]']
+        if not unchanged_json and any(self._embedded_json_credential(item, depth + 1) for item in text_parts):
             return ['[REDACTED]']
         if self._decoded_text_credential(joined, depth):
             return ['[REDACTED]']

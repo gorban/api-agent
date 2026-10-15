@@ -28,8 +28,10 @@ def encoded_parts(credential, layers=1, shape="string"):
         encoded = '[' + encoded + ']'
     elif shape == 'nested':
         encoded = '{"outer":[{"note":' + encoded + '}]}'
-    elif shape == 'credential-key':
+    elif shape in ('credential-key', 'credential-key-trailing'):
         encoded = '{"access_token":"\\u' + format(ord(credential[0]), '04x') + credential[1:] + '"}'
+        if shape == 'credential-key-trailing':
+            encoded += '.'
     for _ in range(layers - 1):
         encoded = json.dumps(encoded)
     return (encoded[:10], encoded[10:])
@@ -55,7 +57,7 @@ def test_ordinary_serialized_partitions_remain_exact(parts):
     assert EmissionBoundary(secrets=(TOKEN,)).export({'parts': parts}) == {}
 
 
-@pytest.mark.parametrize('shape', ['string', 'object', 'array', 'nested', 'credential-key'])
+@pytest.mark.parametrize('shape', ['string', 'object', 'array', 'nested', 'credential-key', 'credential-key-trailing'])
 @pytest.mark.parametrize('subscription', [None, False, True], ids=['constructed', 'http', 'sse'])
 @pytest.mark.parametrize('enabled', [False, True])
 @pytest.mark.parametrize('credential', [TOKEN, SECONDARY, 'ordinary text'])
@@ -64,7 +66,8 @@ def test_serialized_partition_ipc_frames_and_recording(shape, subscription, enab
         ordinary = '"or\\u0064inary text"'
         containers = {'string': ordinary, 'object': '{"note":' + ordinary + '}',
                       'array': '[' + ordinary + ']', 'nested': '{"outer":[{"note":' + ordinary + '}]}',
-                      'credential-key': '{"note":' + ordinary + '}'}
+                      'credential-key': '{"note":' + ordinary + '}',
+                      'credential-key-trailing': '{"note":' + ordinary + '}.'}
         encoded = containers[shape]
         parts = (encoded[:10], encoded[10:])
     else:
