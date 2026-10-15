@@ -351,6 +351,8 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
         raise ProviderAccessError('invalid_request', 'GPT subscription inference requires responses mode.')
     base_url = _endpoint(base_url, access_token, subscription)
     body = _payload(request, api_mode, subscription)
+    from .reasoning import reasoning_fields
+    body.update(reasoning_fields(request, base_url=base_url, api_mode=api_mode))
     from .rich import _protected
     from api_agent.providers.rich_inference import continuation
     if any(message.continuation is not None and _protected(continuation(message.continuation), access_token) for message in request.payload.messages):

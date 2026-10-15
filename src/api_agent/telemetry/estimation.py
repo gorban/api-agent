@@ -412,6 +412,12 @@ def call_signature(row):
             return None
         signature = {name: metadata.get(name) for name in ('requested_model', 'catalog_model', 'actual_model', 'serving_revision', 'service_tier', 'billing_mode')}
         signature['cache_policy'] = metadata.get('cache_policy', 'unknown')
+        requested = call.get('reasoning_effort', 'unknown')
+        quoted = metadata.get('reasoning_effort', 'unknown')
+        if requested != 'unknown' and quoted != 'unknown' and requested != quoted:
+            return None
+        signature['reasoning_effort'] = requested
+        signature['quoted_reasoning_effort'] = quoted
         signatures.add(key(signature))
     return key(sorted(signatures))
 
