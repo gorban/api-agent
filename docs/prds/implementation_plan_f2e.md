@@ -1,5 +1,7 @@
 # Partitioned credential protection
 
+[Encoded-key shells and admissible native comparison](implementation_plan_f2e1.md) extends this boundary for two intersecting export cases.
+
 Registered authentication and recognizable Bearer credentials must not become recoverable by concatenating assistant text parts or enabled evidence arrays. This extends the [native metadata contract](implementation_plan_f2d.md) without changing ordinary text, tool execution, usage or opaque replay.
 
 ## Requirements

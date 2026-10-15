@@ -209,16 +209,19 @@ class EmissionBoundary:
             return True
         if _credential_key(key):
             return True
-        if not key.lstrip().startswith(('"', '{', '[')):
+        # Decode only the printable detection view. Keep the original key for
+        # ordinary output, but do not let a nonprinting shell hide JSON syntax.
+        candidate = printable_value(key)
+        if not candidate.lstrip().startswith(('"', '{', '[')):
             return False
         try:
-            decoded = _parse_json(key)
+            decoded = _parse_json(candidate)
         except (_DuplicateJSONKey, RecursionError):
             return True
         except ValueError:
             return False
         return ((type(decoded) is str and self._key_credential(decoded, depth + 1)) or
-                self._decoded_text_credential(key, depth + 1))
+                self._decoded_text_credential(candidate, depth + 1))
 
     def _decoded_value_credential(self, value, depth):
         if depth > 20:
@@ -254,9 +257,58 @@ class EmissionBoundary:
     def _registered_native(self, value):
         try:
             secrets, registrations = self._json_registration_snapshot()
-            return registered_json_value(value, secrets, registrations=registrations)
+            if registered_json_value(value, secrets, registrations=registrations):
+                return True
+            if not registrations:
+                return False
+            changed = [False]
+            admissible = self._admissible_original(value, set(), 0, changed)
+            return (changed[0] and admissible is not _DROP and
+                    registered_json_value(admissible, secrets, registrations=registrations))
         except (ValueError, RecursionError):
             return True
+
+    def _admissible_original(self, value, seen, depth, changed):
+        """Compare admitted original members before credential-key filtering.
+
+        Unsupported native members are omitted exactly as during export. This
+        is a detection view, not an exported value or an arbitrary subset match.
+        """
+        if depth > 20:
+            changed[0] = True
+            return _DROP
+        if value is None or type(value) in (str, bool):
+            return value
+        if type(value) is int:
+            if -_MAX_JSON_INTEGER <= value <= _MAX_JSON_INTEGER:
+                return value
+            changed[0] = True
+            return _DROP
+        if type(value) is float:
+            if math.isfinite(value):
+                return value
+            changed[0] = True
+            return _DROP
+        if type(value) not in (dict, list, tuple) or id(value) in seen:
+            changed[0] = True
+            return _DROP
+        seen = seen | {id(value)}
+        if type(value) is dict:
+            result = {}
+            for key, item in value.items():
+                if type(key) is not str:
+                    changed[0] = True
+                    continue
+                admitted = self._admissible_original(item, seen, depth + 1, changed)
+                if admitted is not _DROP:
+                    result[key] = admitted
+            return result
+        result = []
+        for item in value:
+            admitted = self._admissible_original(item, seen, depth + 1, changed)
+            if admitted is not _DROP:
+                result.append(admitted)
+        return result
 
     def _json(self, value, seen, depth):
         if depth > 20:
