@@ -234,7 +234,7 @@ class EmissionBoundary:
         # ordinary output, but do not let a nonprinting shell hide JSON syntax.
         candidate = printable_value(key)
         if not candidate.lstrip().startswith(('"', '{', '[')):
-            return False
+            return self._embedded_json_credential(candidate, depth, as_key=True)
         try:
             decoded = _parse_json(candidate)
         except (_DuplicateJSONKey, RecursionError):
