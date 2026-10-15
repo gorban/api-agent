@@ -118,3 +118,43 @@ def test_per_part_masking_cannot_create_another_registered_credential():
         secrets=('owned-replaced-value', 'before' + omitted_number + '[REDACTED]after'))
     actual = boundary.export({'parts': ['before', omitted_number, 'owned-replaced-value', 'after']})
     assert actual == {'parts': ['[REDACTED]']}
+
+
+@pytest.mark.parametrize('text', ['{}', '[]', '0', '3.5', '"ordinary"', '9007199254740992'])
+def test_json_text_omission_precedes_registered_container_comparison(text):
+    payload = {'note': nested(dict(PROTECTED, ignored=text), 'dictionary', 19), 'duration_ms': 5}
+    plain = EmissionBoundary(ContentPolicy(True)).export(payload)
+    assert leaf(plain['note'], 'dictionary', 19) == {'opaque': PROTECTED['opaque']}
+    actual = EmissionBoundary(ContentPolicy(True), secrets=(json.dumps(PROTECTED),)).export(payload)
+    assert actual['duration_ms'] == 5
+    assert PROTECTED['opaque'] not in json.dumps(actual)
+
+
+@pytest.mark.parametrize('layers', [0, 1, 2, 3])
+def test_each_json_quoting_layer_consumes_ordinary_export_depth(layers):
+    text = '{}'
+    for _ in range(layers):
+        text = json.dumps(text)
+    payload = {'note': nested(dict(PROTECTED, ignored=text), 'dictionary', 19 - layers)}
+    actual = EmissionBoundary(ContentPolicy(True), secrets=(json.dumps(PROTECTED),)).export(payload)
+    assert PROTECTED['opaque'] not in json.dumps(actual)
+
+
+@pytest.mark.parametrize('text', ['ordinary', 'true', 'null', '{}', '[]', '"ordinary"'])
+def test_retained_json_text_is_a_real_extra_member(text):
+    payload = {'note': nested(dict(PROTECTED, ignored=text), 'dictionary', 18)}
+    actual = EmissionBoundary(ContentPolicy(True), secrets=(json.dumps(PROTECTED),)).export(payload)
+    assert actual == EmissionBoundary(ContentPolicy(True)).export(payload)
+    assert leaf(actual['note'], 'dictionary', 18)['opaque'] == PROTECTED['opaque']
+
+
+def test_recorded_steps_apply_json_text_depth_admission(tmp_path):
+    steps = [{'name': 'ordinary'}, {'name': 'protected',
+              'note': nested(dict(PROTECTED, ignored='{}'), 'dictionary', 17)}]
+    recorder = RunRecorder(tmp_path, identity(), evidence_boundary=EmissionBoundary(
+        ContentPolicy(True), secrets=(json.dumps(PROTECTED),)))
+    filename = recorder.record_test(result(), steps=steps)
+    saved = json.loads((tmp_path / filename).read_text())
+    assert saved['steps'][0] == {'name': 'ordinary'}
+    assert saved['steps'][1]['name'] == 'protected'
+    assert PROTECTED['opaque'] not in json.dumps(saved)
