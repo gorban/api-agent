@@ -2,9 +2,9 @@
 
 ## Testing during implementation
 
-Write deterministic unit tests covering each task's requirements as it is implemented, preferably red-to-green where possible. Before committing code changes, require all applicable unit tests to pass with 100% line and branch coverage, as required by AGENTS.md. Use focused mutation checks for rejection assertions that could pass for the wrong reason.
+Write deterministic requirement tests, preferably red-to-green. Before code commits, require applicable units at exact 100% line/branch coverage under AGENTS.md. Use focused mutations where rejection could pass for the wrong reason.
 
-The TUI enforces exact 100% line/branch coverage for All tests; partial selections report coverage informationally. CI must enforce the full applicable unit suites and coverage gate before PR merges. Unit tests are excluded from Allure. Reverify coverage as features land and again before final cleanup. The final E2E acceptance pass-rate gate remains a separate task, with its threshold and measurement rules to be established with the user.
+The TUI enforces exact coverage for All tests; partial coverage is informational. CI enforces complete applicable unit/coverage gates before merges. Units never enter Allure. Renew coverage as features land and before cleanup. Establish the separate final E2E pass-rate threshold and measurement rules with the user.
 
 ## Checklist
 
@@ -30,9 +30,15 @@ The TUI enforces exact 100% line/branch coverage for All tests; partial selectio
 
 See [delivery evidence, current provider architecture and accounting follow-through](implementation_plan_n.md). Their original completion marks and remaining work are preserved in that child.
 
-## Late development and CI follow-up
+## Frontend prerequisite
+
+- [ ] Complete [reasoning/message identity](implementation_plan_f2f.md) before [frontend integration](implementation_plan_i2.md).
+
+## Late CI follow-up
 
 - [ ] Complete interactive hooks, staged checks, graph diagrams and no-Git CI parity after graph contracts settle. See [hook and CI requirements](implementation_plan_i1.md).
+
+- [ ] Extend the static workflow viewer with [historical, recorded and live inspection](implementation_plan_b1c.md) after application/E2E evidence and before final profiling.
 
 ## Final follow-up
 

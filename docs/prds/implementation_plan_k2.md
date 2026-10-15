@@ -23,3 +23,7 @@ These requirements join the tracing backend to local-run browser ownership. Expo
 - [ ] Human reviews ordinary startup, automatic dashboard login, persistent status and Stop/Exit cleanup.
 
 Official documentation: [Langfuse headless initialization](https://langfuse.com/self-hosting/administration/headless-initialization) documents distinct user email/password and project API-key provisioning. The live documentation currently describes v4; recheck the pinned deployed version rather than silently upgrading this application.
+
+## Later workflow inspector
+
+- [ ] After the static final flow tab and application lifecycle pass, reuse this same owned server/browser tab for [live workflow inspection](implementation_plan_b1c.md). Preserve tab order/readiness and static fallback; playback controls never pause execution or allocate another browser. Earlier application work reserves the evidence identities without pulling the full inspector into initial frontend integration.

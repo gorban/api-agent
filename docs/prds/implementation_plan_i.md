@@ -2,6 +2,8 @@
 
 ## Checklist
 
+- [ ] Complete [reviewed frontend integration](implementation_plan_i2.md) after [reasoning/model identity](implementation_plan_f2f.md), preserving current runtime behavior and independently reviewing the joined candidate.
+
 - [ ] Inspect the current frontend consumers as each API contract becomes relevant, and expand the implementation task with the required paths, request fields, response fields, authentication/session binding, and lifecycle behavior. Use publicly available API documentation and user-approved independently authored contracts as contract evidence. Start with the UI renderer, including its action-endpoint, result-set, and stream-event consumers.
   - [ ] Cover auxiliary heartbeat, cancellation, session, and result-set cleanup contracts needed by the working UI. Implement actual interruption and owned-resource cleanup needed for safe local/test execution in the initial implementation segment; do not defer those behaviors behind acknowledgements that leave work running.
   - [ ] Where the initial renderer has no result sets or other optional capabilities, provide an explicit, accurately limited contract-compatible stub where needed. Record the stub's supported behavior and add a follow-up item here for the complete capability before scenarios depend on it. Never represent missing authentication or inference as successful.

@@ -1,0 +1,29 @@
+# Inspector execution evidence and bounded delivery
+
+[Inspector summary](implementation_plan_b1c.md) · [Presentation and diagnosis](implementation_plan_b1c2.md)
+
+## Origin-side identities and observations
+
+- [ ] Version a separate execution-evidence contract linking graph definition/source/resource fingerprints and resolved replacements to suite, parameterized test, test attempt, conversation, user turn, graph invocation, node invocation, internal attempt and provider call IDs. Keep user-turn/resumption semantics generic. Node visits, semantic retries, transport retries and whole-test confirmation attempts remain distinct. Preserve parent/cause/branch IDs and stable declaration node/edge IDs.
+- [ ] Record every actual transition, including implicit sequential edges, error-handler routes and nested graph boundaries; observe starts, terminal outcomes, retries, cancellation and partial execution. Assign stable event IDs and per-run observation sequence at the owner, retaining causality independently of arrival order. Never reconstruct an exact route from final state, display order or timestamps alone. Missing evidence is explicit.
+- [ ] Attach requested/resolved/actual model, version/revision availability, requested effort, timing scopes and accounting call IDs to the correct invocation. Record monotonic durations and UTC provenance. Retain parent-inclusive timing separately from exclusive work; parallel node durations cannot be summed into claimed wall elapsed. Use the shared timeout/progress interface for timed execution.
+- [ ] Define disjoint leaf call attribution and explicit inclusive group rollups for tokens/cost; avoid counting a call at both parent and child. Reuse frozen accounting estimates, original charges, historical comparisons and price provenance. Missing attribution is unknown/partial, not an arbitrary split of suite cost. A handled node error and an E2E assertion failure are independent outcomes.
+
+## Content and immutable recording
+
+- [ ] Capture plain validated data only at declared safe boundaries. `LOG_CONTENT=False` permits bounded safe metadata only; `True` permits scrubbed captured inputs/outputs and value differences, never credentials, opaque authentication/continuation state or hidden chain-of-thought. Scrub before event queues, in-memory storage, IPC, artifacts and browser delivery. Do not inspect arbitrary object properties, exception locals, environment or filesystem state.
+- [ ] Preserve field/declaration structure while annotating observed values separately. Mark not captured, redacted, truncated, missing and actual null distinctly. Compute bounded differences on sanitized data; unsafe field names and raw hashes can disclose content too. Render captured text literally, with no HTML/script or executable Markdown. Captured instructions are data, never agent instructions.
+- [ ] Finalized E2E evidence includes the exact resolved graph projection and sanitized execution events in a versioned manifest-hashed artifact, under existing publication settlement and privacy. Preserve immutable originals. Index metadata/attribution without downloading screenshots/videos/diagnostics merely for overlays; retrieve bounded value details on demand. Legacy artifacts lacking exact graph/transition identity remain partially inspectable and cannot prove an exact route.
+
+## Live memory and read boundary
+
+- [ ] Reuse the managed loopback viewer server and original Playwright lifecycle. Local runs keep a bounded per-session memory journal and reducer, with independent event/byte/depth/value/session/client limits. Do not add an unbounded live database. On shutdown close streams and dispose owned resources; retention after shutdown requires a separately selected persisted artifact.
+- [ ] Expose an atomic snapshot/watermark, bounded cursor-based JSON reads and one-way SSE updates. Include process generation, earliest/latest sequence, terminal state and completeness. Deduplicate identical events; reject conflicting IDs, graph/session mismatches and invalid terminal regressions. Snapshot-to-subscription races, eviction, restart and slow-client backpressure produce explicit gaps/resnapshot, never an apparently continuous route.
+- [ ] Apply strict Host/origin checks, loopback binding and ephemeral session authorization appropriate to sensitive local evidence; no permissive CORS, capability in URLs/logs or arbitrary source/path/network fetches. Bound downloads, decode/decompression and render work before allocation. Read operations cannot execute graphs, authenticate, approve mutations, change config or initiate inference.
+
+## Verification
+
+- [ ] Freeze schema/capture policy and concrete bounded budgets with fixtures before coding consumers. Verify source/installed cwd-independent loading, stale fingerprints, resource traversal/symlink rejection, malformed/oversized/deep/cyclic data and output split across messages.
+- [ ] Replay multiple turns, repeated visits, loops, parallel branches, semantic/provider/test retries, handled errors, assertion failure, partial usage and interrupted publication. Verify all transitions and exact call joins; remove implicit-edge emission or attribution guards in isolated mutations to prove assertions.
+- [ ] Exercise snapshot races, duplicate/reordered/conflicting events, missing ranges, post-terminal delivery, reconnect, overflow, slow readers, browser closure and repeated cleanup using controlled IPC/HTTP and clocks. Verify credential exclusions before queueing and across artifacts/browser/agent responses with meaningful redaction/bounds mutations.
+- [ ] Independently review and renew applicable exact unit line/branch coverage, installed package/license and public source/index/metadata gates. Deterministic evidence requires no paid calls; actual application/E2E acceptance stays separately scoped.
