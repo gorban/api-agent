@@ -80,8 +80,8 @@ The role reader accepts declared role, index and credential kind; the LLM reader
 | Mode | UI session | Visibility and preparation |
 | --- | --- | --- |
 | Unit, integration, help, collection | None | No frontend regardless of `RUN_UI`; integration may need a separate LLM login browser |
-| Local-run, `RUN_UI=False` | None | No UI hook |
-| Local-run, `RUN_UI=True` | One until local-run ends | Always headed; invoke pack hook before user handoff |
+| Local-run, `RUN_UI=False` | One headed startup browser until local-run ends | No frontend tab or UI hook; started-component dashboard tabs remain available |
+| Local-run, `RUN_UI=True` | One headed startup browser until local-run ends | Open the verified frontend and other started-component tabs; invoke pack hook for the UI session before handoff |
 | E2E | Fresh separate browser instance/context/session for every attempt, including confirmation retries | Always real UI; headless only when neither `RUN_UI` nor debug is enabled; pack hook before test body |
 
 - [ ] Yield the exact same `BrowserSession`, context and updated active page from pack preparation to test/user. Finish pack navigation tasks before handoff; do not open a different default-browser profile to continue an authenticated session. Attribute failed hook setup to that E2E attempt and do not run its test body.

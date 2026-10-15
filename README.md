@@ -13,7 +13,7 @@ Build and run API-connected agents from one guided terminal interface.
 
 ## Get started
 
-Use Python 3.13 or newer, then run from the `api-agent` directory:
+Use Python 3.13 or newer, then run from this repository directory:
 ```bash
 ./launch.py
 ```

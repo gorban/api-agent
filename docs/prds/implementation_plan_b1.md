@@ -1,8 +1,12 @@
 # Strict Markdown executable Layout
 
+The future versioned `flow.md.html` resource layout and viewer contract are in
+[B1a](implementation_plan_b1a.md). The `layout.md` example below records the
+earlier grammar proposal; conversion requires parser/compiler equivalence.
+
 ## Checklist
 
-- [ ] Use `layout.md` for LangGraph orchestration, with a versioned, deliberately restricted Markdown grammar. Let the implementor develop the exact allowed headings/table columns for the implemented behavior and show concrete declarations/parser diagnostics at human review; evolve the schema as needed. Configuration and pack-manifest formats remain separate choices.
+- [ ] Use root `flow.md.html` and linked nested declarations for LangGraph orchestration, with a versioned, deliberately restricted Markdown grammar per [B1a](implementation_plan_b1a.md). Let the implementor develop the exact allowed headings/table columns for the implemented behavior and show concrete declarations/parser diagnostics at human review; evolve the schema as needed. Configuration and pack-manifest formats remain separate choices.
 - [ ] Parse Markdown structure into a typed Layout definition rather than treating arbitrary prose as instructions or extracting executable behavior with loose text matching. Accept only declared structural forms: fixed headings, fixed-column tables, inline identifiers, and inline file links; reject unknown executable sections/columns, duplicate IDs, invalid field types, unresolved functions/bindings, and ambiguous declarations with file/line diagnostics.
   - [ ] Represent nodes, unconditional/conditional edges, input/output bindings, independent loop groups/attempt budgets, and ordered conditional prompt sources using the same strict grammar. Named conditions resolve to registered Python functions; table cells do not contain arbitrary Python expressions.
   - [ ] Define optional nonexecuting notes explicitly so explanatory prose cannot accidentally alter the graph. Generate diagrams from the parsed definition; Markdown itself is the executable readable description, not a separate copy of the flow.
