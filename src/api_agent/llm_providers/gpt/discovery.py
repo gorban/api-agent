@@ -58,7 +58,7 @@ def _failure(status, data, request_id, token, authentication_type=None):
         request_id=_safe_text(request_id, token, limit=100))
 
 
-def _catalog(data, subscription, token):
+def _catalog(data, subscription, token, *, base_url=None):
     if type(data) is not dict or type(data.get('models' if subscription else 'data')) is not list:
         raise ModelDiscoveryError('unknown', 'GPT model discovery returned an invalid catalog.')
     selections, seen = [], set()
@@ -91,9 +91,12 @@ def _catalog(data, subscription, token):
                        for value in (maximum, context))):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata.')
         family, inferred_version = _selection_identity(identifier)
+        from .reasoning import reasoning_efforts
+        efforts = reasoning_efforts(identifier, base_url=base_url)
         selections.append(AvailableSelection(identifier, description, display_name=name,
                           version=version if version is not None else inferred_version,
-                          max_output_tokens=maximum, context_length=context, family=family))
+                          max_output_tokens=maximum, context_length=context, family=family,
+                          features=("reasoning_effort",) if efforts else (), reasoning_efforts=efforts))
     if len(selections) > 256:
         raise ModelDiscoveryError('unknown', 'GPT model discovery returned too many selections.')
     return tuple(selections)
@@ -131,7 +134,7 @@ async def discover_models(*, client, base_url, access_token, subscription):
             status, data, request_id, authentication_type = await _get(client, base_url + '/models', access_token, budget)
             if status != 200:
                 raise _failure(status, data, request_id, access_token, authentication_type)
-            return _catalog(data, subscription, access_token)
+            return _catalog(data, subscription, access_token, base_url=base_url)
     except (TimeoutError, httpx.TimeoutException):
         failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')
     except httpx.RequestError:
@@ -171,7 +174,7 @@ async def discover_selections(*, client, base_url, access_token, subscription):
             if status == 200:
                 if subscription:
                     raise ModelDiscoveryError('authentication', 'GPT subscription requires an authenticated account catalog; the endpoint returned a public catalog.')
-                catalog = _catalog(data, False, access_token)
+                catalog = _catalog(data, False, access_token, base_url=base_url)
                 status, data, request_id, authentication_type = await _get(client, base_url + '/key', access_token, budget)
                 if status != 200:
                     raise _failure(status, data, request_id, access_token, authentication_type)
@@ -185,7 +188,7 @@ async def discover_selections(*, client, base_url, access_token, subscription):
             status, data, request_id, authentication_type = await _get(client, base_url + '/models', access_token, budget)
             if status != 200:
                 raise _failure(status, data, request_id, access_token, authentication_type)
-            return _catalog(data, subscription, access_token)
+            return _catalog(data, subscription, access_token, base_url=base_url)
     except (TimeoutError, httpx.TimeoutException):
         failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')
     except httpx.RequestError:

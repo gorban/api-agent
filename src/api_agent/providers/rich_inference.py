@@ -183,12 +183,15 @@ def request_to_wire(request):
                tools=[dict(name=tool.name, description=tool.description, schema=tool.input_schema) for tool in payload.tools],
                structured=None if payload.structured is None else dict(name=payload.structured.name, schema=payload.structured.schema),
                max_output_tokens=payload.generation.max_output_tokens, cache_policy=payload.generation.cache_policy)
+    if payload.generation.reasoning_effort is not None:
+        row['reasoning_effort'] = payload.generation.reasoning_effort
     request_from_wire(row)
     return row
 
 
 def request_from_wire(row):
-    _exact(row, ('version','selected_llm','request_id','messages','tools','structured','max_output_tokens','cache_policy'))
+    keys = ('version','selected_llm','request_id','messages','tools','structured','max_output_tokens','cache_policy')
+    _exact(row, (*keys, 'reasoning_effort') if type(row) is dict and 'reasoning_effort' in row else keys)
     _bounded(row)
     try:
         if (type(row['version']) is not int or row['version'] != 2
@@ -229,7 +232,7 @@ def request_from_wire(row):
         if pending:
             raise ValueError()
         return LLMRequest(_identifier(row['selected_llm']), CompletionRequest(messages, tuple(tools),
-            GenerationOptions(row['max_output_tokens'], cache_policy=row['cache_policy']), structured), _identifier(row['request_id'], empty=True))
+            GenerationOptions(row['max_output_tokens'], cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort')), structured), _identifier(row['request_id'], empty=True))
     except (ValueError, TypeError):
         raise ContractError('Invalid rich inference request') from None
 

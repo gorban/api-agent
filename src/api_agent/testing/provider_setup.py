@@ -17,6 +17,13 @@ from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
 from api_agent.providers.shared_setup import SharedSetupOwner
 
 
+def _configured_request(request, config):
+    """Freeze effective options before transport and accounting see the call."""
+    from api_agent.providers.cache_policy import configured_request
+    return configured_request(request, config.get('LLM_CACHE_POLICY'),
+                              reasoning_effort=config.get('LLM_REASONING_EFFORT'))
+
+
 def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None,
                           password_manager_registry=None, interaction_descriptor=None):
     """Write configuration to a protected, operation-owned IPC file."""
@@ -327,7 +334,8 @@ class IntegrationLLM:
         from api_agent.providers.cache_policy import configured_request
         from api_agent.providers.selection import ModelSelectionPolicy
         ModelSelectionPolicy(self.config).require_allowed(request.selected_llm)
-        request = configured_request(request, self.config.get('LLM_CACHE_POLICY'))
+        request = configured_request(request, self.config.get('LLM_CACHE_POLICY'),
+                                     reasoning_effort=self.config.get('LLM_REASONING_EFFORT'))
         async with self._setup_lock:
             await self._prepare_setup()
         self._validate_request(self.provider.implementation, request)
@@ -341,6 +349,7 @@ class IntegrationLLM:
     def complete(self, request):
         if self.closed:
             raise ContractError('Integration provider setup is closed.')
+        request = _configured_request(request, self.config)
         from .inference_usage import publish
         call_id = publish(request)
         result = None
@@ -463,14 +472,16 @@ class IntegrationLLM:
 class RemoteIntegrationLLM:
     """Only readiness, bounded catalog metadata and lease disposal cross the backend boundary."""
     timeout = 300
-    def __init__(self, descriptor):
+    def __init__(self, descriptor, config=None):
         from api_agent.providers.setup_transport import SetupClient
+        self.config = dict(config or {})
         self.client = SetupClient(descriptor, timeout=self.timeout)
         self.loop = asyncio.new_event_loop()
         self.loop.set_default_executor(ThreadPoolExecutor(max_workers=1,
             thread_name_prefix='api-agent-setup-client'))
 
     def complete(self, request):
+        request = _configured_request(request, self.config)
         from .inference_usage import publish
         call_id = publish(request)
         result = None
@@ -530,7 +541,7 @@ def llm_provider():
     data = _read_snapshot()
     if 'setup_backend' in data:
         _worker_manager_registry(data)
-        provider = RemoteIntegrationLLM(data['setup_backend'])
+        provider = RemoteIntegrationLLM(data['setup_backend'], data['config'])
     else:
         provider = IntegrationLLM(data['config'], data['owner_root'],
                                   unattended_index_source=data.get('unattended_index_source'),

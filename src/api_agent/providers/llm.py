@@ -6,7 +6,7 @@ from typing import Literal
 from .control import OperationalError
 
 
-LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy"})
+LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy", "reasoning_effort"})
 
 
 def _require(condition: bool) -> None:
@@ -93,7 +93,10 @@ class GenerationOptions:
     temperature: float | None = None
     cache_policy: Literal["off", "medium", "high"] | None = None
 
+    reasoning_effort: Literal["", "off", "low", "medium", "high"] | None = None
+
     def __post_init__(self):
+        _require(self.reasoning_effort is None or (type(self.reasoning_effort) is str and self.reasoning_effort in ("", "off", "low", "medium", "high")))
         _require(self.max_output_tokens is None or (type(self.max_output_tokens) is int and self.max_output_tokens > 0))
         _require(self.temperature is None or (type(self.temperature) in {int, float} and math.isfinite(self.temperature) and self.temperature >= 0))
         _require(self.cache_policy is None or (type(self.cache_policy) is str and self.cache_policy in {"", "off", "medium", "high"}))
@@ -133,10 +136,12 @@ class AvailableSelection:
     max_output_tokens: int | None = None
     context_length: int | None = None
     family: str | None = None
+    reasoning_efforts: tuple[str, ...] | None = None
 
     def __post_init__(self):
         _require(isinstance(self.selected_llm, str) and bool(self.selected_llm) and isinstance(self.description, str) and isinstance(self.features, tuple) and all(type(feature) is str and feature in LLM_FEATURES for feature in self.features))
         _require(len(set(self.features)) == len(self.features))
+        _require(self.reasoning_efforts is None or (type(self.reasoning_efforts) is tuple and all(type(value) is str and value in ("off", "low", "medium", "high") for value in self.reasoning_efforts) and len(set(self.reasoning_efforts)) == len(self.reasoning_efforts)))
         _require(type(self.display_name) is str)
         _require(self.version is None or type(self.version) is str)
         _require(self.family is None or (type(self.family) is str and bool(self.family)))
@@ -145,6 +150,9 @@ class AvailableSelection:
 
     def validate(self, request: "LLMRequest") -> None:
         required = {name for name, enabled in (("tools", bool(request.payload.tools) or any(message.calls or message.results for message in request.payload.messages)), ("structured", request.payload.structured is not None), ("temperature", request.payload.generation.temperature is not None), ("max_output_tokens", request.payload.generation.max_output_tokens is not None), ("cache_policy", request.payload.generation.cache_policy is not None)) if enabled}
+        effort = request.payload.generation.reasoning_effort
+        if effort and ("reasoning_effort" not in self.features or self.reasoning_efforts is None or effort not in self.reasoning_efforts):
+            raise OperationalError("unsupported")
         if request.selected_llm != self.selected_llm or not required.issubset(self.features):
             raise OperationalError("unsupported")
 

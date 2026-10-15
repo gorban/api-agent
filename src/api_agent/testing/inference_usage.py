@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 _STARTS = {}
-_TIMING = {'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision'}
+_TIMING = {'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision', 'reasoning_effort'}
 _TURN = ContextVar('inference_user_turn', default=None)
 
 
@@ -39,6 +39,8 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
     row = {'call_id': call_id, 'selection': selection,
            'usage': (usage_to_wire(reported) if reported is not None else None)
                     if result is None else result_to_wire(result)['usage']}
+    if request.payload.generation.reasoning_effort is not None:
+        row['reasoning_effort'] = request.payload.generation.reasoning_effort or None
     if result is not None:
         for name in ('actual_model', 'service_tier', 'serving_revision'):
             if getattr(result, name) is not None:
@@ -71,6 +73,8 @@ def capture(event, tracker):
     usage = row['usage']
     from api_agent.telemetry.accounting import validate_evidence
     evidence = dict(call_id=identifier, selection=selection, actual_model=row.get('actual_model'), service_tier=row.get('service_tier'), serving_revision=row.get('serving_revision'), usage=usage, quote=row.get('quote'), started_at=row.get('started_at'), finished_at=row.get('finished_at'), attempt=row.get('attempt', 1), turn_id=row.get('turn_id', identifier), turn_kind=row.get('turn_kind', 'initial'), outcome=row.get('outcome', 'unknown' if usage is None else 'completed'))
+    if 'reasoning_effort' in row:
+        evidence['reasoning_effort'] = row['reasoning_effort']
     validate_evidence(evidence)
     if not tracker.record_inference(identifier, event.identity.id, evidence):
         return

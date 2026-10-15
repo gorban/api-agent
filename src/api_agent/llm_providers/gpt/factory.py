@@ -49,8 +49,9 @@ class GPTProvider:
         # including calls made with newly allocated HTTP clients.
         self.cache_session_id = str(uuid4())
         self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
-                                                 features=("cache_policy", "structured", "tools") if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy", "structured", "tools"))
+                                                 features=("cache_policy", "structured", "tools", "reasoning_effort") if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy", "structured", "tools", "reasoning_effort"))
         self.cache_policy = config.get('LLM_CACHE_POLICY')
+        self.reasoning_effort = config.get('LLM_REASONING_EFFORT')
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.base_url = config.get("GPT_BASE_URL", "https://api.openai.com/v1")
@@ -169,7 +170,7 @@ class GPTProvider:
         """Validate selected cache support before retrieving authentication."""
         from api_agent.providers.cache_policy import configured_request
         from .inference import validate_text_request
-        request = configured_request(request, self.cache_policy)
+        request = configured_request(request, self.cache_policy, reasoning_effort=self.reasoning_effort)
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
         validate_text_request(base_url=base, access_token='preflight-validation',
                               subscription=self.auth_mode == 'subscription', api_mode=self.api_mode, request=request)
@@ -179,7 +180,7 @@ class GPTProvider:
             raise ContractError("GPT provider is closed.")
         from .inference import complete_text, validate_text_request
         from api_agent.providers.cache_policy import configured_request
-        request = configured_request(request, self.cache_policy)
+        request = configured_request(request, self.cache_policy, reasoning_effort=self.reasoning_effort)
         if not isinstance(self.auth_mode, str) or self.auth_mode not in {'subscription', 'api_key'}:
             raise ContractError('GPT_AUTH_MODE must be subscription or api_key.')
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
@@ -254,7 +255,7 @@ class GPTProvider:
         from .pricing import quote
         from api_agent.providers.cache_policy import configured_request
         from api_agent.providers.costs import period_seconds
-        request = configured_request(request, self.cache_policy)
+        request = configured_request(request, self.cache_policy, reasoning_effort=self.reasoning_effort)
         return quote(request, result, direct=self.auth_mode == 'subscription' or self.base_url == 'https://api.openai.com/v1',
                      subscription=self.auth_mode == 'subscription', rate_card=self.rate_card, compatibility=self.cost_compatibility, payment_usd=self.payment_usd, quota_seconds=period_seconds(self.quota_period), pay_period=self.pay_period)
 

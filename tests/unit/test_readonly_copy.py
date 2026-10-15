@@ -50,6 +50,9 @@ def test_readonly_selection_copies_exact_text_and_keeps_editor_state(tmp_path, m
             # Actual mouse selection, not a mocked selection getter.
             expected = (str(screen.query_one(selector, Static).content) if view == 'manager-edit'
                         else 'https://openrouter.ai/api/v1')
+            # Select the entire implementation path even from a deeply nested checkout.
+            await pilot.resize_terminal(max(150, len(expected) + 40), 40)
+            await pilot.pause()
             start = 0 if view == 'manager-edit' else 4
             end = start + len(expected) - 1
             await pilot.mouse_down(selector, offset=(start, 0))

@@ -17,11 +17,22 @@ CONFIG = {'LLM_PROVIDER': FACTORY, 'GPT_AUTH_MODE': 'subscription', 'GPT_API_MOD
           'LLM_DEFAULT_MODEL': '^gpt-6-luna$'}
 
 
-def test_reviewed_baseline_is_recomputed_without_local_calibration_file():
-    report = driver._baselines()[0]
+def test_reviewed_baseline_is_recomputed_without_local_calibration_file(monkeypatch):
+    from api_agent.workflows.sampling import measured_calibration
+    report = measured_calibration([{'trial': trial, 'route': 'next_a',
+        'nodes': sorted(DECLARED)} for trial in range(1, 61)], DECLARED)
+    report.update(driver.fingerprint('gpt-6-luna', CONFIG))
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
     maximum = driver.baseline_limit('gpt-6-luna', CONFIG)
     assert maximum == report['max_runs']
     assert driver.preflight_baselines(CONFIG) == {'gpt-6-luna': maximum}
+    assert 'receipt' not in report
+
+
+def test_packaged_original_measurements_remain_readable():
+    from api_agent.workflows.sampling import validate_calibration
+    report = driver._baselines()[0]
+    assert validate_calibration(report, DECLARED, {}) == report['max_runs']
     assert report['trials'] == 20
     assert sum(report['routes'].values()) == 20
     assert 'receipt' not in report

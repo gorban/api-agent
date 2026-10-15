@@ -24,7 +24,7 @@ DEPENDENCIES = ('langgraph', 'langchain-core', 'jsonschema', 'markdown-it-py', '
 SAMPLING_SOURCES = (
     'workflows/fixture_driver.py', 'workflows/contrived.py', 'workflows/execution.py',
     'workflows/layout.py', 'llm_providers/gpt/inference.py', 'llm_providers/gpt/rich.py',
-    'llm_providers/gpt/cache_policy.py', 'llm_providers/gpt/discovery.py',
+    'llm_providers/gpt/cache_policy.py', 'llm_providers/gpt/reasoning.py', 'llm_providers/gpt/discovery.py',
     'llm_providers/gpt/endpoint.py', 'providers/llm.py', 'providers/contracts.py',
     'providers/control.py', 'providers/progress.py', 'providers/cache_policy.py',
     'providers/inference.py', 'providers/rich_inference.py', 'providers/setup_transport.py',
@@ -97,6 +97,7 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
         user_input_hash=sha256(USER_INPUT.encode()).hexdigest(),
         effective_settings={'temperature': None, 'max_output_tokens': None,
             'cache_policy': config.get('LLM_CACHE_POLICY') or None,
+            'reasoning_effort': config.get('LLM_REASONING_EFFORT') or None,
             'api_mode': config.get('GPT_API_MODE'), 'retries': {'first': 2, 'second': 2},
             'llm_timeout': config.get('WORKFLOW_LLM_TIMEOUT_SECONDS', 120),
             'node_timeout': config.get('WORKFLOW_NODE_TIMEOUT_SECONDS'),

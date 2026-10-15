@@ -35,7 +35,7 @@ def run_discovery(response=None, *, subscription=False, base_url=BASE, handler=N
 def test_discovery_single_authorized_get_preserves_order_and_client(subscription, payload, expected):
     results, requests = run_discovery(httpx.Response(200, json=payload), subscription=subscription)
     assert [(row.selected_llm, row.description) for row in results] == expected
-    assert all(row.features == () for row in results)
+    assert all(row.features == (('reasoning_effort',) if row.reasoning_efforts else ()) for row in results)
     assert len(requests) == 1
     assert requests[0].method == 'GET' and str(requests[0].url) == BASE + '/models'
     assert requests[0].headers['Authorization'] == 'Bearer ' + TOKEN
