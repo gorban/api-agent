@@ -33,6 +33,60 @@ def test_ordinary_encoded_keys_retain_original_spelling(key):
     assert boundary.export({key: 'retained'}) == {key: 'retained'}
 
 
+@pytest.mark.parametrize('shell', ['\x00', '\u200b'])
+@pytest.mark.parametrize('at_start', [False, True])
+@pytest.mark.parametrize('key_kind', ['registered', 'credential_role'])
+def test_invisible_shell_cannot_conceal_encoded_credential_key(shell, at_start, key_kind):
+    credential = 'owned-invisible-key-secret'
+    key = json.dumps(credential if key_kind == 'registered' else 'password')
+    wrapped = shell + key if at_start else key + shell
+    value = 'owned-secondary-value'
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=(credential,))
+    actual = boundary.export({'note': {wrapped: value, 'ordinary': 'retained'}})
+    assert actual == {'note': {'ordinary': 'retained'}}
+
+
+@pytest.mark.parametrize('shell', ['\x00', '\u200b'])
+def test_invisible_shell_on_ordinary_encoded_key_preserves_spelling(shell):
+    key = shell + json.dumps('ordinary')
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=('owned-secret',))
+    assert boundary.export({'note': {key: 'retained'}}) == {'note': {key: 'retained'}}
+
+
+@pytest.mark.parametrize('invalid', [
+    (b'unsupported', 'value'),
+    ('unsupported', object()),
+    ('unsupported', 1 << 53),
+    ('unsupported', float('inf')),
+])
+@pytest.mark.parametrize('carrier', ['dict', 'list', 'tuple'])
+def test_invalid_member_does_not_fragment_registered_container(invalid, carrier):
+    protected = {'password': 'owned-primary', 'opaque': 'owned-secondary'}
+    protected[invalid[0]] = invalid[1]
+    value = protected if carrier == 'dict' else [protected] if carrier == 'list' else (protected,)
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=(json.dumps({'password': 'owned-primary', 'opaque': 'owned-secondary'}),))
+    actual = boundary.export({'note': value, 'ordinary': 'retained'})
+    assert actual['ordinary'] == 'retained'
+    assert 'owned-secondary' not in json.dumps(actual)
+
+
+def test_admissible_extra_member_does_not_match_registered_subset():
+    registered = json.dumps({'password': 'owned-primary', 'opaque': 'owned-secondary'})
+    value = {'password': 'owned-primary', 'opaque': 'owned-secondary', 'extra': 'ordinary'}
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=(registered,))
+    assert boundary.export({'note': value}) == {'note': {'opaque': 'owned-secondary', 'extra': 'ordinary'}}
+
+
+def test_recorded_step_omits_fragmented_registered_container(tmp_path):
+    registered = json.dumps({'password': 'owned-primary', 'opaque': 'owned-secondary'})
+    protected = {'password': 'owned-primary', 'opaque': 'owned-secondary', b'invalid': 'ordinary'}
+    recorder = RunRecorder(tmp_path, identity(), evidence_boundary=EmissionBoundary(ContentPolicy(True), secrets=(registered,)))
+    filename = recorder.record_test(result(), steps=({'name': 'safe'}, {'name': 'protected', 'steps': (protected,)}))
+    saved = json.loads((tmp_path / filename).read_text())
+    assert saved['steps'][0] == {'name': 'safe'}
+    assert 'owned-secondary' not in json.dumps(saved)
+
+
 @pytest.mark.parametrize('control', ['\x00', '\t', '\u200b'])
 def test_tuple_registered_container_is_checked_before_sensitive_member_filtering(control):
     secret = json.dumps([{'password': 'owned-primary', 'ordinary': 'owned-sensitive'}])

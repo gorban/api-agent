@@ -123,6 +123,44 @@ def test_serialized_partition_ipc_frames_and_recording(shape, subscription, enab
     asyncio.run(scenario())
 
 
+def test_invisible_encoded_key_is_private_in_worker_frame_and_recording(tmp_path):
+    key = '\u200b' + json.dumps('password')
+    text = json.dumps({key: 'owned-secondary-credential', 'ordinary': 'safe'})
+    parts = (text[:11], text[11:])
+
+    async def scenario():
+        result = LLMResult(Message('assistant', tuple(TextContent(part) for part in parts),
+                                   (ToolCall('call-owned', 'lookup', '{}'),)), Usage(7, 3), 'tool_calls')
+        backend = content_boundary({'LOG_CONTENT': True, 'API_KEY': 'owned-primary-credential'})
+        owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=AsyncMock(return_value=result),
+                                aclose=AsyncMock(), export_content=lambda req, res: export_content(backend, req, res))
+        registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
+        server = SetupServer(registry, 'synthetic-json-capability-0000000000')
+        frames = []
+        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
+        try:
+            registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
+            await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
+            evidence = [_decode(frame) for frame in frames if _decode(frame)['status'] == 'evidence']
+            response = next(row for row in evidence if row['phase'] == 'response')
+            assert 'owned-secondary-credential' not in json.dumps(response)
+            parent = EmissionBoundary(ContentPolicy(True))
+            attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(
+                call_id=str(uuid4()), phase=row['phase'], content=row['content']))), parent) for row in evidence]
+            recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'), evidence_boundary=parent)
+            test = TestIdentity('owned-test', 'synthetic', 'owned.py', 'owned.py::test_owned')
+            filename = recorder.record_test(TestResult(test, 'passed', 0), attachments=attachments)
+            saved = json.loads((tmp_path / filename).read_text())
+            assert 'owned-secondary-credential' not in json.dumps(saved)
+            for attachment in saved['attachments']:
+                assert 'owned-secondary-credential' not in (tmp_path / attachment['source']).read_text()
+        finally:
+            await server.aclose()
+            await registry.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_serialized_text_depth_and_recursion_fail_closed(monkeypatch):
     boundary = EmissionBoundary(ContentPolicy(True))
     assert boundary._decoded_text_credential('ordinary', 21)
