@@ -11,12 +11,12 @@ This is the authoritative boundary and browser-session requirements document. It
 | External upstream API extension | Authentication, signing, request/identity validation, upstream configuration and optional routes | Selected extension; no private default in core |
 | Included personal GPT provider or replaceable external LLM provider | Discovery, inference, streaming, structured output, upstream metadata, optional authentication, usage and pricing | Selected inference provider; [early GPT task](../prds/implementation_plan_f2.md) |
 | Optional external access adapter | Non-inference discovery/usage checks, scoped authentication and routes | Separately activated access operation; no completion/streaming capability |
-| Optional UI provider | Frontend launch plan, authoritative proxy configuration, instance-owned readiness and process lifecycle | Selected pack and operation |
-| Resource pack | Knowledge/navigation/prompts, scenario tests, UI authentication strategy and optional credential roles | Selected pack; UI hook once per newly created session |
+| Optional UI provider | Frontend launch, proxy configuration, owned readiness/lifecycle and optional browser login/navigation preparation | Selected UI session and operation |
+| Resource pack | Knowledge/navigation/prompts, scenario tests, provider selection and optional credential roles | Private UI strategy belongs to its selected UI provider; legacy hook bridges once per session |
 
 Core is independent of the API type. A provider at a different path may implement REST or another API without accepting GraphQL queries. The included GraphQL package is `graphql_api_provider`; it requires a separately selected upstream extension. Product-specific code and examples belong to their external owners. Public tests use synthetic adapters, identities and API data.
 
-Core owns shared UI browser resources operationally. A lazy setup provider may own its authentication browser/client and must dispose them through its session owner. A provider exclusively uses its LLM session until disposal finishes; a pack exclusively prepares its UI session before handing it to the test/user. Login pages, selectors, signing, cookie contents, protocol transactions and token interpretation remain outside core. Core request-session storage contains opaque request ownership, not provider tokens.
+Core owns shared UI browser resources operationally. A lazy setup provider may own its authentication browser/client and must dispose them through its session owner. A provider exclusively uses its LLM session until disposal finishes; a UI provider exclusively prepares its UI session before handing it to the test/user. Login pages, selectors, signing, cookie contents, protocol transactions and token interpretation remain outside core. Core request-session storage contains opaque request ownership, not provider tokens.
 
 ## Implementation phases
 
@@ -71,20 +71,23 @@ class LLMSetup(Protocol):
     ) -> LLMAuthSession: ...
 ```
 
-Version and validate optional capability contracts. An absent UI hook or explicit async no-op is valid; a present malformed hook errors. Absence/no-op does not claim verified login. `user_index=None` means attended UI use, never unresolved unattended selection. There is no extra scenario or identity-mode argument: the pack chooses its strategy from ordinary mode and account selection.
+Version and validate optional capability contracts. An absent UI hook or explicit async no-op is valid; a present malformed hook errors. Absence/no-op does not claim verified login. `user_index=None` means attended UI use, never unresolved unattended selection. There is no extra identity-mode switch. The selected UI provider owns preparation; bridge an existing pack hook through that owner without duplicate invocation. Freeze and validate the optional capability before delivery through [prepared UI sessions](../prds/implementation_plan_i2c.md).
 
 The role reader accepts declared role, index and credential kind; the LLM reader is already bound to its provider-declared LLM role and accepts index/kind only. Reject undeclared roles, unsupported kinds, ambiguous/out-of-range selections and attempts to switch the bound account. Retrieve the actual username separately from its saved item name, passwords only when needed and fresh TOTP at the challenge. Credentials and opaque tokens never enter ordinary logs, traces or report attachments, even with content logging enabled.
 
 ### UI session policy
 
+[Prepared UI sessions](../prds/implementation_plan_i2c.md) governs the next local/test consumer and supersedes earlier unconditional UI preparation or integration-never-starts-UI wording. The separate K2 viewer/dashboard browser does not initiate UI or LLM login.
+
 | Mode | UI session | Visibility and preparation |
 | --- | --- | --- |
-| Unit, integration, help, collection | None | No frontend regardless of `RUN_UI`; integration may need a separate LLM login browser |
-| Local-run, `RUN_UI=False` | One headed startup browser until local-run ends | No frontend tab or UI hook; started-component dashboard tabs remain available |
-| Local-run, `RUN_UI=True` | One headed startup browser until local-run ends | Open the verified frontend and other started-component tabs; invoke pack hook for the UI session before handoff |
-| E2E | Fresh separate browser instance/context/session for every attempt, including confirmation retries | Always real UI; headless only when neither `RUN_UI` nor debug is enabled; pack hook before test body |
+| Unit, help, collection; ordinary LLM integration | None | No frontend; LLM integration may need a separate provider-owned login browser |
+| Explicit UI-provider integration | Original managed UI session | Opt-in test fixture invokes selected provider lifecycle/preparation; visible with RUN_UI or DEBUG; discovery never requests it |
+| Local-run, `RUN_UI=False` | No UI/authentication browser at startup | No frontend or UI hook and no eager LLM authentication; separate dashboard requests remain independent; later authenticated API calls stay lazy |
+| Local-run, `RUN_UI=True` | One headed startup browser until local-run ends | Open the verified frontend and other started-component tabs; await optional UI-provider preparation and selected-account LLM readiness before agent-ready handoff |
+| E2E | Fresh separate browser instance/context/session for every attempt, including confirmation retries | Always real UI; headless only when neither `RUN_UI` nor debug is enabled; UI-provider preparation before test body |
 
-- [ ] Yield the exact same `BrowserSession`, context and updated active page from pack preparation to test/user. Finish pack navigation tasks before handoff; do not open a different default-browser profile to continue an authenticated session. Attribute failed hook setup to that E2E attempt and do not run its test body.
+- [ ] Yield the exact same `BrowserSession`, context and updated active page from UI-provider preparation to test/user. Finish provider navigation tasks before handoff; do not open a different default-browser profile to continue an authenticated session. Attribute failed hook setup to that E2E attempt and do not run its test body.
 - [ ] Map `E2E_DEBUG` to the debug policy. Debug retains every created browser, including failed setup attempts, through an explicit inspection owner/supervisor. Keep worker/driver ownership alive until inspection cleanup; retention cannot rely on pytest workers surviving implicitly.
 - [ ] Apply the same visibility policy to every LLM login consumer: unattended is headless unless RUN_UI or DEBUG makes it visible; attended is always headed. DEBUG retains its original session after provider auth disposal. The unused `AUTH_BROWSER_DEBUG` declaration is removed. Extend the implemented integration debug retention to other non-E2E consumers through the shared owner; map `E2E_DEBUG` to that owner without creating a second visibility policy.
 - [ ] Ordinary completion/cancellation closes all browser resources, including partial setup. Explicit inspection cleanup closes retained contexts, browsers and drivers. Retention never keeps provider refresh tasks or a disposed token getter active.
