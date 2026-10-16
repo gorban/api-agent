@@ -26,9 +26,20 @@ Implementation sources: [Playwright screenshots](https://playwright.dev/python/d
 
 Attachment sources: [Playwright MCP configuration](https://github.com/microsoft/playwright-mcp#configuration) supports CDP and bound-browser endpoints; [Python CDP attachment](https://playwright.dev/python/docs/api/class-browsertype#browser-type-connect-over-cdp) attaches to an existing Chromium instance, with lower fidelity than the Playwright protocol. Validate actual page/context preservation in the spike rather than assuming that using Playwright in both processes makes them share a browser.
 
-- [ ] Compute E2E browser visibility as `RUN_UI or E2E_DEBUG`; explicit `E2E_DEBUG=True` is always headed and retains browsers after the selected tests regardless of `RUN_UI`. Keep the existing subset-only debug restriction and map the shared DEBUG retention policy to E2E while preserving E2E_DEBUG compatibility; do not maintain separate browser visibility implementations. Test all visibility/retention combinations without sacrificing screenshot evidence.
+- [ ] Compute E2E browser visibility as `RUN_UI or DEBUG or E2E_DEBUG`; explicit `E2E_DEBUG=True` is always headed and retains browsers after the selected tests regardless of `RUN_UI`. Keep the existing subset-only debug restriction and map the shared DEBUG retention policy to E2E while preserving E2E_DEBUG compatibility; do not maintain separate browser visibility implementations. Test all visibility/retention combinations without sacrificing screenshot evidence.
 
 - [x] Preserve typed RUN_UI and its default/explicit source in E2E configuration for the demo and selected resource packs. It controls browser visibility without disabling mandatory E2E UI_SOURCE_DIR/UI_NX_APP; exclude it from collection-only and unrelated modes. Runner visibility/retention wiring remains above.
 
 - [x] Prove headed provider-authentication inspection on a controlled original page through a loopback CDP endpoint, retain the browser after owner transfer, preserve it after client disconnect, and close it on explicit inspection shutdown. The integration debug worker now exposes this endpoint for the original subscription login page.
 - [ ] Make agent attachment available independently of retention/debug when an operation opts into development inspection. Debug controls lifetime, not permission to attach. For integration, expose the suite's single authentication browser and allow multiple selected tests once shared backend setup is in place; distinguish multiple provider/role pages explicitly. Keep the E2E single-selected-test attachment policy until multi-test browser/attempt identities and selection are implemented. Local run exposes its single prepared UI browser, with separate identities for any authentication pages. Use one inspection service contract for all providers rather than a GPT-only implementation.
+
+## Shared prepared-session consumer
+
+- [ ] Implement E2E through [prepared UI sessions](implementation_plan_i2c.md),
+  reusing the provider launch and optional login component first proved by the
+  explicit UI-provider integration. E2E always starts its UI; RUN_UI controls
+  visibility, and DEBUG or E2E_DEBUG makes it headed and retained. Await required
+  login before test handoff; setup failure prevents test-body execution.
+- [ ] Share one visibility/retention calculation including both debug settings;
+  preserve per-attempt UI isolation and shared account-bound LLM authentication.
+  The known parallel UI inspection gap must be repaired before application E2E.

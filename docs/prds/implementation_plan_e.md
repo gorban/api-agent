@@ -1,5 +1,12 @@
 # Initial LangGraph and frontend API
 
+## Immediate operation consumer
+
+- [ ] Prove [selected UI-provider launch/session handoff](implementation_plan_i2c.md)
+  with a no-inference integration, then wire Run local with RUN_UI-gated UI and
+  account-bound optional login/LLM readiness. Reuse that consumer for E2E.
+  Discovery remains independent; a direct Studio host test is not this proof.
+
 ## Checklist
 
 - [x] Establish the in-process Django ASGI composition in `src/api_agent/api/`: selected-pack Runtime, lifespan-driven health/startup/readiness, exact public routes, explicit 501 deferred handlers, method/OPTIONS handling and exact Host validation. Deterministic units cover these contracts without opening listeners or initiating authentication.

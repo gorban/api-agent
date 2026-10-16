@@ -7,6 +7,8 @@ Integrate frontend/provider contracts after reasoning and sample controls. Prior
 [Included Studio presentation, clarification and adapter delivery](implementation_plan_i2a.md)
 records the selected frontend's owning requirements and renewed integration gates.
 
+Next, complete [prepared UI sessions and provider-lifecycle integration tests](implementation_plan_i2c.md), then Run local and E2E consumers. Frontend process readiness alone is not authenticated-session handoff.
+
 - [ ] Refresh both inventories in an idle window. Preserve commits, working/index changes, settings and intentional deletions. Prove backup restoration before mutation. Rehearse isolated candidates and consume reviewed tracked/untracked deltas; never replace directories or merge stale copied trees.
 - [ ] Reconcile the included frontend and Nx manifests, generic UI providers, dependency/TLS preparation, verified readiness, process/output/browser ownership, run-local composition, selectable logs, lifecycle screens, full failure details and test selection. Transfer all applicable reviewed requirements and regression tests into this repository's owning PRDs without private planning or external implementation material.
 - [ ] Preserve current declaration authority, ordered provider contributions, shared saved-setting layers, installed dependency preparation, explicit unit owners and recursive selected-provider checks. Preserve authentication/DEBUG ownership, accounting identities/history, reporting settlement, SQLite disposal/transactions, suite exclusion and compact coverage. Reconcile overlapping changes explicitly rather than restore an older subsystem.

@@ -1,12 +1,38 @@
 # Local startup browser and authentication policy
 
-[Local-run contracts](implementation_plan_a5.md) · [Dashboard startup and login](implementation_plan_k2.md)
+[Local-run contracts](implementation_plan_a5.md) · [Prepared UI sessions](implementation_plan_i2c.md) · [Dashboard tabs](implementation_plan_k2.md)
 
-- [ ] Local-run does not invoke test-runner authentication preflight. Always create one new headed startup browser independently of tracing mode or RUN_UI. RUN_UI controls frontend startup and its tab; disabled UI creates no frontend tab or pack UI hook. Dispatch the selected pack's optional authenticate hook for an actual UI session before user handoff. Follow [startup tabs and dashboard login](implementation_plan_k2.md). On-demand LLM authentication uses a separate lazy session; unattended login is headless unless RUN_UI or DEBUG makes it visible, and attended login is always visible. See [approved browser contracts](../architecture/provider_architecture.md).
+The prepared-session policy supersedes earlier pack-hook and eager-login wording.
+RUN_UI opts into the frontend; DEBUG changes visibility and retention without
+enabling UI or authentication by itself. The separately owned startup viewer/
+dashboard browser in K2 remains independent of frontend/authentication sessions.
 
-- [ ] The unused AUTH_BROWSER_DEBUG declaration is removed. Apply the shared non-E2E policy already implemented for GPT integration: unattended LLM login is headless unless RUN_UI or DEBUG is True; attended login is always headed. Debug retains the original context/browser/driver until explicit inspection cleanup. Local-run startup browser is always headed; RUN_UI controls the frontend service; E2E UI uses RUN_UI/E2E_DEBUG. Reuse shared owners rather than a separate local-run policy.
-
-- [ ] Offer opted-in same-browser agent inspection for local-run UI using the [shared retained-browser attachment task](implementation_plan_a3.md). Reuse its loopback endpoint, original-page identity, pause/ownership and explicit shutdown contracts. Keep UI and authentication-only inspection identities distinct. GPT authentication inspection already exposes its original page/context; extending the local UI seam must not open or inspect a substitute browser. MCP is not required for ordinary operation.
-
-- [ ] Dispatch optional resource-pack authentication for every newly created local UI session; do not add a separate Authenticated UI action. The pack owns login strategy and may delegate cookie preparation to its upstream extension. An absent/explicit no-op hook is valid; malformed hooks and preparation failures are explicit errors.
-  - [ ] Supply the ordinary mode, resolved account index or None for attended use, role-bound credentials and the actual BrowserSession. Hand the same context and updated active page to the user, with no background navigation left behind. Keep LLM login state separate. Ordinary non-session links may still use the host browser.
+- [ ] With RUN_UI=False, start no frontend or UI authentication session, and do
+  not eagerly initialize the LLM provider or retrieve login credentials/quota.
+  Genuine later authenticated API calls retain lazy provider setup. Separately
+  configured reporting/dashboard tabs do not authorize login or a UI hook.
+- [ ] With RUN_UI=True, use the selected UI provider's normal launch lifecycle,
+  verify owned frontend readiness, create the managed headed UI session and
+  await its optional provider-owned login/navigation component. Bridge existing
+  pack preparation through one owner. Hand the same context and current page
+  back only after required preparation completes; anonymous/no-op providers
+  remain supported without claiming verified authentication.
+- [ ] Resolve the selected unattended index consistently for the consumed UI
+  and LLM roles. Finish UI login, then ensure selected LLM readiness through its
+  shared owner before declaring the interactive agent ready. If UI preparation
+  needs that LLM session earlier, coalesce setup without a second login. Preserve
+  separate cookie/token ownership and fail selected-credential errors rather
+  than silently choosing attended mode or another cached account.
+- [ ] Apply the shared LLM login visibility policy: attended is headed;
+  unattended is headless unless RUN_UI or DEBUG requests visibility. Reuse or
+  refresh valid cached state first. Bounded visible challenge handoff remains
+  available; it does not turn DEBUG into authentication authorization.
+- [ ] Reuse shared original-session inspection and cleanup for local UI and
+  separate login browsers. DEBUG retains created sessions; ordinary shutdown
+  closes them. Expose original endpoints/identities without substituting a
+  browser, and preserve pending cleanup/retry ownership until disposal confirms.
+- [ ] Verify UI-off with DEBUG both ways, UI-on attended/unattended/no-op login,
+  matching-index LLM setup, failure/cancel/timeout and readiness ordering. Use
+  the same consumer in explicit UI-provider integrations and E2E; do not duplicate
+  login or browser visibility code in each runner. Keep startup dashboard tabs
+  and the later selected workflow viewer under their existing owning requirements.
