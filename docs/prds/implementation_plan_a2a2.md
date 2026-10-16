@@ -50,6 +50,10 @@ start attended; same-operation physical-device handoff is not certified.
   response headers/body; include real empty-phrase navigation controls.
 - [x] Renew exact applicable unit coverage, wheel, boundary and mutation gates
   after the supporting-frame compatibility repair.
+- [x] While a challenge is paused, do not repeatedly allocate/dispose document
+  handles for a known absent password. Remember confirmed absence within the
+  current workflow, not manager-access failures. Repeated polls keep the active
+  component clock stable without suppressing real progress or cleanup events.
 - [ ] Human-review the selected-login passkey route and retained-browser cleanup.
 
 1Password passkey retrieval remains unsupported. Its CLI login-recovery work
@@ -70,3 +74,8 @@ coverage of 22,265 statements and 8,424 branches. Installed browser and
 independent policy/navigation mutations pass. A live selected-account attempt
 reached email verification but offered only password despite available browser
 passkey support; this does not establish live passkey acceptance.
+
+Paused-route timing renewal: 9,245 units pass at 32 workers with exact
+coverage of 22,270 statements and 8,426 branches. Real offline pages reproduce
+the previous repeated cleanup clock; installed-package and independent mutation
+controls verify stable polling, resumed routes and unchanged real cleanup.
