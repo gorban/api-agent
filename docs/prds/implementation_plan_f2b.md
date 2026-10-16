@@ -1,5 +1,7 @@
 # Lazy setup and provider integration suites
 
+
+[Cached renewal and complete setup reports](implementation_plan_f2b_refresh.md).
 Normal user operations run through launch.py. No separate connection command is a prerequisite. This extends the [subscription connection layer](implementation_plan_f2a.md) and [GPT provider](implementation_plan_f2.md); inference remains a later capability.
 
 See [human login challenges and resumption](implementation_plan_f2b_login.md) for the current extension.

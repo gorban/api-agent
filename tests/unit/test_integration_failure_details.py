@@ -353,3 +353,20 @@ def test_grouped_startup_cause_and_child_command_evidence_reach_captured_result(
         assert 'synthetic suppressed child cause' in row.local_diagnostic
         assert 'child command exit 1 stdout cause stderr specific cause' in row.local_diagnostic
         assert 'synthetic sixteenth actual cause' not in row.traceback
+
+
+@pytest.mark.parametrize('parallel_jobs', [0, 2])
+@pytest.mark.parametrize('outcome', ['failed', 'skipped'])
+def test_setup_terminal_report_is_complete_without_call(selection, parallel_jobs, outcome):
+    ctx, _ = selection
+    action = 'raise RuntimeError("setup witness")' if outcome == 'failed' else 'pytest.skip("setup witness")'
+    (ctx.base_root / 'tests/integration/test_sample.py').write_text(
+        'import pytest\n@pytest.fixture\ndef prerequisite():\n    ' + action +
+        '\ndef test_sample(prerequisite):\n    pytest.fail("test body must not run")\n')
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'),
+                                   accepted=True, parallel_jobs=parallel_jobs)
+    row, = result.tests
+    assert row.status == ('error' if outcome == 'failed' else 'skipped')
+    assert 'setup witness' in row.traceback
+    assert 'report incomplete' not in row.traceback + row.local_diagnostic
+    assert 'test body must not run' not in row.traceback

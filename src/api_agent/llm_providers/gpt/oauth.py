@@ -74,10 +74,12 @@ def _begin(host_id, redirect_uri, registration, app_name):
                                 AUTHORIZE + "?" + urlencode(query), registration)
 
 
-async def _request(client, method, url, **kwargs):
+async def _request(client, method, url, *, refresh=False, **kwargs):
     try:
         async with client.stream(method, url, timeout=15, follow_redirects=False, **kwargs) as response:
             if response.status_code != 200:
+                if refresh and response.status_code in (400, 401):
+                    raise AuthError("refresh_rejected")
                 raise ValueError
             body = bytearray()
             async for chunk in response.aiter_bytes():
@@ -88,6 +90,8 @@ async def _request(client, method, url, **kwargs):
             if not isinstance(result, dict):
                 raise ValueError
             return result
+    except AuthError:
+        raise
     except (httpx.HTTPError, ValueError, TypeError):
         pass
     raise AuthError("authorization_failed")
@@ -208,7 +212,7 @@ async def refresh_connection(connection: Connection, *, client: httpx.AsyncClien
     now = _number(now)
     if now < connection.earliest_refresh_at:
         raise AuthError("refresh_not_ready")
-    data = await _request(client, "POST", TOKEN, data=dict(grant_type="refresh_token",
+    data = await _request(client, "POST", TOKEN, refresh=True, data=dict(grant_type="refresh_token",
                           client_id=connection.client_id, refresh_token=connection.refresh_token,
                           resource=RESOURCE))
     return await _connection(data, connection.client_id, connection.host_id,
