@@ -97,6 +97,9 @@ class GPTProvider:
             'login_step_failed': 'GPT could not complete the current login page action; retry or complete login in the visible browser.',
             'login_interaction_required': 'GPT login needs browser interaction; start attended or show the browser with RUN_UI=True or DEBUG.',
             'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
+            'passkey_protocol_logging': 'Disable browser protocol/channel debug logging before retrieving passkey material; application --debug inspection remains supported.',
+            'passkey_counter_unsupported': 'This passkey has a signature counter that managed software authentication cannot preserve. Use attended login.',
+            'passkey_browser_unsupported': 'Managed Chromium could not prepare the selected software passkey. Use attended login or update the managed browser.',
         }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
         converted = InteractionRequiredError(message)
         if hasattr(error, 'cleanup_error'):
@@ -183,11 +186,19 @@ class GPTProvider:
         self.browsers.append(browser)
         async def login_credentials(kind):
             return await credentials(user_index, kind)
+        material_options = {}
+        import inspect
+        reader = (getattr(credentials, 'login_credentials')
+                  if inspect.getattr_static(credentials, 'login_credentials', None) is not None else None)
+        if username is not None and callable(reader):
+            async def login_material():
+                return await reader(user_index, expected_username=username, relying_party_id='openai.com')
+            material_options['login_material'] = login_material
         login_options = ({'login_username': username, 'login_credentials': login_credentials,
                           'allow_interaction': not browser_options.get('headless', False)}
                          if username is not None else {})
         try:
-            profile = await self._connect_account(store, browser_owner=browser, app_name=self.app_name, **registration, **login_options)
+            profile = await self._connect_account(store, browser_owner=browser, app_name=self.app_name, **registration, **login_options, **material_options)
         except AuthError as error:
             if (str(error) == 'login_interaction_required' and browser_options.get('headless')
                     and not hasattr(error, 'cleanup_error')):
@@ -197,7 +208,7 @@ class GPTProvider:
                 self.browsers.append(visible)
                 try:
                     profile = await self._connect_account(store, browser_owner=visible, app_name=self.app_name,
-                                                    login_username=username, login_credentials=login_credentials,
+                                                    login_username=username, login_credentials=login_credentials, **material_options,
                                                     allow_interaction=True, **registration)
                 except AuthError as retry_error:
                     raise self._login_error(retry_error) from None

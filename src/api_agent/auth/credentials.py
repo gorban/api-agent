@@ -23,8 +23,16 @@ class CredentialLoginRequiredError(CredentialError):
     """Safe authentication-required failure without helper output."""
 
 
+class CredentialCapabilityUnsupportedError(CredentialError):
+    """The selected manager does not implement optional login discovery."""
+
+
 class CredentialRecoveryError(CredentialError):
     """Safe recovery failure without input or transcript details."""
+
+
+from .login_credentials import (LoginCredentialRequest, PasskeyCredential, SelectedLoginCredentials,
+                                validate_login_request)
 
 
 DEFAULT_TIMEOUT = 15.0
@@ -191,6 +199,9 @@ def _run(argv: list[str], timeout: float, *, classify_login=None, cancel_event=N
 
 
 def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeout: float, *, interaction=None, recovery_timeout=None) -> str:
+    if isinstance(kind, LoginCredentialRequest):
+        from .selected_login import retrieve
+        return retrieve(source, kind, timeout, interaction=interaction, recovery_timeout=recovery_timeout)
     if type(kind) is not str or kind not in {"username", "password", "totp"}:
         raise CredentialError("Unsupported credential kind.")
     if isinstance(source, CredentialSource):
@@ -259,6 +270,19 @@ def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeou
     if not output or kind == "username" and not output.strip():
         raise CredentialError("Credential CLI returned an empty credential.")
     return output
+
+
+def get_login_credentials(source: CredentialSource | Mapping[str, object], *, expected_username: str,
+                          relying_party_id: str, timeout: float = DEFAULT_TIMEOUT,
+                          interaction=None, recovery_timeout=None) -> SelectedLoginCredentials:
+    """Discover the selected login before choosing a password or passkey route."""
+    from .managers import ManagerError
+    try:
+        validate_login_request(expected_username, relying_party_id)
+    except ManagerError as error:
+        raise CredentialError(str(error)) from None
+    request = LoginCredentialRequest(expected_username, relying_party_id)
+    return _coordinated(source, request, timeout, interaction, recovery_timeout)
 
 
 def get_password(source: CredentialSource | Mapping[str, object], *, timeout: float = DEFAULT_TIMEOUT, interaction=None, recovery_timeout=None) -> str:

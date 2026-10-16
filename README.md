@@ -54,11 +54,15 @@ for prerequisites and connection instructions.
     [one-hour access tokens and renewable 30-day refresh tokens](https://developers.openai.com/siwc/token-sharing-open-source/token-reference#token-lifetimes).
     Successful refresh renews that 30-day window; expiry or revocation may
     require signing in again.
-- **Password-manager passkeys are not automated.** Keeper support is on the
-  [roadmap](docs/prds/implementation_plan_a2a1.md). The bundled 1Password CLI
-  adapter has no verified passkey interface, so its passkey implementation is
-  not planned; pull requests using a supported interface are welcome. Manual
-  passkey approval remains available in the visible browser.
+- **Keeper passkeys use a managed software authenticator.** The selected login's
+  matching P-256 credential is loaded only for sign-in and removed before DEBUG
+  browser retention. Presence/verification are software signals, not hardware-key
+  approval; positive signature counters and PRF-dependent authentication are not
+  supported. If a physical key is needed during software authentication, end
+  that attempt and retry attended, after its software authenticator is removed.
+  See [passkey support](docs/prds/implementation_plan_a2a2.md).
+  The bundled 1Password CLI adapter has no verified passkey interface; contributions
+  using a supported interface are welcome. Manual passkey approval remains available.
 - **1Password CLI must already be signed in.** Credential retrieval is included;
   interactive CLI login recovery is a [later task](docs/prds/implementation_plan_a2a.md#deferred-login-recovery).
   Keeper already supports interactive recovery. Native Windows recovery is

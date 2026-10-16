@@ -12,12 +12,21 @@ from .control import OperationalError, OperationContext, CleanupPendingError, _c
 
 
 class ScopedRoleCredentials:
-    def __init__(self, roles: Iterable[str], index: int, retrieve: Callable[..., Awaitable[str]]):
+    def __init__(self, roles: Iterable[str], index: int, retrieve: Callable[..., Awaitable[str]], *, retrieve_login=None):
         if type(index) is not int or index < 0:
             raise ContractError("Invalid selected account")
         self._roles = frozenset(roles)
         self._index = index
         self._retrieve = retrieve
+        self._retrieve_login = retrieve_login
+
+    async def login_credentials(self, role, index, *, expected_username, relying_party_id):
+        if role not in self._roles or type(index) is not int or index != self._index:
+            raise ContractError('Login material is outside credential binding')
+        if self._retrieve_login is None:
+            return None
+        return await self._retrieve_login(role, index, expected_username=expected_username,
+                                          relying_party_id=relying_party_id)
 
     async def __call__(self, role: str, index: int, kind: str) -> str:
         if role not in self._roles:
@@ -43,6 +52,9 @@ class ScopedLLMCredentials:
 
     async def __call__(self, index: int, kind: str) -> str:
         return await self._reader(self._role, index, kind)
+
+    async def login_credentials(self, index, **kwargs):
+        return await self._reader.login_credentials(self._role, index, **kwargs)
 
 
 def ui_session_policy(mode: str, *, run_ui: bool = False, debug: bool = False) -> bool | None:
@@ -217,6 +229,10 @@ class BrowserOwner(_Owner):
         self.session: BrowserSession | None = None
         self._starting = None
         self._preparing = None
+
+    def prevent_inspection(self):
+        """Require physical disposal when sensitive browser cleanup is uncertain."""
+        self._inspection = None
 
     async def _start(self) -> BrowserSession:
         try:
