@@ -135,7 +135,7 @@ def test_reuse_exact_existing_and_retained_tests(setup):
 
 def test_digest_pin_reuses_normalized_container_only_when_image_identity_matches(setup):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     assert '@sha256:' in pin
     identifier = engine.add('localstack', image=pin.split('@', 1)[0])
@@ -154,7 +154,7 @@ def test_digest_pin_reuses_normalized_container_only_when_image_identity_matches
 ])
 def test_docker_familiar_repo_digest_is_verified_with_container_image_id(setup, pin, familiar):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     manager.specs['localstack']['image'] = pin
     identifier = engine.add('localstack', image=pin.split('@', 1)[0])
     engine.image_inspections[pin] = [{'Id': 'sha256:' + '1' * 64,
@@ -171,7 +171,7 @@ def test_docker_familiar_repo_digest_is_verified_with_container_image_id(setup, 
 ])
 def test_familiar_repo_alias_does_not_accept_foreign_registry_or_repository(setup, reported):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     engine.add('localstack', image=pin.split('@', 1)[0])
     digest = pin.rsplit('@', 1)[1]
@@ -184,7 +184,7 @@ def test_familiar_repo_alias_does_not_accept_foreign_registry_or_repository(setu
 
 def test_non_docker_registry_pin_requires_its_exact_repository(setup):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     pin = 'registry.example:5000/team/localstack:4@sha256:' + 'c' * 64
     manager.specs['localstack']['image'] = pin
     identifier = engine.add('localstack', image='registry.example:5000/team/localstack:4')
@@ -201,7 +201,7 @@ def test_non_docker_registry_pin_requires_its_exact_repository(setup):
 ])
 def test_nested_library_repository_keeps_library_namespace(setup, reported, accepted):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     pin = 'docker.io/library/team/image:1@sha256:' + 'd' * 64
     manager.specs['localstack']['image'] = pin
     identifier = engine.add('localstack', image='docker.io/library/team/image:1')
@@ -221,7 +221,7 @@ def test_nested_library_repository_keeps_library_namespace(setup, reported, acce
                                    'list_container_id', 'dict_container_id', 'malformed_container_id'])
 def test_digest_pin_rejects_unproved_or_wrong_running_image(setup, wrong):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     identifier = engine.add('localstack', image=pin.split('@', 1)[0])
     record = engine.records[identifier]
@@ -285,7 +285,7 @@ def test_digest_only_image_locator_and_same_image_id_cache_reuse(setup):
 
 def test_malformed_digest_inspection_is_incompatible(setup):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     engine.add('localstack', image=pin.split('@', 1)[0])
     engine.image_inspections[pin] = [None]
@@ -336,7 +336,7 @@ def test_foreign_owned_project_is_refused(setup):
 
 def test_partial_up_failure_rolls_back_only_new_ids(setup):
     create, engine, _, _, _ = setup
-    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     reused = engine.add('jaeger')
     engine.fail_up = True
     with pytest.raises(p.PrerequisiteError, match='up failed'): manager.acquire()
@@ -589,7 +589,8 @@ def test_journal_read_and_write_io_errors(setup, monkeypatch):
     manager = create()
     manager.directory.mkdir(parents=True)
     def fail(*args, **kwargs): raise PermissionError('private')
-    monkeypatch.setattr(Path, 'read_text', fail)
+    import api_agent.runtime.reporting_metadata as metadata
+    monkeypatch.setattr(metadata, '_read', fail)
     with pytest.raises(p.PrerequisiteError, match='read ownership'):
         p._read_journal(manager.directory, scope, lambda pid: 'boot')
     monkeypatch.setattr(Path, 'open', fail)
@@ -792,7 +793,7 @@ def test_repeated_local_run_restarts_exact_stopped_owned_id(setup):
 
 def test_failed_restart_rolls_back_restarted_id_and_preserves_reused(setup):
     create, engine, _, _, _ = setup
-    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
     reused = engine.add('jaeger')
     restarted = engine.add('localstack', running=False)
     engine.fail_up = True

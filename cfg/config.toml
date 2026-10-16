@@ -243,7 +243,7 @@ COLLECT_ONLY = false
 [fields.ALLURE_S3_USE_LOCALSTACK]
 type = "bool"
 default = false
-help = "Use managed local S3 for result history. True defaults the bucket to allure-results and endpoint to http://localhost:4566, and provisions the selected bucket idempotently. Remote S3 requires False and an explicit bucket."
+help = "Use managed local S3 for result history. True defaults the bucket to allure-results and endpoint to http://localhost:4566; compatible launches share the same managed installation and namespace. False with an explicit endpoint publishes to that service without managing containers, even for loopback. Remote S3 requires False and an explicit bucket."
 [fields.ALLURE_S3_USE_LOCALSTACK.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
@@ -279,7 +279,7 @@ COLLECT_ONLY = false
 [fields.ALLURE_S3_ENDPOINT]
 type = "str"
 conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "http://localhost:4566"}]
-help = "Optional S3-compatible endpoint, such as LocalStack; omitted uses AWS S3."
+help = "Optional S3-compatible endpoint; omitted uses AWS S3. With ALLURE_S3_USE_LOCALSTACK=False, an explicit endpoint is publication-only and never starts, initializes or stops containers."
 [fields.ALLURE_S3_ENDPOINT.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
