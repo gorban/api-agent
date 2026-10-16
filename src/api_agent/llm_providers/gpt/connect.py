@@ -99,7 +99,10 @@ class LoginPageGuard:
         blocked = self.page.get_by_role('heading', name=re.compile(
             r'^(Oops, an error occurred!|Performing security verification|Use your passkey|Sign in with a passkey|Use your security key|Insert your security key|Check your email|Verify your email|Check your phone|Verify your phone number|Choose a verification method|Choose how to verify|Verify your identity)$')).first
         try:
-            visible = await blocked.is_visible()
+            location = urlsplit(self.page.url)
+            route_challenge = (location.scheme == 'https' and location.netloc == 'auth.openai.com'
+                               and location.path == '/auth_challenge/passkey')
+            visible = route_challenge or await blocked.is_visible()
         except Exception:
             code = 'browser_closed' if self.page.is_closed() else 'browser_unavailable'
             raise AuthError(code) from None

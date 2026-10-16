@@ -251,33 +251,80 @@ def test_retry_and_cancelled_waiter():
     run(scenario())
 
 
-def test_shutdown_during_initialization_and_active_call():
+@pytest.mark.parametrize('phase', ['initialization', 'active_call'])
+def test_shutdown_during_initialization_and_active_call(phase):
     async def scenario():
-        entered = asyncio.Event()
+        original_tasks = set(asyncio.all_tasks())
+        entered, drained = asyncio.Event(), asyncio.Event()
+        cleanup_entered, release_cleanup = asyncio.Event(), asyncio.Event()
         async def block(**kwargs):
             entered.set()
-            await asyncio.Event().wait()
-        owner, driver, *_ = browser()
-        llm = LLMSessionOwner(SimpleNamespace(authenticate=block), lambda: owner,
-                              user_index=0, credentials=credentials(), timeout=.01)
-        call = asyncio.create_task(llm.call(AsyncMock()))
-        await entered.wait()
-        await llm.aclose()
-        with pytest.raises(asyncio.CancelledError):
-            await call
-        driver.stop.assert_awaited_once()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                drained.set()
+        async def close_context():
+            cleanup_entered.set()
+            await release_cleanup.wait()
+        owner, driver, instance, context = browser()
+        context.close.side_effect = close_context
         auth = Auth()
-        owner, *_ = browser()
-        llm = LLMSessionOwner(SimpleNamespace(authenticate=AsyncMock(return_value=auth)), lambda: owner,
+        auth.aclose = AsyncMock(wraps=auth.aclose)
+        authenticate = (AsyncMock(side_effect=block) if phase == 'initialization'
+                        else AsyncMock(return_value=auth))
+        operation = AsyncMock(side_effect=block if phase == 'active_call' else None)
+        llm = LLMSessionOwner(SimpleNamespace(authenticate=authenticate), lambda: owner,
                               user_index=0, credentials=credentials())
-        entered.clear()
-        call = asyncio.create_task(llm.call(block))
-        await entered.wait()
-        await llm.aclose()
-        with pytest.raises(asyncio.CancelledError):
-            await call
-        assert auth.closed
-    run(scenario())
+        call = asyncio.create_task(llm.call(operation))
+        closing = None
+        try:
+            await entered.wait()
+            if phase == 'initialization':
+                operation.assert_not_called()
+            closing = asyncio.create_task(llm.aclose())
+            await cleanup_entered.wait()
+            assert drained.is_set()
+            assert call.cancelled()
+            assert llm._initializing.done()
+            assert not llm._calls
+            assert llm._browser is owner and owner.session is not None
+            assert llm._resources and owner._resources
+            instance.close.assert_not_awaited()
+            driver.stop.assert_not_awaited()
+            # Hold real teardown beyond the old 10 ms cleanup allowance. This
+            # proves shutdown waits for owned work rather than assuming instant
+            # context disposal; the generous watchdog is only a deadlock guard.
+            done, pending = await asyncio.wait((closing,), timeout=.05)
+            assert not done and pending == {closing}
+            release_cleanup.set()
+            await closing
+            assert call.cancelled()
+            if phase == 'initialization':
+                assert llm._initializing.cancelled()
+                operation.assert_not_called()
+                auth.aclose.assert_not_awaited()
+            else:
+                operation.assert_awaited_once()
+                auth.aclose.assert_awaited_once()
+                assert auth.closed
+            for dispose in (context.close, instance.close, driver.stop):
+                dispose.assert_awaited_once()
+            assert not llm._resources and not owner._resources
+            assert llm._browser is None and owner._resource_task is None
+            assert llm._closing.done() and owner._closing.done()
+            assert not [task for task in asyncio.all_tasks()
+                        if task not in original_tasks and not task.done()]
+        finally:
+            release_cleanup.set()
+            tasks = [task for task in (call, llm._initializing) if task is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if closing is not None:
+                await asyncio.gather(closing, return_exceptions=True)
+            await llm.aclose()
+    run(asyncio.wait_for(scenario(), 10))
 
 
 def test_late_auth_is_disposed_after_shutdown():

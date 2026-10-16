@@ -130,6 +130,16 @@ no browser. Current debug teardown waits for retained windows to close.
 Closing a login browser before callback ends authentication promptly.
 E2E_DEBUG selects retained headed E2E browsers for focused tests.
 
+For the included Studio request test, keep DEBUG inspection in the pytest
+controller with a serial run:
+```bash
+./launch.py --debug --tui-mode integration --test-parallel-jobs=0 \
+  api-agent::tests/integration/test_studio_request.py
+```
+This test makes one inference request using the configured provider. Parallel
+worker-owned UI inspection is pending: its browser currently closes when the
+worker exits. Shared provider-login inspection is independent of that limitation.
+
 Prefer Chrome DevTools MCP for browser inspection; Playwright MCP is an
 alternative. Configure the agent's MCP server to attach to the printed loopback
 CDP endpoint, replacing `<port>` below with its port:

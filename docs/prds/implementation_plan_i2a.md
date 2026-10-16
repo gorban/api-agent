@@ -24,14 +24,17 @@ does not certify workflow execution or the full application E2E runner.
 ## Delivery gates
 
 - [x] Require meaningful unit/frontend assertions and focused mutations, exact applicable line/branch coverage, installed relocated-resource loading, host/browser lifecycle tests, license checks and independent adversarial review.
+- [ ] Preserve the original worker-owned DEBUG UI browser after parallel test completion. Define controller ownership/handoff before implementation; retain the creating loop, report inspection endpoints and finalize test evidence before user-driven browser closure. Prove cancellation, worker loss, cleanup retries and no resource leaks through actual parallel runners. Serial controller inspection is verified but does not close this requirement; resolve it before application E2E.
 - [x] Audit independently authored source, intended index and actual commit metadata while preserving unrelated changes. Keep private handoff/provenance outside this repository.
 - [ ] Human review of the joined provider/theme/settings/continuation behavior. Actual listening agent, authentication, inference and first application E2E retain their owning application gates.
 
 ## Verification checkpoint
 
-The joined Python gate passes 8,888 units at exact 100% measured line/branch
+The joined Python gate passes 8,904 units at exact 100% measured line/branch
 coverage. Authored frontend checks pass 111 cases plus five reply controls;
 browser modules use static line/branch measurement and Node modules use native
 V8 line/branch measurement. Installed assets, notices and provider discovery
 resolve outside the checkout. Controlled HTTP/browser tests include connection
-failures; external inference acceptance is recorded separately.
+failures. A minimal live browser-to-agent-to-provider request returned the
+expected text. Parallel UI DEBUG retention remains an open ownership requirement;
+this does not certify full application E2E or workflow execution.

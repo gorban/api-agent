@@ -324,7 +324,7 @@ def test_managed_browser_is_default_and_handles_callback(lane, monkeypatch, supp
     async def goto(url, **kwargs):
         assert kwargs == {'wait_until': 'domcontentloaded'}
         assert b'200 OK' in await request(url)
-    owner.start = AsyncMock(return_value=SimpleNamespace(page=SimpleNamespace(goto=goto)))
+    owner.start = AsyncMock(return_value=SimpleNamespace(page=SimpleNamespace(url='https://auth.openai.com/log-in', goto=goto)))
     create = lambda: owner
     monkeypatch.setattr('api_agent.llm_providers.gpt.browser.subscription_browser', create)
     options = {'browser_owner': owner} if supplied else {}
@@ -345,7 +345,7 @@ def test_closing_login_without_callback_ends_promptly_and_disposes(lane, closed)
             navigated.set()
         blocked = SimpleNamespace(is_visible=AsyncMock(return_value=False))
         blocked.first = blocked
-        page = SimpleNamespace(goto=goto, is_closed=lambda: state['page'], get_by_role=lambda *a, **kw: blocked)
+        page = SimpleNamespace(url='https://auth.openai.com/log-in', goto=goto, is_closed=lambda: state['page'], get_by_role=lambda *a, **kw: blocked)
         browser = SimpleNamespace(is_connected=lambda: not state['browser'])
         owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page, browser=browser)),
                                 aclose=AsyncMock())
@@ -392,7 +392,7 @@ def test_full_login_workflow_callback_and_safe_failure_cleanup(lane, monkeypatch
         urls = []
         async def goto(url, **kwargs):
             urls.append(url)
-        session = SimpleNamespace(page=SimpleNamespace(goto=goto, is_closed=lambda: False),
+        session = SimpleNamespace(page=SimpleNamespace(url='https://auth.openai.com/log-in', goto=goto, is_closed=lambda: False),
                                   browser=SimpleNamespace(is_connected=lambda: True))
         owner = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
         reader = AsyncMock()
@@ -500,7 +500,7 @@ def test_managed_browser_wait_accepts_callback_before_closure(lane, close_after_
             requests.append(asyncio.create_task(callback(url)))
         blocked = SimpleNamespace(is_visible=AsyncMock(return_value=False))
         blocked.first = blocked
-        session = SimpleNamespace(page=SimpleNamespace(goto=goto, is_closed=lambda: state['closed'], get_by_role=lambda *a, **kw: blocked),
+        session = SimpleNamespace(page=SimpleNamespace(url='https://auth.openai.com/log-in', goto=goto, is_closed=lambda: state['closed'], get_by_role=lambda *a, **kw: blocked),
                                   browser=SimpleNamespace(is_connected=lambda: not state['closed']))
         owner = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
         store = Store()
@@ -515,7 +515,7 @@ def test_managed_browser_wait_accepts_callback_before_closure(lane, close_after_
 def test_managed_browser_failure_is_safe_and_disposes_owner(lane, monkeypatch, stage):
     from unittest.mock import AsyncMock
     error = RuntimeError('private authorization URL')
-    page = SimpleNamespace(goto=AsyncMock(side_effect=error if stage == 'navigation' else None))
+    page = SimpleNamespace(url='https://auth.openai.com/log-in', goto=AsyncMock(side_effect=error if stage == 'navigation' else None))
     owner = SimpleNamespace(start=AsyncMock(side_effect=error if stage == 'start' else None,
                                           return_value=SimpleNamespace(page=page)), aclose=AsyncMock())
     client = SimpleNamespace(aclose=AsyncMock())
@@ -534,7 +534,7 @@ def test_blocked_managed_browser_is_disposed(lane, monkeypatch, end):
         async def goto(*args, **kwargs):
             entered.set()
             await asyncio.Event().wait()
-        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=SimpleNamespace(goto=goto))),
+        owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=SimpleNamespace(url='https://auth.openai.com/log-in', goto=goto))),
                                 aclose=AsyncMock())
         original = c.asyncio.timeout
         monkeypatch.setattr(c.asyncio, 'timeout', lambda _: original(.05))
@@ -627,7 +627,7 @@ def test_observed_login_blocker_requires_human_without_logging_page_contents(int
     from unittest.mock import AsyncMock, Mock
     blocked = SimpleNamespace(is_visible=AsyncMock(return_value=True))
     blocked.first = blocked
-    page = SimpleNamespace(get_by_role=Mock(return_value=blocked))
+    page = SimpleNamespace(url='https://auth.openai.com/log-in', get_by_role=Mock(return_value=blocked))
     guard = c.LoginPageGuard(page, allow_interaction=interactive)
     if interactive:
         asyncio.run(guard.check())
@@ -650,7 +650,7 @@ def test_login_guard_disconnect_is_safe(closed):
     from unittest.mock import AsyncMock, Mock
     blocked = SimpleNamespace(is_visible=AsyncMock(side_effect=RuntimeError('private page text')))
     blocked.first = blocked
-    page = SimpleNamespace(get_by_role=Mock(return_value=blocked), is_closed=lambda: closed)
+    page = SimpleNamespace(url='https://auth.openai.com/log-in', get_by_role=Mock(return_value=blocked), is_closed=lambda: closed)
     guard = c.LoginPageGuard(page, allow_interaction=True)
     with pytest.raises(c.AuthError, match='^' + ('browser_closed' if closed else 'browser_unavailable') + '$'):
         asyncio.run(guard.check())
@@ -746,7 +746,7 @@ def test_browser_guard_cannot_overturn_completed_callback_but_preserves_cancella
     from api_agent.providers.sessions import wait_browser_result
     async def scenario():
         result = asyncio.get_running_loop().create_future()
-        session = SimpleNamespace(page=SimpleNamespace(is_closed=lambda: False),
+        session = SimpleNamespace(page=SimpleNamespace(url='https://auth.openai.com/log-in', is_closed=lambda: False),
                                   browser=SimpleNamespace(is_connected=lambda: True))
         async def guard():
             if outcome != 'pending':
@@ -811,7 +811,7 @@ def test_explicit_human_challenge_headings_pause_without_scraping(heading, capsy
     from unittest.mock import Mock
     blocked = SimpleNamespace(is_visible=AsyncMock(return_value=True))
     blocked.first = blocked
-    page = SimpleNamespace(get_by_role=Mock(return_value=blocked))
+    page = SimpleNamespace(url='https://auth.openai.com/log-in', get_by_role=Mock(return_value=blocked))
     guard = c.LoginPageGuard(page, allow_interaction=True)
     async def scenario():
         assert await guard.check() is True
@@ -832,7 +832,7 @@ def test_attended_without_username_monitors_human_challenge(lane):
     lane.finish_authorization = AsyncMock()
     blocked = SimpleNamespace(is_visible=AsyncMock(return_value=True))
     blocked.first = blocked
-    page = SimpleNamespace(goto=AsyncMock(), is_closed=lambda: False,
+    page = SimpleNamespace(url='https://auth.openai.com/log-in', goto=AsyncMock(), is_closed=lambda: False,
                            get_by_role=Mock(return_value=blocked))
     owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page,
                             browser=SimpleNamespace(is_connected=lambda: True))), aclose=AsyncMock())
@@ -857,14 +857,15 @@ def test_shared_username_helper_preserves_control_errors_and_bounds_unknown_erro
     page.click.assert_not_awaited()
 
 
+@pytest.mark.parametrize('challenge', ['heading', 'route'])
 @pytest.mark.parametrize('username', [None, 'person@example.test'])
-def test_offline_challenge_wait_keeps_real_callback_priority_without_credentials(lane, monkeypatch, username):
+def test_offline_challenge_wait_keeps_real_callback_priority_without_credentials(lane, monkeypatch, username, challenge):
     from playwright.async_api import async_playwright
     async def scenario():
         callbacks, guards = [], []
         def begin(host, uri, **kwargs):
             callbacks.append(uri)
-            return SimpleNamespace(authorization_url='https://auth.openai.com/log-in', state='s')
+            return SimpleNamespace(authorization_url='https://auth.openai.com/' + ('auth_challenge/passkey' if challenge == 'route' else 'log-in'), state='s')
         lane.begin_authorization = begin
         lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email='person@example.test'))
         original_guard = c.LoginPageGuard
@@ -879,7 +880,7 @@ def test_offline_challenge_wait_keeps_real_callback_priority_without_credentials
                 context = await browser.new_context(service_workers='block')
                 await context.set_offline(True)
                 await context.route('**/*', lambda route: route.fulfill(content_type='text/html', body=(
-                    '<h1>Use your security key</h1><label>Email address<input></label>'
+                    '<h1>' + ('Connect your api-agent to ChatGPT' if challenge == 'route' else 'Use your security key') + '</h1><label>Email address<input></label>'
                     '<button onclick="window.clicked=true">Continue</button>')))
                 page = await context.new_page()
                 owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page, browser=browser)), aclose=AsyncMock())
@@ -893,6 +894,8 @@ def test_offline_challenge_wait_keeps_real_callback_priority_without_credentials
                 assert b'200 OK' in await request(callbacks[0])
                 assert await asyncio.wait_for(task, 5) == 'account'
                 assert len(store.saved) == 1
+                assert guards[0].notified
+                assert await page.get_by_role('heading').is_visible()
                 assert not await page.evaluate('Boolean(window.clicked)')
                 owner.aclose.assert_awaited_once()
             finally:
@@ -1017,3 +1020,161 @@ def test_replacement_document_disposal_receipt_survives_assistance_and_retains_b
         assert login.last_document is None
         current.dispose.assert_awaited_once()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('url,expected', [
+    ('https://auth.openai.com/auth_challenge/passkey', True),
+    ('https://auth.openai.com/auth_challenge/passkey?flow=synthetic#step', True),
+    ('http://auth.openai.com/auth_challenge/passkey', False),
+    ('https://other.example/auth_challenge/passkey', False),
+    ('https://auth.openai.com.evil.test/auth_challenge/passkey', False),
+    ('https://auth.openai.com@other.example/auth_challenge/passkey', False),
+    ('https://auth.openai.com/auth_challenge/passkey/extra', False),
+    ('https://auth.openai.com/auth_challenge/unknown', False),
+    ('https://auth.openai.com/consent', False),
+])
+def test_passkey_route_requires_exact_trusted_authority_and_path(url, expected, capsys):
+    from test_gpt_login import Page
+    async def scenario():
+        page = Page('Connect your api-agent to ChatGPT')
+        page.url = url
+        guard = c.LoginPageGuard(page, allow_interaction=True)
+        assert await guard.check() is expected
+        assert await guard.check() is expected
+        assert guard.notified is expected
+        page.fill.assert_not_awaited()
+        page.click.assert_not_awaited()
+    asyncio.run(scenario())
+    assert capsys.readouterr().out.count('human attention') == int(expected)
+
+
+@pytest.mark.parametrize('interactive', [False, True])
+def test_passkey_route_with_consent_controls_cannot_submit_then_resumes_offline(interactive, capsys):
+    from playwright.async_api import async_playwright
+    async def scenario():
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context(service_workers='block')
+                await context.set_offline(True)
+                await context.route('**/*', lambda route: route.fulfill(content_type='text/html', body=(
+                    '<h1>Connect your api-agent to ChatGPT</h1><input type=password>'
+                    '<button onclick="window.clicks=(window.clicks||0)+1">Continue</button>')))
+                page = await context.new_page()
+                await page.goto('https://auth.openai.com/auth_challenge/passkey')
+                credentials = AsyncMock(return_value='private-credential')
+                guard = c.LoginPageGuard(page, allow_interaction=interactive)
+                login = c.LoginWorkflow(SimpleNamespace(page=page, browser=browser), 'person@example.test',
+                                        credentials, 'api-agent', guard, allow_interaction=interactive)
+                if interactive:
+                    await login.advance()
+                    await login.advance()
+                else:
+                    with pytest.raises(c.AuthError, match='^login_interaction_required$'):
+                        await login.advance()
+                credentials.assert_not_awaited()
+                assert not await page.evaluate('Boolean(window.clicks)')
+                assert await page.locator('input').input_value() == ''
+                await page.goto('https://auth.openai.com/consent')
+                await login.advance()
+                await login.advance()
+                assert await page.evaluate('window.clicks') == 1
+                credentials.assert_not_awaited()
+                await login.aclose()
+            finally:
+                await browser.close()
+    asyncio.run(scenario())
+    assert capsys.readouterr().out.count('human attention') == int(interactive)
+
+
+def test_passkey_route_uses_real_connect_guard_for_single_headless_visible_retry(lane, monkeypatch, capsys):
+    from test_gpt_login import Page
+    from api_agent.llm_providers.gpt import factory as factory_module
+    async def scenario():
+        store = Store()
+        store.list = lambda: ()
+        monkeypatch.setattr(factory_module, 'ConnectionStore', lambda _: store)
+        created, pages, guards, callbacks = [], [], [], []
+        original_guard = c.LoginPageGuard
+        def guard(*args, **kwargs):
+            instance = original_guard(*args, **kwargs)
+            guards.append(instance)
+            return instance
+        monkeypatch.setattr(c, 'LoginPageGuard', guard)
+        def browser(**options):
+            page = Page('Connect your api-agent to ChatGPT')
+            async def goto(uri, **kwargs):
+                callbacks.append(uri)
+                page.url = 'https://auth.openai.com/auth_challenge/passkey'
+            page.goto = goto
+            pages.append(page)
+            owner = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=page,
+                browser=SimpleNamespace(is_connected=lambda: True))), aclose=AsyncMock())
+            created.append((options, owner))
+            return owner
+        monkeypatch.setattr(factory_module, 'subscription_browser', browser)
+        lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email='person@example.test'))
+        provider = factory_module.factory({'NO_STD_IN': True, 'RUN_UI': False}, None)
+        reader = AsyncMock(return_value='person@example.test')
+        task = asyncio.create_task(provider.asetup(interactive=False, user_index=0, credentials=reader))
+        try:
+            async with asyncio.timeout(5):
+                while len(guards) != 2 or not guards[-1].notified:
+                    await asyncio.sleep(.01)
+            assert [options for options, _ in created] == [{'headless': True}, {}]
+            for page in pages:
+                page.fill.assert_not_awaited()
+                page.click.assert_not_awaited()
+            reader.assert_awaited_once_with(0, 'username')
+            assert b'200 OK' in await request(callbacks[-1])
+            session = await asyncio.wait_for(task, 5)
+            assert session.profile_id == 'account'
+            assert len(store.saved) == 1
+            assert pages[-1].url == 'https://auth.openai.com/auth_challenge/passkey'
+        finally:
+            await provider.aclose()
+        assert len(created) == 2
+        created[0][1].aclose.assert_awaited()
+        created[1][1].aclose.assert_awaited()
+    asyncio.run(scenario())
+    assert capsys.readouterr().out.count('Opening visible Chromium') == 1
+
+
+def test_passkey_route_arriving_after_consent_controls_are_pinned_pauses_same_document(capsys):
+    from playwright.async_api import async_playwright, ElementHandle
+    from unittest.mock import patch
+    async def scenario():
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context(service_workers='block')
+                await context.set_offline(True)
+                await context.route('**/*', lambda route: route.fulfill(content_type='text/html', body=(
+                    '<h1>Connect your api-agent to ChatGPT</h1>'
+                    '<button onclick="window.clicks=(window.clicks||0)+1">Continue</button>')))
+                page = await context.new_page()
+                await page.goto('https://auth.openai.com/consent')
+                guard = c.LoginPageGuard(page, allow_interaction=True)
+                reader = AsyncMock()
+                login = c.LoginWorkflow(SimpleNamespace(page=page, browser=browser), 'person@example.test',
+                                        reader, 'api-agent', guard, allow_interaction=True)
+                original = ElementHandle.evaluate_handle
+                async def capture_then_change_route(handle, *args, **kwargs):
+                    document = await original(handle, *args, **kwargs)
+                    await page.evaluate('history.pushState({}, "", "/auth_challenge/passkey")')
+                    return document
+                with patch.object(ElementHandle, 'evaluate_handle', capture_then_change_route):
+                    await login.advance()
+                assert guard.notified
+                assert not await page.evaluate('Boolean(window.clicks)')
+                assert login.last_action is None
+                reader.assert_not_awaited()
+                await page.evaluate('history.pushState({}, "", "/consent")')
+                await login.advance()
+                await login.advance()
+                assert await page.evaluate('window.clicks') == 1
+                await login.aclose()
+            finally:
+                await browser.close()
+    asyncio.run(scenario())
+    assert capsys.readouterr().out.count('human attention') == 1
