@@ -23,7 +23,7 @@ def passkey_owner(monkeypatch):
         async def goto(url, **_):
             assert b'200 OK' in await request(url)
         page = SimpleNamespace(goto=goto, is_closed=lambda: False)
-        channel = SimpleNamespace(send=AsyncMock(return_value={'authenticatorId': 'synthetic'}),
+        channel = SimpleNamespace(send=AsyncMock(return_value={'authenticatorId': 'synthetic', 'frameTree': {'frame': {'id': 'main'}}}),
             on=Mock(), remove_listener=Mock(), detach=AsyncMock())
         context = SimpleNamespace(new_page=AsyncMock(return_value=page), close=AsyncMock(),
             new_cdp_session=AsyncMock(return_value=channel))
@@ -61,7 +61,7 @@ def test_failed_key_removal_closes_original_browser_instead_of_retaining(lane, p
         async def send(method, _=None):
             if method == 'WebAuthn.removeVirtualAuthenticator':
                 raise RuntimeError('synthetic disposal failure')
-            return {'authenticatorId': 'synthetic'}
+            return {'authenticatorId': 'synthetic', 'frameTree': {'frame': {'id': 'main'}}}
         channel.send.side_effect = send
         lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email='person@example.test'))
         with pytest.raises(CleanupPendingError) as error:
@@ -110,7 +110,7 @@ def test_primary_error_keeps_failed_passkey_cleanup_receipt(lane, passkey_owner)
         async def send(method, _=None):
             if method == 'WebAuthn.removeVirtualAuthenticator':
                 raise RuntimeError('synthetic removal failure')
-            return {'authenticatorId': 'synthetic'}
+            return {'authenticatorId': 'synthetic', 'frameTree': {'frame': {'id': 'main'}}}
         channel.send.side_effect = send
         lane.finish_authorization = AsyncMock(side_effect=c.AuthError('account_mismatch'))
         with pytest.raises(c.AuthError, match='account_mismatch') as error:

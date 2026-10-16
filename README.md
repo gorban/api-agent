@@ -60,6 +60,7 @@ for prerequisites and connection instructions.
   approval; positive signature counters and PRF-dependent authentication are not
   supported. If a physical key is needed during software authentication, end
   that attempt and retry attended, after its software authenticator is removed.
+  The site must offer a passkey route; email-only verification stays manual.
   See [passkey support](docs/prds/implementation_plan_a2a2.md).
   The bundled 1Password CLI adapter has no verified passkey interface; contributions
   using a supported interface are welcome. Manual passkey approval remains available.

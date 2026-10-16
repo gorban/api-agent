@@ -41,7 +41,15 @@ start attended; same-operation physical-device handoff is not certified.
 - [x] Exercise supported/absent/unsupported/mismatched/malformed records, manager
   recovery, route preference, no-password routes, navigation races, timeout,
   cancellation, repeated assertions and cleanup through independent controls.
-- [x] Renew exact applicable unit coverage, wheel, boundary and mutation gates.
+- [x] Allow ordinary supporting iframe documents while keeping every main-frame
+  navigation/redirect restricted to the trusted origin or exact owned callback.
+  Before document execution, enforce browser WebAuthn get/create permissions for
+  self only; refuse ambiguous existing policies and preserve unrelated headers.
+  Prove same-RP foreign-frame denial against a successful unrestricted control.
+  Supply a standard status phrase when HTTP/2 omits it, preserving status and
+  response headers/body; include real empty-phrase navigation controls.
+- [x] Renew exact applicable unit coverage, wheel, boundary and mutation gates
+  after the supporting-frame compatibility repair.
 - [ ] Human-review the selected-login passkey route and retained-browser cleanup.
 
 1Password passkey retrieval remains unsupported. Its CLI login-recovery work
@@ -51,3 +59,14 @@ Verification: 9,187 unit tests pass at 32 workers with exact coverage of
 22,203 statements and 8,398 branches. Installed-wheel, unrelated-working-directory,
 synthetic browser signatures/navigation, independent rejection mutations and
 public-boundary checks pass. Live selected-account acceptance remains separate.
+
+Inspection note: keep one observer connection alive while software authentication
+is active. Disconnecting an additional CDP observer can disable Chromium's shared
+virtual-authenticator environment. Wait for provider-owned authenticator removal
+before disconnecting the observer. Do not inspect credential-bearing CDP payloads.
+
+Supporting-frame/HTTP2 renewal: 9,241 units pass at 32 workers with exact
+coverage of 22,265 statements and 8,424 branches. Installed browser and
+independent policy/navigation mutations pass. A live selected-account attempt
+reached email verification but offered only password despite available browser
+passkey support; this does not establish live passkey acceptance.

@@ -14,7 +14,7 @@ from api_agent.providers.control import CleanupPendingError
 def software(monkeypatch):
     for name in ('DEBUG', 'DEBUGP', 'PWDEBUG', 'DEBUG_FILE'):
         monkeypatch.delenv(name, raising=False)
-    channel = SimpleNamespace(send=AsyncMock(return_value={'authenticatorId': 'synthetic'}),
+    channel = SimpleNamespace(send=AsyncMock(return_value={'authenticatorId': 'synthetic', 'frameTree': {'frame': {'id': 'main'}}}),
                               detach=AsyncMock(), on=Mock(), remove_listener=Mock())
     session = SimpleNamespace(context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=channel)),
                               browser=SimpleNamespace(is_connected=lambda: True),
@@ -44,7 +44,7 @@ def test_import_and_removal_are_owned(software):
     async def scenario():
         await owner.prepare()
         assert owner.credential is None
-        imported = channel.send.call_args_list[3].args[1]['credential']
+        imported = next(call.args[1]['credential'] for call in channel.send.call_args_list if call.args[0] == 'WebAuthn.addCredential')
         assert imported['signCount'] == -1
         assert imported['backupEligibility'] is False
         assert imported['privateKey'] == 'synthetic-key'
@@ -67,7 +67,7 @@ def test_positive_counter_is_never_reset(software):
 
 def test_import_failure_uses_static_diagnostic_and_still_removes(software):
     owner, channel = software
-    channel.send.side_effect = [None, None, {'authenticatorId': 'synthetic'}, RuntimeError('private detail'), None, None, None]
+    channel.send.side_effect = [{'frameTree': {'frame': {'id': 'main'}}}, None, None, {'authenticatorId': 'synthetic'}, RuntimeError('private detail'), None, None, None]
     async def scenario():
         with pytest.raises(AuthError, match='passkey_browser_unsupported') as error:
             await owner.prepare()
@@ -108,7 +108,7 @@ def test_cancelled_import_finishes_before_removal(software):
             if method == 'WebAuthn.addCredential':
                 entered.set()
                 await release.wait()
-            return {'authenticatorId': 'synthetic'}
+            return {'authenticatorId': 'synthetic', 'frameTree': {'frame': {'id': 'main'}}}
         channel.send.side_effect = send
         task = asyncio.create_task(owner.prepare())
         await entered.wait()
@@ -253,7 +253,7 @@ def test_cancelled_failed_removal_exports_recoverable_receipt(software):
 
 def test_failed_authenticator_creation_still_disables_interception(software):
     owner, channel = software
-    channel.send.side_effect = [None, None, RuntimeError('creation failed'), None, None]
+    channel.send.side_effect = [{'frameTree': {'frame': {'id': 'main'}}}, None, None, RuntimeError('creation failed'), None, None]
     async def scenario():
         with pytest.raises(AuthError, match='passkey_browser_unsupported'):
             await owner.prepare()
@@ -276,3 +276,61 @@ def test_detach_retry_preserves_already_removed_authenticator(software):
         removals = [call for call in channel.send.call_args_list if call.args[0] == 'WebAuthn.removeVirtualAuthenticator']
         assert len(removals) == 1
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('frame', ['child', 'nested-child'])
+def test_foreign_supporting_frame_document_can_load(software, frame):
+    owner, channel = software
+    owner.channel, owner.main_frame = channel, 'main'
+    asyncio.run(owner._navigation({'requestId': 'frame', 'frameId': frame,
+                                  'request': {'url': 'https://support.example.test/frame'}}))
+    channel.send.assert_awaited_once_with('Fetch.continueRequest', {'requestId': 'frame'})
+
+
+def test_document_response_restricts_delegation_without_losing_headers(software):
+    owner, channel = software
+    owner.channel = channel
+    headers = [{'name': 'Set-Cookie', 'value': 'one=1'}, {'name': 'Set-Cookie', 'value': 'two=2'}]
+    asyncio.run(owner._navigation({'requestId': 'response', 'responseStatusCode': 200,
+                                  'responseStatusText': 'OK', 'responseHeaders': headers}))
+    method, data = channel.send.call_args.args
+    assert method == 'Fetch.continueResponse'
+    assert data['responseCode'] == 200 and data['responsePhrase'] == 'OK'
+    assert data['responseHeaders'][:2] == headers
+    assert 'publickey-credentials-get=(self)' in data['responseHeaders'][-1]['value']
+
+
+def test_ambiguous_response_policy_is_never_resumed(software):
+    owner, channel = software
+    owner.channel = channel
+    asyncio.run(owner._navigation({'requestId': 'response', 'responseStatusCode': 200,
+        'responseStatusText': 'OK', 'responseHeaders': [
+            {'name': 'Permissions-Policy', 'value': 'publickey-credentials-get=*'}]}))
+    assert owner.navigation_failed
+    channel.send.assert_awaited_once_with('Fetch.failRequest',
+        {'requestId': 'response', 'errorReason': 'BlockedByClient'})
+
+
+def test_uncertain_response_resume_is_aborted(software):
+    owner, channel = software
+    owner.channel = channel
+    channel.send.side_effect = [RuntimeError('private diagnostic'), None]
+    asyncio.run(owner._navigation({'requestId': 'response', 'responseStatusCode': 200,
+                                  'responseStatusText': 'OK', 'responseHeaders': []}))
+    assert owner.navigation_failed
+    assert channel.send.call_args_list[-1].args[0] == 'Fetch.failRequest'
+
+
+@pytest.mark.parametrize('status,phrase,expected', [(200, '', 'OK'), (200, None, 'OK'),
+    (599, '', 'Response'), (200, 'Original phrase', 'Original phrase')])
+def test_empty_http2_reason_phrase_gets_a_valid_cdp_reason(software, status, phrase, expected):
+    owner, channel = software
+    owner.channel = channel
+    event = {'requestId': 'response', 'responseStatusCode': status, 'responseHeaders': []}
+    if phrase is not None:
+        event['responseStatusText'] = phrase
+    asyncio.run(owner._navigation(event))
+    method, params = channel.send.call_args.args
+    assert method == 'Fetch.continueResponse'
+    assert params['responseCode'] == status and params['responsePhrase'] == expected
+    assert not owner.navigation_failed
