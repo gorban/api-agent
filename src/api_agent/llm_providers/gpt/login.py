@@ -11,6 +11,10 @@ from api_agent.runtime.managed_browser import _dispose
 from .contracts import AuthError
 
 
+_PASSWORD_UNAVAILABLE = ('The selected login has no password and GPT offers no usable passkey route. '
+                         'Email verification remains manual; use a visible browser to continue.')
+
+
 class LoginWorkflow:
     def __init__(self, session, username, credentials, app_name, guard, *, allow_interaction,
                  material=None, software_passkey=False):
@@ -153,6 +157,11 @@ class LoginWorkflow:
         return True
 
     async def _choose(self, control, heading, url, label):
+        if label == 'Continue with password' and self.material_known and not self.password_value:
+            # A paused page is polled repeatedly. Do not allocate handles and
+            # start an independent cleanup clock for a known unusable route.
+            self._interaction(_PASSWORD_UNAVAILABLE)
+            return
         key = (urlsplit(url).path, label, await heading.text_content())
         handle = await control.element_handle(timeout=1000)
         if handle is None:
@@ -165,8 +174,8 @@ class LoginWorkflow:
             if label == 'Continue with password':
                 value = await self._credential('password', watch_guard=False)
                 if not isinstance(value, str) or not value.strip():
-                    self._interaction('The selected login has no password and GPT offers no usable passkey route. '
-                                      'Email verification remains manual; use a visible browser to continue.')
+                    self.password_value, self.material_known = None, True
+                    self._interaction(_PASSWORD_UNAVAILABLE)
                     return
                 self.password_value, self.material_known = value, True
             if (self.page.url != url or not await heading.is_visible()

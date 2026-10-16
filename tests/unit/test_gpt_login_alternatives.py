@@ -141,3 +141,75 @@ def test_unchanged_document_is_not_submitted_twice(alternative_page):
         assert login.last_document is current and login.documents == [current]
         await login.aclose()
     asyncio.run(alternative_page(check))
+
+
+
+@pytest.mark.parametrize('software_passkey', [False, True])
+def test_known_missing_password_polling_keeps_one_stable_component_clock(alternative_page, monkeypatch, software_passkey):
+    from api_agent.providers import progress
+    from api_agent.providers.progress import progress_sink, report_timeout
+    from api_agent.tui.test_results import component_timing
+
+    monkeypatch.setattr(progress, '_clock', lambda: 0)
+    async def check(page, browser):
+        await page.get_by_role('link', name='Continue with passkey', exact=True).evaluate('(link) => link.remove()')
+        login = make_workflow(page, browser, passkey=software_passkey)
+        active, displays, events = {}, [], []
+        def observe(event):
+            events.append(event)
+            if event.active:
+                active[event.id] = event
+            else:
+                active.pop(event.id, None)
+            displays.append(component_timing(active.values()))
+        try:
+            with progress_sink(observe):
+                async with report_timeout('Shared provider setup', 180):
+                    for _ in range(5):
+                        await login.advance()
+                    assert set(displays) == {'0s elapsed; timeout 3m — Shared provider setup'}
+                    assert {event.name for event in events} == {'Shared provider setup'}
+                    assert login.documents == []
+                    assert await page.evaluate('window.chosen') is None
+                    login.credentials.assert_not_awaited()
+            assert active == {}
+        finally:
+            await login.aclose()
+    asyncio.run(alternative_page(check))
+
+
+
+def test_legacy_absent_password_is_not_looked_up_again_on_every_poll(alternative_page):
+    async def check(page, browser):
+        login = make_workflow(page, browser, reader=AsyncMock(return_value=None), known=False)
+        try:
+            await login.advance()
+            await login.advance()
+            assert login.material_known and login.password_value is None
+            assert not login.documents
+            assert await page.evaluate('window.chosen') is None
+            login.credentials.assert_awaited_once_with('password')
+        finally:
+            await login.aclose()
+    asyncio.run(alternative_page(check))
+
+
+
+def test_paused_missing_password_can_resume_an_offered_passkey(alternative_page):
+    async def check(page, browser):
+        # A hidden element leaves role lookup; keep its fixture selector for restoration.
+        control = page.locator('a[href="#passkey"]')
+        await control.evaluate('(link) => link.hidden = true')
+        login = make_workflow(page, browser, passkey=True)
+        try:
+            await login.advance()
+            assert login.disabled and not login.documents
+            assert await page.evaluate('window.chosen') is None
+            await control.evaluate('(link) => link.hidden = false')
+            await login.advance()
+            assert not login.disabled
+            assert await page.evaluate('window.chosen') == 'passkey'
+            login.credentials.assert_not_awaited()
+        finally:
+            await login.aclose()
+    asyncio.run(alternative_page(check))
