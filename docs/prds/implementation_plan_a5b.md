@@ -2,15 +2,17 @@
 
 [Local-run contracts](implementation_plan_a5.md) · [Prepared UI sessions](implementation_plan_i2c.md) · [Dashboard tabs](implementation_plan_k2.md)
 
-The prepared-session policy supersedes earlier pack-hook and eager-login wording.
-RUN_UI opts into the frontend; DEBUG changes visibility and retention without
-enabling UI or authentication by itself. The separately owned startup viewer/
-dashboard browser in K2 remains independent of frontend/authentication sessions.
+RUN_UI opts into the frontend service and tab. RUN_UI or DEBUG opens the shared
+startup browser; DEBUG alone opens home/status, enabled tracing and the final
+flow without enabling frontend login or eager LLM setup. Both False starts no
+automatic browser. Every browser used by Run local is headed, including attended
+and unattended authentication; headless browsing is a test policy only.
 
 - [ ] With RUN_UI=False, start no frontend or UI authentication session, and do
-  not eagerly initialize the LLM provider or retrieve login credentials/quota.
+  not eagerly initialize the LLM provider or retrieve UI/LLM credentials/quota.
   Genuine later authenticated API calls retain lazy provider setup. Separately
-  configured reporting/dashboard tabs do not authorize login or a UI hook.
+  configured tracing dashboards may still use their own login credentials; they
+  do not authorize UI/LLM login or a UI hook.
 - [ ] With RUN_UI=True, use the selected UI provider's normal launch lifecycle,
   verify owned frontend readiness, create the managed headed UI session and
   await its optional provider-owned login/navigation component. Bridge existing
@@ -23,16 +25,18 @@ dashboard browser in K2 remains independent of frontend/authentication sessions.
   needs that LLM session earlier, coalesce setup without a second login. Preserve
   separate cookie/token ownership and fail selected-credential errors rather
   than silently choosing attended mode or another cached account.
-- [ ] Apply the shared LLM login visibility policy: attended is headed;
-  unattended is headless unless RUN_UI or DEBUG requests visibility. Reuse or
-  refresh valid cached state first. Bounded visible challenge handoff remains
-  available; it does not turn DEBUG into authentication authorization.
+- [ ] Local LLM authentication always uses a headed browser if a browser is
+  required, including after a later API request with both startup flags False.
+  Reuse/refresh valid cached state first; no browser is needed for a cache hit
+  or static API key. Test-mode unattended authentication may be headless under
+  its own visibility policy. DEBUG does not authorize eager login by itself.
 - [ ] Reuse shared original-session inspection and cleanup for local UI and
   separate login browsers. DEBUG retains created sessions; ordinary shutdown
   closes them. Expose original endpoints/identities without substituting a
   browser, and preserve pending cleanup/retry ownership until disposal confirms.
-- [ ] Verify UI-off with DEBUG both ways, UI-on attended/unattended/no-op login,
+- [ ] Verify all four RUN_UI/DEBUG combinations, headed-only local login,
+  authenticated tracing without frontend login, UI-on attended/unattended/no-op login,
   matching-index LLM setup, failure/cancel/timeout and readiness ordering. Use
   the same consumer in explicit UI-provider integrations and E2E; do not duplicate
   login or browser visibility code in each runner. Keep startup dashboard tabs
-  and the later selected workflow viewer under their existing owning requirements.
+  and selected workflow viewer under [the four-tab plan](implementation_plan_k2.md).

@@ -11,15 +11,20 @@ do not add a second UI-enable or authentication-mode switch.
 
 | Operation | UI provider and browser | Authentication at startup |
 | --- | --- | --- |
-| Run local, RUN_UI=False | No frontend launch or UI-session preparation, even with DEBUG | No eager UI or LLM authentication; actual later authenticated requests remain lazy |
+| Run local, RUN_UI=False, DEBUG=False | No automatic startup browser or frontend | No eager UI or LLM authentication; actual later authenticated requests remain lazy |
+| Run local, RUN_UI=False, DEBUG=True | Headed startup browser with home/status, enabled tracing and final flow; no frontend | No eager UI or LLM authentication; tracing login is separately configured |
 | Run local, RUN_UI=True | Launch selected frontend and one managed headed UI session | Finish optional UI preparation, then prepare the selected LLM session when needed for the interactive agent |
 | Ordinary integration/discovery | No frontend; only a provider-owned authentication browser if needed | Only capabilities requested by the test; catalog discovery never requires a UI session |
 | Explicit UI-provider integration | Launch selected UI through the same consumer as local/E2E; headed with RUN_UI or DEBUG, otherwise headless | Optional UI preparation; LLM authentication only when the test explicitly needs it |
 | E2E | Frontend always required; browser headed with RUN_UI or DEBUG or E2E_DEBUG, otherwise headless | Complete scenario-required UI/LLM setup before handing the prepared session to its test |
 
-DEBUG controls visibility, inspection and retention; it never enables a disabled
-local frontend or eager authentication. Separately requested reporting/dashboard
-tabs do not authorize frontend login. Attended login requiring human action must
+For Run local, RUN_UI or DEBUG opens one headed startup browser; DEBUG alone
+does not enable the optional frontend or eager UI/LLM login. Run local never
+uses headless browsing, including separate login browsers. Test consumers retain
+their headless/visible policy. [Startup tabs](implementation_plan_k2.md) are the
+unauthenticated home/status page, optional UI, optional tracing and final flow.
+Tracing login uses its configured dashboard credentials independently of UI/LLM
+login; a dashboard tab does not authorize frontend authentication. Attended login requiring human action must
 be visible; a headless attempt that cannot finish reports interaction required
 or uses the approved bounded visible handoff, never a silent account fallback.
 
@@ -49,8 +54,9 @@ or uses the approved bounded visible handoff, never a silent account fallback.
   login that needs LLM authentication may request that owner earlier; coalesce
   it rather than deadlock or open a second login. UI cookies and LLM credentials
   remain separate, with any identity relationship validated by their owner.
-- [ ] No-UI local startup must not call credential readers, start login browsers,
-  fetch quota or force LLM setup. Later genuine API/inference requests still
+- [ ] No-UI local startup must not request UI/LLM credentials, start their login
+  browsers, fetch LLM quota or force LLM setup. A configured tracing dashboard
+  may still perform its separately owned login in the headed startup browser. Later genuine API/inference requests still
   authenticate normally. Do not apply this startup omission to discovery or
   inference integrations merely because RUN_UI=False.
 - [ ] Give every E2E attempt its own prepared UI session; shared authenticated
@@ -95,7 +101,7 @@ or uses the approved bounded visible handoff, never a silent account fallback.
   live private login/inference and human review.
 
 The first human checkpoint is an actual provider-launched integration browser
-retained for inspection, followed by RUN_UI-gated local startup and then the
+retained for inspection, followed by local startup with its browser/frontend gates and then the
 first application E2E. Do not advertise commands as working before those consumers
 are implemented and verified. Earlier direct Studio transport proof remains valid
 for its limited scope.
