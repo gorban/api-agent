@@ -260,7 +260,7 @@ def test_explicit_provider_choices_override_declared_selection(tmp_path):
     ]:
         assert bootstrap_schema(base, argv, environ, dotenv, overrides,
                                 owner_root=tmp_path).fields['LIMIT'].default == 7
-    assert bootstrap_schema(base, [], {'LLM_PROVIDER': ''}, {}, owner_root=tmp_path) is base
+    assert bootstrap_schema(base, [], {'LLM_PROVIDER': '', 'UI_PROVIDER': ''}, {}, owner_root=tmp_path) is base
     assert bootstrap_schema(schema_from_dict({'version': 1}), [], {}, {}).fields == {}
 
 

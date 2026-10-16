@@ -1,0 +1,266 @@
+import {renderMarkdown} from './markdown.js';
+import {requestPayload, readResponse, readJSONResponse, supportsContinuation, submitContinuation} from './transport.js';
+import {normalizeCatalog, resolveSelection} from './catalog.js';
+import {beginReply, takeReply, customAnswer} from './reply.js';
+const $ = id => document.getElementById(id);
+const KEY = 'api-agent-studio-v2';
+const defaults = () => ({model: '', version: '', reasoning: ''});
+const fresh = () => ({session: crypto.randomUUID(), messages: [], draft: '', reply: null, settings: defaults()});
+let state = fresh(), active = null, catalog = [], catalogStatus = '', apiOrigin, apiHeaders = Object.freeze({}), settingsOpener;
+const field = value => typeof value === 'string' && value.length < 1000;
+const questionValid = q => !q || (field(q.id) && typeof q.question === 'string' && ['clarification', 'approval'].includes(q.kind) && Array.isArray(q.options) && q.options.every(x => q.kind === 'clarification' ? typeof x === 'string' : x && field(x.id) && typeof x.label === 'string'));
+const settingsValid = x => x && ['model', 'version', 'reasoning'].every(k => field(x[k]));
+const valid = x => x && field(x.session) && typeof x.draft === 'string' && settingsValid(x.settings) && Array.isArray(x.messages) && x.messages.every(m => m && field(m.id) && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string' && settingsValid(m.requested) && questionValid(m.question));
+function storageFailure() { $('storage-note').textContent = 'Not saved in this browser'; $('storage-warning').textContent = 'Browser storage is unavailable. Your conversation is kept until this page closes.'; $('storage-warning').hidden = false; }
+try {
+  const raw = localStorage.getItem(KEY);
+  if (raw) {
+    const loaded = JSON.parse(raw);
+    if (!valid(loaded)) throw Error('invalid');
+    state = loaded;
+    for (const m of state.messages) if (m.pending) { m.pending = false; m.error = 'The response was interrupted when this page closed. You can retry.'; }
+  }
+} catch { storageFailure(); }
+if (state.reply && (!state.messages.some(m => m.id === state.reply.messageId && m.question && !m.resolved) || typeof state.reply.savedDraft !== 'string')) state.reply = null;
+let previousChat = null;
+try { const raw = localStorage.getItem(KEY + ':previous'); if (raw) { const prior = JSON.parse(raw); if (valid(prior) && !state.messages.length) previousChat = prior; } } catch {}
+function savePrevious() { try { if (previousChat) localStorage.setItem(KEY + ':previous', JSON.stringify(previousChat)); else localStorage.removeItem(KEY + ':previous'); } catch {} }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { storageFailure(); } }
+function announce(text) { $('status').textContent = text; }
+function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+function clearPromptError() { $('prompt-error').hidden = true; $('prompt-error').textContent = ''; $('prompt').removeAttribute('aria-invalid'); }
+function focusComposer() { $('prompt').focus({preventScroll: true}); }
+function scrollLatest() { const c = $('conversation-scroll'); c.scrollTop = c.scrollHeight; }
+function follow() { if ($('follow-latest').checked) scrollLatest(); }
+function responseDetails(m) {
+  const details = el('details', 'response-metadata');
+  details.append(el('summary', '', 'Response metadata'));
+  const grid = el('dl', 'metadata-grid');
+  const display = (value, fallback) => typeof value === 'string' && value ? value : fallback;
+  for (const [key, value] of [
+    ['Requested model', display(m.requested.model, 'Provider default')],
+    ['Reported model', display(m.actual?.actual_model || m.actual?.model, 'Not reported')],
+    ['Requested version', display(m.requested.version, 'Provider default')],
+    ['Reported version', display(m.actual?.version, 'Not reported')],
+    ['Requested reasoning', display(m.requested.reasoning, 'Provider default')],
+    ['Reported reasoning', display(m.actual?.reasoning, 'Not reported')],
+    ['Reported serving revision', display(m.actual?.serving_revision, 'Not reported')],
+    ['Reported service tier', display(m.actual?.service_tier, 'Not reported')],
+    ['Status', m.pending ? 'Waiting for response' : m.error ? 'Incomplete' : 'Complete']
+  ]) { const row = el('div'); row.append(el('dt', '', key), el('dd', '', value)); grid.append(row); }
+  details.append(grid); return details;
+}
+function questionControls(m) {
+  const box = el('fieldset', 'response-question');
+  box.append(el('legend', '', m.question.question));
+  for (const option of m.question.options) {
+    const label = typeof option === 'string' ? option : option.label;
+    const button = el('button', 'suggestion', label); button.type = 'button';
+    button.addEventListener('click', () => {
+      if (active) return;
+      if (m.question.kind === 'approval') submitReply(label, option.id);
+      else { state.draft = label; $('prompt').value = label; save(); focusComposer(); }
+    });
+    box.append(button);
+  }
+  if (m.question.kind === 'clarification') {
+    const custom = el('button', 'suggestion', 'Choose your own answer below…'); custom.type = 'button';
+    custom.addEventListener('click', () => {
+      if (active) return;
+      state.draft = customAnswer($('prompt').value, m.question.options);
+      $('prompt').value = state.draft; save(); focusComposer();
+    });
+    box.append(custom);
+  }
+  return box;
+}
+function submitReply(text, optionId) {
+  if (!supportsContinuation) {
+    announce('This backend does not support question continuations. Your answer and earlier draft are preserved.');
+    return;
+  }
+  const message = state.messages.find(m => m.id === state.reply?.messageId);
+  if (!message || !resolveSelection(catalog, message.requested).valid) { announce('The question’s model selection is no longer available.'); return; }
+  const reply = takeReply(state, text, optionId);
+  if (!reply) { announce('Choose an explicit approval option.'); return; }
+  $('prompt').value = state.draft;
+  run(text, {...message.requested}, null, reply);
+}
+function render() {
+  $('reply-context').hidden = !state.reply;
+  $('reply-context').textContent = state.reply ? 'Answering api-agent’s question. Your earlier draft will return after you send.' : '';
+  const c = $('conversation'), focused = document.activeElement;
+  const focusedId = focused.closest?.('.message')?.dataset.messageId;
+  const wasSummary = focused.tagName === 'SUMMARY';
+  const old = new Map([...c.children].map(n => [n.dataset.messageId, n]));
+  $('undo-new-chat').hidden = !previousChat || !!state.messages.length;
+  $('welcome').hidden = !!state.messages.length;
+  $('main').classList.toggle('has-messages', !!state.messages.length);
+  $('follow-controls').hidden = !state.messages.length;
+  const nodes = state.messages.map(m => {
+    const signature = JSON.stringify(m), previous = old.get(m.id);
+    if (previous?.dataset.signature === signature) return previous;
+    const article = el('article', `message ${m.role}${m.pending ? ' draft' : ''}`);
+    article.dataset.messageId = m.id; article.dataset.signature = signature;
+    const head = el('h2', 'message-head');
+    if (m.role === 'assistant') head.append(el('span', 'avatar', '{·}'));
+    head.append(el('span', '', m.role === 'user' ? 'You' : 'api-agent'));
+    const body = el('div', 'message-body');
+    if (m.role === 'assistant') renderMarkdown(body, m.text);
+    else body.textContent = m.text;
+    article.append(head, body);
+    if (m.error) {
+      article.append(el('p', 'error-note', m.error));
+      const retry = el('button', 'suggestion', 'Retry response'); retry.type = 'button';
+      retry.disabled = !!active;
+      retry.addEventListener('click', () => { focusComposer(); run(m.request, {...m.requested}, m); });
+      article.append(retry);
+    }
+    if (m.role === 'assistant') {
+      const details = responseDetails(m);
+      details.open = !!previous?.querySelector('details')?.open;
+      article.append(details);
+      if (m.question && !m.resolved && !m.pending && !m.error && state.reply?.messageId === m.id) article.append(questionControls(m));
+    }
+    return article;
+  });
+  for (const n of [...c.children]) if (!nodes.includes(n)) n.remove();
+  nodes.forEach((n, i) => { if (c.children[i] !== n) c.insertBefore(n, c.children[i] || null); });
+  if (!focused.isConnected && wasSummary) nodes.find(n => n.dataset.messageId === focusedId)?.querySelector('summary')?.focus({preventScroll: true});
+  c.querySelectorAll('.suggestion').forEach(b => b.disabled = !!active);
+  $('send').disabled = !!active; $('new-chat').disabled = !!active;
+  if (!active && document.activeElement === $('stop')) focusComposer();
+  $('stop').hidden = !active;
+}
+async function run(text, requested, retryMessage, reply) {
+  if (active) return;
+  reply = retryMessage ? retryMessage.requestReply : reply;
+  if (reply && !supportsContinuation) { announce('This backend no longer supports this question continuation. The original reply is preserved for retry.'); return; }
+  const selection = resolveSelection(catalog, retryMessage?.selectionSnapshot || requested);
+  if (!selection.valid) { announce(selection.error); return; }
+  previousChat = null; savePrevious(); clearPromptError();
+  const history = retryMessage ? state.messages.slice(0, Math.max(0, state.messages.indexOf(retryMessage) - 1)) : state.messages;
+  const messages = history.filter(m => !m.error && !m.pending).map(({role, text}) => ({role, text}));
+  const controller = new AbortController();
+  const request = {controller, stopped: false, timedOut: false}; active = request;
+  if (!retryMessage) state.messages.push({id: crypto.randomUUID(), role: 'user', text, requested: {...requested}});
+  const m = retryMessage || {id: crypto.randomUUID(), role: 'assistant', request: text, requested: {...requested}};
+  if (!retryMessage) {
+    m.requestReply = reply ? structuredClone(reply) : null;
+    m.selectionSnapshot = {...requested, model: selection.selection.selected_llm, version: selection.selection.version || requested.version};
+  }
+  Object.assign(m, {text: '', actual: {}, error: '', pending: true});
+  if (!retryMessage) state.messages.push(m);
+  render(); follow(); save();
+  const messageBody = [...$('conversation').children].find(node => node.dataset.messageId === m.id).querySelector('.message-body');
+  announce('Waiting for api-agent. You can stop at any time.');
+  const timer = setTimeout(() => { request.timedOut = true; controller.abort(); }, 30000);
+  try {
+    await configuration;
+    if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const response = reply ? await submitContinuation({session: state.session, text, messages, requested: {...m.selectionSnapshot}, reply: structuredClone(m.requestReply)}, {signal: controller.signal}) : await fetch(apiOrigin + '/app/agent/chat/stream', {
+      method: 'POST', headers: {'Content-Type': 'application/json', Accept: 'text/event-stream, application/json', ...apiHeaders},
+      body: JSON.stringify(requestPayload({session: crypto.randomUUID(), text, messages, requested: {...requested, model: selection.selection.selected_llm}, reply})), signal: controller.signal
+    });
+    await readResponse(response, {
+      onText(text, replace) {
+        m.text = replace ? text : m.text + text;
+        renderMarkdown(messageBody, m.text);
+        follow(); save();
+      },
+      onMetadata(metadata) { for (const key of ['model', 'version', 'reasoning', 'actual_model', 'service_tier', 'serving_revision']) if (field(metadata[key]) && !Object.hasOwn(m.actual, key)) m.actual[key] = metadata[key]; },
+      onClarification(question) { m.question = {...question, kind: 'clarification'}; },
+      onApproval(question) { m.question = {...question, kind: 'approval'}; },
+      signal: controller.signal
+    });
+    announce('Response complete.');
+  } catch (error) {
+    m.error = request.stopped ? 'Response stopped. You can retry when you’re ready.' : request.timedOut ? 'The agent took too long to respond. Please try again.' : error instanceof SyntaxError ? 'The agent returned an unreadable response. Please try again.' : error instanceof TypeError ? 'Couldn’t connect to api-agent. Please try again when the agent is available.' : error.name === 'AbortError' ? 'The connection was interrupted. Please try again.' : error.message;
+    announce(m.error);
+  } finally {
+    clearTimeout(timer); m.pending = false; active = null;
+    if (beginReply(state, m)) $('prompt').value = state.draft;
+    render(); follow(); save();
+  }
+}
+function fillSelect(id, entries, selected) {
+  const select = $(id); select.replaceChildren(new Option('Provider default', ''));
+  for (const item of entries) select.add(new Option(item.name || item.id, item.id));
+  if (selected && !entries.some(x => x.id === selected)) select.add(new Option(selected + ' (saved selection)', selected));
+  select.value = selected;
+}
+function syncSettings() {
+  const models = [...new Map(catalog.map(x => [x.selected_llm, {id: x.selected_llm, name: x.display_name}])).values()];
+  fillSelect('model', models, state.settings.model);
+  const entries = catalog.filter(x => x.selected_llm === state.settings.model);
+  fillSelect('version', entries.filter(x => x.version).map(x => ({id: x.version})), state.settings.version);
+  const selected = entries.find(x => x.version === state.settings.version) || entries[0];
+  fillSelect('reasoning', (selected?.reasoning_efforts || []).map(id => ({id})), state.settings.reasoning);
+  $('model-short-name').textContent = selected?.display_name || state.settings.model || 'Provider default';
+  const selection = resolveSelection(catalog, state.settings);
+  $('model-status').textContent = catalogStatus || (selection.valid ? '' : selection.error);
+}
+const configuration = fetch('/config.json').then(r => { if (!r.ok) throw Error('Unable to load the API configuration.'); return r.json(); }).then(c => {
+  if (!c || typeof c !== 'object' || Array.isArray(c) || Object.keys(c).some(key => !['apiOrigin', 'apiHeaders'].includes(key)) || typeof c.apiOrigin !== 'string') throw Error('Invalid API configuration.');
+  const url = new URL(c.apiOrigin);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('Invalid API configuration.');
+  if (c.apiHeaders !== undefined) {
+    const headers = c.apiHeaders;
+    if (!headers || typeof headers !== 'object' || Array.isArray(headers) || Object.keys(headers).length !== 1 || !Object.hasOwn(headers, 'X-API-Agent-Session') || typeof headers['X-API-Agent-Session'] !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(headers['X-API-Agent-Session'])) throw Error('Invalid API configuration headers.');
+    apiHeaders = Object.freeze({...headers});
+  }
+  apiOrigin = url.origin;
+});
+// Attach rejection handling immediately; sending still receives the configuration error.
+configuration.catch(() => { catalogStatus = 'The API configuration could not be loaded.'; $('model-status').textContent = catalogStatus; });
+async function loadModels() {
+  try {
+    await configuration;
+    const r = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(5000)});
+    const data = await readJSONResponse(r);
+    catalog = normalizeCatalog(data);
+    catalogStatus = catalog.length ? '' : 'No model choices are available. Reconnect before sending.';
+    syncSettings();
+  } catch { catalogStatus ||= 'Model list unavailable. Reconnect before sending.'; $('model-status').textContent = catalogStatus; }
+}
+$('settings-nav').addEventListener('click', () => { settingsOpener = document.activeElement; $('settings').showModal(); });
+$('close-settings').addEventListener('click', () => $('settings').close());
+let backdropStart = false;
+function outsideDialog(event) { const r = $('settings').getBoundingClientRect(); return event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom; }
+$('settings').addEventListener('pointerdown', e => { backdropStart = outsideDialog(e); });
+$('settings').addEventListener('click', e => { if (backdropStart && outsideDialog(e)) $('settings').close(); backdropStart = false; });
+$('settings').addEventListener('close', () => settingsOpener?.focus({preventScroll: true}));
+for (const id of ['model', 'version', 'reasoning']) $(id).addEventListener('change', () => { state.settings[id] = $(id).value; if (id === 'model') state.settings.version = ''; if (id !== 'reasoning') state.settings.reasoning = ''; syncSettings(); save(); });
+$('prompt').value = state.draft;
+$('prompt').addEventListener('input', () => { clearPromptError(); state.draft = $('prompt').value; save(); });
+$('composer').addEventListener('submit', e => {
+  e.preventDefault(); if (active) return;
+  const text = $('prompt').value.trim();
+  if (!text) { $('prompt-error').textContent = 'Write a message to get started.'; $('prompt-error').hidden = false; $('prompt').setAttribute('aria-invalid', 'true'); announce('Write a message to get started.'); focusComposer(); return; }
+  if (state.reply) { submitReply(text); return; }
+  const selection = resolveSelection(catalog, state.settings);
+  if (!selection.valid) { announce(selection.error); return; }
+  state.draft = ''; $('prompt').value = ''; focusComposer(); run(text, {...state.settings});
+});
+$('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('composer').requestSubmit(); } });
+$('stop').addEventListener('click', () => { if (active) { active.stopped = true; active.controller.abort(); focusComposer(); } });
+$('new-chat').addEventListener('click', () => { if (active) return; clearPromptError(); const settings = state.settings; if (state.messages.length || state.draft) previousChat = structuredClone(state); savePrevious(); state = fresh(); state.settings = settings; $('prompt').value = ''; render(); $('conversation-scroll').scrollTop = 0; save(); focusComposer(); announce(previousChat ? 'A new conversation is ready. Undo new chat is available until you send a message.' : 'A new conversation is ready.'); });
+document.querySelectorAll('[data-prompt]').forEach(b => b.addEventListener('click', () => { clearPromptError(); $('prompt').value = b.dataset.prompt; state.draft = b.dataset.prompt; save(); focusComposer(); }));
+$('follow-latest').addEventListener('change', () => { if ($('follow-latest').checked) scrollLatest(); });
+$('latest-response').addEventListener('click', () => { $('follow-latest').checked = true; scrollLatest(); });
+const pauseFollow = () => { $('follow-latest').checked = false; };
+$('conversation-scroll').addEventListener('wheel', e => { if (e.deltaY < 0) pauseFollow(); }, {passive: true});
+$('conversation-scroll').addEventListener('touchstart', pauseFollow, {passive: true});
+$('conversation-scroll').addEventListener('pointerdown', pauseFollow);
+$('conversation-scroll').addEventListener('keydown', e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) pauseFollow(); });
+$('copyright-notice').textContent = `Copyright David Bruck © 2026–${new Date().getFullYear()}`;
+syncSettings(); render(); loadModels();
+
+$('undo-new-chat').addEventListener('click', () => {
+  if (active || !previousChat || state.messages.length) return;
+  clearPromptError(); const draft = state.draft;
+  state = previousChat; previousChat = null;
+  if (draft) state.draft = draft;
+  savePrevious(); $('prompt').value = state.draft; render(); save(); follow(); focusComposer();
+  announce('Previous conversation restored.');
+});

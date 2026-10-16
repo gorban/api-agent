@@ -13,7 +13,8 @@ from api_agent.providers.contracts import InteractionRequiredError, SessionClose
 from api_agent.providers.sessions import wait_browser_result
 from api_agent.runtime.managed_browser import _dispose
 from .contracts import AuthError
-from .login import LoginWorkflow
+from .login import LoginWorkflow, finish_login
+from api_agent.providers.control import CleanupPendingError
 
 
 class CallbackListener:
@@ -96,7 +97,7 @@ class LoginPageGuard:
 
     async def check(self):
         blocked = self.page.get_by_role('heading', name=re.compile(
-            r'^(Oops, an error occurred!|Performing security verification)$')).first
+            r'^(Oops, an error occurred!|Performing security verification|Use your passkey|Sign in with a passkey|Use your security key|Insert your security key|Check your email|Verify your email|Check your phone|Verify your phone number|Choose a verification method|Choose how to verify|Verify your identity)$')).first
         try:
             visible = await blocked.is_visible()
         except Exception:
@@ -106,30 +107,44 @@ class LoginPageGuard:
             if not self.allow_interaction:
                 raise AuthError('login_interaction_required')
             if not self.notified:
-                print('GPT login shows an error or security-verification page. Retry or complete sign-in in the visible browser.', flush=True)
+                print('GPT login needs human attention. Retry or complete sign-in in the visible browser.', flush=True)
                 self.notified = True
+        else:
+            self.notified = False
+        return visible
 
 
 async def submit_login_username(session, username, *, guard):
-    """Own submission while monitoring visible blockers and browser closure."""
+    """Submit only a recognized username stage using the shared pinned workflow."""
+    workflow = LoginWorkflow(session, username, None, "api-agent", guard,
+                             allow_interaction=guard.allow_interaction)
     async def submit():
-        await session.page.get_by_role("textbox", name="Email address", exact=True).fill(username, timeout=0)
-        await session.page.get_by_role("button", name="Continue", exact=True).click(timeout=0)
-    await guard.check()
+        while workflow.last_action is None:
+            await workflow.advance()
+            if workflow.last_action is None:
+                await asyncio.sleep(.1)
     task = asyncio.create_task(submit())
+    primary = None
     try:
-        await wait_browser_result(task, session, on_wait=guard.check)
-    except (asyncio.CancelledError, AuthError):
+        try:
+            await wait_browser_result(task, session)
+        except (asyncio.CancelledError, AuthError, CleanupPendingError):
+            raise
+        except SessionClosedError:
+            raise AuthError('browser_closed') from None
+        except Exception:
+            raise AuthError("username_submission_failed") from None
+    except BaseException as error:
+        primary = error
         raise
-    except SessionClosedError:
-        raise AuthError('browser_closed') from None
-    except Exception:
-        raise AuthError("username_submission_failed") from None
     finally:
         task.cancel()
         async def drain():
             await asyncio.gather(task, return_exceptions=True)
-        await _dispose(drain())
+        try:
+            await _dispose(drain())
+        finally:
+            await finish_login(workflow, primary)
 
 
 async def connect_account(store, *, registration=None, open_browser=None,
@@ -152,6 +167,8 @@ async def connect_account(store, *, registration=None, open_browser=None,
         registration = store.load(profile)
     owned = client is None
     client = httpx.AsyncClient() if owned else client
+    workflow = None
+    primary = None
     try:
         try:
             from api_agent.providers.progress import report_timeout
@@ -174,13 +191,10 @@ async def connect_account(store, *, registration=None, open_browser=None,
                             raise
                         except Exception:
                             raise AuthError("browser_unavailable") from None
+                        guard = LoginPageGuard(session.page, allow_interaction=allow_interaction)
                         if login_username is not None:
-                            guard = LoginPageGuard(session.page, allow_interaction=allow_interaction)
-                            if login_credentials is None:
-                                await submit_login_username(session, login_username, guard=guard)
-                            else:
-                                workflow = LoginWorkflow(session, login_username, login_credentials,
-                                                         app_name, guard, allow_interaction=allow_interaction)
+                            workflow = LoginWorkflow(session, login_username, login_credentials,
+                                                     app_name, guard, allow_interaction=allow_interaction)
                     elif not open_browser(attempt.authorization_url):
                         raise AuthError("browser_unavailable")
                     if session is None:
@@ -191,7 +205,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
                                 on_wait=workflow.advance if workflow is not None else guard.check if guard is not None else None)
                         except SessionClosedError:
                             raise AuthError("browser_closed") from None
-                        except (AuthError, InteractionRequiredError, asyncio.CancelledError):
+                        except (AuthError, InteractionRequiredError, asyncio.CancelledError, CleanupPendingError):
                             raise
                         except Exception:
                             raise AuthError('login_step_failed') from None
@@ -203,13 +217,20 @@ async def connect_account(store, *, registration=None, open_browser=None,
                     return await store.save_serialized(connection)
         except TimeoutError:
             raise AuthError("callback_timeout") from None
+    except BaseException as error:
+        primary = error
+        raise
     finally:
         try:
-            if browser_owner is not None:
-                await _dispose(browser_owner.aclose())
+            if workflow is not None:
+                await finish_login(workflow, primary)
         finally:
-            if owned:
-                await _dispose(client.aclose())
+            try:
+                if browser_owner is not None:
+                    await _dispose(browser_owner.aclose())
+            finally:
+                if owned:
+                    await _dispose(client.aclose())
 
 
 def main(argv=None):

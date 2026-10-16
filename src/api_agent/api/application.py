@@ -173,12 +173,16 @@ class Runtime:
                          self.timeout, self._cancel_requested)
         except Exception:
             raise CleanupPendingError((self,), self.aclose) from None
-        owners = (*self._retained_owners, self.sessions, self.identity_adapter, self.ui_provider,
+        studio_backend = (self.services or {}).get('studio_backend')
+        owners = (studio_backend, *self._retained_owners, self.sessions, self.identity_adapter, self.ui_provider,
                   self.llm_provider, self.access_provider, self.api_provider, self.upstream_provider, self.tracing)
         pending = []
         # API owners require upstream clients; every unresolved child retains tracing.
         for owner in owners:
             if owner is None:
+                continue
+            if any(child is studio_backend for child in pending) and owner is not studio_backend:
+                pending.append(owner)
                 continue
             if any(child is self.sessions or child is self.ui_provider or child is self.identity_adapter
                    or self._retained_kinds.get(id(child)) == 'ui'

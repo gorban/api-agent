@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import httpx
 
+from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, ProviderCapabilities, SetupPrerequisiteError
 from .connect import _dispose, connect_account
 from .connections import ConnectionStore, SubscriptionSession
@@ -56,13 +57,13 @@ class GPTProvider:
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.base_url = config.get("GPT_BASE_URL", "https://api.openai.com/v1")
         self.run_ui = config.get("RUN_UI", False)
-        self.allow_browser_interaction = config.get("NO_STD_IN") is False or inspection is not None
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
         self.payment_usd = config.get('LLM_PAY_PERIOD_LIMIT', 100.0)
         self.quota_period = config.get('LLM_QUOTA_PERIOD', 'week')
         self.pay_period = config.get('LLM_PAY_PERIOD', 'month')
         self.browsers = []
+        self.pending_logins = []
         self.quota_interactive = False
         self.quota_executable = None
         self.quota_preparation_error = None
@@ -80,7 +81,23 @@ class GPTProvider:
             'login_interaction_required': 'GPT login needs browser interaction; start attended or show the browser with RUN_UI=True or DEBUG.',
             'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
         }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
-        return InteractionRequiredError(message)
+        converted = InteractionRequiredError(message)
+        if hasattr(error, 'cleanup_error'):
+            converted.cleanup_error = error.cleanup_error
+        if hasattr(error, 'retained_owners'):
+            converted.retained_owners = error.retained_owners
+        return converted
+
+    async def _connect_account(self, store, **options):
+        try:
+            return await connect_account(store, **options)
+        except BaseException as error:
+            pending = getattr(error, 'cleanup_error', error)
+            if isinstance(pending, CleanupPendingError):
+                for owner in pending.owners:
+                    if not any(retained is owner for retained in self.pending_logins):
+                        self.pending_logins.append(owner)
+            raise
 
     async def asetup(self, *, interactive, user_index, credentials):
         if self.closed:
@@ -134,16 +151,16 @@ class GPTProvider:
                               'allow_interaction': not browser_options.get('headless', False)}
                              if username is not None else {})
             try:
-                profile = await connect_account(store, browser_owner=browser, app_name=self.app_name, **login_options)
+                profile = await self._connect_account(store, browser_owner=browser, app_name=self.app_name, **login_options)
             except AuthError as error:
                 if (str(error) == 'login_interaction_required' and browser_options.get('headless')
-                        and (interactive or self.allow_browser_interaction)):
+                        and not hasattr(error, 'cleanup_error')):
                     print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
                     visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
                     visible = subscription_browser(**visible_options)
                     self.browsers.append(visible)
                     try:
-                        profile = await connect_account(store, browser_owner=visible, app_name=self.app_name,
+                        profile = await self._connect_account(store, browser_owner=visible, app_name=self.app_name,
                                                         login_username=username, login_credentials=login_credentials,
                                                         allow_interaction=True)
                     except AuthError as retry_error:
@@ -261,6 +278,17 @@ class GPTProvider:
 
     async def aclose(self):
         self.closed = True
+        async def release_login(owner):
+            await owner.aclose()
+            self.pending_logins.remove(owner)
+        for owner in tuple(self.pending_logins):
+            try:
+                await release_login(owner)
+            except asyncio.CancelledError as error:
+                pending = CleanupPendingError((self,), self.aclose)
+                error.retained_owners = pending.owners
+                error.cleanup_error = pending
+                raise
         for session in self.sessions:
             await _dispose(session.aclose())
         self.sessions.clear()

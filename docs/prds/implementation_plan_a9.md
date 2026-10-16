@@ -20,3 +20,6 @@ The public suite passed 5,834 tests and 27 subtests with exact 100% lines and br
 The user explicitly replied “Coverage approved” after the guided compact/full console output, retained JSON/HTML and interactive presentation walkthrough. This acceptance covers the coverage-disclosure scope.
 
 Configuration/startup navigation has its own [requirements grouping](implementation_plan_a9d.md).
+
+[Large unit selections](implementation_plan_a9e.md) preserve execution when
+parameterized identities exceed the operating system command argument budget.

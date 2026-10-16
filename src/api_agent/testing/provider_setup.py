@@ -556,6 +556,61 @@ def llm_provider():
             provider.close()
 
 
+class UIBrowserInspectionRun:
+    """Retain a UI browser's creating loop in the existing inspection protocol."""
+    def __init__(self, loop, inspection):
+        self.loop, self.inspection, self.closed = loop, inspection, False
+        self._shutdown = None
+
+    async def _shutdown_loop(self):
+        await self.loop.shutdown_asyncgens()
+        await self.loop.shutdown_default_executor()
+
+    async def dispose_inspection(self):
+        """Retain native/background work and loop shutdown until confirmed done."""
+        from api_agent.providers.control import CleanupPendingError
+        from api_agent.providers.progress import report_timeout_sync
+        with report_timeout_sync('Studio inspection cleanup', 2):
+            if self.inspection is not None:
+                await self.inspection.aclose()
+            tasks = {task for task in asyncio.all_tasks(self.loop)
+                     if task is not asyncio.current_task() and task is not self._shutdown}
+            if tasks:
+                _, pending = await asyncio.wait(tasks, timeout=1)
+                if pending:
+                    raise CleanupPendingError((self,), self.dispose_inspection)
+            if self._shutdown is None:
+                self._shutdown = self.loop.create_task(self._shutdown_loop())
+            done, _ = await asyncio.wait({self._shutdown}, timeout=1)
+            if not done:
+                raise CleanupPendingError((self,), self.dispose_inspection)
+            self._shutdown.result()
+
+    def close(self):
+        if not self.closed:
+            if self.inspection is not None:
+                self.loop.run_until_complete(self.inspection.wait_closed())
+            self.loop.run_until_complete(self.dispose_inspection())
+            self.loop.close()
+            self.closed = True
+
+
+def finish_ui_browser_inspection(loop, inspection):
+    """Transfer allocated DEBUG UI browsers to launch's end_inspection owner.
+
+    Empty and non-debug runs close their loop immediately. Without launch's
+    inspection channel, attended debug windows retain the same manual-close
+    behavior as provider inspection. The caller must already close BrowserOwner
+    so its resources have transferred to the supplied InspectionOwner.
+    """
+    owner = UIBrowserInspectionRun(loop, inspection)
+    if inspection is not None and inspection.sessions and os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
+        _inspection_providers.append(owner)
+    else:
+        owner.close()
+    return owner
+
+
 def serve_inspections(send):
     """Called after pytest has finalized all reports and session teardown."""
     providers = list(_inspection_providers)
@@ -584,7 +639,8 @@ def serve_inspections(send):
                           for session in inspector.sessions)
             if attempt is not None or (not windows and provider not in pending):
                 try:
-                    provider.loop.run_until_complete(inspector.aclose())
+                    dispose = getattr(provider, 'dispose_inspection', inspector.aclose)
+                    provider.loop.run_until_complete(dispose())
                 except Exception:
                     pending.add(provider)
                     send(kind='inspection_cleanup_pending', attempt=attempt)

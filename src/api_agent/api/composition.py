@@ -30,7 +30,8 @@ def activation_kinds(values, required_kinds=None):
     return frozenset(kinds)
 
 
-def compose_runtime(context, values, *, callback_origin, tls_material=None, required_kinds=None):
+def compose_runtime(context, values, *, callback_origin, tls_material=None, required_kinds=None,
+                    ui_processes=None, studio_backend=None, ui_access_token=None):
     result = values if isinstance(values, ConfigResult) else None
     if result is not None:
         if result.errors or result.missing:
@@ -44,16 +45,23 @@ def compose_runtime(context, values, *, callback_origin, tls_material=None, requ
     ssl_context = verified_client_context(values.get('CLIENT_CA_FILE'))
     sessions = SessionStore(context.pack_id, callback_origin)
     emissions = EmissionBoundary(ContentPolicy.from_config(result))
+    active = activation_kinds(values, required_kinds)
+    if ui_processes is None and 'ui' in active and values.get('UI_PROVIDER'):
+        from api_agent.ui.process import StudioProcesses
+        ui_processes = StudioProcesses(ssl_context=ssl_context)
     services = MappingProxyType({'sessions': sessions, 'emissions': emissions,
                                  'callback_origin': callback_origin, 'ssl_context': ssl_context,
-                                 'owner_root': getattr(context, 'owner_root', None), 'tls_material': tls_material})
+                                 'owner_root': getattr(context, 'owner_root', None), 'tls_material': tls_material,
+                                 'ui_processes': ui_processes, 'studio_backend': studio_backend,
+                                 'ui_access_token': ui_access_token})
+    if ui_access_token is not None:
+        emissions.register_secret(ui_access_token)
     for key in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
         if values.get(key): emissions.register_secret(values[key])
     trace_config = replace(result, values=values) if result is not None else ConfigResult(values, {}, (), (), ())
     tracing = TraceRuntime(trace_config, boundary=emissions)
     # Health/deferred application composition need not instantiate an LLM.
     # Executable LLM operations must call require_llm_provider first.
-    active = activation_kinds(values, required_kinds)
     plan = []
     for kind, selection in (('upstream', 'UPSTREAM_API_PROVIDER'), ('api', 'API_PROVIDER'), ('llm', 'LLM_PROVIDER'), ('access', 'ACCESS_PROVIDER'), ('ui', 'UI_PROVIDER')):
         if kind not in active or not values.get(selection):

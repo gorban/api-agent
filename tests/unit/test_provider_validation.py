@@ -1,4 +1,5 @@
 """Factory contracts fail closed and release isolated imports on every exit."""
+from dataclasses import replace
 import asyncio
 import sys
 from types import SimpleNamespace
@@ -164,6 +165,7 @@ def test_bootstrap_selection_obeys_each_precedence_layer(tmp_path):
     assert 'falls back to attended' not in help_text
     assert 'GPT_PROFILE' not in bundled.fields
     # Higher-precedence explicit empty selections disable the lower selection.
+    schema = type(schema)({**schema.fields, 'UI_PROVIDER': replace(schema.fields['UI_PROVIDER'], default='')})
     assert loading.bootstrap_schema(schema, [], {'LLM_PROVIDER': ''}, {'LLM_PROVIDER': '/missing.py:create'}) is schema
     assert loading.bootstrap_schema(schema, ['--llm-provider='], {}, {'LLM_PROVIDER': '/missing.py:create'}) is schema
     assert loading.bootstrap_schema(schema, [], {}, {'LLM_PROVIDER': location}, {'LLM_PROVIDER': ''}) is schema
