@@ -2,6 +2,12 @@
 
 [Password-manager adapters](implementation_plan_a2a.md) · [Login intervention](implementation_plan_f2b_login.md)
 
+Scheduling: defer this optional enhancement until after application delivery and
+profiling. Existing password/TOTP automation and manual browser approval remain
+available. Keeper is the planned passkey implementation; no 1Password CLI
+passkey implementation is scheduled without a verified supported interface.
+Contributions establishing that interface are welcome.
+
 A passkey performs a WebAuthn challenge/response; it is not a password or TOTP
 string. Physical security keys remain attended. Browser-visible challenges
 can pause automation and resume supported login steps after human completion.

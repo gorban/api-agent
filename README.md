@@ -38,6 +38,35 @@ terminal access. For browser inspection, configure Chrome DevTools MCP (preferre
 or Playwright MCP. See [developer setup](docs/development.md#developer-environment-and-builds)
 for prerequisites and connection instructions.
 
+## Known issues
+
+- Automatic [Sign in with ChatGPT OAuth client registrations](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+  support recognized username, password and authenticator-app TOTP steps through
+  the bundled Keeper and 1Password adapters. Hardware-key approval
+  ([YubiKey®](https://www.yubico.com/), for example) stays manual: a detected
+  challenge in a headless login triggers one visible-browser retry, then
+  supported steps resume after your approval. Other security checks may also
+  need attention; native OS prompts cannot reliably be detected.
+  - **Workaround:** choose attended login (no unattended user selected, or
+    `--unattended-user-index=`). No unattended subscription-user entry or
+    password manager is required. Managed Chromium opens when registration is needed; the saved
+    connection is reused and refreshed automatically. OpenAI documents
+    [one-hour access tokens and renewable 30-day refresh tokens](https://developers.openai.com/siwc/token-sharing-open-source/token-reference#token-lifetimes).
+    Successful refresh renews that 30-day window; expiry or revocation may
+    require signing in again.
+- **Password-manager passkeys are not automated.** Keeper support is on the
+  [roadmap](docs/prds/implementation_plan_a2a1.md). The bundled 1Password CLI
+  adapter has no verified passkey interface, so its passkey implementation is
+  not planned; pull requests using a supported interface are welcome. Manual
+  passkey approval remains available in the visible browser.
+- **1Password CLI must already be signed in.** Credential retrieval is included;
+  interactive CLI login recovery is a [later task](docs/prds/implementation_plan_a2a.md#deferred-login-recovery).
+  Keeper already supports interactive recovery. Native Windows recovery is
+  not implemented; the recovery transport currently requires POSIX.
+- **API-key mode needs a configured password-manager entry.** Manual key entry
+  is [not implemented](docs/prds/implementation_plan_f2.md); the attended-login
+  workaround above applies to subscription authentication.
+
 ## Testing
 
 Choose `unit`, `integration`, or `e2e` as `<tests_type>`:
@@ -88,3 +117,5 @@ Model-specific bounds are packaged with the fixture; [calibration refresh](docs/
 is explicit maintenance outside normal test collection. Normal coverage needs no
 local pilot file and rejects unsupported provider/model/settings without substitution. The useful GraphQL demonstration remains
 the next phase.
+
+*YubiKey® is a registered trademark of Yubico AB.*
