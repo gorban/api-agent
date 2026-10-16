@@ -103,6 +103,21 @@ class PasswordManagerRegistry:
                     inspect.signature(optional).bind('stderr')
                 except (TypeError, ValueError):
                     raise ManagerError('Password manager classification has incompatible arguments') from None
+            for hook, arguments in (
+                    ('retrieve_login', ('source', 'cli', 'expected_username', 'relying_party_id', 'run_private')),
+                    ('login_probe', ('source', 'cli'))):
+                function = getattr(module, hook, None)
+                if function is None:
+                    if hook == 'login_probe' and getattr(module, 'retrieve_login', None) is not None:
+                        raise ManagerError('Password manager login discovery requires a safe login probe')
+                    continue
+                if (not inspect.isfunction(function) or inspect.iscoroutinefunction(function)
+                        or inspect.isasyncgenfunction(function) or inspect.isgeneratorfunction(function)):
+                    raise ManagerError('Optional password manager login capability must be synchronous')
+                try:
+                    inspect.signature(function).bind(*arguments)
+                except (TypeError, ValueError):
+                    raise ManagerError('Optional password manager login capability has incompatible arguments') from None
             return module
         except ManagerError:
             raise

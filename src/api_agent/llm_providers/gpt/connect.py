@@ -153,7 +153,7 @@ async def submit_login_username(session, username, *, guard):
 async def connect_account(store, *, registration=None, open_browser=None,
                           client=None, timeout=180, clock=time.time, profile=None, browser_owner=None,
                           app_name="api-agent", login_username=None, login_credentials=None,
-                          allow_interaction=True):
+                          allow_interaction=True, login_material=None):
     """Persist only a fully verified connection; clean up on every exit."""
     from .oauth import begin_authorization, finish_authorization
     if type(allow_interaction) is not bool:
@@ -171,6 +171,8 @@ async def connect_account(store, *, registration=None, open_browser=None,
     owned = client is None
     client = httpx.AsyncClient() if owned else client
     workflow = None
+    authenticator = None
+    material = None
     primary = None
     try:
         try:
@@ -189,15 +191,36 @@ async def connect_account(store, *, registration=None, open_browser=None,
                             browser_owner = subscription_browser()
                         try:
                             session = await browser_owner.start()
+                            if login_material is not None:
+                                from .passkeys import SoftwarePasskey, require_private_transport
+                                require_private_transport()
+                                material_task = asyncio.create_task(login_material())
+                                try:
+                                    material = await wait_browser_result(material_task, session)
+                                finally:
+                                    material_task.cancel()
+                                    async def drain_material():
+                                        await asyncio.gather(material_task, return_exceptions=True)
+                                    await _dispose(drain_material())
+                                if material is not None and material.passkey_available:
+                                    authenticator = SoftwarePasskey(session, material.passkey,
+                                                                   callback_url=listener.redirect_uri)
+                                    await authenticator.prepare()
                             await session.page.goto(attempt.authorization_url, wait_until="domcontentloaded")
+                        except (AuthError, InteractionRequiredError, CleanupPendingError):
+                            raise
                         except asyncio.CancelledError:
                             raise
                         except Exception:
                             raise AuthError("browser_unavailable") from None
                         guard = LoginPageGuard(session.page, allow_interaction=allow_interaction)
                         if login_username is not None:
+                            extra = ({'material': material, 'software_passkey': authenticator is not None}
+                                     if material is not None else {})
                             workflow = LoginWorkflow(session, login_username, login_credentials,
-                                                     app_name, guard, allow_interaction=allow_interaction)
+                                                     app_name, guard, allow_interaction=allow_interaction,
+                                                     **extra)
+                        material = None
                     elif not open_browser(attempt.authorization_url):
                         raise AuthError("browser_unavailable")
                     if session is None:
@@ -229,8 +252,19 @@ async def connect_account(store, *, registration=None, open_browser=None,
                 await finish_login(workflow, primary)
         finally:
             try:
-                if browser_owner is not None:
-                    await _dispose(browser_owner.aclose())
+                try:
+                    if authenticator is not None:
+                        await authenticator.aclose()
+                except BaseException as error:
+                    browser_owner.prevent_inspection()
+                    if primary is None:
+                        raise
+                    primary.cleanup_error = getattr(error, 'cleanup_error', error)
+                    primary.retained_owners = getattr(error, 'retained_owners', (authenticator,))
+                finally:
+                    material = None
+                    if browser_owner is not None:
+                        await _dispose(browser_owner.aclose())
             finally:
                 if owned:
                     await _dispose(client.aclose())

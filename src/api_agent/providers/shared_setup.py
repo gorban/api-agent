@@ -31,9 +31,19 @@ class RevocableCredentials(_Owner):
         self._closed = True
 
     async def __call__(self, *args, **kwargs):
+        return await self._read(self._reader, *args, **kwargs)
+
+    async def login_credentials(self, *args, **kwargs):
+        self._check()
+        reader = getattr(self._reader, 'login_credentials', None)
+        if reader is None:
+            return None
+        return await self._read(reader, *args, **kwargs)
+
+    async def _read(self, reader, *args, **kwargs):
         self._check()
         try:
-            task = _spawn(self._reader(*args, **kwargs))
+            task = _spawn(reader(*args, **kwargs))
             self._reads.add(task)
             task.add_done_callback(self._reads.discard)
             result = await asyncio.shield(task)

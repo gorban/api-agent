@@ -2,8 +2,9 @@
 
 [Password-manager adapters](implementation_plan_a2a.md) · [Login intervention](implementation_plan_f2b_login.md)
 
-Scheduling: defer this optional enhancement until after application delivery and
-profiling. Existing password/TOTP automation and manual browser approval remain
+Scheduling: selected-login Keeper automation is pulled forward under the
+[managed software-passkey requirements](implementation_plan_a2a2.md). Remaining
+optional authenticator work follows application delivery and profiling. Existing password/TOTP automation and manual browser approval remain
 available. Keeper is the planned passkey implementation; no 1Password CLI
 passkey implementation is scheduled without a verified supported interface.
 Contributions establishing that interface are welcome.
@@ -45,8 +46,8 @@ Native browser/OS prompts are not reliably exposed through page DOM selectors.
   Never persist/export private key material, challenges, assertions or
   recovery input in configuration, IPC diagnostics, logs or Allure. Bind any
   browser integration to the original managed context and exact authenticated
-  operation; disposal must revoke it. No virtual authenticator is a production
-  substitute for required real user verification.
+  operation; disposal must revoke it. Managed software authentication follows the separately documented explicit
+  software-presence policy; it does not establish physical user verification.
 - [ ] Verify both bundled adapters and an unsupported synthetic adapter; test
   mismatched account/origin/relying-party, absent/ambiguous credentials, user
   cancellation, timeouts, cleanup and credential exclusion with independent
@@ -54,7 +55,8 @@ Native browser/OS prompts are not reliably exposed through page DOM selectors.
   review before enabling it.
 - [ ] Human-review supported manager authentication and physical-key handoff.
 
-The current helpers continue to support username/password/TOTP only.
+String helpers continue to support username/password/TOTP. The optional
+[structured selected-login capability](implementation_plan_a2a2.md) is separate.
 [Keeper’s passkey guide](https://help.keeper.io/article/268-what-is-a-passkey-and-how-does-keeper-support-them)
 and [1Password’s browser guide](https://support.1password.com/save-use-passkeys/)
 describe browser use; [1Password CLI fields](https://developer.1password.com/docs/cli/item-fields/)

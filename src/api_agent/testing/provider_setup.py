@@ -179,9 +179,9 @@ class IntegrationLLM:
         except (ValueError, TypeError):
             raise ContractError('The selected unattended login descriptor is incomplete or invalid.') from None
 
-        async def retrieve(selected_role, selected_index, kind):
+        async def retrieve(selected_role, selected_index, kind, **options):
             helper = {'username': helpers.get_username, 'password': helpers.get_password,
-                      'totp': helpers.get_totp}[kind]
+                      'totp': helpers.get_totp, 'login': helpers.get_login_credentials}[kind]
             interaction = None if self.interaction is None else self.interaction.fork()
             try:
                 from api_agent.providers.progress import report_timeout
@@ -191,7 +191,7 @@ class IntegrationLLM:
                         remaining = budget.remaining
                         timeout = helpers.DEFAULT_TIMEOUT if remaining is None else min(helpers.DEFAULT_TIMEOUT, remaining)
                         return helper(source, timeout=timeout,
-                                      interaction=interaction, recovery_timeout=remaining)
+                                      interaction=interaction, recovery_timeout=remaining, **options)
                     task = asyncio.create_task(asyncio.to_thread(call_helper))
                     self._credential_tasks.add(task)
                     task.add_done_callback(self._credential_tasks.discard)
@@ -199,6 +199,9 @@ class IntegrationLLM:
                         value = await asyncio.shield(task)
                         if type(value) is str and value:
                             self.emissions.register_secret(value)
+                        elif kind == 'login':
+                            for secret in value.secret_values():
+                                self.emissions.register_secret(secret)
                         return value
                     except asyncio.CancelledError:
                         if interaction is not None:
@@ -206,6 +209,8 @@ class IntegrationLLM:
                         from api_agent.runtime.tasks import settle
                         await settle(asyncio.gather(task, return_exceptions=True))
                         raise
+            except helpers.CredentialCapabilityUnsupportedError:
+                return None
             except (helpers.CredentialLoginRequiredError, helpers.CredentialRecoveryError) as error:
                 raise UnattendedCredentialError(str(error),
                     index_source=self.unattended_index_source) from None
@@ -216,7 +221,10 @@ class IntegrationLLM:
             finally:
                 if interaction is not None:
                     interaction.close()
-        return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve))
+        async def retrieve_login(selected_role, selected_index, **options):
+            return await retrieve(selected_role, selected_index, 'login', **options)
+        return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve,
+                                                               retrieve_login=retrieve_login))
 
     async def _prepare_setup(self):
         await self._release_retained()

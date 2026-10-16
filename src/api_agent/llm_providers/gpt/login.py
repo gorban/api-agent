@@ -12,7 +12,8 @@ from .contracts import AuthError
 
 
 class LoginWorkflow:
-    def __init__(self, session, username, credentials, app_name, guard, *, allow_interaction):
+    def __init__(self, session, username, credentials, app_name, guard, *, allow_interaction,
+                 material=None, software_passkey=False):
         self.session = session
         self.page = session.page
         self.username = username
@@ -24,6 +25,9 @@ class LoginWorkflow:
         self.last_document = None
         self.documents = []
         self.closing = None
+        self.password_value = material.password if material is not None else None
+        self.material_known = material is not None
+        self.software_passkey = software_passkey
         self.consent = re.compile(r'^Connect(?: your)? ' + re.escape(app_name) + r' to ChatGPT$')
 
     def _interaction(self, message):
@@ -33,10 +37,13 @@ class LoginWorkflow:
             print(message, flush=True)
         self.disabled = True
 
-    async def _credential(self, kind):
+    async def _credential(self, kind, *, watch_guard=True):
+        if kind == 'password' and self.material_known:
+            return self.password_value
         task = asyncio.create_task(self.credentials(kind))
         try:
-            return await wait_browser_result(task, self.session, on_wait=self.guard.check)
+            return await wait_browser_result(task, self.session,
+                                             on_wait=self.guard.check if watch_guard else None)
         finally:
             task.cancel()
             async def drain():
@@ -44,10 +51,15 @@ class LoginWorkflow:
             await _dispose(drain())
 
     async def advance(self):
+        location = urlsplit(self.page.url)
+        trusted = location.scheme == 'https' and location.netloc == 'auth.openai.com'
+        if trusted and await self._alternative(location):
+            return
+        if trusted and location.path == '/auth_challenge/passkey' and self.software_passkey:
+            return
         if await self.guard.check() is True:
             self.disabled = True
             return
-        location = urlsplit(self.page.url)
         if location.scheme == 'about':
             return
         if (location.scheme != 'https' or location.netloc != 'auth.openai.com'):
@@ -120,8 +132,60 @@ class LoginWorkflow:
                                      return_exceptions=True)
             await _dispose(release())
 
+    async def _alternative(self, location):
+        heading = self.page.get_by_role('heading', name=re.compile(
+            r'^(Check your inbox|Check your email|Verify your email|Choose a verification method|Choose how to verify|Verify your identity)$'))
+        if self.credentials is None or not await heading.is_visible():
+            return False
+        # Only use controls offered by this document. No guessed endpoints and
+        # no email inbox access. A selected login may intentionally lack a password.
+        for label, available in (('Continue with passkey', self.software_passkey),
+                                 ('Continue with password', True)):
+            if not available:
+                continue
+            for role in ('link', 'button'):
+                control = self.page.get_by_role(role, name=label, exact=True)
+                if await control.is_visible():
+                    await self._choose(control, heading, location.geturl(), label)
+                    return True
+        self._interaction('GPT offers no supported automatic sign-in route for the selected login. '
+                          'Email verification remains manual; use a visible browser to continue.')
+        return True
+
+    async def _choose(self, control, heading, url, label):
+        key = (urlsplit(url).path, label, await heading.text_content())
+        handle = await control.element_handle(timeout=1000)
+        if handle is None:
+            return
+        try:
+            if key == self.last_action and await self._same_document():
+                return
+            document = await handle.evaluate_handle('(element) => element.ownerDocument')
+            self.documents.append(document)
+            if label == 'Continue with password':
+                value = await self._credential('password', watch_guard=False)
+                if not isinstance(value, str) or not value.strip():
+                    self._interaction('The selected login has no password and GPT offers no usable passkey route. '
+                                      'Email verification remains manual; use a visible browser to continue.')
+                    return
+                self.password_value, self.material_known = value, True
+            if (self.page.url != url or not await heading.is_visible()
+                    or await heading.text_content() != key[2]
+                    or not await self._bound(handle, handle, url)):
+                return
+            await handle.click(timeout=1000)
+            self.last_document, self.last_action = document, key
+            self.disabled = False
+            await self._close_documents(keep=document)
+        finally:
+            try:
+                await _dispose(handle.dispose())
+            finally:
+                await self._close_documents(keep=self.last_document)
+
     async def aclose(self):
         """Release owned documents, retaining a safe retry receipt on failure."""
+        self.password_value = None
         await self._close_documents()
 
     async def _close_documents(self, *, keep=None):
