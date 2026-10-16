@@ -37,7 +37,7 @@ def test_profile_selection(mode, target, expected):
 @pytest.mark.parametrize('mode,localstack', list(itertools.product(('', 'LangFuse', 'OTEL'), (False, True))))
 def test_every_profile_combination_has_dependencies_and_scope(mode, localstack):
     scope = Scope()
-    plan = plan_compose({'TRACE_MODE': mode, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566' if localstack else ''}, scope)
+    plan = plan_compose({'TRACE_MODE': mode, 'ALLURE_S3_USE_LOCALSTACK': localstack, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566' if localstack else ''}, scope)
     doc = json.loads((plan.directory / 'compose.json').read_text())
     active = set(plan.services)
     assert ('localstack' in active) == localstack
@@ -57,7 +57,7 @@ def test_command_is_explicit_and_environment_is_isolated(monkeypatch):
     monkeypatch.setenv('SA_POSTGRES_PASSWORD', 'private-env-value')
     monkeypatch.setenv('COMPOSE_FILE', '/private/compose.yml')
     monkeypatch.setenv('AWS_SECRET_ACCESS_KEY', 'private-key')
-    plan = plan_compose({'TRACE_MODE': 'LangFuse', 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'}, Scope())
+    plan = plan_compose({'TRACE_MODE': 'LangFuse', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'}, Scope())
     assert plan.command == ('docker', 'compose', '--project-name', Scope().project,
         '--project-directory', str(plan.directory), '-f', str(plan.directory / 'compose.json'),
         '--env-file', str(plan.directory / 'empty.env'), '--profile', 'langfuse', '--profile', 'localstack')

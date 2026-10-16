@@ -95,6 +95,7 @@ def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(
     from api_agent.runtime.dependencies import active_environment, ensure_environment
     from api_agent.runtime.compose import plan_compose
     from api_agent.runtime.prerequisites import PrerequisiteManager
+    from api_agent.runtime.reporting_registry import SharedReportingManager
 
     def dependencies():
         owner = context.pack_root if getattr(context, 'external_pack', False) else context.base_root
@@ -109,6 +110,8 @@ def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(
 
     return RecordingPrerequisites(prepare_dependencies=dependencies,
         plan=lambda config: plan_compose(config, scope, engine_environment=engine_environment),
-        manager=lambda plan, cancelled: PrerequisiteManager(plan, scope, ownership_directory,
-            engine_environment=engine_environment, cancelled=cancelled, deadline_seconds=timeout),
+        manager=lambda plan, cancelled: (SharedReportingManager(plan,
+            engine_environment=engine_environment, cancelled=cancelled, deadline_seconds=timeout)
+            if plan.profiles == ('localstack',) else PrerequisiteManager(plan, scope, ownership_directory,
+            engine_environment=engine_environment, cancelled=cancelled, deadline_seconds=timeout)),
         cancel_event=cancel_event, timeout=timeout)

@@ -4,7 +4,7 @@ Compose's JSON input is also YAML, so no optional YAML parser is required.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -102,7 +102,7 @@ def selected_profiles(config):
         is_local = _local_s3_endpoint(parsed, port, localstack_port)
         if localstack and not is_local:
             raise ComposeError('LocalStack selection requires its loopback S3 endpoint.')
-        if is_local:
+        if localstack and is_local:
             profiles.append('localstack')
     return tuple(profiles)
 
@@ -294,3 +294,12 @@ def snapshot_compose(plan, directory):
     environment = dict(plan.environment)
     environment['SA_LOCALSTACK_READY_HOOK'] = str(directory / 'localstack-ready.sh')
     return command, environment
+
+
+
+def rebind_reporting_plan(plan, scope):
+    """Change only ownership interpolation; retain already captured asset bytes."""
+    command = list(plan.command)
+    command[command.index('--project-name') + 1] = scope.project
+    return replace(plan, command=tuple(command), environment=MappingProxyType({
+        **plan.environment, **local_development_environment(scope)}))

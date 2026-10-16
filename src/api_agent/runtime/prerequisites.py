@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import stat
 import shutil
 import shlex
 import subprocess
@@ -297,7 +298,14 @@ def _locked(directory, scope, *, deadline, cancelled, now, sleep):
     path = directory / f'{scope.id}.lock'
     if path.is_symlink():
         raise PrerequisiteError('Ownership lock may not be a symlink.')
-    with path.open('a') as stream:
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError as error:
+        raise PrerequisiteError('Cannot open ownership lock.') from error
+    with os.fdopen(descriptor, 'a') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise PrerequisiteError('Ownership lock must be a regular user-owned file.')
         while True:
             _check(deadline, cancelled, now)
             try:
@@ -316,13 +324,12 @@ def _read_journal(directory, scope, identity):
     if path.is_symlink():
         raise PrerequisiteError('Ownership journal may not be a symlink.')
     try:
-        journal = json.loads(path.read_text())
-    except FileNotFoundError:
-        return {}
+        from .reporting_metadata import _read
+        journal = _read(path)
+        if journal is None:
+            return {}
     except (OSError, ValueError) as error:
         raise PrerequisiteError('Cannot read ownership journal.') from error
-    if not isinstance(journal, dict):
-        raise PrerequisiteError('Invalid ownership journal.')
     active = {}
     for key, record in journal.items():
         if (not isinstance(record, dict) or not isinstance(record.get('pid'), int)
@@ -336,11 +343,16 @@ def _read_journal(directory, scope, identity):
 
 
 def _write_journal(directory, scope, journal):
+    from .reporting_metadata import LIMIT
+    payload = json.dumps(journal, sort_keys=True)
+    if len(payload.encode()) > LIMIT:
+        raise PrerequisiteError('Ownership journal exceeds its bounded size; existing leases are preserved.')
     path = directory / f'{scope.id}.json'
     temporary = directory / f'{scope.id}.{uuid4().hex}.tmp'
     try:
         with temporary.open('x') as stream:
-            json.dump(journal, stream, sort_keys=True)
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
@@ -508,6 +520,45 @@ class PrerequisiteManager:
         except (KeyError, TypeError, ValueError) as error:
             raise PrerequisiteError('Invalid prerequisite inspection response.') from error
 
+    def verify_reporting_storage(self, identifier, directory, deadline):
+        """Verify the retained controlled bind and named volume before adoption."""
+        from .reporting_metadata import _directory
+        try:
+            records = json.loads(self._command((self.plan.command[0], 'inspect', identifier), deadline))
+            record, = records
+            if record['Id'] != identifier:
+                raise ValueError()
+            mounts = record['Mounts']
+            hook, = [item for item in mounts if item['Destination'] == '/etc/localstack/init/ready.d/10-api-agent-s3.sh']
+            source = Path(hook['Source'])
+            parent = _directory(source.parent)
+            if hook['Type'] != 'bind' or hook.get('RW') is not False or not parent.is_relative_to(directory):
+                raise ValueError()
+            for name, expected in self.plan.assets.items():
+                path = parent / name
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                            or info.st_mode & 0o022 or info.st_size > len(expected)
+                            or stream.read(len(expected) + 1) != expected):
+                        raise ValueError()
+            if source.name != 'localstack-ready.sh':
+                raise ValueError()
+            source, destination = next(value.split(':')[:2] for value in
+                self.specs['localstack']['volumes'] if value.startswith('localstack-data:'))
+            name = self.scope.project + '_' + source
+            volume, = [item for item in mounts if item.get('Name') == name]
+            if volume['Type'] != 'volume' or volume['Destination'] != destination:
+                raise ValueError()
+            volumes = json.loads(self._command((self.plan.command[0], 'volume', 'inspect', name), deadline))
+            actual, = volumes
+            labels = actual['Labels']
+            if actual['Name'] != name or any(labels.get(key) != value for key, value in self.scope.labels('localstack').items()):
+                raise ValueError()
+        except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
+            raise PrerequisiteError('Reporting storage ownership or captured assets could not be verified.') from error
+
     def _verified_digest_image(self, expected, actual_id, deadline):
         """Verify a container's immutable image against the locally resolved pin."""
         if not isinstance(actual_id, str) or not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', actual_id):
@@ -584,7 +635,7 @@ class PrerequisiteManager:
         self._rollback = None
         return stopped
 
-    def acquire(self):
+    def acquire(self, *, expected_ids=None, reporting_directory=None):
         if self._rollback is not None:
             raise PrerequisiteError('Prerequisite rollback remains pending; release before acquiring again.')
         if self.lease is not None:
@@ -605,7 +656,13 @@ class PrerequisiteManager:
                 self.lease = ServiceLease(invocation, self.scope.id, (), (), ())
                 return self.lease
             initial = self._inventory(deadline)
+            if expected_ids is not None and (set(initial) != set(expected_ids)
+                    or any(not item.running for item in initial.values())):
+                raise PrerequisiteError('Registered reporting container changed or stopped; no restart was attempted.')
             compatible = self._compatible(initial, deadline, allow_stopped=True)
+            if reporting_directory is not None:
+                for identifier in expected_ids:
+                    self.verify_reporting_storage(identifier, reporting_directory, deadline)
             existing = {name: item for name, item in compatible.items() if item.running}
             restarted = {item.id for item in compatible.values() if not item.running}
             protected = {item for record in journal.values() for item in record['ids']}

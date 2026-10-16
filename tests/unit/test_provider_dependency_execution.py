@@ -50,7 +50,7 @@ def test_recording_preparation_is_lazy_and_skips_inactive_selections(tmp_path, m
     ensure = Mock(return_value=None)
     monkeypatch.setattr('api_agent.runtime.dependencies.active_environment', lambda path: True)
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', ensure)
-    monkeypatch.setattr('api_agent.runtime.compose.plan_compose', Mock(return_value='plan'))
+    monkeypatch.setattr('api_agent.runtime.compose.plan_compose', Mock(return_value=SimpleNamespace(profiles=())))
     manager = Mock()
     manager.acquire.return_value = 'lease'
     monkeypatch.setattr('api_agent.runtime.prerequisites.PrerequisiteManager', Mock(return_value=manager))

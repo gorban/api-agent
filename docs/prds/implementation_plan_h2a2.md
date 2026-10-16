@@ -8,6 +8,10 @@ A managed reporting installation is shared across launches and checkouts. Select
 
 These are requirements; registering them does not deliver runtime wiring or authorize changes to existing services, volumes or history.
 
+The [initial LocalStack routing/reuse slice](implementation_plan_h2a3.md) is
+pulled forward for current test review, after fixture hang protection. It does
+not complete last-session shutdown or the management UI.
+
 ## 1. Session ownership before runtime wiring
 
 - [ ] Use the selected backend and canonical endpoint for routing. Keep local installation identity/session records internal and independent of checkout paths; do not require a trusted remote registration or UUID match before publishing. Validate locally managed configuration, service versions, enabled profiles and ownership labels before reuse. Reject incompatible or unrelated listeners with clear diagnostics; preserve fixed application ports.
