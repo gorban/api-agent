@@ -46,3 +46,17 @@
 - [ ] Human review: complete the live logged-out Keeper walkthrough, including input, cancel/retry, terminal relay and returning to the test result, before API-key acquisition. Synthetic checks do not mark live acceptance complete.
 
 - [ ] Add native non-POSIX interactive recovery after verifying platform process, terminal and input ownership. The current POSIX implementation fails explicitly where that capability is unavailable.
+
+## Deferred login recovery
+
+- [ ] After application delivery and profiling, add optional 1Password CLI
+  session-login recovery through its verified supported interface. This is
+  distinct from its existing username/password/TOTP retrieval and from passkey
+  support. Preserve Keeper recovery and adapters without this capability.
+- [ ] Reuse the operation-owned interaction, deadline, cancellation and cleanup
+  contracts; classify only observed login-required responses. Keep inputs and
+  retrieved credentials out of diagnostics, recordings and worker evidence.
+- [ ] Verify logged-in/logged-out, retry, cancellation, concurrent retrieval,
+  redirected-terminal and TUI behavior with controlled adapters and meaningful
+  mutation tests; obtain independent review and live human acceptance before
+  claiming automatic login recovery. Until then require external CLI sign-in.
