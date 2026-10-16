@@ -94,6 +94,12 @@ sys.exit(code)
 '''
 
 
+def _complete_report(rows):
+    phases = {row['phase']: row for row in rows}
+    return ('setup' in phases and 'teardown' in phases
+            and ('call' in phases or phases['setup']['status'] in {'failed', 'skipped'}))
+
+
 @suite_locked
 @_admit_operation
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
@@ -414,11 +420,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                     elif row['kind'] == 'report':
                                         reports.setdefault(identity.id, []).append(row)
                                         if row['phase'] == 'teardown':
-                                            phases = {item['phase']: item for item in reports[identity.id]}
                                             # Missing phases need the eventual worker exit diagnostic.
                                             # Setup failures/skips legitimately have no call report.
-                                            setup = phases.get('setup', {})
-                                            if setup and ('call' in phases or setup.get('status') in {'failed', 'skipped'}):
+                                            if _complete_report(reports[identity.id]):
                                                 finish(repo, identity, reports[identity.id])
                                 except (ValueError, KeyError, TypeError) as error:
                                     record_local('Integration pytest report protocol', error, selected.values())
@@ -459,7 +463,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     failed |= (run_complete if directory.retained else process.returncode) != 0
                     for identity in selected.values():
                         rows = reports.get(identity.id, [])
-                        if not {'setup', 'call', 'teardown'}.issubset({row['phase'] for row in rows}):
+                        if not _complete_report(rows):
                             code = run_complete if directory.retained else process.returncode
                             diagnostics.setdefault(identity.id, []).append(
                                 f'Integration pytest report incomplete: worker exit code {code}; '

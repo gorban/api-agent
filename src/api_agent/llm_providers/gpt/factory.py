@@ -19,9 +19,26 @@ from .endpoint import validate_base_url
 class OwnedSubscriptionSession(SubscriptionSession):
     """Own refresh transport on the same loop as the subscription session."""
 
-    def __init__(self, store, profile):
+    def __init__(self, store, profile, *, reconnect=None):
         self.client = None
+        self.reconnect = reconnect
         super().__init__(store, profile, self._refresh)
+
+    async def _current(self):
+        try:
+            try:
+                return await super()._current()
+            except AuthError as error:
+                if str(error) != 'refresh_rejected' or self.reconnect is None:
+                    raise
+                # The serialized refresh lock has been released. One shared
+                # session task owns reconnect, including all concurrent waiters.
+                await self.reconnect()
+                return await super()._current()
+        except AuthError:
+            raise InteractionRequiredError(
+                'GPT could not refresh the cached subscription connection. '
+                'Retry sign-in through launch.py; check connectivity and the cached account.') from None
 
     async def _refresh(self, connection, now):
         if self.client is None:
@@ -137,42 +154,56 @@ class GPTProvider:
         if len(connections) == 1:
             profile = store.profile_id(connections[0])
         elif interactive or username is not None:
-            # Let the verified OAuth result identify the account instead of a manual ID.
-            browser_options = {}
-            if self.inspection is not None:
-                browser_options['inspection'] = self.inspection
-            if not interactive:
-                browser_options['headless'] = not (self.run_ui or self.inspection is not None)
-            browser = subscription_browser(**browser_options)
-            self.browsers.append(browser)
-            async def login_credentials(kind):
-                return await credentials(user_index, kind)
-            login_options = ({'login_username': username, 'login_credentials': login_credentials,
-                              'allow_interaction': not browser_options.get('headless', False)}
-                             if username is not None else {})
-            try:
-                profile = await self._connect_account(store, browser_owner=browser, app_name=self.app_name, **login_options)
-            except AuthError as error:
-                if (str(error) == 'login_interaction_required' and browser_options.get('headless')
-                        and not hasattr(error, 'cleanup_error')):
-                    print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
-                    visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
-                    visible = subscription_browser(**visible_options)
-                    self.browsers.append(visible)
-                    try:
-                        profile = await self._connect_account(store, browser_owner=visible, app_name=self.app_name,
-                                                        login_username=username, login_credentials=login_credentials,
-                                                        allow_interaction=True)
-                    except AuthError as retry_error:
-                        raise self._login_error(retry_error) from None
-                else:
-                    raise self._login_error(error) from None
+            profile = await self._login(store, interactive=interactive, username=username,
+                                        user_index=user_index, credentials=credentials)
         else:
             raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
-        session = OwnedSubscriptionSession(store, profile)
+        async def reconnect():
+            print('GPT cached subscription refresh was rejected; sign-in is required again.', flush=True)
+            await self._login(store, interactive=interactive, username=username,
+                              user_index=user_index, credentials=credentials, profile=profile)
+        session = OwnedSubscriptionSession(store, profile, reconnect=reconnect)
         self.sessions.append(session)
         self.quota_interactive = bool(interactive)
         return session
+
+    async def _login(self, store, *, interactive, username, user_index, credentials, profile=None):
+        if not interactive and username is None:
+            raise InteractionRequiredError(
+                'GPT cached subscription sign-in needs renewal. Start attended through launch.py '
+                'or select an unattended LLM User with working credential access.')
+        # Let the verified OAuth result identify the account instead of a manual ID.
+        browser_options = {}
+        registration = {'profile': profile} if profile is not None else {}
+        if self.inspection is not None:
+            browser_options['inspection'] = self.inspection
+        if not interactive:
+            browser_options['headless'] = not (self.run_ui or self.inspection is not None)
+        browser = subscription_browser(**browser_options)
+        self.browsers.append(browser)
+        async def login_credentials(kind):
+            return await credentials(user_index, kind)
+        login_options = ({'login_username': username, 'login_credentials': login_credentials,
+                          'allow_interaction': not browser_options.get('headless', False)}
+                         if username is not None else {})
+        try:
+            profile = await self._connect_account(store, browser_owner=browser, app_name=self.app_name, **registration, **login_options)
+        except AuthError as error:
+            if (str(error) == 'login_interaction_required' and browser_options.get('headless')
+                    and not hasattr(error, 'cleanup_error')):
+                print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
+                visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
+                visible = subscription_browser(**visible_options)
+                self.browsers.append(visible)
+                try:
+                    profile = await self._connect_account(store, browser_owner=visible, app_name=self.app_name,
+                                                    login_username=username, login_credentials=login_credentials,
+                                                    allow_interaction=True, **registration)
+                except AuthError as retry_error:
+                    raise self._login_error(retry_error) from None
+            else:
+                raise self._login_error(error) from None
+        return profile
 
     async def adescribe(self, *, auth=None):
         if self.closed:
