@@ -131,7 +131,7 @@ COLLECT_ONLY = false
 acknowledge_default = false
 type = "path"
 anchor = "owner_root"
-required = true
+required = false
 [fields.UI_SOURCE_DIR.applies_when]
 any = [{TUI_MODE = "e2e"}, {TUI_MODE = "run-local", RUN_UI = true}]
 COLLECT_ONLY = false
@@ -353,7 +353,7 @@ help = "Replaceable APIProvider version-1 factory (file.py:factory), required wh
 acknowledge_default = false
 type = "str"
 review_optional = true
-help = "Replaceable UIProvider version-1 frontend lifecycle factory (file.py:factory), selected by the resource pack or an explicit override. Any adapter implementing that interface may replace it."
+help = "Replaceable UIProvider version-1 frontend lifecycle factory (file.py:factory). The bundled Studio provider supplies the included chat frontend; a resource pack or explicit override may select any adapter implementing that interface."
 
 [fields.ACCESS_PROVIDER]
 acknowledge_default = false

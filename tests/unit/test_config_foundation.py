@@ -77,8 +77,8 @@ def test_conditional_defaults_and_pack_override_provenance():
 def test_active_required_and_collection_exemptions(tmp_path):
     schema = load_shared_schema()
     run = resolve_config(schema, environ={'TUI_MODE': 'run-local', 'RUN_UI': 'True'}, anchors={'owner_root': tmp_path})
-    assert run.missing == ('UI_SOURCE_DIR',)
-    assert run.errors
+    assert not run.missing and not run.errors
+    assert run.values['UI_PROVIDER'].endswith('/ui/provider.py:create_provider')
     collect = resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'e2e', 'RUN_UI': 'True',
                             'COLLECT_ONLY': 'True', 'E2E_RERUNS': 'bad'})
     assert not collect.errors and 'E2E_RERUNS' not in collect.values

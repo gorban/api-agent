@@ -1,0 +1,30 @@
+/* Response typography, shared by the warm palette and Midnight. */
+.message-body.markdown{white-space:normal;overflow-wrap:anywhere;line-height:1.75;min-width:0}
+.markdown>:first-child{margin-top:0!important}.markdown>:last-child{margin-bottom:0!important}
+.markdown p{margin:0 0 1em}.markdown strong{font-weight:680;color:var(--ink)}
+.markdown :is(h1,h2,h3,h4,h5,h6){font-family:inherit;color:var(--ink);font-weight:650;line-height:1.3;letter-spacing:-.025em;margin:1.4em 0 .55em;max-width:none}
+.markdown h1{font-size:1.8em}.markdown h2{font-size:1.5em}.markdown h3{font-size:1.25em}.markdown h4{font-size:1.1em}.markdown h5{font-size:1em}.markdown h6{font-size:.95em;color:var(--muted)}
+.markdown :is(h1,h2,h3,h4,h5,h6) em{font:inherit;font-style:italic;letter-spacing:inherit;color:inherit}
+.markdown :is(ul,ol){margin:.65em 0 1.15em;padding-inline-start:1.6em}.markdown li{padding-inline-start:.2em;margin:.3em 0}
+.markdown li :is(ul,ol){margin:.3em 0}.markdown li>p{margin:.3em 0}.markdown li::marker{color:var(--blue)}
+.markdown li:has(>input[type=checkbox]){list-style:none;padding-inline-start:0}
+.markdown input[type=checkbox]{width:16px;height:16px;min-height:0;margin:0 .5em 0 -1.4em;vertical-align:middle;accent-color:var(--blue);opacity:1}
+.markdown blockquote{margin:1.2em 0;padding:14px 20px;border-inline-start:3px solid var(--blue);border-radius:0 12px 12px 0;background:var(--markdown-panel,#eeece3);color:var(--ink)}
+.markdown blockquote>:last-child{margin-bottom:0}.markdown blockquote blockquote{border-color:var(--muted)}
+.markdown a{color:var(--blue);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}
+.markdown a:hover{text-decoration-thickness:2px}.markdown hr{margin:1.6em 0;border:0;border-top:1px solid var(--muted);opacity:.65}
+.markdown code,.markdown kbd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.875em;background:var(--markdown-panel,#eeece3);border-radius:5px;padding:.15em .35em;color:var(--ink)}
+.markdown kbd{border:1px solid var(--muted);box-shadow:0 2px 0 var(--muted);white-space:nowrap}
+.message .markdown pre{margin:1em 0;padding:18px 20px;border-radius:14px;background:var(--markdown-panel,#eeece3);color:var(--ink);white-space:pre;overflow-x:auto;overflow-wrap:normal;max-width:100%;font-size:13px;line-height:1.65}
+.markdown pre code{padding:0;background:none;font-size:inherit;border-radius:0;white-space:inherit;overflow-wrap:normal}
+.markdown-table{max-width:100%;overflow-x:auto;margin:1.2em 0;border:1px solid var(--muted);border-radius:14px}
+.markdown table{border-collapse:collapse;width:100%;font-size:.9em;line-height:1.6;min-width:320px}
+.markdown th,.markdown td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--muted)}
+.markdown th{font-weight:650;background:var(--markdown-panel,#eeece3);color:var(--ink)}
+.markdown :is(th,td)[align=center]{text-align:center}.markdown :is(th,td)[align=right]{text-align:right}
+.markdown tbody tr:last-child td{border-bottom:0}
+.markdown img{display:block;max-width:100%;height:auto;margin:1em 0;border-radius:16px}
+.markdown mark{background:var(--blue);color:var(--paper);border-radius:3px;padding:0 .15em}
+.markdown details{border:1px solid var(--muted);border-radius:12px;padding:6px 16px;font-size:inherit;color:inherit}
+.markdown summary{color:var(--blue);font-weight:600}.markdown :is(pre,.markdown-table):focus-visible{outline-offset:-3px}
+@media(max-width:560px){.message .markdown pre{padding:14px}.markdown :is(th,td){padding:10px 12px}.markdown blockquote{padding:12px 14px}}

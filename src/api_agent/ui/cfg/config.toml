@@ -1,0 +1,19 @@
+version = 1
+
+[fields.UI_LISTENER_URL]
+type = "str"
+acknowledge_default = true
+required = true
+default = "https://localhost:9443"
+help = "Loopback origin for the included Studio frontend."
+[fields.UI_LISTENER_URL.applies_when]
+any = [{TUI_MODE = "e2e"}, {TUI_MODE = "run-local", RUN_UI = true}]
+COLLECT_ONLY = false
+
+[fields.UI_SOURCE_DIR]
+type = "path"
+override = true
+anchor = "owner_root"
+required = false
+acknowledge_default = false
+help = "The included Studio uses its packaged frontend resources without an external UI source directory. Other UI providers may declare a required source location."

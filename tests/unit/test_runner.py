@@ -259,3 +259,28 @@ def test_component():
     assert len(progress) == 2 and progress[0].component.active and not progress[-1].component.active
     assert progress[0].identity == result.tests[0].identity
     assert progress[0].component.id == progress[-1].component.id
+
+
+def test_large_selection_uses_file_instead_of_os_argument_budget(tmp_path, monkeypatch):
+    """Long parameter IDs must not consume the OS exec argument allowance."""
+    import io
+    import json
+    from api_agent.testing import runner
+    from api_agent.testing.collection import TestIdentity
+    base = fixture_repo(tmp_path / 'base')
+    ctx = context(base)
+    nodes = ['tests/unit/test_tiny.py::test_ok[' + str(index) + '-' + 'x' * 3000 + ']' for index in range(1000)]
+    tests = [TestIdentity('base::' + node, 'base', 'tests/unit/test_tiny.py', node) for node in nodes]
+    monkeypatch.setattr(runner, 'collect_tests', lambda *args, **kwargs: tests)
+    launches = []
+    def launch(args, **options):
+        assert sum(len(arg.encode()) + 1 for arg in args) < 10000
+        selected = Path(options['env']['API_AGENT_UNIT_SELECTION'])
+        assert json.loads(selected.read_text()) == nodes
+        launches.append(selected)
+        return SimpleNamespace(stdout=io.StringIO(), returncode=1, poll=lambda: 1)
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    monkeypatch.setattr(runner, '_stop_execution', lambda process: None)
+    result = run_unit_tests(ctx, tests)
+    assert len(result.tests) == len(nodes)
+    assert len(launches) == 1 and not launches[0].exists()

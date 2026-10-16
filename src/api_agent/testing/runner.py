@@ -62,7 +62,7 @@ class UnitRunResult:
 
 
 _PLUGIN = r'''
-import json, sys
+import json, os, sys
 import pytest
 event_path = sys.argv[1]
 class Events:
@@ -75,7 +75,9 @@ class Events:
         self.send(kind='report', node=report.nodeid, phase=report.when,
                   status=report.outcome, duration=report.duration,
                   traceback=str(report.longrepr) if report.failed else '')
-status = pytest.main(sys.argv[2:], plugins=[Events()])
+with open(os.environ['API_AGENT_UNIT_SELECTION'], encoding='utf-8') as selection_file:
+    selected_nodes = json.load(selection_file)
+status = pytest.main(sys.argv[2:] + selected_nodes, plugins=[Events()])
 import os
 if os.environ.get('API_AGENT_COVERAGE_OUTPUT'):
     from pathlib import Path
@@ -179,7 +181,9 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                 env['COVERAGE_FILE'] = str(Path(temporary) / '.coverage')
             if parallel_jobs:
                 args += ['-n', str(parallel_jobs)]
-            args.extend(selected)
+            selection_file = Path(temporary) / 'selection.json'
+            selection_file.write_text(json.dumps(list(selected)), encoding='utf-8')
+            env['API_AGENT_UNIT_SELECTION'] = str(selection_file)
             try:
                 child_env = dict(env)
                 child_env['PYTHONPATH'] = temporary + os.pathsep + env['PYTHONPATH']

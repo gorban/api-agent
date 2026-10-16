@@ -170,6 +170,9 @@ def load_shared_schema(base_root: Path | None = None) -> ConfigSchema:
     fields = dict(schema.fields)
     factory = Path(__file__).resolve().parent.parent / 'llm_providers/gpt/factory.py'
     fields['LLM_PROVIDER'] = replace(fields['LLM_PROVIDER'], default=str(factory) + ':factory')
+    ui_factory = Path(__file__).resolve().parent.parent / 'ui/provider.py'
+    if 'UI_PROVIDER' in fields:
+        fields['UI_PROVIDER'] = replace(fields['UI_PROVIDER'], default=str(ui_factory) + ':create_provider')
     return ConfigSchema(fields)
 
 def _compose_fields(shared: ConfigSchema, extension: ConfigSchema | None = None) -> ConfigSchema:

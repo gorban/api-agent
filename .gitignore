@@ -17,3 +17,7 @@ artifacts/
 .certs/
 
 .provider-state/
+
+node_modules/
+coverage/
+/package-lock.json

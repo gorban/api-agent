@@ -12,6 +12,11 @@ def methods(*allowed):
     def decorate(view):
         @wraps(view)
         async def wrapped(request, *args, **kwargs):
+            capability = view.__name__
+            if capability in ("models", "chat", "chat_stream"):
+                backend = (_runtime(request).services or {}).get("studio_backend")
+                if backend is not None:
+                    return await backend.handle(request, capability)
             if request.method == "OPTIONS" and "OPTIONS" in allowed:
                 response = HttpResponse(status=204)
                 response["Allow"] = allow

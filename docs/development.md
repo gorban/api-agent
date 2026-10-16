@@ -71,10 +71,16 @@ the owner process dies. A competing Start fails before execution.
 
 ## Terminal automation and acceptance
 
-`--no-std-in` (or `NO_STD_IN=True`) disables terminal prompts and uses raw output.
-Supply the mode and applicable required settings. Missing prerequisites skip
+`--no-std-in` (or `NO_STD_IN=True`) uses console output instead of the interactive
+TUI. Supply the mode and applicable required settings. Missing prerequisites skip
 dependent integrations with a reason; malformed values and execution failures
-fail. Authentication that needs human interaction cannot be called unattended.
+fail. An explicitly detected human-only login challenge can reopen Chromium
+visibly once, then resume supported steps after intervention. This also applies
+with `RUN_UI=False` and `NO_STD_IN=True`; a graphical session is required for the
+visible browser. Credential lookup errors stop the selected unattended login.
+Password-manager recovery retains its dedicated
+[terminal interaction](architecture/password_managers.md#interactive-recovery).
+Authentication and recovery remain bounded by their enclosing deadlines.
 
 For terminal integration execution, combine `--no-std-in` with `--start`
 (or `--start=E2E`). `--debug` additionally retains login browsers for inspection.
@@ -124,15 +130,42 @@ no browser. Current debug teardown waits for retained windows to close.
 Closing a login browser before callback ends authentication promptly.
 E2E_DEBUG selects retained headed E2E browsers for focused tests.
 
-Attach agent tooling to the printed loopback CDP endpoint and use its existing
-context/page. The MCP extension connection page is a separate browser. The
-launcher owns cleanup; keep callback parameters, credentials, cookies and
-storage out of diagnostic output. See [inspection contracts](architecture/provider_architecture.md).
+Prefer Chrome DevTools MCP for browser inspection; Playwright MCP is an
+alternative. Configure the agent's MCP server to attach to the printed loopback
+CDP endpoint, replacing `<port>` below with its port:
+```bash
+npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:<port>
+npx -y @playwright/mcp@latest --cdp-endpoint=http://127.0.0.1:<port>
+```
+Choose one server and select the existing context/page. The MCP extension
+connection page is a separate browser. Attaching does not change the browser's
+headless/headed mode or retention policy; launch.py owns cleanup. Keep callback
+parameters, credentials, cookies and storage out of diagnostic output. See the
+[Chrome DevTools MCP options](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/configuration.md),
+[Playwright MCP options](https://github.com/microsoft/playwright-mcp#configuration)
+and [inspection contracts](architecture/provider_architecture.md).
 
 ## Developer environment and builds
 
+Use Python 3.13+ and a coding agent with terminal access. The launcher prepares
+its local environment and Python dependencies; `uv` is optional for launcher
+setup. Browser inspection additionally needs:
+
+- Node.js LTS and npm when using the `npx` MCP commands above.
+- Chrome DevTools MCP (preferred) or Playwright MCP configured in the agent.
+- A compatible browser: attaching to an existing managed browser needs no
+  separate Chrome installation. The launcher prepares Playwright Chromium when
+  browser work first needs it; required host libraries must also be available.
+  Compatibility with the chosen MCP/browser versions still needs verification.
+
+If the MCP launches its own browser for independent UI development, configure
+its `--executable-path` when its default Chrome executable is unavailable.
+Use the CDP attachment options above when inspecting a launch.py browser.
+Docker and other provider prerequisites are needed only for operations that
+declare them; ordinary unit tests need no live provider credentials or inference.
+
 Activate `.venv` in each shell. Development installation is separate from the
-managed user launch path:
+managed user launch path; this example uses `uv`:
 ```bash
 uv pip install --python .venv/bin/python -e '.[dev]'
 .venv/bin/python -m build --wheel
@@ -144,3 +177,25 @@ Environments and build artifacts are ignored. Another worktree can share local
 certificates through intentional symlinks. A .env symlink permits shared reads,
 but configuration editors refuse to write through it; use an independent copy
 when editing settings through the TUI.
+
+### Included frontend checks
+
+The Studio host uses Node's standard library. For browser development checks,
+install the pinned development tools and their Chromium once:
+```bash
+npm install
+npx playwright install chromium
+npm run test:frontend
+npm run test:frontend:coverage
+.venv/bin/python -m pytest tests/frontend/test_studio_connection.py
+```
+The first two test commands exercise controlled responses without inference.
+The Python connection checks exercise real local HTTP listeners and disposal
+with a controlled provider. The coverage command requires exact authored
+line/branch coverage; reports stay under `artifacts/frontend-coverage/`.
+`test_studio_request.py` is a separate integration test: it sends one small
+prompt through the actual agent endpoints using the configured LLM connection.
+
+Large unit selections are transferred to pytest through an operation-owned
+temporary selection file, so parameterized test IDs do not exhaust OS command
+argument limits. Positional selection and per-owner execution remain unchanged.

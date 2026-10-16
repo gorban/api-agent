@@ -27,6 +27,7 @@ exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 "demo" = "api_agent/demo"
 "cfg" = "api_agent/cfg"
 "infra/compose" = "api_agent/infra/compose"
+"apps/api-agent-ui" = "api_agent/ui/app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]

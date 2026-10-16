@@ -1,0 +1,108 @@
+/* Midnight — warm ivory and apricot against quiet ink-blue layers. */
+:root {
+  color-scheme: dark;
+  --ink: #f5eee3;
+  --paper: #131c29;
+  --muted: #b7bfca;
+  --blue: #f3b587;
+  --orange: #ff9254;
+  --panel: #1c293a;
+  --panel-raised: #243347;
+  --field: #172331;
+  --line: #7d8da0;
+  --apricot-ink: #302014;
+  color: var(--ink);
+  background: var(--paper);
+}
+body { color: var(--ink); background: var(--paper); }
+.app { background: radial-gradient(ellipse at 85% 30%, #26304366, transparent 48%); }
+::selection { background: #f3b587; color: #302014; }
+:focus-visible { outline: 3px solid #f8c59e; outline-offset: 4px; }
+.skip { background: #f3b587; color: #302014; }
+.wordmark, h1, h2, .hello { color: var(--ink); }
+h1 em { color: var(--blue); }
+.brandmark { background: #f3b587; color: #302014; }
+.new-chat, #send, .primary, #lab-run {
+  background: #f3b587;
+  color: #302014;
+  box-shadow: inset 0 1px 0 #ffe0c7;
+}
+.new-chat:hover, #send:hover:not(:disabled), .primary:hover:not(:disabled), #lab-run:hover:not(:disabled) { background: #fac69d; }
+#send span { color: #302014; background: #d89a6c; }
+.settings-button, #lab-button { color: var(--ink); }
+.settings-button:hover, #lab-button:hover { background: #2a3a4d; }
+.small-dot { background: #a8c8af; }
+.orbit { border-color: #5a6a7b; }
+.orbit-two { border-color: #405268; }
+.satellite { background: #f3b587; border-color: var(--paper); }
+.companion-caption { color: var(--muted); }
+.intro, .starter-heading, .starters small, .enter-hint,
+.composer-model, #status, .message details, .draft .message-head:after,
+.follow-controls label, .response-metadata > summary,
+#settings-description, #lab-description, #model-status, .settings-note { color: var(--muted); }
+.starters button {
+  color: var(--ink);
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 #53637a70, inset 0 0 0 1px #40516a70;
+}
+.starters button:hover { background: var(--panel-raised); }
+.starter-icon.blue { color: #c3d3f2; background: #30415b; }
+.starter-icon.orange { color: #ffd0ad; background: #49372d; }
+.arrow { color: #e9dfd1; background: #35465b; }
+.composer-shell { background: #2a394b; box-shadow: inset 0 1px 0 #61718555; }
+#composer { background: var(--field); box-shadow: inset 0 1px 0 #8b9aab28, inset 0 0 0 1px var(--line); }
+#composer:focus-within { outline: 3px solid #f8c59e; outline-offset: 3px; }
+textarea { color: var(--ink); caret-color: #f3b587; }
+textarea::placeholder { color: #b7bfca; opacity: 1; }
+#stop { color: #ffd0ad; background: #352b28; border-color: #c09274; }
+#stop:hover { background: #49372d; }
+button:disabled { opacity: 1; color: #b7bfca; background: #354252; box-shadow: none; }
+#send:disabled span { background: #465368; color: #cbd2da; }
+.follow-controls input { accent-color: #f3b587; color-scheme: dark; }
+.follow-controls button, .response-metadata > summary:before { color: #f3b587; }
+.message.user { color: var(--ink); background: #25354a; }
+.message.assistant { color: var(--ink); }
+.avatar { color: #302014; background: #f3b587; }
+.message pre { color: #e8dfd1; background: #1b2939; }
+.metadata-grid { background: #1c293a; }
+.metadata-grid > div { border-color: #435267; }
+.metadata-grid dt { color: var(--muted); }
+.metadata-grid dd { color: var(--ink); }
+.suggestion { color: var(--ink); background: #1c293a; border-color: var(--line); }
+.suggestion:hover { background: #2a3a4d; }
+.error-note, #storage-warning { color: #ffdbc2; background: #422e27; }
+.error-note { border-left-color: #f3b587; }
+.draft { border-left-color: #f3b587; }
+footer { color: var(--muted); }
+.footer-brand { color: var(--ink); }
+.footer-brand span, footer a { color: #f3b587; }
+#settings, #lab {
+  background: #1c293a;
+  color: var(--ink);
+  box-shadow: 0 24px 90px #050b1466, inset 0 1px 0 #61718570;
+}
+#settings::backdrop, #lab::backdrop { background: #070e19ba; backdrop-filter: blur(5px); }
+.dialog-head button { color: var(--ink); background: #35465b; }
+.dialog-head button:hover { background: #46566c; }
+#settings label, #lab label { color: var(--ink); }
+#settings select, #lab select {
+  color-scheme: dark;
+  color: var(--ink);
+  background-color: #172331;
+  border-color: var(--line);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23b7bfca' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  box-shadow: inset 0 1px 2px #08101b55;
+}
+#settings select:hover, #lab select:hover { background-color: #243347; border-color: #a7b3c1; }
+#settings select:focus-visible, #lab select:focus-visible { outline: 3px solid #f8c59e; outline-offset: 3px; border-color: #f8c59e; }
+#settings option, #lab option { color: var(--ink); background: #1c293a; }
+.lab-pending { color: var(--muted); background: #1c293a; border-color: var(--line); }
+.message .lab-artifact { color: var(--ink); background: #243347; border-color: var(--line); }
+.lab-artifact a { color: #f3b587; }
+#conversation-scroll, #settings, #lab { scrollbar-color: #7d8da0 #172331; }
+@media (forced-colors: active) {
+  #composer, .starters button, .new-chat, #send, .primary, #lab-run, .dialog-head button { border: 1px solid ButtonText; }
+  :focus-visible, #composer:focus-within { outline-color: Highlight; }
+}
+
+:root{--markdown-panel:#1c293a}

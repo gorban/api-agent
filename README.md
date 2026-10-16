@@ -6,8 +6,8 @@ Build and run API-connected agents from one guided terminal interface.
 - Adapt applications through resource packs and replaceable providers.
 - Run locally with connected UI/API services, logs and optional tracing.
 - Select tests, inspect failures and browse recorded results.
-- DEBUG / `--debug` keeps completed tests open in a browser to manually verify
-  but also supports Playright MCP from another agent to work it with you.
+- Keep DEBUG browsers open for human or agent inspection with Chrome DevTools MCP
+  or Playwright MCP.
 - Even allows hooking up a password manager for automated login to UI and LLM
   provider.
 
@@ -32,6 +32,11 @@ See [setup and configuration](docs/workbench.md#getting-started).
 - [Credentials and LLM connections](docs/connections.md)
 - [Resource packs and providers](docs/resource-packs.md)
 - [Running, debugging and testing](docs/development.md)
+
+**Developing with a coding agent?** Start with Python 3.13+ and an agent with
+terminal access. For browser inspection, configure Chrome DevTools MCP (preferred)
+or Playwright MCP. See [developer setup](docs/development.md#developer-environment-and-builds)
+for prerequisites and connection instructions.
 
 ## Testing
 

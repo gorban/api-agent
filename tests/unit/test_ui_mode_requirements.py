@@ -1,4 +1,5 @@
 """UI applicability is independent of E2E browser visibility."""
+from dataclasses import replace
 import pytest
 from api_agent.config import load_shared_schema, resolve_config
 
@@ -9,18 +10,27 @@ from api_agent.config import load_shared_schema, resolve_config
     ("integration", "False", False), ("integration", "True", False),
 ])
 def test_ui_required_by_operation(mode, run_ui, required, tmp_path):
-    result = resolve_config(load_shared_schema(), environ={"ALLURE_S3_BUCKET": "synthetic-results", "TUI_MODE": mode, "RUN_UI": run_ui}, anchors={"owner_root": tmp_path})
+    base = load_shared_schema()
+    # External UI adapters can require their own source; the included UI does not.
+    schema = type(base)({**base.fields, "UI_SOURCE_DIR": replace(base.fields["UI_SOURCE_DIR"], required=True)})
+    result = resolve_config(schema, environ={"ALLURE_S3_BUCKET": "synthetic-results", "TUI_MODE": mode, "RUN_UI": run_ui}, anchors={"owner_root": tmp_path})
     assert ("UI_SOURCE_DIR" in result.missing) is required
-    supplied = resolve_config(load_shared_schema(), environ={"ALLURE_S3_BUCKET": "synthetic-results", "TUI_MODE": mode, "RUN_UI": run_ui, "UI_SOURCE_DIR": "frontend"}, anchors={"owner_root": tmp_path})
+    supplied = resolve_config(schema, environ={"ALLURE_S3_BUCKET": "synthetic-results", "TUI_MODE": mode, "RUN_UI": run_ui, "UI_SOURCE_DIR": "frontend"}, anchors={"owner_root": tmp_path})
     supplied.raise_for_errors()
     assert ("UI_SOURCE_DIR" in supplied.values) is required
     if required:
         assert supplied.values["UI_SOURCE_DIR"] == tmp_path / "frontend"
     else:
-        ignored = resolve_config(load_shared_schema(), environ={"ALLURE_S3_BUCKET": "synthetic-results", "TUI_MODE": mode, "RUN_UI": run_ui, "UI_SOURCE_DIR": "", "UI_NX_APP": ""}, anchors={"owner_root": tmp_path})
+        ignored = resolve_config(schema, environ={"ALLURE_S3_BUCKET": "synthetic-results", "TUI_MODE": mode, "RUN_UI": run_ui, "UI_SOURCE_DIR": "", "UI_NX_APP": ""}, anchors={"owner_root": tmp_path})
         ignored.raise_for_errors()
 
 def test_e2e_collection_does_not_require_ui():
     result = resolve_config(load_shared_schema(), environ={"TUI_MODE": "e2e", "RUN_UI": "True", "COLLECT_ONLY": "True"})
     result.raise_for_errors()
     assert "UI_SOURCE_DIR" not in result.values
+
+@pytest.mark.parametrize("mode", ["run-local", "e2e"])
+def test_included_studio_needs_no_external_source(mode):
+    result = resolve_config(load_shared_schema(), environ={"TUI_MODE": mode, "RUN_UI": "True"})
+    assert "UI_SOURCE_DIR" not in result.missing
+    assert result.values["UI_PROVIDER"].endswith("ui/provider.py:create_provider")

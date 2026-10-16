@@ -408,10 +408,10 @@ def test_headless_blocker_hands_off_once_to_headed_with_same_expected_account(st
     assert capsys.readouterr().out.count('Opening visible Chromium') == 1
 
 
-def test_headless_blocker_never_opens_an_interactive_fallback_without_permission(store, monkeypatch, capsys):
+def test_headless_blocker_opens_visible_retry_with_no_standard_input(store, monkeypatch, capsys):
     from api_agent.llm_providers.gpt.contracts import AuthError
     browser = SimpleNamespace(aclose=AsyncMock())
-    # A synchronous browser factory must be called only once.
+    # Explicit browser intervention remains available without terminal input.
     from unittest.mock import Mock
     create = Mock(return_value=browser)
     monkeypatch.setattr(module, 'subscription_browser', create)
@@ -423,10 +423,134 @@ def test_headless_blocker_never_opens_an_interactive_fallback_without_permission
             with pytest.raises(InteractionRequiredError, match='needs browser interaction'):
                 await provider.asetup(interactive=False, user_index=0,
                                       credentials=AsyncMock(return_value='person@example.test'))
-            create.assert_called_once_with(headless=True)
-            connect.assert_awaited_once()
+            assert create.call_count == 2
+            assert create.call_args_list[0].kwargs == {"headless": True}
+            assert create.call_args_list[1].kwargs == {}
+            assert connect.await_count == 2
             assert not provider.sessions
         finally:
             await provider.aclose()
     run(scenario())
-    assert not capsys.readouterr().out
+    assert capsys.readouterr().out.count("Opening visible Chromium") == 1
+
+
+@pytest.mark.parametrize('failure', ['pending', 'cancel', 'account_mismatch', 'visible_retry', 'blocked_headless'])
+def test_session_setup_retains_pending_login_in_provider_until_disposal_succeeds(store, monkeypatch, failure):
+    from test_gpt_login import Page, workflow
+    from api_agent.llm_providers.gpt.contracts import AuthError
+    from api_agent.providers.sessions import LLMSessionOwner
+    async def scenario():
+        login = workflow(Page())
+        document = SimpleNamespace(dispose=AsyncMock(side_effect=RuntimeError('private release diagnostic')))
+        login.documents.append(document)
+        login.last_document = document
+        pending = CleanupPendingError((login,), login.aclose)
+        error = pending
+        if failure in {'cancel', 'account_mismatch', 'blocked_headless'}:
+            error = asyncio.CancelledError() if failure == 'cancel' else AuthError(
+                'login_interaction_required' if failure == 'blocked_headless' else 'account_mismatch')
+            error.cleanup_error = pending
+            error.retained_owners = (login,)
+        effects = [AuthError('login_interaction_required'), error] if failure == 'visible_retry' else error
+        connect = AsyncMock(side_effect=effects)
+        monkeypatch.setattr(module, 'connect_account', connect)
+        browsers = []
+        def browser(**options):
+            owned = SimpleNamespace(aclose=AsyncMock())
+            browsers.append(owned)
+            return owned
+        monkeypatch.setattr(module, 'subscription_browser', browser)
+        provider = module.factory({'NO_STD_IN': True, 'RUN_UI': False}, None)
+        session = LLMSessionOwner(provider, user_index=0, interactive=False,
+                                  credentials=AsyncMock(return_value='person@example.test'))
+        operation = AsyncMock()
+        expected = asyncio.CancelledError if failure == 'cancel' else InteractionRequiredError if failure in {'account_mismatch', 'blocked_headless'} else CleanupPendingError
+        with pytest.raises(expected) as caught:
+            await session.call(operation)
+        operation.assert_not_awaited()
+        assert provider.pending_logins == [login]
+        if failure in {'account_mismatch', 'blocked_headless'}:
+            assert caught.value.cleanup_error is pending
+            assert caught.value.retained_owners == (login,)
+        if failure == 'blocked_headless':
+            assert len(browsers) == 1
+            connect.assert_awaited_once()
+        await session.aclose()
+        assert provider.pending_logins == [login]
+        with pytest.raises(CleanupPendingError):
+            await provider.aclose()
+        assert provider.pending_logins == [login]
+        for owned in browsers:
+            owned.aclose.assert_not_awaited()
+        document.dispose.side_effect = None
+        await provider.aclose()
+        assert not provider.pending_logins
+        assert not login.documents
+        await provider.aclose()
+        for owned in browsers:
+            owned.aclose.assert_awaited_once()
+    run(scenario())
+
+
+def test_provider_deduplicates_repeated_receipts_for_same_login_owner(store, monkeypatch):
+    async def scenario():
+        owner = SimpleNamespace(aclose=AsyncMock())
+        pending = CleanupPendingError((owner,), owner.aclose)
+        monkeypatch.setattr(module, 'connect_account', AsyncMock(side_effect=pending))
+        provider = module.factory({}, None)
+        for _ in range(2):
+            with pytest.raises(CleanupPendingError):
+                await provider._connect_account(object())
+        assert provider.pending_logins == [owner]
+        await provider.aclose()
+        owner.aclose.assert_awaited_once()
+        assert provider.pending_logins == []
+    run(scenario())
+
+
+def test_login_error_mapping_keeps_cleanup_cancellation_without_inventing_retained_owners():
+    from api_agent.llm_providers.gpt.contracts import AuthError
+    primary = AuthError('account_mismatch')
+    primary.cleanup_error = asyncio.CancelledError()
+    converted = module.GPTProvider._login_error(primary)
+    assert isinstance(converted, InteractionRequiredError)
+    assert converted.cleanup_error is primary.cleanup_error
+    assert not hasattr(converted, 'retained_owners')
+
+
+def test_provider_disposal_cancellation_preserves_retry_for_blocked_login_task(store, monkeypatch):
+    from test_gpt_login import Page, workflow
+    from api_agent.llm_providers.gpt import login as login_module
+    report = login_module.report_timeout
+    monkeypatch.setattr(login_module, 'report_timeout', lambda name, timeout: report(name, .05))
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def dispose():
+            entered.set()
+            await release.wait()
+        login = workflow(Page())
+        document = SimpleNamespace(dispose=AsyncMock(side_effect=dispose))
+        login.documents.append(document)
+        provider = module.factory({}, None)
+        provider.pending_logins.append(login)
+        task = asyncio.create_task(provider.aclose())
+        await entered.wait()
+        original = login.closing
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(task, 5)
+        assert caught.value.retained_owners == (provider,)
+        assert caught.value.cleanup_error.retry == provider.aclose
+        assert provider.pending_logins == [login]
+        assert login.closing is original
+        assert not original.done()
+        document.dispose.assert_awaited_once()
+        release.set()
+        await caught.value.cleanup_error.retry()
+        assert provider.pending_logins == []
+        assert login.documents == []
+        assert original.done()
+        document.dispose.assert_awaited_once()
+    run(scenario())
