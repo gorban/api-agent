@@ -15,9 +15,10 @@ def encoded(value):
     return base64.urlsafe_b64encode(value).decode().rstrip('=')
 
 
+@pytest.mark.parametrize('empty_phrase', [False, True])
 @pytest.mark.parametrize('document', ['main', 'iframe'])
 @pytest.mark.parametrize('destination', ['foreign', 'callback', 'wrong-callback-path'])
-def test_redirect_checks_each_document_and_only_exact_owned_callback(document, destination):
+def test_redirect_checks_each_document_and_only_exact_owned_callback(document, destination, empty_phrase):
     async def exercise():
         requests = []
         target = ''
@@ -32,7 +33,7 @@ def test_redirect_checks_each_document_and_only_exact_owned_callback(document, d
                     response = f'HTTP/1.1 302 Found\r\nLocation: {target}\r\n'.encode()
                 else:
                     body = b'<!doctype html><title>Disposable local document</title>'
-                    response = b'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n'
+                    response = (b'HTTP/1.1 200 \r\n' if empty_phrase else b'HTTP/1.1 200 OK\r\n') + b'Content-Type: text/html\r\n'
                 writer.write(response + b'Connection: close\r\nContent-Length: '
                              + str(len(body)).encode() + b'\r\n\r\n' + body)
                 await writer.drain()
@@ -56,7 +57,7 @@ def test_redirect_checks_each_document_and_only_exact_owned_callback(document, d
                 try:
                     await owner.prepare()
                     await page.goto(origin)
-                    permitted = destination == 'callback'
+                    permitted = document == 'iframe' or destination == 'callback'
                     if document == 'main':
                         if permitted:
                             await page.goto(origin + '/redirect')
@@ -74,7 +75,7 @@ def test_redirect_checks_each_document_and_only_exact_owned_callback(document, d
                             frame.src = url; document.body.append(frame);
                         })''', origin + '/redirect'), 10)
                     foreign_requests = [path for path, host in requests if f'127.0.0.1:{port}' in host]
-                    assert foreign_requests == (['/callback'] if permitted else [])
+                    assert foreign_requests == ([('/wrong' if destination == 'wrong-callback-path' else '/callback')] if permitted else [])
                     assert sum(path == '/redirect' for path, host in requests) == 1
                     assert not owner.navigation_failed
                 finally:
