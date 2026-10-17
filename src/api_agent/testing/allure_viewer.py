@@ -98,9 +98,10 @@ class _Handler(SimpleHTTPRequestHandler):
             super().do_GET()
             return
         work = self.owner._counts_report(*summary) if summary is not None else self.owner._history_report(*binding)
+        timeout = self.owner.timeout if summary is not None else self.owner._history_timeout(binding[2], binding[3])
         future = asyncio.run_coroutine_threadsafe(work, self.owner._loop)
         try:
-            url = future.result(timeout=self.owner.timeout + 5)
+            url = future.result(timeout=timeout + 5)
         except FutureTimeout:
             future.cancel()
             self.send_error(504, 'Allure report generation timed out')
@@ -533,12 +534,18 @@ class ManagedAllureViewer:
             self._bindings[route] = f'http://127.0.0.1:{self.port}/{route}/index.html'
         return self._bindings[route]
 
+    def _history_timeout(self, previous, following):
+        # Each batch of up to 20 actual reports gets one generation budget.
+        # A large configured window with little available history stays bounded.
+        batches = 1 + (len(previous) + len(following)) // HISTORY_LAUNCHES
+        return self.timeout * batches
+
     async def _history_report(self, source, manifest, previous=(), following=()):
         task = asyncio.current_task()
         self._http_tasks.add(task)
         try:
             async with self._operation(), self._lock:
-                async with component_timeout('Allure archived run', self.timeout) as budget:
+                async with component_timeout('Allure archived run', self._history_timeout(previous, following)) as budget:
                     return await self._historical_report(source, manifest, previous, budget, following)
         finally:
             self._http_tasks.discard(task)

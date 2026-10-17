@@ -12,4 +12,6 @@
 - [x] Verify current-only, smaller/default/larger windows, pass-rate statistics, sparse tests, malformed/native truncated data, exact outcomes and history links with genuine CLI/browser proof, source configuration, mutations, installed package, exact coverage and independent review.
 - [ ] Human review a larger history window and its per-test History/pass-rate presentation. Existing history needs no migration or deletion.
 
+- [ ] Complete the [archive generation budget repair](implementation_plan_d1h1.md) before the larger-window acceptance retry.
+
 The owning adapter only changes derived report data. Allure 2 remains an external prerequisite; original finalized artifacts and generated current-test outcomes remain authoritative.
