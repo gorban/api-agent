@@ -336,18 +336,16 @@ def test_empty_http2_reason_phrase_gets_a_valid_cdp_reason(software, status, phr
     assert not owner.navigation_failed
 
 
-@pytest.mark.parametrize('enabled,url,allowed', [
-    (True, 'https://chatgpt.com/', True),
-    (False, 'https://chatgpt.com/', False),
-    (True, 'https://chatgpt.com/auth/callback', True),
-    (True, 'http://chatgpt.com/', False),
-    (True, 'https://chatgpt.com.evil.test/', False),
-    (True, 'https://chatgpt.com:8443/', False),
+@pytest.mark.parametrize('url', [
+    'https://chatgpt.com/',
+    'https://chatgpt.com/auth/callback',
+    'http://chatgpt.com/',
+    'https://chatgpt.com.evil.test/',
+    'https://chatgpt.com:8443/',
 ])
-def test_firstparty_main_document_permission_is_opt_in_and_exact(software, enabled, url, allowed):
+def test_non_authorization_main_documents_are_blocked(software, url):
     owner, channel = software
-    owner.channel, owner.main_frame, owner.first_party = channel, 'main', enabled
+    owner.channel, owner.main_frame = channel, 'main'
     asyncio.run(owner._navigation({'requestId': 'document', 'frameId': 'main', 'request': {'url': url}}))
-    method, parameters = channel.send.call_args.args
-    assert method == ('Fetch.continueRequest' if allowed else 'Fetch.failRequest')
-    assert parameters['requestId'] == 'document'
+    channel.send.assert_awaited_once_with('Fetch.failRequest',
+        {'requestId': 'document', 'errorReason': 'BlockedByClient'})

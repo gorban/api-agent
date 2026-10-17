@@ -7,13 +7,9 @@
   authenticator before navigation and retain the shared login workflow through
   password, offered passkey alternatives and final setup cleanup. Do not pre-login
   through ChatGPT. Other login and API-key paths stay intact.
-- [x] Retain the independently tested first-party navigation helper as an isolated
-  alternative, outside normal provider setup; it does not add a configuration
-  setting or change the direct authorization entry point.
-- [x] Advance on either a recognized nonempty, locally unexpired session cookie
-  or a return to the exact ChatGPT origin without a visible Log in button after
-  account submission. Do not treat initial hydration, CSRF/consent cookies or a
-  similarly named host as success. These signals only advance browser navigation.
+- [x] Remove the unused preliminary sign-in helper, its cookie/page handoff
+  heuristics and its extra software-authenticator navigation permission. Keep a
+  real-browser direct authorization regression without preliminary sign-in.
 - [x] Pin username controls to their original document, use only offered passkey
   alternatives and preserve password/TOTP fallback when material supports it.
   Never retrieve email inbox codes or guess a passkey route.
@@ -27,8 +23,8 @@
 - [x] Preserve nested deadlines, callback priority, cancellation and pending
   document/key/browser cleanup ownership. Keep credentials, cookies and complete
   authorization URLs out of diagnostics and recordings.
-- [x] Verify session-signal alternatives, hydration/expiry/origin negatives,
-  navigation races, same-page key scope, direct authorization without a preliminary sign-in,
+- [x] Verify origin restrictions, navigation races, same-page key scope,
+  direct authorization without a preliminary sign-in,
   configured-name precedence and failed/partial setup. Renew applicable unit,
   installed-wheel and public-boundary gates before delivery.
 - [x] On token-exchange HTTP 400 with recognized `invalid_grant`, discard the
@@ -47,6 +43,6 @@
   account configured with password and passkey; observe the offered post-password
   challenge. Make no inference calls to exercise authentication.
 
-The first-party helper and its cookie/page handoff controls were delivered and
-verified separately. Direct authorization is restored by user direction; live
-post-password challenge behavior remains subject to the acceptance above.
+Provider setup uses direct application authorization only. Shared password,
+TOTP and software-passkey support remains available throughout that flow; no
+preliminary ChatGPT session or cookie heuristic is required.
