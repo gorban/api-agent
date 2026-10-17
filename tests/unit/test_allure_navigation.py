@@ -26,7 +26,8 @@ class Viewer:
         self.calls.append(source)
         if self.fail:
             raise RuntimeError('History unavailable')
-        return ViewerLocation('http://127.0.0.1:5252/history',browser_error='Browser unavailable')
+        return ViewerLocation('http://127.0.0.1:5252/history',browser_error='Browser unavailable',
+                              archive_url='http://127.0.0.1:5252/archive.html')
     async def aclose(self):
         if self.close_fail:
             raise RuntimeError('Cleanup pending')
@@ -227,6 +228,7 @@ def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_pat
                 assert 'History unavailable' in str(app.screen.query_one('#error',Static).content)
             else:
                 assert 'http://127.0.0.1:5252/history' in str(app.screen.query_one('#body',Static).content)
+                assert 'Browse previous runs: http://127.0.0.1:5252/archive.html' in str(app.screen.query_one('#body',Static).content)
                 app._allure_opening=True
                 await app.choose('refresh-allure')
                 assert len(viewer.calls)==1

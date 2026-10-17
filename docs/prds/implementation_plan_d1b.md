@@ -4,8 +4,8 @@
 
 ## History browsing
 
-- [x] Main-menu Allure serve browses finalized integration/E2E runs for the selected repository/pack, newest first. Enumerate finalized manifests below configured local/S3 roots; passing a parent directory to Allure 2 does not recursively discover run folders. Do not apply the cost-history lookback or let units replace this history.
-- [x] Preserve each run's identity through separate immutable report routes. Repeated tests across different suites remain separate runs; do not silently collapse history into Allure retries. Generate a run's report when selected rather than rebuilding every historical run at startup. Refresh discovers new manifests and preserves existing report bindings.
+- [x] Main-menu Allure serve discovers finalized integration/E2E runs for the selected repository/pack, newest first. Enumerate finalized manifests below configured local/S3 roots; passing a parent directory to Allure 2 does not recursively discover run folders. Do not apply the cost-history lookback or let units replace this history.
+- [x] Preserve each run's identity through separate immutable report routes. Repeated tests across different suites remain separate runs; do not silently collapse history into Allure retries. Generate older archive reports when selected. The [native-history follow-through](implementation_plan_d1c.md) supersedes archive-only startup with a bounded recent launch chain. Refresh discovers new manifests and preserves existing report bindings.
 - [x] Select by persisted identity and timestamps, never filesystem modification times. Validate manifest schema, repository/run identity, every artifact hash and attachment reference before generation. Reject changed/conflicting manifests, missing/corrupt files, links and nonregular files with actionable errors. Preserve original bytes and immutable history.
   Preserve manifest-listed `environment.properties` exactly; viewer annotations are added only when that filename is absent.
 - [x] Support explicitly empty ALLURE_RESULTS_DIR by reading exact finalized S3 artifacts into owned temporary staging. Storage retrieval never starts LocalStack or an authentication flow merely to browse. SDK transport timeouts and shared operation budgets bound retrieval; cancellation drains owned work.
@@ -21,6 +21,8 @@
 
 - [x] Independently review controlled CLI/HTTP/browser, local/S3 integrity, malformed/late history, conflict, cancellation, process and retry controls. Require exact applicable coverage, installed-package independence, licenses and public-boundary checks.
 - [ ] Human review multiple run routes, refresh, browser-opening failure diagnostics and owned cleanup. Selected-test/live-preview acceptance remains in its own child.
+
+Native cross-launch history: [requirements and acceptance](implementation_plan_d1c.md).
 
 Official references: [generation](https://allurereport.org/docs/v2/generate-report/), [installation](https://allurereport.org/docs/v2/install/) and [Homebrew formula](https://formulae.brew.sh/formula/allure).
 

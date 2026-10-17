@@ -3,6 +3,7 @@ import asyncio
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 import hashlib
 import html
@@ -26,6 +27,27 @@ from api_agent.runtime.tasks import offload
 from .allure_source import (PreviewSnapshot, RunSource, ViewerError, validate_manifest,
                             verified_files)
 from .processes import finalize
+from .storage import RunStorage
+
+HISTORY_LAUNCHES = 20
+HISTORY_FILES = ('history.json', 'history-trend.json', 'duration-trend.json',
+                 'retry-trend.json', 'categories-trend.json')
+
+
+def _history_result(body, manifest):
+    """Upgrade our legacy retry parameter in derived staging, never in storage."""
+    row = json.loads(body)
+    expected = hashlib.sha256(
+        f'{manifest["repo"]}:{manifest["mode"]}:{row.get("fullName")}'.encode()).hexdigest()
+    parameters = row.get('parameters')
+    changed = False
+    if row.get('historyId') == expected and isinstance(parameters, list):
+        for parameter in parameters:
+            if (isinstance(parameter, dict) and parameter.get('name') == 'attempt'
+                    and parameter.get('excluded') is not True):
+                parameter['excluded'] = True
+                changed = True
+    return json.dumps(row).encode() if changed else body
 
 
 @dataclass(frozen=True)
@@ -33,6 +55,7 @@ class ViewerLocation:
     url: str
     inspection_endpoint: str | None = None
     browser_error: str | None = None
+    archive_url: str | None = None
 
 
 class _Handler(SimpleHTTPRequestHandler):
@@ -186,24 +209,45 @@ class ManagedAllureViewer:
                 if response.status_code != 200 or response.text != marker.read_text():
                     raise ViewerError('Owned Allure report server did not become ready')
 
-    async def _report(self, manifest, files, *, preview=False, result_file=None):
+    async def _report(self, manifest, files, *, preview=False, result_file=None, history=None):
         digest = validate_manifest(manifest, preview=preview)
         if result_file is not None and (result_file not in files or not result_file.endswith('-result.json')):
             raise ViewerError('The exact selected Allure result is unavailable')
         selector = hashlib.sha256(result_file.encode()).hexdigest() if result_file else 'suite'
+        if history is not None:
+            context = {name: hashlib.sha256(body).hexdigest() for name, body in history.items()}
+            selector += '-history-' + hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
         route = f'runs/{manifest["run_id"]}/{digest}/{selector}'
         if route in self._bindings:
             return self._bindings[route]
         await self._ready()
         root = Path(self._temporary.name)
+        url = f'http://127.0.0.1:{self.port}/{route}/index.html'
         with tempfile.TemporaryDirectory(prefix='input-', dir=root) as staging:
             for name, body in files.items():
                 if result_file and name.endswith('-result.json') and name != result_file:
                     continue
+                if history is not None and name.endswith('-result.json'):
+                    body = _history_result(body, manifest)
                 (Path(staging) / name).write_bytes(body)
             if 'environment.properties' not in files:
                 (Path(staging) / 'environment.properties').write_text(
                     f'Run={manifest["run_id"]}\nPublication={"Live preview; suite accounting pending" if preview else "Finalized immutable run"}\n')
+            if history is not None:
+                if 'history' in files:
+                    raise ViewerError('Allure artifact conflicts with derived history staging')
+                directory = Path(staging) / 'history'
+                directory.mkdir()
+                for name, body in history.items():
+                    (directory / name).write_bytes(body)
+                if 'executor.json' not in files:
+                    (Path(staging) / 'executor.json').write_text(json.dumps({
+                        'name': 'Managed local viewer', 'buildName': 'Browse previous runs',
+                        'buildUrl': f'http://127.0.0.1:{self.port}/archive.html',
+                        'reportName': manifest['mode'] + ' — ' + manifest['finished_at'],
+                        'buildOrder': int(datetime.fromisoformat(
+                            manifest['finished_at'].replace('Z', '+00:00')).timestamp() * 1000),
+                        'reportUrl': url}))
             # Generate outside the served tree; publish a route only after success.
             with tempfile.TemporaryDirectory(prefix='report-', dir=root) as generated:
                 output = Path(generated) / 'report'
@@ -226,7 +270,7 @@ class ManagedAllureViewer:
                 destination = root / route
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(output), destination)
-        url = f'http://127.0.0.1:{self.port}/{route}/index.html{suffix}'
+        url += suffix
         self._bindings[route] = url
         return url
 
@@ -266,30 +310,72 @@ class ManagedAllureViewer:
                 manifests = await offload(source.history, budget=budget)
                 if not manifests:
                     raise ViewerError('No finalized integration or E2E Allure runs are available')
+                manifests = json.loads(json.dumps(manifests))
+                digests = {row['run_id']: validate_manifest(row, repo=source.repo) for row in manifests}
+                windows = {}
+                recent = {}
+                for manifest in reversed(manifests):
+                    previous = recent.get(manifest['mode'], ())
+                    windows[manifest['run_id']] = previous
+                    recent[manifest['mode']] = (manifest, *previous)[:HISTORY_LAUNCHES - 1]
                 links = []
                 for manifest in manifests:
-                    digest = validate_manifest(manifest, repo=source.repo)
-                    route = f'/open/{manifest["run_id"]}/{digest}'
-                    self._history_routes[route] = (source, json.loads(json.dumps(manifest)))
+                    digest = digests[manifest['run_id']]
+                    previous = windows[manifest['run_id']]
+                    context = hashlib.sha256(json.dumps([
+                        digests[row['run_id']] for row in previous]).encode()).hexdigest()
+                    route = f'/open/{manifest["run_id"]}/{digest}/{context}'
+                    self._history_routes.setdefault(route, (source, manifest, previous))
                     url = route
                     label = f'{manifest["finished_at"]} — {manifest["mode"]} — {manifest["status"]} — {manifest["run_id"]}'
                     links.append(f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>')
-                index = Path(self._temporary.name) / 'index.html'
+                index = Path(self._temporary.name) / 'archive.html'
                 temporary = index.with_suffix('.tmp')
-                temporary.write_text('<!doctype html><meta charset="utf-8"><title>Allure run history</title>'
-                                     '<h1>Allure run history</h1><p>Newest first. Each report preserves its run identity.</p><ul>'
+                temporary.write_text('<!doctype html><meta charset="utf-8"><title>Allure run archive</title>'
+                                     '<h1>Allure run archive</h1><p>Newest first. Native history shows up to 20 launches of the same mode; older reports remain available here.</p><ul>'
                                      + ''.join(links) + '</ul>', encoding='utf-8')
                 temporary.replace(index)
-                return await self._open(f'http://127.0.0.1:{self.port}/index.html')
+                manifest = manifests[0]
+                url = await self._historical_report(source, manifest, windows[manifest['run_id']], budget)
+                location = await self._open(url)
+                return ViewerLocation(location.url, location.inspection_endpoint, location.browser_error,
+                                      f'http://127.0.0.1:{self.port}/archive.html')
 
-    async def _history_report(self, source, manifest):
+    def _generated_history(self, url):
+        from .allure_source import MAX_ARTIFACT, MAX_RUN
+        directory = Path(self._temporary.name) / url.split(f':{self.port}/', 1)[1].split('/index.html')[0] / 'history'
+        if directory.is_symlink():
+            raise ViewerError('Invalid generated Allure history')
+        files = {}
+        size = 0
+        for name in HISTORY_FILES:
+            path = directory / name
+            if path.exists() or path.is_symlink():
+                try:
+                    body = RunStorage._read_source(path, max_bytes=MAX_ARTIFACT)
+                except Exception:
+                    raise ViewerError('Invalid generated Allure history') from None
+                size += len(body)
+                if len(body) > MAX_ARTIFACT or size > MAX_RUN:
+                    raise ViewerError('Generated Allure history exceeds transfer limit')
+                files[name] = body
+        return files
+
+    async def _historical_report(self, source, manifest, previous, budget):
+        history = {}
+        for item in [*reversed(previous), manifest]:
+            files = await offload(source.load, item, budget=budget)
+            url = await self._report(item, files, history=history)
+            history = await offload(self._generated_history, url)
+        return url
+
+    async def _history_report(self, source, manifest, previous=()):
         task = asyncio.current_task()
         self._http_tasks.add(task)
         try:
             async with self._operation(), self._lock:
                 async with component_timeout('Allure history report', self.timeout) as budget:
-                    files = await offload(source.load, manifest, budget=budget)
-                    return await self._report(manifest, files)
+                    return await self._historical_report(source, manifest, previous, budget)
         finally:
             self._http_tasks.discard(task)
 

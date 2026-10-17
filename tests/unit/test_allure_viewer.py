@@ -123,7 +123,8 @@ async def test_history_separates_runs_selected_attempt_and_cleanup(tmp_path, run
     try:
         location = await owner.show_history(source)
         async with httpx.AsyncClient() as client:
-            response = await client.get(location.url)
+            assert second['run_id'] in location.url
+            response = await client.get(location.archive_url)
             assert response.text.index(second['run_id']) < response.text.index(manifest['run_id'])
             selected = await owner.show_run(source, manifest, name)
             assert '#testresult/case0' in selected.url
@@ -593,16 +594,16 @@ async def test_default_browser_is_inspectable(port,monkeypatch):
 
 
 @async_test
-async def test_history_http_generates_only_requested_run_and_preserves_host_boundary(tmp_path,run,cli,port):
+async def test_history_http_generates_latest_and_preserves_host_boundary(tmp_path,run,cli,port):
     manifest,files,_=run
     save(tmp_path,manifest,files)
     source=RunSource('sample',tmp_path)
     owner=viewer.ManagedAllureViewer(port,browser_factory=Browser)
     try:
         location=await owner.show_history(source)
-        assert owner._bindings=={}
+        assert len(owner._bindings)==1
         async with httpx.AsyncClient() as client:
-            index=await client.get(location.url)
+            index=await client.get(location.archive_url)
             import re
             path=re.search(r'href="([^"]+)"',index.text)[1]
             response=await client.get(f'http://127.0.0.1:{port}'+path)
@@ -632,7 +633,7 @@ async def test_late_artifact_corruption_returns_http_failure_without_serving_par
             response=await client.get(f'http://127.0.0.1:{port}'+path)
             assert response.status_code==503
             assert 'corrupt' not in response.text
-        assert owner._bindings=={}
+        assert len(owner._bindings)==1
     finally:
         await owner.aclose()
 
@@ -797,3 +798,207 @@ def test_shared_allure_command_is_review_visible_with_default():
     field = load_shared_schema().fields['ALLURE_CLI']
     assert field.default == 'allure'
     assert field.acknowledge_default is True
+
+
+@pytest.fixture
+def history_cli(cli):
+    cli.write_text(cli.read_text() + '''
+ (output/'history').mkdir()
+ prior=source/'history'/'history.json'
+ chain=json.loads(prior.read_text()) if prior.exists() else []
+ executor=json.loads((source/'executor.json').read_text())
+ chain.append(executor.get('reportName','recorded executor'))
+ (output/'history'/'history.json').write_text(json.dumps(chain))
+ (output/'observed.json').write_text(json.dumps({'chain':chain,'executor':executor,
+   'results':len(list(source.glob('*-result.json')))}))
+''')
+    return cli
+
+
+def history_runs(root, run, dates, *, modes=None):
+    manifest, files, _ = run
+    rows = []
+    for index, date in enumerate(dates):
+        row = dict(manifest, run_id=str(uuid4()), finished_at=date,
+                   mode=modes[index] if modes else 'integration')
+        save(root, row, files)
+        rows.append(row)
+    return rows
+
+
+def generated_root(owner, location):
+    return Path(owner._temporary.name) / location.url.split(f':{owner.port}/', 1)[1].split('/index.html')[0]
+
+
+@async_test
+async def test_native_history_transfers_launches_without_pooling_results(tmp_path, run, history_cli, port):
+    rows = history_runs(tmp_path, run, ['2026-01-01T01:00:00Z', '2026-01-02T01:00:00Z',
+                                      '2026-01-03T01:00:00Z', '2026-01-04T01:00:00Z'],
+                        modes=['integration', 'e2e', 'integration', 'integration'])
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        location = await owner.show_history(RunSource('sample', tmp_path))
+        observed = json.loads((generated_root(owner, location) / 'observed.json').read_text())
+        assert observed['chain'] == ['integration — ' + rows[i]['finished_at'] for i in (0, 2, 3)]
+        assert observed['results'] == 1
+        assert observed['executor']['reportUrl'] == location.url
+        assert observed['executor']['buildUrl'] == location.archive_url
+        assert observed['executor']['buildOrder'] == 1767488400000
+        assert len(owner._bindings) == 3
+        assert rows[-1]['run_id'] in location.url
+        assert run[1] == RunSource('sample', tmp_path).load(rows[0])
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_native_window_is_bounded_and_archive_still_lists_older_launches(tmp_path, run, history_cli, port):
+    rows = history_runs(tmp_path, run, [f'2026-01-{day:02d}T01:00:00Z' for day in range(1, 23)])
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        location = await owner.show_history(RunSource('sample', tmp_path))
+        chain = json.loads((generated_root(owner, location) / 'history/history.json').read_text())
+        assert len(chain) == viewer.HISTORY_LAUNCHES == 20
+        assert chain[0] == 'integration — ' + rows[2]['finished_at']
+        assert len(owner._bindings) == 20
+        async with httpx.AsyncClient() as client:
+            archive = await client.get(location.archive_url)
+            assert all(row['run_id'] in archive.text for row in rows)
+            route = next(route for route, binding in owner._history_routes.items()
+                         if binding[1]['run_id'] == rows[0]['run_id'])
+            previous = await client.get(f'http://127.0.0.1:{port}' + route)
+            assert previous.status_code == 302
+            assert rows[0]['run_id'] in previous.headers['Location']
+        assert len(owner._bindings) == 21
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_late_launch_refresh_freezes_old_history_context(tmp_path, run, history_cli, port):
+    rows = history_runs(tmp_path, run, ['2026-01-01T01:00:00Z', '2026-01-03T01:00:00Z'])
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    source = RunSource('sample', tmp_path)
+    try:
+        first = await owner.show_history(source)
+        original = (generated_root(owner, first) / 'observed.json').read_bytes()
+        routes = dict(owner._history_routes)
+        history_runs(tmp_path, run, ['2026-01-02T01:00:00Z'])
+        second = await owner.show_history(source)
+        assert first.url != second.url
+        assert (generated_root(owner, first) / 'observed.json').read_bytes() == original
+        updated = json.loads((generated_root(owner, second) / 'observed.json').read_bytes())
+        assert len(updated['chain']) == 3
+        assert all(owner._history_routes[path] == binding for path, binding in routes.items())
+        assert rows[-1]['run_id'] in first.url and rows[-1]['run_id'] in second.url
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_history_preserves_manifest_executor_and_rejects_staging_collision(tmp_path, run, history_cli, port):
+    manifest, files, _ = run
+    original = b'{"name":"Original recorder","reportUrl":"https://example.org/report"}'
+    files['executor.json'] = original
+    manifest['files'] = {name: hashlib.sha256(body).hexdigest() for name, body in files.items()}
+    save(tmp_path, manifest, files)
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        location = await owner.show_history(RunSource('sample', tmp_path))
+        observed = json.loads((generated_root(owner, location) / 'observed.json').read_bytes())
+        assert observed['executor'] == json.loads(original)
+        files['history'] = b'recorded artifact'
+        changed = dict(manifest, run_id=str(uuid4()), files={
+            name: hashlib.sha256(body).hexdigest() for name, body in files.items()})
+        save(tmp_path, changed, files)
+        with pytest.raises(ViewerError, match='conflicts with derived history'):
+            await owner.show_history(RunSource('sample', tmp_path))
+    finally:
+        await owner.aclose()
+
+
+@pytest.mark.parametrize('damage', ['directory-link', 'file-link', 'fifo', 'artifact-limit', 'aggregate-limit'])
+@async_test
+async def test_generated_history_transfer_refuses_unsafe_or_oversized_files(run, cli, port, tmp_path, monkeypatch, damage):
+    manifest, files, _ = run
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        url = await owner._report(manifest, files)
+        directory = generated_root(owner, SimpleNamespace(url=url)) / 'history'
+        directory.mkdir()
+        (directory / 'history.json').write_text('{}')
+        if damage == 'directory-link':
+            directory.rename(directory.with_name('real-history'))
+            directory.symlink_to(directory.with_name('real-history'))
+        elif damage == 'file-link':
+            (directory / 'history.json').unlink()
+            (directory / 'history.json').symlink_to(tmp_path / 'missing')
+        elif damage == 'fifo':
+            import os
+            (directory / 'history.json').unlink()
+            os.mkfifo(directory / 'history.json')
+        elif damage == 'artifact-limit':
+            monkeypatch.setattr('api_agent.testing.allure_source.MAX_ARTIFACT', 1)
+        else:
+            monkeypatch.setattr('api_agent.testing.allure_source.MAX_RUN', 1)
+        with pytest.raises(ViewerError, match='generated Allure history|transfer limit'):
+            owner._generated_history(url)
+    finally:
+        await owner.aclose()
+
+
+@pytest.mark.parametrize('parameters', [None, {}, [None, {'name':'other'}],
+    [{'name':'attempt','value':'2','excluded':True}]])
+def test_history_parameter_upgrade_preserves_unaffected_bytes(run, parameters):
+    manifest = run[0]
+    full_name = 'tests/test_demo.py::test_demo'
+    history_id = hashlib.sha256(f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest()
+    body = json.dumps({'fullName':full_name,'historyId':history_id,'parameters':parameters}, indent=2).encode()
+    assert viewer._history_result(body, manifest) == body
+
+
+@pytest.mark.parametrize('owned', [True, False])
+def test_legacy_retry_counter_is_excluded_only_for_recorder_owned_identity(run, owned):
+    manifest = run[0]
+    full_name = 'tests/test_demo.py::test_demo'
+    history_id = hashlib.sha256(f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest()
+    row = {'fullName':full_name,'historyId':history_id if owned else 'foreign',
+           'parameters':[{'name':'attempt','value':'2'}]}
+    body = json.dumps(row, indent=2).encode()
+    converted = viewer._history_result(body, manifest)
+    if owned:
+        assert json.loads(converted)['parameters'] == [{'name':'attempt','value':'2','excluded':True}]
+        assert json.loads(body) == row
+    else:
+        assert converted == body
+
+
+@async_test
+async def test_close_during_second_history_generation_drains_and_removes_partial_chain(tmp_path, run, cli, port):
+    marker = tmp_path / 'generation-count'
+    startup = (f' marker=pathlib.Path({str(marker)!r})\n'
+               ' count=int(marker.read_text())+1 if marker.exists() else 1\n'
+               ' marker.write_text(str(count))\n'
+               ' if count==2:\n  import time; time.sleep(30)\n')
+    cli.write_text(cli.read_text().replace(' source=pathlib.Path(sys.argv[2])',
+                                         startup + ' source=pathlib.Path(sys.argv[2])'))
+    history_runs(tmp_path, run, ['2026-01-01T01:00:00Z', '2026-01-02T01:00:00Z'])
+    browser = Browser()
+    owner = viewer.ManagedAllureViewer(port, browser_factory=lambda: browser)
+    operation = asyncio.create_task(owner.show_history(RunSource('sample', tmp_path)))
+    try:
+        async with asyncio.timeout(10):
+            while not marker.exists() or marker.read_text() != '2':
+                await asyncio.sleep(.01)
+        assert len(owner._bindings) == 1
+        process, = owner._processes
+        await asyncio.wait_for(owner.aclose(), timeout=10)
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+        assert process.poll() is not None
+        assert owner._processes == [] and owner._operations == set()
+        assert owner._temporary is None and browser.urls == []
+    finally:
+        operation.cancel()
+        await asyncio.gather(operation, return_exceptions=True)
+        await owner.aclose()
