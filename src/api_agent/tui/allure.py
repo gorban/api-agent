@@ -165,17 +165,20 @@ class AllureNavigation:
         else:
             self.notify(message, timeout=15)
 
-    async def action_allure_copy_url(self, url):
+    async def action_allure_copy_url(self, url, opening=False):
         try:
             native = await copy_text(self, url)
         except ClipboardError:
             self.notify(Content.assemble('Could not copy the URL; copy manually:\n', url),
                         severity='error', timeout=15)
         else:
-            self.notify('URL copied.' if native else 'URL sent to terminal clipboard.', timeout=2)
+            message = 'URL copied.' if native else 'URL sent to terminal clipboard.'
+            if opening:
+                message += ' If no browser opens, paste the URL into a browser.'
+            self.notify(message, timeout=10 if opening else 2)
 
     async def action_allure_open_url(self, url):
-        await self.action_allure_copy_url(url)
+        await self.action_allure_copy_url(url, opening=True)
         try:
             self.open_url(url)
         except Exception:
