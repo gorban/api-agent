@@ -269,7 +269,7 @@ COLLECT_ONLY = false
 type = "int"
 default = 20
 validation = "positive"
-help = "Launches in an Allure history window, including the current launch. Default 20 includes up to 19 earlier launches in test History and up to 19 earlier plus 19 later launches in archive Trend charts. Set 1 for current only. Larger values increase generation time and storage; existing viewer deadlines and artifact-size limits still apply. This changes presentation, not retained results or cost-estimation history."
+help = "Launches in an Allure history window, including the current launch. Default 20 includes up to 19 earlier launches in test History and up to 19 earlier plus 19 later launches in archive Trend charts. Set 1 for current only. Larger values increase generation time and storage. Archive generation allows two minutes per batch of up to 20 actual reports; individual commands and artifact sizes remain bounded. This changes presentation, not retained results or cost-estimation history."
 [fields.ALLURE_HISTORY_DISPLAY_COUNT.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
