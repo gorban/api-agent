@@ -20,7 +20,7 @@ class Viewer:
         self.closed=False
     async def show_preview(self,snapshot,result_file, *, source=None):
         self.calls.append((snapshot,result_file))
-        self.sources.append(source)
+        self.sources.append(source() if callable(source) else source)
         if self.fail:
             raise RuntimeError('Preview unavailable')
         return ViewerLocation('http://127.0.0.1:5252/exact','#inspection')

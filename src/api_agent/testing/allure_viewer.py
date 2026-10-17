@@ -19,7 +19,7 @@ import tempfile
 import threading
 from urllib.parse import quote
 
-from api_agent.providers.control import finish_cleanup
+from api_agent.providers.control import CleanupPendingError, finish_cleanup
 from api_agent.providers.sessions import InspectionOwner
 from api_agent.providers.progress import component_timeout, report_timeout
 from api_agent.runtime.managed_browser import managed_browser
@@ -158,6 +158,7 @@ class ManagedAllureViewer:
         self._loop = None
         self._http_tasks = set()
         self._operations = set()
+        self._history_tasks = set()
         self._lock = asyncio.Lock()
         self._closed = False
         self._cli = None
@@ -236,14 +237,14 @@ class ManagedAllureViewer:
                 if response.status_code != 200 or response.text != marker.read_text():
                     raise ViewerError('Owned Allure report server did not become ready')
 
-    async def _report(self, manifest, files, *, preview=False, result_file=None, history=None):
+    async def _report(self, manifest, files, *, preview=False, result_file=None, history=None, archive=True):
         digest = validate_manifest(manifest, preview=preview)
         if result_file is not None and (result_file not in files or not result_file.endswith('-result.json')):
             raise ViewerError('The exact selected Allure result is unavailable')
         selector = hashlib.sha256(result_file.encode()).hexdigest() if result_file else 'suite'
         if history is not None:
             context = {name: hashlib.sha256(body).hexdigest() for name, body in history.items()}
-            selector += '-history-' + hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+            selector += ('' if archive else '-no-archive') + '-history-' + hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
         route = f'runs/{manifest["run_id"]}/{digest}/{selector}'
         if route in self._bindings:
             return self._bindings[route]
@@ -270,8 +271,9 @@ class ManagedAllureViewer:
                     (directory / name).write_bytes(body)
                 if 'executor.json' not in files:
                     (Path(staging) / 'executor.json').write_text(json.dumps({
-                        'name': 'Managed local viewer', 'buildName': 'Browse previous runs',
-                        'buildUrl': f'http://127.0.0.1:{self.port}/archive.html',
+                        'name': 'Managed local viewer',
+                        **({'buildName': 'Browse previous runs',
+                            'buildUrl': f'http://127.0.0.1:{self.port}/archive.html'} if archive else {}),
                         'reportName': manifest['mode'] + ' — ' + recorded_at,
                         'buildOrder': int(datetime.fromisoformat(
                             recorded_at.replace('Z', '+00:00')).timestamp() * 1000),
@@ -334,19 +336,45 @@ class ManagedAllureViewer:
                     try:
                         async with component_timeout('Allure prior test history', self.timeout / 2) as budget:
                             await self._ready()
-                            history = await self._selected_history(source, manifest, budget)
-                            archive = f'http://127.0.0.1:{self.port}/archive.html'
-                    except (ViewerError, TimeoutError):
+                            task = asyncio.create_task(self._selected_history(source, manifest, budget))
+                            self._history_tasks.add(task)
+                            task.add_done_callback(self._history_finished)
+                            try:
+                                history, available = await asyncio.shield(task)
+                                if available:
+                                    archive = f'http://127.0.0.1:{self.port}/archive.html'
+                            finally:
+                                if not task.done():
+                                    task.cancel()
+                    except CleanupPendingError:
+                        raise
+                    except Exception:
                         error = 'Prior Allure history is unavailable; showing this attempt without history.'
                 url = await self._report(manifest, files, preview=snapshot.preview,
-                                         result_file=result_file, history=history)
+                                         result_file=result_file, history=history, archive=archive is not None)
                 return replace(await self._open(url), archive_url=archive, history_error=error)
 
+    def _history_finished(self, task):
+        self._history_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    async def _drain_history(self, budget):
+        tasks = tuple(self._history_tasks)
+        # The foreground requests cancellation before releasing the viewer lock.
+        # Never cancel again while a synchronous read is draining.
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=budget.remaining)
+            if pending:
+                raise CleanupPendingError((self,), self.aclose)
+
     async def _selected_history(self, source, manifest, budget):
+        source = source() if callable(source) else source
         if source.repo != manifest['repo']:
             raise ViewerError('Allure history repository does not match the selected test')
         manifests = json.loads(json.dumps(await offload(source.history, budget=budget)))
-        self._archive(source, manifests)
+        if manifests:
+            self._archive(source, manifests)
         cutoff = datetime.fromisoformat(manifest['started_at'].replace('Z', '+00:00'))
         previous = [row for row in manifests if row['mode'] == manifest['mode']
                     and row['run_id'] != manifest['run_id']
@@ -356,7 +384,7 @@ class ManagedAllureViewer:
             files = await offload(source.load, row, budget=budget)
             url = await self._report(row, files, history=history)
             history = await offload(self._generated_history, url)
-        return history
+        return history, bool(manifests)
 
     async def show_history(self, source):
         async with self._operation(), self._lock:
@@ -446,7 +474,8 @@ class ManagedAllureViewer:
         for task in tuple((self._operations | self._http_tasks) - {current}):
             task.cancel()
         async with self._lock:
-            async with report_timeout('Allure viewer cleanup', 15):
+            async with report_timeout('Allure viewer cleanup', 15) as budget:
+                await finish_cleanup(self._drain_history(budget))
                 tasks = tuple(task for task in self._http_tasks if task is not current)
                 for task in tasks:
                     task.cancel()
