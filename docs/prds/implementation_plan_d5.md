@@ -12,3 +12,5 @@
 - [ ] Prove fail-fast ordering, both rates, cancellation/cleanup and actual generated Allure presentation with deterministic controlled tests before E2E acceptance. No paid calls solely for retry verification. Renew applicable exact coverage, installed/native artifacts and independent review when implementing.
 
 The current integration recorder rejects completed finalization if any recorded attempt failed. Extend this through an explicitly validated E2E aggregate outcome when implementing confirmations; keep the integration failure guard intact. Native retry grouping alone does not implement E2E recovery or final-rate semantics.
+
+- [ ] Persist the effective nonnegative confirmation count as finalized `manifest.metadata.e2e_reruns`, plus authoritative logical-test first/final outcomes. Archive count presentation must not assume a present-day default for legacy retry data; missing confirmation information remains explicit. Keep all-confirmations-pass and fail-fast semantics when emitting those records.

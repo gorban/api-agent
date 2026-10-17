@@ -49,6 +49,13 @@ class AllureNavigation:
         self._allure_retained_bytes = 0
         self._allure_generation = object()
         self._allure_opening = False
+        self._allure_loading = ''
+
+    def refresh_allure_loading(self):
+        for screen in self.screen_stack:
+            for status in screen.query('#allure-loading'):
+                status.update(self._allure_loading)
+                status.display = bool(self._allure_loading)
 
     def receive_allure_snapshot(self, snapshot, generation):
         if generation is self._inspection_generation and not self._inspection_shutdown:
@@ -133,6 +140,9 @@ class AllureNavigation:
             return
         generation = self._allure_generation
         self._allure_opening = True
+        mode = 'E2E' if self.mode == 'e2e' else 'integration'
+        self._allure_loading = f'Preparing selected {mode} run in Allure…'
+        self.refresh_allure_loading()
         self.screen.refresh_bindings()
         try:
             location = await self._allure().show_preview(*selected, source=self.allure_source)
@@ -144,6 +154,8 @@ class AllureNavigation:
         finally:
             if generation is self._allure_generation:
                 self._allure_opening = False
+                self._allure_loading = ''
+                self.refresh_allure_loading()
                 self.screen.refresh_bindings()
 
     def allure_page(self):
@@ -167,7 +179,7 @@ class AllureNavigation:
         if getattr(location, 'history_error', None):
             parts.extend([spacing, location.history_error])
         if getattr(location, 'archive_url', None):
-            parts.extend([spacing + 'Browse previous runs: ', link(location.archive_url, 'allure_open_url'),
+            parts.extend([spacing + 'All runs: ', link(location.archive_url, 'allure_open_url'),
                           ' (open + copy URL)'])
         content = Content.assemble(*parts)
         message = AllureLinkContent(str(content), content.spans)
@@ -222,7 +234,7 @@ class AllureNavigation:
                             (('refresh-allure', 'Refresh history'),))
             if generation is not self._allure_generation:
                 return
-            location = await self._allure().show_history(self.allure_source())
+            location = await self._allure().show_archive(self.allure_source())
             if generation is self._allure_generation:
                 self.operation_status = 0
                 self.show_allure_location(location)
@@ -237,6 +249,8 @@ class AllureNavigation:
 
     async def close_allure(self):
         self._allure_generation = object()
+        self._allure_loading = ''
+        self.refresh_allure_loading()
         viewer = self.allure_viewer
         if viewer is None:
             self._allure_opening = False

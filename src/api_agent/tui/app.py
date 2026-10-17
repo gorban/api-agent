@@ -374,6 +374,10 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 yield Static("", id="error", markup=False)
         if self.kind == "defaults":
             yield Static(app.configuration_review_blocker(), id="error", markup=False)
+        if self.kind in {'test-results', 'test-failure'}:
+            status = Static(app._allure_loading, id='allure-loading', markup=False)
+            status.display = bool(app._allure_loading)
+            yield status
         if self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
             with Vertical(id="menu-bottom-bar"):
                 yield Static("Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.",
@@ -878,6 +882,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
     .compact-review DataTable { height: 3; }
     .compact-review #heading, .compact-review #body, .compact-review DataTable { margin-bottom: 0; }
     #error { color: $error; height: auto; }
+    #allure-loading { color: darkorange; height: auto; }
     QuitDialog, DeleteDialog, StopContainersDialog { align: center middle; background: $background 80%; }
     QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
     .confirmation-actions { height: auto; }
