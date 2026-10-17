@@ -2,6 +2,8 @@
 import pytest
 
 
+pytestmark = pytest.mark.feature('Studio appearance')
+
 @pytest.mark.requires_ui_session
 def test_studio_theme(ui_provider_session, ui_provider_loop):
     page = ui_provider_session.session.page

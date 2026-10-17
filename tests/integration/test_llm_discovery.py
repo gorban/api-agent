@@ -1,5 +1,8 @@
 """Selected-provider authenticated catalog access without inference."""
+import pytest
 
+
+pytestmark = pytest.mark.feature('LLM discovery')
 
 def test_llm_discovery(llm_provider):
     choices = llm_provider.describe()
