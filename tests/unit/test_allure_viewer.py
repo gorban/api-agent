@@ -241,6 +241,7 @@ def read_server_response_to_eof(port):
         return b''.join(chunks)
 
 
+@pytest.mark.skipif(viewer.os.name != 'posix', reason='Immediate socket reuse is a POSIX-only contract.')
 @async_test
 async def test_viewer_reopens_same_port_after_confirmed_http_shutdown(cli, port):
     first = viewer.ManagedAllureViewer(port)

@@ -131,7 +131,7 @@ class _Handler(SimpleHTTPRequestHandler):
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     # POSIX reuse permits rebinding after closed HTTP connections (TIME_WAIT),
-    # without allowing adoption of an active listener. Keep Windows exclusive.
+    # without allowing adoption of an active listener. Preserve Windows non-reuse.
     allow_reuse_address = os.name == 'posix'
 
 

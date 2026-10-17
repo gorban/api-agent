@@ -19,6 +19,10 @@
 
 The CLI is an optional out-of-band dependency; [installation instructions](../development.md) stand alone. Application E2E execution keeps its separate implementation gate; its eventual results reuse these generic viewer contracts.
 
+## Platform hardening
+
+- [ ] Verify and harden [native Windows listener isolation](implementation_plan_d1g.md) with explicit socket policy and native acceptance. Preserving its current non-reuse setting does not establish exclusive binding.
+
 ## Later optimization
 
 - [ ] Profile and conditionally optimize [incremental native-history preparation](implementation_plan_d1f.md) late in implementation.
