@@ -209,9 +209,13 @@ def test_viewer_failure_preserves_results_and_cleanup_can_retry(tmp_path,monkeyp
 
 
 @pytest.mark.parametrize('bucket,failed',[(False,False),(True,False),(False,True)])
-def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_path,monkeypatch,bucket,failed):
+@pytest.mark.parametrize('secondary', [False, True])
+def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_path,monkeypatch,bucket,failed,secondary):
     async def scenario():
         fields={'ALLURE_S3_BUCKET':{'type':'str','default':'reports'}} if bucket else {}
+        fields.update(ALLURE_VIEW_SECONDARY={'type':'bool','default':secondary},
+                      ALLURE_RESULTS_DIR={'type':'path','anchor':'owner_root','default':str(tmp_path / 'working')},
+                      ALLURE_SECONDARY_DIR={'type':'path','anchor':'owner_root','default':str(tmp_path / 'secondary')})
         app=fixture(tmp_path,fields=fields)
         app.context.owner_root=tmp_path
         viewer=Viewer(fail=failed)
@@ -223,7 +227,8 @@ def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_pat
             await pilot.pause()
             assert app.screen.kind=='allure'
             source=viewer.calls[0]
-            assert (source.storage is not None)==bucket
+            assert (source.storage is not None)==(bucket and not secondary)
+            assert source.local_root == tmp_path / ('secondary' if secondary else 'working')
             assert not app.test_run_active()
             if failed:
                 assert 'History unavailable' in str(app.screen.query_one('#error',Static).content)
@@ -478,4 +483,42 @@ def test_stale_or_unbound_details_cannot_open_a_different_run(tmp_path, monkeypa
             app._allure_budget_unavailable.add('one')
             await app.open_selected_allure()
             assert 'memory budget was reached' in notices[-1]
+    asyncio.run(scenario())
+
+
+def test_secondary_history_never_constructs_primary_client(tmp_path, monkeypatch):
+    from api_agent.testing import storage
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Secondary viewing contacted primary storage')
+    monkeypatch.setattr(storage, 'RunStorage', forbidden)
+    async def scenario():
+        app = fixture(tmp_path, fields={
+            'ALLURE_VIEW_SECONDARY': {'type': 'bool', 'default': True},
+            'ALLURE_SECONDARY_DIR': {'type': 'path', 'anchor': 'owner_root', 'default': str(tmp_path / 'secondary')},
+            'ALLURE_S3_BUCKET': {'type': 'str', 'default': 'unreachable'}})
+        app.allure_viewer = Viewer()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.show_allure_history()
+            source = app.allure_viewer.calls[0]
+            assert source.history() == []
+            assert source.storage is None
+            assert app.operation_status == 0
+            assert not (tmp_path / 'secondary').exists()
+            await app.close_allure()
+    asyncio.run(scenario())
+
+
+def test_secondary_toggle_remains_in_configuration_review(tmp_path):
+    from api_agent.config import load_shared_schema
+    async def scenario():
+        app = fixture(tmp_path)
+        app.schema = load_shared_schema()
+        app.session.schema = app.schema
+        app.session._provider_base_schema = app.schema
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.show_configuration()
+            await pilot.pause()
+            assert 'ALLURE_VIEW_SECONDARY' in {name for name, _ in app.configuration_rows()}
     asyncio.run(scenario())

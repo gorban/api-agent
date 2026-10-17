@@ -192,7 +192,8 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
         errors.extend(deferred_errors.get(name, ()))
     missing = tuple(name for name, declaration in schema.fields.items()
                     if name in active and (declaration.required or bool(declaration.required_when)
-                    and _matches(declaration.required_when, values)) and name not in raw)
+                    and _matches(declaration.required_when, values))
+                    and (name not in raw or declaration.type == 'path' and values.get(name) == ''))
     if not interactive:
         errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}' for name in missing)
     fields = {name: value for name, value in fields.items() if name in active}

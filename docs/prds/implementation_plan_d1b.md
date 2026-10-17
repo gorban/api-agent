@@ -11,6 +11,15 @@
 - [x] Support explicitly empty ALLURE_RESULTS_DIR by reading exact finalized S3 artifacts into owned temporary staging. Storage retrieval never starts LocalStack or an authentication flow merely to browse. SDK transport timeouts and shared operation budgets bound retrieval; cancellation drains owned work.
 - [x] Serve only the owned loopback socket, with Host validation and no directory listing. ALLURE_VIEWER_PORT defaults to 5252. An occupied port fails clearly without adoption, replacement or silent port changes. Ordinary generation is a snapshot; uploads do not silently replace a served report.
 
+## Secondary history source
+
+- [x] Add visible boolean ALLURE_VIEW_SECONDARY, default False, with normal configuration precedence. True renders finalized history exclusively from ALLURE_SECONDARY_DIR, with the same integrity checks and no S3 retrieval, authentication or LocalStack startup. False preserves working-results/S3 history discovery. Exact selected-test previews remain bound to their current attempt.
+- [x] Require a nonempty ALLURE_SECONDARY_DIR when the toggle is True in integration, E2E and Allure viewing modes. Collection-only and unrelated modes remain unaffected. Keep secondary-directory configuration visible in Allure mode too.
+- [x] Keep publication independent: integration/E2E still require primary S3 and always attempt an additional secondary copy whenever its directory is configured, with either viewing policy. Never mutate or republish history merely to view it.
+- [x] Verify configuration precedence/visibility, source isolation and missing/empty paths, publication independence, installed-package behavior and exact applicable coverage.
+
+- [ ] Human review toggle visibility and secondary-only browsing with a configured existing directory. No new inference is needed.
+
 ## CLI and browser
 
 - [x] Require an externally installed Allure 2 CLI available as `allure` on PATH in the launcher's environment. Check availability/version under bounded progress; report missing CLI, incompatible versions, Java startup failures and generation timeouts. Never silently install software. Recording/publication remains usable without this optional viewer dependency.

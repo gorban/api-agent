@@ -146,7 +146,8 @@ def test_saved_empty_destinations_are_acknowledged_and_suppress_startup_review(t
         app = tui_fixture(tmp_path)
         app.schema = replace(app.schema, fields={**app.schema.fields,
                             **{name: shared.fields[name] for name in names},
-                            'COLLECT_ONLY': shared.fields['COLLECT_ONLY']})
+                            'COLLECT_ONLY': shared.fields['COLLECT_ONLY'],
+                            'ALLURE_VIEW_SECONDARY': shared.fields['ALLURE_VIEW_SECONDARY']})
         app.session.schema = app.schema
         app.context.anchors['owner_root'] = tmp_path
         async with app.run_test(size=(100, 35)) as pilot:
@@ -165,6 +166,7 @@ def test_saved_empty_destinations_are_acknowledged_and_suppress_startup_review(t
                 await pilot.pause()
                 assert app.session.result(_review=True).values[name] == ''
                 assert app.session.result(_review=True).fields[name].explicit
+            app.session.set_value('ALLURE_VIEW_SECONDARY', 'False', persist=True)
             assert not app.configuration_pending()
             await pilot.press('c')
             await pilot.pause()
@@ -180,3 +182,21 @@ def test_saved_empty_destinations_are_acknowledged_and_suppress_startup_review(t
             for name in names[1:]:
                 assert relaunched.session.result(_review=True).values[name] == ''
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('view_secondary', [False, True])
+def test_secondary_copy_publication_is_independent_of_viewing_policy(tmp_path, monkeypatch, view_secondary):
+    context, test, config = recording_fixture(tmp_path)
+    secondary = tmp_path / 'copies'
+    config.update(ALLURE_VIEW_SECONDARY=view_secondary, ALLURE_SECONDARY_DIR=secondary)
+    s3 = FakeS3()
+    constructor = recorded.RunStorage
+    monkeypatch.setattr(recorded, 'RunStorage', lambda *args, **kwargs: constructor(*args, client=s3, **kwargs))
+
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True, runner=fake_runner())
+
+    assert result.exit_code == 0 and result.persisted
+    assert s3.objects
+    copies = tuple(secondary.glob('*/*/manifest.json'))
+    assert len(copies) == 1
+    assert copies[0].read_bytes() == (result.directory / 'manifest.json').read_bytes()
