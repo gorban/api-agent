@@ -2232,8 +2232,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
     async def stop_tests_to_menu(self, accepted):
         if not accepted:
             return
-        await self.test_run.stop_and_wait()
-        self.operation_status = 130
+        if self.test_run_active():
+            await self.test_run.stop_and_wait()
+            self.operation_status = 130
         if await self.end_inspection(force=True):
             self.show_menu()
 
@@ -2251,14 +2252,14 @@ class ApiAgentApp(AllureNavigation, App[int]):
             if await self.close_allure():
                 self.show_menu()
             return
-        if self.inspection_cleanup_active() and not self.test_run_active():
-            duties = []
-            if self.inspections.active:
-                duties.append("end browser inspection")
-            if self.recording_cleanup is not None:
-                duties.append("finish pending cleanup")
-            if self.allure_viewer is not None:
-                duties.append("close Allure")
+        duties = []
+        if self.inspections.active:
+            duties.append("end browser inspection")
+        if self.recording_cleanup is not None:
+            duties.append("finish pending cleanup")
+        if self.allure_viewer is not None:
+            duties.append("close Allure")
+        if duties and not self.test_run_active():
             action = ", ".join(duties)
             action = action[0].upper() + action[1:]
             self.push_screen(QuitDialog(action + " and return to the menu? Enter literal y to confirm; every other response cancels."),

@@ -198,7 +198,7 @@ def test_unmount_drains_active_tests_before_inspection_cleanup(tmp_path):
 def test_stopped_tests_do_not_navigate_away_from_pending_inspection(tmp_path):
     async def run():
         app = fixture(tmp_path)
-        app.test_run = SimpleNamespace(stop_and_wait=AsyncMock())
+        app.test_run = SimpleNamespace(active=True, stop_and_wait=AsyncMock())
         app.end_inspection = AsyncMock(return_value=False)
         app.show_menu = Mock()
         await app.stop_tests_to_menu(True)
