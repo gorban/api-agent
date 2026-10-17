@@ -9,7 +9,9 @@ Allure Categories classifies defect outcomes; an all-passing selected launch can
 - [x] Declare explicit pytest `feature("Readable capability")` markers on every existing base and included-provider integration test. Support module/class/function inheritance and multiple features. Each marker requires exactly one bounded, nonempty printable string and no keyword arguments. Preserve ordinary tag selection and parameterized identities.
 - [x] Collect values without executing tests or authenticating. Carry features on immutable TestIdentity into frozen previews/final Allure. Apply credential scrubbing to labels; preserve history IDs, attempt exclusions, statuses and suite labels. Legacy contributions without metadata remain readable until the separately planned static gate. Do not infer features from filenames.
 - [x] Verify native generated Behaviors for passed/failed tests, empty Categories for an all-passing launch and default defect groups for failed/broken outcomes. Preserve historical immutable artifacts. Changed test-source fingerprints require compatible new token history; do not relabel old accounting from current source.
-- [ ] Verify inherited/parameterized/provider collection, malformed markers, safe emission, stable grouping and applicable exact coverage, wheel/installed/native output and independent review.
+- [x] Verify inherited/parameterized/provider collection, malformed markers, safe emission, stable grouping and applicable exact coverage, wheel/installed/native output and independent review.
+
+- [ ] Human review feature navigation in a new report, including empty Categories when all tests pass. E2E execution and static enforcement retain their separate gates.
 
 ## Later staged and CI enforcement
 
