@@ -18,6 +18,7 @@
 
 ## Live memory and read boundary
 
+- [ ] Deliver the [attached-agent diagnostics contract](implementation_plan_b1c4.md) over this same journal: DEBUG connection discovery, compact hierarchy/attempt/timing/cost events and bounded selective details, before richer inspector presentation.
 - [ ] Reuse the managed loopback viewer server and original Playwright lifecycle. Local runs keep a bounded per-session memory journal and reducer, with independent event/byte/depth/value/session/client limits. Do not add an unbounded live database. On shutdown close streams and dispose owned resources; retention after shutdown requires a separately selected persisted artifact.
 - [ ] Expose an atomic snapshot/watermark, bounded cursor-based JSON reads and one-way SSE updates. Include process generation, earliest/latest sequence, terminal state and completeness. Deduplicate identical events; reject conflicting IDs, graph/session mismatches and invalid terminal regressions. Snapshot-to-subscription races, eviction, restart and slow-client backpressure produce explicit gaps/resnapshot, never an apparently continuous route.
 - [ ] Apply strict Host/origin checks, loopback binding and ephemeral session authorization appropriate to sensitive local evidence; no permissive CORS, capability in URLs/logs or arbitrary source/path/network fetches. Bound downloads, decode/decompression and render work before allocation. Read operations cannot execute graphs, authenticate, approve mutations, change config or initiate inference.

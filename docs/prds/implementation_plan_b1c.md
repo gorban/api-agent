@@ -9,8 +9,9 @@ Extend the same managed viewer late in application delivery, before final profil
 1. [ ] Reserve stable graph/node/edge and execution identity seams during graph/application implementation. Add origin-side transitions and invocation/call attribution before depending on new replay evidence; older incomplete records stay visibly partial. This early seam is not an early commitment to build the inspector UI.
 2. [ ] Implement the [execution evidence and delivery contract](implementation_plan_b1c1.md): one versioned, scrubbed observation model/reducer consumed from finalized E2E artifacts and bounded local-run memory. Reuse accounting identities; do not put input/output payloads into accounting records.
    Freeze [document hashes, Git provenance and historical source lookup](implementation_plan_b1c3.md) alongside capture, including explicit uncommitted-source handling.
-3. [ ] Implement [historical comparison, replay and diagnostic navigation](implementation_plan_b1c2.md) through the existing server/browser. Definition, Recorded execution and Live run modes share the same selected graph and detail projections.
-4. [ ] Review deterministic replay, actual managed-browser lifecycle, privacy/bounds and evidence integrity independently, then obtain human acceptance of history comparisons, turn/visit navigation and live following. These are new gates, independent of initial static viewer acceptance.
+3. [ ] First deliver [compact live diagnostics for attached agents](implementation_plan_b1c4.md): a printed DEBUG connection address, summary-first JSON/SSE and bounded per-invocation detail from the same in-process evidence.
+4. [ ] Implement [historical comparison, replay and diagnostic navigation](implementation_plan_b1c2.md) through the existing server/browser. Definition, Recorded execution and Live run modes share the same selected graph and detail projections.
+5. [ ] Review deterministic replay, actual managed-browser lifecycle, privacy/bounds and evidence integrity independently, then obtain human acceptance of history comparisons, turn/visit navigation and live following. These are new gates, independent of initial static viewer acceptance.
 
 ## Design choices
 

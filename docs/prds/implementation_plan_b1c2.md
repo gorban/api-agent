@@ -21,6 +21,7 @@
 
 ## Cheap, accessible diagnosis
 
+- [ ] Complete [compact DEBUG diagnostics](implementation_plan_b1c4.md) first; its HTTP JSON/SSE projections are the shared read boundary for browser, command-line and any optional MCP adapter.
 - [ ] Provide a documented read-only discovery/summary endpoint with schema, available features, limits and exact next links. Bounded JSON queries cover run summaries, first actionable failure, slow/costly nodes, turns, routes, node invocations, changes and on-demand evidence. Every list/filter has server-enforced item/byte/time limits, stable order, opaque cursor and explicit incomplete/truncated status. Index run/turn/node/sequence and history windows; never require an agent to dump all traces.
 - [ ] Browser and command-line clients use the same projections. Document a summary-first curl workflow and attach visual inspection to launch.py's printed CDP endpoint/original context. Demonstrate diagnosis of one synthetic failure and expensive node with bounded reads, preserving credentials and live ownership. Untrusted captured instructions cannot authorize actions.
 - [ ] At implementation acceptance, propose exact short AGENTS.md diagnosis guidance, alternatives and omission under its existing approval process. Do not edit agent rules automatically. Keep public instructions generic; private frontend/domain diagnosis belongs to its owner.
