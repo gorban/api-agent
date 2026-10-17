@@ -209,3 +209,31 @@ prompt through the actual agent endpoints using the configured LLM connection.
 Large unit selections are transferred to pytest through an operation-owned
 temporary selection file, so parameterized test IDs do not exhaust OS command
 argument limits. Positional selection and per-owner execution remain unchanged.
+
+### Selected UI-session checks
+
+To review the selected UI provider without an LLM request:
+
+```bash
+./launch.py --debug --tui-mode integration \
+  api-agent::tests/integration/test_ui_provider_session.py
+```
+
+The included Studio provider is anonymous. Other selected providers may prepare
+login using their declared roles and the selected unattended index. The test
+launches the normal provider process and hands back its original managed session;
+ordinary LLM discovery still opens no frontend. Integration listeners use isolated
+loopback ports, preserving the configured scheme/host and saved settings.
+
+Studio also contributes `test_studio_session.py::test_studio_theme`, which changes
+Appearance without inference. DEBUG retains original browsers and their hosts
+after reports complete, including parallel workers. Use the launcher's existing
+end-inspection control to release them before starting another suite.
+
+With `--log-content=True`, these prepared-session tests attach original viewport
+PNGs through the usual Allure publication and secondary copy. A trusted provider
+must supply credential masking; unsafe or unsupported capture reports unavailable
+evidence. Content disabled performs no browser capture. Authentication-provider
+browsers and the existing one-prompt Studio request test retain their separate
+evidence/lifecycle tasks. These checks do not implement Run local or application
+E2E, and no inference is needed for this review.

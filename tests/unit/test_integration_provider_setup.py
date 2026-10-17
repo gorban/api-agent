@@ -357,6 +357,8 @@ def test_pack_requirement_marker_registered_for_worker():
     from unittest.mock import call
     assert config.addinivalue_line.call_args_list == [
         call("markers", "requires_pack_api: selected integration requires pack API/identity preflight"),
+        call("markers", "requires_ui_session: selected integration consumes the UI provider"),
+        call("markers", "requires_llm: UI integration also consumes the LLM provider"),
     ]
 
 

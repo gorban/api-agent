@@ -23,9 +23,9 @@ def registry(monkeypatch):
 
 @pytest.mark.parametrize('error', [None, RuntimeError('ordinary failure')])
 def test_noncredential_reports_are_not_reformatted(error):
-    report = SimpleNamespace(longrepr=object())
+    report = SimpleNamespace(longrepr=object(), when="call", passed=False)
     original = report.longrepr
-    hook = p.pytest_runtest_makereport(None,
+    hook = p.pytest_runtest_makereport(SimpleNamespace(),
         SimpleNamespace(excinfo=None if error is None else SimpleNamespace(value=error)))
     next(hook)
     with pytest.raises(StopIteration) as finished:

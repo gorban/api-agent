@@ -19,6 +19,10 @@ The checklist below covers remaining providers, request-time/local/E2E consumers
 
 ## Checklist
 
+[Test-owned UI evidence](implementation_plan_a4a.md) delivers a bounded first
+consumer. Provider-authentication browsers and full application E2E retain the
+broader requirements below.
+
 - [ ] Resolve required credential roles/index and browser readiness for integration/E2E execution, then initialize LLM authentication lazily at the first authenticated provider call. Use [approved session contracts](../architecture/provider_architecture.md) and [credential helpers](implementation_plan_a2.md). Empty/missing profiles retain attended access. Unit/help/collection do not authenticate; local-run uses its own runtime, not test preflight. Neither profile selection nor automatic login supplies execution acceptance. Ordinary integration retains interactive Start unless START=True/E2E is supplied; explicit integration DEBUG is the documented terminal-free exception, and E2E retains its acceptance screen unless explicit START=E2E accepts it.
 - [ ] Before implementing a provider/pack live login flow, walk its pages with the user through Playwright MCP in that owner's workspace. Record its locators, redirects, challenge branches and completion checks there. Public core implements generic credential/evidence/lifetime utilities using controlled synthetic pages; do not derive public implementation from private login pages.
   - [ ] Exercise optional unattended LLM authentication through its lazy shared session/getter. For every E2E attempt, create a separate worker-owned UI browser and call the pack hook (or normalized no-op) before yielding that exact session/context/updated page to the test. Hook failures fail that attempt before its body. UI cookies and shared LLM state remain separate.

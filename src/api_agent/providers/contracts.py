@@ -169,6 +169,7 @@ OPERATION_METHODS = {
     "api": {"invoke": "ainvoke"},
     "access": {"describe": "adescribe", "usage": "aread_usage"},
     "llm": {"describe": "adescribe", "complete": "acomplete", "stream": "astream", "usage": "aread_usage"},
-    "ui": {"launch": "astart"},
+    "ui": {"launch": "astart", "prepare_session": "aprepare_session",
+           "capture_evidence": "acapture_evidence"},
     "upstream": {"validate": "avalidate"},
 }

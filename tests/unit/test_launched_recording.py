@@ -167,7 +167,8 @@ def test_requirement_validation_precedes_owner_acquisition(tmp_path, monkeypatch
 def test_default_owner_uses_single_validated_requirement_plan(tmp_path, monkeypatch, requires_api):
     context, test, config = fixture(tmp_path)
     context.pack_root = context.owner_root
-    plan = SimpleNamespace(validate=Mock(), requires_pack_api=requires_api)
+    plan = SimpleNamespace(validate=Mock(), requires_pack_api=requires_api,
+        provider_kinds=frozenset({'llm','api','upstream','access'} if requires_api else {'llm'}))
     planner, factory = Mock(return_value=plan), Mock(return_value=owner([]))
     monkeypatch.setattr(launched, 'plan_integration_requirements', planner)
     monkeypatch.setattr(launched, 'local_recording_prerequisites', factory)

@@ -99,8 +99,8 @@ def test_unattended_failure_guidance_uses_launch_index_source(tmp_path, monkeypa
             with pytest.raises(UnattendedCredentialError) as caught:
                 worker.loop.run_until_complete(worker._credentials(0)(0, 'username'))
             from api_agent.testing.provider_setup import pytest_runtest_makereport
-            report = SimpleNamespace(longrepr=''.join(format_exception(caught.value)))
-            hook = pytest_runtest_makereport(None, SimpleNamespace(excinfo=SimpleNamespace(value=caught.value)))
+            report = SimpleNamespace(longrepr=''.join(format_exception(caught.value)), when='call', passed=False)
+            hook = pytest_runtest_makereport(SimpleNamespace(), SimpleNamespace(excinfo=SimpleNamespace(value=caught.value)))
             next(hook)
             with pytest.raises(StopIteration) as finished:
                 hook.send(report)
@@ -279,4 +279,22 @@ def test_empty_summary_is_explicit_failure(tmp_path):
             await pilot.pause(.1)
             assert 'FAIL' in str(app.screen.query_one('#body', Static).render())
             assert '(0.00%)' in str(app.screen.query_one('#body', Static).render())
+    asyncio.run(scenario())
+
+
+def test_selected_ui_intent_reports_missing_configuration_before_execution(tmp_path):
+    test=TestIdentity('base::t.py::test_ui','base','t.py','t.py::test_ui',frozenset({'requires_ui_session'}))
+    async def scenario():
+        app=fixture(tmp_path,'integration',collector=lambda *args:[test],fields={
+            'UI_REQUIRED':{'type':'str','required':True,'acknowledge_default':False,
+                'applies_when':{'operation':'ui_session'}}})
+        app.integration_runner=Mock(side_effect=AssertionError('must not execute without UI configuration'))
+        async with app.run_test(size=(110,40)) as pilot:
+            await pilot.pause(.2)
+            assert app.screen.kind=='tests'
+            await pilot.press('s')
+            await pilot.pause(.3)
+            assert app.screen.kind=='error'
+            assert 'Missing required configuration: UI_REQUIRED' in str(app.screen.body)
+            app.integration_runner.assert_not_called()
     asyncio.run(scenario())

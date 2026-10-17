@@ -276,3 +276,51 @@ def test_composition_redacts_ephemeral_access_capability_with_content_enabled(tm
     assert exported['message'] == 'visible content [REDACTED]'
     assert token not in json.dumps(exported)
     asyncio.run(runtime.aclose())
+
+
+def test_owned_parent_writer_closes_once_even_after_child_already_exited():
+    from unittest.mock import Mock
+    async def run():
+        child = Child()
+        child.code = 0
+        child.stdin = SimpleNamespace(close=Mock())
+        owned = process.OwnedStudioProcess(child)
+        await owned.aclose()
+        await owned.aclose()
+        child.stdin.close.assert_called_once()
+        assert child.terminations == child.kills == 0
+    asyncio.run(run())
+
+
+def test_writer_close_failure_retains_owner_and_retries_before_signalling():
+    from unittest.mock import Mock
+    async def run():
+        child = Child()
+        child.stdin = SimpleNamespace(close=Mock(side_effect=[OSError('controlled pipe close'), None]))
+        owned = process.OwnedStudioProcess(child)
+        with pytest.raises(CleanupPendingError) as pending:
+            await owned.aclose()
+        assert child.terminations == child.kills == 0
+        await pending.value.retry()
+        assert child.stdin.close.call_count == 2
+        assert child.terminations == 1
+        await owned.aclose()
+        assert child.stdin.close.call_count == 2
+    asyncio.run(run())
+
+
+def test_actual_node_parent_pipe_eof_stops_listener_without_signal():
+    async def run():
+        selected_port = port()
+        owned = await launcher().start((shutil.which('node'), str(app_directory() / 'launch.mjs')),
+            cwd=app_directory(), host='127.0.0.1', port=selected_port, scheme='http',
+            env={'UI_LISTENER_URL': f'http://127.0.0.1:{selected_port}'})
+        try:
+            assert owned.process.poll() is None
+            owned.process.stdin.close()
+            await owned._wait(3)
+            assert owned.process.returncode == 0
+        finally:
+            await owned.aclose()
+        assert not owned._terminated and not owned._killed
+    asyncio.run(run())

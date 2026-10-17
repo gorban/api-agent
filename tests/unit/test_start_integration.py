@@ -21,7 +21,7 @@ def test_terminal_start_or_debug_dispatches_recorded_integration(activation, val
     dotenv = {activation: value} if source == 'dotenv' else {}
     if source == 'cli':
         args.append('--' + activation.lower() + '=' + value)
-    selected = [object()]
+    selected = [SimpleNamespace(tags=frozenset())]
     def execute(context, tests, config, **options):
         assert tests is selected and config['START'] == (value if activation == 'START' else 'False')
         assert config['DEBUG'] is (activation == 'DEBUG') and config['NO_STD_IN']
@@ -77,3 +77,31 @@ def test_rejection_describes_only_the_selected_mode(mode, debug):
         assert main(args, base_root=ROOT) == 2
     assert stderr.getvalue() == 'Configuration error: ' + expected + '\n'
     prepare.assert_not_called()
+
+
+@pytest.mark.parametrize('provided',[True,False])
+def test_terminal_ui_intent_uses_declared_sources_and_rejects_missing_fields(tmp_path,provided):
+    provider=tmp_path/'ui.py'
+    provider.write_text('raise AssertionError("configuration discovery must not load a provider")\n')
+    cfg=tmp_path/'cfg'
+    cfg.mkdir()
+    (cfg/'config.toml').write_text('version=1\n[fields.UI_REQUIRED]\ntype="str"\nrequired=true\nacknowledge_default=false\n[fields.UI_REQUIRED.applies_when]\noperation="ui_session"\n')
+    args=['--tui-mode=integration','--no-std-in','--start','--allure-s3-bucket=synthetic',
+        '--ui-provider='+str(provider)+':create']
+    if provided:args.append('--ui-required=ready')
+    selected=[SimpleNamespace(tags=frozenset({'requires_ui_session'}))]
+    output,error=StringIO(),StringIO()
+    def execute(context,tests,config,**options):
+        assert config['TUI_MODE']=='integration' and config['UI_REQUIRED']=='ready'
+        return SimpleNamespace(exit_code=0)
+    with patch.dict('os.environ',{},clear=True),patch('sys.stdout',output),patch('sys.stderr',error), \
+         patch('api_agent.config.read_dotenv',return_value={}),patch('api_agent.config.dotenv.read_dotenv',return_value={}), \
+         patch('api_agent.runtime.worktrees.verify_worktrees'),patch('api_agent.runtime.dependencies.ensure_environment',return_value=None), \
+         patch('api_agent.testing.collection.collect_tests',return_value=selected), \
+         patch('api_agent.testing.launched.run_launched_integration',side_effect=execute) as run:
+        status=main(args,base_root=ROOT)
+    if provided:
+        assert status==0 and run.call_count==1
+    else:
+        assert status!=0 and run.call_count==0
+        assert 'Missing required configuration: UI_REQUIRED' in error.getvalue()

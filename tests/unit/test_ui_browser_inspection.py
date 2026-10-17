@@ -124,3 +124,65 @@ def test_shared_end_inspection_retains_native_work_and_complete_loop_shutdown(tm
         if not loop.is_closed():
             loop.run_until_complete(owner.dispose_inspection())
             loop.close()
+
+
+def test_failed_browser_transfer_retains_loop_host_and_retry(tmp_path,monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    retained=[]
+    monkeypatch.setattr(provider_setup,'_inspection_providers',retained)
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(tmp_path/'events'))
+    order=[]
+    async def transfer():
+        order.append('transfer')
+        if order.count('transfer')==1:
+            raise CleanupPendingError((),transfer)
+    browser=SimpleNamespace(aclose=transfer)
+    async def inspect():order.append('inspection')
+    async def close_host():order.append('host')
+    host=SimpleNamespace(aclose=close_host)
+    inspector=SimpleNamespace(sessions=[SimpleNamespace(inspection_endpoint=None)],aclose=inspect)
+    loop=asyncio.new_event_loop()
+    owner=provider_setup.finish_ui_browser_inspection(loop,inspector,owners=(host,),transfers=(browser,))
+    assert retained==[owner] and not loop.is_closed()
+    with pytest.raises(CleanupPendingError):loop.run_until_complete(owner.dispose_inspection())
+    assert order==['transfer'] and owner._transfers==[browser]
+    loop.run_until_complete(owner.dispose_inspection())
+    assert order==['transfer','transfer','inspection','host']
+    loop.close()
+
+
+def test_no_browser_cleanup_failure_is_manifested_and_keeps_loop(tmp_path,monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    retained=[]
+    monkeypatch.setattr(provider_setup,'_inspection_providers',retained)
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(tmp_path/'events'))
+    host=SimpleNamespace(aclose=AsyncMock(side_effect=[RuntimeError('controlled'),None]))
+    loop=asyncio.new_event_loop()
+    with pytest.raises(RuntimeError):
+        provider_setup.finish_ui_browser_inspection(loop,None,owners=(host,))
+    assert len(retained)==1 and not loop.is_closed()
+    assert provider_setup.retained_inspection_manifest()==('',)
+    events=[]
+    provider_setup.serve_inspections(lambda **event:events.append(event))
+    assert loop.is_closed()
+    assert [x['kind'] for x in events]==['inspection_open','inspection_closed']
+
+
+def test_standalone_cleanup_returns_original_retry_receipt(monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    retained = []
+    monkeypatch.setattr(provider_setup, '_inspection_providers', retained)
+    monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
+    host = SimpleNamespace(aclose=AsyncMock())
+    pending = CleanupPendingError((host,), host.aclose)
+    host.aclose.side_effect = [pending, None]
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(CleanupPendingError) as caught:
+            provider_setup.finish_ui_browser_inspection(loop, None, owners=(host,))
+        assert caught.value is pending and caught.value.owners == (host,)
+        assert not loop.is_closed() and retained == []
+        loop.run_until_complete(caught.value.retry())
+        assert host.aclose.await_count == 2
+    finally:
+        loop.close()

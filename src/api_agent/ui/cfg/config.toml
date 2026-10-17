@@ -7,7 +7,7 @@ required = true
 default = "https://localhost:9443"
 help = "Loopback origin for the included Studio frontend."
 [fields.UI_LISTENER_URL.applies_when]
-any = [{TUI_MODE = "e2e"}, {TUI_MODE = "run-local", RUN_UI = true}]
+any = [{TUI_MODE = "e2e"}, {TUI_MODE = "run-local", RUN_UI = true}, {operation = "ui_session"}]
 COLLECT_ONLY = false
 
 [fields.UI_SOURCE_DIR]

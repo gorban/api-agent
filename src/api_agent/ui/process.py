@@ -20,6 +20,7 @@ class OwnedStudioProcess:
         self._closing = None
         self._terminated = False
         self._killed = False
+        self._stdin_closed = False
 
     async def _wait(self, timeout):
         async with asyncio.timeout(timeout):
@@ -29,6 +30,11 @@ class OwnedStudioProcess:
     async def _stop(self):
         try:
             async with component_timeout('Studio process cleanup', self.timeout):
+                if not self._stdin_closed:
+                    writer = getattr(self.process, 'stdin', None)
+                    if writer is not None:
+                        writer.close()
+                    self._stdin_closed = True
                 if self.process.poll() is None:
                     if not self._terminated:
                         self.process.terminate()
@@ -69,13 +75,14 @@ class StudioProcesses:
         if scheme not in ('http', 'https') or type(port) is not int or not 1 <= port <= 65535:
             raise ValueError('Invalid Studio process listener')
         token = token_urlsafe(32)
-        environment = dict(env, API_AGENT_UI_LAUNCH_TOKEN=token)
+        environment = dict(env, API_AGENT_UI_LAUNCH_TOKEN=token,
+                           API_AGENT_UI_PARENT_LIVENESS='stdin-v1')
         process = None
         try:
             async with component_timeout('Studio process launch', self.timeout):
                 # Popen completes ownership transfer before the next cancellation point.
                 try:
-                    child = subprocess.Popen(argv, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                    child = subprocess.Popen(argv, cwd=cwd, env=environment, stdin=subprocess.PIPE,
                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                              start_new_session=True)
                 except OSError:

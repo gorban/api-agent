@@ -2,6 +2,15 @@
 
 [Owning requirements](implementation_plan_b2b1.md).
 
+## Qualification after prepared UI-session delivery
+
+- [ ] Before the next native workflow coverage acceptance, qualify the changed
+  source bindings with a fresh authorized pilot and independent receipt review.
+  Shared role-credential retrieval is now a separately bound source. The prior
+  packaged measurements/fingerprints remain immutable; changed inputs reject
+  before inference. UI-only checks make no inference and cannot renew this gate.
+  Preserve the separate provider-cache failure and all earlier valid evidence.
+
 ## Historical pilot
 
 The initial successful pilot measured 20 contiguous graphs with the selected GPT model, Responses subscription access, medium cache policy and a 60-second LLM timeout. All first-component nodes succeeded 20 times and all second-component nodes 14 times; routes were 2 next_a, 12 next_b and 6 skip. Recomputed bounds justified a cap of 16. These are historical observed settings, not evidence that the pilot ran under the later 120-second timeout or changed transport behavior.
@@ -54,9 +63,9 @@ A fresh 20-graph qualification used the repaired schema-position source with the
 
 The approved four-run safety margin gives cap 20 and bound 0.00007880854309967764. The original signed measurement remains immutable; a separately reviewed unsigned report derives these policy fields from the same records. Reporting-only sampler/evidence changes leave all 32 request-source/asset bindings unchanged. Coverage still stops on complete node coverage. The current source gate passes 6,962 units and 27 subtests with exact coverage of 18,825 statements and 7,092 branches. Joined application verification, final artifact/index audit and coordinated integration remain separate; the prior provider-cache failure stays unresolved.
 
-## Current combined runtime qualification
+## Prior combined runtime qualification
 
-The combined configuration, provider and workflow runtime received its own fresh 20-graph qualification at the same subscription Responses profile, omitted cache policy and 120-second LLM timeout. All graphs succeeded in 53 calls: routes were 4 next_a, 11 next_b and 5 skip; first-component nodes had 20 hits and second-component nodes 15. All 32 request-source/asset bindings match this runtime, including its strict request-schema repair. The earlier source qualification is not reused for changed code.
+The combined configuration, provider and workflow runtime received its own fresh 20-graph qualification at the same subscription Responses profile, omitted cache policy and 120-second LLM timeout. All graphs succeeded in 53 calls: routes were 4 next_a, 11 next_b and 5 skip; first-component nodes had 20 hits and second-component nodes 15. At that checkpoint all 32 request-source/asset bindings matched the qualified runtime, including its strict request-schema repair. The current source has changed and requires the fresh qualification noted above. The earlier source qualification is not reused for changed code.
 
 Independent receipt, distinct graph scopes, fingerprint and exact probability checks approve minimum 13 plus the four-run margin: packaged cap 17, with missing-node bound 0.00008371852331830907. Cap 12 fails the statistical target; 13 meets it before headroom. Original signed measurements stay immutable. Coverage retains immediate all-node stopping. Combined verification passes 7,752 units and 27 subtests with exact coverage of 20,154 statements and 7,562 branches. Installed-package loading from an unrelated working directory matches all 32 bindings and the reviewed cap. The complete intended index/neutral metadata audit and selected native publication pass. Human acceptance remains open; the retained provider-cache failure is unresolved and no complete live-suite pass is claimed.
 

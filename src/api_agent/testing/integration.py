@@ -90,6 +90,8 @@ code = pytest.main(sys.argv[2:], plugins=[events])
 events.send(kind='run_complete', exit_code=int(code))
 from api_agent.testing.provider_setup import serve_inspections
 serve_inspections(events.send)
+from api_agent.testing.ui_inspection import finish_parallel_inspections
+finish_parallel_inspections(events.send)
 sys.exit(code)
 '''
 
@@ -280,7 +282,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
                     break
-                if config is not None and backend is None:
+                if config is not None and backend is None and plan_integration_requirements(tests).requires_llm:
                     stage = 'Integration shared setup backend startup'
                     from .setup_backend import SetupBackend
                     backend = SetupBackend(config, context.owner_root,
@@ -304,7 +306,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
                     env['API_AGENT_COMPONENT_EVENTS'] = str(event_file)
-                    args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
+                    args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.ui_inspection', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
                     if config is not None and config.get('DEBUG'):
                         args.append('-s')
                     if parallel_jobs:
@@ -397,7 +399,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         inspection_ready = True
                                         emit(RunnerEvent('inspection_open', repo, text=row.get('endpoint', '')))
                                         continue
-                                    if row['kind'] in {'inspection_closed', 'inspection_cleanup_pending'}:
+                                    if row['kind'] in {'inspection_closed', 'inspection_cleanup_pending', 'inspection_lost'}:
                                         emit(RunnerEvent(row['kind'], repo))
                                         continue
                                     identity = selected.get(row['node'])
@@ -411,6 +413,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         emit(RunnerEvent('inference_usage', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'inference_content':
                                         emit(RunnerEvent('inference_content', repo, identity, text=json.dumps(row['data'])))
+                                    elif row['kind'] == 'browser_attachment' and (config or {}).get('LOG_CONTENT') is True:
+                                        from .browser_attachments import read_attachment
+                                        try:
+                                            attachment = read_attachment(row['data'], event_file.parent)
+                                        except (OSError, ValueError, TypeError):
+                                            continue
+                                        emit(RunnerEvent('browser_attachment', repo, identity, attachment=attachment))
                                     elif row['kind'] == 'workflow_evidence':
                                         emit(RunnerEvent('workflow_evidence', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'component_progress':

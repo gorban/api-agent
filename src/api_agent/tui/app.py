@@ -1556,12 +1556,16 @@ class ApiAgentApp(App[int]):
                 raise ValueError("No selected tests remain after recollection")
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
             self.show_unit_results(self.unit_progress())
-            resolved = self.session.result()
+            from api_agent.testing.requirements import plan_integration_requirements
+            plan = plan_integration_requirements(self.selection.selected_tests)
+            resolved = self.session.result(operation_intents=('ui_session',) if plan.requires_ui_session else ())
+            resolved.raise_for_errors()
+            if resolved.missing:
+                raise ValueError('Missing required configuration: ' + ', '.join(resolved.missing))
             active = dict(resolved.values)
             from api_agent.telemetry.privacy import ContentPolicy
             content_policy = ContentPolicy.from_config(resolved)
-            from api_agent.testing.requirements import plan_integration_requirements
-            if plan_integration_requirements(self.selection.selected_tests).requires_pack_api and not self.check_operation_start():
+            if plan.requires_pack_api and not self.check_operation_start():
                 return
             if not self.integration_unattended:
                 active['UNATTENDED_USER_INDEX'] = None

@@ -48,6 +48,14 @@ BrowserSession holds browser, context and current page. `BrowserOwner.prepare` i
 
 ## Deadlines, failures and streams
 
+The selected UI consumer uses [prepared sessions](../prds/implementation_plan_i2c1.md):
+optional `prepare_session` advertises async `aprepare_session(*, session,
+user_index, credentials) -> None`. Omission is anonymous readiness. Preparation
+keeps the original browser/context and may select another live page in that
+context. Optional `capture_evidence` and its trusted original-pixel safety policy
+are defined in [UI evidence](../prds/implementation_plan_a4a.md). Core never
+invokes an additional legacy authentication hook alongside preparation.
+
 `OperationContext(correlation_id, deadline)` is immutable with an optional absolute monotonic deadline. Pass the same context through authentication, getter calls, operation work and stream iteration; retries never receive a fresh overall budget. Cleanup uses a separate bounded wait. Scheduled work at an expired deadline is conservatively possibly_executed; a fresh unscheduled coroutine is not_started.
 
 OperationalError has a safe kind, execution disposition and optional retry delay. Kinds are authentication, authorization, unavailable, rate_limited, unsupported, invalid_request, deadline and unknown. Execution is not_started/possibly_executed/completed. Unknown failures are sanitized and possibly_executed. Retry authority belongs to the operation consumer; these owners perform no automatic inference or mutation retries.

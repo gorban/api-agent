@@ -235,6 +235,11 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 usage_output(starting_usage_line(usage.report()))
 
         def event(row):
+            if row.kind == 'browser_attachment':
+                if config.get('LOG_CONTENT') is not True:
+                    return
+                if row.attachment is not None:
+                    content.setdefault(row.identity.id, []).append(row.attachment)
             if row.kind == 'workflow_evidence':
                 from api_agent.workflows.evidence import attachment
                 frozen = attachment(row, evidence_boundary)

@@ -7,6 +7,10 @@ readiness. They do not claim Run local, authenticated UI preparation or E2E is
 implemented. Use existing RUN_UI, DEBUG, E2E_DEBUG and UNATTENDED_USER_INDEX;
 do not add a second UI-enable or authentication-mode switch.
 
+The bounded [prepared integration checkpoint](implementation_plan_i2c1.md)
+owns the first selected-provider consumer, isolated test listeners and optional
+preparation. Run local and application E2E remain separate consumers below.
+
 ## Activation and visibility
 
 | Operation | UI provider and browser | Authentication at startup |
@@ -30,7 +34,7 @@ or uses the approved bounded visible handoff, never a silent account fallback.
 
 ## Provider-owned preparation and handoff
 
-- [ ] Freeze and validate an optional versioned UI-session preparation capability
+- [x] Freeze and validate an optional versioned UI-session preparation capability
   before consumers depend on it. The selected UI provider owns its Playwright
   login/navigation component, page recognition and success criteria. Core owns
   browser allocation, supervision, credentials, timing and cleanup. Bridge an

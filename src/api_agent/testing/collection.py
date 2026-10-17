@@ -41,6 +41,8 @@ except ImportError:
 class Collector:
     def pytest_configure(self, config):
         config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
+        config.addinivalue_line("markers", "requires_ui_session: selected integration consumes the UI provider")
+        config.addinivalue_line("markers", "requires_llm: UI integration also consumes the LLM provider")
 
     def pytest_collection_finish(self, session):
         rows = [{"node_id": item.nodeid, "tags": sorted({mark.name for mark in item.iter_markers()})} for item in session.items]
