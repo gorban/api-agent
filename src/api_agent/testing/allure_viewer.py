@@ -130,7 +130,9 @@ class _Handler(SimpleHTTPRequestHandler):
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    # POSIX reuse permits rebinding after closed HTTP connections (TIME_WAIT),
+    # without allowing adoption of an active listener. Keep Windows exclusive.
+    allow_reuse_address = os.name == 'posix'
 
 
 class ManagedAllureViewer:
