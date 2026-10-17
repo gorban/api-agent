@@ -12,7 +12,7 @@ from textual.widgets import Button, DataTable, Input, Select, Static
 
 
 def fixture(tmp_path, mode=None, fields=None, collector=None, argv=()):
-    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, pack_id="fixture",
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path, pack_id="fixture",
                               dotenv_path=tmp_path / ".env", anchors={}, external_pack=False)
     declarations = {"TUI_MODE": {"type": "str", "acknowledge_default": False},
                     "UNATTENDED_AUTH": {"type": "jsonobject", "acknowledge_default": False}}

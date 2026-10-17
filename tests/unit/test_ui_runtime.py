@@ -243,3 +243,100 @@ def test_repeated_close_preserves_startup_drain_and_cannot_handoff_closed_owner(
         await owner.aclose()
         operation.prepared.aclose.assert_awaited_once()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('config,headless', [({},True),({'RUN_UI':True},False),({'DEBUG':True},False)])
+def test_browser_visibility_uses_shared_owner(operation,config,headless):
+    owner=operation.create(**config)
+    assert operation.browser_factory.call_args.kwargs == {'inspection':owner.inspection,'headless':headless}
+
+
+@pytest.mark.parametrize('value',[False,None,1,'false','true'])
+def test_capture_does_not_read_state_without_boolean_content_consent(operation,value):
+    owner=operation.create(LOG_CONTENT=value)
+    class Forbidden:
+        @property
+        def session(self): raise AssertionError('capture accessed withheld browser')
+    owner.browser_owner=Forbidden()
+    asyncio.run(owner.capture('failure'))
+
+
+def test_backend_binding_uses_effective_origin_and_lives_until_ui_disposal(operation):
+    from contextlib import asynccontextmanager
+    order=[]
+    @asynccontextmanager
+    async def backend(values):
+        order.append(('backend',values['UI_LISTENER_URL']))
+        yield {'agent_url':'http://127.0.0.1:8123','access_token':'x'*32}
+        order.append(('backend-close',None))
+    owner=ui_runtime.UIIntegrationOwner({'config':{'UI_LISTENER_URL':'http://localhost:9443'},
+        'owner_root':str(operation.tmp_path)},None,backend=backend)
+    async def close(): order.append(('ui-close',None))
+    operation.prepared.aclose.side_effect=close
+    async def exercise():
+        await owner.start()
+        values,services=operation.prepared_factory.call_args.args
+        assert order==[('backend',values['UI_LISTENER_URL'])]
+        assert values['UI_LISTENER_URL']!='http://localhost:9443'
+        assert values['AGENT_DJANGO_URL']=='http://127.0.0.1:8123'
+        assert services['runtime_values'] is values
+        assert services['ui_access_token']=='x'*32
+        assert owner.emissions.content_export({'text': 'x'*32}) != {'text': 'x'*32}
+        await owner.aclose()
+        assert order[-2:]==[('ui-close',None),('backend-close',None)]
+        await owner.aclose()
+        assert order.count(('backend-close',None))==1
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('binding', [None,{}, {'agent_url':'http://127.0.0.1:8123','access_token':'x'*32,'override':True},
+    {'agent_url':'https://remote.example','access_token':'x'*32},
+    *[{'agent_url':'http://127.0.0.1:8123','access_token':token} for token in [None,31*'x',257*'x',32*'é',32*'\n']]])
+def test_backend_binding_rejects_extra_services_remote_urls_and_invalid_nonce(operation,binding):
+    from contextlib import asynccontextmanager
+    closed=[]
+    @asynccontextmanager
+    async def backend(values):
+        try: yield binding
+        finally: closed.append(True)
+    owner=ui_runtime.UIIntegrationOwner({'config':{'UI_LISTENER_URL':'http://localhost:9443'},
+        'owner_root':str(operation.tmp_path)},None,backend=backend)
+    async def exercise():
+        with pytest.raises(ValueError): await owner.start()
+        operation.prepared_factory.assert_not_called()
+        await owner.aclose()
+        assert closed==[True]
+    asyncio.run(exercise())
+
+
+def test_backend_pending_cleanup_is_retried_after_context_exit(operation):
+    retry=AsyncMock()
+    pending=CleanupPendingError(('backend',),retry)
+    backend=SimpleNamespace(__aenter__=AsyncMock(return_value={'agent_url':'http://127.0.0.1:8123','access_token':'x'*32}),
+        __aexit__=AsyncMock(side_effect=pending))
+    owner=ui_runtime.UIIntegrationOwner({'config':{'UI_LISTENER_URL':'http://localhost:9443'},
+        'owner_root':str(operation.tmp_path)},None,backend=lambda values:backend)
+    async def exercise():
+        await owner.start()
+        with pytest.raises(CleanupPendingError): await owner.aclose()
+        await owner.aclose()
+        backend.__aexit__.assert_awaited_once()
+        retry.assert_awaited_once()
+        assert owner.backend is None
+    asyncio.run(exercise())
+
+
+def test_backend_closing_during_enter_cannot_launch_ui(operation):
+    from contextlib import asynccontextmanager
+    from api_agent.providers.contracts import SessionClosedError
+    @asynccontextmanager
+    async def backend(values):
+        owner.closed=True
+        yield {'agent_url':'http://127.0.0.1:8123','access_token':'x'*32}
+    owner=ui_runtime.UIIntegrationOwner({'config':{'UI_LISTENER_URL':'http://localhost:9443'},
+        'owner_root':str(operation.tmp_path)},None,backend=backend)
+    async def exercise():
+        with pytest.raises(SessionClosedError): await owner.start()
+        operation.prepared_factory.assert_not_called()
+        await owner.aclose()
+    asyncio.run(exercise())

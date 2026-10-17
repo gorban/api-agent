@@ -249,64 +249,74 @@ def test_pending_server_shutdown_preserves_retry_and_avoids_second_cancel(connec
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('debug,failed,allocated', [(False, False, False), (True, False, True), (True, True, True), (True, True, False)])
-def test_browser_run_retains_only_allocated_debug_loop(connection, monkeypatch, tmp_path, debug, failed, allocated, capsys):
+class ImmediateProvider:
+    def __init__(self, *, failure=False):
+        self.requests=[]
+        self.failure=failure
+    def describe(self):
+        return (AvailableSelection('sample'),)
+    def complete(self, request):
+        self.requests.append(request)
+        if self.failure:
+            raise RuntimeError('controlled provider failure')
+        return LLMResult(Message('assistant', (TextContent('Ok'),)))
+
+
+@pytest.mark.parametrize('failure,enabled',[(False,True),(True,True),(False,False)])
+def test_prepared_studio_request_uses_one_http_prompt_and_shared_capture(connection,tmp_path,monkeypatch,failure,enabled):
+    from api_agent.testing.ui_runtime import UIIntegrationOwner
+    from api_agent.testing import browser_attachments
+    from api_agent.ui import provider as included
+    from api_agent.testing.browser_evidence import PNG_SIGNATURE
+    attachments=[]
+    monkeypatch.setattr(browser_attachments,'publish_attachment',attachments.append)
+    provider=ImmediateProvider(failure=failure)
+    backend=connection.ui_provider_backend.__wrapped__(None,provider,'sample')
+    owner=UIIntegrationOwner({'config':{
+        'UI_LISTENER_URL':'http://127.0.0.1:9443',
+        'UI_PROVIDER':str(Path(included.__file__)) + ':create_provider','LOG_CONTENT':enabled},
+        'owner_root':str(tmp_path)},None,backend=backend)
+    async def exercise():
+        prepared=await owner.start()
+        original=prepared.session
+        try:
+            if failure:
+                with pytest.raises(AssertionError):await connection.browser_prompt(prepared)
+            else:
+                assert await connection.browser_prompt(prepared)=='Ok'
+            assert prepared.session is original
+            assert original.browser.is_connected() and not original.page.is_closed()
+            assert len(provider.requests)==1
+            request=provider.requests[0]
+            assert request.payload.messages[0].content==(TextContent('Answer with exactly: Ok'),)
+            await owner.capture('failure' if failure else 'success')
+            if enabled:
+                assert len(attachments)==1
+                title,data,mime=attachments[0]
+                assert title==f'UI {"failure" if failure else "success"} context 1 page 1'
+                assert mime=='image/png' and data.startswith(PNG_SIGNATURE)
+            else:
+                assert attachments==[]
+        finally:
+            await owner.aclose()
+        assert not original.browser.is_connected()
+        assert owner.backend is None
+    asyncio.run(exercise())
+
+
+def test_studio_request_declares_both_provider_intents(connection):
+    assert {mark.name for mark in connection.test_studio_request.pytestmark}=={'requires_ui_session','requires_llm'}
+
+
+@pytest.mark.parametrize('selected',[True,False])
+def test_studio_precondition_checks_frontend_ownership_before_llm_setup(connection,selected):
     from types import SimpleNamespace
-    from api_agent.testing import provider_setup
-    retained = []
-    loops = []
-    monkeypatch.setattr(provider_setup, '_inspection_providers', retained)
-    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(tmp_path / 'events'))
-    async def operation(provider, selection, *, screenshot, inspection):
-        loops.append(asyncio.get_running_loop())
-        if allocated:
-            assert inspection is not None
-            inspection.observe(SimpleNamespace(inspection_endpoint='http://127.0.0.1:1234'))
-        if failed:
-            raise RuntimeError('controlled browser failure')
-        return 'Ok'
-    monkeypatch.setattr(connection, 'browser_prompt', operation)
-    provider = SimpleNamespace(config={'DEBUG': debug})
-    try:
-        if failed:
-            with pytest.raises(RuntimeError, match='controlled browser failure'):
-                connection.run_browser_prompt(provider, 'sample')
-        else:
-            assert connection.run_browser_prompt(provider, 'sample') == 'Ok'
-        assert loops[0].is_closed() is not (debug and allocated)
-        assert bool(retained) is (debug and allocated)
-        if allocated:
-            assert 'Studio browser inspection: http://127.0.0.1:1234' in capsys.readouterr().out
-    finally:
-        for owner in retained:
-            owner.loop.run_until_complete(owner.inspection.aclose())
-            owner.loop.close()
-
-
-@pytest.mark.parametrize('config,headless', [({}, True), ({'RUN_UI': True}, False), ({'DEBUG': True}, False)])
-def test_browser_visibility_honors_run_ui_and_debug(connection, monkeypatch, config, headless):
-    from contextlib import asynccontextmanager
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-    @asynccontextmanager
-    async def endpoint(*args):
-        yield 'http://127.0.0.1:1234'
-    seen = []
-    browser = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError('controlled browser stop')), aclose=AsyncMock())
-    def create(**kwargs):
-        seen.append(kwargs)
-        return browser
-    monkeypatch.setattr(connection, 'studio_endpoint', endpoint)
-    monkeypatch.setattr(connection, 'managed_browser', create)
-    inspection = object()
-    with pytest.raises(RuntimeError, match='controlled browser stop'):
-        asyncio.run(connection.browser_prompt(SimpleNamespace(config=config), 'sample', inspection=inspection))
-    assert seen == [{'inspection': inspection, 'headless': headless}]
-    browser.aclose.assert_awaited_once()
-
-
-@pytest.mark.parametrize('value,enabled', [(False, False), (True, True), (None, False), (1, False), ('false', False), ('true', False)])
-def test_browser_content_capture_requires_explicit_opt_in(connection, tmp_path, value, enabled):
-    from types import SimpleNamespace
-    result = connection.studio_screenshot.__wrapped__(SimpleNamespace(values={'LOG_CONTENT': value}), tmp_path)
-    assert result == (tmp_path / 'studio-response.png' if enabled else None)
+    from api_agent.testing.provider_setup import IntegrationRequirements
+    from api_agent.ui import provider
+    location=str(Path(provider.__file__).resolve())+':create_provider' if selected else str(Path(provider.__file__).resolve())+':other_factory'
+    requirements=IntegrationRequirements({'UI_PROVIDER':location},Path.cwd())
+    if selected:
+        assert connection.studio_configuration.__wrapped__(requirements) is None
+    else:
+        with pytest.raises(pytest.skip.Exception,match='included Studio'):
+            connection.studio_configuration.__wrapped__(requirements)

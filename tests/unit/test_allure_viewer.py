@@ -1,0 +1,711 @@
+"""Controlled CLI and HTTP proof for immutable viewer bindings."""
+import asyncio
+from functools import wraps
+import hashlib
+import io
+import json
+from pathlib import Path
+import socket
+from types import SimpleNamespace
+from uuid import uuid4
+
+import httpx
+import pytest
+
+from api_agent.testing import allure_viewer as viewer
+from api_agent.testing.allure_source import (MAX_ARTIFACT, MAX_MANIFEST, MAX_RUN,
+    PreviewSnapshot, RunSource, ViewerError, component, validate_manifest, verified_files)
+
+
+def async_test(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        return asyncio.run(function(*args, **kwargs))
+    return wrapped
+
+
+@pytest.fixture
+def run():
+    result_id = str(uuid4())
+    name = result_id + '-result.json'
+    files = {name: json.dumps({'uuid': result_id, 'status': 'passed', 'attachments': [
+        {'name': 'Picture', 'source': 'image.png'}]}).encode(), 'image.png': b'original picture'}
+    manifest = {'schema': 1, 'repo': 'sample', 'run_id': str(uuid4()), 'mode': 'integration',
+                'started_at': '2026-01-01T00:00:00Z', 'finished_at': '2026-01-01T00:01:00Z',
+                'status': 'completed', 'files': {key: hashlib.sha256(body).hexdigest() for key, body in files.items()}}
+    return manifest, files, name
+
+
+@pytest.fixture
+def cli(tmp_path, monkeypatch):
+    path = tmp_path / 'allure'
+    path.write_text('''#!/usr/bin/env python3
+import json, pathlib, sys
+if '--version' in sys.argv:
+ print('2.32.0')
+else:
+ source=pathlib.Path(sys.argv[2]); output=pathlib.Path(sys.argv[4]); output.mkdir()
+ (output/'index.html').write_text('Allure')
+ cases=output/'data'/'test-cases'; cases.mkdir(parents=True)
+ for n, result in enumerate(source.glob('*-result.json')):
+  (cases/f'case{n}.json').write_text(json.dumps({'uid':f'case{n}'}))
+''')
+    path.chmod(0o700)
+    monkeypatch.setattr(viewer.shutil, 'which', lambda _: str(path))
+    return path
+
+
+@pytest.fixture
+def port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+class Browser:
+    def __init__(self):
+        self.urls = []
+        self.closed = False
+        self.session = SimpleNamespace(page=self, inspection_endpoint='http://127.0.0.1:9000')
+
+    async def start(self):
+        return self.session
+
+    async def goto(self, url):
+        self.urls.append(url)
+
+    async def aclose(self):
+        self.closed = True
+
+
+def save(root, manifest, files):
+    directory = root / manifest['repo'] / manifest['run_id']
+    directory.mkdir(parents=True)
+    (directory / 'manifest.json').write_text(json.dumps(manifest))
+    for name, body in files.items():
+        (directory / name).write_bytes(body)
+    return directory
+
+
+def test_local_history_identity_and_bytes(tmp_path, run):
+    manifest, files, _ = run
+    save(tmp_path, manifest, files)
+    source = RunSource('sample', tmp_path)
+    assert source.history() == [manifest]
+    assert source.load(manifest) == files
+
+
+def test_s3_staging_without_local_results(run):
+    manifest, files, _ = run
+    objects = dict(files, **{'manifest.json': json.dumps(manifest).encode()})
+    streams = []
+    def get_object(**kwargs):
+        stream = io.BytesIO(objects[kwargs['Key'].rsplit('/', 1)[-1]])
+        streams.append(stream)
+        return {'Body': stream}
+    storage = SimpleNamespace(history=lambda repo: [manifest], bucket='reports',
+        _client=lambda: SimpleNamespace(get_object=get_object), _key=lambda repo, run_id, name: name)
+    source = RunSource('sample', storage=storage)
+    assert source.history() == [manifest]
+    assert source.load(manifest) == files
+    assert all(stream.closed for stream in streams)
+
+
+@async_test
+async def test_history_separates_runs_selected_attempt_and_cleanup(tmp_path, run, cli, port):
+    manifest, files, name = run
+    save(tmp_path, manifest, files)
+    second = dict(manifest, run_id=str(uuid4()), finished_at='2026-01-02T00:01:00Z', status='failed')
+    save(tmp_path, second, files)
+    source = RunSource('sample', tmp_path)
+    browser = Browser()
+    owner = viewer.ManagedAllureViewer(port, browser_factory=lambda: browser)
+    try:
+        location = await owner.show_history(source)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(location.url)
+            assert response.text.index(second['run_id']) < response.text.index(manifest['run_id'])
+            selected = await owner.show_run(source, manifest, name)
+            assert '#testresult/case0' in selected.url
+            assert manifest['run_id'] in selected.url
+            assert (await client.get(selected.url.split('#')[0])).text == 'Allure'
+        assert selected.inspection_endpoint == 'http://127.0.0.1:9000'
+        assert (await owner.show_run(source, manifest, name)).url == selected.url
+        root = Path(owner._temporary.name)
+    finally:
+        await owner.aclose()
+    assert browser.closed
+    assert not root.exists()
+    await owner.aclose()
+
+
+@async_test
+async def test_preview_versions_preserve_existing_routes(run, cli, port):
+    manifest, files, name = run
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    first = dict(manifest, preview_version=1)
+    second = dict(manifest, preview_version=2)
+    try:
+        one = await owner.show_preview(PreviewSnapshot(files, first, {'test': name}), name)
+        two = await owner.show_preview(PreviewSnapshot(files, second, {'test': name}), name)
+        final = await owner.show_preview(PreviewSnapshot(files, manifest, {'test': name}, False), name)
+        assert len({one.url, two.url, final.url}) == 3
+        async with httpx.AsyncClient() as client:
+            assert (await client.get(one.url.split('#')[0])).status_code == 200
+    finally:
+        await owner.aclose()
+
+
+@pytest.mark.parametrize('value', ['', '.', '..', 'a/b', 'a\\b', 'a\0b', 1])
+def test_invalid_component(value):
+    with pytest.raises(ViewerError):
+        component(value)
+
+
+@pytest.mark.parametrize('change', [ {'schema': 2}, {'schema': True}, {'repo': '..'}, {'run_id': 'bad'},
+    {'started_at': '2026-01-01'}, {'mode': 'unit'}, {'finished_at': '2025-01-01T00:00:00Z'},
+    {'finished_at': '2026-01-01'}, {'status': 'running'}, {'files': {}}, {'files': []},
+    {'files': {'manifest.json': 'a'*64}}, {'files': {'ok': 'bad'}}, {'files': {'ok': 'a'*64}},
+    {'run_id': None}, {'started_at': None}])
+def test_reject_invalid_manifest(run, change):
+    manifest, _, _ = run
+    with pytest.raises(ViewerError):
+        validate_manifest(dict(manifest, **change))
+
+
+@pytest.mark.parametrize('change', [{}, {'preview_version': 0}, {'preview_version': True}])
+def test_preview_requires_explicit_version(run, change):
+    manifest, _, _ = run
+    with pytest.raises(ViewerError):
+        validate_manifest(dict(manifest, **change), preview=True)
+
+
+def test_reject_other_repo(run):
+    with pytest.raises(ViewerError):
+        validate_manifest(run[0], repo='other')
+
+
+def test_corrupt_artifact(run):
+    manifest, files, name = run
+    files[name] = b'corrupt'
+    with pytest.raises(ViewerError, match='digest'):
+        verified_files(manifest, files.__getitem__)
+
+
+@pytest.mark.parametrize('row', [[], {'uuid':'wrong','status':'passed'}, {'uuid':'original','status':'running'},
+    {'uuid':'original','status':'passed','attachments':[{}]},
+    {'uuid':'original','status':'passed','steps':[{'attachments':[{'source':'missing'}]}]},
+    {'uuid':'original','status':'passed','attachments':[None]}, {'uuid':'original','status':'passed','attachments':None}])
+def test_result_validation(row):
+    files = {'original-result.json': json.dumps(row).encode()}
+    manifest = {'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
+    with pytest.raises(ViewerError):
+        verified_files(manifest, files.__getitem__)
+
+
+@pytest.mark.parametrize('port', [0, 65536, True])
+def test_invalid_port(port):
+    with pytest.raises(ValueError):
+        viewer.ManagedAllureViewer(port)
+
+
+@async_test
+async def test_foreign_listener_is_preserved(cli, port):
+    with socket.socket() as foreign:
+        foreign.bind(('127.0.0.1', port))
+        foreign.listen()
+        owner = viewer.ManagedAllureViewer(port)
+        try:
+            with pytest.raises(ViewerError, match='occupied'):
+                await owner._ready()
+            assert foreign.getsockname()[1] == port
+        finally:
+            await owner.aclose()
+
+
+@async_test
+async def test_missing_cli(monkeypatch, port):
+    monkeypatch.setattr(viewer.shutil, 'which', lambda _: None)
+    owner = viewer.ManagedAllureViewer(port)
+    with pytest.raises(ViewerError, match='missing'):
+        await owner._ready()
+    await owner.aclose()
+
+
+@async_test
+async def test_incompatible_cli(cli, port):
+    cli.write_text('#!/bin/sh\necho 3.0.0\n')
+    owner = viewer.ManagedAllureViewer(port)
+    with pytest.raises(ViewerError, match='Unsupported'):
+        await owner._ready()
+    await owner.aclose()
+
+
+@async_test
+async def test_browser_failure_keeps_report(run, cli, port):
+    def fail():
+        raise RuntimeError('browser unavailable')
+    manifest, files, name = run
+    owner = viewer.ManagedAllureViewer(port, browser_factory=fail)
+    try:
+        location = await owner.show_preview(PreviewSnapshot(files, dict(manifest, preview_version=1), {}), name)
+        assert location.browser_error
+        async with httpx.AsyncClient() as client:
+            assert (await client.get(location.url.split('#')[0])).status_code == 200
+    finally:
+        await owner.aclose()
+
+@pytest.mark.parametrize('mutation', ['symlink', 'mismatch', 'oversized', 'invalid', 'conflict'])
+def test_history_rejects_invalid_commits(tmp_path, run, mutation, monkeypatch):
+    manifest, files, _ = run
+    directory = save(tmp_path, manifest, files)
+    source = RunSource('sample', tmp_path)
+    if mutation == 'symlink':
+        (tmp_path/'sample').rename(tmp_path/'real')
+        (tmp_path/'sample').symlink_to(tmp_path/'real')
+    elif mutation == 'mismatch':
+        directory.rename(directory.with_name(str(uuid4())))
+    elif mutation == 'oversized':
+        monkeypatch.setattr('api_agent.testing.allure_source.MAX_MANIFEST', 1)
+    elif mutation == 'invalid':
+        (directory/'manifest.json').write_text('bad')
+    else:
+        source.storage = SimpleNamespace(history=lambda _: [dict(manifest, status='failed')])
+    with pytest.raises(ViewerError):
+        source.history()
+
+
+def test_history_ignores_uncommitted_directories(tmp_path, run):
+    manifest, files, _ = run
+    repo = tmp_path/'sample'
+    repo.mkdir()
+    (repo/'uncommitted').mkdir()
+    (repo/'file').write_text('other')
+    assert RunSource('sample', tmp_path).history() == []
+    assert RunSource('sample').history() == []
+    assert RunSource('sample', tmp_path/'absent').history() == []
+
+
+def test_history_rejects_symlinked_run_child(tmp_path, run):
+    manifest, files, _ = run
+    directory = save(tmp_path, manifest, files)
+    target = directory.with_name('stored-run')
+    directory.rename(target)
+    directory.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ViewerError, match='Symlinked Allure history'):
+        RunSource('sample', tmp_path).history()
+
+
+@pytest.mark.parametrize('mutation', ['changed', 'missing', 'symlink', 'unreadable'])
+def test_load_refuses_replacement(tmp_path, run, mutation):
+    manifest, files, _ = run
+    directory = save(tmp_path, manifest, files)
+    if mutation == 'changed':
+        (directory/'manifest.json').write_text(json.dumps(dict(manifest,status='failed')))
+    elif mutation == 'missing':
+        (directory/'manifest.json').unlink()
+    elif mutation == 'symlink':
+        directory.rename(directory.with_name('real'))
+        directory.symlink_to(directory.with_name('real'))
+    else:
+        (directory/'manifest.json').write_text('bad')
+    with pytest.raises(ViewerError):
+        RunSource('sample', tmp_path).load(manifest)
+
+
+def test_remote_replacement_refused(run):
+    manifest, _, _ = run
+    storage = SimpleNamespace(bucket='x', _key=lambda *args: 'manifest.json', _client=lambda: SimpleNamespace(
+        get_object=lambda **kwargs: {'Body':io.BytesIO(json.dumps(dict(manifest,status='failed')).encode())}))
+    with pytest.raises(ViewerError, match='binding changed'):
+        RunSource('sample', storage=storage).load(manifest)
+
+
+@pytest.mark.parametrize('limit', ['MAX_RUN','MAX_ARTIFACT'])
+def test_artifact_limits(run, monkeypatch, limit):
+    manifest, files, _ = run
+    monkeypatch.setattr('api_agent.testing.allure_source.'+limit, 1)
+    with pytest.raises(ViewerError):
+        verified_files(manifest, files.__getitem__)
+
+
+def test_manifest_size_limit(run, monkeypatch):
+    monkeypatch.setattr('api_agent.testing.allure_source.MAX_MANIFEST', 1)
+    with pytest.raises(ViewerError):
+        validate_manifest(run[0])
+
+
+@async_test
+async def test_server_directory_listing_disabled(cli, port):
+    owner = viewer.ManagedAllureViewer(port)
+    try:
+        await owner._ready()
+        async with httpx.AsyncClient() as client:
+            assert (await client.get(f'http://127.0.0.1:{port}/')).status_code == 404
+    finally:
+        await owner.aclose()
+    with pytest.raises(ViewerError, match='closed'):
+        await owner._ready()
+
+
+@pytest.mark.parametrize('mode', ['missing-index','missing-case','invalid-uid','invalid-json'])
+@async_test
+async def test_generation_rejects_invalid_output(run, cli, port, mode):
+    suffix = {'missing-index':"(output/'index.html').unlink()", 'missing-case':"[p.unlink() for p in cases.glob('*.json')]",
+        'invalid-uid':"(cases/'case0.json').write_text('{\"uid\":\"../bad\"}')", 'invalid-json':"(cases/'case0.json').write_text('bad')"}[mode]
+    cli.write_text(cli.read_text()+'\n '+suffix+'\n')
+    manifest, files, name = run
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        with pytest.raises(ViewerError):
+            await owner.show_preview(PreviewSnapshot(files, dict(manifest,preview_version=1), {}), name)
+        assert not owner._bindings
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_invalid_selected_result_and_empty_history(run, cli, port):
+    manifest, files, _ = run
+    owner = viewer.ManagedAllureViewer(port)
+    with pytest.raises(ViewerError, match='selected'):
+        await owner._report(manifest, files, result_file='image.png')
+    with pytest.raises(ViewerError, match='No finalized'):
+        await owner.show_history(RunSource('sample'))
+    await owner.aclose()
+
+
+@pytest.mark.parametrize('mode', ['startup','exit','timeout'])
+@async_test
+async def test_cli_failures_are_bounded(cli, port, mode):
+    owner = viewer.ManagedAllureViewer(port, timeout=.02)
+    if mode == 'startup':
+        arguments = ['/missing-allure-executable']
+    elif mode == 'exit':
+        arguments = ['/bin/sh','-c','exit 1']
+    else:
+        arguments = ['/bin/sh','-c','sleep 30']
+    with pytest.raises(ViewerError):
+        await owner._command(arguments)
+    assert owner._processes == []
+    await owner.aclose()
+
+
+@async_test
+async def test_cancel_generation_reaps_owned_process(cli, port):
+    owner = viewer.ManagedAllureViewer(port)
+    task = asyncio.create_task(owner._command(['/bin/sh','-c','sleep 30']))
+    while not owner._processes:
+        await asyncio.sleep(0)
+    process = owner._processes[0]
+    try:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert process.poll() is not None
+        assert owner._processes == []
+    finally:
+        from api_agent.testing.processes import finalize
+        await asyncio.to_thread(finalize, process)
+        await owner.aclose()
+
+
+@async_test
+async def test_close_during_generation_cancels_and_reaps_owned_process(run, cli, port):
+    cli.write_text(cli.read_text().replace(" source=pathlib.Path(sys.argv[2])", " import time; time.sleep(30)\n source=pathlib.Path(sys.argv[2])"))
+    manifest, files, name = run
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    task = asyncio.create_task(owner.show_preview(PreviewSnapshot(files, dict(manifest, preview_version=1), {}), name))
+    try:
+        while not any(len(process.args) > 1 and process.args[1] == 'generate' for process in owner._processes):
+            await asyncio.sleep(.01)
+        process = owner._processes[0]
+
+        await asyncio.wait_for(owner.aclose(), timeout=3)
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert process.poll() is not None
+        assert owner._processes == []
+        assert owner._operations == set()
+        assert owner._temporary is None
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await owner.aclose()
+
+
+@async_test
+async def test_close_during_browser_start_cancels_operation_and_closes_browser(run, cli, port):
+    entered = asyncio.Event()
+    browser = Browser()
+
+    async def waiting_start():
+        entered.set()
+        await asyncio.Event().wait()
+
+    browser.start = waiting_start
+    manifest, files, name = run
+    owner = viewer.ManagedAllureViewer(port, browser_factory=lambda: browser)
+    task = asyncio.create_task(owner.show_preview(PreviewSnapshot(files, dict(manifest, preview_version=1), {}), name))
+    try:
+        await entered.wait()
+        await asyncio.wait_for(owner.aclose(), timeout=3)
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert browser.closed
+        assert owner._operations == set()
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await owner.aclose()
+
+
+@async_test
+async def test_close_cancels_queued_viewer_work_before_source_retrieval(run, port):
+    entered = asyncio.Event()
+    owner = viewer.ManagedAllureViewer(port)
+    source = SimpleNamespace(load=lambda *args, **kwargs: pytest.fail('queued source was loaded'))
+    manifest, _, _ = run
+
+    async def holding_lock():
+        async with owner._lock:
+            entered.set()
+            await asyncio.Event().wait()
+
+    blocker = asyncio.create_task(holding_lock())
+    await entered.wait()
+    queued = asyncio.create_task(owner.show_run(source, manifest))
+    await asyncio.sleep(0)
+    assert queued in owner._operations
+
+    closing = asyncio.create_task(owner.aclose())
+    await asyncio.sleep(0)
+    assert queued.cancelling()
+    await asyncio.gather(queued, return_exceptions=True)
+    assert queued.cancelled()
+    blocker.cancel()
+    await asyncio.gather(blocker, return_exceptions=True)
+    await asyncio.wait_for(closing, timeout=3)
+    assert owner._operations == set()
+
+
+@async_test
+async def test_browser_cleanup_failure_retains_retry(port):
+    browser = Browser()
+    async def fail():
+        raise RuntimeError('retry cleanup')
+    browser.aclose = fail
+    owner = viewer.ManagedAllureViewer(port, browser_factory=lambda:browser)
+    owner._browser = browser
+    with pytest.raises(RuntimeError):
+        await owner.aclose()
+    assert owner._browser is browser
+    del browser.aclose
+    await owner.aclose()
+    assert browser.closed
+
+
+def test_noncanonical_run_id(run):
+    manifest = dict(run[0], run_id=run[0]['run_id'].upper())
+    with pytest.raises(ViewerError):
+        validate_manifest(manifest)
+
+
+def test_nested_steps_validation_succeeds():
+    row = {'uuid':'original','status':'passed','steps':[{'name':'first','steps':[]}]}
+    files = {'original-result.json':json.dumps(row).encode()}
+    assert verified_files({'files':{key:hashlib.sha256(data).hexdigest() for key,data in files.items()}}, files.__getitem__) == files
+
+
+@async_test
+async def test_readiness_mismatch(cli, port, monkeypatch):
+    async def wrong(*args, **kwargs):
+        return SimpleNamespace(status_code=200,text='foreign')
+    monkeypatch.setattr(httpx.AsyncClient,'get',wrong)
+    owner = viewer.ManagedAllureViewer(port)
+    try:
+        with pytest.raises(ViewerError, match='ready'):
+            await owner._ready()
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_single_result_report_excludes_other_attempt(run, cli, port):
+    manifest, files, name = run
+    second = str(uuid4())
+    files[second+'-result.json'] = json.dumps({'uuid':second,'status':'failed'}).encode()
+    manifest['files'] = {key:hashlib.sha256(data).hexdigest() for key,data in files.items()}
+    owner = viewer.ManagedAllureViewer(port,browser_factory=Browser)
+    try:
+        location = await owner.show_preview(PreviewSnapshot(files,dict(manifest,preview_version=1),{}),name)
+        assert location.url.endswith('#testresult/case0')
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_pending_process_cleanup_is_retryable(port, monkeypatch):
+    owner = viewer.ManagedAllureViewer(port)
+    process = object()
+    owner._processes.append(process)
+    seen = []
+    monkeypatch.setattr(viewer,'finalize',seen.append)
+    await owner.aclose()
+    assert seen == [process]
+    assert owner._processes == []
+
+
+@async_test
+async def test_server_thread_cleanup_retry(cli, port):
+    owner = viewer.ManagedAllureViewer(port)
+    await owner._ready()
+    thread = owner._thread
+    class Pending:
+        def join(self, **kwargs):
+            pass
+        def is_alive(self):
+            return True
+    owner._thread = Pending()
+    with pytest.raises(ViewerError,match='pending'):
+        await owner.aclose()
+    owner._thread = thread
+    await owner.aclose()
+
+
+@async_test
+async def test_default_browser_is_inspectable(port,monkeypatch):
+    browser = Browser()
+    seen = []
+    def managed(**kwargs):
+        seen.append(kwargs)
+        return browser
+    monkeypatch.setattr(viewer,'managed_browser',managed)
+    owner = viewer.ManagedAllureViewer(port)
+    await owner._open('http://127.0.0.1/example')
+    assert seen == [{'headless':False,'inspection':owner._inspection}]
+    await owner.aclose()
+
+
+@async_test
+async def test_history_http_generates_only_requested_run_and_preserves_host_boundary(tmp_path,run,cli,port):
+    manifest,files,_=run
+    save(tmp_path,manifest,files)
+    source=RunSource('sample',tmp_path)
+    owner=viewer.ManagedAllureViewer(port,browser_factory=Browser)
+    try:
+        location=await owner.show_history(source)
+        assert owner._bindings=={}
+        async with httpx.AsyncClient() as client:
+            index=await client.get(location.url)
+            import re
+            path=re.search(r'href="([^"]+)"',index.text)[1]
+            response=await client.get(f'http://127.0.0.1:{port}'+path)
+            assert response.status_code==302
+            assert manifest['run_id'] in response.headers['Location']
+            assert (await client.get(response.headers['Location'])).text=='Allure'
+            assert len(owner._bindings)==1
+            assert (await client.get(location.url,headers={'Host':'untrusted.example'})).status_code==403
+            assert (await client.head(location.url,headers={'Host':'untrusted.example'})).status_code==403
+            assert (await client.head(location.url)).status_code==200
+            assert (await client.get(f'http://127.0.0.1:{port}/open/missing')).status_code==404
+        assert owner._http_tasks==set()
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_late_artifact_corruption_returns_http_failure_without_serving_partial_report(tmp_path,run,cli,port):
+    manifest,files,name=run
+    directory=save(tmp_path,manifest,files)
+    owner=viewer.ManagedAllureViewer(port,browser_factory=Browser)
+    try:
+        await owner.show_history(RunSource('sample',tmp_path))
+        path=next(iter(owner._history_routes))
+        (directory/name).write_text('corrupt')
+        async with httpx.AsyncClient() as client:
+            response=await client.get(f'http://127.0.0.1:{port}'+path)
+            assert response.status_code==503
+            assert 'corrupt' not in response.text
+        assert owner._bindings=={}
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_http_wait_timeout_cancels_the_owned_generation_future(tmp_path,run,cli,port,monkeypatch):
+    manifest,files,_=run
+    save(tmp_path,manifest,files)
+    owner=viewer.ManagedAllureViewer(port,browser_factory=Browser)
+    cancelled=[]
+    def submit(coroutine,loop):
+        coroutine.close()
+        def timeout(**kwargs):
+            raise viewer.FutureTimeout()
+        return SimpleNamespace(result=timeout,cancel=lambda:cancelled.append(True))
+    try:
+        await owner.show_history(RunSource('sample',tmp_path))
+        monkeypatch.setattr(viewer.asyncio,'run_coroutine_threadsafe',submit)
+        path=next(iter(owner._history_routes))
+        async with httpx.AsyncClient() as client:
+            assert (await client.get(f'http://127.0.0.1:{port}'+path)).status_code==504
+        assert cancelled==[True]
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_cleanup_cancels_and_drains_queued_http_work(port):
+    owner=viewer.ManagedAllureViewer(port)
+    entered=asyncio.Event()
+    stopped=asyncio.Event()
+    async def waiting():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+    task=asyncio.create_task(waiting())
+    owner._http_tasks.add(task)
+    await entered.wait()
+    await owner.aclose()
+    assert task.done() and stopped.is_set()
+
+
+@async_test
+async def test_closed_viewer_never_retrieves_or_generates_new_history(run,port):
+    owner=viewer.ManagedAllureViewer(port)
+    await owner.aclose()
+    manifest,files,name=run
+    source=object()
+    with pytest.raises(ViewerError,match='closed'):
+        await owner.show_history(source)
+    with pytest.raises(ViewerError,match='closed'):
+        await owner.show_run(source,manifest)
+    with pytest.raises(ViewerError,match='closed'):
+        await owner.show_preview(PreviewSnapshot(files,dict(manifest,preview_version=1),{}),name)
+    with pytest.raises(ViewerError,match='closed'):
+        await owner._history_report(source,manifest)
+    assert owner._http_tasks==set()
+
+
+def test_source_checks_budget_before_discovery_and_fetch(run):
+    source=RunSource('sample')
+    expired=SimpleNamespace(remaining=0)
+    with pytest.raises(ViewerError,match='timed out'):
+        source.history(budget=expired)
+    with pytest.raises(ViewerError,match='timed out'):
+        source.load(run[0],budget=expired)
+
+
+def test_well_formed_replacement_still_requires_its_immutable_digest(run):
+    manifest,files,name=run
+    original=json.loads(files[name])
+    files[name]=json.dumps(dict(original,status='failed')).encode()
+    with pytest.raises(ViewerError,match='digest mismatch'):
+        verified_files(manifest,files.__getitem__)

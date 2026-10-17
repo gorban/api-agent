@@ -32,7 +32,9 @@ exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 addopts = "--strict-markers"
-markers = ["requires_pack_api: selected integration requires the pack API and identity preflight"]
+markers = ["requires_pack_api: selected integration requires the pack API and identity preflight",
+    "requires_ui_session: selected integration consumes the UI provider",
+    "requires_llm: selected integration consumes an LLM provider"]
 
 [tool.coverage.run]
 source = ["api_agent"]

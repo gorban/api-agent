@@ -516,11 +516,21 @@ def ui_provider_loop():
 
 
 @pytest.fixture
-def ui_provider_session(request, ui_provider_loop):
+def ui_provider_backend():
+    """Optional async context factory binding an agent endpoint to this UI.
+
+    Receives effective UI runtime values and yields only ``agent_url`` and
+    ``access_token``. Its lifetime follows the complete prepared UI owner.
+    """
+    return None
+
+
+@pytest.fixture
+def ui_provider_session(request, ui_provider_loop, ui_provider_backend):
     """Prepare only the selected UI provider and retain its complete DEBUG owner."""
     from .ui_runtime import UIIntegrationOwner
     data = _read_snapshot()
-    owner = UIIntegrationOwner(data, _worker_manager_registry(data))
+    owner = UIIntegrationOwner(data, _worker_manager_registry(data), backend=ui_provider_backend)
     loop = ui_provider_loop
     try:
         yield loop.run_until_complete(owner.start())

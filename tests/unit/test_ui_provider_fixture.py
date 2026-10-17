@@ -32,7 +32,7 @@ def test_finalization_retains_original_loop_even_when_capture_fails(fixture_owne
     loop=asyncio.new_event_loop()
     r.owner.capture.side_effect=capture_error
     request=SimpleNamespace(node=SimpleNamespace(_api_agent_ui_outcome='success'))
-    fixture=setup.ui_provider_session.__wrapped__(request,loop)
+    fixture=setup.ui_provider_session.__wrapped__(request,loop,None)
     assert next(fixture)=='prepared'
     if capture_error is not None and isinstance(capture_error,asyncio.CancelledError):
         with pytest.raises(asyncio.CancelledError):fixture.close()
@@ -59,7 +59,7 @@ def test_setup_failure_capture_precedes_owned_disposal(fixture_owner,monkeypatch
     r.owner.capture.side_effect=capture
     r.owner.aclose.side_effect=close
     loop=asyncio.new_event_loop()
-    fixture=setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()),loop)
+    fixture=setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()),loop,None)
     with pytest.raises(RuntimeError,match='setup failed'):next(fixture)
     assert order==[('capture','failure'),('close',None)]
     assert loop.is_closed()
@@ -108,3 +108,23 @@ def test_non_call_reports_preserve_test_capture_phase(phase):
         hook.send(report)
     assert finished.value.value is report
     assert node._api_agent_ui_outcome == 'failure'
+
+
+def test_default_ui_session_does_not_request_an_agent_backend():
+    assert setup.ui_provider_backend.__wrapped__() is None
+
+
+def test_selected_backend_follows_shared_fixture_retained_owner(fixture_owner,tmp_path,monkeypatch):
+    r=fixture_owner
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(tmp_path/'events'))
+    loop=asyncio.new_event_loop()
+    backend=object()
+    fixture=setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()),loop,backend)
+    assert next(fixture)=='prepared'
+    assert r.factory.call_args.kwargs=={'backend':backend}
+    fixture.close()
+    assert len(r.retained)==1
+    r.owner.aclose.assert_not_awaited()
+    r.retained[0].close()
+    r.owner.aclose.assert_awaited_once()
+    assert loop.is_closed()

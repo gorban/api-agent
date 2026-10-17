@@ -15,15 +15,13 @@ from api_agent.providers.progress import component_timeout, report_timeout
 from api_agent.providers.control import CleanupPendingError, finish_cleanup
 from api_agent.runtime.tasks import offload, settle
 from api_agent.providers.selection import ModelSelectionPolicy
-from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
-from api_agent.runtime.managed_browser import managed_browser
+from api_agent.providers.sessions import LLMSessionOwner
 from api_agent.ui.provider import app_directory
 
 
 @asynccontextmanager
 async def studio_endpoint(provider, selection):
     """Own real loopback listeners; provider selection/auth belongs to launch.py."""
-    import uvicorn
     node = shutil.which('node')
     if node is None:
         pytest.skip('The included Studio browser test requires Node.js.')
@@ -58,6 +56,22 @@ async def studio_endpoint(provider, selection):
             cleanup.push_async_callback(_cleanup, _close_host, process)
             origin = (await process.stdout.readline()).decode().strip()
             assert origin.startswith('http://127.0.0.1:'), 'Studio did not announce a loopback listener.'
+        async with agent_endpoint(provider, selection, origin, nonce, listener=listener):
+            yield origin
+
+
+@asynccontextmanager
+async def agent_endpoint(provider, selection, origin, nonce, *, listener=None):
+    """Own the real Agent HTTP bridge for the selected UI runtime."""
+    import uvicorn
+    async with AsyncExitStack() as cleanup:
+        if listener is None:
+            listener = socket.socket()
+            cleanup.callback(listener.close)
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.setblocking(False)
+        endpoint = f'http://127.0.0.1:{listener.getsockname()[1]}'
         async def describe(*, auth):
             return await offload(provider.describe)
         async def complete(request, *, auth, context):
@@ -76,7 +90,7 @@ async def studio_endpoint(provider, selection):
             while not server.started:
                 assert not task.done(), 'Agent listener stopped before readiness.'
                 await asyncio.sleep(.01)
-        yield origin
+        yield endpoint
 
 
 async def _cleanup(action, *args):
@@ -114,64 +128,53 @@ async def _close_host(process):
         raise CleanupPendingError((process,), lambda: _close_host(process)) from None
 
 
-async def browser_prompt(provider, selection, *, screenshot=None, inspection=None):
+async def browser_prompt(prepared):
+    """Consume the selected provider's original prepared page for one request."""
     from playwright.async_api import expect
-    async with studio_endpoint(provider, selection) as origin:
-        config = getattr(provider, 'config', {})
-        browser = managed_browser(inspection=inspection,
-            headless=not (config.get('RUN_UI', False) or config.get('DEBUG', False)))
-        try:
-            async with component_timeout('Studio browser request', 150):
-                session = await browser.start()
-                page = session.page
-                errors = []
-                page.on('pageerror', lambda error: errors.append(str(error)))
-                await page.goto(origin)
-                await expect(page.locator('#model option')).to_have_count(2)
-                await page.locator('#prompt').fill('Answer with exactly: Ok')
-                await page.locator('#send').click()
-                status = page.locator('.assistant .metadata-grid dd').last
-                await expect(status).to_have_text(re.compile(r'Complete|Incomplete'), timeout=120000)
-                assert await status.text_content() == 'Complete', await page.locator('#status').inner_text()
-                answer = await page.locator('.assistant .message-body').inner_text()
-                assert answer.strip(), 'Agent returned an empty browser response.'
-                assert not errors, errors
-                assert await page.locator('#stop').is_hidden()
-                if screenshot is not None:
-                    await page.screenshot(path=str(screenshot), full_page=True)
-                    assert screenshot.stat().st_size > 0
-                return answer
-        finally:
-            await browser.aclose()
-
-
-def _show_studio_browser(session):
-    if session.inspection_endpoint:
-        print('Studio browser inspection: ' + session.inspection_endpoint, flush=True)
-
-
-def run_browser_prompt(provider, selection, *, screenshot=None):
-    """Keep an allocated DEBUG browser on its creating loop for shared inspection."""
-    from api_agent.testing.provider_setup import finish_ui_browser_inspection
-    loop = asyncio.new_event_loop()
-    inspection = (InspectionOwner(on_session=_show_studio_browser)
-                  if getattr(provider, 'config', {}).get('DEBUG', False) else None)
-    try:
-        return loop.run_until_complete(browser_prompt(provider, selection,
-            screenshot=screenshot, inspection=inspection))
-    finally:
-        finish_ui_browser_inspection(loop, inspection)
+    page = prepared.session.page
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    async with component_timeout('Studio browser request', 150):
+        await expect(page.locator('#model option')).to_have_count(2)
+        await page.locator('#prompt').fill('Answer with exactly: Ok')
+        await page.locator('#send').click()
+        status = page.locator('.assistant .metadata-grid dd').last
+        await expect(status).to_have_text(re.compile(r'Complete|Incomplete'), timeout=120000)
+        assert await status.text_content() == 'Complete', await page.locator('#status').inner_text()
+        answer = await page.locator('.assistant .message-body').inner_text()
+        assert answer.strip(), 'Agent returned an empty browser response.'
+        assert not errors, errors
+        assert await page.locator('#stop').is_hidden()
+        return answer
 
 
 @pytest.fixture
-def studio_screenshot(integration_config, tmp_path):
-    """Browser content follows the same explicit opt-in as recorded evidence."""
-    if integration_config.values.get('LOG_CONTENT') is not True:
-        return None
-    return tmp_path / 'studio-response.png'
+def studio_configuration(integration_config):
+    """Studio selectors belong to the included frontend, before paid setup."""
+    from pathlib import Path
+    from api_agent.providers.loading import provider_location
+    from api_agent.ui import provider
+    selected, factory = provider_location(integration_config.values['UI_PROVIDER'],
+                                          owner_root=integration_config.owner_root)
+    integration_config.require_combination(
+        selected.resolve() == Path(provider.__file__).resolve() and factory == 'create_provider',
+        'This request test requires the included Studio UI provider.')
 
 
-def test_studio_request(llm_provider, llm_selection, studio_screenshot):
-    screenshot = studio_screenshot
-    answer = run_browser_prompt(llm_provider, llm_selection, screenshot=screenshot)
+@pytest.fixture
+def ui_provider_backend(studio_configuration, llm_provider, llm_selection):
+    """Bind the chosen provider to the real HTTP contract before UI launch."""
+    @asynccontextmanager
+    async def backend(values):
+        nonce = secrets.token_urlsafe(32)
+        async with agent_endpoint(llm_provider, llm_selection,
+                                  values['UI_LISTENER_URL'], nonce) as endpoint:
+            yield {'agent_url': endpoint, 'access_token': nonce}
+    return backend
+
+
+@pytest.mark.requires_ui_session
+@pytest.mark.requires_llm
+def test_studio_request(ui_provider_session, ui_provider_loop):
+    answer = ui_provider_loop.run_until_complete(browser_prompt(ui_provider_session))
     assert answer.strip().lower().rstrip('.') == 'ok'

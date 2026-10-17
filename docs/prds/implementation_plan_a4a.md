@@ -13,7 +13,7 @@
   unavailable metadata. Propagate cancellation. Never replace test/setup failure
   or completed inference with an ordinary evidence failure.
 - [x] Require a trusted provider-owned original-pixel capture policy. That owner
-  masks all form values and registered credentials and establishes page-specific
+  masks authentication fields and registered credentials and establishes page-specific
   safety before returning PNG bytes. Missing or unverifiable safety yields
   unavailable evidence. This is no generic arbitrary-page safety guarantee.
 - [x] Use fixed context/page ordinals and phase labels, excluding raw URLs,
@@ -21,8 +21,23 @@
   pixels and individual capture time. Submit immutable title/bytes/MIME tuples.
 - [x] Join success and setup/test failure capture to the current attempt's
   existing Allure results and immutable S3 history before UI teardown.
-- [x] Verify the included trusted provider masking against controlled form values,
-  registered-secret displays and split-node text using actual browser pixels.
+- [x] Verify the initial conservative provider masking against controlled form
+  values, registered-secret displays and split-node text using actual browser pixels.
+- [x] With LOG_CONTENT=True, preserve ordinary prompt inputs, response text and
+  trusted UI controls/icons in original screenshots. Do not blanket-mask a field
+  merely because it is editable, or an owned icon merely because it uses SVG.
+  Continue masking password/authentication fields and live registered secrets;
+  reject capture when safe localization cannot be established.
+  Ordinary values are inspected even when changed only through DOM properties;
+  unsafe or unstable content withholds the entire original image.
+- [x] Keep LOG_CONTENT=False or unset behavior unchanged: withhold actual browser
+  pixels and attach the fixed notice. Do not relax conservative masking or any
+  credential protections, or start capturing masked pages with content disabled.
+- [x] Add actual-browser pixel regressions proving ordinary prompt/response
+  visibility and credential exclusion, including secrets inside ordinary inputs,
+  split text, registration races and trusted icons. Preserve content-disabled
+  gates, immutable recording, exact coverage and independent privacy review.
+- [ ] Human-review the refined original screenshots before accepting this change.
 - [x] Independently review the capture policy and recording join.
 
 ## Limits and remaining acceptance
@@ -45,24 +60,34 @@ UI capability version 1 may advertise `capture_evidence`, implemented by
 `async acapture_evidence(*, page, boundary) -> bytes | None`. Loading validates
 the async hook and keyword signature. Consumers adapt this keyword hook to the
 capture helper's `(page, boundary)` callback. The provider retains responsibility
-for original-pixel safety, including all form values and live registered secrets;
+for original-pixel safety, including authentication fields and live registered secrets;
 return None whenever safety cannot be established. Advertising this capability
 does not make every page safe or permit capturing authentication-provider contexts.
 
-The included Studio policy binds capture to its successfully launched listener
-and root document. It rejects frames, active requests and unstable document
-content, masks editable controls and unsupported rendering surfaces, compares
-transient text/attributes against the live secret boundary and verifies document
-identity/content after capture. Controlled Chromium pixel tests retain ordinary
-answer text while masking forms. Whole, split or overlapping registered secrets
-in ordinary page content make pixels unavailable rather than relying on partial
-mask localization. A final live-boundary check follows awaited marker cleanup;
-submission occurs synchronously before timeout-progress teardown can yield.
-Controls cover registration during capture/cleanup and progress-scope exit.
+The Studio policy binds capture to its successfully launched listener and root
+document. It rejects frames, active requests and unstable document content.
+Authentication controls are identified by type, identity, autocomplete, accessible
+label, placeholder and associated labels. Unsupported rendering surfaces remain
+masked. Ordinary editable values remain visible and participate in live secret
+checks. Only the exact authored navigation SVG markup is trusted; arbitrary SVG
+continues to be masked. This relies on the provider's controlled document, scripts
+and styles, and is not a reusable policy for arbitrary sites.
+
+Whole, split or overlapping registered secrets in ordinary page content make
+pixels unavailable rather than relying on partial mask localization. A final
+live-boundary check follows awaited marker cleanup; submission occurs synchronously
+before timeout-progress teardown can yield. Controlled Chromium tests compare
+original prompt, response and trusted-icon pixel regions byte for byte, verify
+black authentication/untrusted-icon pixels, reject DOM-property-only secrets,
+and cover registration during capture/cleanup plus document mutation. Five
+focused mutations independently reject removed authentication masking, value
+inspection, SVG trust restriction, cleanup registration check and document check.
+Independent refinement review passes; human screenshot acceptance remains open.
 
 - [x] Complete exact applicable coverage, installed and public-boundary gates.
-- [ ] Human review original saved screenshots with content enabled; confirm
-  only the fixed notice with content disabled and unavailable evidence without a safe policy.
+- [x] Human acceptance of the delivered conservative original screenshots and
+  fixed content-disabled notice. This accepts the existing scope only; ordinary
+  prompt/icon visibility remains unchecked in the refinement above.
 
 Controlled normal-runner checks preserve original PNGs in the matching successful,
 setup-error and failed attempts, with immutable manifest hashes and byte-identical
@@ -87,7 +112,8 @@ on rejection. These checks use synthetic local storage and no paid requests.
 - [x] Verify parent/worker isolation, all outcomes, missing/altered/FIFO resources,
   immutable Allure/secondary bytes, relocated wheel and applicable exact coverage
   and boundary gates.
-- [ ] Human-review the explanatory image in the viewer when wired.
+- [x] Human acceptance of the explanatory image in the delivered evidence scope;
+  managed-viewer navigation retains its separate acceptance gate.
 
 Notice delivery passes 9,583 units and 27 subtests at 32 workers, with exact
 100% measured lines and branches. Independent mutation controls preserve the
