@@ -2,6 +2,8 @@
 
 [Inspector summary](implementation_plan_b1c.md) · [Execution contract](implementation_plan_b1c1.md)
 
+Complete the [mixed-model pricing and quota qualification](implementation_plan_f3c.md) before accepting node-cost overlays; distinguish allocated quota estimates from measured per-call charges.
+
 ## Definition and historical overlays
 
 - [ ] Show compatible recent E2E node mean wall elapsed and mean estimated cost, using `TEST_COST_HISTORY_DAYS` and existing indexed finalized-history ingestion. Default to successful complete node invocations, including their internal attempts once; make failure cohorts selectable and separate. Disclose sample count, age/window, variation, missingness and cost basis. Offer clearly labelled per-invocation and cumulative-per-test views; unvisited, known zero and unknown remain distinct.
