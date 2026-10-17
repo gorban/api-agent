@@ -230,6 +230,58 @@ async def test_foreign_listener_is_preserved(cli, port):
             await owner.aclose()
 
 
+def read_server_response_to_eof(port):
+    # Keep the client open until the server sends FIN, making the server the
+    # active closer and exercising its TIME_WAIT socket rather than a race.
+    with socket.create_connection(('127.0.0.1', port), timeout=2) as client:
+        client.sendall(f'GET /.ready HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n'.encode())
+        chunks = []
+        while chunk := client.recv(4096):
+            chunks.append(chunk)
+        return b''.join(chunks)
+
+
+@async_test
+async def test_viewer_reopens_same_port_after_confirmed_http_shutdown(cli, port):
+    first = viewer.ManagedAllureViewer(port)
+    second = viewer.ManagedAllureViewer(port)
+    try:
+        await first._ready()
+        response = await asyncio.to_thread(read_server_response_to_eof, port)
+        assert response.startswith(b'HTTP/1.0 200 OK')
+        server, thread = first._server, first._thread
+        await first.aclose()
+        assert server.socket.fileno() == -1
+        assert not thread.is_alive()
+
+        await second._ready()
+
+        assert second._server.server_address == ('127.0.0.1', port)
+        assert second._thread.is_alive()
+    finally:
+        await first.aclose()
+        await second.aclose()
+
+
+@async_test
+async def test_active_managed_viewer_is_not_replaced(cli, port):
+    first = viewer.ManagedAllureViewer(port)
+    second = viewer.ManagedAllureViewer(port)
+    try:
+        await first._ready()
+        with pytest.raises(ViewerError, match='occupied'):
+            await second._ready()
+        await second.aclose()
+
+        await first._ready()
+
+        assert first._thread.is_alive()
+        assert first._server.server_address == ('127.0.0.1', port)
+    finally:
+        await second.aclose()
+        await first.aclose()
+
+
 @async_test
 async def test_missing_cli(monkeypatch, port):
     monkeypatch.setattr(viewer.shutil, 'which', lambda _: None)
