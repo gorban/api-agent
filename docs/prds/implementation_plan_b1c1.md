@@ -1,6 +1,6 @@
 # Inspector execution evidence and bounded delivery
 
-[Inspector summary](implementation_plan_b1c.md) · [Presentation and diagnosis](implementation_plan_b1c2.md)
+[Inspector summary](implementation_plan_b1c.md) · [Presentation and diagnosis](implementation_plan_b1c2.md) · [Historical source identity](implementation_plan_b1c3.md)
 
 ## Origin-side identities and observations
 
