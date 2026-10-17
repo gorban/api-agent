@@ -282,6 +282,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 *SelectedTextCopy.COPY_BINDINGS]
 
     def on_screen_resume(self):
+        if self.kind == 'test-results':
+            self.call_after_refresh(self.app.update_test_results, self)
         pending = getattr(self.app, '_pending_cost_refresh', None)
         if pending is self.app.selection and self.kind == 'tests':
             self.app._pending_cost_refresh = None
@@ -1855,6 +1857,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
         if self.unit_result is not None and self.test_run is not None:
             from .test_results import completed_summary
             summary = completed_summary(summary, self.test_run.elapsed)
+        screen = self.screen
+        if isinstance(screen, ModalScreen):
+            screen = self.screen_stack[-2]
         rows = ordered_result_rows(self.unit_rows, completed=self.unit_result is not None)
         if self.mode in {'integration', 'e2e'} and self.unit_result is not None:
             from .cost_history import cost_cell
@@ -1862,21 +1867,20 @@ class ApiAgentApp(AllureNavigation, App[int]):
                     for key, cells in rows]
         if selected_row not in {key for key, _ in rows}:
             scroll_y = None
-        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results":
-            screen = self.screen
+        if isinstance(screen, WorkbenchScreen) and screen.kind == "test-results":
             if getattr(screen, "results_run", None) is not self.unit_result and screen.query(DataTable):
                 screen.query_one(DataTable).results_completed = False
             screen.body, screen.rows = summary, rows
             self.call_after_refresh(self.update_test_results, screen)
         else:
             self.show("test-results", f"{(self.mode or 'unit').capitalize()} test results", summary, rows=rows, selected_row=selected_row)
+            screen = self.screen
             if scroll_y is not None:
-                screen = self.screen
                 self.call_after_refresh(lambda: screen.query_one(DataTable).scroll_to(
                     y=scroll_y, animate=False))
-        self.screen.results_run = self.unit_result
-        self.screen.test_run_complete = self.unit_result is not None
-        self.screen.style_results = self.style_unit_summary
+        screen.results_run = self.unit_result
+        screen.test_run_complete = self.unit_result is not None
+        screen.style_results = self.style_unit_summary
         if self.unit_result is not None:
             self.call_after_refresh(self.style_unit_summary)
 
@@ -2248,10 +2252,15 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 self.show_menu()
             return
         if self.inspection_cleanup_active() and not self.test_run_active():
-            action = "End browser inspection"
+            duties = []
+            if self.inspections.active:
+                duties.append("end browser inspection")
+            if self.recording_cleanup is not None:
+                duties.append("finish pending cleanup")
             if self.allure_viewer is not None:
-                action = ("End browser inspection and close Allure" if self.inspections.active
-                          or self.recording_cleanup is not None else "Close Allure")
+                duties.append("close Allure")
+            action = ", ".join(duties)
+            action = action[0].upper() + action[1:]
             self.push_screen(QuitDialog(action + " and return to the menu? Enter literal y to confirm; every other response cancels."),
                              self.end_inspection_to_menu)
             return
