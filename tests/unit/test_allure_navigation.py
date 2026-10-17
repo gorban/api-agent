@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import DataTable, Input, Static
 
+from api_agent.tui import allure
 from api_agent.tui.allure import AllureNavigation
 from api_agent.testing.allure_viewer import PreviewSnapshot, ViewerLocation
 from test_tui import fixture
@@ -34,6 +35,87 @@ class Viewer:
 
 def snapshot():
     return PreviewSnapshot({}, {}, {'one':'one-result.json'})
+
+
+class RetentionHarness(AllureNavigation):
+    def __init__(self):
+        self.initialize_allure()
+        self._inspection_generation = object()
+        self._inspection_shutdown = False
+        self.refreshed = []
+        self.screen = SimpleNamespace(refresh_bindings=lambda: self.refreshed.append(True))
+
+
+def test_retained_preview_budget_includes_boundary_and_rejects_next_attempt(monkeypatch):
+    monkeypatch.setattr(allure, 'MAX_RETAINED_ALLURE_BYTES', 5)
+    app = RetentionHarness()
+    first = PreviewSnapshot({'a': b'123'}, {}, {'one': 'a'})
+    boundary = PreviewSnapshot({'b': b'45'}, {}, {'two': 'b'})
+    rejected = PreviewSnapshot({'c': b'6'}, {}, {'three': 'c'})
+
+    for item in (first, boundary, rejected):
+        app.receive_allure_snapshot(item, app._inspection_generation)
+
+    assert app.allure_snapshots == {'one': first, 'two': boundary}
+    assert app._allure_retained_bytes == 5
+    assert app._allure_budget_unavailable == {'three'}
+    assert len(app.refreshed) == 3
+
+
+def test_repeated_attempt_replaces_old_binding_even_when_rejected(monkeypatch):
+    monkeypatch.setattr(allure, 'MAX_RETAINED_ALLURE_BYTES', 3)
+    app = RetentionHarness()
+    first = PreviewSnapshot({'a': b'123'}, {}, {'one': 'a'})
+    too_large = PreviewSnapshot({'b': b'1234'}, {}, {'one': 'b'})
+    retry = PreviewSnapshot({'c': b'12'}, {}, {'one': 'c'})
+
+    app.receive_allure_snapshot(first, app._inspection_generation)
+    app.receive_allure_snapshot(too_large, app._inspection_generation)
+    assert app.allure_snapshots == {}
+    assert app._allure_retained_bytes == 0
+    assert app._allure_budget_unavailable == {'one'}
+    app.receive_allure_snapshot(retry, app._inspection_generation)
+
+    assert app.allure_snapshots == {'one': retry}
+    assert app._allure_retained_bytes == 2
+    assert app._allure_budget_unavailable == set()
+
+
+def test_final_snapshot_replaces_previews_and_is_counted_once(monkeypatch):
+    monkeypatch.setattr(allure, 'MAX_RETAINED_ALLURE_BYTES', 5)
+    app = RetentionHarness()
+    first = PreviewSnapshot({'a': b'123'}, {}, {'one': 'a'})
+    second = PreviewSnapshot({'b': b'45'}, {}, {'two': 'b'})
+    final = PreviewSnapshot({'all': b'12345'}, {}, {'one': 'a', 'two': 'b'}, False)
+
+    app.receive_allure_snapshot(first, app._inspection_generation)
+    app.receive_allure_snapshot(second, app._inspection_generation)
+    app.receive_allure_snapshot(final, app._inspection_generation)
+    app.receive_allure_snapshot(final, app._inspection_generation)
+
+    assert app.allure_snapshots == {'one': final, 'two': final}
+    assert app._allure_retained_bytes == 5
+    assert app._allure_budget_unavailable == set()
+
+
+def test_stale_snapshot_does_not_change_retention_and_clear_resets_state(monkeypatch):
+    monkeypatch.setattr(allure, 'MAX_RETAINED_ALLURE_BYTES', 1)
+    app = RetentionHarness()
+    retained = PreviewSnapshot({'a': b'1'}, {}, {'one': 'a'})
+    rejected = PreviewSnapshot({'b': b'22'}, {}, {'two': 'b'})
+
+    app.receive_allure_snapshot(retained, app._inspection_generation)
+    app.receive_allure_snapshot(rejected, app._inspection_generation)
+    app.receive_allure_snapshot(retained, object())
+    app._inspection_shutdown = True
+    app.receive_allure_snapshot(retained, app._inspection_generation)
+    assert app.allure_snapshots == {'one': retained}
+    assert app._allure_budget_unavailable == {'two'}
+    app.clear_allure_snapshots()
+
+    assert app.allure_snapshots == {}
+    assert app._allure_budget_unavailable == set()
+    assert app._allure_retained_bytes == 0
 
 
 @pytest.mark.parametrize('status',['PASSED','FAILED','ERROR','SKIPPED','CANCELLED'])
@@ -209,6 +291,29 @@ def test_empty_result_screen_and_missing_attempt_have_clear_availability(tmp_pat
             assert app.selected_allure_result(app.screen)==(None,None)
             await app.open_selected_allure()
             assert 'unavailable for this test attempt' in notices[-1]
+            assert app.allure_viewer is None
+    asyncio.run(scenario())
+
+
+def test_budget_rejection_keeps_selected_shortcut_with_honest_message(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(allure, 'MAX_RETAINED_ALLURE_BYTES', 1)
+        app = fixture(tmp_path)
+        notices = []
+        monkeypatch.setattr(app, 'notify', lambda text, **kwargs: notices.append(text))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.mode = 'integration'
+            app.unit_rows = {'one': ('PASSED', 'one', '1s')}
+            await app.show('test-results', 'Results', rows=list(app.unit_rows.items()))
+            oversized = PreviewSnapshot({'one-result.json': b'12'}, {}, {'one': 'one-result.json'})
+            app.receive_allure_snapshot(oversized, app._inspection_generation)
+
+            assert app.screen.check_action('view_allure', ()) is True
+            assert app.selected_allure_result(app.screen) == (None, None)
+            await app.open_selected_allure()
+            assert 'retained preview memory budget was reached' in notices[-1]
+            assert 'If this run finalizes and publishes' in notices[-1]
             assert app.allure_viewer is None
     asyncio.run(scenario())
 

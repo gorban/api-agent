@@ -190,8 +190,9 @@ class ManagedAllureViewer:
                 if result_file and name.endswith('-result.json') and name != result_file:
                     continue
                 (Path(staging) / name).write_bytes(body)
-            (Path(staging) / 'environment.properties').write_text(
-                f'Run={manifest["run_id"]}\nPublication={"Live preview; suite accounting pending" if preview else "Finalized immutable run"}\n')
+            if 'environment.properties' not in files:
+                (Path(staging) / 'environment.properties').write_text(
+                    f'Run={manifest["run_id"]}\nPublication={"Live preview; suite accounting pending" if preview else "Finalized immutable run"}\n')
             # Generate outside the served tree; publish a route only after success.
             with tempfile.TemporaryDirectory(prefix='report-', dir=root) as generated:
                 output = Path(generated) / 'report'

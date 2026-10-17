@@ -1480,7 +1480,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
             return
         if not await self.end_inspection():
             return
-        self.allure_snapshots.clear()
+        self.clear_allure_snapshots()
         cancel_event = threading.Event()
         selection = self.selection
         self.collection_cancel = cancel_event
@@ -2182,7 +2182,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
                     self.test_run = TestRunLifecycle()
                     self.collection_cancel = self.test_run.cancel_event
                     self.unit_result = None
-                    self.allure_snapshots.clear()
+                    self.clear_allure_snapshots()
                     self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
                     self.show_unit_results(self.unit_progress())
                     self.run_worker(self._run_integrations(), group='integration-run', exclusive=True)

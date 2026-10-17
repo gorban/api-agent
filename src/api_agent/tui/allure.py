@@ -2,19 +2,41 @@
 import asyncio
 from textual.widgets import DataTable, Input, Static
 
+MAX_RETAINED_ALLURE_BYTES = 128 * 1024 * 1024
+
 
 class AllureNavigation:
     def initialize_allure(self):
         self.allure_viewer = None
         self.allure_snapshots = {}
+        self._allure_budget_unavailable = set()
+        self._allure_retained_bytes = 0
         self._allure_generation = object()
         self._allure_opening = False
 
     def receive_allure_snapshot(self, snapshot, generation):
         if generation is self._inspection_generation and not self._inspection_shutdown:
+            # A new attempt supersedes its old binding even if the new copy is
+            # too large to retain. Final snapshots share one copy across tests.
             for identity in snapshot.result_files:
-                self.allure_snapshots[identity] = snapshot
+                self.allure_snapshots.pop(identity, None)
+                self._allure_budget_unavailable.discard(identity)
+            unique = {id(item): item for item in self.allure_snapshots.values()}
+            retained = sum(len(body) for item in unique.values() for body in item.files.values())
+            incoming = 0 if id(snapshot) in unique else sum(len(body) for body in snapshot.files.values())
+            if retained + incoming <= MAX_RETAINED_ALLURE_BYTES:
+                for identity in snapshot.result_files:
+                    self.allure_snapshots[identity] = snapshot
+            else:
+                self._allure_budget_unavailable.update(snapshot.result_files)
+            self._allure_retained_bytes = retained + (incoming if incoming and
+                retained + incoming <= MAX_RETAINED_ALLURE_BYTES else 0)
             self.screen.refresh_bindings()
+
+    def clear_allure_snapshots(self):
+        self.allure_snapshots.clear()
+        self._allure_budget_unavailable.clear()
+        self._allure_retained_bytes = 0
 
     def allure_runner_options(self, runner, generation):
         import inspect
@@ -55,7 +77,11 @@ class AllureNavigation:
         if selected is None:
             return
         if selected[0] is None:
-            self.notify('Allure evidence is unavailable for this test attempt; check publication details.',
+            key = self.screen.query_one(DataTable).selected_row_keys[0]
+            message = ('Allure live preview is unavailable for this test attempt: the retained preview memory budget was reached. If this run finalizes and publishes, browse it from Allure history.'
+                       if key in self._allure_budget_unavailable else
+                       'Allure evidence is unavailable for this test attempt; check publication details.')
+            self.notify(message,
                         severity='error', timeout=10)
             return
         generation = self._allure_generation

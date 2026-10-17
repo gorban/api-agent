@@ -709,3 +709,35 @@ def test_well_formed_replacement_still_requires_its_immutable_digest(run):
     files[name]=json.dumps(dict(original,status='failed')).encode()
     with pytest.raises(ViewerError,match='digest mismatch'):
         verified_files(manifest,files.__getitem__)
+
+
+@pytest.fixture(params=[(True, True), (False, True), (True, False), (False, False)],
+                ids=['preview-existing', 'final-existing', 'preview-annotation', 'final-annotation'])
+def metadata_snapshot(run, request):
+    manifest, files, name = run
+    preview, existing = request.param
+    original = b'Original=authoritative\nSuite=recorded\n'
+    if existing:
+        files['environment.properties'] = original
+    manifest['files'] = {key: hashlib.sha256(body).hexdigest() for key, body in files.items()}
+    if preview:
+        manifest['preview_version'] = 1
+    publication = 'Live preview; suite accounting pending' if preview else 'Finalized immutable run'
+    expected = original if existing else f'Run={manifest["run_id"]}\nPublication={publication}\n'.encode()
+    return PreviewSnapshot(files, manifest, {}, preview), name, expected
+
+
+@async_test
+async def test_generation_preserves_recorded_environment_before_adding_annotations(metadata_snapshot, cli, port):
+    snapshot, name, expected = metadata_snapshot
+    cli.write_text(cli.read_text() + "\n (output/'observed-environment.bin').write_bytes((source/'environment.properties').read_bytes())\n")
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    original_files = dict(snapshot.files)
+    try:
+        await owner.show_preview(snapshot, name)
+        route, = owner._bindings
+        observed = Path(owner._temporary.name) / route / 'observed-environment.bin'
+        assert observed.read_bytes() == expected
+        assert snapshot.files == original_files
+    finally:
+        await owner.aclose()
