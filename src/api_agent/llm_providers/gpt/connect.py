@@ -14,7 +14,6 @@ from api_agent.providers.sessions import wait_browser_result
 from api_agent.runtime.managed_browser import _dispose
 from .contracts import AuthError
 from .login import LoginWorkflow, finish_login
-from .firstparty import FirstPartyWorkflow, authenticate_first_party
 from api_agent.providers.control import CleanupPendingError
 
 
@@ -205,18 +204,9 @@ async def connect_account(store, *, registration=None, open_browser=None,
                                     await _dispose(drain_material())
                                 if material is not None and material.passkey_available:
                                     authenticator = SoftwarePasskey(session, material.passkey,
-                                                                   callback_url=listener.redirect_uri,
-                                                                   first_party=True)
+                                                                   callback_url=listener.redirect_uri)
                                     await authenticator.prepare()
-                                    guard = LoginPageGuard(session.page, allow_interaction=allow_interaction)
-                                    workflow = FirstPartyWorkflow(session, login_username, login_credentials,
-                                        app_name, guard, allow_interaction=allow_interaction,
-                                        material=material, software_passkey=True)
-                                    print('GPT selected-login passkey: signing in through ChatGPT before app authorization.', flush=True)
-                                    await authenticate_first_party(workflow, session, callback=listener.result)
-                                    workflow.authorizing = True
-                            if not listener.result.done():
-                                await session.page.goto(attempt.authorization_url, wait_until="domcontentloaded")
+                            await session.page.goto(attempt.authorization_url, wait_until="domcontentloaded")
                         except (AuthError, InteractionRequiredError, CleanupPendingError):
                             raise
                         except asyncio.CancelledError:
