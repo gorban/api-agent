@@ -116,7 +116,7 @@ class RunRecorder:
             'labels': [{'name': 'parentSuite', 'value': self._safe_text(self.identity.repo)},
                        {'name': 'suite', 'value': self.identity.mode},
                        {'name': 'subSuite', 'value': self._safe_text(Path(test.file).name)}],
-            'parameters': [{'name': 'attempt', 'value': str(attempt)}],
+            'parameters': [{'name': 'attempt', 'value': str(attempt), 'excluded': True}],
             'attachments': attachment_rows,
             'start': started_ms, 'stop': stopped_ms,
         }

@@ -116,6 +116,8 @@ class AllureNavigation:
             message += '\nBrowser inspection: ' + location.inspection_endpoint
         if location.browser_error:
             message += '\n' + location.browser_error
+        if getattr(location, 'archive_url', None):
+            message += '\nBrowse previous runs: ' + location.archive_url
         if self.screen.kind == 'allure':
             self.screen.query_one('#body', Static).update(message)
         else:

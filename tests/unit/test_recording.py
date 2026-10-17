@@ -28,7 +28,7 @@ def test_allure_hierarchy_and_attachments(tmp_path):
     assert [(x['name'], x['value']) for x in row['labels']] == [
         ('parentSuite', 'example'), ('suite', 'integration'), ('subSuite', 'test_demo.py')]
     assert row['name'] == 'test_ok'
-    assert row['parameters'] == [{'name': 'attempt', 'value': '2'}]
+    assert row['parameters'] == [{'name': 'attempt', 'value': '2', 'excluded': True}]
     assert (tmp_path / row['attachments'][0]['source']).read_bytes() == b'<p>ok</p>'
     assert 'secret traceback' not in (tmp_path / filename).read_text()
     manifest = run.finalize({'token': 'secret', 'duration_ms': 100})

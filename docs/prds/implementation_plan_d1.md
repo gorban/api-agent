@@ -4,7 +4,7 @@
 
 ## Viewer capabilities
 
-- [x] Complete [multi-run history, CLI prerequisites and managed serving](implementation_plan_d1b.md). Main-menu Allure serve browses multiple finalized integration/E2E suites for the selected repository/pack, with separate immutable run routes and newest-first navigation. Units remain outside this history.
+- [ ] Complete [multi-run history, CLI prerequisites and managed serving](implementation_plan_d1b.md). Main-menu Allure serve browses multiple finalized integration/E2E suites for the selected repository/pack, with separate immutable run routes and newest-first navigation. Units remain outside this history. Finish [native cross-launch history](implementation_plan_d1c.md) before renewed viewer acceptance.
 - [x] Complete [exact-test navigation during and after execution](implementation_plan_d1a.md). `a View in Allure` opens the highlighted terminal test/attempt, including while other tests run. Hide it for multi-row selections, groups, pending/running tests and units.
 - [x] Keep final history and operation-owned live previews distinct. Each preview has an explicit version and artifact hashes; later tests/final publication require a new binding. Never publish a partial finalized manifest or silently substitute latest data. Completed accounting and immutable final manifests remain authoritative.
 

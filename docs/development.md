@@ -51,8 +51,12 @@ a host installation alone may not be visible inside a container. The
 
 Choose **Allure serve** or run `./launch.py --tui-mode allure` interactively to
 browse finalized integration/E2E runs for the selected repository/pack. The
-managed browser opens a newest-first history page; each run has its own report,
-generated when opened. **Refresh history** discovers later publications. The
+managed browser opens the latest report with native test History and trend
+charts, built chronologically from up to 20 launches of the same mode.
+**Browse previous runs** in the launcher or report executor opens the complete
+newest-first archive; older reports are generated on demand. Independent
+launches remain distinct from retries. **Refresh history** discovers later
+publications without changing already served report bindings. The
 viewer uses `ALLURE_VIEWER_PORT` (default 5252); an occupied port fails clearly.
 Leaving the viewer closes its browser, listener and temporary reports; stored
 results remain intact.
