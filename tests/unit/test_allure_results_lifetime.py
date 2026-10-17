@@ -60,8 +60,9 @@ def test_first_completed_test_refreshes_footer_without_focus_change(tmp_path, sn
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('confirming', [False, True], ids=['results-visible', 'confirmation-open'])
 @pytest.mark.parametrize('generation_finishes_last', [False, True], ids=['toast-before-completion', 'preview-finishes-after-completion'])
-def test_final_results_keep_allure_toast_and_its_exact_link(tmp_path, monkeypatch, interactions, generation_finishes_last):
+def test_final_results_keep_allure_toast_and_its_exact_link(tmp_path, monkeypatch, interactions, generation_finishes_last, confirming):
     async def scenario():
         app = fixture(tmp_path)
         entered, release = asyncio.Event(), asyncio.Event()
@@ -90,6 +91,10 @@ def test_final_results_keep_allure_toast_and_its_exact_link(tmp_path, monkeypatc
                     await request
                     await pilot.pause()
                     notification = app.screen.query_one(Toast)._notification
+                if confirming:
+                    await pilot.press('c')
+                    await pilot.pause()
+                    await app.open_selected_allure()
                 app.unit_event(RunnerEvent('test_finished', identity=two, status='passed', duration=2))
                 app.unit_result = IntegrationRunResult(0, (TestResult(one, 'passed', 1), TestResult(two, 'passed', 2)), '')
                 app.test_run.finish()
@@ -98,7 +103,12 @@ def test_final_results_keep_allure_toast_and_its_exact_link(tmp_path, monkeypatc
                     release.set()
                     await request
                 await pilot.pause()
+                if confirming:
+                    assert app.screen is not current_screen
+                    await pilot.press('escape')
+                    await pilot.pause()
                 toast = app.screen.query_one(Toast)
+                assert REPORT in str(toast.render())
                 assert app.screen is current_screen and app.screen.test_run_complete
                 assert len(viewer.calls) == 1 and not viewer.closed
                 if not generation_finishes_last:
@@ -157,4 +167,34 @@ def test_leave_results_names_owned_resources_once_and_cleans_only_on_confirmatio
             assert viewer.closed == (accepted and allure_owned)
             assert cleanup_calls == (['cleanup'] if accepted and recording_owned else [])
             assert (app.recording_cleanup is not None) == (recording_owned and not accepted)
+    asyncio.run(scenario())
+
+
+def test_leave_confirmation_uses_one_owner_snapshot_during_natural_browser_close(tmp_path):
+    async def scenario():
+        app = fixture(tmp_path)
+        class ClosingInspection:
+            reads = 0
+            @property
+            def active(self):
+                self.reads += 1
+                return self.reads == 1
+        closing = ClosingInspection()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.mode = 'integration'
+            app.unit_result = IntegrationRunResult(0, (), '')
+            app.show_unit_results()
+            await pilot.pause()
+            app.inspections = closing
+            try:
+                await app.close_view()
+                await pilot.pause()
+                assert app.screen.message.startswith('End browser inspection and return')
+                assert closing.reads == 1
+            finally:
+                app.inspections = InspectionGroup()
+            await pilot.press('escape')
+            await pilot.pause()
+            assert app.screen.kind == 'test-results'
     asyncio.run(scenario())

@@ -5,6 +5,7 @@ from uuid import uuid4
 from rich.segment import Segment
 from rich.style import Style as RichStyle
 from textual.content import Content
+from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.style import Style
 from textual.widgets import DataTable, Input, Static
@@ -83,7 +84,7 @@ class AllureNavigation:
         return {}
 
     def selected_allure_key(self, screen):
-        if (self.mode not in {'integration', 'e2e'} or screen.kind not in {'test-results', 'test-failure'}
+        if (self.mode not in {'integration', 'e2e'} or getattr(screen, 'kind', None) not in {'test-results', 'test-failure'}
                 or self.screen is not screen or isinstance(self.focused, Input)
                 or self._allure_opening):
             return None
@@ -145,13 +146,20 @@ class AllureNavigation:
                 self._allure_opening = False
                 self.screen.refresh_bindings()
 
+    def allure_page(self):
+        screen = self.screen
+        if isinstance(screen, ModalScreen):
+            screen = self.screen_stack[-2]
+        return screen if getattr(screen, 'kind', None) == 'allure' else None
+
     def show_allure_location(self, location):
+        page = self.allure_page()
         def link(url, action):
             style = Style.from_meta({'@click': ('app.' + action, (url,))})
             return Content(url).stylize(style)
         parts = ['Allure (click to open + copy URL):\n', link(location.url, 'allure_open_url')]
         if location.inspection_endpoint:
-            spacing = '\n\n' if self.screen.kind == 'allure' else '\n'
+            spacing = '\n\n' if page is not None else '\n'
             parts.extend([spacing + 'Browser CDP (click to copy; not a web page):\n',
                           link(location.inspection_endpoint, 'allure_copy_url')])
         if location.browser_error:
@@ -161,8 +169,8 @@ class AllureNavigation:
                           ' (open + copy URL)'])
         content = Content.assemble(*parts)
         message = AllureLinkContent(str(content), content.spans)
-        if self.screen.kind == 'allure':
-            self.screen.query_one('#body', Static).update(message)
+        if page is not None:
+            page.query_one('#body', Static).update(message)
         else:
             self.notify(message, timeout=15)
 
@@ -213,9 +221,10 @@ class AllureNavigation:
                 self.operation_status = 0
                 self.show_allure_location(location)
         except Exception as error:
-            if generation is self._allure_generation and self.screen.kind == 'allure':
+            page = self.allure_page() if generation is self._allure_generation else None
+            if page is not None:
                 self.operation_status = 3
-                self.screen.query_one('#error', Static).update(str(error))
+                page.query_one('#error', Static).update(str(error))
         finally:
             if generation is self._allure_generation:
                 self._allure_opening = False
