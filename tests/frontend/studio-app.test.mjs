@@ -50,9 +50,15 @@ test('Studio selection, safe rendering, question editing, and unavailable contin
       return route.continue();
     });
     await page.goto(host);
+    assert.equal(await page.locator('#model-short-name').textContent(), 'Provider default');
     await page.locator('#settings-nav').click();
     await page.locator('#model').selectOption('sample');
+    assert.equal(await page.locator('#model-short-name').textContent(), 'Sample model');
     assert.deepEqual(await page.locator('#reasoning option').allTextContents(), ['Provider default','off','low']);
+    await page.locator('#reasoning').selectOption('off');
+    assert.equal(await page.locator('#model-short-name').textContent(), 'Sample model: off');
+    await page.locator('#reasoning').selectOption('low');
+    assert.equal(await page.locator('#model-short-name').textContent(), 'Sample model: low');
     await page.locator('#reasoning').selectOption('off');
     await page.locator('#close-settings').click();
     await page.locator('#prompt').fill('<b>Make something</b>');

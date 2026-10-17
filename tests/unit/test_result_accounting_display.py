@@ -62,9 +62,8 @@ def test_shared_details_prioritizes_failures_and_preserves_accounting(status, co
 
 
 @pytest.mark.parametrize('mode', ['integration','e2e'])
-@pytest.mark.parametrize('current,historical,opens', [(True,False,True),(False,True,True),
-                                                    (False,False,False)])
-def test_passing_details_open_only_for_current_or_compatible_historical_tokens(tmp_path, monkeypatch, mode, current, historical, opens):
+@pytest.mark.parametrize('current,historical', [(True,False),(False,True),(False,False)])
+def test_completed_integration_details_include_current_or_historical_accounting(tmp_path, monkeypatch, mode, current, historical):
     # This snapshot requires no remote storage, inference or authentication.
     from test_historical_cost_tui import Snapshot
     snapshot = Snapshot()
@@ -87,9 +86,6 @@ def test_passing_details_open_only_for_current_or_compatible_historical_tokens(t
             app.screen.query_one(TestTable).focus()
             await pilot.press('enter')
             await pilot.pause()
-            if not opens:
-                assert app.screen.kind == 'test-results'
-                return
             assert app.screen.kind == 'test-failure'
             body = app.screen.query_one('#body', Static).content
             assert body.plain.endswith('PASSED') and body.spans[-1].style == 'green'

@@ -47,29 +47,40 @@ class AllureNavigation:
                 self.receive_allure_snapshot, snapshot, generation)}
         return {}
 
-    def selected_allure_result(self, screen):
-        if (self.mode not in {'integration', 'e2e'} or screen.kind != 'test-results'
+    def selected_allure_key(self, screen):
+        if (self.mode not in {'integration', 'e2e'} or screen.kind not in {'test-results', 'test-failure'}
                 or self.screen is not screen or isinstance(self.focused, Input)
                 or self._allure_opening):
             return None
-        if not screen.query(DataTable):
-            return None
-        table = screen.query_one(DataTable)
-        keys = table.selected_row_keys
-        if len(keys) != 1:
-            return None
-        key = keys[0]
-        snapshot = self.allure_snapshots.get(key)
+        if screen.kind == 'test-failure':
+            result, key, _ = getattr(screen, 'result_return', (None, None, None))
+            if result is None or result is not self.unit_result:
+                return None
+        else:
+            if not screen.query(DataTable):
+                return None
+            keys = screen.query_one(DataTable).selected_row_keys
+            if len(keys) != 1:
+                return None
+            key = keys[0]
         if self.unit_rows.get(key, ('PENDING',))[0] not in {
                 'PASSED', 'FAILED', 'ERROR', 'BROKEN', 'SKIPPED', 'CANCELLED', 'INTERRUPTED'}:
             return None
+        return key
+
+    def selected_allure_result(self, screen):
+        key = self.selected_allure_key(screen)
+        if key is None:
+            return None
+        snapshot = self.allure_snapshots.get(key)
         return (snapshot, snapshot.result_files[key]) if snapshot is not None else (None, None)
 
     def _allure(self):
         if self.allure_viewer is None:
             from api_agent.testing.allure_viewer import ManagedAllureViewer
+            values = self.session.result().values
             self.allure_viewer = ManagedAllureViewer(
-                self.session.result().values.get('ALLURE_VIEWER_PORT', 5252))
+                values.get('ALLURE_VIEWER_PORT', 5252), cli=values.get('ALLURE_CLI', 'allure'))
         return self.allure_viewer
 
     async def open_selected_allure(self):
@@ -77,7 +88,7 @@ class AllureNavigation:
         if selected is None:
             return
         if selected[0] is None:
-            key = self.screen.query_one(DataTable).selected_row_keys[0]
+            key = self.selected_allure_key(self.screen)
             message = ('Allure live preview is unavailable for this test attempt: the retained preview memory budget was reached. If this run finalizes and publishes, browse it from Allure history.'
                        if key in self._allure_budget_unavailable else
                        'Allure evidence is unavailable for this test attempt; check publication details.')

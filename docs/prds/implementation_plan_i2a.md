@@ -43,3 +43,5 @@ expected text. That earlier checkpoint left parallel UI DEBUG retention open. Th
 [parallel ownership follow-through](implementation_plan_i2a1.md) now closes that
 implementation gap with independent controlled proofs; full application E2E and
 workflow execution retain their separate gates.
+
+- [x] The compact composer model indicator appends `: <reasoning>` for every explicitly selected effort, including off; provider-default effort has no suffix. Preserve model/version selection and immutable per-message metadata.

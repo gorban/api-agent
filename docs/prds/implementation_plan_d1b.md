@@ -23,3 +23,5 @@
 - [ ] Human review multiple run routes, refresh, browser-opening failure diagnostics and owned cleanup. Selected-test/live-preview acceptance remains in its own child.
 
 Official references: [generation](https://allurereport.org/docs/v2/generate-report/), [installation](https://allurereport.org/docs/v2/install/) and [Homebrew formula](https://formulae.brew.sh/formula/allure).
+
+- [x] Add review-visible ALLURE_CLI, default allure, accepting a quoted executable and optional command-prefix arguments. Parse to an argument vector without shell execution. Use the same prefix for bounded version checking and generation; missing commands, malformed quoting and nonzero exits are actionable. Document host/container PATH differences and explicit host executable paths.

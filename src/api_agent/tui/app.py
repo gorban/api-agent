@@ -441,6 +441,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             self.set_interval(.25, self.refresh_suite_timer)
             self.refresh_suite_timer()
             self.call_after_refresh(self.layout_test_results)
+        if self.kind == 'test-failure':
+            self._bindings.key_to_bindings['c'] = [Binding('c', 'close_view', 'Close')]
+            self._bindings.key_to_bindings['a'] = [Binding('a', 'view_allure', 'View in Allure')]
         if self.kind == "defaults":
             self._bindings.key_to_bindings["c"] = [Binding(
                 "c", "close_view", "Close" if self.app.startup_review or self.app.review_destination else "Close / menu")]
@@ -2044,7 +2047,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
             from api_agent.telemetry.usage_output import has_tokens
             historical = (self.cost_estimator.predictions.get(key, {}).get('has_token_history', False)
                           if self.cost_estimator is not None else False)
-            if result and (result.status != 'passed' or getattr(result, 'local_diagnostic', '')
+            if result and (self.mode in {'integration', 'e2e'} or result.status != 'passed' or getattr(result, 'local_diagnostic', '')
                            or has_tokens(self.suite_usage, key) or historical):
                 mode = (self.mode or 'unit').capitalize()
                 title = (f"{mode} test details" if result.status == 'passed' else
@@ -2240,6 +2243,11 @@ class ApiAgentApp(AllureNavigation, App[int]):
             self.show_menu()
 
     async def close_view(self):
+        if self.screen.kind == 'test-failure':
+            result, key, scroll_y = getattr(self.screen, 'result_return', (None, None, None))
+            self.show_unit_results(selected_row=key if result is self.unit_result else None,
+                                   scroll_y=scroll_y if result is self.unit_result else None)
+            return
         if self.screen.kind == 'allure':
             if await self.close_allure():
                 self.show_menu()
@@ -2261,10 +2269,6 @@ class ApiAgentApp(AllureNavigation, App[int]):
         elif self.screen.kind == "defaults" and self.review_destination:
             self.mode = self.review_destination
             await self.enter_mode(skip_defaults=True)
-        elif self.screen.kind == "test-failure":
-            result, key, scroll_y = getattr(self.screen, "result_return", (None, None, None))
-            self.show_unit_results(selected_row=key if result is self.unit_result else None,
-                                   scroll_y=scroll_y if result is self.unit_result else None)
         elif self.screen.kind == "test-results" and self.unit_result is None:
             return
         elif self.screen.kind == "cleanup" and self.configuration_pending():

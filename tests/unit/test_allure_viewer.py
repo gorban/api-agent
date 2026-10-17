@@ -741,3 +741,59 @@ async def test_generation_preserves_recorded_environment_before_adding_annotatio
         assert snapshot.files == original_files
     finally:
         await owner.aclose()
+
+
+@pytest.mark.parametrize('command', ['', '  ', '"unfinished', None, 3, [], 'bad\0command'])
+@async_test
+async def test_invalid_configured_command_is_actionable_before_launch(port, command):
+    owner = viewer.ManagedAllureViewer(port, cli=command)
+    try:
+        with pytest.raises(ViewerError, match='Invalid ALLURE_CLI'):
+            await owner._ready()
+        assert owner._processes == []
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_quoted_command_prefix_reaches_version_and_generation_literally(run, cli, port, tmp_path, monkeypatch):
+    import shlex
+    import sys
+    wrapper = tmp_path / 'host wrapper.py'
+    recorded = tmp_path / 'arguments.jsonl'
+    literal = '$not_expanded; literal argument'
+    wrapper.write_text('import json,os,sys\n'
+        + f'with open({str(recorded)!r},"a") as stream: stream.write(json.dumps(sys.argv[1:])+"\\n")\n'
+        + 'os.execv(sys.executable,[sys.executable,sys.argv[2],*sys.argv[3:]])\n')
+    monkeypatch.setattr(viewer.shutil, 'which', lambda name: name)
+    command = shlex.join([sys.executable, str(wrapper), literal, str(cli)])
+    manifest, files, name = run
+    owner = viewer.ManagedAllureViewer(port, cli=command, browser_factory=Browser)
+    try:
+        await owner.show_preview(PreviewSnapshot(files, dict(manifest, preview_version=1), {}), name)
+        calls = [json.loads(line) for line in recorded.read_text().splitlines()]
+        assert [row[:3] for row in calls] == [[literal, str(cli), '--version'], [literal, str(cli), 'generate']]
+        assert owner._cli == (sys.executable, str(wrapper), literal, str(cli))
+    finally:
+        await owner.aclose()
+
+
+@async_test
+async def test_host_command_exit_reports_status_without_echoing_output(cli, port):
+    cli.write_text('#!/bin/sh\necho synthetic-private-diagnostic >&2\nexit 127\n')
+    owner = viewer.ManagedAllureViewer(port)
+    try:
+        with pytest.raises(ViewerError, match='exit 127') as error:
+            await owner._ready()
+        assert 'synthetic-private-diagnostic' not in str(error.value)
+        assert 'ALLURE_CLI' in str(error.value)
+        assert owner._processes == []
+    finally:
+        await owner.aclose()
+
+
+def test_shared_allure_command_is_review_visible_with_default():
+    from api_agent.config import load_shared_schema
+    field = load_shared_schema().fields['ALLURE_CLI']
+    assert field.default == 'allure'
+    assert field.acknowledge_default is True

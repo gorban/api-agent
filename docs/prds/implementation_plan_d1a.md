@@ -69,3 +69,5 @@ attempt loses any earlier binding and reports its specific unavailable reason;
 it never substitutes another attempt. Finalized history remains independently
 viewable. Returning to selection or starting a suite clears retained copies,
 budget accounting and unavailable reasons.
+
+- [x] Completed integration/E2E tests open details on Enter for every outcome, including passed tests with no LLM use. Show existing timing, per-test cost and actual token data. `c Close` returns to the same results/row/scroll without confirmation or disposal. Details expose the same exact-attempt `a View in Allure` action, retaining results, snapshots and inspection resources.

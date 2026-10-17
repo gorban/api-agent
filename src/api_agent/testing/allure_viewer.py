@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -91,11 +92,12 @@ class ManagedAllureViewer:
     Existing bindings never change. Refresh adds new routes and rewrites only the
     history navigation index. Cleanup failures retain resources for aclose retry.
     """
-    def __init__(self, port=5252, *, browser_factory=None, timeout=120):
+    def __init__(self, port=5252, *, browser_factory=None, timeout=120, cli='allure'):
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError('Allure viewer port must be between 1 and 65535')
         self.port = port
         self.timeout = timeout
+        self.cli = cli
         self._inspection = InspectionOwner()
         self.browser_factory = browser_factory or (lambda: managed_browser(headless=False, inspection=self._inspection))
         self._temporary = None
@@ -134,7 +136,7 @@ class ManagedAllureViewer:
                 try:
                     await asyncio.to_thread(process.wait, timeout=budget.remaining)
                     if process.returncode != 0:
-                        raise ViewerError('Allure failed; check the Allure 2 CLI and Java installation')
+                        raise ViewerError(f'Allure command failed (exit {process.returncode}); check ALLURE_CLI, its host PATH and Java installation')
                     output.seek(0)
                     return output.read(4096).decode('utf-8', errors='replace').strip()
                 except subprocess.TimeoutExpired:
@@ -147,13 +149,22 @@ class ManagedAllureViewer:
         if self._closed:
             raise ViewerError('Allure viewer is closed')
         if self._cli is None:
-            cli = shutil.which('allure')
-            if cli is None:
-                raise ViewerError('Allure 2 CLI is missing from PATH; install with brew install allure or see https://allurereport.org/docs/v2/install/')
-            version = await self._command([cli, '--version'], version=True)
+            try:
+                if not isinstance(self.cli, str):
+                    raise ValueError()
+                arguments = shlex.split(self.cli)
+                if not arguments or any('\0' in argument for argument in arguments):
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise ViewerError('Invalid ALLURE_CLI; provide a command and quote arguments containing spaces') from None
+            executable = shutil.which(arguments[0])
+            if executable is None:
+                raise ViewerError('Allure 2 CLI command is missing from PATH; configure ALLURE_CLI or install with brew install allure; see https://allurereport.org/docs/v2/install/')
+            arguments[0] = executable
+            version = await self._command([*arguments, '--version'], version=True)
             if re.fullmatch(r'2\.\d+\.\d+(?:[-+][A-Za-z0-9.\-]+)?', version) is None:
                 raise ViewerError('Unsupported Allure CLI; an externally installed Allure 2 version is required')
-            self._cli = cli
+            self._cli = tuple(arguments)
         if self._temporary is None:
             self._temporary = tempfile.TemporaryDirectory(prefix='api-agent-allure-viewer-')
         if self._server is None:
@@ -196,7 +207,7 @@ class ManagedAllureViewer:
             # Generate outside the served tree; publish a route only after success.
             with tempfile.TemporaryDirectory(prefix='report-', dir=root) as generated:
                 output = Path(generated) / 'report'
-                await self._command([self._cli, 'generate', staging, '--output', str(output)])
+                await self._command([*self._cli, 'generate', staging, '--output', str(output)])
                 if not (output / 'index.html').is_file():
                     raise ViewerError('Allure generation produced no report')
                 suffix = ''
