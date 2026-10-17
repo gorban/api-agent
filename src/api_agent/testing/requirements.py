@@ -5,6 +5,17 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class IntegrationRequirementsPlan:
     requires_pack_api: bool
+    requires_ui_session: bool = False
+    requires_llm: bool = True
+
+    @property
+    def provider_kinds(self):
+        kinds = {'llm'} if self.requires_llm else set()
+        if self.requires_ui_session:
+            kinds.add('ui')
+        if self.requires_pack_api:
+            kinds.update(('api', 'upstream', 'access'))
+        return frozenset(kinds)
 
     def validate(self, context, config):
         if self.requires_pack_api:
@@ -13,10 +24,13 @@ class IntegrationRequirementsPlan:
 
 
 def plan_integration_requirements(tests):
-    """API integrations declare their pack identity/API dependency explicitly.
+    """Keep legacy LLM intent; explicit UI-only tests do not consume an LLM.
 
-    Base/provider-only tests require no pack API. The same immutable marker
-    survives collection, selection and execution verification.
+    A UI session test that also consumes an LLM declares ``requires_llm``.
+    Mixed selections union their requirements without changing operation mode.
     """
     tests = tuple(tests)
-    return IntegrationRequirementsPlan(any('requires_pack_api' in test.tags for test in tests))
+    return IntegrationRequirementsPlan(
+        any('requires_pack_api' in test.tags for test in tests),
+        any('requires_ui_session' in test.tags for test in tests),
+        any('requires_ui_session' not in test.tags or 'requires_llm' in test.tags for test in tests))

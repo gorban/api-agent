@@ -27,14 +27,11 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     cancelled = options.setdefault('cancel_event', Event())
     if prerequisites is None:
         scope = StackScope.from_roots(context.base_root, context.pack_root)
-        provider_kinds = {'llm'}
-        if plan.requires_pack_api:
-            provider_kinds.update(('api', 'upstream', 'access'))
         prerequisites = local_recording_prerequisites(context, scope=scope,
             ownership_directory=context.owner_root / 'artifacts' / 'prerequisites',
             engine_environment={key: os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ},
             cancel_event=cancelled, provider_config=config,
-            provider_kinds=frozenset(provider_kinds))
+            provider_kinds=plan.provider_kinds)
     prepare = options.pop('prepare', None)
 
     def before(usage):

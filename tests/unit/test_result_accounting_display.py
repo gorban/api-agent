@@ -1,6 +1,7 @@
 """Completed details use actual accounting and the finalized suite estimate."""
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from textual.widgets import Static
@@ -98,10 +99,10 @@ def test_passing_details_open_only_for_current_or_compatible_historical_tokens(t
             assert tokens_text(app.suite_usage, tests[0].id) in body.plain
             assert app.screen.selected_test_name() == tests[0].id
             # Existing copy fallback and close action also work for passed details.
-            copied = []
-            monkeypatch.setattr(app, 'copy_to_clipboard', copied.append)
+            copy = AsyncMock(return_value=True)
+            monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
             await app.screen.action_copy_value()
-            assert copied == [tests[0].id]
+            copy.assert_awaited_once_with(app, tests[0].id)
             await pilot.press('c')
             await pilot.pause()
             assert app.screen.kind == 'test-results'

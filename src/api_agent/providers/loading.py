@@ -297,8 +297,10 @@ def validate_capabilities(adapter, expected_kind=None):
         streaming = operation == 'stream'
         if not callable(hook) or ((inspect.iscoroutinefunction(hook) or inspect.isgeneratorfunction(hook)) if streaming else not inspect.iscoroutinefunction(hook)):
             raise ProviderError('provider_capability_invalid')
-        args = () if operation in ('describe', 'usage', 'launch') else (object(),)
-        kwargs = {} if operation == 'launch' else {'auth': None}
+        args = () if operation in ('describe', 'usage', 'launch', 'prepare_session', 'capture_evidence') else (object(),)
+        kwargs = (dict(session=object(), user_index=None, credentials=None)
+                  if operation == 'prepare_session' else dict(page=object(), boundary=object())
+                  if operation == 'capture_evidence' else {} if operation == 'launch' else {'auth': None})
         try:
             inspect.signature(hook).bind(*args, **kwargs)
         except (TypeError, ValueError):

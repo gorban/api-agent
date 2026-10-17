@@ -195,3 +195,31 @@ test('optional ephemeral access token has exact bounds and config header shape',
     assert.equal(response.headers.get('x-api-agent-session'),null);
   }
 });
+
+test('managed parent stdin EOF stops host; manual host ignores stdin EOF', {timeout:10000}, async t => {
+  for (const managed of [true, false]) {
+    const childEnv={...env, ...(managed ? {API_AGENT_UI_PARENT_LIVENESS:'stdin-v1'} : {})};
+    const script=`
+      import net from 'node:net';
+      import {launch} from './apps/api-agent-ui/server.mjs';
+      const listen=net.Server.prototype.listen;
+      net.Server.prototype.listen=function(port,host,callback){return listen.call(this,0,host,callback);};
+      const server=await launch(${JSON.stringify(childEnv)});
+      process.send({port:server.address().port});
+    `;
+    const child=spawn(process.execPath,['--input-type=module','-e',script],{cwd:new URL('../../',import.meta.url),stdio:['pipe','pipe','pipe','ipc']});
+    t.after(async()=>{if(child.exitCode===null && child.signalCode===null){const exited=once(child,'exit');child.kill('SIGKILL');await exited;}});
+    const [{port}]=await once(child,'message');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status,200);
+    const exited=once(child,'exit');
+    child.stdin.end();
+    if (!managed) {
+      await new Promise(resolve=>setTimeout(resolve,80));
+      assert.equal(child.exitCode,null);
+      assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status,200);
+      child.kill('SIGTERM');
+    }
+    assert.deepEqual(await exited,[0,null]);
+    await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
+  }
+});

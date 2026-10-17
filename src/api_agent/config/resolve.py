@@ -111,8 +111,9 @@ def _expected_matches(actual, expected):
     return actual == expected or actual is None and expected == ''
 
 
-def _matches(predicate, values):
-    return all(any(_matches(branch, values) for branch in expected) if name == 'any'
+def _matches(predicate, values, operation_intents=()):
+    return all(expected in operation_intents if name == 'operation' else
+               any(_matches(branch, values, operation_intents) for branch in expected) if name == 'any'
                else (any(_expected_matches(values.get(name, UNSET), value) for value in expected)
                      if isinstance(expected, list) else _expected_matches(values.get(name, UNSET), expected))
                for name, expected in predicate.items())
@@ -122,11 +123,15 @@ def _controllers(predicate):
         if name == 'any':
             for branch in expected:
                 yield from _controllers(branch)
-        else:
+        elif name != 'operation':
             yield name
 
 def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
-                   interactive=False, pack_launcher=False, overrides=None):
+                   interactive=False, pack_launcher=False, overrides=None, operation_intents=()):
+    from .declarations import OPERATION_INTENTS
+    operation_intents = frozenset(operation_intents)
+    if not operation_intents <= OPERATION_INTENTS:
+        raise ConfigError('Unsupported configuration operation intent')
     options = parse_options(schema, argv)
     environ = os.environ if environ is None else environ
     sources = [('dotenv', dotenv or {}), ('environment', environ), ('cli', options.values)]
@@ -182,7 +187,7 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
     for name in schema.fields:
         resolve_defaults(name)
     active = {name for name, declaration in schema.fields.items()
-              if (not declaration.pack_only or pack_launcher) and _matches(declaration.applies_when, values)}
+              if (not declaration.pack_only or pack_launcher) and _matches(declaration.applies_when, values, operation_intents)}
     for name in active:
         errors.extend(deferred_errors.get(name, ()))
     missing = tuple(name for name, declaration in schema.fields.items()

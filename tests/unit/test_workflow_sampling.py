@@ -109,14 +109,16 @@ def test_fingerprint_binds_user_input_and_driver(workflow_driver,monkeypatch):
     assert 'src/api_agent/workflows/fixture_driver.py' in before['sources']
 
 
-def test_fingerprint_binds_provider_inference_code(workflow_driver,monkeypatch):
+@pytest.mark.parametrize('source,before_text,after_text',[
+    ('src/api_agent/llm_providers/gpt/inference.py',b'_LIMIT = 1048576',b'_LIMIT = 1048577'),
+    ('src/api_agent/auth/bindings.py',b'sources[selected_role]',b'sources[next(iter(sources))]')])
+def test_fingerprint_binds_request_affecting_code(workflow_driver,monkeypatch,source,before_text,after_text):
     from pathlib import Path
     fingerprint=workflow_driver['fingerprint']
     before=fingerprint('synthetic',FACTORY_CONFIG)
-    source='src/api_agent/llm_providers/gpt/inference.py'
     original=Path.read_bytes
     def changed(path):
-        return original(path).replace(b'_LIMIT = 1048576', b'_LIMIT = 1048577') if str(path).endswith(source) else original(path)
+        return original(path).replace(before_text,after_text) if str(path).endswith(source) else original(path)
     monkeypatch.setattr(Path,'read_bytes',changed)
     after=fingerprint('synthetic',FACTORY_CONFIG)
     assert before['sources'][source] != after['sources'][source]

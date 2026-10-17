@@ -153,78 +153,16 @@ class IntegrationLLM:
             self._retained_owners.pop()
 
     def _credentials(self, index):
-        from api_agent.auth.profiles import normalize_auth, parse_profiles, validate_role_entries
-        from api_agent.auth import credentials as helpers
-        from api_agent.providers.sessions import ScopedRoleCredentials, ScopedLLMCredentials
+        from api_agent.auth.bindings import bind_role_credentials
+        from api_agent.providers.sessions import ScopedLLMCredentials
         role = self.config.get('LLM_CREDENTIAL_ROLE')
-        try:
-            canonical = normalize_auth(self.config.get('UNATTENDED_AUTH', {}),
-                                       registry=self.password_manager_registry)
-            entries = canonical['roles'].get(role, [])
-            if not role:
-                return None
-            validate_role_entries(role, entries)
-            if not entries:
-                raise SetupPrerequisiteError(f'{role}: configure an account in unattended authentication setup.')
-            if not canonical['password_manager']['manager']:
-                raise SetupPrerequisiteError('Configure the shared password manager before unattended authentication.')
-            profiles = parse_profiles({'password_manager': canonical['password_manager'],
-                                       'roles': {role: entries}}, (role,),
-                                      registry=self.password_manager_registry)
-            if type(index) is not int or index < 0 or index >= len(profiles.for_role(role)):
-                raise ValueError
-            source = profiles.for_role(role)[index]
-        except SetupPrerequisiteError:
-            raise
-        except (ValueError, TypeError):
-            raise ContractError('The selected unattended login descriptor is incomplete or invalid.') from None
-
-        async def retrieve(selected_role, selected_index, kind, **options):
-            helper = {'username': helpers.get_username, 'password': helpers.get_password,
-                      'totp': helpers.get_totp, 'login': helpers.get_login_credentials}[kind]
-            interaction = None if self.interaction is None else self.interaction.fork()
-            try:
-                from api_agent.providers.progress import report_timeout
-                async with report_timeout('Password-manager ' + kind, None) as budget:
-                    def call_helper():
-                        # A queued worker must not restart the captured budget.
-                        remaining = budget.remaining
-                        timeout = helpers.DEFAULT_TIMEOUT if remaining is None else min(helpers.DEFAULT_TIMEOUT, remaining)
-                        return helper(source, timeout=timeout,
-                                      interaction=interaction, recovery_timeout=remaining, **options)
-                    task = asyncio.create_task(asyncio.to_thread(call_helper))
-                    self._credential_tasks.add(task)
-                    task.add_done_callback(self._credential_tasks.discard)
-                    try:
-                        value = await asyncio.shield(task)
-                        if type(value) is str and value:
-                            self.emissions.register_secret(value)
-                        elif kind == 'login':
-                            for secret in value.secret_values():
-                                self.emissions.register_secret(secret)
-                        return value
-                    except asyncio.CancelledError:
-                        if interaction is not None:
-                            interaction.cancel()
-                        from api_agent.runtime.tasks import settle
-                        await settle(asyncio.gather(task, return_exceptions=True))
-                        raise
-            except helpers.CredentialCapabilityUnsupportedError:
-                return None
-            except (helpers.CredentialLoginRequiredError, helpers.CredentialRecoveryError) as error:
-                raise UnattendedCredentialError(str(error),
-                    index_source=self.unattended_index_source) from None
-            except helpers.CredentialError:
-                raise UnattendedCredentialError(
-                    "Password-manager " + kind + " retrieval is unavailable. Sign in to the configured CLI and check the login entry.",
-                    index_source=self.unattended_index_source) from None
-            finally:
-                if interaction is not None:
-                    interaction.close()
-        async def retrieve_login(selected_role, selected_index, **options):
-            return await retrieve(selected_role, selected_index, 'login', **options)
-        return ScopedLLMCredentials(role, ScopedRoleCredentials((role,), index, retrieve,
-                                                               retrieve_login=retrieve_login))
+        if not role:
+            return None
+        reader = bind_role_credentials(self.config, (role,), index,
+            registry=self.password_manager_registry, emissions=self.emissions,
+            pending_tasks=self._credential_tasks, interaction_owner=self.interaction,
+            index_source=self.unattended_index_source)
+        return ScopedLLMCredentials(role, reader)
 
     async def _prepare_setup(self):
         await self._release_retained()
@@ -564,10 +502,47 @@ def llm_provider():
             provider.close()
 
 
+@pytest.fixture
+def ui_provider_loop():
+    """The UI session's creating loop, retained only by its inspection owner."""
+    loop = asyncio.new_event_loop()
+    try:
+        yield loop
+    finally:
+        if not loop.is_closed() and not any(owner.loop is loop for owner in _inspection_providers):
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
+            loop.close()
+
+
+@pytest.fixture
+def ui_provider_session(request, ui_provider_loop):
+    """Prepare only the selected UI provider and retain its complete DEBUG owner."""
+    from .ui_runtime import UIIntegrationOwner
+    data = _read_snapshot()
+    owner = UIIntegrationOwner(data, _worker_manager_registry(data))
+    loop = ui_provider_loop
+    try:
+        yield loop.run_until_complete(owner.start())
+    finally:
+        try:
+            try:
+                loop.run_until_complete(owner.capture(getattr(request.node, '_api_agent_ui_outcome', 'failure')))
+            except Exception:
+                pass
+        finally:
+            # The inspection owner retains even an interrupted browser transfer.
+            # Its explicit disposal performs transfer, then inspection, then host.
+            finish_ui_browser_inspection(loop, owner.inspection, owners=(owner,),
+                                         transfers=(owner.browser_owner,))
+
+
 class UIBrowserInspectionRun:
     """Retain a UI browser's creating loop in the existing inspection protocol."""
-    def __init__(self, loop, inspection):
+    def __init__(self, loop, inspection, owners=(), transfers=()):
         self.loop, self.inspection, self.closed = loop, inspection, False
+        self._owners = list(owners)
+        self._transfers = list(transfers)
         self._shutdown = None
 
     async def _shutdown_loop(self):
@@ -579,8 +554,14 @@ class UIBrowserInspectionRun:
         from api_agent.providers.control import CleanupPendingError
         from api_agent.providers.progress import report_timeout_sync
         with report_timeout_sync('Studio inspection cleanup', 2):
+            while self._transfers:
+                await self._transfers[-1].aclose()
+                self._transfers.pop()
             if self.inspection is not None:
                 await self.inspection.aclose()
+            while self._owners:
+                await self._owners[-1].aclose()
+                self._owners.pop()
             tasks = {task for task in asyncio.all_tasks(self.loop)
                      if task is not asyncio.current_task() and task is not self._shutdown}
             if tasks:
@@ -603,32 +584,50 @@ class UIBrowserInspectionRun:
             self.closed = True
 
 
-def finish_ui_browser_inspection(loop, inspection):
+def finish_ui_browser_inspection(loop, inspection, *, owners=(), transfers=()):
     """Transfer allocated DEBUG UI browsers to launch's end_inspection owner.
 
     Empty and non-debug runs close their loop immediately. Without launch's
     inspection channel, attended debug windows retain the same manual-close
-    behavior as provider inspection. The caller must already close BrowserOwner
-    so its resources have transferred to the supplied InspectionOwner.
+    behavior as provider inspection. Callers either transfer BrowserOwner first
+    or supply it in transfers; those transfers finish before inspection and
+    complete runtime ownership is released.
     """
-    owner = UIBrowserInspectionRun(loop, inspection)
+    owner = UIBrowserInspectionRun(loop, inspection, owners, transfers)
     if inspection is not None and inspection.sessions and os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
         _inspection_providers.append(owner)
     else:
-        owner.close()
+        try:
+            owner.close()
+        except BaseException:
+            if os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
+                _inspection_providers.append(owner)
+            raise
     return owner
 
 
-def serve_inspections(send):
+def retained_inspection_manifest():
+    """Describe retained sessions without transferring or clearing ownership."""
+    return tuple(endpoint for provider in _inspection_providers
+                 for endpoint in (tuple(session.inspection_endpoint or ''
+                     for session in provider.inspection.sessions) if provider.inspection is not None
+                     and provider.inspection.sessions else ('',)))
+
+
+def serve_inspections(send, *, command_path=None):
     """Called after pytest has finalized all reports and session teardown."""
     providers = list(_inspection_providers)
     _inspection_providers.clear()
     if not providers:
         return
-    command = Path(os.environ['API_AGENT_INTEGRATION_EVENTS']).parent / 'inspection-command.json'
+    command = (Path(command_path) if command_path is not None else
+               Path(os.environ['API_AGENT_INTEGRATION_EVENTS']).parent / 'inspection-command.json')
     for provider in providers:
-        for session in provider.inspection.sessions:
+        sessions = () if provider.inspection is None else provider.inspection.sessions
+        for session in sessions:
             send(kind='inspection_open', endpoint=session.inspection_endpoint or '')
+        if not sessions:
+            send(kind='inspection_open', endpoint='')
     seen = 0
     pending = set()
     while providers:
@@ -644,10 +643,10 @@ def serve_inspections(send):
         for provider in tuple(providers):
             inspector = provider.inspection
             windows = any(session.browser.is_connected() and session.context.pages
-                          for session in inspector.sessions)
+                          for session in (() if inspector is None else inspector.sessions))
             if attempt is not None or (not windows and provider not in pending):
                 try:
-                    dispose = getattr(provider, 'dispose_inspection', inspector.aclose)
+                    dispose = getattr(provider, 'dispose_inspection', None) or inspector.aclose
                     provider.loop.run_until_complete(dispose())
                 except Exception:
                     pending.add(provider)
@@ -693,6 +692,8 @@ def integration_config():
 def pytest_runtest_makereport(item, call):
     """Put recovery guidance before the internal stack in every evidence sink."""
     report = yield
+    if report.when == 'call':
+        item._api_agent_ui_outcome = 'success' if report.passed else 'failure'
     if call.excinfo is not None and isinstance(call.excinfo.value, UnattendedCredentialError):
         guidance = str(call.excinfo.value).partition('\n\n')[0]
         report.longrepr = guidance + '\n\n' + str(report.longrepr)
@@ -701,3 +702,5 @@ def pytest_runtest_makereport(item, call):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
+    config.addinivalue_line("markers", "requires_ui_session: selected integration consumes the UI provider")
+    config.addinivalue_line("markers", "requires_llm: UI integration also consumes the LLM provider")

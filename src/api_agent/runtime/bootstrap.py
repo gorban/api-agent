@@ -259,6 +259,15 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 from api_agent.testing.launched import run_launched_integration
                 from api_agent.telemetry.privacy import ContentPolicy
                 tests = collect_tests(context, 'integration', result.positionals, config=result.values)
+                from api_agent.testing.requirements import plan_integration_requirements
+                if plan_integration_requirements(tests).requires_ui_session:
+                    result = resolve_config(schema, argv=argv, environ=os.environ,
+                        dotenv=dotenv, anchors=context.anchors, interactive=True,
+                        pack_launcher=context.external_pack, overrides=runtime_directory_overrides(context),
+                        operation_intents=('ui_session',))
+                    result = retain_runtime_directory(result, context).raise_for_errors()
+                    if result.missing:
+                        raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
                 print('Integration debug: shared authentication; provider login may require browser interaction.'
                       if result.values.get('DEBUG') else 'Integration tests: provider login may require browser interaction.', flush=True)
                 from api_agent.auth.terminal_interaction import TerminalInteraction

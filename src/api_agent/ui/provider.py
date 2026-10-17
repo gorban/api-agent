@@ -32,13 +32,14 @@ def listener_plan(value):
 
 class DemoUIProvider:
     version = 1
-    capabilities = ProviderCapabilities(kind='ui', operations=('launch',))
+    capabilities = ProviderCapabilities(kind='ui', operations=('launch', 'capture_evidence'))
 
     def __init__(self, config, services):
         self.config, self.services = config, services
         self.process = None
         self.pending = None
         self.closed = False
+        self._evidence_origin = None
         self._lock = asyncio.Lock()
 
     async def astart(self):
@@ -78,12 +79,20 @@ class DemoUIProvider:
                     self.process = await launcher.start(
                         (executable, str(app / 'launch.mjs')), cwd=app,
                         host=endpoint.hostname, port=port, scheme=endpoint.scheme, env=env)
+                    self._evidence_origin = listener.rstrip('/')
                 except CleanupPendingError as error:
                     self.pending = error
                     raise
                 except asyncio.CancelledError as error:
                     self.pending = getattr(error, 'cleanup_pending', None)
                     raise
+
+    async def acapture_evidence(self, *, page, boundary):
+        """Capture only the running instance's trusted authored Studio page."""
+        if self.closed or self.process is None:
+            return None
+        from .evidence import capture_studio_viewport
+        return await capture_studio_viewport(page, boundary, self._evidence_origin)
 
     async def aclose(self):
         self.closed = True

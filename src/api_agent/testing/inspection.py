@@ -116,7 +116,9 @@ class IntegrationInspection(CleanupLeaseOwner):
                 if self.closed:
                     return
                 if self.process.poll() is not None:
-                    acknowledged = any(row.get('kind') == 'inspection_closed' for row in self._rows())
+                    rows = self._rows()
+                    acknowledged = (any(row.get('kind') == 'inspection_closed' for row in rows)
+                                    and not any(row.get('kind') == 'inspection_lost' for row in rows))
                     self.lost = not acknowledged
                     try:
                         self._reap()
@@ -139,7 +141,9 @@ class IntegrationInspection(CleanupLeaseOwner):
                 self.pending = False
                 return True
             if self.process.poll() is not None:
-                acknowledged = any(row.get('kind') == 'inspection_closed' for row in self._rows())
+                rows = self._rows()
+                acknowledged = (any(row.get('kind') == 'inspection_closed' for row in rows)
+                                and not any(row.get('kind') == 'inspection_lost' for row in rows))
                 self.lost = not acknowledged
                 try:
                     self._reap()

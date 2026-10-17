@@ -28,7 +28,7 @@ SAMPLING_SOURCES = (
     'llm_providers/gpt/endpoint.py', 'providers/llm.py', 'providers/contracts.py',
     'providers/control.py', 'providers/progress.py', 'providers/cache_policy.py',
     'providers/inference.py', 'providers/rich_inference.py', 'providers/setup_transport.py',
-    'providers/shared_setup.py', 'providers/loading.py', 'testing/setup_backend.py', 'testing/provider_setup.py',
+    'providers/shared_setup.py', 'providers/loading.py', 'auth/bindings.py', 'testing/setup_backend.py', 'testing/provider_setup.py',
     'llm_providers/gpt/factory.py', 'runtime/tasks.py',
 )
 

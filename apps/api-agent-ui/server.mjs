@@ -76,11 +76,20 @@ export async function launch(env = process.env) {
     server.once('error', reject);
     server.listen(listenerPort(listener), listener.hostname.replace(/^\[|\]$/g, ''), resolve);
   });
+  const parentManaged = env.API_AGENT_UI_PARENT_LIVENESS === 'stdin-v1';
+  if (parentManaged) {
+    process.stdin.once('end', stop);
+    process.stdin.resume();
+  }
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
   server.once('close', () => {
     process.off('SIGTERM', stop);
     process.off('SIGINT', stop);
+    if (parentManaged) {
+      process.stdin.off('end', stop);
+      process.stdin.pause();
+    }
   });
   return server;
 }

@@ -25,6 +25,7 @@ class RunnerEvent:
     traceback: str = ''
     text: str = ''
     component: ComponentProgress | None = None
+    attachment: tuple[str, bytes, str] | None = field(default=None, repr=False)
 
 
 def format_test_summary(mode, tests, *, state=None, elapsed=None):

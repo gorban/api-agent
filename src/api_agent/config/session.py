@@ -297,14 +297,14 @@ class ConfigSession:
                 self._restore(path, snapshots[path])
             raise
 
-    def result(self, *, _cleanup=False, _review=False):
-        return self._resolve(_cleanup=_cleanup, _review=_review)[0]
+    def result(self, *, _cleanup=False, _review=False, operation_intents=()):
+        return self._resolve(_cleanup=_cleanup, _review=_review, operation_intents=operation_intents)[0]
 
     def auth_sources(self):
         """Effective per-component provenance, independent of the write target."""
         return self._resolve(_review=True)[1]
 
-    def _resolve(self, *, _cleanup=False, _review=False):
+    def _resolve(self, *, _cleanup=False, _review=False, operation_intents=()):
         registry = self.password_manager_registry
         dotenv, origins = {}, {}
         auth_sources = {'password_manager': 'Not provided', 'roles': {}}
@@ -360,7 +360,7 @@ class ConfigSession:
         result = resolve_config(schema, argv=argv, environ=self.environ,
                                 dotenv=dotenv, anchors=self.context.anchors,
                                 interactive=True, pack_launcher=self.context.external_pack,
-                                overrides=choices)
+                                overrides=choices, operation_intents=operation_intents)
         fields = {name: replace(value, source='interactive' if name in choices
                                 else origins[name] if value.source == 'dotenv' else value.source)
                   for name, value in result.fields.items()}

@@ -20,6 +20,11 @@ class ScopedRoleCredentials:
         self._retrieve = retrieve
         self._retrieve_login = retrieve_login
 
+    def matches_binding(self, roles, index):
+        """Whether this reader grants exactly the requested operation binding."""
+        return (type(index) is int and index == self._index
+                and frozenset(roles) == self._roles)
+
     async def login_credentials(self, role, index, *, expected_username, relying_party_id):
         if role not in self._roles or type(index) is not int or index != self._index:
             raise ContractError('Login material is outside credential binding')

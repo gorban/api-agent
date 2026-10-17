@@ -5,6 +5,7 @@ from typing import Any, Mapping
 import tomllib
 
 UNSET = object()
+OPERATION_INTENTS = frozenset({'ui_session'})
 TYPES = {'bool', 'int', 'float', 'str', 'path', 'jsonobject'}
 
 @dataclass(frozen=True)
@@ -116,9 +117,9 @@ def _validate_values(declaration, fields, *, deferred=False, pending_controllers
     if not deferred:
         for enum_value in declaration.enum:
             convert_value(replace(declaration, enum=()), enum_value, external=False, anchors=None)
-    for predicate in (declaration.applies_when, declaration.required_when):
+    for predicate, operation_allowed in ((declaration.applies_when, True), (declaration.required_when, False)):
         _validate_predicate(predicate, fields, validate_values=not deferred,
-                            pending_controllers=pending_controllers)
+                            pending_controllers=pending_controllers, operation_allowed=operation_allowed)
     defaults = [] if declaration.default is UNSET else [declaration.default]
     for conditional in declaration.conditional_defaults:
         if not isinstance(conditional, dict) or set(conditional) != {'when', 'value'}:
@@ -131,7 +132,7 @@ def _validate_values(declaration, fields, *, deferred=False, pending_controllers
             convert_value(declaration, value, external=False, anchors=None)
 
 
-def _validate_predicate(predicate, fields, *, validate_values=True, pending_controllers=()):
+def _validate_predicate(predicate, fields, *, validate_values=True, pending_controllers=(), operation_allowed=False):
     if not isinstance(predicate, dict):
         raise ValueError('Predicate must be a controlling-field equals table')
     for name, expected in predicate.items():
@@ -140,7 +141,11 @@ def _validate_predicate(predicate, fields, *, validate_values=True, pending_cont
                 raise ValueError('Predicate any requires a nonempty array of tables')
             for branch in expected:
                 _validate_predicate(branch, fields, validate_values=validate_values,
-                                    pending_controllers=pending_controllers)
+                                    pending_controllers=pending_controllers, operation_allowed=operation_allowed)
+            continue
+        if name == 'operation':
+            if not operation_allowed or type(expected) is not str or expected not in OPERATION_INTENTS:
+                raise ValueError('Unsupported operation intent in applicability predicate')
             continue
         if name not in fields:
             raise ValueError(f'Unknown controlling field {name}')
