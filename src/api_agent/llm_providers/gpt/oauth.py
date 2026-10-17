@@ -12,6 +12,7 @@ from uuid import UUID
 import httpx
 import jwt
 
+from api_agent.providers.progress import component_timeout
 from .contracts import AuthError, Connection
 
 ISSUER = "https://auth.openai.com"
@@ -22,6 +23,13 @@ RESOURCE = "https://api.openai.com/v1"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
 INITIAL_CLIENT = "dynamic_agent_client"
 LIMIT = 131072
+# Only fixed protocol classifications may cross the login boundary. Never echo
+# arbitrary response fields: even an error payload may contain credentials.
+OAUTH_ERROR_CODES = frozenset({
+    'invalid_grant', 'invalid_client', 'invalid_request', 'invalid_scope',
+    'unsupported_grant_type', 'unauthorized_client', 'access_denied',
+    'server_error', 'temporarily_unavailable',
+})
 
 
 @dataclass(frozen=True)
@@ -59,42 +67,58 @@ def begin_authorization(host_id: str, redirect_uri: str,
     raise AuthError("invalid_attempt")
 
 
-def _begin(host_id, redirect_uri, registration, app_name):
+def _begin(host_id, redirect_uri, registration, app_name, *, issued_client_id=None):
     state, nonce, verifier = (secrets.token_urlsafe(32) for _ in range(3))
-    client_id = registration.client_id if registration else INITIAL_CLIENT
+    client_id = issued_client_id or (registration.client_id if registration else INITIAL_CLIENT)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     query = dict(client_id=client_id, ext_agent_host_id=host_id, response_type="code",
                  redirect_uri=redirect_uri, scope=SCOPES, resource=RESOURCE, state=state,
                  nonce=nonce, code_challenge_method="S256", code_challenge=challenge)
     if registration:
         query.update(id_token_hint=registration.id_token, login_hint=registration.email)
-    else:
+    elif client_id == INITIAL_CLIENT:
         query["agent_name_hint"] = app_name
     return AuthorizationAttempt(state, nonce, verifier, redirect_uri, host_id, client_id,
                                 AUTHORIZE + "?" + urlencode(query), registration)
 
 
 async def _request(client, method, url, *, refresh=False, **kwargs):
+    status = None
+    reason = None
     try:
-        async with client.stream(method, url, timeout=15, follow_redirects=False, **kwargs) as response:
-            if response.status_code != 200:
-                if refresh and response.status_code in (400, 401):
+        async with component_timeout('GPT OAuth ' + ('token exchange' if url == TOKEN else 'identity verification'), 15) as budget:
+            async with client.stream(method, url, timeout=budget.remaining, follow_redirects=False,
+                                     headers={'Accept-Encoding': 'identity'}, **kwargs) as response:
+                status = response.status_code
+                if refresh and status in (400, 401):
                     raise AuthError("refresh_rejected")
-                raise ValueError
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > LIMIT:
+                if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
                     raise ValueError
-            result = json.loads(body)
-            if not isinstance(result, dict):
-                raise ValueError
-            return result
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > LIMIT:
+                        raise ValueError
+                    body.extend(chunk)
+                result = json.loads(body)
+                if not isinstance(result, dict):
+                    raise ValueError
+                if status != 200:
+                    supplied = result.get('error')
+                    if isinstance(supplied, dict):
+                        supplied = supplied.get('code')
+                    if isinstance(supplied, str) and supplied in OAUTH_ERROR_CODES:
+                        reason = supplied
+                    raise ValueError
+                return result
     except AuthError:
         raise
-    except (httpx.HTTPError, ValueError, TypeError):
+    except (httpx.HTTPError, ValueError, TypeError, RecursionError, TimeoutError):
         pass
-    raise AuthError("authorization_failed")
+    error = AuthError("authorization_failed")
+    error.stage = 'token' if url == TOKEN else 'metadata' if url == METADATA else 'keys'
+    error.http_status = status
+    error.oauth_error = reason
+    raise error
 
 
 def _text(data, key):
@@ -187,6 +211,26 @@ async def _connection(data, client_id, host_id, subject, nonce, client, now, pre
                       scopes, expires_at, earliest)
 
 
+def _issued_client(attempt, parameters):
+    client_id = parameters.get("client_id", attempt.client_id)
+    if not isinstance(client_id, str) or not client_id or client_id == INITIAL_CLIENT:
+        raise AuthError("incomplete_registration")
+    if attempt.client_id != INITIAL_CLIENT and client_id != attempt.client_id:
+        raise AuthError("client_mismatch")
+    return client_id
+
+
+def restart_authorization(attempt, parameters):
+    """Discard a rejected code and reauthorize the same issued registration."""
+    if parameters.get('state') != attempt.state:
+        raise AuthError('invalid_state')
+    if 'error' in parameters:
+        raise AuthError('authorization_denied')
+    client_id = _issued_client(attempt, parameters)
+    return _begin(attempt.host_id, attempt.redirect_uri, attempt.registration, '',
+                  issued_client_id=client_id)
+
+
 async def finish_authorization(attempt: AuthorizationAttempt, parameters: Mapping[str, str],
                                *, client: httpx.AsyncClient, now: float) -> Connection:
     now = _number(now)
@@ -194,11 +238,7 @@ async def finish_authorization(attempt: AuthorizationAttempt, parameters: Mappin
         raise AuthError("invalid_state")
     if "error" in parameters:
         raise AuthError("authorization_denied")
-    client_id = parameters.get("client_id", attempt.client_id)
-    if not isinstance(client_id, str) or not client_id or client_id == INITIAL_CLIENT:
-        raise AuthError("incomplete_registration")
-    if attempt.registration is not None and client_id != attempt.client_id:
-        raise AuthError("client_mismatch")
+    client_id = _issued_client(attempt, parameters)
     code = _text(parameters, "code")
     data = await _request(client, "POST", TOKEN, data=dict(grant_type="authorization_code",
                           client_id=client_id, code=code, code_verifier=attempt.verifier,

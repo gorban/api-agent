@@ -31,6 +31,18 @@
   navigation races, same-page key scope, direct authorization without a preliminary sign-in,
   configured-name precedence and failed/partial setup. Renew applicable unit,
   installed-wheel and public-boundary gates before delivery.
+- [x] On token-exchange HTTP 400 with recognized `invalid_grant`, discard the
+  rejected code and retry authorization once using the issued client ID. Preserve
+  the same host, page/context, selected login, original deadline and cleanup owner;
+  rotate state, nonce and PKCE. Omit the initial registration name hint on retry,
+  select only a unique offered account with the exact configured email under the
+  recognized app heading, bind the callback and identity to the issued client, and save only fully
+  verified credentials. Do not retry other failures or loop on a second rejection.
+- [x] Preserve a fixed safe OAuth failure stage, HTTP status and recognized
+  protocol error classification after an accepted browser callback. Never echo
+  response descriptions, unknown error strings, codes, tokens or key material.
+  Keep refresh behavior and cleanup ownership intact. Verify malformed and
+  oversized responses, transport failures and credential-bearing error fields.
 - [ ] Human-review discovery-only direct registration with an uncached selected
   account configured with password and passkey; observe the offered post-password
   challenge. Make no inference calls to exercise authentication.
