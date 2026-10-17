@@ -175,6 +175,7 @@ def blocked_history(monkeypatch):
     release = threading.Event()
     entered = asyncio.Event()
     scopes = []
+    reads = []
     original = viewer.component_timeout
     @asynccontextmanager
     async def timeout(name, seconds):
@@ -187,14 +188,15 @@ def blocked_history(monkeypatch):
                 yield budget
     def start():
         entered.set()
-        scopes[0].reschedule(loop.time())
+        scopes[-1].reschedule(loop.time())
     def history(*, budget):
+        reads.append(budget)
         loop.call_soon_threadsafe(start)
         release.wait()
         return []
     monkeypatch.setattr(viewer, 'component_timeout', timeout)
     return SimpleNamespace(source=SimpleNamespace(repo='sample', history=history),
-                           release=release, entered=entered)
+                           release=release, entered=entered, reads=reads)
 
 
 @async_test
@@ -305,3 +307,28 @@ async def test_archive_refresh_preserves_the_first_selected_route(tmp_path, run,
         assert observed['executor']['buildUrl'] == refreshed.archive_url
     finally:
         await owner.aclose()
+
+
+@async_test
+async def test_repeated_selections_do_not_accumulate_blocked_history_reads(tmp_path, selected, cli, port, monkeypatch):
+    with monkeypatch.context() as patch:
+        blocked = blocked_history(patch)
+        snapshot, name = selected
+        other = next(key for key in snapshot.files if key.endswith('-result.json') and key != name)
+        owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+        try:
+            first = await owner.show_preview(snapshot, name, source=blocked.source)
+            second = await owner.show_preview(snapshot, other, source=blocked.source)
+            third = await owner.show_preview(snapshot, name, source=blocked.source)
+            assert len(blocked.reads) == len(owner._history_tasks) == 1
+            assert all(location.history_error for location in (first, second, third))
+            assert first.url != second.url and third.url == first.url
+            assert owner._browser.urls == [first.url, second.url, third.url]
+            blocked.release.set()
+            await owner._drain_history(SimpleNamespace(remaining=10))
+            assert not owner._history_tasks
+            retried = await owner.show_preview(snapshot, name, source=RunSource('sample', tmp_path))
+            assert retried.history_error is None
+        finally:
+            blocked.release.set()
+            await owner.aclose()
