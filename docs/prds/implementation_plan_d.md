@@ -24,7 +24,7 @@ Planned exception to mandatory integration/E2E reporting: [explicit reporting sk
 - [x] Declare `ALLURE_S3_USE_LOCALSTACK=False`; True conditionally defaults bucket `allure-results` and endpoint `http://localhost:4566`, preserving explicit bucket/region overrides. The scoped lifecycle provisions and verifies the selected bucket before publication. Synthetic CLI/planner and actual LocalStack checks verify bucket provisioning, persistence and history retrieval.
 - [x] Add optional typed configuration for a secondary Allure results destination, such as a local directory. When configured, write results there as well as to S3; it must not replace primary S3 persistence.
 - [x] Treat omitted/empty ALLURE_SECONDARY_DIR as disabled. Explicitly empty ALLURE_RESULTS_DIR disables retained local working results while preserving mandatory S3 recording through owned temporary staging; clean staging on success/failure/cancellation/exception and return no retained directory. Empty paths remain explicit acknowledged values in configuration. Default artifacts/allure is Git-ignored in both repositories.
-- [ ] Deliver [selected-run report viewers and safe sharing](implementation_plan_d1.md), including results-to-viewer navigation and independent publication.
+- [x] Deliver [selected-run report viewers and safe sharing](implementation_plan_d1.md), including results-to-viewer navigation and independent publication.
 
 - [ ] Before the first integration/E2E run, establish [token and suite-wide quota tracking](implementation_plan_f.md). Retain usage CSV artifacts and before/after provider-supplied quota percentage snapshots and delta with each run, and include the suite delta in TUI results.
 
