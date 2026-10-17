@@ -76,6 +76,37 @@ def test_provider_conditional_defaults_and_overrides(tmp_path, mode, api_mode):
     assert alternate.values.get('GPT_BASE_URL') == ('https://openrouter.ai/api/v1' if mode == 'api_key' else None)
 
 
+@pytest.mark.parametrize('dotenv,environ,argv,source,expected', [
+    ({'GPT_APP_NAME': 'api-agent'}, {}, [], 'dotenv', 'api-agent'),
+    ({'GPT_APP_NAME': 'chosen-app'}, {}, [], 'dotenv', 'chosen-app'),
+    ({'GPT_APP_NAME': 'older-app'}, {'GPT_APP_NAME': 'api-agent'}, [], 'environment', 'api-agent'),
+    ({'GPT_APP_NAME': 'older-app'}, {'GPT_APP_NAME': 'another-app'}, ['--gpt-app-name=api-agent'], 'cli', 'api-agent'),
+])
+def test_effective_app_name_reaches_the_actual_registration_hint(tmp_path, monkeypatch, dotenv, environ, argv, source, expected):
+    from unittest.mock import AsyncMock
+    from urllib.parse import parse_qs, urlsplit
+    from api_agent.llm_providers.gpt import factory
+    from api_agent.llm_providers.gpt.oauth import begin_authorization
+    schema = provider_schema(tmp_path)
+    result = resolve_config(schema, argv=argv, environ=environ, dotenv=dotenv,
+                            anchors={'owner_root': tmp_path}, interactive=True)
+    assert result.fields['GPT_APP_NAME'].source == source
+    async def scenario():
+        browser = SimpleNamespace(aclose=AsyncMock())
+        monkeypatch.setattr(factory, 'subscription_browser', lambda **_: browser)
+        provider = factory.factory(result.values, None)
+        async def connect(store, **options):
+            attempt = begin_authorization('urn:uuid:12345678-1234-1234-1234-123456789abc',
+                'http://127.0.0.1:12345/auth/callback', app_name=options['app_name'])
+            assert parse_qs(urlsplit(attempt.authorization_url).query)['agent_name_hint'] == [expected]
+            return 'synthetic-profile'
+        provider._connect_account = connect
+        assert await provider._login(object(), interactive=False, username='person@example.test',
+                                     user_index=4, credentials=AsyncMock()) == 'synthetic-profile'
+        await provider.aclose()
+    asyncio.run(scenario())
+
+
 def test_tui_effective_provider_settings_and_default_review(tmp_path):
     async def scenario():
         context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path,

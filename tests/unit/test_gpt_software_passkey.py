@@ -334,3 +334,20 @@ def test_empty_http2_reason_phrase_gets_a_valid_cdp_reason(software, status, phr
     assert method == 'Fetch.continueResponse'
     assert params['responseCode'] == status and params['responsePhrase'] == expected
     assert not owner.navigation_failed
+
+
+@pytest.mark.parametrize('enabled,url,allowed', [
+    (True, 'https://chatgpt.com/', True),
+    (False, 'https://chatgpt.com/', False),
+    (True, 'https://chatgpt.com/auth/callback', True),
+    (True, 'http://chatgpt.com/', False),
+    (True, 'https://chatgpt.com.evil.test/', False),
+    (True, 'https://chatgpt.com:8443/', False),
+])
+def test_firstparty_main_document_permission_is_opt_in_and_exact(software, enabled, url, allowed):
+    owner, channel = software
+    owner.channel, owner.main_frame, owner.first_party = channel, 'main', enabled
+    asyncio.run(owner._navigation({'requestId': 'document', 'frameId': 'main', 'request': {'url': url}}))
+    method, parameters = channel.send.call_args.args
+    assert method == ('Fetch.continueRequest' if allowed else 'Fetch.failRequest')
+    assert parameters['requestId'] == 'document'

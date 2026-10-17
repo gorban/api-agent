@@ -2,6 +2,8 @@
 
 [Password-manager capabilities](implementation_plan_a2a1.md) · [Login intervention](implementation_plan_f2b_login.md)
 
+[First-party sign-in and registration follow-through](implementation_plan_a2a3.md)
+
 The managed software-authenticator path is explicitly supported for a selected
 unattended login. It signs with the exported credential; browser-simulated
 presence and verification do not prove physical-key approval. Physical keys and

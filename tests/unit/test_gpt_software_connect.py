@@ -13,6 +13,7 @@ from test_gpt_connect import lane, Store, request
 
 @pytest.fixture
 def passkey_owner(monkeypatch):
+    monkeypatch.setattr(c, 'authenticate_first_party', AsyncMock())
     for name in ('DEBUG', 'DEBUGP', 'PWDEBUG', 'DEBUG_FILE'):
         monkeypatch.delenv(name, raising=False)
     async def create():
@@ -143,4 +144,72 @@ def test_factory_preserves_scoped_material_reader(monkeypatch, tmp_path):
         assert profile == 'selected-profile'
         selected.assert_awaited_once_with('llm', 4, expected_username='person@example.test', relying_party_id='openai.com')
         await provider.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure,expected', [
+    (c.AuthError('login_interaction_required'), 'login_interaction_required'),
+    (RuntimeError('synthetic browser detail'), 'browser_unavailable'),
+    (c.SessionClosedError('synthetic closure'), 'browser_closed'),
+])
+def test_firstparty_failure_cleans_workflow_and_key_before_oauth(lane, passkey_owner, monkeypatch, failure, expected):
+    async def scenario():
+        owner, inspection, channel, browser, material = await passkey_owner()
+        observed = []
+        async def fail(workflow, session, **_):
+            observed.append(workflow)
+            raise failure
+        monkeypatch.setattr(c, 'authenticate_first_party', fail)
+        store = Store()
+        lane.finish_authorization = AsyncMock()
+        with pytest.raises(c.AuthError, match='^' + expected + '$'):
+            await c.connect_account(store, browser_owner=owner, client=object(),
+                login_username='person@example.test', login_credentials=AsyncMock(),
+                login_material=AsyncMock(return_value=material))
+        assert observed[0].ready.cancelled() and not observed[0].documents
+        assert not store.saved
+        lane.finish_authorization.assert_not_awaited()
+        channel.detach.assert_awaited_once()
+        await inspection.aclose()
+        browser.close.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_firstparty_cancellation_retains_normal_browser_cleanup(lane, passkey_owner, monkeypatch):
+    async def scenario():
+        owner, inspection, channel, browser, material = await passkey_owner()
+        async def cancel(workflow, session, **_):
+            raise asyncio.CancelledError()
+        monkeypatch.setattr(c, 'authenticate_first_party', cancel)
+        store = Store()
+        with pytest.raises(asyncio.CancelledError):
+            await c.connect_account(store, browser_owner=owner, client=object(),
+                login_username='person@example.test', login_credentials=AsyncMock(),
+                login_material=AsyncMock(return_value=material))
+        assert not store.saved
+        channel.detach.assert_awaited_once()
+        await inspection.aclose()
+        browser.close.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_accepted_callback_during_firstparty_skips_reopening_authorization(lane, passkey_owner, monkeypatch):
+    async def scenario():
+        owner, inspection, channel, browser, material = await passkey_owner()
+        session = await owner.start()
+        session.page.goto = AsyncMock()
+        async def accepted(workflow, browser_session, *, callback):
+            callback.set_result({'state': 's', 'code': 'c'})
+        monkeypatch.setattr(c, 'authenticate_first_party', accepted)
+        lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email='person@example.test'))
+        store = Store()
+        result = await c.connect_account(store, browser_owner=owner, client=object(),
+            login_username='person@example.test', login_credentials=AsyncMock(),
+            login_material=AsyncMock(return_value=material))
+        assert result == 'account' and len(store.saved) == 1
+        session.page.goto.assert_not_awaited()
+        assert lane.finish_authorization.await_args.args[1] == {'state': 's', 'code': 'c'}
+        channel.detach.assert_awaited_once()
+        await inspection.aclose()
+        browser.close.assert_awaited_once()
     asyncio.run(scenario())

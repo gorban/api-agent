@@ -98,6 +98,7 @@ def test_adapter_degrades_without_cache_or_auth(tmp_path, monkeypatch):
 
 
 def test_adapter_sync_reconciles_late_upload_and_ingest(tmp_path):
+    from datetime import datetime, timezone
     from api_agent.testing.cost_history import HistoricalEstimator
     cache = HistoryCache(tmp_path / 'cache')
     manifest, payload = fixture()
@@ -106,7 +107,8 @@ def test_adapter_sync_reconciles_late_upload_and_ingest(tmp_path):
         def accounting_history(self, repo, **kwargs):
             return [(manifest, payload)] if self.available else []
     storage = Storage()
-    snap = HistoricalEstimator([], {}, cache, 'origin', 'repo', bundled_rate_card(), storage)
+    snap = HistoricalEstimator([], {}, cache, 'origin', 'repo', bundled_rate_card(), storage,
+                               now=datetime(2026, 10, 10, 1, tzinfo=timezone.utc))
     assert snap.synchronize() is not snap
     assert cache.records('origin') == []
     storage.available = True
