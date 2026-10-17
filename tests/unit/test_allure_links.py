@@ -147,3 +147,23 @@ def test_clipboard_and_opener_fail_independently(tmp_path, monkeypatch, failing_
             assert any(expected in notice for notice in notices)
             assert (REPORT in notices[-1]) == failure
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('native', [True, False], ids=['native-copy', 'terminal-copy'])
+def test_driver_false_open_result_still_explains_manual_fallback(tmp_path, monkeypatch, native):
+    async def scenario():
+        app = fixture(tmp_path)
+        copied, opened, notices = [], [], []
+        async def copy(app, value):
+            copied.append(value)
+            return native
+        monkeypatch.setattr(allure, 'copy_text', copy)
+        monkeypatch.setattr('webbrowser.open', lambda value: opened.append(value) or False)
+        monkeypatch.setattr(app, 'notify', lambda message, **kwargs: notices.append(str(message)))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.action_allure_open_url(REPORT)
+            assert opened == copied == [REPORT]
+            assert any('If no browser opens, paste the URL into a browser.' in notice for notice in notices)
+            assert not any('browser opened' in notice.lower() for notice in notices)
+    asyncio.run(scenario())
