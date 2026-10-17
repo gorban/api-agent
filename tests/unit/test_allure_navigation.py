@@ -255,7 +255,7 @@ def test_snapshot_runner_compatibility_and_factory(tmp_path,monkeypatch):
     app.allure_runner_options(flexible,3)['on_snapshot']('data')
     assert callback==[('data',2),('data',3)]
     created=[]
-    monkeypatch.setattr('api_agent.testing.allure_viewer.ManagedAllureViewer',lambda port:created.append(port) or Viewer())
+    monkeypatch.setattr('api_agent.testing.allure_viewer.ManagedAllureViewer',lambda port, **kwargs:created.append(port) or Viewer())
     assert app._allure() is app._allure()
     assert created==[5252]
 
@@ -412,4 +412,67 @@ def test_closing_during_history_screen_mount_prevents_late_resource_acquisition(
             release.set()
             await operation
             assert app.allure_viewer is None and not app._allure_opening
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('status', ['passed', 'failed', 'error', 'skipped'])
+def test_completed_details_keep_exact_allure_and_close_without_disposal(tmp_path, monkeypatch, status):
+    from api_agent.testing.runner import UnitRunResult
+    async def scenario():
+        app = fixture(tmp_path)
+        backend = Viewer()
+        notices = []
+        monkeypatch.setattr(app, 'notify', lambda message, **kwargs: notices.append(message))
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            app.mode = 'integration'
+            test = SimpleNamespace(identity=SimpleNamespace(id='one'), status=status,
+                                   duration=1.25, traceback='')
+            result = UnitRunResult(0, (test,), (), 'Completed')
+            app.unit_result = result
+            app.unit_rows = {'one': (status.upper(), 'one', '1.25s')}
+            app.allure_viewer = backend
+            app.show_unit_results()
+            await pilot.pause()
+            evidence = snapshot()
+            app.receive_allure_snapshot(evidence, app._inspection_generation)
+            await pilot.press('enter')
+            await pilot.pause()
+
+            assert app.screen.kind == 'test-failure'
+            assert app.screen._bindings.key_to_bindings['c'][0].description == 'Close'
+            assert app.screen.check_action('view_allure', ()) is True
+            await pilot.press('a')
+            await pilot.pause()
+            assert backend.calls == [(evidence, 'one-result.json')]
+            await pilot.press('c')
+            await pilot.pause()
+            assert app.screen.kind == 'test-results'
+            assert app.screen.query_one(DataTable).selected_row_keys == ('one',)
+            assert app.unit_result is result
+            assert app.allure_snapshots['one'] is evidence
+            assert app.allure_viewer is backend and not backend.closed
+    asyncio.run(scenario())
+
+
+def test_stale_or_unbound_details_cannot_open_a_different_run(tmp_path, monkeypatch):
+    async def scenario():
+        app = fixture(tmp_path)
+        notices = []
+        monkeypatch.setattr(app, 'notify', lambda message, **kwargs: notices.append(message))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.mode = 'integration'
+            await app.show('test-failure', 'Details', 'one')
+            assert app.selected_allure_result(app.screen) is None
+            app.screen.result_return = (object(), 'one', 0)
+            app.unit_result = object()
+            app.unit_rows = {'one': ('PASSED', 'one', '1s')}
+            assert app.selected_allure_result(app.screen) is None
+            app.screen.result_return = (app.unit_result, 'one', 0)
+            await app.open_selected_allure()
+            assert 'evidence is unavailable' in notices[-1]
+            app._allure_budget_unavailable.add('one')
+            await app.open_selected_allure()
+            assert 'memory budget was reached' in notices[-1]
     asyncio.run(scenario())

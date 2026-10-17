@@ -43,7 +43,7 @@ verify `allure --version`. For other installations, follow the official
 [Allure installation guide](https://allurereport.org/docs/v2/install/), including
 its Java and PATH requirements.
 
-The `allure` executable must be available on PATH in the launcher's environment;
+`ALLURE_CLI` defaults to `allure` and is visible in Review configuration. It accepts a quoted executable and optional prefix arguments, without shell expansion. That executable must be available on PATH in the launcher's environment;
 a host installation alone may not be visible inside a container. The
 [managed viewer](prds/implementation_plan_d1.md) checks this prerequisite.
 
@@ -270,3 +270,7 @@ notice image explaining how to enable screenshots; provider safety still applies
 browsers retain their separate evidence/lifecycle tasks. The one-prompt Studio
 request test now uses the shared prepared session and screenshot path. These checks do not implement Run local or application
 E2E, and no inference is needed for this review.
+
+A host command prefix can be configured as `ALLURE_CLI="distrobox-host-exec /absolute/host/path/to/allure"`. Check the same command with `--version` first. A noninteractive host PATH may differ from an interactive shell’s PATH, so a bare host command can exit 127 despite working in a terminal. An explicit host executable path avoids depending on shell startup files. Quotes group arguments containing spaces; shell variables, pipelines and substitutions are not expanded.
+
+Completed integration/E2E tests open timing, token and cost details with Enter, including passed tests without LLM calls. Within details, **c Close** restores the results row/scroll without ending inspection; **a View in Allure** opens that same attempt.

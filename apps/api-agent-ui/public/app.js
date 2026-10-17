@@ -196,7 +196,8 @@ function syncSettings() {
   fillSelect('version', entries.filter(x => x.version).map(x => ({id: x.version})), state.settings.version);
   const selected = entries.find(x => x.version === state.settings.version) || entries[0];
   fillSelect('reasoning', (selected?.reasoning_efforts || []).map(id => ({id})), state.settings.reasoning);
-  $('model-short-name').textContent = selected?.display_name || state.settings.model || 'Provider default';
+  const label = selected?.display_name || state.settings.model || 'Provider default';
+  $('model-short-name').textContent = label + (state.settings.reasoning ? ': ' + state.settings.reasoning : '');
   const selection = resolveSelection(catalog, state.settings);
   $('model-status').textContent = catalogStatus || (selection.valid ? '' : selection.error);
 }

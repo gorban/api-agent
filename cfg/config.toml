@@ -248,12 +248,20 @@ help = "Use managed local S3 for result history. True defaults the bucket to all
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
+[fields.ALLURE_CLI]
+type = "str"
+default = "allure"
+help = "Allure 2 executable and optional command-prefix arguments, using quotes around paths or arguments containing spaces. For example: distrobox-host-exec /absolute/host/path/to/allure. No shell expansion is performed. The same command checks the version and generates reports."
+[fields.ALLURE_CLI.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
 [fields.ALLURE_VIEWER_PORT]
 type = "int"
 default = 5252
 validation = "positive"
 acknowledge_default = false
-help = "Loopback port for the managed Allure 2 report viewer. Requires an external allure executable on PATH. An occupied port fails without replacing another listener."
+help = "Loopback port for the managed Allure 2 report viewer. Requires the external command configured by ALLURE_CLI. An occupied port fails without replacing another listener."
 [fields.ALLURE_VIEWER_PORT.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
