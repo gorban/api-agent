@@ -24,6 +24,7 @@ This converts the existing generic runtime and independently authored example, p
 - [ ] After selected external declarations conform and the managed Run local/browser/UI/tracing prerequisites are implemented, reuse that viewer in Run local's final tab. Derive the static declaration/diagram view and displayed resolved overrides from the invocation's compiled definition; show its graph identity/source fingerprint so a stale or unrelated diagram cannot masquerade as the running graph. Preserve tab readiness/order and ownership from K2.
 - [ ] Wire declaration-derived temporary PlantUML generation and strict staged-snapshot freshness into the existing managed checks, sharing the same read-only CI entrypoint. Explicit generation writes unstaged files only. Never execute a graph/provider or copy an external pack into public output just to build a diagram.
 - [ ] Update each applicable README Get started only with delivered behavior and the `actual LangGraph flow` link. Independently review equivalence, resource isolation, freshness and browser disposal; human-review selected graph/overrides and ready-tab order. Format implementation alone does not claim complete application or E2E acceptance.
+- [ ] Deliver [invocation-scoped development refresh](implementation_plan_b1d.md) for the long-lived application. Preserve running/resumed graph versions and coherent prompt/declaration snapshots; assess compilation caching only during measured final profiling.
 
 ## Forward-compatible execution evidence
 
