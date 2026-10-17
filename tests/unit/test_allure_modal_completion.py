@@ -103,7 +103,7 @@ def test_history_generation_updates_its_page_beneath_quit_confirmation(tmp_path,
         app = fixture(tmp_path)
         entered, release = asyncio.Event(), asyncio.Event()
         class PausedHistory(Viewer):
-            async def show_history(self, source):
+            async def show_archive(self, source):
                 self.calls.append(source)
                 entered.set()
                 await release.wait()

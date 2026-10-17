@@ -1,5 +1,6 @@
 """Result shortcuts preserve test identity, focus and operation ownership."""
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,9 @@ class Viewer:
         if self.fail:
             raise RuntimeError('Preview unavailable')
         return ViewerLocation('http://127.0.0.1:5252/exact','#inspection')
+    async def show_archive(self, source):
+        location = await self.show_history(source)
+        return replace(location, url="http://127.0.0.1:5252/archive.html", archive_url=None)
     async def show_history(self,source):
         self.calls.append(source)
         if self.fail:
@@ -242,8 +246,8 @@ def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_pat
             if failed:
                 assert 'History unavailable' in str(app.screen.query_one('#error',Static).content)
             else:
-                assert 'http://127.0.0.1:5252/history' in str(app.screen.query_one('#body',Static).content)
-                assert 'Browse previous runs: http://127.0.0.1:5252/archive.html' in str(app.screen.query_one('#body',Static).content)
+                assert 'http://127.0.0.1:5252/archive.html' in str(app.screen.query_one('#body',Static).content)
+                assert str(app.screen.query_one('#body',Static).content).count('http://127.0.0.1:5252/archive.html') == 1
                 app._allure_opening=True
                 await app.choose('refresh-allure')
                 assert len(viewer.calls)==1

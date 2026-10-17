@@ -79,3 +79,8 @@ viewable. Returning to selection or starting a suite clears retained copies,
 budget accounting and unavailable reasons.
 
 - [x] Completed integration/E2E tests open details on Enter for every outcome, including passed tests with no LLM use. Show existing timing, per-test cost and actual token data. `c Close` returns to the same results/row/scroll without confirmation or disposal. Details expose the same exact-attempt `a View in Allure` action, retaining results, snapshots and inspection resources.
+
+## Persistent selected-report preparation
+
+- [x] Show orange `Preparing selected integration run in Allure…` or `Preparing selected E2E run in Allure…` immediately above the footer while a selected-report request is pending. This is persistent screen state, not a toast. Preserve it when remaining tests finish, when results refresh, and when details/confirmation screens resume.
+- [x] Clear only the matching request's status after its actual link notification or failure; cancellation and leave/close clear it. Stale requests cannot erase a newer status. Keep errors and current test timing/outcomes independent. Verify partial/final completion ordering, failure, cancellation, resumed views and selected mode.

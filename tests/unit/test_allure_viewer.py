@@ -928,7 +928,9 @@ async def test_native_window_is_bounded_and_archive_still_lists_older_launches(t
             previous = await client.get(f'http://127.0.0.1:{port}' + route)
             assert previous.status_code == 302
             assert rows[0]['run_id'] in previous.headers['Location']
-        assert len(owner._bindings) == 21
+        older = SimpleNamespace(url=previous.headers['Location'])
+        observed = json.loads((generated_root(owner, older) / 'observed.json').read_bytes())
+        assert observed['chain'] == ['integration — ' + rows[0]['finished_at']]
     finally:
         await owner.aclose()
 

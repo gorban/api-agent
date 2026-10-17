@@ -67,10 +67,12 @@ def validate_manifest(manifest, *, repo=None, preview=False):
         raise ViewerError('Invalid finalized Allure manifest or preview binding') from None
 
 
-def verified_files(manifest, read):
+def verified_files(manifest, read, *, results_only=False):
     files = {}
     size = 0
     for name, digest in manifest['files'].items():
+        if results_only and not name.endswith('-result.json'):
+            continue
         body = read(name)
         if type(body) is not bytes or len(body) > MAX_ARTIFACT or hashlib.sha256(body).hexdigest() != digest:
             raise ViewerError('Allure artifact digest mismatch or size limit exceeded')
@@ -82,7 +84,7 @@ def verified_files(manifest, read):
     def attachments(value):
         if isinstance(value, dict):
             for attachment in value.get('attachments', []):
-                if not isinstance(attachment, dict) or attachment.get('source') not in files:
+                if not isinstance(attachment, dict) or attachment.get('source') not in (manifest['files'] if results_only else files):
                     raise ViewerError('Allure result references a missing attachment')
             for key, child in value.items():
                 if key != 'attachments':
@@ -164,7 +166,7 @@ class RunSource:
         except Exception:
             raise ViewerError('Could not discover finalized Allure history') from None
 
-    def load(self, manifest, *, budget=None):
+    def load(self, manifest, *, budget=None, results_only=False):
         """Fetch this exact committed manifest and verify every artifact byte."""
         digest = validate_manifest(manifest, repo=self.repo)
         try:
@@ -177,7 +179,7 @@ class RunSource:
                 def local_read(name):
                     _check_budget(budget)
                     return RunStorage._read_source(directory / name, max_bytes=MAX_ARTIFACT)
-                return verified_files(manifest, local_read)
+                return verified_files(manifest, local_read, results_only=results_only)
             if self.storage is None:
                 raise ViewerError('Exact finalized Allure run is unavailable locally or in S3')
             def read(name, limit=MAX_ARTIFACT):
@@ -191,7 +193,7 @@ class RunSource:
             committed = json.loads(read('manifest.json', MAX_MANIFEST))
             if validate_manifest(committed, repo=self.repo) != digest:
                 raise ViewerError('Finalized Allure manifest binding changed')
-            return verified_files(manifest, read)
+            return verified_files(manifest, read, results_only=results_only)
         except ViewerError:
             raise
         except Exception:
