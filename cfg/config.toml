@@ -320,14 +320,24 @@ help = "Local working directory for isolated recorded run artifacts and manifest
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
+[fields.ALLURE_VIEW_SECONDARY]
+type = "bool"
+default = false
+help = "Render Allure history only from ALLURE_SECONDARY_DIR instead of local working results and S3. Requires a nonempty secondary directory; does not change publication or secondary-copy writes. Exact selected-test previews still use the current attempt."
+[fields.ALLURE_VIEW_SECONDARY.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
 [fields.ALLURE_SECONDARY_DIR]
 type = "path"
 anchor = "owner_root"
 allow_empty = true
 review_optional = true
-help = "Optional directory for an additional copy of finalized Allure artifacts and manifests, organized by repository/run ID. When unset or explicitly empty, no additional copy is written; required S3 history remains. Relative paths resolve against the test-owner repository."
+help = "Directory for an additional copy of finalized Allure artifacts and manifests, organized by repository/run ID. Always try writing a copy when set, regardless of ALLURE_VIEW_SECONDARY. When unset or empty, no additional copy is written unless ALLURE_VIEW_SECONDARY=True, which requires this directory for history viewing. Required S3 publication remains unchanged. Relative paths resolve against the test-owner repository."
+[fields.ALLURE_SECONDARY_DIR.required_when]
+ALLURE_VIEW_SECONDARY = true
 [fields.ALLURE_SECONDARY_DIR.applies_when]
-TUI_MODE = ["integration", "e2e"]
+TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
 [fields.TOKEN_USAGE_CSV_ENABLED]

@@ -207,15 +207,17 @@ class AllureNavigation:
                 return
             values = self.session.result().values
             storage = None
-            if values.get('ALLURE_S3_BUCKET'):
+            secondary = values.get('ALLURE_VIEW_SECONDARY', False)
+            if values.get('ALLURE_S3_BUCKET') and not secondary:
                 storage = RunStorage(values['ALLURE_S3_BUCKET'],
                     prefix=values.get('ALLURE_S3_PREFIX', 'allure'),
                     endpoint_url=values.get('ALLURE_S3_ENDPOINT'),
                     region_name=values.get('ALLURE_S3_REGION'),
                     localstack_port=values.get('ALLURE_LOCALSTACK_PORT', 4566),
                     managed_local=values.get('ALLURE_S3_USE_LOCALSTACK', False))
+            local_root = values.get('ALLURE_SECONDARY_DIR' if secondary else 'ALLURE_RESULTS_DIR')
             source = RunSource(repository_label(self.context, self.context.owner_root),
-                               local_root=values.get('ALLURE_RESULTS_DIR') or None, storage=storage)
+                               local_root=local_root or None, storage=storage)
             location = await self._allure().show_history(source)
             if generation is self._allure_generation:
                 self.operation_status = 0
