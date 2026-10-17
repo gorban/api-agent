@@ -1047,3 +1047,46 @@ async def test_verified_foreign_parameters_reach_generation_unchanged(tmp_path, 
         assert source.load(manifest) == files
     finally:
         await owner.aclose()
+
+
+@pytest.fixture(params=[
+    ('"name":"attempt"', '"name":"other","name":"attempt"'),
+    ('"name":"attempt"', '"na\\u006de":"other","name":"attempt"'),
+    ('"value":"2"', '"value":"semantic-blue","value":"2"'),
+    ('"value":"2"', '"\\u0076alue":"semantic-blue","value":"2"'),
+    ('"fullName":', '"fullName":"foreign","fullName":'),
+    ('"historyId":', '"historyId":"foreign","historyId":'),
+    ('"parameters":', '"parameters":[],"parameters":'),
+    ('"parameters":', '"metadata":{"mode":1,"mode":2},"parameters":'),
+    ('"parameters":', '"metadata":{"name":1,"name":2,"deep":{"value":1,"value":2}},"parameters":'),
+], ids=['name','escaped-name','value','escaped-value','full-name','history-id',
+        'parameters','nested-metadata','multiple-depths'])
+def duplicate_history_result(run, request):
+    manifest, files, name = run
+    full_name = 'tests/test_demo.py::test_demo'
+    row = json.loads(files[name])
+    row.update(fullName=full_name, parameters=[{'name':'attempt','value':'2'}],
+        historyId=hashlib.sha256(f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest())
+    body = json.dumps(row, separators=(',', ':'))
+    old, new = request.param
+    assert old in body
+    files[name] = body.replace(old, new, 1).encode()
+    manifest['files'] = {key: hashlib.sha256(value).hexdigest() for key, value in files.items()}
+    return manifest, files, name
+
+
+@async_test
+async def test_verified_duplicate_members_are_never_rewritten(tmp_path, duplicate_history_result, cli, port):
+    manifest, files, name = duplicate_history_result
+    save(tmp_path, manifest, files)
+    source = RunSource('sample', tmp_path)
+    assert validate_manifest(manifest, repo='sample')
+    assert source.load(manifest) == files
+    cli.write_text(cli.read_text() + "\n (output/'observed-result.bin').write_bytes(next(source.glob('*-result.json')).read_bytes())\n")
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        location = await owner.show_history(source)
+        assert (generated_root(owner, location) / 'observed-result.bin').read_bytes() == files[name]
+        assert source.load(manifest) == files
+    finally:
+        await owner.aclose()
