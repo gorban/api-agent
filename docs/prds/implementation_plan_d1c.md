@@ -13,7 +13,7 @@
 ## Acceptance
 
 - [x] Verify current-launch totals, failure/success history and trends, exact prior-test/attachment links, retries, independent modes, first launch, late upload/refresh, immutable context routes, stale/corrupt input, transfer limits and interrupted generation. Detect omitted history transfer and pooled-launch mutations.
-- [ ] Prove actual Allure CLI/HTTP/Chromium history navigation with controlled results, installed-package loading, exact applicable line/branch coverage and boundary/license/index/metadata checks; obtain independent review. No paid inference is needed.
+- [x] Prove actual Allure CLI/HTTP/Chromium history navigation with controlled results, installed-package loading, exact applicable line/branch coverage and boundary/license/index/metadata checks; obtain independent review. No paid inference is needed.
 - [ ] Human review the latest report, History tab, trend navigation, archive and exact selected attempt.
 
 ## Future format changes
