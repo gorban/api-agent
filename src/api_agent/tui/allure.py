@@ -151,7 +151,8 @@ class AllureNavigation:
             return Content(url).stylize(style)
         parts = ['Allure (click to open + copy URL):\n', link(location.url, 'allure_open_url')]
         if location.inspection_endpoint:
-            parts.extend(['\nBrowser CDP (click to copy; not a web page):\n',
+            spacing = '\n\n' if self.screen.kind == 'allure' else '\n'
+            parts.extend([spacing + 'Browser CDP (click to copy; not a web page):\n',
                           link(location.inspection_endpoint, 'allure_copy_url')])
         if location.browser_error:
             parts.extend(['\n', location.browser_error])

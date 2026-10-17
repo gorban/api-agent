@@ -38,8 +38,7 @@
   S3 run in owned temporary storage with verified manifests/hashes.
 - [x] Retain viewer server, staging and browser while the test-results operation
   is active, including after suite completion. Dispose through existing owned
-  cleanup when canceling/leaving results, returning to selection, explicitly
-  ending inspection or quitting. Preserve pending cleanup and retry duties.
+  cleanup when canceling/leaving results, returning to selection or quitting. Preserve pending cleanup and retry duties.
   Browser closure alone must not cancel tests. Never stop shared reporting
   storage or another owner's viewer merely because this viewer closes.
 - [x] Reuse only an exact verified viewer binding, or explicit separate run

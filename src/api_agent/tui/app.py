@@ -436,7 +436,6 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                     self._bindings.bind(binding.key, f'edit_search_query({binding.action!r})',
                                         show=False, priority=True)
         if self.kind == "test-results":
-            self._bindings.bind("e", "end_inspection", "End inspection")
             self._bindings.key_to_bindings["a"] = [Binding("a", "view_allure", "View in Allure")]
             self.set_interval(.25, self.refresh_suite_timer)
             self.refresh_suite_timer()
@@ -494,9 +493,6 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
 
     async def action_back_to_selection(self):
         self.app.run_worker(self.app.back_to_selection(), group="collection", exclusive=True)
-
-    async def action_end_inspection(self):
-        await self.app.end_inspection()
 
     async def action_view_allure(self):
         self.app.run_worker(self.app.open_selected_allure(), group="allure-viewer", exclusive=False)
@@ -645,9 +641,6 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             return isinstance(self.app.focused, DataTable)
         if action == "close_view" and self.kind == "menu":
             return False
-        if action == "end_inspection":
-            return self.kind == 'test-results' and (self.app.inspection_cleanup_active()
-                                                    or self.app.allure_viewer is not None)
         if action == "view_allure":
             return self.app.selected_allure_result(self) is not None
         if action == "back_to_selection":
@@ -1832,6 +1825,8 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 self.screen.query_one("#body", Static).update(self.unit_progress())
                 for column, value in zip(table.columns, self.unit_rows[key]):
                     table.update_cell(key, column, literal_cell(value), update_width=True)
+                if event.kind != 'component_progress':
+                    self.screen.refresh_bindings()
 
     def show_unit_results(self, summary=None, *, selected_row=None, scroll_y=None):
         if summary is None:
@@ -1854,9 +1849,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
             summary += '\n' + final_usage_text(self.suite_usage)
         if self.unit_result is not None and self.mode == 'integration':
             if self.inspections.active:
-                summary += '\nDebug inspection: open — tests and publication have finished. Press e to end inspection.'
+                summary += '\nDebug inspection: open — tests and publication have finished. Leaving results closes inspection.'
             if self.inspection_failed or self.recording_cleanup is not None:
-                summary += '\nInspection cleanup: FAIL — worker lost or cleanup pending; press e to retry cleanup.'
+                summary += '\nInspection cleanup: FAIL — worker lost or cleanup pending; leave results to retry cleanup.'
         if self.unit_result is not None and self.test_run is not None:
             from .test_results import completed_summary
             summary = completed_summary(summary, self.test_run.elapsed)
@@ -2253,7 +2248,11 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 self.show_menu()
             return
         if self.inspection_cleanup_active() and not self.test_run_active():
-            self.push_screen(QuitDialog("End browser inspection and return to the menu? Enter literal y to confirm; every other response cancels."),
+            action = "End browser inspection"
+            if self.allure_viewer is not None:
+                action = ("End browser inspection and close Allure" if self.inspections.active
+                          or self.recording_cleanup is not None else "Close Allure")
+            self.push_screen(QuitDialog(action + " and return to the menu? Enter literal y to confirm; every other response cancels."),
                              self.end_inspection_to_menu)
             return
         if self.test_run_active():

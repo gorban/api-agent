@@ -70,7 +70,7 @@ def test_harness_failure_displays_exception_stack_and_path_without_locals(tmp_pa
     asyncio.run(run())
 
 
-def test_retained_inspection_results_are_ready_and_explicit_end_is_available(tmp_path):
+def test_retained_inspection_results_cleanup_when_leaving(tmp_path):
     test = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
     item = handle()
     async def run():
@@ -85,11 +85,18 @@ def test_retained_inspection_results_are_ready_and_explicit_end_is_available(tmp
             assert app.screen.kind == 'test-results' and not app.test_run_active()
             assert app.operation_status == 0 and app.inspections.active
             assert 'tests and publication have finished' in app.screen.query_one('#body', Static).content.plain
-            assert app.screen.check_action('end_inspection', ())
+            assert not app.screen.check_action('edit_setting', ())
+            assert all(binding.action != 'end_inspection' for binding in app.screen._bindings.key_to_bindings.get('e', ()))
             await pilot.press('e')
+            await pilot.pause()
+            assert not item.closed
+            await pilot.press('c')
+            await pilot.pause()
+            await pilot.press('y', 'enter')
             await pilot.pause(.2)
             assert item.closed and not app.inspections.active
-            assert not app.screen.check_action('end_inspection', ())
+            assert not app.screen.check_action('edit_setting', ())
+            assert all(binding.action != 'end_inspection' for binding in app.screen._bindings.key_to_bindings.get('e', ()))
             assert app.operation_status == 0
     asyncio.run(run())
 
@@ -192,7 +199,10 @@ def test_recording_pending_result_retains_cleanup_and_publication(tmp_path, retr
             assert app.screen.kind == 'test-results' and app.integration_persisted
             assert app.unit_result.tests[0].status == 'passed'
             assert app.recording_cleanup is pending.recording_prerequisites
-            await pilot.press('e')
+            await pilot.press('c')
+            await pilot.pause()
+            assert calls == []
+            await pilot.press('y', 'enter')
             await pilot.pause(.2)
             assert calls == ['retry']
             assert (app.recording_cleanup is not None) == retry_fails
@@ -221,7 +231,8 @@ def test_transient_pending_clears_after_natural_close_without_falsifying_runner_
             app.unit_event(RunnerEvent('inspection_closed'))
             await pilot.pause(.1)
             assert app.operation_status == 0 and not app.inspection_failed
-            assert not app.screen.check_action('end_inspection', ())
+            assert not app.screen.check_action('edit_setting', ())
+            assert all(binding.action != 'end_inspection' for binding in app.screen._bindings.key_to_bindings.get('e', ()))
     asyncio.run(run())
 
 
