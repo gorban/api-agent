@@ -9,6 +9,11 @@ from .storage import RunStorage
 STATUSES = ('failed', 'broken', 'skipped', 'passed', 'unknown')
 
 
+def _statistics(items):
+    return {**{status: sum(row['status'] == status for row in items) for status in STATUSES},
+            'total': len(items)}
+
+
 def _decode(body):
     if len(body) > MAX_ARTIFACT:
         raise ViewerError('Allure history window exceeds size limit')
@@ -46,9 +51,7 @@ def prepare_history(history, count):
         entries = _entries(_decode(history['history.json']))
         for entry in entries.values():
             entry['items'] = entry['items'][:count - 1]
-            entry['statistic'] = {status: sum(row['status'] == status for row in entry['items'])
-                                  for status in STATUSES}
-            entry['statistic']['total'] = len(entry['items'])
+            entry['statistic'] = _statistics(entry['items'])
         result['history.json'] = _encode(entries)
     for name in TREND_FILES:
         if name in history:
@@ -75,14 +78,19 @@ def extend_history(output, prior, count):
         for key, entry in entries.items():
             old = previous.get(key)
             if old is None:
-                if entry['statistic']['total'] > len(entry['items']):
+                if entry['statistic'] != _statistics(entry['items']):
                     raise ViewerError('Generated Allure test history is incomplete')
                 continue
             added = entry['statistic']['total'] - old['statistic']['total']
             current, earlier = entry['items'], old['items']
             if not 0 <= added <= len(current) or current[added:] != earlier[:len(current) - added]:
                 raise ViewerError('Conflicting generated Allure test history')
+            increase = _statistics(current[:added])
+            if any(entry['statistic'][status] != old['statistic'][status] + increase[status]
+                   for status in STATUSES):
+                raise ViewerError('Conflicting generated Allure test history statistics')
             entry['items'] = [*current[:added], *earlier][:count]
+            entry['statistic'] = _statistics(entry['items'])
         path.write_bytes(_encode(entries))
     for name in TREND_FILES:
         path = root / 'history' / name
@@ -99,3 +107,18 @@ def extend_history(output, prior, count):
             if _read(widget) != current:
                 raise ViewerError('Conflicting generated Allure Trend widget')
             widget.write_bytes(body)
+    for path in (root / 'data/test-cases').glob('*.json'):
+        case = _decode(_file(path))
+        if not isinstance(case, dict) or not isinstance(case.get('extra', {}), dict):
+            raise ViewerError('Invalid generated Allure test case')
+        extra = case.get('extra', {})
+        if 'history' not in extra:
+            continue
+        original = _entries({'case': extra['history']})['case']
+        if case.get('status') not in STATUSES:
+            raise ViewerError('Invalid Allure current test history status')
+        items = original['items'][:count - 1]
+        retained = dict(original, items=items, statistic=_statistics([{'status': case['status']}, *items]))
+        if retained != original:
+            extra['history'] = retained
+            path.write_bytes(_encode(case))
