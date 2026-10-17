@@ -44,6 +44,71 @@ def test_restores_truncated_native_test_history_without_changing_statistics(expa
     assert result['new'] == entry([{'uid': 'current', 'status': 'passed'}])
 
 
+def test_status_breakdown_must_match_the_generated_new_items(expanded):
+    root, prior, complete = expanded
+    path = root / 'history/history.json'
+    value = json.loads(path.read_bytes())
+    value['test']['statistic']['passed'] += 1
+    value['test']['statistic']['failed'] -= 1
+    path.write_text(json.dumps(value))
+    with pytest.raises(ViewerError, match='statistics'):
+        window.extend_history(root, prior, 25)
+
+
+def test_multiple_new_observations_use_the_retained_denominator(expanded):
+    root, prior, _ = expanded
+    current = [{'uid': 'two', 'status': 'failed'}, {'uid': 'one', 'status': 'passed'}]
+    earlier = json.loads(prior['history.json'])['test']['items']
+    complete = entry([*current, *earlier])
+    (root / 'history/history.json').write_text(json.dumps({'test': dict(complete, items=complete['items'][:20])}))
+    cases = root / 'data/test-cases'
+    cases.mkdir(parents=True)
+    case = {'uid': 'two', 'status': 'failed', 'name': 'unchanged',
+            'extra': {'history': dict(complete, items=complete['items'][1:])}}
+    (cases / 'two.json').write_text(json.dumps(case))
+    window.extend_history(root, prior, 25)
+    value = json.loads((root / 'history/history.json').read_bytes())['test']
+    assert value == entry(complete['items'][:25])
+    updated = json.loads((cases / 'two.json').read_bytes())
+    assert updated['status'] == 'failed' and updated['name'] == 'unchanged'
+    expected = entry(complete['items'][:25])
+    expected['items'] = complete['items'][1:25]
+    assert updated['extra']['history'] == expected
+
+
+@pytest.mark.parametrize('case', [[], {'extra': None}, {'status': 'invalid', 'extra': {'history': entry([])}}])
+def test_malformed_current_history_is_not_published(expanded, case):
+    root, prior, _ = expanded
+    cases = root / 'data/test-cases'
+    cases.mkdir(parents=True)
+    (cases / 'one.json').write_text(json.dumps(case))
+    with pytest.raises(ViewerError, match='test'):
+        window.extend_history(root, prior, 25)
+
+
+def test_current_cases_without_history_remain_byte_exact(expanded):
+    root, prior, _ = expanded
+    cases = root / 'data/test-cases'
+    cases.mkdir(parents=True)
+    body = b'{ "status":"passed" }'
+    (cases / 'one.json').write_bytes(body)
+    window.extend_history(root, prior, 25)
+    assert (cases / 'one.json').read_bytes() == body
+
+
+def test_consistent_native_case_history_remains_byte_exact(expanded):
+    root, prior, _ = expanded
+    cases = root / 'data/test-cases'
+    cases.mkdir(parents=True)
+    earlier = json.loads(prior['history.json'])['test']['items']
+    original = entry([{'status': 'passed'}, *earlier])
+    original['items'] = earlier
+    body = json.dumps({'status': 'passed', 'extra': {'history': original}}, indent=2).encode()
+    (cases / 'current.json').write_bytes(body)
+    window.extend_history(root, prior, 25)
+    assert (cases / 'current.json').read_bytes() == body
+
+
 @pytest.mark.parametrize('count', [1, 3, 25])
 def test_prior_history_statistics_follow_the_retained_observations(count):
     original = {'history.json': json.dumps({'test': entry(items(40))}).encode(),

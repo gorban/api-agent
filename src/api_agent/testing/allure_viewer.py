@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import partial
 import hashlib
-import html
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -397,7 +396,7 @@ class ManagedAllureViewer:
             raise ViewerError('Allure history repository does not match the selected test')
         manifests = json.loads(json.dumps(await offload(source.history, budget=budget)))
         if manifests:
-            self._archive(source, manifests)
+            await self._archive(source, manifests, budget)
         cutoff = datetime.fromisoformat(manifest['started_at'].replace('Z', '+00:00'))
         previous = [row for row in manifests if row['mode'] == manifest['mode']
                     and row['run_id'] != manifest['run_id']
@@ -417,7 +416,7 @@ class ManagedAllureViewer:
                 if not manifests:
                     raise ViewerError('No finalized integration or E2E Allure runs are available')
                 manifests = json.loads(json.dumps(manifests))
-                windows = self._archive(source, manifests)
+                windows = await self._archive(source, manifests, budget)
                 manifest = manifests[0]
                 url = await self._historical_report(source, manifest, windows[manifest['run_id']], budget)
                 location = await self._open(url)
@@ -431,55 +430,22 @@ class ManagedAllureViewer:
                 manifests = json.loads(json.dumps(await offload(source.history, budget=budget)))
                 if not manifests:
                     raise ViewerError('No finalized integration or E2E Allure runs are available')
-                self._archive(source, manifests)
+                await self._archive(source, manifests, budget)
                 return await self._open(f'http://127.0.0.1:{self.port}/archive.html')
 
-    def _archive(self, source, manifests):
-        digests = {row['run_id']: validate_manifest(row, repo=source.repo) for row in manifests}
-        windows, following = {}, {}
-        recent = {}
-        for manifest in reversed(manifests):
-            previous = recent.get(manifest['mode'], ())
-            windows[manifest['run_id']] = previous
-            recent[manifest['mode']] = (manifest, *previous)[:self.history_count - 1]
-        recent = {}
-        for manifest in manifests:
-            later = recent.get(manifest['mode'], ())
-            following[manifest['run_id']] = later
-            recent[manifest['mode']] = (manifest, *later)[:self.history_count - 1]
-        links = []
-        for manifest in manifests:
-            identifier = manifest['run_id']
-            digest = digests[identifier]
-            previous, later = windows[identifier], following[identifier]
-            context = hashlib.sha256(json.dumps([
-                [digests[row['run_id']] for row in previous],
-                [digests[row['run_id']] for row in later]]).encode()).hexdigest()
-            route = f'/open/{identifier}/{digest}/{context}'
-            # Freeze the window while refreshing only the verified retrieval source.
-            self._history_routes[route] = (source, manifest, previous, later)
-            summary = f'/counts/{identifier}/{digest}'
-            self._summary_routes[summary] = (source, manifest)
-            prefix = f'{manifest["finished_at"]} — {manifest["mode"]} — '
-            state = {'failed': 'run error', 'interrupted': 'interrupted'}.get(manifest['status'])
-            suffix = (f' — {state}' if state else '') + f' — {identifier}'
-            links.append(f'<li><a href="{html.escape(route, quote=True)}">{html.escape(prefix)}'
-                         f'<span data-summary="{html.escape(summary, quote=True)}">Loading pass counts…</span>'
-                         f'{html.escape(suffix)}</a></li>')
-        index = Path(self._temporary.name) / 'archive.html'
-        temporary = index.with_suffix('.tmp')
-        temporary.write_text('<!doctype html><meta charset="utf-8"><title>Allure run archive</title>'
-            f'<h1>Allure run archive</h1><p>All finalized runs, newest first, including the most recent {self.history_count}. '
-            'Select a run for its exact results. In test details, History links to earlier results of that test. '
-            f'Trend charts show up to {self.history_count - 1} earlier and {self.history_count - 1} later launches of the same type; click a bar to open its report. '
-            'Counts cover recorded tests; interrupted runs may be incomplete.</p><ol>'
-            + ''.join(links) + '</ol><script>async function counts(){'
-            'for(const row of document.querySelectorAll("[data-summary]")){try{'
-            'const response=await fetch(row.dataset.summary,{cache:"no-store"});'
-            'if(!response.ok)throw Error();row.textContent=(await response.json()).label;'
-            '}catch{row.textContent="pass counts unavailable"}}}counts();</script>', encoding='utf-8')
-        temporary.replace(index)
-        return windows
+    async def _archive(self, source, manifests, budget):
+        from .allure_archive import checkpoint, prepare
+        stop = threading.Event()
+        with tempfile.TemporaryDirectory(prefix='api-agent-allure-index-') as staging:
+            output = Path(staging) / 'archive.html'
+            windows, routes, summaries = await offload(
+                prepare, source, manifests, self.history_count, budget, stop, output,
+                cancellation=stop)
+            checkpoint(budget, stop)
+            self._history_routes.update(routes)
+            self._summary_routes.update(summaries)
+            await offload(output.replace, Path(self._temporary.name) / 'archive.html')
+            return windows
 
     async def _counts_report(self, source, manifest):
         from .allure_counts import count_label, result_counts
