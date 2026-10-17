@@ -2265,8 +2265,8 @@ class ApiAgentApp(AllureNavigation, App[int]):
         dialog = self.screen
         if isinstance(dialog, QuitDialog) and getattr(dialog, '_results_leave', False):
             _, _, dialog.message = self.results_leave_prompt()
-            if dialog.is_mounted:
-                dialog.query_one('#quit-message', Static).update(dialog.message)
+            for body in dialog.query('#quit-message'):
+                body.update(dialog.message)
 
     async def close_view(self):
         if self.screen.kind == 'test-failure':

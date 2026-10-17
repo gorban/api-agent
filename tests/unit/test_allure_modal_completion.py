@@ -234,3 +234,47 @@ def test_late_completion_without_a_screen_does_not_refresh_a_dialog(tmp_path):
     assert not app.screen_stack
     app.finish_test_run()
     assert not app.test_run_active()
+
+
+
+def test_completion_updates_connected_warning_before_parent_mount_acknowledgement(tmp_path, monkeypatch):
+    from api_agent.testing.lifecycle import TestRunLifecycle
+    from test_allure_results_lifetime import prepare_live_results
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = QuitDialog._on_compose
+        async def composed_but_not_mounted(dialog, event):
+            await original(dialog, event)
+            entered.set()
+            await release.wait()
+        monkeypatch.setattr(QuitDialog, '_on_compose', composed_but_not_mounted)
+        app = fixture(tmp_path)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            one, two = prepare_live_results(app)
+            app.test_run = TestRunLifecycle()
+            app.allure_viewer = Viewer()
+            await pilot.pause()
+            try:
+                await app.close_view()
+                await asyncio.wait_for(entered.wait(), 10)
+                dialog = app.screen
+                assert not dialog.is_mounted
+                body = dialog.query_one('#quit-message', Static)
+                answer = dialog.query_one('#quit-answer', Input)
+                answer.value = 'y'
+                app.unit_result = IntegrationRunResult(0,
+                    (TestResult(one, 'passed', 1), TestResult(two, 'passed', 2)), '')
+                app.show_unit_results()
+                app.finish_test_run()
+                assert dialog.message.startswith('Close Allure and return')
+                assert str(body.content) == dialog.message
+                assert answer.value == 'y'
+            finally:
+                app.test_run.finish()
+                release.set()
+            await pilot.pause()
+            await pilot.press('escape')
+            await pilot.pause()
+            assert app.screen.kind == 'test-results'
+    asyncio.run(scenario())
