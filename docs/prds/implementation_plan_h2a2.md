@@ -30,6 +30,10 @@ For tracing, `TRACE_MODE` selects the backend and `TRACE_TARGET` supplies its ad
 
 ## 3. Reporting and container management
 
+Bring the bounded [selected-test Allure viewer](implementation_plan_d1a.md)
+forward for result/screenshot review. It reuses managed browser/process ownership
+and current storage access; it does not complete tracing or last-session shutdown.
+
 - [ ] Replace the Allure-only menu entry with Reporting: serve Allure and the configured tracing stack, display stable endpoints and join the same managed installation. Keep immutable run selection and publication attribution.
 - [ ] Expand container management to inventory managed running/stopped containers and volumes, inspect logs and stop eligible containers. Keep the screen accessible when no containers are running. Reuse shared selectable, scrollable, copyable log pages from Run local instead of duplicating them.
 - [ ] Offer Delete volumes with a preview of the affected managed installation, containers and volumes and a `y` confirmation. Cascade graceful stop, removal of eligible containers referencing those volumes, then volume deletion. The user need not perform intermediate steps. Normal Stop retains containers/volumes unless the chosen action requires container removal.
