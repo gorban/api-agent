@@ -34,6 +34,38 @@ call count, session ID, input, output, total, cache-read, cache-creation and
 reasoning tokens. Allure retains its own usage summary and CSV independently.
 The default CSV, its lock and legacy backups are Git-ignored.
 
+## Optional Allure viewer prerequisite
+
+Install the Allure 2 CLI separately for HTML report generation and viewing;
+recording and publishing results do not require it. On macOS, or Linux with
+Homebrew already installed, use `brew install allure` (OpenJDK is included), then
+verify `allure --version`. For other installations, follow the official
+[Allure installation guide](https://allurereport.org/docs/v2/install/), including
+its Java and PATH requirements.
+
+The `allure` executable must be available on PATH in the launcher's environment;
+a host installation alone may not be visible inside a container. The
+[managed viewer](prds/implementation_plan_d1.md) checks this prerequisite.
+
+## Viewing Allure results
+
+Choose **Allure serve** or run `./launch.py --tui-mode allure` interactively to
+browse finalized integration/E2E runs for the selected repository/pack. The
+managed browser opens a newest-first history page; each run has its own report,
+generated when opened. **Refresh history** discovers later publications. The
+viewer uses `ALLURE_VIEWER_PORT` (default 5252); an occupied port fails clearly.
+Leaving the viewer closes its browser, listener and temporary reports; stored
+results remain intact.
+
+In live or completed test results, highlight one completed test and press
+**a View in Allure** for that exact attempt. Pending/running tests, groups, units
+and multi-row selections have no shortcut. A live preview labels pending
+suite-wide accounting; final publication gets a separate immutable binding.
+The viewer remains until leaving results, Back to selection, End inspection or
+quit. Viewer failures do not change test/publication outcomes. Normal prompts,
+responses and trusted Studio icons are visible with `LOG_CONTENT=True`;
+authentication fields and registered credentials remain protected.
+
 ## Testing
 
 Select `unit`, `integration` or `e2e` through `--tui-mode`. File/node selectors
@@ -235,6 +267,6 @@ PNGs through the usual Allure publication and secondary copy. A trusted provider
 must supply credential masking; unsafe or unsupported capture reports unavailable
 evidence. Content disabled performs no browser capture and attaches a fixed
 notice image explaining how to enable screenshots; provider safety still applies. Authentication-provider
-browsers and the existing one-prompt Studio request test retain their separate
-evidence/lifecycle tasks. These checks do not implement Run local or application
+browsers retain their separate evidence/lifecycle tasks. The one-prompt Studio
+request test now uses the shared prepared session and screenshot path. These checks do not implement Run local or application
 E2E, and no inference is needed for this review.

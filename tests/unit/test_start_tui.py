@@ -132,7 +132,7 @@ def test_start_e2e_keeps_human_acceptance(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('mode', ['run-local', 'allure', 'deployment-logs'])
+@pytest.mark.parametrize('mode', ['run-local', 'deployment-logs'])
 def test_start_service_modes_retain_current_operation_boundary(tmp_path, mode):
     async def scenario():
         app = fixture(tmp_path, mode, fields={'START': START}, argv=['--start'])
@@ -319,3 +319,17 @@ def test_noninteractive_e2e_acceptance_preserves_operation_validation():
         status = main(['--no-std-in', '--tui-mode=e2e', '--start=E2E',
                        '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-bucket=synthetic'], base_root=root)
     assert status == 3 and stderr.getvalue() == 'synthetic operation requirement\n'
+
+
+def test_start_allure_enters_managed_history_without_automatic_test_execution(tmp_path,monkeypatch):
+    async def scenario():
+        app=fixture(tmp_path,'allure',fields={'START':START},argv=['--start'])
+        entered=asyncio.Event()
+        async def history():
+            entered.set()
+        monkeypatch.setattr(app,'show_allure_history',history)
+        async with app.run_test() as pilot:
+            await wait_for(pilot,entered.is_set)
+            assert app.mode=='allure' and not app.auto_start_pending
+            assert not app.test_run_active()
+    asyncio.run(scenario())

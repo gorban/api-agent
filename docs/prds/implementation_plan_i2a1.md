@@ -26,7 +26,7 @@ polling catches loss even when descendants keep the execnet channel open.
 
 - [x] Independently review lifecycle seams and aggregate suite exclusion.
 - [x] Complete exact applicable coverage and package/public-boundary gates.
-- [ ] Human review parallel original-browser retention and explicit cleanup.
+- [x] Human review parallel original-browser retention and explicit cleanup.
 
 Managed included UI hosts opt into parent-stdin EOF liveness. The worker owns
 the sole writer; worker death stops its listener and active connections. Normal

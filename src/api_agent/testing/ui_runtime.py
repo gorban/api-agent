@@ -20,7 +20,7 @@ from .inference_content import content_boundary
 
 class UIIntegrationOwner:
     """Retain provider, credential helpers and TLS work until explicit disposal."""
-    def __init__(self, data, registry, *, services=None):
+    def __init__(self, data, registry, *, services=None, backend=None):
         from api_agent.auth.interaction_transport import OwnedInteraction
         self.config = dict(data['config'])
         self.owner_root = Path(data['owner_root'])
@@ -35,6 +35,8 @@ class UIIntegrationOwner:
         self._started = self.closed = False
         self.prepared = None
         self.extra_services = dict(services or {})
+        self.backend_factory, self.backend = backend, None
+        self._backend_cleanup = None
         self.inspection = InspectionOwner(on_session=self._show_browser) if self.config.get('DEBUG') else None
         self.browser_owner = managed_browser(inspection=self.inspection,
             headless=not (self.config.get('DEBUG') or self.config.get('RUN_UI')))
@@ -87,6 +89,15 @@ class UIIntegrationOwner:
             services = {'owner_root':self.owner_root, 'emissions':self.emissions,
                 'runtime_values':values, 'tls_material':material, 'ssl_context':ssl_context,
                 'ui_processes':StudioProcesses(ssl_context=ssl_context), **self.extra_services}
+            if self.backend_factory is not None:
+                self.backend = self.backend_factory(values)
+                binding = await self.backend.__aenter__()
+                _validate_backend_binding(binding)
+                if self.closed:
+                    raise SessionClosedError('UI test fixture closed during preparation')
+                values['AGENT_DJANGO_URL'] = binding['agent_url']
+                self.emissions.register_secret(binding['access_token'])
+                services['ui_access_token'] = binding['access_token']
             self.prepared = PreparedUISession(values, services, browser_owner=self.browser_owner,
                 user_index=self.config.get('UNATTENDED_USER_INDEX'), credentials_for=self._credentials_for,
                 retain_on_failure=True)
@@ -125,6 +136,16 @@ class UIIntegrationOwner:
                     await self.prepared.aclose()
                 else:
                     await self.browser_owner.aclose()
+                if self.backend is not None:
+                    try:
+                        if self._backend_cleanup is not None:
+                            await self._backend_cleanup.retry()
+                        else:
+                            await self.backend.__aexit__(None, None, None)
+                    except CleanupPendingError as error:
+                        self._backend_cleanup = error
+                        raise
+                    self.backend = self._backend_cleanup = None
                 tasks = set(self.pending_tasks)
                 if self._tls_task is not None:
                     tasks.add(self._tls_task)
@@ -137,3 +158,14 @@ class UIIntegrationOwner:
                             task.exception()
                 if self.interaction is not None:
                     self.interaction.close()
+
+
+def _validate_backend_binding(binding):
+    """Permit only a loopback Agent URL and the instance's ephemeral nonce."""
+    if type(binding) is not dict or set(binding) != {'agent_url', 'access_token'}:
+        raise ValueError('Invalid UI backend binding')
+    listener_plan(binding['agent_url'])
+    token = binding['access_token']
+    if (type(token) is not str or not 32 <= len(token) <= 256
+            or not token.isascii() or not token.isprintable()):
+        raise ValueError('Invalid UI backend binding')

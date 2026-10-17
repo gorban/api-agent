@@ -1,29 +1,24 @@
-# Selected-run report viewers
+# Allure history and selected-test viewers
 
-[Allure reporting](implementation_plan_d.md) · [Shared reporting management](implementation_plan_h2a2.md).
+[Allure reporting](implementation_plan_d.md) · [Shared reporting management](implementation_plan_h2a2.md)
 
-## Serving and navigation
+## Viewer capabilities
 
-- [ ] Provide the TUI's "Allure serve" mode for viewing test results. Default to the most recent recorded integration/E2E run for the selected repository/pack; unit runs must not replace that selection.
-  - [ ] When ALLURE_RESULTS_DIR is explicitly empty, fetch the selected S3 run into owned temporary viewer staging and clean it after serving; do not assume a retained local directory exists.
-  - [ ] After the report server is ready, open a headed browser through the shared managed browser lifecycle, including the test shortcut. Display its URL and inspection endpoint where appropriate; support the launcher's container/host access path. If browser opening fails, keep the owned report available and report the opening failure without changing test outcomes.
-  - [ ] Resolve the latest finalized run from persistent run metadata. Fetch exact local/S3 artifacts without mixing runs or using file modification times/stale reports.
-  - [ ] Deliver [selected-test navigation during and after execution](implementation_plan_d1a.md): `a View in Allure` opens the one completed test/attempt at its exact run identity, without navigating away from the running results screen. Hide it for multi-row selections and group rows.
-  - [ ] Test latest-run and exact-test navigation, partial-suite viewing, failed/interrupted runs, newer history, unit runs and managed cleanup. The selected-test slice precedes broader reporting management; it does not start tracing or alter shared storage ownership.
+- [x] Complete [multi-run history, CLI prerequisites and managed serving](implementation_plan_d1b.md). Main-menu Allure serve browses multiple finalized integration/E2E suites for the selected repository/pack, with separate immutable run routes and newest-first navigation. Units remain outside this history.
+- [x] Complete [exact-test navigation during and after execution](implementation_plan_d1a.md). `a View in Allure` opens the highlighted terminal test/attempt, including while other tests run. Hide it for multi-row selections, groups, pending/running tests and units.
+- [x] Keep final history and operation-owned live previews distinct. Each preview has an explicit version and artifact hashes; later tests/final publication require a new binding. Never publish a partial finalized manifest or silently substitute latest data. Completed accounting and immutable final manifests remain authoritative.
 
-## Report-viewer sharing
+## Ownership and sharing
 
-- [ ] Bind a finalized Allure viewer to the exact selected immutable run and
-  manifest. The [live-results preview](implementation_plan_d1a.md) instead uses
-  an explicit operation-owned snapshot binding until final publication. Ordinary report generation/serving does not automatically incorporate
-  newly uploaded S3 results. Reuse a managed viewer only for the same verified
-  binding, or implement an explicit multi-run viewer with separate run routes.
-  A different run or foreign listener on the configured port must fail clearly,
-  without replacing the other viewer, changing ports or substituting latest data.
-- [ ] Keep result publication independent of viewer lifetime. Sharing LocalStack
-  or a tracing backend does not imply that their UI/run/session state can be
-  adopted. Verify two view requests for the same and different runs, finalized
-  late uploads, stale viewer identity and owned stop before human acceptance.
+- [x] Bind each finalized route to its exact run/manifest and each preview to its frozen snapshot. Reuse only the same verified binding. Ordinary generation does not automatically incorporate S3 uploads; refresh adds newly verified history without replacing existing reports.
+- [x] Keep publication independent of viewer lifetime. Sharing LocalStack or tracing does not authorize adopting unrelated UI/run/session state. A foreign listener fails clearly; never replace it or change ports silently. Closing a viewer must not cancel tests or stop shared reporting storage.
+- [x] Finish independent joined review, applicable exact coverage and installed/package/license/boundary checks. This bounded viewer does not implement tracing management or last-session container shutdown.
 
-[Allure 2 generation/serve documentation](https://allurereport.org/docs/v2/generate-report/)
-describes generated reports; S3 updates require explicit regeneration.
+The CLI is an optional out-of-band dependency; [installation instructions](../development.md) stand alone. Application E2E execution keeps its separate implementation gate; its eventual results reuse these generic viewer contracts.
+
+**Deferred human review**
+
+Substantive implementation and independent verification are complete. Explicit human acceptance remains unchecked in the linked children.
+
+- [History and managed serving](implementation_plan_d1b.md)
+- [Selected-test navigation](implementation_plan_d1a.md)

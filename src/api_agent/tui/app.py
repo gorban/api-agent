@@ -16,6 +16,7 @@ from api_agent.tui.select import AdvancingSelect
 from api_agent.tui.test_table import TestTable
 from api_agent.tui.search import GroupedUserFooter, SearchBar, SearchInput
 from api_agent.tui.clipboard import ClipboardError, copy_text
+from api_agent.tui.allure import AllureNavigation
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -436,6 +437,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                                         show=False, priority=True)
         if self.kind == "test-results":
             self._bindings.bind("e", "end_inspection", "End inspection")
+            self._bindings.key_to_bindings["a"] = [Binding("a", "view_allure", "View in Allure")]
             self.set_interval(.25, self.refresh_suite_timer)
             self.refresh_suite_timer()
             self.call_after_refresh(self.layout_test_results)
@@ -492,6 +494,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
 
     async def action_end_inspection(self):
         await self.app.end_inspection()
+
+    async def action_view_allure(self):
+        self.app.run_worker(self.app.open_selected_allure(), group="allure-viewer", exclusive=False)
 
     async def action_start_selected(self):
         await self.app.choose("continue")
@@ -638,7 +643,10 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if action == "close_view" and self.kind == "menu":
             return False
         if action == "end_inspection":
-            return self.kind == 'test-results' and self.app.inspection_cleanup_active()
+            return self.kind == 'test-results' and (self.app.inspection_cleanup_active()
+                                                    or self.app.allure_viewer is not None)
+        if action == "view_allure":
+            return self.app.selected_allure_result(self) is not None
         if action == "back_to_selection":
             return self.kind == "test-results" and self.test_run_complete and not self.app.test_run_active()
         if action.startswith("failure_"):
@@ -834,7 +842,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         await self.app.choose("skip")
 
 
-class ApiAgentApp(App[int]):
+class ApiAgentApp(AllureNavigation, App[int]):
     @property
     def schema(self):
         return getattr(self.session, "schema", self._initial_schema)
@@ -900,6 +908,7 @@ class ApiAgentApp(App[int]):
         self.collector = collector
         self.unit_runner = unit_runner
         self.integration_runner = integration_runner
+        self.initialize_allure()
         self.integration_unattended = False
         self.integration_persisted = None
         from api_agent.testing.inspection_controls import InspectionGroup
@@ -984,9 +993,8 @@ class ApiAgentApp(App[int]):
     def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
         screen = WorkbenchScreen(kind, title, text, actions, rows, selected_row=selected_row)
         if isinstance(self.screen, WorkbenchScreen):
-            self.switch_screen(screen)
-        else:
-            self.push_screen(screen)
+            return self.switch_screen(screen)
+        return self.push_screen(screen)
 
     async def on_mount(self):
         result = self.session.result()
@@ -1412,6 +1420,11 @@ class ApiAgentApp(App[int]):
             return
         if self.mode in {"unit", "integration", "e2e"}:
             await self.collect_tests()
+        elif self.mode == "allure":
+            self.review_destination = None
+            self.startup_review = False
+            self.auto_start_pending = False
+            self.run_worker(self.show_allure_history(), group="allure-viewer", exclusive=False)
         else:
             self.review_destination = None
             self.startup_review = False
@@ -1467,6 +1480,7 @@ class ApiAgentApp(App[int]):
             return
         if not await self.end_inspection():
             return
+        self.allure_snapshots.clear()
         cancel_event = threading.Event()
         selection = self.selection
         self.collection_cancel = cancel_event
@@ -1577,6 +1591,7 @@ class ApiAgentApp(App[int]):
                         active, accepted=True, interaction=interaction,
                         content_policy=content_policy,
                         **self.historical_runner_options(runner),
+                        **self.allure_runner_options(runner, generation),
                         usage_output=lambda text: self.call_from_thread(self.receive_usage, text, generation),
                         unattended_index_source=getattr(resolved.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         on_event=lambda event: self.call_from_thread(self.integration_event, event, generation),
@@ -1665,7 +1680,7 @@ class ApiAgentApp(App[int]):
             self.finish_test_run()
 
     def inspection_cleanup_active(self):
-        return self.inspections.active or self.recording_cleanup is not None
+        return self.inspections.active or self.recording_cleanup is not None or self.allure_viewer is not None
 
     def discard_finished_inspection(self):
         if not self.inspection_cleanup_active():
@@ -1685,10 +1700,19 @@ class ApiAgentApp(App[int]):
         from api_agent.runtime.tasks import offload
         group = self.inspections
         recording = self.recording_cleanup
+        viewer = self.allure_viewer
         pending = recording.pending_cleanup if recording is not None else None
         generation = self._inspection_generation
         async def retry():
             cleaned = True
+            if viewer is not None:
+                try:
+                    await viewer.aclose()
+                except Exception:
+                    cleaned = False
+                else:
+                    if self.allure_viewer is viewer:
+                        self.allure_viewer = None
             if pending is not None:
                 try:
                     await retry_owned_cleanup(recording, pending)
@@ -1707,7 +1731,7 @@ class ApiAgentApp(App[int]):
                     self.operation_status = 3
                 elif self.integration_exit_status is not None:
                     self.operation_status = self.integration_exit_status
-        owners = (group,)
+        owners = (group,) + ((viewer,) if viewer is not None else ())
         if recording is not None:
             owners += (recording,)
         error = CleanupPendingError(owners, retry)
@@ -1717,6 +1741,8 @@ class ApiAgentApp(App[int]):
         return error
 
     async def end_inspection(self, *, force=False):
+        if not await self.close_allure():
+            return False
         self.inspection_lost |= self.inspections.lost
         if self.inspection_lost:
             self.inspection_failed = True
@@ -2109,6 +2135,9 @@ class ApiAgentApp(App[int]):
                 self.request_container_stop()
             elif key == "refresh-containers":
                 self.refresh_container_inventory()
+            elif key == "refresh-allure":
+                if not self._allure_opening:
+                    self.run_worker(self.show_allure_history(), group="allure-viewer", exclusive=False)
             elif key == "switch-target":
                 self.switch_target()
             elif key == "skip":
@@ -2153,6 +2182,7 @@ class ApiAgentApp(App[int]):
                     self.test_run = TestRunLifecycle()
                     self.collection_cancel = self.test_run.cancel_event
                     self.unit_result = None
+                    self.allure_snapshots.clear()
                     self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
                     self.show_unit_results(self.unit_progress())
                     self.run_worker(self._run_integrations(), group='integration-run', exclusive=True)
@@ -2164,7 +2194,7 @@ class ApiAgentApp(App[int]):
                 self.operation_status = 3
                 self.show_selection()
             elif key == "menu":
-                if self.test_run_active() or self.inspection_cleanup_active():
+                if self.test_run_active() or self.inspection_cleanup_active() or self.allure_viewer is not None:
                     await self.close_view()
                 else:
                     self.show_menu()
@@ -2210,6 +2240,10 @@ class ApiAgentApp(App[int]):
             self.show_menu()
 
     async def close_view(self):
+        if self.screen.kind == 'allure':
+            if await self.close_allure():
+                self.show_menu()
+            return
         if self.inspection_cleanup_active() and not self.test_run_active():
             self.push_screen(QuitDialog("End browser inspection and return to the menu? Enter literal y to confirm; every other response cancels."),
                              self.end_inspection_to_menu)

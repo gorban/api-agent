@@ -42,8 +42,15 @@ An interrupted transfer remains retryable before host disposal. Repeated cleanup
 never cancels a preparation's disposal twice. Setup failure evidence precedes
 cleanup through explicit retained ownership, including failure before a test body.
 
-The existing one-prompt Studio request test still has its earlier dedicated host;
-migrating it to this consumer is a separate next step, without new spending here.
+The one-prompt Studio request test consumes the prepared selected UI session.
+Its `ui_provider_backend` fixture supplies an async context factory receiving the
+effective UI runtime values and yielding only an Agent loopback URL and ephemeral
+access token. Validate that binding, register the token for credential exclusion,
+and retain the backend through UI disposal/DEBUG inspection. Ordinary session
+checks leave this optional backend absent and never initialize an LLM. Studio
+selectors are restricted to the included provider before LLM setup. The request
+uses the real Agent HTTP contract; controlled tests substitute inference only.
+Success/failure capture uses the same attempt pipeline, not temporary PNG files.
 
 - [x] Prove the selected provider lifecycle with a harmless rendered action,
   original session handoff and no inference.
@@ -53,7 +60,7 @@ migrating it to this consumer is a separate next step, without new spending here
   DEBUG provider/runtime lifetime until original-browser inspection ends.
 - [x] Independently review session, account-binding and joined startup ownership.
 - [x] Complete applicable exact coverage, installed/package/public-boundary gates.
-- [ ] Human review the selected-provider browser, harmless rendered action and
+- [x] Human review the selected-provider browser, harmless rendered action and
   explicit retained-browser cleanup without an inference request.
 
 Run local, application E2E, private login adapters and workflow conversion remain
@@ -64,10 +71,10 @@ Contract controls live in `test_ui_session.py`, `test_ui_runtime.py`,
 `test_ui_provider_fixture.py`. The shared integration proves original-session
 handoff; the included provider contribution proves its Appearance interaction.
 
-Delivery validation passes 9,555 units at 32 workers plus three test-only
+Original delivery validation passed 9,555 units at 32 workers plus three test-only
 phase/standalone-cleanup cases against identical production bytes. The union
 measures every file at exact 100% lines and branches: 22,980 statements and
-8,694 branches. All 9,558 current cases are accounted for; 27 subtests pass.
+8,694 branches. All 9,558 original cases are accounted for; 27 subtests pass.
 The installed wheel runs its selected included provider and rendered action
 from an unrelated working directory, captures original masked pixels and
 disposes its process/browser. Frontend coverage passes 112 cases plus five

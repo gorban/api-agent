@@ -56,7 +56,7 @@ def validate_recorded_integration(tests, config, *, accepted=False, no_std_in=Fa
 @suite_locked
 def run_recorded_integration(context, tests, config, *, accepted=False, no_std_in=False,
                              storage=None, quota_fetcher=None, prepare=None, finish=None,
-                             usage_output=None,
+                             usage_output=None, on_snapshot=None,
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
                              unattended_index_source=None, interaction=None, content_policy=None, historical_estimator=None):
@@ -147,6 +147,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                                             steps=workflow_steps.pop(result.identity.id, None))
             recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)
+            from .allure_preview import emit_snapshot
+            emit_snapshot(recorder, {result.identity.id: filename}, on_snapshot,
+                          version=len(recording_ids))
 
         def after(result):
             nonlocal persisted, manifest, usage_summary
@@ -228,6 +231,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             manifest = recorder.finalize(status=status, shared_artifacts=(
                 ('Suite usage', 'usage-summary.json', 'application/json'),
                 ('Immutable accounting', 'accounting.json', 'application/json')))
+            from .allure_preview import emit_snapshot
+            emit_snapshot(recorder, recording_ids, on_snapshot, manifest=manifest)
             estimator.ingest(directory, manifest)
             storage.persist(directory, manifest)
             persisted = True
