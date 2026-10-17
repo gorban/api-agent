@@ -335,6 +335,8 @@ class ManagedAllureViewer:
                 if source is not None:
                     try:
                         async with component_timeout('Allure prior test history', self.timeout / 2) as budget:
+                            if self._history_tasks:
+                                raise ViewerError('Prior Allure history is still settling')
                             await self._ready()
                             task = asyncio.create_task(self._selected_history(source, manifest, budget))
                             self._history_tasks.add(task)
