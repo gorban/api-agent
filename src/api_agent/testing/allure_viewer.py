@@ -91,8 +91,9 @@ class _Handler(SimpleHTTPRequestHandler):
         if self.headers.get('Host') != f'127.0.0.1:{self.owner.port}':
             self.send_error(403)
             return
-        summary = self.owner._summary_routes.get(self.path)
-        binding = self.owner._history_routes.get(self.path)
+        with self.owner._publication_lock:
+            summary = self.owner._summary_routes.get(self.path)
+            binding = self.owner._history_routes.get(self.path)
         if binding is None and summary is None:
             super().do_GET()
             return
@@ -169,6 +170,7 @@ class ManagedAllureViewer:
         self._bindings = {}
         self._history_routes = {}
         self._summary_routes = {}
+        self._publication_lock = threading.RLock()
         self._loop = None
         self._http_tasks = set()
         self._operations = set()
@@ -442,10 +444,29 @@ class ManagedAllureViewer:
                 prepare, source, manifests, self.history_count, budget, stop, output,
                 cancellation=stop)
             checkpoint(budget, stop)
-            self._history_routes.update(routes)
-            self._summary_routes.update(summaries)
-            await offload(output.replace, Path(self._temporary.name) / 'archive.html')
+            await offload(self._publish_archive, output, routes, summaries)
             return windows
+
+    def _publish_archive(self, output, routes, summaries):
+        from .allure_source import MAX_ARTIFACT
+        body = RunStorage._read_source(output, max_bytes=MAX_ARTIFACT)
+        index = Path(self._temporary.name) / 'archive.html'
+        with self._publication_lock:
+            history = {**self._history_routes, **routes}
+            counts = {**self._summary_routes, **summaries}
+            interruption = None
+            try:
+                output.replace(index)
+            except BaseException as error:
+                # Resolve an interrupted atomic replacement from its owned bytes.
+                if (output.exists() or not index.exists()
+                        or RunStorage._read_source(index, max_bytes=MAX_ARTIFACT) != body):
+                    raise
+                if not isinstance(error, OSError):
+                    interruption = error
+            self._history_routes, self._summary_routes = history, counts
+            if interruption is not None:
+                raise interruption
 
     async def _counts_report(self, source, manifest):
         from .allure_counts import count_label, result_counts
