@@ -25,5 +25,6 @@ An agent inspecting the original DEBUG browser should be able to test document c
 
 ## Acceptance
 
+- [ ] Couple refresh acceptance to the [existing DEBUG guidance follow-through](implementation_plan_b1c4.md): demonstrate efficient edit/rerun/inspect iteration in the attached browser, then propose the exact existing-guidance amendment after both capabilities are delivered.
 - [ ] With the original managed DEBUG browser attached, edit declarations, nested prompts, schemas and overrides between synthetic requests; verify new generations and diagrams, invalid-edit errors, unchanged in-flight/resumed versions and state-reset diagnostics. Test atomic saves, same-mtime edits, capture races and multiple clients. Verify Python restart handling, unchanged browser/auth ownership and reporting-enabled versus explicitly skipped tests.
 - [ ] If optimization proceeds, compare unchanged behavior and actual latency at the profiled large size; mutations must detect missing cache-key inputs, skipped content validation, stale fallback and mixed-generation execution. Renew exact applicable unit coverage, installed/relocated resource loading, lifecycle, independent review and public-boundary gates. No paid inference is required for this acceptance.
