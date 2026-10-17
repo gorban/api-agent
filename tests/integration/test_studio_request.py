@@ -19,6 +19,8 @@ from api_agent.providers.sessions import LLMSessionOwner
 from api_agent.ui.provider import app_directory
 
 
+pytestmark = pytest.mark.feature('Studio chat')
+
 @asynccontextmanager
 async def studio_endpoint(provider, selection):
     """Own real loopback listeners; provider selection/auth belongs to launch.py."""

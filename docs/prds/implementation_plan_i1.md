@@ -47,6 +47,10 @@ The selected future format is [B1a](implementation_plan_b1a.md). Earlier rendere
 - [ ] Use one shared check pipeline locally and in CI, with clear failures and cancellable deadlines. Keep it quick: no complete test suite, browser, inference, live provider, network/service startup or application execution. Deterministic generator validation is distinct from runtime integration testing.
 - [ ] Document check, fix and generation commands, restoration/re-staging steps and no-Git CI responsibilities. Explain rendered chart behavior using [GitHub's diagram guidance](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-diagrams); GitHub supports native Mermaid, but editor styling support does not prove diagram rendering. Verify both selected editor and GitHub viewing targets before adding renderer dependencies. The selected workflow renderer is pinned PlantUML and its viewer entry is `./launch.py --view-flow`; other quick-check command names remain implementation decisions.
 
+## Integration/E2E classification
+
+- [ ] Enforce [explicit feature metadata](implementation_plan_d4.md) against the complete staged snapshot and clean CI snapshot. Share one static rule, preserve provider/pack scope, verify inheritance/parameterization and reject missing or unprovable metadata without importing tests.
+
 ## Acceptance
 
 - [ ] Prove partial staging, unstaged formatter configuration and untracked graph poisoning cannot change the result for a fixed index.

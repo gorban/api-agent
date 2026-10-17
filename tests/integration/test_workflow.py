@@ -1,8 +1,11 @@
 """Mandatory permanent fixture coverage; pilot refresh is an explicit CLI action."""
+import pytest
 from api_agent.workflows.fixture_driver import (
     baseline_limit, fingerprint, node_coverage, preflight_baselines, run_graph,
 )
 
+
+pytestmark = pytest.mark.feature('Workflow execution')
 
 def test_workflow_node_coverage(request, integration_config):
     # Refresh reviewed bounds explicitly with the workflow calibration command;

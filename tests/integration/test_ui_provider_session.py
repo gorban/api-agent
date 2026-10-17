@@ -2,6 +2,8 @@
 import pytest
 
 
+pytestmark = pytest.mark.feature('UI sessions')
+
 @pytest.mark.requires_ui_session
 def test_ui_provider_session(ui_provider_session):
     """Shared readiness proof; provider-specific interactions stay with providers."""

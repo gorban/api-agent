@@ -7,6 +7,8 @@ from api_agent.workflows.layout import load_layout
 from api_agent.workflows.evidence import publish
 import pytest
 
+pytestmark = pytest.mark.feature('Workflow preferences')
+
 CATALOG = '''
 def produce(inputs, context):
     return {'truth': inputs['truth'], 'preference': False}

@@ -8,6 +8,7 @@ import time
 import sys
 import tempfile
 from .processes import finalize
+from .classification import validate_features
 
 
 class CollectionError(ValueError):
@@ -24,15 +25,18 @@ class TestIdentity:
     node_id: str
     tags: frozenset[str] = frozenset()
     root: Path | None = None
+    features: tuple[str, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, "tags", frozenset(self.tags))
+        object.__setattr__(self, "features", validate_features(self.features))
         if self.root is not None:
             object.__setattr__(self, "root", Path(self.root).resolve())
 
 
 _PLUGIN = '''
 import json, sys
+from api_agent.testing.classification import collected_features
 try:
     import pytest
 except ImportError:
@@ -43,9 +47,11 @@ class Collector:
         config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
         config.addinivalue_line("markers", "requires_ui_session: selected integration consumes the UI provider")
         config.addinivalue_line("markers", "requires_llm: UI integration also consumes the LLM provider")
+        config.addinivalue_line("markers", "feature(name): explicit functional feature for reporting")
 
     def pytest_collection_finish(self, session):
-        rows = [{"node_id": item.nodeid, "tags": sorted({mark.name for mark in item.iter_markers()})} for item in session.items]
+        rows = [{"node_id": item.nodeid, "tags": sorted({mark.name for mark in item.iter_markers()}),
+                 "features": collected_features(item)} for item in session.items]
         with open(sys.argv[1], "w", encoding="utf-8") as stream:
             json.dump(rows, stream)
 sys.exit(pytest.main(sys.argv[2:], plugins=[Collector()]))
@@ -233,7 +239,7 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
                     raise CollectionError(f"No tests collected in base unit suite: {base / 'tests/unit'}")
                 for row in rows:
                     node = row["node_id"]
-                    identity = TestIdentity(f"{repo}::{node}", repo, node.split("::", 1)[0], node, frozenset(row["tags"]), root if root not in {base, owner} else None)
+                    identity = TestIdentity(f"{repo}::{node}", repo, node.split("::", 1)[0], node, frozenset(row["tags"]), root if root not in {base, owner} else None, features=row.get("features", []))
                     file, _, suffix = node.partition('::')
                     collected.setdefault(((root / file).resolve(), suffix), identity)
             except (OSError, ValueError, KeyError, TypeError) as exc:

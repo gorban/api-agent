@@ -120,6 +120,8 @@ class RunRecorder:
             'attachments': attachment_rows,
             'start': started_ms, 'stop': stopped_ms,
         }
+        row['labels'].extend({'name': 'feature', 'value': self._safe_text(feature)}
+                             for feature in test.features)
         if steps is not None:
             row['steps'] = self._evidence.content_export({'steps': steps}).get('steps', [])
         if result.status in {'cancelled', 'interrupted'}:

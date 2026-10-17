@@ -33,6 +33,7 @@ exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 testpaths = ["tests/unit"]
 addopts = "--strict-markers"
 markers = ["requires_pack_api: selected integration requires the pack API and identity preflight",
+    "feature(name): explicit functional feature for reporting",
     "requires_ui_session: selected integration consumes the UI provider",
     "requires_llm: selected integration consumes an LLM provider"]
 

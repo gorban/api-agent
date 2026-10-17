@@ -73,6 +73,9 @@ if os.name == 'posix' and 'API_AGENT_LAUNCHER_LIVENESS_FD' in os.environ:
             os._exit(130)
     threading.Thread(target=parent_liveness, daemon=True).start()
 class Events:
+    def pytest_configure(self, config):
+        config.addinivalue_line("markers", "feature(name): explicit functional feature for reporting")
+
     def send(self, **row):
         with open(event_path, 'a', encoding='utf-8') as stream:
             stream.write(json.dumps(row) + '\n')
