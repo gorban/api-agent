@@ -19,7 +19,7 @@
 - [x] Refresh archive bindings from the currently selected source even when the manifest and frozen history context already have a route. Switching to secondary-only viewing must not read the earlier primary source through a refreshed archive link. Preserve immutable report routes, bytes and history contexts.
 - [x] Verify configuration precedence/visibility, source isolation and missing/empty paths, publication independence, installed-package behavior and exact applicable coverage.
 
-- [ ] Independently recheck secondary-source selection and refreshed archive links, preserving earlier viewer closures.
+- [x] Independently recheck secondary-source selection and refreshed archive links, preserving earlier viewer closures.
 - [ ] Human review toggle visibility and secondary-only browsing with a configured existing directory. No new inference is needed.
 
 ## CLI and browser
