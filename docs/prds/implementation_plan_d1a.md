@@ -23,7 +23,8 @@
 
 - [x] Make a completed test and its captured attachments viewable before suite
   completion. Produce an operation-owned, validated local preview if final run
-  publication is not yet available. Preserve outcome/teardown ordering and exact
+  publication is not yet available. Collect attachment sources recursively through nested steps,
+  retaining the same flat-name, hash, count and byte limits. Preserve outcome/teardown ordering and exact
   attachment bytes; never publish a partial finalized manifest or combine runs.
   Bind each versioned preview to the run, test/attempt and validated snapshot
   artifact digests. Later tests or final publication require an explicit new
@@ -61,3 +62,10 @@ A missing retained snapshot produces an explicit unavailable-evidence message;
 no latest-run substitution is allowed. Main-menu history uses on-demand per-run
 generation. Application E2E execution remains separately planned; controlled
 E2E-mode result tables exercise this shared presentation contract.
+
+Live preview retention has an aggregate 128 MiB byte budget across distinct
+snapshots, including shared finalized copies counted once. An over-budget
+attempt loses any earlier binding and reports its specific unavailable reason;
+it never substitutes another attempt. Finalized history remains independently
+viewable. Returning to selection or starting a suite clears retained copies,
+budget accounting and unavailable reasons.

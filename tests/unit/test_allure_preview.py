@@ -69,6 +69,49 @@ def test_preview_includes_original_attachment_and_detaches_metadata(recorder):
     preview.emit_snapshot(owner,{},None)
 
 
+def test_preview_includes_nested_step_attachment(tmp_path):
+    context, test, _ = fixture(tmp_path)
+    owner = RunRecorder(tmp_path/'run', RunIdentity.create(test.repo, 'integration'))
+    attachment = owner.record_artifact('step-evidence.txt', b'nested evidence')
+    step = {'name': 'outer', 'steps': [{'name': 'inner', 'attachments': [
+        {'name': 'Evidence', 'source': attachment, 'type': 'text/plain'}]}]}
+    result = owner.record_test(TestResult(test, 'passed'), steps=[step])
+    received = []
+
+    preview.emit_snapshot(owner, {test.id: result}, received.append)
+
+    assert len(received) == 1
+    snapshot = received[0]
+    assert snapshot.files[attachment] == b'nested evidence'
+    assert hashlib.sha256(snapshot.files[attachment]).hexdigest() == snapshot.manifest['files'][attachment]
+
+
+@pytest.mark.parametrize('source', [None, 3, '../outside', 'missing'])
+def test_malformed_nested_attachment_never_exports_partial_preview(recorder, source):
+    owner, mapping = recorder
+    result = next(iter(mapping.values()))
+    row = json.loads((owner.directory/result).read_bytes())
+    row['steps'] = [{'steps': [{'attachments': [{'source': source}]}]}]
+    (owner.directory/result).write_text(json.dumps(row))
+    received = []
+
+    preview.emit_snapshot(owner, mapping, received.append)
+
+    assert received == []
+
+
+@pytest.mark.parametrize('row', [[], {'steps': [{'attachments': 'invalid'}]}])
+def test_malformed_result_structure_never_exports_preview(recorder, row):
+    owner, mapping = recorder
+    result = next(iter(mapping.values()))
+    (owner.directory/result).write_text(json.dumps(row))
+    received = []
+
+    preview.emit_snapshot(owner, mapping, received.append)
+
+    assert received == []
+
+
 @pytest.mark.parametrize('damage',['file-count','file-size','total-size','traversal','missing','digest'])
 def test_unusable_viewer_copy_never_exports_partial_data(recorder,monkeypatch,damage):
     owner,mapping = recorder

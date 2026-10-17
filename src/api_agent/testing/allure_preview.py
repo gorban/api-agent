@@ -12,6 +12,26 @@ MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
 
 
+def _attachment_sources(row):
+    """Find attachment references at every step depth in one recorded result."""
+    if not isinstance(row, dict):
+        raise ValueError('Invalid viewer result data')
+    pending = [row]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            attachments = value.get('attachments', [])
+            if not isinstance(attachments, list):
+                raise ValueError('Invalid viewer attachments')
+            for attachment in attachments:
+                if not isinstance(attachment, dict) or not isinstance(attachment.get('source'), str):
+                    raise ValueError('Invalid viewer attachment source')
+                yield attachment['source']
+            pending.extend(child for key, child in value.items() if key != 'attachments')
+        elif isinstance(value, list):
+            pending.extend(value)
+
+
 def emit_snapshot(recorder, result_files, callback, *, manifest=None, version=1):
     """Copy only recorded bytes; viewer failure must not alter test outcomes.
 
@@ -28,7 +48,7 @@ def emit_snapshot(recorder, result_files, callback, *, manifest=None, version=1)
                 for name in tuple(names):
                     row = json.loads(RunStorage._read_source(
                         recorder.directory / name, max_bytes=MAX_FILE_BYTES))
-                    names.update(attachment['source'] for attachment in row['attachments'])
+                    names.update(_attachment_sources(row))
             else:
                 names = set(manifest['files'])
             if len(names) > MAX_FILES:
