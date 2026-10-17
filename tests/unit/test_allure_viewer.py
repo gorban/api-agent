@@ -28,7 +28,13 @@ def async_test(function):
 def run():
     result_id = str(uuid4())
     name = result_id + '-result.json'
-    files = {name: json.dumps({'uuid': result_id, 'status': 'passed', 'attachments': [
+    full_name = 'tests/test_demo.py::test_demo'
+    identity = hashlib.sha256(f'sample:integration:{full_name}'.encode()).hexdigest()
+    files = {name: json.dumps({'uuid': result_id, 'status': 'passed',
+        'name': 'test_demo', 'fullName': full_name, 'historyId': identity,
+        'labels': [{'name': 'parentSuite', 'value': 'sample'},
+                   {'name': 'suite', 'value': 'integration'},
+                   {'name': 'subSuite', 'value': 'test_demo.py'}], 'attachments': [
         {'name': 'Picture', 'source': 'image.png'}]}).encode(), 'image.png': b'original picture'}
     manifest = {'schema': 1, 'repo': 'sample', 'run_id': str(uuid4()), 'mode': 'integration',
                 'started_at': '2026-01-01T00:00:00Z', 'finished_at': '2026-01-01T00:01:00Z',
@@ -956,7 +962,9 @@ def test_history_parameter_upgrade_preserves_unaffected_bytes(run, parameters):
     manifest = run[0]
     full_name = 'tests/test_demo.py::test_demo'
     history_id = hashlib.sha256(f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest()
-    body = json.dumps({'fullName':full_name,'historyId':history_id,'parameters':parameters}, indent=2).encode()
+    row = json.loads(run[1][run[2]])
+    row.update(fullName=full_name, historyId=history_id, parameters=parameters)
+    body = json.dumps(row, indent=2).encode()
     assert viewer._history_result(body, manifest) == body
 
 
@@ -965,8 +973,9 @@ def test_legacy_retry_counter_is_excluded_only_for_recorder_owned_identity(run, 
     manifest = run[0]
     full_name = 'tests/test_demo.py::test_demo'
     history_id = hashlib.sha256(f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest()
-    row = {'fullName':full_name,'historyId':history_id if owned else 'foreign',
-           'parameters':[{'name':'attempt','value':'2'}]}
+    row = json.loads(run[1][run[2]])
+    row.update(fullName=full_name, historyId=history_id if owned else 'foreign',
+               parameters=[{'name':'attempt','value':'2'}])
     body = json.dumps(row, indent=2).encode()
     converted = viewer._history_result(body, manifest)
     if owned:
@@ -1013,8 +1022,10 @@ def test_history_preserves_noncanonical_or_semantic_attempt_values(run, value):
     manifest = run[0]
     full_name = 'tests/test_demo.py::test_demo'
     history_id = hashlib.sha256(f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest()
-    body = json.dumps({'fullName':full_name,'historyId':history_id,
-                      'parameters':[{'name':'attempt','value':value}]}, indent=2).encode()
+    row = json.loads(run[1][run[2]])
+    row.update(fullName=full_name, historyId=history_id,
+               parameters=[{'name':'attempt','value':value}])
+    body = json.dumps(row, indent=2).encode()
     assert viewer._history_result(body, manifest) == body
 
 
@@ -1090,3 +1101,91 @@ async def test_verified_duplicate_members_are_never_rewritten(tmp_path, duplicat
         assert source.load(manifest) == files
     finally:
         await owner.aclose()
+
+
+@pytest.fixture(params=[
+    ({}, ('fullName',)),
+    ({'fullName': None}, ()),
+    ({'fullName': ''}, ()),
+    ({'fullName': 0}, ()),
+    ({'fullName': False}, ()),
+    ({'fullName': []}, ()),
+    ({'fullName': {}}, ()),
+    ({'fullName': 'test_demo'}, ()),
+    ({'fullName': '::test_demo'}, ()),
+    ({'fullName': 'tests/test_demo.py::', 'name': ''}, ()),
+    ({}, ('name',)),
+    ({'name': 'foreign'}, ()),
+    ({'name': None}, ()),
+    ({}, ('labels',)),
+    ({'labels': []}, ()),
+    ({'labels': None}, ()),
+    ({'labels': [{'name': 'parentSuite', 'value': 'foreign'},
+                {'name': 'suite', 'value': 'integration'},
+                {'name': 'subSuite', 'value': 'test_demo.py'}]}, ()),
+    ({'labels': [{'name': 'parentSuite', 'value': 'sample'},
+                {'name': 'suite', 'value': 'e2e'},
+                {'name': 'subSuite', 'value': 'test_demo.py'}]}, ()),
+    ({'labels': [{'name': 'parentSuite', 'value': 'sample'},
+                {'name': 'suite', 'value': 'integration'},
+                {'name': 'subSuite', 'value': 'other.py'}]}, ()),
+    ({'labels': [{'name': 'parentSuite', 'value': 'sample'},
+                {'name': 'suite', 'value': 'integration'},
+                {'name': 'subSuite', 'value': 'test_demo.py'},
+                {'name': 'owner', 'value': 'foreign'}]}, ()),
+], ids=['missing-full-name', 'null-full-name', 'empty-full-name', 'numeric-full-name',
+        'boolean-full-name', 'list-full-name', 'object-full-name', 'unqualified-full-name',
+        'empty-file', 'empty-node', 'missing-name', 'foreign-name', 'null-name',
+        'missing-labels', 'empty-labels', 'null-labels', 'foreign-repo', 'foreign-mode',
+        'foreign-file', 'extra-label'])
+def foreign_history_identity(run, request):
+    manifest, files, name = run
+    row = json.loads(files[name])
+    changes, removed = request.param
+    row.update(changes)
+    for key in removed:
+        del row[key]
+    row['historyId'] = hashlib.sha256(
+        f'{manifest["repo"]}:{manifest["mode"]}:{row.get("fullName")}'.encode()).hexdigest()
+    row['parameters'] = [{'name': 'attempt', 'value': '2'}]
+    files[name] = json.dumps(row, indent=2).encode()
+    manifest['files'] = {key: hashlib.sha256(body).hexdigest() for key, body in files.items()}
+    return manifest, files, name
+
+
+@async_test
+async def test_verified_foreign_identity_reaches_generation_byte_exact(tmp_path, foreign_history_identity, cli, port):
+    manifest, files, name = foreign_history_identity
+    save(tmp_path, manifest, files)
+    source = RunSource('sample', tmp_path)
+    assert validate_manifest(manifest, repo='sample')
+    assert source.load(manifest) == files
+    cli.write_text(cli.read_text() + "\n (output/'observed-result.bin').write_bytes(next(source.glob('*-result.json')).read_bytes())\n")
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        location = await owner.show_history(source)
+        assert (generated_root(owner, location) / 'observed-result.bin').read_bytes() == files[name]
+        assert source.load(manifest) == files
+    finally:
+        await owner.aclose()
+
+
+@pytest.mark.parametrize('node', ['test_demo', 'TestExample::test_demo',
+                                 'TestExample::test_demo[first::second]'])
+def test_genuine_recorder_identity_upgrades_legacy_counter(tmp_path, node):
+    from datetime import datetime, timezone
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.contracts import TestResult
+    from api_agent.testing.recording import RunIdentity, RunRecorder
+    full_name = 'tests/test_demo.py::' + node
+    identity = RunIdentity(str(uuid4()), 'sample', 'integration', datetime(2026, 1, 1, tzinfo=timezone.utc))
+    recorder = RunRecorder(tmp_path, identity)
+    test = TestIdentity('sample::' + full_name, 'sample', 'tests/test_demo.py', full_name)
+    name = recorder.record_test(TestResult(test, 'passed', 1), attempt=2)
+    manifest = recorder.finalize()
+    row = json.loads((tmp_path / name).read_bytes())
+    del row['parameters'][0]['excluded']
+    body = json.dumps(row, indent=2).encode()
+    expected = json.loads(body)
+    expected['parameters'][0]['excluded'] = True
+    assert json.loads(viewer._history_result(body, manifest)) == expected

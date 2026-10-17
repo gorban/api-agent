@@ -46,8 +46,21 @@ def _history_result(body, manifest):
     row = json.loads(body, object_pairs_hook=members)
     if ambiguous:
         return body
+    full_name = row.get('fullName')
+    if not isinstance(full_name, str) or not full_name:
+        return body
+    file, separator, node = full_name.partition('::')
+    if not file or not separator or not node:
+        return body
+    head, bracket, parameters_text = node.partition('[')
+    expected_name = head.rsplit('::', 1)[-1] + bracket + parameters_text
+    expected_labels = [{'name': 'parentSuite', 'value': manifest['repo']},
+                       {'name': 'suite', 'value': manifest['mode']},
+                       {'name': 'subSuite', 'value': Path(file).name}]
+    if row.get('name') != expected_name or row.get('labels') != expected_labels:
+        return body
     expected = hashlib.sha256(
-        f'{manifest["repo"]}:{manifest["mode"]}:{row.get("fullName")}'.encode()).hexdigest()
+        f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest()
     parameters = row.get('parameters')
     if (row.get('historyId') != expected or not isinstance(parameters, list)
             or len(parameters) != 1):
