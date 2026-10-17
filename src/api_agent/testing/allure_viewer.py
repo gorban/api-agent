@@ -36,7 +36,16 @@ HISTORY_FILES = ('history.json', 'history-trend.json', 'duration-trend.json',
 
 def _history_result(body, manifest):
     """Upgrade our legacy retry parameter in derived staging, never in storage."""
-    row = json.loads(body)
+    ambiguous = False
+    def members(pairs):
+        nonlocal ambiguous
+        value = dict(pairs)
+        if len(value) != len(pairs):
+            ambiguous = True
+        return value
+    row = json.loads(body, object_pairs_hook=members)
+    if ambiguous:
+        return body
     expected = hashlib.sha256(
         f'{manifest["repo"]}:{manifest["mode"]}:{row.get("fullName")}'.encode()).hexdigest()
     parameters = row.get('parameters')
