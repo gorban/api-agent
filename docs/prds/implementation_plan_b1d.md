@@ -1,0 +1,29 @@
+# Development graph refresh and measured compilation performance
+
+[Workflow conversion](implementation_plan_b1b.md) · [Run local tabs](implementation_plan_k2.md) · [Source provenance](implementation_plan_b1c3.md)
+
+An agent inspecting the original DEBUG browser should be able to test document changes without silently running a stale graph. Refresh correctness comes first; file watching, caching and pre-compilation are not assumed performance requirements.
+
+## Invocation-scoped definitions
+
+- [ ] On each new graph invocation, resolve the selected declaration/resource closure and capture a coherent validated version, including prompts, schemas, overrides and request-affecting configuration. The initial baseline may parse/validate/compile each new invocation. Do not promise fresh topology merely because prompt files are reread. Freeze the captured definition for execution, source hashes, diagrams and observations together.
+- [ ] Keep running executions, retries, suspended approvals/clarifications and their resumptions pinned to their original definition. Changes apply to a new invocation, never halfway through a node or a resumed graph. Between conversation turns, validate state compatibility before adopting a new definition; require an explicit new conversation/reset when necessary. Never silently migrate state, replay a prompt or spend tokens to apply an edit.
+- [ ] Surface invalid new declarations or mixed-generation capture as actionable errors before effects; do not silently run the last good definition for a new request. An already-running pinned invocation may finish. Distinguish current invalid edits from the last successfully compiled graph in the viewer.
+- [ ] Update the shared flow tab/status to identify the generation actually used by a new invocation. Historical and active-run overlays retain their own pinned identities. Preserve the attached browser/context, UI conversation and owned authentication sessions; refreshing a definition does not restart login, duplicate a browser or execute a graph just to redraw it.
+- [ ] Document that Run local source refresh is distinct from test Allure recording. Reporting-enabled tests still require committed document-hash inputs; uncommitted test development requires explicit `--skip-allure-reporting`. DEBUG alone does not bypass that prerequisite. Read-only/local graph inspection must not create Allure recording merely to support refresh.
+
+## File watching and native code
+
+- [ ] Make request-boundary freshness independent of filesystem watcher events. A watcher is unnecessary just to apply edits on the next invocation. Consider bounded watcher/poll notifications separately only if immediate idle diagram refresh or edit diagnostics justify them; missed/coalesced events, atomic saves, nested resources and new/deleted override files cannot cause stale execution.
+- [ ] Treat Python callable/module changes separately from declaration refresh. Use an explicit managed restart when live code replacement cannot preserve service, state and cleanup ownership. Do not apply blanket module reload or implicitly reuse old callable bindings under a new declaration identity. Keep restart requirements visible to the attached agent; no automatic inference is needed to detect a change.
+
+## Profile before caching or pre-compilation
+
+- [ ] At final performance profiling, use an independently authored small graph and a representative large nested graph. Record size/shape explicitly: nodes/edges, depth, branches, prompt/document bytes and schema/resource counts. Measure cold/warm source discovery, bounded reads/hash validation, parsing, schema validation, compilation, diagram work and end-to-end local request latency separately from provider/network/token waiting. Use deterministic no-spend node/provider implementations and reproducible environments; include concurrent requests.
+- [ ] Record distributions and the materiality criterion before deciding to optimize. If compilation is immaterial to representative latency, retain the simple invocation-boundary implementation and record a no-change result. Do not add caching, pre-compilation or a watcher dependency merely because a microbenchmark improves.
+- [ ] Only if justified, prototype a bounded cache/precompiled representation keyed by the complete validated declaration/resource/override/configuration/parser/binding identity. Validate freshness at each new invocation, independently of watchers; mtime alone is insufficient. Prefer immutable parse/compile plans; never globally cache credentials, runtime services, event loops, conversation state or mutable invocation objects. Version/bound storage and treat persisted entries as untrusted; no executable-object deserialization.
+
+## Acceptance
+
+- [ ] With the original managed DEBUG browser attached, edit declarations, nested prompts, schemas and overrides between synthetic requests; verify new generations and diagrams, invalid-edit errors, unchanged in-flight/resumed versions and state-reset diagnostics. Test atomic saves, same-mtime edits, capture races and multiple clients. Verify Python restart handling, unchanged browser/auth ownership and reporting-enabled versus explicitly skipped tests.
+- [ ] If optimization proceeds, compare unchanged behavior and actual latency at the profiled large size; mutations must detect missing cache-key inputs, skipped content validation, stale fallback and mixed-generation execution. Renew exact applicable unit coverage, installed/relocated resource loading, lifecycle, independent review and public-boundary gates. No paid inference is required for this acceptance.
