@@ -123,7 +123,8 @@ class AllureNavigation:
             from api_agent.testing.allure_viewer import ManagedAllureViewer
             values = self.session.result().values
             self.allure_viewer = ManagedAllureViewer(
-                values.get('ALLURE_VIEWER_PORT', 5252), cli=values.get('ALLURE_CLI', 'allure'))
+                values.get('ALLURE_VIEWER_PORT', 5252), cli=values.get('ALLURE_CLI', 'allure'),
+                history_count=values.get('ALLURE_HISTORY_DISPLAY_COUNT', 20))
         return self.allure_viewer
 
     async def open_selected_allure(self):

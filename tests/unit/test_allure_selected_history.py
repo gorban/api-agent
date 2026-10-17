@@ -15,6 +15,7 @@ from api_agent.testing import allure_viewer as viewer
 from api_agent.testing.allure_source import PreviewSnapshot, RunSource, ViewerError
 from test_allure_viewer import (run, cli, history_cli, port, Browser, async_test,
                                save, history_runs, generated_root)
+from test_allure_archive import trend_cli
 
 
 @pytest.fixture(params=[(False, 'passed'), (True, 'passed'), (False, 'failed'), (True, 'failed')],
@@ -67,15 +68,14 @@ async def test_selected_report_retains_native_history_without_other_current_test
 
 
 @async_test
-async def test_selected_history_uses_same_launch_window(tmp_path, run, selected, history_cli, port, monkeypatch):
-    monkeypatch.setattr(viewer, 'HISTORY_LAUNCHES', 3)
+async def test_selected_history_uses_same_launch_window(tmp_path, run, selected, trend_cli, port):
     rows = history_runs(tmp_path, run, [f'2026-01-{day:02d}T01:00:00Z' for day in range(1, 5)])
     snapshot, name = selected
-    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser, history_count=3)
     try:
         location = await owner.show_preview(snapshot, name, source=RunSource('sample', tmp_path))
-        chain = json.loads((generated_root(owner, location) / 'history/history.json').read_bytes())
-        assert chain == ['integration — ' + row['finished_at'] for row in rows[-2:]] + [
+        chain = json.loads((generated_root(owner, location) / 'history/history-trend.json').read_bytes())
+        assert [row['reportName'] for row in reversed(chain)] == ['integration — ' + row['finished_at'] for row in rows[-2:]] + [
             'integration — ' + snapshot.manifest['started_at']]
         assert len(owner._bindings) == 3
     finally:

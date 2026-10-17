@@ -262,7 +262,7 @@ def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_pat
 
 
 def test_snapshot_runner_compatibility_and_factory(tmp_path,monkeypatch):
-    app=fixture(tmp_path)
+    app=fixture(tmp_path, fields={'ALLURE_HISTORY_DISPLAY_COUNT': {'type': 'int', 'default': 20}})
     callback=[]
     app.call_from_thread=lambda method,*args:callback.append(args)
     def old_runner():
@@ -276,9 +276,10 @@ def test_snapshot_runner_compatibility_and_factory(tmp_path,monkeypatch):
     app.allure_runner_options(flexible,3)['on_snapshot']('data')
     assert callback==[('data',2),('data',3)]
     created=[]
-    monkeypatch.setattr('api_agent.testing.allure_viewer.ManagedAllureViewer',lambda port, **kwargs:created.append(port) or Viewer())
+    app.session.set_value('ALLURE_HISTORY_DISPLAY_COUNT', '25')
+    monkeypatch.setattr('api_agent.testing.allure_viewer.ManagedAllureViewer',lambda port, **kwargs:created.append((port, kwargs)) or Viewer())
     assert app._allure() is app._allure()
-    assert created==[5252]
+    assert created==[(5252, {'cli': 'allure', 'history_count': 25})]
 
 
 def test_history_menu_mode_configuration_dispatch(tmp_path,monkeypatch):
