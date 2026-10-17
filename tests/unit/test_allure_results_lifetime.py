@@ -1,10 +1,12 @@
 """Live Allure actions and notifications remain owned by the results operation."""
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from textual.widgets._footer import FooterKey
 from textual.widgets._toast import Toast
 
+from api_agent.providers.control import CleanupPendingError
 from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import RunnerEvent, TestResult
 from api_agent.testing.inspection_controls import InspectionGroup
@@ -113,24 +115,34 @@ def test_final_results_keep_allure_toast_and_its_exact_link(tmp_path, monkeypatc
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('owned,expected', [
-    ('browser', 'End browser inspection and return'),
-    ('allure', 'Close Allure and return'),
-    ('both', 'End browser inspection and close Allure and return'),
-])
+@pytest.mark.parametrize('browser_owned,allure_owned,recording_owned,expected', [
+    (True, False, False, 'End browser inspection and return'),
+    (False, True, False, 'Close Allure and return'),
+    (False, False, True, 'Finish pending cleanup and return'),
+    (True, True, False, 'End browser inspection, close Allure and return'),
+    (True, False, True, 'End browser inspection, finish pending cleanup and return'),
+    (False, True, True, 'Finish pending cleanup, close Allure and return'),
+    (True, True, True, 'End browser inspection, finish pending cleanup, close Allure and return'),
+], ids=['browser', 'allure', 'recording', 'browser-allure', 'browser-recording', 'allure-recording', 'all-owners'])
 @pytest.mark.parametrize('accepted', [False, True], ids=['cancel', 'confirm'])
-def test_leave_results_names_owned_resources_once_and_cleans_only_on_confirmation(tmp_path, owned, expected, accepted):
+def test_leave_results_names_owned_resources_once_and_cleans_only_on_confirmation(tmp_path, browser_owned, allure_owned, recording_owned, expected, accepted):
     async def scenario():
         app = fixture(tmp_path)
         viewer, browser = Viewer(), handle()
+        cleanup_calls = []
+        async def retry():
+            cleanup_calls.append('cleanup')
+        recording = SimpleNamespace(pending_cleanup=CleanupPendingError((), retry))
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.mode = 'integration'
             app.unit_result = IntegrationRunResult(0, (), '')
-            if owned != 'allure':
+            if browser_owned:
                 app.inspections = InspectionGroup((browser,))
-            if owned != 'browser':
+            if allure_owned:
                 app.allure_viewer = viewer
+            if recording_owned:
+                app.recording_cleanup = recording
             app.show_unit_results()
             await pilot.pause()
             await pilot.press('c')
@@ -141,6 +153,8 @@ def test_leave_results_names_owned_resources_once_and_cleans_only_on_confirmatio
             await pilot.press(*(('y', 'enter') if accepted else ('escape',)))
             await pilot.pause()
             assert app.screen.kind == ('menu' if accepted else 'test-results')
-            assert browser.closed == (accepted and owned != 'allure')
-            assert viewer.closed == (accepted and owned != 'browser')
+            assert browser.closed == (accepted and browser_owned)
+            assert viewer.closed == (accepted and allure_owned)
+            assert cleanup_calls == (['cleanup'] if accepted and recording_owned else [])
+            assert (app.recording_cleanup is not None) == (recording_owned and not accepted)
     asyncio.run(scenario())

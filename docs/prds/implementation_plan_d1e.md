@@ -4,7 +4,8 @@
 
 - [ ] Refresh contextual actions when a test reaches a terminal state. A single completed integration/E2E test exposes `a View in Allure` while others run, regardless of whether its frozen snapshot arrives before or after its outcome. Opening one preview never regenerates it automatically as other tests finish.
 - [ ] Remove the results-only `e End inspection` shortcut. Keep owned Allure and DEBUG resources until leaving results, returning to selection or quitting; preserve cleanup failure/retry duties. Details close returns to results without disposal.
-- [ ] Confirm leaving results once, naming browser inspection, Allure, or both concisely according to owned resources. Cleanup remains shared and does not stop tests accidentally.
+- [ ] Confirm leaving results once, naming browser inspection, pending recording cleanup, Allure, or their combination concisely according to owned resources. Cleanup remains shared and does not stop tests accidentally.
+- [ ] Completion with a confirmation open updates the owning results screen without burying the pending choice or mounting duplicate screens. Cancel reveals completed results; confirm disposes the same owners. Preserve notification identity and leave no orphan dialogs.
 - [ ] Preserve an unexpired Allure notification and its exact links when live results become completed results; do not reset its expiry or rebuild the open report. Allow generation begun before completion to finish normally.
 - [ ] Separate the report URL and Browser CDP label with a blank line on the history page; keep notifications compact.
 - [ ] Verify live outcome/snapshot ordering, footer visibility, final transition, URL interaction, cancellation and cleanup retry with controlled resources; require exact applicable coverage, installed wheel and independent boundary/review checks.
