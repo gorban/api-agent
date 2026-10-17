@@ -141,3 +141,9 @@ def test_mismatched_native_overlap_is_rejected(widgets):
 def test_surrounding_window_is_bounded(widgets, later):
     with pytest.raises(ViewerError, match='window'):
         trends.surrounding_widgets(*widgets, later)
+
+
+@pytest.mark.parametrize('count', [0, True, 2.5, None])
+def test_invalid_configured_trend_window_is_rejected(widgets, count):
+    with pytest.raises(ViewerError, match='window'):
+        trends.surrounding_widgets(*widgets, 1, count)

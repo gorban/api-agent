@@ -265,6 +265,15 @@ help = "Shared loopback port for the managed Allure 2 reports and archive.html r
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
+[fields.ALLURE_HISTORY_DISPLAY_COUNT]
+type = "int"
+default = 20
+validation = "positive"
+help = "Launches in an Allure history window, including the current launch. Default 20 includes up to 19 earlier launches in test History and up to 19 earlier plus 19 later launches in archive Trend charts. Set 1 for current only. Larger values increase generation time and storage; existing viewer deadlines and artifact-size limits still apply. This changes presentation, not retained results or cost-estimation history."
+[fields.ALLURE_HISTORY_DISPLAY_COUNT.applies_when]
+TUI_MODE = ["integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
 [fields.ALLURE_LOCALSTACK_PORT]
 type = "int"
 default = 4566

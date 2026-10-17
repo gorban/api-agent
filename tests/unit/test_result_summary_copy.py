@@ -287,6 +287,8 @@ def test_initial_picker_copy_only_while_table_focused(tmp_path, monkeypatch, mod
         monkeypatch.setattr('api_agent.tui.app.copy_text', copy)
         async with app.run_test(size=(140, 35)) as pilot:
             await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             monkeypatch.setattr('api_agent.tui.app.sys.platform', platform)
             screen = app.screen
             assert screen.kind == 'tests'

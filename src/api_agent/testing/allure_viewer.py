@@ -153,10 +153,13 @@ class ManagedAllureViewer:
     Existing bindings never change. Refresh adds new routes and rewrites only the
     history navigation index. Cleanup failures retain resources for aclose retry.
     """
-    def __init__(self, port=5252, *, browser_factory=None, timeout=120, cli='allure'):
+    def __init__(self, port=5252, *, browser_factory=None, timeout=120, cli='allure', history_count=HISTORY_LAUNCHES):
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError('Allure viewer port must be between 1 and 65535')
+        if type(history_count) is not int or history_count < 1:
+            raise ValueError('Allure history display count must be a positive integer')
         self.port = port
+        self.history_count = history_count
         self.timeout = timeout
         self.cli = cli
         self._inspection = InspectionOwner()
@@ -254,6 +257,9 @@ class ManagedAllureViewer:
         if result_file is not None and (result_file not in files or not result_file.endswith('-result.json')):
             raise ViewerError('The exact selected Allure result is unavailable')
         selector = hashlib.sha256(result_file.encode()).hexdigest() if result_file else 'suite'
+        if history is not None and self.history_count != HISTORY_LAUNCHES:
+            from .allure_history_window import prepare_history
+            history = await offload(prepare_history, history, self.history_count)
         if history is not None:
             context = {name: hashlib.sha256(body).hexdigest() for name, body in history.items()}
             selector += ('' if archive else '-no-archive') + '-history-' + hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
@@ -296,6 +302,9 @@ class ManagedAllureViewer:
                 await self._command([*self._cli, 'generate', staging, '--output', str(output)])
                 if not (output / 'index.html').is_file():
                     raise ViewerError('Allure generation produced no report')
+                if history is not None and self.history_count > HISTORY_LAUNCHES:
+                    from .allure_history_window import extend_history
+                    await offload(extend_history, output, history, self.history_count)
                 suffix = ''
                 if result_file:
                     cases = list((output / 'data' / 'test-cases').glob('*.json'))
@@ -394,7 +403,7 @@ class ManagedAllureViewer:
                     and row['run_id'] != manifest['run_id']
                     and datetime.fromisoformat(row['finished_at'].replace('Z', '+00:00')) <= cutoff]
         history = {}
-        for row in reversed(previous[:HISTORY_LAUNCHES - 1]):
+        for row in reversed(previous[:self.history_count - 1]):
             files = await offload(source.load, row, budget=budget)
             url = await self._report(row, files, history=history)
             history = await offload(self._generated_history, url)
@@ -432,12 +441,12 @@ class ManagedAllureViewer:
         for manifest in reversed(manifests):
             previous = recent.get(manifest['mode'], ())
             windows[manifest['run_id']] = previous
-            recent[manifest['mode']] = (manifest, *previous)[:HISTORY_LAUNCHES - 1]
+            recent[manifest['mode']] = (manifest, *previous)[:self.history_count - 1]
         recent = {}
         for manifest in manifests:
             later = recent.get(manifest['mode'], ())
             following[manifest['run_id']] = later
-            recent[manifest['mode']] = (manifest, *later)[:HISTORY_LAUNCHES - 1]
+            recent[manifest['mode']] = (manifest, *later)[:self.history_count - 1]
         links = []
         for manifest in manifests:
             identifier = manifest['run_id']
@@ -460,9 +469,9 @@ class ManagedAllureViewer:
         index = Path(self._temporary.name) / 'archive.html'
         temporary = index.with_suffix('.tmp')
         temporary.write_text('<!doctype html><meta charset="utf-8"><title>Allure run archive</title>'
-            '<h1>Allure run archive</h1><p>All finalized runs, newest first, including the most recent 20. '
+            f'<h1>Allure run archive</h1><p>All finalized runs, newest first, including the most recent {self.history_count}. '
             'Select a run for its exact results. In test details, History links to earlier results of that test. '
-            'Trend charts show up to 19 earlier and 19 later launches of the same type; click a bar to open its report. '
+            f'Trend charts show up to {self.history_count - 1} earlier and {self.history_count - 1} later launches of the same type; click a bar to open its report. '
             'Counts cover recorded tests; interrupted runs may be incomplete.</p><ol>'
             + ''.join(links) + '</ol><script>async function counts(){'
             'for(const row of document.querySelectorAll("[data-summary]")){try{'
@@ -529,7 +538,7 @@ class ManagedAllureViewer:
                 with tempfile.TemporaryDirectory(prefix='surrounding-', dir=root) as staging:
                     target = Path(staging) / 'report'
                     shutil.copytree(source_path, target)
-                    surrounding_widgets(source_path, latest_path, target, len(following))
+                    surrounding_widgets(source_path, latest_path, target, len(following), self.history_count)
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     if not destination.exists():
                         shutil.move(str(target), destination)

@@ -157,6 +157,31 @@ async def test_archive_surrounding_window_keeps_selected_results_and_history_exa
         await owner.aclose()
 
 
+@pytest.mark.parametrize('count', [1, 3, 25])
+@async_test
+async def test_configured_window_reaches_both_sides_beyond_native_cap(tmp_path, run, trend_cli, port, count):
+    from datetime import datetime, timedelta, timezone
+    dates = [(datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=n)).isoformat() for n in range(2 * count + 1)]
+    rows = history_runs(tmp_path, run, dates)
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser, history_count=count)
+    try:
+        await owner.show_archive(RunSource('sample', tmp_path))
+        binding = next(value for value in owner._history_routes.values() if value[1]['run_id'] == rows[count]['run_id'])
+        assert len(binding[2]) == len(binding[3]) == count - 1
+        url = await owner._history_report(*binding)
+        root = generated_root(owner, SimpleNamespace(url=url))
+        past = json.loads((root / 'history/history-trend.json').read_bytes())
+        surrounding = json.loads((root / 'widgets/history-trend.json').read_bytes())
+        assert len(past) == count and len(surrounding) == 2 * count - 1
+        assert surrounding[count - 1] == past[0]
+        assert len(list((root / 'data/test-cases').glob('*.json'))) == 1
+        async with httpx.AsyncClient(trust_env=False) as client:
+            archive = await client.get(f'http://127.0.0.1:{port}/archive.html')
+            assert f'up to {count - 1} earlier and {count - 1} later' in archive.text
+    finally:
+        await owner.aclose()
+
+
 @async_test
 async def test_e2e_archive_reports_first_and_confirmed_final_fractions(tmp_path, run, cli, port):
     import hashlib
