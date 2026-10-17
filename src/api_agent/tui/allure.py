@@ -1,8 +1,43 @@
 """Workbench-owned Allure navigation, independent of test execution."""
 import asyncio
+from functools import cached_property
+from uuid import uuid4
+from rich.segment import Segment
+from rich.style import Style as RichStyle
+from textual.content import Content
+from textual.strip import Strip
+from textual.style import Style
 from textual.widgets import DataTable, Input, Static
 
+from .clipboard import ClipboardError, copy_text
+
 MAX_RETAINED_ALLURE_BYTES = 128 * 1024 * 1024
+
+
+class AllureLinkContent(Content):
+    """Retain one action identity after Content adds per-line selection offsets."""
+    @cached_property
+    def _link_styles(self):
+        return {}
+
+    @cached_property
+    def _link_scope(self):
+        return uuid4().hex
+
+    def render_strips(self, width, height, style, options):
+        links = self._link_styles
+        result = []
+        for strip in super().render_strips(width, height, style, options):
+            segments = []
+            for segment in strip:
+                action = segment.style.meta.get('@click')
+                if action is not None:
+                    shared = links.setdefault(action, RichStyle(meta={
+                        '@click': action, 'allure_link_scope': self._link_scope}))
+                    segment = Segment(segment.text, segment.style + shared, segment.control)
+                segments.append(segment)
+            result.append(Strip(segments, strip.cell_length))
+        return result
 
 
 class AllureNavigation:
@@ -111,17 +146,41 @@ class AllureNavigation:
                 self.screen.refresh_bindings()
 
     def show_allure_location(self, location):
-        message = 'Allure: ' + location.url
+        def link(url, action):
+            style = Style.from_meta({'@click': ('app.' + action, (url,))})
+            return Content(url).stylize(style)
+        parts = ['Allure (click to open + copy URL):\n', link(location.url, 'allure_open_url')]
         if location.inspection_endpoint:
-            message += '\nBrowser inspection: ' + location.inspection_endpoint
+            parts.extend(['\nBrowser CDP (click to copy; not a web page):\n',
+                          link(location.inspection_endpoint, 'allure_copy_url')])
         if location.browser_error:
-            message += '\n' + location.browser_error
+            parts.extend(['\n', location.browser_error])
         if getattr(location, 'archive_url', None):
-            message += '\nBrowse previous runs: ' + location.archive_url
+            parts.extend(['\nBrowse previous runs: ', link(location.archive_url, 'allure_open_url'),
+                          ' (open + copy URL)'])
+        content = Content.assemble(*parts)
+        message = AllureLinkContent(str(content), content.spans)
         if self.screen.kind == 'allure':
             self.screen.query_one('#body', Static).update(message)
         else:
             self.notify(message, timeout=15)
+
+    async def action_allure_copy_url(self, url):
+        try:
+            native = await copy_text(self, url)
+        except ClipboardError:
+            self.notify(Content.assemble('Could not copy the URL; copy manually:\n', url),
+                        severity='error', timeout=15)
+        else:
+            self.notify('URL copied.' if native else 'URL sent to terminal clipboard.', timeout=2)
+
+    async def action_allure_open_url(self, url):
+        await self.action_allure_copy_url(url)
+        try:
+            self.open_url(url)
+        except Exception:
+            self.notify(Content.assemble('Could not open the link automatically; open manually:\n', url),
+                        severity='error', timeout=15)
 
     async def show_allure_history(self):
         from api_agent.testing.allure_viewer import RunSource
