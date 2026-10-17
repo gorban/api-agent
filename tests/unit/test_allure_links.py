@@ -77,7 +77,7 @@ def test_cdp_toast_link_copies_base_without_opening_empty_root(tmp_path, monkeyp
             app.show_allure_location(ViewerLocation(REPORT, CDP))
             await pilot.pause()
             toast = app.screen.query_one(Toast)
-            assert 'Browser CDP (click to copy; not a web page):' in str(toast.render())
+            assert REPORT + '\nBrowser CDP (click to copy; not a web page):' in str(toast.render())
             position, _ = link_cells(toast, CDP)[-1]
             assert interactions == []
             await pilot.click(toast, offset=position)
@@ -96,9 +96,10 @@ def test_history_links_preserve_literal_errors_and_open_exact_archive(tmp_path, 
             await pilot.pause()
             await app.show('allure', 'History')
             await pilot.pause()
-            app.show_allure_location(ViewerLocation(REPORT, browser_error=error, archive_url=archive))
+            app.show_allure_location(ViewerLocation(REPORT, CDP, browser_error=error, archive_url=archive))
             await pilot.pause()
             body = app.screen.query_one('#body', Static)
+            assert REPORT + "\n\nBrowser CDP" in str(body.content)
             assert error in str(body.content) and archive in str(body.content)
             assert all('quit' not in str(span.style) for span in body.content.spans)
             assert link_cells(body, REPORT)

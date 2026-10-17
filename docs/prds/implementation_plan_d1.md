@@ -9,6 +9,9 @@
 - [x] Keep final history and operation-owned live previews distinct. Each preview has an explicit version and artifact hashes; later tests/final publication require a new binding. Never publish a partial finalized manifest or silently substitute latest data. Completed accounting and immutable final manifests remain authoritative.
 - [x] Deliver [whole wrapped-link interaction and CDP clarity](implementation_plan_d1d.md) for viewer locations.
 
+- [ ] Complete [live availability and results-lifetime refinement](implementation_plan_d1e.md).
+- [ ] Profile and conditionally optimize [incremental native-history preparation](implementation_plan_d1f.md) late in implementation.
+
 ## Ownership and sharing
 
 - [x] Bind each finalized route to its exact run/manifest and each preview to its frozen snapshot. Reuse only the same verified binding. Ordinary generation does not automatically incorporate S3 uploads; refresh adds newly verified history without replacing existing reports.

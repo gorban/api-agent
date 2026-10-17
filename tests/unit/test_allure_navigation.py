@@ -149,8 +149,9 @@ def test_live_results_open_exact_completed_attempt_without_changing_execution(tm
             assert app.selected_allure_result(app.screen) is None
             app.mode='e2e'
             assert app.selected_allure_result(app.screen)[1]=='one-result.json'
-            assert app.screen.check_action('end_inspection',()) is True
-            await app.screen.action_end_inspection()
+            assert not app.screen.check_action('edit_setting', ())
+            assert all(binding.action != 'end_inspection' for binding in app.screen._bindings.key_to_bindings.get('e', ()))
+            await app.end_inspection()
             assert viewer.closed and app.allure_viewer is None
     asyncio.run(scenario())
 
