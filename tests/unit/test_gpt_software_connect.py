@@ -13,7 +13,6 @@ from test_gpt_connect import lane, Store, request
 
 @pytest.fixture
 def passkey_owner(monkeypatch):
-    monkeypatch.setattr(c, 'authenticate_first_party', AsyncMock())
     for name in ('DEBUG', 'DEBUGP', 'PWDEBUG', 'DEBUG_FILE'):
         monkeypatch.delenv(name, raising=False)
     async def create():
@@ -152,21 +151,17 @@ def test_factory_preserves_scoped_material_reader(monkeypatch, tmp_path):
     (RuntimeError('synthetic browser detail'), 'browser_unavailable'),
     (c.SessionClosedError('synthetic closure'), 'browser_closed'),
 ])
-def test_firstparty_failure_cleans_workflow_and_key_before_oauth(lane, passkey_owner, monkeypatch, failure, expected):
+def test_direct_authorization_navigation_failure_cleans_key(lane, passkey_owner, failure, expected):
     async def scenario():
         owner, inspection, channel, browser, material = await passkey_owner()
-        observed = []
-        async def fail(workflow, session, **_):
-            observed.append(workflow)
-            raise failure
-        monkeypatch.setattr(c, 'authenticate_first_party', fail)
+        session = await owner.start()
+        session.page.goto = AsyncMock(side_effect=failure)
         store = Store()
         lane.finish_authorization = AsyncMock()
         with pytest.raises(c.AuthError, match='^' + expected + '$'):
             await c.connect_account(store, browser_owner=owner, client=object(),
                 login_username='person@example.test', login_credentials=AsyncMock(),
                 login_material=AsyncMock(return_value=material))
-        assert observed[0].ready.cancelled() and not observed[0].documents
         assert not store.saved
         lane.finish_authorization.assert_not_awaited()
         channel.detach.assert_awaited_once()
@@ -175,12 +170,11 @@ def test_firstparty_failure_cleans_workflow_and_key_before_oauth(lane, passkey_o
     asyncio.run(scenario())
 
 
-def test_firstparty_cancellation_retains_normal_browser_cleanup(lane, passkey_owner, monkeypatch):
+def test_direct_authorization_cancellation_retains_normal_browser_cleanup(lane, passkey_owner):
     async def scenario():
         owner, inspection, channel, browser, material = await passkey_owner()
-        async def cancel(workflow, session, **_):
-            raise asyncio.CancelledError()
-        monkeypatch.setattr(c, 'authenticate_first_party', cancel)
+        session = await owner.start()
+        session.page.goto = AsyncMock(side_effect=asyncio.CancelledError())
         store = Store()
         with pytest.raises(asyncio.CancelledError):
             await c.connect_account(store, browser_owner=owner, client=object(),
@@ -193,21 +187,38 @@ def test_firstparty_cancellation_retains_normal_browser_cleanup(lane, passkey_ow
     asyncio.run(scenario())
 
 
-def test_accepted_callback_during_firstparty_skips_reopening_authorization(lane, passkey_owner, monkeypatch):
+@pytest.mark.parametrize('password', [None, 'selected-password'])
+def test_passkey_is_prepared_before_direct_authorization_with_shared_login_workflow(
+        lane, passkey_owner, monkeypatch, password):
     async def scenario():
         owner, inspection, channel, browser, material = await passkey_owner()
+        material.password = password
         session = await owner.start()
-        session.page.goto = AsyncMock()
-        async def accepted(workflow, browser_session, *, callback):
-            callback.set_result({'state': 's', 'code': 'c'})
-        monkeypatch.setattr(c, 'authenticate_first_party', accepted)
+        navigation = []
+        async def goto(url, **options):
+            navigation.append(url)
+            assert url.startswith('http://127.0.0.1:'), 'Unexpected preliminary sign-in navigation'
+            assert channel.send.call_args.args[0] == 'WebAuthn.addCredential'
+            assert b'200 OK' in await request(url)
+        session.page.goto = goto
+        original = c.LoginWorkflow
+        workflows = []
+        def workflow(*args, **options):
+            result = original(*args, **options)
+            workflows.append((result, options))
+            return result
+        monkeypatch.setattr(c, 'LoginWorkflow', workflow)
         lane.finish_authorization = AsyncMock(return_value=SimpleNamespace(email='person@example.test'))
         store = Store()
         result = await c.connect_account(store, browser_owner=owner, client=object(),
             login_username='person@example.test', login_credentials=AsyncMock(),
             login_material=AsyncMock(return_value=material))
         assert result == 'account' and len(store.saved) == 1
-        session.page.goto.assert_not_awaited()
+        assert len(navigation) == 1 and navigation[0].startswith('http://127.0.0.1:')
+        assert len(workflows) == 1
+        workflow, options = workflows[0]
+        assert options == {'allow_interaction': True, 'material': material, 'software_passkey': True}
+        assert not workflow.documents
         assert lane.finish_authorization.await_args.args[1] == {'state': 's', 'code': 'c'}
         channel.detach.assert_awaited_once()
         await inspection.aclose()

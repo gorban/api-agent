@@ -133,7 +133,7 @@ def test_offered_firstparty_flow_reuses_the_original_page(firstparty_pages):
     asyncio.run(firstparty_pages(check))
 
 
-def test_firstparty_then_real_callback_preserves_configured_name_and_identity(firstparty_pages, monkeypatch):
+def test_direct_authorization_real_callback_preserves_configured_name_and_identity(firstparty_pages, monkeypatch):
     from api_agent.llm_providers.gpt import oauth, passkeys
     async def check(session, entered):
         authenticator = SimpleNamespace(prepare=AsyncMock(), aclose=AsyncMock())
@@ -143,20 +143,20 @@ def test_firstparty_then_real_callback_preserves_configured_name_and_identity(fi
         finish = AsyncMock(return_value=SimpleNamespace(email='person@example.test'))
         monkeypatch.setattr(oauth, 'finish_authorization', finish)
         store = Store()
-        close = FirstPartyWorkflow.aclose
+        close = LoginWorkflow.aclose
         async def close_after_verified_save(login):
             assert len(store.saved) == 1
             await close(login)
-        monkeypatch.setattr(FirstPartyWorkflow, 'aclose', close_after_verified_save)
+        monkeypatch.setattr(LoginWorkflow, 'aclose', close_after_verified_save)
         store.host_id = lambda: 'urn:uuid:12345678-1234-1234-1234-123456789abc'
         owner = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
         material = SimpleNamespace(passkey_available=True, passkey=object(), password=None)
         result = await connect.connect_account(store, browser_owner=owner, client=object(),
             app_name='chosen-app', login_username='person@example.test', login_credentials=AsyncMock(),
             login_material=AsyncMock(return_value=material))
-        assert result == 'account' and entered == ['person@example.test']
+        assert result == 'account' and entered == []
         assert len(store.saved) == 1 and session.context.pages == [session.page]
-        assert create.call_args.kwargs['first_party'] is True
+        assert 'first_party' not in create.call_args.kwargs
         assert finish.await_args.args[1]['code'] == 'synthetic-code'
         authenticator.prepare.assert_awaited_once()
         authenticator.aclose.assert_awaited_once()
