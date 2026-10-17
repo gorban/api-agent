@@ -8,6 +8,13 @@
 - [x] Verify synthetic page variants, no repeated notices, resumption, origin boundaries, retry and lifecycle regressions.
 - [x] Complete callback verification, account binding and persistence before final document cleanup. Preserve primary cancellation or authentication errors with safe cleanup receipts. Keep exact pending handles and their coalesced disposal task owned through bounded independent cleanup waits; repeated cancellation and retries must neither lose nor duplicate releases. The provider retains pending workflows through shared/session setup failure and settles them before releasing dependent sessions or browsers. Pending cleanup suppresses further browser-login retries.
 - [x] Verify shared-session shutdown after initialization or an active call has entered its blocked state. Hold actual browser-context teardown behind a barrier, prove cancellation and task drainage precede disposal, and retain dependencies until release. Use the normal cleanup budget with a separate safety watchdog; a tiny deadline is not a prerequisite for testing shutdown. Keep explicit cleanup-timeout ownership tests separate and leave production deadlines unchanged.
+- [x] Check blocking challenges before offered account or alternate-route actions,
+  during credential lookup and after element validation immediately before a
+  click. Ordinary offered password/passkey alternatives may proceed; an installed
+  software authenticator only exempts the exact trusted passkey route and its
+  passkey heading, never another security challenge or automatic DOM action there.
+  Verify same-document overlays and both interaction policies with real controlled
+  browser pages, retaining pinned document identity and accepted-callback priority.
 - [ ] Human acceptance of actual challenge pages remains deferred.
 
 Native operating-system WebAuthn dialogs are outside DOM observation; heading recognition cannot reliably detect them. This attended path does not inject a virtual authenticator; [selected-login software passkeys](implementation_plan_a2a2.md) have their own explicit scope. No challenge is bypassed, and disappearance of a challenge is not authentication success. Only the fully verified OAuth connection completes authentication.

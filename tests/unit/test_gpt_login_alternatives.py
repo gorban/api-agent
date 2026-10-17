@@ -33,7 +33,8 @@ def alternative_page():
 def make_workflow(page, browser, *, password=None, passkey=False, reader=None, known=True):
     return LoginWorkflow(SimpleNamespace(page=page, browser=browser), 'person@example.test',
         reader or AsyncMock(return_value='confirmed-password'), 'test-app',
-        LoginPageGuard(page, allow_interaction=True), allow_interaction=True,
+        LoginPageGuard(page, allow_interaction=True, automatic_alternatives=True,
+                       software_passkey=passkey), allow_interaction=True,
         material=SimpleNamespace(password=password) if known else None, software_passkey=passkey)
 
 

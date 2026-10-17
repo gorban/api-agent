@@ -42,13 +42,13 @@ class LoginWorkflow:
             print(message, flush=True)
         self.disabled = True
 
-    async def _credential(self, kind, *, watch_guard=True):
+    async def _credential(self, kind):
         if kind == 'password' and self.material_known:
             return self.password_value
         task = asyncio.create_task(self.credentials(kind))
         try:
             return await wait_browser_result(task, self.session,
-                                             on_wait=self.guard.check if watch_guard else None)
+                                             on_wait=self.guard.check)
         finally:
             task.cancel()
             async def drain():
@@ -56,16 +56,16 @@ class LoginWorkflow:
             await _dispose(drain())
 
     async def advance(self):
+        if await self.guard.check() is True:
+            self.disabled = True
+            return
         location = urlsplit(self.page.url)
         trusted = location.scheme == 'https' and location.netloc == 'auth.openai.com'
+        if trusted and location.path == '/auth_challenge/passkey' and self.software_passkey:
+            return
         if trusted and location.path == '/choose-an-account' and await self._account_choice(location):
             return
         if trusted and await self._alternative(location):
-            return
-        if trusted and location.path == '/auth_challenge/passkey' and self.software_passkey:
-            return
-        if await self.guard.check() is True:
-            self.disabled = True
             return
         if location.scheme == 'about':
             return
@@ -187,15 +187,14 @@ class LoginWorkflow:
             document = await handle.evaluate_handle('(element) => element.ownerDocument')
             self.documents.append(document)
             if label == 'Continue with password':
-                value = await self._credential('password', watch_guard=False)
+                value = await self._credential('password')
                 if not isinstance(value, str) or not value.strip():
                     self.password_value, self.material_known = None, True
                     self._interaction(_PASSWORD_UNAVAILABLE)
                     return
                 self.password_value, self.material_known = value, True
-            if (self.page.url != url or not await heading.is_visible()
-                    or await heading.text_content() != key[2]
-                    or not await self._bound(handle, handle, url)):
+            if (not await self._bound(handle, handle, url)
+                    or not await self._current(heading, key[2], url)):
                 return
             await handle.click(timeout=1000)
             self.last_document, self.last_action = document, key

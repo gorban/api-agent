@@ -39,6 +39,13 @@ gate before runtime wiring. Preserve the exclusive suite/accounting guard.
   data/ownership evidence and an approved concrete transition. Never relabel,
   delete or replace it merely to hide the port conflict.
 
+- [x] Detect unregistered listeners on both loopback address families before
+  provisioning. Pin managed publication/history clients to the literal IPv4
+  listener verified by ownership, including reuse of an already registered
+  server. Keep publication-only endpoint routing unchanged. Verify an IPv6-only
+  foreign listener and refusal before engine mutation, without relying on hostname
+  resolution order; unsupported address families remain portable.
+
 ## Verification and limits
 
 - [x] Prove two checkouts converge on the same canonical scope and reuse one

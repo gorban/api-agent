@@ -6,6 +6,7 @@ read-only verification followed by an atomic local metadata registration.
 from contextlib import contextmanager, nullcontext
 from hashlib import sha256
 import json
+import errno
 import os
 from pathlib import Path
 import socket
@@ -30,9 +31,16 @@ def _configuration(plan):
 
 
 def _occupied(port):
-    with socket.socket() as client:
-        client.settimeout(.5)
-        return client.connect_ex(('127.0.0.1', port)) == 0
+    for family, host in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as client:
+                client.settimeout(.5)
+                if client.connect_ex((host, port)) == 0:
+                    return True
+        except OSError as error:
+            if error.errno not in {errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT}:
+                raise
+    return False
 
 
 class SharedReportingManager:

@@ -555,3 +555,39 @@ def test_rotating_compatibility_id_enrollment_and_lookup_use_same_binding(storag
     assert joined.acquire().reused_ids == lease.container_ids and joined.key == key
     joined.release(retain=True)
     assert len(calls) == 4 and joined.lease is None
+
+
+def test_ipv6_only_listener_prevents_unregistered_managed_provisioning(storage):
+    import socket
+    if not socket.has_ipv6:
+        pytest.skip('IPv6 is unavailable.')
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        listener.bind(('::1', 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        assert r._occupied(port)
+        owner = storage.create({'ALLURE_S3_USE_LOCALSTACK': True,
+            'ALLURE_LOCALSTACK_PORT': port, 'ALLURE_S3_ENDPOINT': f'http://localhost:{port}'})
+        owner.occupied = r._occupied
+        with pytest.raises(p.PrerequisiteError, match='occupied and unregistered'):
+            owner.acquire()
+        assert storage.engine.commands == []
+
+
+@pytest.mark.parametrize('error,ignored', [(r.errno.EAFNOSUPPORT, True),
+    (r.errno.EPROTONOSUPPORT, True), (r.errno.EACCES, False)])
+def test_occupancy_skips_only_unavailable_address_families(monkeypatch, error, ignored):
+    from contextlib import nullcontext
+    original = r.socket.socket
+    def socket(family, kind):
+        if family == r.socket.AF_INET6:
+            raise OSError(error, 'synthetic socket error')
+        return original(family, kind)
+    monkeypatch.setattr(r.socket, 'socket', socket)
+    with original() as temporary:
+        temporary.bind(('127.0.0.1', 0))
+        port = temporary.getsockname()[1]
+        expected = nullcontext() if ignored else pytest.raises(OSError)
+        with expected:
+            assert not r._occupied(port)

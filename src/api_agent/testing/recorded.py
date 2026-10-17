@@ -99,7 +99,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),
             secondary_directory=config.get('ALLURE_SECONDARY_DIR') or None,
             endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'),
-                                 localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566))
+                                 localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566),
+                                 managed_local=config.get('ALLURE_S3_USE_LOCALSTACK', False))
         usage = SuiteUsage(identity.run_id, cost_estimator=cost_estimator)
         seen = set()
         recording_ids = {}

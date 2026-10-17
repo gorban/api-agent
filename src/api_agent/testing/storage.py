@@ -17,11 +17,21 @@ class StorageError(RuntimeError):
 
 class RunStorage:
     def __init__(self, bucket, *, client=None, prefix='allure', secondary_directory=None,
-                 endpoint_url=None, region_name=None, localstack_port=4566):
+                 endpoint_url=None, region_name=None, localstack_port=4566, managed_local=False):
         if not bucket or not isinstance(bucket, str):
             raise ValueError('An S3 bucket is required')
         if type(localstack_port) is not int or not 1 <= localstack_port <= 65535:
             raise ValueError('LocalStack port must be an integer between 1 and 65535')
+        if type(managed_local) is not bool:
+            raise ValueError('Managed local storage selection must be a boolean')
+        if managed_local:
+            from api_agent.runtime.compose import _endpoint, _local_s3_endpoint
+            parsed, port = _endpoint(f'http://localhost:{localstack_port}' if endpoint_url is None else endpoint_url)
+            if not _local_s3_endpoint(parsed, port, localstack_port):
+                raise ValueError('Managed local storage requires its configured loopback endpoint')
+            # Managed listeners and ownership verification bind IPv4 explicitly.
+            # Never resolve localhost to a different, unowned IPv6 service.
+            endpoint_url = f'http://127.0.0.1:{localstack_port}'
         self.localstack_port = localstack_port
         self.bucket = bucket
         self.client = client

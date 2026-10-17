@@ -90,19 +90,29 @@ class CallbackListener:
 
 class LoginPageGuard:
     """Report observed login blockers without reading page text or credentials."""
-    def __init__(self, page, *, allow_interaction):
+    def __init__(self, page, *, allow_interaction, automatic_alternatives=False, software_passkey=False):
         self.page = page
         self.allow_interaction = allow_interaction
         self.notified = False
+        self.automatic_alternatives = automatic_alternatives
+        self.software_passkey = software_passkey
 
     async def check(self):
-        blocked = self.page.get_by_role('heading', name=re.compile(
-            r'^(Oops, an error occurred!|Performing security verification|Use your passkey|Sign in with a passkey|Use your security key|Insert your security key|Check your email|Verify your email|Check your phone|Verify your phone number|Choose a verification method|Choose how to verify|Verify your identity)$')).first
         try:
             location = urlsplit(self.page.url)
-            route_challenge = (location.scheme == 'https' and location.netloc == 'auth.openai.com'
-                               and location.path == '/auth_challenge/passkey')
-            visible = route_challenge or await blocked.is_visible()
+            trusted = location.scheme == 'https' and location.netloc == 'auth.openai.com'
+            route_challenge = trusted and location.path == '/auth_challenge/passkey'
+            names = ['Oops, an error occurred!', 'Performing security verification',
+                     'Use your security key', 'Insert your security key',
+                     'Check your phone', 'Verify your phone number']
+            if not (route_challenge and self.software_passkey):
+                names.extend(('Use your passkey', 'Sign in with a passkey'))
+            if not (trusted and not route_challenge and self.automatic_alternatives):
+                names.extend(('Check your email', 'Verify your email', 'Choose a verification method',
+                              'Choose how to verify', 'Verify your identity'))
+            blocked = self.page.get_by_role('heading', name=re.compile(
+                r'^(' + '|'.join(re.escape(name) for name in names) + r')$')).first
+            visible = (route_challenge and not self.software_passkey) or await blocked.is_visible()
         except Exception:
             code = 'browser_closed' if self.page.is_closed() else 'browser_unavailable'
             raise AuthError(code) from None
@@ -230,7 +240,9 @@ async def connect_account(store, *, registration=None, open_browser=None,
                             raise AuthError('browser_closed') from None
                         except Exception:
                             raise AuthError("browser_unavailable") from None
-                        guard = LoginPageGuard(session.page, allow_interaction=allow_interaction)
+                        guard = LoginPageGuard(session.page, allow_interaction=allow_interaction,
+                                               automatic_alternatives=login_credentials is not None,
+                                               software_passkey=authenticator is not None)
                         if login_username is not None and workflow is None:
                             extra = ({'material': material, 'software_passkey': authenticator is not None}
                                      if material is not None else {})

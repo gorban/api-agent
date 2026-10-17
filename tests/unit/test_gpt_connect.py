@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from api_agent.llm_providers.gpt import connect as c
+from api_agent.llm_providers.gpt import factory as factory_module
 
 
 async def request(uri, target=None, raw=None):
@@ -1089,7 +1090,6 @@ def test_passkey_route_with_consent_controls_cannot_submit_then_resumes_offline(
 
 def test_passkey_route_uses_real_connect_guard_for_single_headless_visible_retry(lane, monkeypatch, capsys):
     from test_gpt_login import Page
-    from api_agent.llm_providers.gpt import factory as factory_module
     async def scenario():
         store = Store()
         store.list = lambda: ()
