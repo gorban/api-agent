@@ -229,3 +229,41 @@ async def test_interrupted_completed_publish_can_be_recovered_without_overwritin
         assert before == after and 'surrounding-' in url
     finally:
         await owner.aclose()
+
+
+@pytest.fixture(params=['retry', 'suite'], ids=['failed-launch-passing-retry', 'suite-failure'])
+def failed_recorded_launch(tmp_path, request):
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.contracts import TestResult
+    from api_agent.testing.recording import RunIdentity, RunRecorder
+    identity = RunIdentity.create('sample', 'integration')
+    recorder = RunRecorder(tmp_path / 'sample' / identity.run_id, identity)
+    test = TestIdentity('sample::test.py::one', 'sample', 'test.py', 'test.py::one')
+    if request.param == 'retry':
+        recorder.record_test(TestResult(test, 'failed'), attempt=1)
+        recorder.record_test(TestResult(test, 'passed'), attempt=2)
+        label = '1 / 1 passed'
+    else:
+        recorder.record_test(TestResult(test, 'passed'))
+        setup = TestIdentity('sample::__suite__::setup', 'sample', '__suite__', '__suite__::setup')
+        recorder.record_test(TestResult(setup, 'error'))
+        label = '1 / 2 passed'
+    manifest = recorder.finalize()
+    assert manifest['status'] == 'failed'
+    return manifest, label
+
+
+@async_test
+async def test_archive_keeps_run_failure_visible_alongside_requested_counts(tmp_path, failed_recorded_launch, cli, port):
+    manifest, label = failed_recorded_launch
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        location = await owner.show_archive(RunSource('sample', tmp_path))
+        async with httpx.AsyncClient(trust_env=False) as client:
+            archive = await client.get(location.url)
+            assert ' — run error — ' in archive.text and manifest['run_id'] in archive.text
+            response = await client.get(f'http://127.0.0.1:{port}'+next(iter(owner._summary_routes)))
+            assert response.json() == {'label': label}
+        assert not owner._bindings
+    finally:
+        await owner.aclose()

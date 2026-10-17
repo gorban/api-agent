@@ -452,7 +452,8 @@ class ManagedAllureViewer:
             summary = f'/counts/{identifier}/{digest}'
             self._summary_routes[summary] = (source, manifest)
             prefix = f'{manifest["finished_at"]} — {manifest["mode"]} — '
-            suffix = (' — interrupted' if manifest['status'] == 'interrupted' else '') + f' — {identifier}'
+            state = {'failed': 'run error', 'interrupted': 'interrupted'}.get(manifest['status'])
+            suffix = (f' — {state}' if state else '') + f' — {identifier}'
             links.append(f'<li><a href="{html.escape(route, quote=True)}">{html.escape(prefix)}'
                          f'<span data-summary="{html.escape(summary, quote=True)}">Loading pass counts…</span>'
                          f'{html.escape(suffix)}</a></li>')
