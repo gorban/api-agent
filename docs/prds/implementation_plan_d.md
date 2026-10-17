@@ -2,6 +2,7 @@
 
 [Shared reporting service ownership and cache coordination](implementation_plan_h2.md).
 
+Planned exception to mandatory integration/E2E reporting: [explicit reporting skip](implementation_plan_d3.md). Reporting otherwise requires committed graph-hash inputs under [historical source identity](implementation_plan_b1c3.md); an explicit skip permits uncommitted inputs by disabling Allure, not by weakening its provenance.
 
 ## Current backend boundary
 
