@@ -135,7 +135,7 @@ class AllureNavigation:
         self._allure_opening = True
         self.screen.refresh_bindings()
         try:
-            location = await self._allure().show_preview(*selected)
+            location = await self._allure().show_preview(*selected, source=self.allure_source())
             if generation is self._allure_generation:
                 self.show_allure_location(location)
         except Exception as error:
@@ -158,14 +158,16 @@ class AllureNavigation:
             style = Style.from_meta({'@click': ('app.' + action, (url,))})
             return Content(url).stylize(style)
         parts = ['Allure (click to open + copy URL):\n', link(location.url, 'allure_open_url')]
+        spacing = '\n\n' if page is not None else '\n'
         if location.inspection_endpoint:
-            spacing = '\n\n' if page is not None else '\n'
             parts.extend([spacing + 'Browser CDP (click to copy; not a web page):\n',
                           link(location.inspection_endpoint, 'allure_copy_url')])
         if location.browser_error:
             parts.extend(['\n', location.browser_error])
+        if getattr(location, 'history_error', None):
+            parts.extend([spacing, location.history_error])
         if getattr(location, 'archive_url', None):
-            parts.extend(['\nBrowse previous runs: ', link(location.archive_url, 'allure_open_url'),
+            parts.extend([spacing + 'Browse previous runs: ', link(location.archive_url, 'allure_open_url'),
                           ' (open + copy URL)'])
         content = Content.assemble(*parts)
         message = AllureLinkContent(str(content), content.spans)
@@ -194,10 +196,25 @@ class AllureNavigation:
             self.notify(Content.assemble('Could not open the link automatically; open manually:\n', url),
                         severity='error', timeout=15)
 
-    async def show_allure_history(self):
+    def allure_source(self):
         from api_agent.testing.allure_viewer import RunSource
         from api_agent.testing.storage import RunStorage
         from api_agent.testing.collection import repository_label
+        values = self.session.result().values
+        storage = None
+        secondary = values.get('ALLURE_VIEW_SECONDARY', False)
+        if values.get('ALLURE_S3_BUCKET') and not secondary:
+            storage = RunStorage(values['ALLURE_S3_BUCKET'],
+                prefix=values.get('ALLURE_S3_PREFIX', 'allure'),
+                endpoint_url=values.get('ALLURE_S3_ENDPOINT'),
+                region_name=values.get('ALLURE_S3_REGION'),
+                localstack_port=values.get('ALLURE_LOCALSTACK_PORT', 4566),
+                managed_local=values.get('ALLURE_S3_USE_LOCALSTACK', False))
+        local_root = values.get('ALLURE_SECONDARY_DIR' if secondary else 'ALLURE_RESULTS_DIR')
+        return RunSource(repository_label(self.context, self.context.owner_root),
+                           local_root=local_root or None, storage=storage)
+
+    async def show_allure_history(self):
         generation = self._allure_generation
         self._allure_opening = True
         try:
@@ -205,20 +222,7 @@ class AllureNavigation:
                             (('refresh-allure', 'Refresh history'),))
             if generation is not self._allure_generation:
                 return
-            values = self.session.result().values
-            storage = None
-            secondary = values.get('ALLURE_VIEW_SECONDARY', False)
-            if values.get('ALLURE_S3_BUCKET') and not secondary:
-                storage = RunStorage(values['ALLURE_S3_BUCKET'],
-                    prefix=values.get('ALLURE_S3_PREFIX', 'allure'),
-                    endpoint_url=values.get('ALLURE_S3_ENDPOINT'),
-                    region_name=values.get('ALLURE_S3_REGION'),
-                    localstack_port=values.get('ALLURE_LOCALSTACK_PORT', 4566),
-                    managed_local=values.get('ALLURE_S3_USE_LOCALSTACK', False))
-            local_root = values.get('ALLURE_SECONDARY_DIR' if secondary else 'ALLURE_RESULTS_DIR')
-            source = RunSource(repository_label(self.context, self.context.owner_root),
-                               local_root=local_root or None, storage=storage)
-            location = await self._allure().show_history(source)
+            location = await self._allure().show_history(self.allure_source())
             if generation is self._allure_generation:
                 self.operation_status = 0
                 self.show_allure_location(location)
