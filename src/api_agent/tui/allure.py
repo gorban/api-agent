@@ -135,7 +135,7 @@ class AllureNavigation:
         self._allure_opening = True
         self.screen.refresh_bindings()
         try:
-            location = await self._allure().show_preview(*selected, source=self.allure_source())
+            location = await self._allure().show_preview(*selected, source=self.allure_source)
             if generation is self._allure_generation:
                 self.show_allure_location(location)
         except Exception as error:
