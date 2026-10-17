@@ -6,7 +6,8 @@
 
 - [x] Provide an explicitly enabled capture and immutable attachment-submission
   seam for test-owned UI contexts. Content disabled performs no enumeration,
-  browser reads, capture or submission.
+  browser reads, real capture or worker-image acceptance. The recording parent
+  attaches a fixed notice image for tests declared as UI-session consumers.
 - [x] Visit accessible pages across supplied contexts before caller teardown.
   Isolate ordinary page/context/capture/submission failures and retain fixed
   unavailable metadata. Propagate cancellation. Never replace test/setup failure
@@ -60,11 +61,36 @@ submission occurs synchronously before timeout-progress teardown can yield.
 Controls cover registration during capture/cleanup and progress-scope exit.
 
 - [x] Complete exact applicable coverage, installed and public-boundary gates.
-- [ ] Human review original saved screenshots with content enabled; confirm no
-  screenshots with content disabled and unavailable evidence without a safe policy.
+- [ ] Human review original saved screenshots with content enabled; confirm
+  only the fixed notice with content disabled and unavailable evidence without a safe policy.
 
 Controlled normal-runner checks preserve original PNGs in the matching successful,
 setup-error and failed attempts, with immutable manifest hashes and byte-identical
 secondary copies. Recording stays best effort on capture errors. DOM export is
 bounded before crossing the browser boundary, and temporary markers are removed
 on rejection. These checks use synthetic local storage and no paid requests.
+
+## Content-disabled notice
+
+- [x] For every recorded UI-session test with LOG_CONTENT other than True, attach
+  one fixed, independently authored notice PNG explaining confidential-data
+  withholding and the LOG_CONTENT=True option. State that credential masking
+  and provider safety checks still apply; enabling content is not a safety bypass.
+- [x] Decide from the parent's selected-test declaration, never returned worker
+  markers. Do not enumerate or inspect browsers or read worker image files to
+  produce the notice. Preserve the disabled-content worker/parent gates. Apply
+  the same behavior to passed, failed and setup-error results.
+- [x] Package reviewed static pixels with the runtime. Use bounded, nonfollowing
+  regular-file access and exact size/digest checks. Missing or damaged resources
+  fall back to the same fixed explanatory text without exporting replacement
+  bytes or failing the completed test. No new renderer dependency is required.
+- [x] Verify parent/worker isolation, all outcomes, missing/altered/FIFO resources,
+  immutable Allure/secondary bytes, relocated wheel and applicable exact coverage
+  and boundary gates.
+- [ ] Human-review the explanatory image in the viewer when wired.
+
+Notice delivery passes 9,583 units and 27 subtests at 32 workers, with exact
+100% measured lines and branches. Independent mutation controls preserve the
+disabled worker-image gate, selected-test authority, asset digest and narrow
+source/license boundary. Two actual selected-provider tests with content off
+attach only the static notice; immutable local/object/secondary bytes match.

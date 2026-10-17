@@ -105,6 +105,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         seen = set()
         recording_ids = {}
         content = {}
+        ui_test_ids = {test.id for test in tests if 'requires_ui_session' in test.tags}
         workflow_steps = {}
         persisted = False
         manifest = None
@@ -137,8 +138,12 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 label = ('provider:' + os.path.relpath(test.root, context.base_root)
                          if test.root is not None else test.repo)
                 test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
+            attachments = tuple(content.pop(result.identity.id, ()))
+            if config.get('LOG_CONTENT') is not True and result.identity.id in ui_test_ids:
+                from .withheld_screenshot import withheld_attachment
+                attachments += (withheld_attachment(),)
             filename = recorder.record_test(replace(result, identity=test),
-                                            attachments=content.pop(result.identity.id, ()),
+                                            attachments=attachments,
                                             steps=workflow_steps.pop(result.identity.id, None))
             recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)

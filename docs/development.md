@@ -233,7 +233,8 @@ end-inspection control to release them before starting another suite.
 With `--log-content=True`, these prepared-session tests attach original viewport
 PNGs through the usual Allure publication and secondary copy. A trusted provider
 must supply credential masking; unsafe or unsupported capture reports unavailable
-evidence. Content disabled performs no browser capture. Authentication-provider
+evidence. Content disabled performs no browser capture and attaches a fixed
+notice image explaining how to enable screenshots; provider safety still applies. Authentication-provider
 browsers and the existing one-prompt Studio request test retain their separate
 evidence/lifecycle tasks. These checks do not implement Run local or application
 E2E, and no inference is needed for this review.
