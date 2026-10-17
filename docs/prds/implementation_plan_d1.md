@@ -6,15 +6,16 @@
 
 - [ ] Provide the TUI's "Allure serve" mode for viewing test results. Default to the most recent recorded integration/E2E run for the selected repository/pack; unit runs must not replace that selection.
   - [ ] When ALLURE_RESULTS_DIR is explicitly empty, fetch the selected S3 run into owned temporary viewer staging and clean it after serving; do not assume a retained local directory exists.
-  - [ ] After the report server is ready, automatically open its URL in the host's default browser, including when entering Allure mode through the `a` shortcut. Support host-browser forwarding when the TUI runs inside Distrobox. Also display the URL; if browser opening fails, keep the report available and report the opening failure.
-  - [ ] Track completed/finalized run identities in persistent history and resolve the latest run from run metadata, not arbitrary file modification times or stale cached reports. Load the selected run's artifacts locally or from S3 as needed without combining results from unrelated runs.
-  - [ ] Support `a` from the completed test-list/summary screen as an immediate transition into Allure mode, pinned to that screen's run ID. A concurrently completed run must not redirect this shortcut away from the results the user was viewing. If no recorded run exists, show that clearly.
-  - [ ] Test latest-run selection and the results-to-Allure transition deterministically, including failed/interrupted finalized runs, newer concurrent runs, and a subsequent unit run.
+  - [ ] After the report server is ready, open a headed browser through the shared managed browser lifecycle, including the test shortcut. Display its URL and inspection endpoint where appropriate; support the launcher's container/host access path. If browser opening fails, keep the owned report available and report the opening failure without changing test outcomes.
+  - [ ] Resolve the latest finalized run from persistent run metadata. Fetch exact local/S3 artifacts without mixing runs or using file modification times/stale reports.
+  - [ ] Deliver [selected-test navigation during and after execution](implementation_plan_d1a.md): `a View in Allure` opens the one completed test/attempt at its exact run identity, without navigating away from the running results screen. Hide it for multi-row selections and group rows.
+  - [ ] Test latest-run and exact-test navigation, partial-suite viewing, failed/interrupted runs, newer history, unit runs and managed cleanup. The selected-test slice precedes broader reporting management; it does not start tracing or alter shared storage ownership.
 
 ## Report-viewer sharing
 
-- [ ] Bind a generated Allure viewer to the exact selected immutable run and
-  manifest. Ordinary report generation/serving does not automatically incorporate
+- [ ] Bind a finalized Allure viewer to the exact selected immutable run and
+  manifest. The [live-results preview](implementation_plan_d1a.md) instead uses
+  an explicit operation-owned snapshot binding until final publication. Ordinary report generation/serving does not automatically incorporate
   newly uploaded S3 results. Reuse a managed viewer only for the same verified
   binding, or implement an explicit multi-run viewer with separate run routes.
   A different run or foreign listener on the configured port must fail clearly,
@@ -25,5 +26,4 @@
   late uploads, stale viewer identity and owned stop before human acceptance.
 
 [Allure 2 generation/serve documentation](https://allurereport.org/docs/v2/generate-report/)
-describes a generated report and a server for that report directory; dynamic
-history browsing must be implemented explicitly rather than assumed from S3.
+describes generated reports; S3 updates require explicit regeneration.
