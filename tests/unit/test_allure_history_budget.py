@@ -9,7 +9,7 @@ import pytest
 
 from api_agent.providers.progress import component_timeout, progress_sink
 from api_agent.testing import allure_viewer as viewer
-from test_allure_viewer import Browser, async_test, cli, port, run, save
+from test_allure_viewer import Browser, async_test, cli, port, run, save, history_runs
 from api_agent.testing.allure_source import RunSource, ViewerError
 
 
@@ -20,6 +20,31 @@ from api_agent.testing.allure_source import RunSource, ViewerError
 def test_budget_uses_actual_reports_including_current(prior, later, batches):
     owner = viewer.ManagedAllureViewer(history_count=10 ** 100)
     assert owner._history_timeout(range(prior), range(later)) == 120 * batches
+
+
+@async_test
+async def test_direct_history_separates_preparation_from_the_admitted_generation_budget(tmp_path, run, cli, port, monkeypatch):
+    history_runs(tmp_path, run, [f'2026-01-01T00:{minute:02d}:00Z' for minute in range(41)])
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser, history_count=100)
+    observed, calls = [], []
+    async def report(source, manifest, previous, budget):
+        calls.append(len(previous))
+        await asyncio.sleep(1.1)
+        return f'http://127.0.0.1:{port}/archive.html'
+    try:
+        await owner._ready()
+        owner.timeout = 1
+        monkeypatch.setattr(owner, '_historical_report', report)
+        with progress_sink(observed.append):
+            async with component_timeout('Outer operation', 2.5):
+                location = await owner.show_history(RunSource('sample', tmp_path))
+        assert location.url.endswith('/archive.html') and calls == [40]
+        preparation = next(row for row in observed if row.name == 'Allure history preparation')
+        generation = next(row for row in observed if row.name == 'Allure history viewer')
+        assert preparation.timeout == 1 and 1 < generation.timeout <= 2.5
+        assert not owner._http_tasks and not owner._operations
+    finally:
+        await owner.aclose()
 
 
 @async_test
