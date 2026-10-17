@@ -11,7 +11,7 @@ from .connect import _dispose, connect_account
 from .connections import ConnectionStore, SubscriptionSession
 from .contracts import AuthError
 from .browser import subscription_browser
-from .oauth import refresh_connection
+from .oauth import refresh_connection, OAUTH_ERROR_CODES
 from .api_key import APIKeySession
 from .endpoint import validate_base_url
 
@@ -97,10 +97,34 @@ class GPTProvider:
             'login_step_failed': 'GPT could not complete the current login page action; retry or complete login in the visible browser.',
             'login_interaction_required': 'GPT login needs browser interaction; start attended or show the browser with RUN_UI=True or DEBUG.',
             'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
+            'authorization_denied': 'GPT authorization was declined in the browser.',
+            'incomplete_registration': 'GPT authorization did not return an issued app registration. Retry sign-in through launch.py.',
+            'invalid_state': 'GPT authorization did not match this sign-in attempt. Retry sign-in through launch.py.',
+            'client_mismatch': 'GPT authorization returned a different app registration. Retry sign-in through launch.py.',
+            'invalid_issuer': 'GPT identity metadata did not match the expected OpenAI issuer and endpoints.',
+            'invalid_identity': 'GPT could not verify the signed account identity returned after browser sign-in.',
+            'invalid_credentials': 'GPT returned an incomplete or invalid token response after browser sign-in.',
+            'identity_mismatch': 'GPT returned a different account identity from the saved registration.',
+            'plan_permission_required': 'GPT token response lacks required ChatGPT plan or refresh permissions. Retry sign-in and approve ChatGPT plan access.',
+
             'passkey_protocol_logging': 'Disable browser protocol/channel debug logging before retrieving passkey material; application --debug inspection remains supported.',
             'passkey_counter_unsupported': 'This passkey has a signature counter that managed software authentication cannot preserve. Use attended login.',
             'passkey_browser_unsupported': 'Managed Chromium could not prepare the selected software passkey. Use attended login or update the managed browser.',
         }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
+        if str(error) == 'authorization_failed':
+            stages = {'token': 'token exchange', 'metadata': 'identity metadata request',
+                      'keys': 'identity signing-key request'}
+            stage = getattr(error, 'stage', None)
+            description = stages.get(stage, 'authorization request') if type(stage) is str else 'authorization request'
+            details = []
+            status = getattr(error, 'http_status', None)
+            if type(status) is int and 100 <= status <= 599:
+                details.append(f'HTTP {status}')
+            reason = getattr(error, 'oauth_error', None)
+            if type(reason) is str and reason in OAUTH_ERROR_CODES:
+                details.append(reason)
+            suffix = ' (' + '; '.join(details) + ')' if details else ''
+            message = f'GPT {description} failed{suffix}. Retry sign-in through launch.py.'
         converted = InteractionRequiredError(message)
         if hasattr(error, 'cleanup_error'):
             converted.cleanup_error = error.cleanup_error

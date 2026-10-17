@@ -150,6 +150,21 @@ async def submit_login_username(session, username, *, guard):
             await finish_login(workflow, primary)
 
 
+async def _open_authorization(session, url, open_browser=None):
+    try:
+        if session is None:
+            if not open_browser(url):
+                raise AuthError('browser_unavailable')
+        else:
+            await session.page.goto(url, wait_until='domcontentloaded')
+    except (AuthError, InteractionRequiredError, CleanupPendingError):
+        raise
+    except SessionClosedError:
+        raise AuthError('browser_closed') from None
+    except Exception:
+        raise AuthError('browser_unavailable') from None
+
+
 async def connect_account(store, *, registration=None, open_browser=None,
                           client=None, timeout=180, clock=time.time, profile=None, browser_owner=None,
                           app_name="api-agent", login_username=None, login_credentials=None,
@@ -206,7 +221,7 @@ async def connect_account(store, *, registration=None, open_browser=None,
                                     authenticator = SoftwarePasskey(session, material.passkey,
                                                                    callback_url=listener.redirect_uri)
                                     await authenticator.prepare()
-                            await session.page.goto(attempt.authorization_url, wait_until="domcontentloaded")
+                            await _open_authorization(session, attempt.authorization_url)
                         except (AuthError, InteractionRequiredError, CleanupPendingError):
                             raise
                         except asyncio.CancelledError:
@@ -223,21 +238,39 @@ async def connect_account(store, *, registration=None, open_browser=None,
                                                      app_name, guard, allow_interaction=allow_interaction,
                                                      **extra)
                         material = None
-                    elif not open_browser(attempt.authorization_url):
-                        raise AuthError("browser_unavailable")
-                    if session is None:
-                        parameters = await listener.result
                     else:
+                        await _open_authorization(None, attempt.authorization_url, open_browser)
+                    retry = False
+                    while True:
+                        if session is None:
+                            parameters = await listener.result
+                        else:
+                            try:
+                                parameters = await wait_browser_result(listener.result, session,
+                                    on_wait=workflow.advance if workflow is not None else guard.check if guard is not None else None)
+                            except SessionClosedError:
+                                raise AuthError("browser_closed") from None
+                            except (AuthError, InteractionRequiredError, asyncio.CancelledError, CleanupPendingError):
+                                raise
+                            except Exception:
+                                raise AuthError('login_step_failed') from None
                         try:
-                            parameters = await wait_browser_result(listener.result, session,
-                                on_wait=workflow.advance if workflow is not None else guard.check if guard is not None else None)
-                        except SessionClosedError:
-                            raise AuthError("browser_closed") from None
-                        except (AuthError, InteractionRequiredError, asyncio.CancelledError, CleanupPendingError):
-                            raise
-                        except Exception:
-                            raise AuthError('login_step_failed') from None
-                    connection = await finish_authorization(attempt, parameters, client=client, now=clock())
+                            connection = await finish_authorization(attempt, parameters, client=client, now=clock())
+                        except AuthError as error:
+                            if (retry or str(error) != 'authorization_failed'
+                                    or getattr(error, 'stage', None) != 'token'
+                                    or getattr(error, 'http_status', None) != 400
+                                    or getattr(error, 'oauth_error', None) != 'invalid_grant'):
+                                raise
+                            retry = True
+                            from .oauth import restart_authorization
+                            attempt = restart_authorization(attempt, parameters)
+                            listener.expected_state = attempt.state
+                            listener.result = asyncio.get_running_loop().create_future()
+                            print('GPT authorization code was rejected; retrying sign-in once with the issued app registration.', flush=True)
+                            await _open_authorization(session, attempt.authorization_url, open_browser)
+                        else:
+                            break
                     if login_username is not None and connection.email.strip().casefold() != login_username.casefold():
                         raise AuthError("account_mismatch")
                     if profile is not None and store.profile_id(connection) != profile:

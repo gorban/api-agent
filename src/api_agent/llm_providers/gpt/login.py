@@ -32,6 +32,7 @@ class LoginWorkflow:
         self.password_value = material.password if material is not None else None
         self.material_known = material is not None
         self.software_passkey = software_passkey
+        self.account_heading = 'Use ChatGPT to sign in to ' + app_name
         self.consent = re.compile(r'^Connect(?: your)? ' + re.escape(app_name) + r' to ChatGPT$')
 
     def _interaction(self, message):
@@ -57,6 +58,8 @@ class LoginWorkflow:
     async def advance(self):
         location = urlsplit(self.page.url)
         trusted = location.scheme == 'https' and location.netloc == 'auth.openai.com'
+        if trusted and location.path == '/choose-an-account' and await self._account_choice(location):
+            return
         if trusted and await self._alternative(location):
             return
         if trusted and location.path == '/auth_challenge/passkey' and self.software_passkey:
@@ -135,6 +138,18 @@ class LoginWorkflow:
                 await asyncio.gather(*(handle.dispose() for handle in handles if handle is not None),
                                      return_exceptions=True)
             await _dispose(release())
+
+    async def _account_choice(self, location):
+        heading = self.page.get_by_role('heading', name=self.account_heading, exact=True)
+        if not await heading.is_visible():
+            return False
+        control = self.page.get_by_role('button').filter(
+            has=self.page.get_by_text(self.username, exact=True))
+        if await control.count() != 1 or not await control.is_visible():
+            self._interaction('GPT needs the configured account selected in the visible browser; no unique matching account was offered.')
+            return True
+        await self._choose(control, heading, location.geturl(), 'Use selected account')
+        return True
 
     async def _alternative(self, location):
         heading = self.page.get_by_role('heading', name=re.compile(
