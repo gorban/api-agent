@@ -1242,3 +1242,43 @@ def test_genuine_recorder_identity_upgrades_legacy_counter(tmp_path, node):
     expected = json.loads(body)
     expected['parameters'][0]['excluded'] = True
     assert json.loads(viewer._history_result(body, manifest)) == expected
+
+
+@pytest.fixture(params=['working', 's3'])
+def replaceable_history_origin(request, tmp_path, run):
+    manifest, files, _ = run
+    if request.param == 'working':
+        directory = save(tmp_path / 'working', manifest, files)
+        return RunSource('sample', tmp_path / 'working'), lambda: (directory / 'manifest.json').unlink()
+    objects = dict(files, **{'manifest.json': json.dumps(manifest).encode()})
+    def get_object(**kwargs):
+        return {'Body': io.BytesIO(objects[kwargs['Key']])}
+    storage = SimpleNamespace(history=lambda repo, **kwargs: [manifest], bucket='reports',
+        _client=lambda: SimpleNamespace(get_object=get_object), _key=lambda repo, run_id, name: name)
+    return RunSource('sample', storage=storage), objects.clear
+
+
+@async_test
+async def test_history_refresh_rebinds_archive_to_current_source(tmp_path, run, cli, port, replaceable_history_origin):
+    manifest, files, _ = run
+    save(tmp_path / 'secondary', manifest, files)
+    primary, disable_primary = replaceable_history_origin
+    secondary = RunSource('sample', tmp_path / 'secondary')
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        first = await owner.show_history(primary)
+        disable_primary()
+
+        refreshed = await owner.show_history(secondary)
+        async with httpx.AsyncClient(trust_env=False) as client:
+            import re
+            archive = await client.get(refreshed.archive_url)
+            route = re.search(r'href="([^"]+)"', archive.text)[1]
+            response = await client.get(f'http://127.0.0.1:{port}' + route)
+            assert response.status_code == 302
+            assert response.headers['Location'] == refreshed.url == first.url
+            assert (await client.get(response.headers['Location'])).text == 'Allure'
+        assert owner._history_routes[route][0] is secondary
+        assert not owner._http_tasks
+    finally:
+        await owner.aclose()

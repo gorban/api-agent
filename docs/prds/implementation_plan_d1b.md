@@ -16,8 +16,10 @@
 - [x] Add visible boolean ALLURE_VIEW_SECONDARY, default False, with normal configuration precedence. True renders finalized history exclusively from ALLURE_SECONDARY_DIR, with the same integrity checks and no S3 retrieval, authentication or LocalStack startup. False preserves working-results/S3 history discovery. Exact selected-test previews remain bound to their current attempt.
 - [x] Require a nonempty ALLURE_SECONDARY_DIR when the toggle is True in integration, E2E and Allure viewing modes. Collection-only and unrelated modes remain unaffected. Keep secondary-directory configuration visible in Allure mode too.
 - [x] Keep publication independent: integration/E2E still require primary S3 and always attempt an additional secondary copy whenever its directory is configured, with either viewing policy. Never mutate or republish history merely to view it.
+- [x] Refresh archive bindings from the currently selected source even when the manifest and frozen history context already have a route. Switching to secondary-only viewing must not read the earlier primary source through a refreshed archive link. Preserve immutable report routes, bytes and history contexts.
 - [x] Verify configuration precedence/visibility, source isolation and missing/empty paths, publication independence, installed-package behavior and exact applicable coverage.
 
+- [ ] Independently recheck secondary-source selection and refreshed archive links, preserving earlier viewer closures.
 - [ ] Human review toggle visibility and secondary-only browsing with a configured existing directory. No new inference is needed.
 
 ## CLI and browser

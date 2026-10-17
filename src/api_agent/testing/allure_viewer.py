@@ -351,7 +351,8 @@ class ManagedAllureViewer:
                     context = hashlib.sha256(json.dumps([
                         digests[row['run_id']] for row in previous]).encode()).hexdigest()
                     route = f'/open/{manifest["run_id"]}/{digest}/{context}'
-                    self._history_routes.setdefault(route, (source, manifest, previous))
+                    # Keep immutable content identity while refreshing the retrieval source.
+                    self._history_routes[route] = (source, manifest, previous)
                     url = route
                     label = f'{manifest["finished_at"]} — {manifest["mode"]} — {manifest["status"]} — {manifest["run_id"]}'
                     links.append(f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>')
