@@ -4,7 +4,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 from textual.widgets._toast import Toast
 
 from api_agent.testing.collection import TestIdentity
@@ -55,12 +55,16 @@ def test_runner_completion_keeps_original_confirmation_and_no_orphan_screens(tmp
                 await pilot.pause()
                 dialog, depth = app.screen, len(app.screen_stack)
                 assert isinstance(dialog, QuitDialog)
+                assert dialog.message.startswith('Stop running tests, close Allure and return')
                 release.set()
                 await asyncio.wait_for(app.test_run.stopped.wait(), 10)
                 await pilot.pause()
                 assert app.screen is dialog and len(app.screen_stack) == depth
                 assert results.test_run_complete and not app.test_run_active()
                 assert app.unit_result.tests[1].status == final_status
+                assert 'Stop running tests' not in dialog.message
+                expected_leave = 'End browser inspection, close Allure' if retain_browser else 'Close Allure'
+                assert dialog.message.startswith(expected_leave)
                 assert not viewer.closed and not browser.closed
                 await pilot.press(*(('y', 'enter') if accept_first_choice else ('escape',)))
                 await pilot.pause()
@@ -139,3 +143,94 @@ def test_history_generation_updates_its_page_beneath_quit_confirmation(tmp_path,
                 request.cancel()
                 await asyncio.gather(request, return_exceptions=True)
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('natural_close', [False, True], ids=['retained-browser', 'browser-closes'])
+def test_active_leave_warning_tracks_resources_and_completion_without_replacing_input(tmp_path, natural_close):
+    from api_agent.testing.inspection_controls import InspectionGroup
+    from api_agent.testing.lifecycle import TestRunLifecycle
+    from test_allure_results_lifetime import prepare_live_results
+    async def scenario():
+        app = fixture(tmp_path)
+        viewer, browser = Viewer(), handle()
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            one, two = prepare_live_results(app)
+            app.test_run = TestRunLifecycle()
+            app.allure_viewer = viewer
+            app.inspections = InspectionGroup((browser,))
+            app.integration_exit_status = app.operation_status = 0
+            await pilot.pause()
+            try:
+                await pilot.press('c')
+                await pilot.pause()
+                dialog = app.screen
+                assert dialog.message.startswith('Stop running tests, end browser inspection, close Allure and return')
+                answer = dialog.query_one('#quit-answer', Input)
+                answer.focus()
+                answer.value = 'y'
+                if natural_close:
+                    browser.closed = True
+                    app.unit_event(RunnerEvent('inspection_closed'))
+                    assert dialog.message.startswith('Stop running tests, close Allure and return')
+                app.unit_result = IntegrationRunResult(0,
+                    (TestResult(one, 'passed', 1), TestResult(two, 'passed', 2)), '')
+                app.unit_rows = {test.identity.id: ('PASSED', test.identity.id, '1s')
+                                 for test in app.unit_result.tests}
+                app.show_unit_results()
+                app.finish_test_run()
+                await pilot.pause()
+                assert app.screen is dialog
+                expected = 'Close Allure' if natural_close else 'End browser inspection, close Allure'
+                assert dialog.message.startswith(expected) and 'Stop running tests' not in dialog.message
+                assert str(dialog.query_one('#quit-message', Static).content) == dialog.message
+                assert dialog.query_one('#quit-answer', Input) is answer
+                assert answer.value == 'y' and app.focused is answer
+                assert not viewer.closed
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.screen.kind == 'menu' and viewer.closed and browser.closed
+                assert app.operation_status == 0 and not app.collection_cancel.is_set()
+            finally:
+                app.test_run.finish()
+    asyncio.run(scenario())
+
+
+def test_immediate_completion_updates_leave_warning_before_dialog_mount(tmp_path):
+    from api_agent.testing.lifecycle import TestRunLifecycle
+    from test_allure_results_lifetime import prepare_live_results
+    async def scenario():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            one, two = prepare_live_results(app)
+            app.test_run = TestRunLifecycle()
+            app.allure_viewer = Viewer()
+            await pilot.pause()
+            try:
+                await app.close_view()
+                dialog = app.screen
+                assert isinstance(dialog, QuitDialog) and not dialog.is_mounted
+                app.unit_result = IntegrationRunResult(0,
+                    (TestResult(one, 'passed', 1), TestResult(two, 'passed', 2)), '')
+                app.show_unit_results()
+                app.finish_test_run()
+                await pilot.pause()
+                assert app.screen is dialog
+                assert dialog.message.startswith('Close Allure and return')
+                assert str(dialog.query_one('#quit-message', Static).content) == dialog.message
+                await pilot.press('escape')
+                await pilot.pause()
+                assert app.screen.kind == 'test-results'
+            finally:
+                app.test_run.finish()
+    asyncio.run(scenario())
+
+
+def test_late_completion_without_a_screen_does_not_refresh_a_dialog(tmp_path):
+    from api_agent.testing.lifecycle import TestRunLifecycle
+    app = fixture(tmp_path)
+    app.test_run = TestRunLifecycle()
+    assert not app.screen_stack
+    app.finish_test_run()
+    assert not app.test_run_active()
