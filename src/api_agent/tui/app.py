@@ -131,7 +131,7 @@ class QuitDialog(FocusNavigation, ModalScreen):
         self.dismiss(False)
 
     def compose(self) -> ComposeResult:
-        yield Static(self.message, markup=False)
+        yield Static(self.message, id="quit-message", markup=False)
         yield Input(id="quit-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="quit-submit")
@@ -1544,6 +1544,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
 
     def finish_test_run(self):
         self.test_run.finish()
+        self.refresh_results_leave()
         if (self.unit_result is not None and self.screen_stack and isinstance(self.screen, WorkbenchScreen)
                 and self.screen.kind == 'test-results'):
             self.show_unit_results()
@@ -1797,6 +1798,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
             if self.inspection_lost:
                 self.inspection_failed = True
                 self.operation_status = 3
+            self.refresh_results_leave()
             if event.kind == 'inspection_closed' and not self.inspection_cleanup_active() and not self.inspection_lost:
                 self.inspection_failed = False
                 if self.integration_exit_status is not None:
@@ -1881,6 +1883,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
         screen.results_run = self.unit_result
         screen.test_run_complete = self.unit_result is not None
         screen.style_results = self.style_unit_summary
+        self.refresh_results_leave()
         if self.unit_result is not None:
             self.call_after_refresh(self.style_unit_summary)
 
@@ -2242,6 +2245,29 @@ class ApiAgentApp(AllureNavigation, App[int]):
         if accepted and await self.end_inspection():
             self.show_menu()
 
+    def results_leave_prompt(self):
+        active = self.test_run_active()
+        duties = ["stop running tests"] if active else []
+        if self.inspections.active:
+            duties.append("end browser inspection")
+        if self.recording_cleanup is not None:
+            duties.append("finish pending cleanup")
+        if self.allure_viewer is not None:
+            duties.append("close Allure")
+        prefix = ", ".join(duties)
+        message = (prefix + " and " if prefix else "") + "return to the menu"
+        message = message[0].upper() + message[1:]
+        return active, bool(duties), message + "? Enter literal y to confirm; every other response cancels."
+
+    def refresh_results_leave(self):
+        if not self.screen_stack:
+            return
+        dialog = self.screen
+        if isinstance(dialog, QuitDialog) and getattr(dialog, '_results_leave', False):
+            _, _, dialog.message = self.results_leave_prompt()
+            if dialog.is_mounted:
+                dialog.query_one('#quit-message', Static).update(dialog.message)
+
     async def close_view(self):
         if self.screen.kind == 'test-failure':
             result, key, scroll_y = getattr(self.screen, 'result_return', (None, None, None))
@@ -2252,22 +2278,11 @@ class ApiAgentApp(AllureNavigation, App[int]):
             if await self.close_allure():
                 self.show_menu()
             return
-        duties = []
-        if self.inspections.active:
-            duties.append("end browser inspection")
-        if self.recording_cleanup is not None:
-            duties.append("finish pending cleanup")
-        if self.allure_viewer is not None:
-            duties.append("close Allure")
-        if duties and not self.test_run_active():
-            action = ", ".join(duties)
-            action = action[0].upper() + action[1:]
-            self.push_screen(QuitDialog(action + " and return to the menu? Enter literal y to confirm; every other response cancels."),
-                             self.end_inspection_to_menu)
-            return
-        if self.test_run_active():
-            self.push_screen(QuitDialog("Stop running tests and return to the menu? Enter literal y to confirm; every other response cancels."),
-                             self.stop_tests_to_menu)
+        active, needs_confirmation, message = self.results_leave_prompt()
+        if needs_confirmation:
+            dialog = QuitDialog(message)
+            dialog._results_leave = True
+            self.push_screen(dialog, self.stop_tests_to_menu if active else self.end_inspection_to_menu)
             return
         if self.screen.kind == "collecting":
             self.collection_cancel.set()
