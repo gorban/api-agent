@@ -9,7 +9,7 @@
 - [x] Select by persisted identity and timestamps, never filesystem modification times. Validate manifest schema, repository/run identity, every artifact hash and attachment reference before generation. Reject changed/conflicting manifests, missing/corrupt files, links and nonregular files with actionable errors. Preserve original bytes and immutable history.
   Preserve manifest-listed `environment.properties` exactly; viewer annotations are added only when that filename is absent.
 - [x] Support explicitly empty ALLURE_RESULTS_DIR by reading exact finalized S3 artifacts into owned temporary staging. Storage retrieval never starts LocalStack or an authentication flow merely to browse. SDK transport timeouts and shared operation budgets bound retrieval; cancellation drains owned work.
-- [x] Serve only the owned loopback socket, with Host validation and no directory listing. ALLURE_VIEWER_PORT defaults to 5252. An occupied port fails clearly without adoption, replacement or silent port changes. Ordinary generation is a snapshot; uploads do not silently replace a served report.
+- [x] Serve only the owned loopback socket, with Host validation and no directory listing. Reports and archive.html share ALLURE_VIEWER_PORT, default 5252, visible in Configuration review for normal default acknowledgement and .env persistence. An occupied port fails clearly without adoption, replacement or silent port changes. Ordinary generation is a snapshot; uploads do not silently replace a served report.
 
 ## Secondary history source
 

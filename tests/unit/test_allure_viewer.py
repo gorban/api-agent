@@ -859,6 +859,22 @@ def test_shared_allure_command_is_review_visible_with_default():
     assert field.acknowledge_default is True
 
 
+@pytest.mark.parametrize('mode', ['integration', 'e2e', 'allure'])
+def test_shared_viewer_port_can_be_reviewed_and_saved(tmp_path, mode):
+    from api_agent.config import load_shared_schema, read_dotenv
+    from api_agent.config.session import ConfigSession
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path,
+        dotenv_path=tmp_path / '.env', external_pack=False,
+        anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': tmp_path})
+    session = ConfigSession(context, load_shared_schema(), environ={'TUI_MODE': mode})
+    candidates = {item.name: item.value for item in session.default_candidates()}
+    assert candidates['ALLURE_VIEWER_PORT'] == 5252
+    session.save_defaults(['ALLURE_VIEWER_PORT'])
+    assert read_dotenv(context.dotenv_path)['ALLURE_VIEWER_PORT'] == '5252'
+    assert session.result().values['ALLURE_VIEWER_PORT'] == 5252
+    assert 'ALLURE_VIEWER_PORT' not in {item.name for item in session.default_candidates()}
+
+
 @pytest.fixture
 def history_cli(cli):
     cli.write_text(cli.read_text() + '''
