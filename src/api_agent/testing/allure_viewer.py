@@ -413,7 +413,7 @@ class ManagedAllureViewer:
 
     async def show_history(self, source):
         async with self._operation(), self._lock:
-            async with component_timeout('Allure history viewer', self.timeout) as budget:
+            async with component_timeout('Allure history preparation', self.timeout) as budget:
                 await self._ready()
                 manifests = await offload(source.history, budget=budget)
                 if not manifests:
@@ -421,7 +421,9 @@ class ManagedAllureViewer:
                 manifests = json.loads(json.dumps(manifests))
                 windows = await self._archive(source, manifests, budget)
                 manifest = manifests[0]
-                url = await self._historical_report(source, manifest, windows[manifest['run_id']], budget)
+                previous = windows[manifest['run_id']]
+            async with component_timeout('Allure history viewer', self._history_timeout(previous, ())) as budget:
+                url = await self._historical_report(source, manifest, previous, budget)
                 location = await self._open(url)
                 return ViewerLocation(location.url, location.inspection_endpoint, location.browser_error,
                                       f'http://127.0.0.1:{self.port}/archive.html')
