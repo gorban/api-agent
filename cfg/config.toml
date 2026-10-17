@@ -260,8 +260,7 @@ COLLECT_ONLY = false
 type = "int"
 default = 5252
 validation = "positive"
-acknowledge_default = false
-help = "Loopback port for the managed Allure 2 report viewer. Requires the external command configured by ALLURE_CLI. An occupied port fails without replacing another listener."
+help = "Shared loopback port for the managed Allure 2 reports and archive.html run index. Requires the external command configured by ALLURE_CLI. An occupied port fails without replacing another listener."
 [fields.ALLURE_VIEWER_PORT.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
