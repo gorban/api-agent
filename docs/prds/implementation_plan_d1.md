@@ -9,8 +9,7 @@
 - [x] Keep final history and operation-owned live previews distinct. Each preview has an explicit version and artifact hashes; later tests/final publication require a new binding. Never publish a partial finalized manifest or silently substitute latest data. Completed accounting and immutable final manifests remain authoritative.
 - [x] Deliver [whole wrapped-link interaction and CDP clarity](implementation_plan_d1d.md) for viewer locations.
 
-- [ ] Complete [live availability and results-lifetime refinement](implementation_plan_d1e.md).
-- [ ] Profile and conditionally optimize [incremental native-history preparation](implementation_plan_d1f.md) late in implementation.
+- [x] Complete [live availability and results-lifetime refinement](implementation_plan_d1e.md).
 
 ## Ownership and sharing
 
@@ -20,11 +19,16 @@
 
 The CLI is an optional out-of-band dependency; [installation instructions](../development.md) stand alone. Application E2E execution keeps its separate implementation gate; its eventual results reuse these generic viewer contracts.
 
+## Later optimization
+
+- [ ] Profile and conditionally optimize [incremental native-history preparation](implementation_plan_d1f.md) late in implementation.
+
 **Deferred human review**
 
-Substantive implementation and independent verification are complete. Explicit human acceptance remains unchecked in the linked children.
+Functional viewer implementation and independent verification are complete. Explicit human acceptance remains unchecked in the linked children. Later profiling remains a separate unfinished task above.
 
 - [History and managed serving](implementation_plan_d1b.md)
 - [Selected-test navigation](implementation_plan_d1a.md)
 - [Native cross-launch history](implementation_plan_d1c.md)
 - [Wrapped-link interaction and CDP clarity](implementation_plan_d1d.md)
+- [Results availability and lifetime](implementation_plan_d1e.md)
