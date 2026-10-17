@@ -96,11 +96,14 @@ def test_history_links_preserve_literal_errors_and_open_exact_archive(tmp_path, 
             await pilot.pause()
             await app.show('allure', 'History')
             await pilot.pause()
-            app.show_allure_location(ViewerLocation(REPORT, CDP, browser_error=error, archive_url=archive))
+            app.show_allure_location(ViewerLocation(REPORT, CDP, browser_error=error, archive_url=archive,
+                                                   history_error='Prior Allure history is unavailable.'))
             await pilot.pause()
             body = app.screen.query_one('#body', Static)
             assert REPORT + "\n\nBrowser CDP" in str(body.content)
             assert error in str(body.content) and archive in str(body.content)
+            assert 'Prior Allure history is unavailable.' in str(body.content)
+            assert '\n\nBrowse previous runs:' in str(body.content)
             assert all('quit' not in str(span.style) for span in body.content.spans)
             assert link_cells(body, REPORT)
             position, _ = link_cells(body, archive)[-1]

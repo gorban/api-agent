@@ -14,11 +14,13 @@ from test_tui import fixture
 class Viewer:
     def __init__(self, *, fail=False, close_fail=False):
         self.calls=[]
+        self.sources=[]
         self.fail=fail
         self.close_fail=close_fail
         self.closed=False
-    async def show_preview(self,snapshot,result_file):
+    async def show_preview(self,snapshot,result_file, *, source=None):
         self.calls.append((snapshot,result_file))
+        self.sources.append(source)
         if self.fail:
             raise RuntimeError('Preview unavailable')
         return ViewerLocation('http://127.0.0.1:5252/exact','#inspection')
@@ -120,9 +122,14 @@ def test_stale_snapshot_does_not_change_retention_and_clear_resets_state(monkeyp
 
 
 @pytest.mark.parametrize('status',['PASSED','FAILED','ERROR','SKIPPED','CANCELLED'])
-def test_live_results_open_exact_completed_attempt_without_changing_execution(tmp_path,status):
+@pytest.mark.parametrize('secondary', [False, True])
+def test_live_results_open_exact_completed_attempt_without_changing_execution(tmp_path,status,secondary):
     async def scenario():
-        app=fixture(tmp_path)
+        app=fixture(tmp_path, fields={
+            'ALLURE_VIEW_SECONDARY': {'type': 'bool', 'default': secondary},
+            'ALLURE_RESULTS_DIR': {'type': 'str', 'default': str(tmp_path / 'working')},
+            'ALLURE_SECONDARY_DIR': {'type': 'str', 'default': str(tmp_path / 'secondary')},
+            'ALLURE_S3_BUCKET': {'type': 'str', 'default': 'reports'}})
         viewer=Viewer()
         app.allure_viewer=viewer
         async with app.run_test(size=(110,35)) as pilot:
@@ -138,6 +145,8 @@ def test_live_results_open_exact_completed_attempt_without_changing_execution(tm
             await pilot.press('a')
             await pilot.pause()
             assert viewer.calls==[(current,'one-result.json')]
+            assert viewer.sources[-1].local_root == tmp_path / ('secondary' if secondary else 'working')
+            assert (viewer.sources[-1].storage is None) is secondary
             assert app.screen.kind=='test-results' and app.unit_rows['two'][0]=='RUNNING'
             table=app.screen.query_one(DataTable)
             table.action_extend_range(1)
@@ -334,7 +343,7 @@ def test_late_viewer_completion_does_not_update_a_replaced_operation(tmp_path,mo
         notices=[]
         monkeypatch.setattr(app,'notify',lambda text,**kwargs:notices.append(text))
         class Late(Viewer):
-            async def show_preview(self,*args):
+            async def show_preview(self,*args, **kwargs):
                 app._allure_generation=object()
                 app._allure_opening=True
                 if failed:

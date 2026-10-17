@@ -67,7 +67,7 @@ def test_final_results_keep_allure_toast_and_its_exact_link(tmp_path, monkeypatc
         app = fixture(tmp_path)
         entered, release = asyncio.Event(), asyncio.Event()
         class PausedViewer(Viewer):
-            async def show_preview(self, current, result_file):
+            async def show_preview(self, current, result_file, *, source=None):
                 self.calls.append((current, result_file))
                 entered.set()
                 await release.wait()
