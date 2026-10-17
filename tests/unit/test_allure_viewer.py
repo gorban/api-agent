@@ -947,7 +947,10 @@ async def test_generated_history_transfer_refuses_unsafe_or_oversized_files(run,
         await owner.aclose()
 
 
-@pytest.mark.parametrize('parameters', [None, {}, [None, {'name':'other'}],
+@pytest.mark.parametrize('parameters', [None, {}, [], [None], [None, {'name':'other'}],
+    [{'name':'attempt'}], [{'name':'other','value':'2'}],
+    [{'name':'attempt','value':'2'},{'name':'other','value':'3'}],
+    [{'name':'attempt','value':'2','excluded':False}],
     [{'name':'attempt','value':'2','excluded':True}]])
 def test_history_parameter_upgrade_preserves_unaffected_bytes(run, parameters):
     manifest = run[0]
@@ -1001,4 +1004,46 @@ async def test_close_during_second_history_generation_drains_and_removes_partial
     finally:
         operation.cancel()
         await asyncio.gather(operation, return_exceptions=True)
+        await owner.aclose()
+
+
+@pytest.mark.parametrize('value', ['semantic-blue', 'semantic-green', '', '0', '01', '+1', '-1',
+    '1.0', '2e1', ' 2', '2\n', '２', 2, True, None])
+def test_history_preserves_noncanonical_or_semantic_attempt_values(run, value):
+    manifest = run[0]
+    full_name = 'tests/test_demo.py::test_demo'
+    history_id = hashlib.sha256(f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest()
+    body = json.dumps({'fullName':full_name,'historyId':history_id,
+                      'parameters':[{'name':'attempt','value':value}]}, indent=2).encode()
+    assert viewer._history_result(body, manifest) == body
+
+
+@pytest.mark.parametrize('parameters', [
+    [{'name':'attempt','value':'semantic-blue'}],
+    [{'name':'attempt','value':'0'}],
+    [{'name':'attempt','value':'2'},{'name':'attempt','value':'semantic-blue'}],
+    [{'name':'attempt','value':'2'},{'name':'attempt','value':'3'}],
+    [{'name':'attempt','value':'2','excluded':False}],
+    [{'name':'attempt','value':'2'},{'name':'other','value':'3'}],
+])
+@async_test
+async def test_verified_foreign_parameters_reach_generation_unchanged(tmp_path, run, cli, port, parameters):
+    manifest, files, name = run
+    full_name = 'tests/test_demo.py::test_demo'
+    row = json.loads(files[name])
+    row.update(fullName=full_name, parameters=parameters, historyId=hashlib.sha256(
+        f'{manifest["repo"]}:{manifest["mode"]}:{full_name}'.encode()).hexdigest())
+    files[name] = json.dumps(row, indent=2).encode()
+    manifest['files'] = {key: hashlib.sha256(body).hexdigest() for key, body in files.items()}
+    save(tmp_path, manifest, files)
+    source = RunSource('sample', tmp_path)
+    assert validate_manifest(manifest, repo='sample')
+    assert source.load(manifest) == files
+    cli.write_text(cli.read_text() + "\n (output/'observed-result.bin').write_bytes(next(source.glob('*-result.json')).read_bytes())\n")
+    owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)
+    try:
+        location = await owner.show_history(source)
+        assert (generated_root(owner, location) / 'observed-result.bin').read_bytes() == files[name]
+        assert source.load(manifest) == files
+    finally:
         await owner.aclose()

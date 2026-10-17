@@ -40,14 +40,16 @@ def _history_result(body, manifest):
     expected = hashlib.sha256(
         f'{manifest["repo"]}:{manifest["mode"]}:{row.get("fullName")}'.encode()).hexdigest()
     parameters = row.get('parameters')
-    changed = False
-    if row.get('historyId') == expected and isinstance(parameters, list):
-        for parameter in parameters:
-            if (isinstance(parameter, dict) and parameter.get('name') == 'attempt'
-                    and parameter.get('excluded') is not True):
-                parameter['excluded'] = True
-                changed = True
-    return json.dumps(row).encode() if changed else body
+    if (row.get('historyId') != expected or not isinstance(parameters, list)
+            or len(parameters) != 1):
+        return body
+    parameter = parameters[0]
+    if (not isinstance(parameter, dict) or set(parameter) != {'name', 'value'}
+            or parameter['name'] != 'attempt' or not isinstance(parameter['value'], str)
+            or re.fullmatch('[1-9][0-9]*', parameter['value']) is None):
+        return body
+    parameter['excluded'] = True
+    return json.dumps(row).encode()
 
 
 @dataclass(frozen=True)
