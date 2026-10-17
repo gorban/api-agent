@@ -690,9 +690,15 @@ def test_remote_timeout_disposes_client_before_fixture_teardown(monkeypatch, pen
 
 @pytest.mark.parametrize('pending', [False, True])
 def test_interrupt_preserves_request_and_socket_cleanup_ownership(monkeypatch, pending):
-    client = SetupClient(descriptor(), timeout=.03)
+    client = SetupClient(descriptor(), timeout=10, cleanup_timeout=.03)
     client._loop = asyncio.new_event_loop()
     reader = asyncio.StreamReader(loop=client._loop)
+    entered = client._loop.create_future()
+    read = reader.readuntil
+    async def blocked_read(*args):
+        entered.set_result(None)
+        return await read(*args)
+    monkeypatch.setattr(reader, 'readuntil', blocked_read)
     gate = asyncio.Event()
     writer = SimpleNamespace(write=lambda value: None, drain=AsyncMock(), close=lambda: None,
                              wait_closed=(lambda: gate.wait()) if pending else AsyncMock())
@@ -703,7 +709,7 @@ def test_interrupt_preserves_request_and_socket_cleanup_ownership(monkeypatch, p
         nonlocal interrupted
         if not interrupted:
             interrupted = True
-            native(asyncio.sleep(.001))
+            native(asyncio.wait_for(asyncio.shield(entered), 5))
             raise KeyboardInterrupt
         return native(awaitable)
     monkeypatch.setattr(client._loop, 'run_until_complete', run_until_complete)

@@ -30,7 +30,8 @@ def _reason_phrase(status):
 
 class SoftwarePasskey:
     """Own import and removal on the original page, including uncertain replies."""
-    def __init__(self, session, credential, *, trusted_origin='https://auth.openai.com', callback_url=None):
+    def __init__(self, session, credential, *, trusted_origin='https://auth.openai.com', callback_url=None,
+                 first_party=False):
         self.session = session
         self.credential = credential
         self.channel = None
@@ -40,6 +41,7 @@ class SoftwarePasskey:
         self.closed = False
         self.trusted_origin = trusted_origin
         self.callback_url = callback_url
+        self.first_party = first_party
         self.intercepting = False
         self.navigation_tasks = set()
         self.navigation_failed = False
@@ -67,7 +69,8 @@ class SoftwarePasskey:
                 origin = f'{location.scheme}://{location.netloc}'
                 callback = self.callback_url is not None and url.split('?', 1)[0] == self.callback_url
                 child = event.get('frameId', self.main_frame) != self.main_frame
-                allowed = child or origin == self.trusted_origin or callback
+                first_party = self.first_party and origin == 'https://chatgpt.com'
+                allowed = child or origin == self.trusted_origin or callback or first_party
                 method = 'Fetch.continueRequest' if allowed else 'Fetch.failRequest'
                 if not allowed:
                     parameters['errorReason'] = 'BlockedByClient'
