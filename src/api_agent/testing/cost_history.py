@@ -157,7 +157,8 @@ def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=Non
         if config.get('ALLURE_S3_BUCKET'):
             storage = RunStorage(config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),
                                  endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'),
-                                 localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566))
+                                 localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566),
+                                 managed_local=config.get('ALLURE_S3_USE_LOCALSTACK', False))
         return HistoricalEstimator(tests, config, cache, origin, repo, card, storage, now, context=context)
     except Exception:
         return EstimateSnapshot({test.id: {'estimated_cost_usd': None, 'known_zero': False, 'basis': 'unavailable', 'sample_count': 0} for test in tests}, card=card)

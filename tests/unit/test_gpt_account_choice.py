@@ -87,7 +87,7 @@ def test_hidden_matching_control_does_not_select_another_account():
         page = SimpleNamespace(url='https://auth.openai.com/choose-an-account',
             get_by_role=role, get_by_text=Mock())
         login = LoginWorkflow(SimpleNamespace(page=page), 'person@example.test', AsyncMock(),
-            'chosen-app', object(), allow_interaction=True)
+            'chosen-app', SimpleNamespace(check=AsyncMock(return_value=False)), allow_interaction=True)
         login._choose = AsyncMock()
         await login.advance()
         login._choose.assert_not_awaited()

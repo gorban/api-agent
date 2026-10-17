@@ -59,7 +59,8 @@ def test_default_port_remains_compatible(tmp_path):
     assert RunStorage('bucket',localstack_port=cleared.values['ALLURE_LOCALSTACK_PORT']).localstack_port==4566
 
 
-@pytest.mark.parametrize('settings,port',[({},4566),({'ALLURE_LOCALSTACK_PORT':14566},14566)])
+@pytest.mark.parametrize('settings,port',[({},4566),({'ALLURE_LOCALSTACK_PORT':14566},14566),
+    ({'ALLURE_S3_USE_LOCALSTACK':True},4566)])
 def test_recording_threads_configured_port(tmp_path,monkeypatch,settings,port):
     from api_agent.testing import recorded
     from test_recorded_integration import fixture,Storage,fake_runner
@@ -70,9 +71,11 @@ def test_recording_threads_configured_port(tmp_path,monkeypatch,settings,port):
     result=recorded.run_recorded_integration(context,[test],config,accepted=True,runner=fake_runner())
     assert result.persisted
     assert factory.call_args.kwargs['localstack_port']==port
+    assert factory.call_args.kwargs['managed_local'] is settings.get('ALLURE_S3_USE_LOCALSTACK',False)
 
 
-@pytest.mark.parametrize('settings,port',[({},4566),({'ALLURE_LOCALSTACK_PORT':14566},14566)])
+@pytest.mark.parametrize('settings,port',[({},4566),({'ALLURE_LOCALSTACK_PORT':14566},14566),
+    ({'ALLURE_S3_USE_LOCALSTACK':True},4566)])
 def test_history_threads_configured_port(tmp_path,monkeypatch,settings,port):
     from api_agent.testing import cost_history
     from test_recorded_integration import fixture
@@ -85,3 +88,4 @@ def test_history_threads_configured_port(tmp_path,monkeypatch,settings,port):
     monkeypatch.setattr(cost_history,'HistoricalEstimator',Mock())
     cost_history.estimator_for(context,[test],config,rate_card={'synthetic':1})
     assert factory.call_args.kwargs['localstack_port']==port
+    assert factory.call_args.kwargs['managed_local'] is settings.get('ALLURE_S3_USE_LOCALSTACK',False)
