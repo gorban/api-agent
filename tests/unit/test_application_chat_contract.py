@@ -682,13 +682,16 @@ def test_asgi_early_control_responses_never_receive_body(mode):
 
 def test_other_asgi_routes_preserve_their_existing_dispatch():
     async def run():
+        create_application(Runtime('example'))
         bridge=backend()
         calls=[]
         async def dispatch(scope,receive,send):
             calls.append(scope['path'])
-        await bridge.handle_asgi(ingress_scope('/other'),None,None,dispatch)
-        assert calls == ['/other']
-        await bridge.aclose()
+        try:
+            await bridge.handle_asgi(ingress_scope('/other'),None,None,dispatch)
+            assert calls == ['/other']
+        finally:
+            await bridge.aclose()
     asyncio.run(run())
 
 

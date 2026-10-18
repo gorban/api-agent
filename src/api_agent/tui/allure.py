@@ -1,6 +1,6 @@
 """Workbench-owned Allure navigation, independent of test execution."""
 import asyncio
-from functools import cached_property
+from functools import cached_property, wraps
 from uuid import uuid4
 from rich.segment import Segment
 from rich.style import Style as RichStyle
@@ -41,6 +41,24 @@ class AllureLinkContent(Content):
         return result
 
 
+def _owned_opener(method):
+    @wraps(method)
+    async def open_owned(self, *args, **kwargs):
+        if not self._allure_accepting:
+            return
+        task = asyncio.current_task()
+        generation = self._allure_generation
+        self._allure_tasks.add(task)
+        try:
+            return await method(self, *args, **kwargs)
+        except asyncio.CancelledError:
+            if generation is self._allure_generation:
+                raise
+        finally:
+            self._allure_tasks.discard(task)
+    return open_owned
+
+
 class AllureNavigation:
     def initialize_allure(self):
         self.allure_viewer = None
@@ -50,6 +68,11 @@ class AllureNavigation:
         self._allure_generation = object()
         self._allure_opening = False
         self._allure_loading = ''
+        self._allure_tasks = set()
+        self._allure_cancel_requested = set()
+        self._allure_cleanup = None
+        self._allure_accepting = True
+        self._allure_shutdown = False
 
     def refresh_allure_loading(self):
         for screen in self.screen_stack:
@@ -127,6 +150,7 @@ class AllureNavigation:
                 history_count=values.get('ALLURE_HISTORY_DISPLAY_COUNT', 20))
         return self.allure_viewer
 
+    @_owned_opener
     async def open_selected_allure(self):
         selected = self.selected_allure_result(self.screen)
         if selected is None:
@@ -147,6 +171,8 @@ class AllureNavigation:
         self.screen.refresh_bindings()
         try:
             await self.prepare_allure_reporting()
+            if generation is not self._allure_generation:
+                return
             location = await self._allure().show_preview(*selected, source=self.allure_source)
             if generation is self._allure_generation:
                 self.show_allure_location(location)
@@ -243,6 +269,7 @@ class AllureNavigation:
         return RunSource(repository_label(self.context, self.context.owner_root),
                            local_root=local_root or None, storage=storage)
 
+    @_owned_opener
     async def show_allure_history(self):
         generation = self._allure_generation
         self._allure_opening = True
@@ -252,6 +279,8 @@ class AllureNavigation:
             if generation is not self._allure_generation:
                 return
             await self.prepare_allure_reporting()
+            if generation is not self._allure_generation:
+                return
             location = await self._allure().show_archive(self.allure_source())
             if generation is self._allure_generation:
                 self.operation_status = 0
@@ -265,19 +294,57 @@ class AllureNavigation:
             if generation is self._allure_generation:
                 self._allure_opening = False
 
-    async def close_allure(self):
+    def stop_allure_admission(self, *, shutdown=False):
+        self._allure_shutdown |= shutdown
+        self._allure_accepting = False
         self._allure_generation = object()
         self._allure_loading = ''
         self.refresh_allure_loading()
+
+    def allure_cleanup_active(self):
+        return bool(self._allure_tasks) or (self._allure_cleanup is not None
+                                           and 'runtime' not in self._allure_cleanup.done)
+
+    def begin_allure_cleanup(self):
+        from types import SimpleNamespace
+        from api_agent.runtime.operation import OperationCleanup
+        self.stop_allure_admission()
+        if self._allure_cleanup is None or 'runtime' in self._allure_cleanup.done:
+            self._allure_cleanup = OperationCleanup(None, SimpleNamespace(aclose=self._dispose_allure),
+                                                    None, None, False, 15)
+        return self._allure_cleanup
+
+    async def _dispose_allure(self):
+        from api_agent.providers.control import _cancel_once
+        tasks = tuple(self._allure_tasks)
+        for task in tasks:
+            _cancel_once(task, self._allure_cancel_requested)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._allure_cancel_requested.difference_update(tasks)
+        # Openers can be draining a thread/provider while cancellation settles.
+        # Only now is their final viewer owner known and safe to dispose.
         viewer = self.allure_viewer
-        if viewer is None:
-            self._allure_opening = False
-            return True
-        try:
+        if viewer is not None:
             await viewer.aclose()
-        except Exception as error:
-            self.notify('Allure cleanup incomplete: ' + str(error), severity='error', timeout=10)
-            return False
-        self.allure_viewer = None
+            if self.allure_viewer is not viewer:
+                raise RuntimeError('Allure viewer changed during cleanup; retry its retained owner.')
+            self.allure_viewer = None
         self._allure_opening = False
+        self._allure_accepting = not self._allure_shutdown
+
+    async def wait_allure_cleanup(self, cleanup):
+        from api_agent.providers.control import CleanupPendingError
+        from api_agent.providers.progress import independent_timeout_scope, report_timeout
+        with independent_timeout_scope():
+            async with report_timeout('Allure navigation cleanup', 15):
+                try:
+                    await cleanup.retry()
+                except CleanupPendingError:
+                    self.notify('Allure cleanup incomplete; retry to finish closing the viewer.',
+                                severity='error', timeout=10)
+                    return False
         return True
+
+    async def close_allure(self):
+        return await self.wait_allure_cleanup(self.begin_allure_cleanup())

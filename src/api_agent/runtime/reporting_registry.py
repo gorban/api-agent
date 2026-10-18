@@ -197,7 +197,7 @@ class SharedReportingManager:
             else:
                 self.manager.release(retain=retain)
             if self.intent:
-                if self.manager._inventory(time.monotonic() + budget.remaining):
+                if self.manager._inventory(time.monotonic() + budget.remaining, cleanup=True):
                     raise PrerequisiteError('Reporting provisioning cleanup remains pending.')
                 path.unlink()
                 self.intent = False

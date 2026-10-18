@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from api_agent.providers.contracts import SessionClosedError, ProviderAccessError
 from api_agent.providers.control import CleanupPendingError
-from api_agent.providers.costs import quote_cost
+from api_agent.providers.costs import quote_cost, validate_quote
 from api_agent.providers.inference import usage_to_wire
 from api_agent.telemetry.usage import SuiteUsage
 from .inference_usage import capture
@@ -70,9 +70,11 @@ class RetainedStudio:
         if not self.ready():
             raise SessionClosedError('Studio waits for finalized suite accounting.')
         async with self._creation:
+            if self.phase == 'closed':
+                raise SessionClosedError('Studio inspection has ended.')
             if self.manual is None:
                 self.manual = self.factory(self.usage.observe_snapshot)
-        self.phase = 'interactive'
+            self.phase = 'interactive'
         return self.manual
 
     async def describe(self):
@@ -119,9 +121,19 @@ class RetainedStudio:
             for name in ('actual_model', 'service_tier', 'serving_revision'):
                 if getattr(result, name) is not None:
                     row[name] = getattr(result, name)
-            row['quote'] = self.manual.emissions.content_export(
-                quote_cost(self.manual.provider.implementation, request, result))
-        capture(SimpleNamespace(text=json.dumps(row, allow_nan=False), identity=self.identity), self.usage)
+        try:
+            if result is not None:
+                try:
+                    quote = self.manual.emissions.content_export(
+                        quote_cost(self.manual.provider.implementation, request, result))
+                    row['quote'] = validate_quote(quote)
+                except Exception:
+                    # Optional pricing cannot invalidate completed inference.
+                    # Do not export provider or emission failure diagnostics.
+                    pass
+        finally:
+            # Even an interrupted quote must retain terminal outcome and usage.
+            capture(SimpleNamespace(text=json.dumps(row, allow_nan=False), identity=self.identity), self.usage)
 
     async def aclose(self):
         self.phase = 'closed'
