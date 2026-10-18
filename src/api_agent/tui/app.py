@@ -284,11 +284,13 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def on_screen_resume(self):
         if self.kind == 'test-results':
             self.call_after_refresh(self.app.update_test_results, self)
-        pending = getattr(self.app, '_pending_cost_refresh', None)
-        if (pending is not None and pending[0] is self
-                and pending[1] is self.app.selection and self.kind == 'tests'):
-            self.app._pending_cost_refresh = None
-            self.call_after_refresh(self.app.refresh_picker_costs, self, pending[1])
+        pending, self._pending_cost_refresh = self._pending_cost_refresh, None
+        if (pending is not None and pending is self.app.selection
+                and self.kind == 'tests' and not self.app._inspection_shutdown):
+            self.call_after_refresh(self.app.refresh_picker_costs, self, pending)
+
+    def on_unmount(self):
+        self._pending_cost_refresh = None
 
     @property
     def focus_chain(self):
@@ -313,6 +315,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         self.config_saved = set()
         self.config_defaults = set()
         self.test_search = None
+        self._pending_cost_refresh = None
 
     def compose(self) -> ComposeResult:
         app = self.app
@@ -2048,13 +2051,14 @@ class ApiAgentApp(AllureNavigation, App[int]):
     def refresh_picker_costs(self, screen, selection):
         # Refresh belongs to the picker which queued it, after its DOM mounts.
         if (selection is not self.selection or not screen.is_attached
-                or not screen.is_mounted or not screen.is_running or self.test_run_active()):
+                or not screen.is_mounted or not screen.is_running or self.test_run_active()
+                or self._inspection_shutdown):
             return
         if screen is self.screen:
             self.refresh_rows()
         elif screen in self.screen_stack:
             # A modal may cover the picker between scheduling and execution.
-            self._pending_cost_refresh = (screen, selection)
+            screen._pending_cost_refresh = selection
 
     async def synchronize_cost_history(self, snapshot, selection):
         try:
@@ -2062,6 +2066,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
         except Exception:
             return
         if (self.cost_estimator is snapshot and self.selection is selection and not self.test_run_active()
+                and not self._inspection_shutdown
                 and any(isinstance(screen, WorkbenchScreen) and screen.kind == 'tests' for screen in self.screen_stack)):
             changed = self.refresh_cost_configuration()
             if not changed:
@@ -2074,7 +2079,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 # and redraw once the original picker becomes active again.
                 picker = next(screen for screen in reversed(self.screen_stack)
                               if isinstance(screen, WorkbenchScreen) and screen.kind == 'tests')
-                self._pending_cost_refresh = (picker, selection)
+                picker._pending_cost_refresh = selection
             if changed:
                 self.run_worker(self.synchronize_cost_history(self.cost_estimator, selection),
                                 group='cost-history', exclusive=True)
@@ -2291,6 +2296,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
     async def on_unmount(self):
         self.stop_allure_admission(shutdown=True)
         self._inspection_shutdown = True
+        for screen in self.screen_stack:
+            if isinstance(screen, WorkbenchScreen):
+                screen._pending_cost_refresh = None
         self.collection_cancel.set()
         if self.test_run_active():
             await self.test_run.stop_and_wait()

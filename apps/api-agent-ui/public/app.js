@@ -239,6 +239,7 @@ async function loadModels() {
     catalogStatus = catalog.length ? '' : 'No model choices are available. Reconnect before sending.';
     syncSettings();
   } catch { catalogStatus ||= response && !response.ok ? `Model list unavailable (HTTP ${response.status}). Reconnect before sending.` : 'Model list unavailable. Reconnect before sending.'; $('model-status').textContent = catalogStatus; }
+  finally { $('model-status').dataset.catalogState = 'settled'; }
 }
 $('backend-default').addEventListener('click', () => {
   if (state.settings.model) state.settings = defaults();

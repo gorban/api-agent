@@ -70,7 +70,7 @@ def test_replacement_cannot_consume_covered_owners_pending_redraw(cached_picker,
                 callback(*args)
             else:
                 await complete_under_modal(app, pilot, estimate, selected)
-            assert app._pending_cost_refresh == (owner, selected)
+            assert owner._pending_cost_refresh is selected
             redraw = Mock()
             monkeypatch.setattr(app, 'refresh_rows', redraw)
 
@@ -79,13 +79,13 @@ def test_replacement_cannot_consume_covered_owners_pending_redraw(cached_picker,
             await pilot.pause()
             assert replacement is not owner and app.selection is selected
             redraw.assert_not_called()
-            assert app._pending_cost_refresh == (owner, selected)
+            assert owner._pending_cost_refresh is selected
 
             app.pop_screen()
             await pilot.pause()
             app.pop_screen()
             await pilot.pause()
-            assert app.screen is owner and app._pending_cost_refresh is None
+            assert app.screen is owner and owner._pending_cost_refresh is None
             callback, args = callbacks.pop()
             assert args == (owner, selected)
             callback(*args)
@@ -138,11 +138,10 @@ def test_original_resume_rejects_pending_redraw_after_selection_changes(cached_p
             picker = app.screen
             callbacks = defer_redraws(app, picker, monkeypatch)
             await complete_under_modal(app, pilot, estimate, app.selection)
-            old_pending = app._pending_cost_refresh
             app.selection = SelectionModel(identities(3))
             app.pop_screen()
             await pilot.pause()
-            assert app.screen is picker and app._pending_cost_refresh is old_pending
+            assert app.screen is picker and picker._pending_cost_refresh is None
             assert callbacks == []
     asyncio.run(scenario())
 
@@ -191,7 +190,7 @@ def test_worker_finishing_beneath_nested_modal_binds_nearest_current_picker(cach
                 await pilot.pause()
                 finish.set()
                 await task
-                assert app._pending_cost_refresh == (current, selected)
+                assert current._pending_cost_refresh is selected
                 app.pop_screen()
                 await pilot.pause()
                 callback, args = callbacks.pop()

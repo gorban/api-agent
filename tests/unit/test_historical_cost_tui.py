@@ -256,11 +256,11 @@ def test_sync_during_modal_refreshes_after_close(tmp_path, monkeypatch):
                         break
                 assert isinstance(app.screen, SettingHelpDialog)
                 assert app.cost_estimator is replacement
-                assert app._pending_cost_refresh == (picker, app.selection)
+                assert picker._pending_cost_refresh is app.selection
                 await pilot.press('escape')
                 await pilot.pause()
                 assert app.screen is picker and app.focused is table
-                assert app._pending_cost_refresh is None
+                assert picker._pending_cost_refresh is None
                 assert table.selected_row_keys == keys and table.cursor_coordinate == cursor
                 assert all(str(table.get_row_at(i)[4]) == '2.000000' for i in range(table.row_count))
         finally:
@@ -285,7 +285,7 @@ def test_refresh_finishing_after_start_cannot_replace_frozen_snapshot(tmp_path, 
                 await app.workers.wait_for_complete()
                 await pilot.pause()
                 assert app.cost_estimator is snapshot
-                assert getattr(app, '_pending_cost_refresh', None) is None
+                assert app.screen._pending_cost_refresh is None
                 app.test_run.finish()
         finally:
             gate.set()

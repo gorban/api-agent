@@ -29,7 +29,16 @@ The allowed configured catalog, default-model policy, versions and reasoning
 choices remain available. Mixed known, unknown and unsupported model reasoning
 metadata cannot invalidate the whole catalog. Validate the effective configured
 or explicitly chosen effort only for the selected model before inference; the
-UI explains incompatible inherited defaults without inferring missing metadata. The automated prompt checks the selected model diagnostic and Send readiness
+UI explains incompatible inherited defaults without inferring missing metadata. The included page exposes catalog readiness separately from model validity:
+`data-catalog-state` on the model status starts as `loading` and becomes `settled`
+only after catalog success or a safe failure diagnostic. A saved model value
+cannot imply catalog readiness. The automated prompt waits at most fifteen
+seconds for settlement before checking model validity or touching the prompt;
+this covers the existing sequential five-second configuration and catalog fetch
+bounds plus fixture overhead, without changing production fetch deadlines.
+Absent or malformed readiness fails with a bounded catalog diagnostic. Settled
+invalid selections and failures remain prompt failures, with no automatic model
+switch or inference while loading. The automated prompt checks the selected model diagnostic and Send readiness
 before writing or submitting its single prompt. An unknown or unsupported
 inherited reasoning default fails immediately with the model diagnostic, even
 when the catalog also offers a compatible alternative; no automatic model switch
