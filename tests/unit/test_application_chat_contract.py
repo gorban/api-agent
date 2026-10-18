@@ -710,6 +710,8 @@ def test_old_response_uses_captured_turn_after_same_id_replacement(operation):
         old_owner=bridge._responses[body['session_id']]
         await bridge.lifecycle.wait_turn(bridge._owner_id,old_owner.turn)
         old_owner.turn._finished -= bridge.lifecycle.terminal_ttl + 1
+        # Simulate retirement to exercise the captured-handle guard independently.
+        bridge._responses.pop(body['session_id'])
         new_body=body | {'messages':[{'role':'user','content':'new'}]}
         await bridge.handle(request(new_body),'chat_stream')
         await entered.wait()
@@ -786,5 +788,186 @@ def test_asgi_framework_metadata_valid_controls_still_receive_bounded_body(mode)
         await app(scope,receive,send)
         assert sent[0]['status'] == 200
         assert json.loads(b''.join(item.get('body',b'') for item in sent))['response_text'] == 'answer'
+        await bridge.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('mounted',[False,True])
+@pytest.mark.parametrize('path,method,status',[
+    ('models','GET',501),('chat','POST',501),('chat/stream','POST',501),
+    ('chat/cancel','POST',501),('chat/heartbeat','POST',501),
+    ('result-sets/item','GET',501),('result-sets','DELETE',501),
+    ('chat','GET',405),('chat','OPTIONS',204),('result-sets','OPTIONS',405)])
+def test_uncomposed_capabilities_resolve_before_any_body_receive(mounted,path,method,status):
+    async def run():
+        app=create_application(Runtime('example'))
+        scope=ingress_scope('/app/agent/'+path,method)
+        scope['client']=('192.0.2.1',1234)
+        scope['headers']=[(b'host',b'testserver'),(b'origin',b'https://invalid.example'),
+                          (b'x-api-agent-session',b'wrong'),(b'content-length',b'200000')]
+        if mounted:
+            scope['root_path']='/mounted'
+            scope['path']='/mounted'+scope['path']
+        async def receive():
+            pytest.fail('unavailable capability acquired unauthorized open body')
+        sent=[]
+        async def send(message):
+            sent.append(message)
+        await app(scope,receive,send)
+        assert sent[0]['status'] == status
+        headers=dict(sent[0]['headers'])
+        assert all(name == name.lower() for name in headers)
+        if status in (204,405):
+            assert headers[b'allow'] == (b'DELETE' if path == 'result-sets' else b'POST, OPTIONS')
+        if status == 204:
+            assert headers[b'access-control-allow-methods'] == b'POST, OPTIONS'
+            assert headers[b'access-control-allow-headers'] == b'Content-Type, Authorization'
+        if status == 501:
+            assert headers[b'cache-control'] == b'private, no-store'
+            assert json.loads(sent[1]['body'])['code'] == 'not_implemented'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('mode',['host','query','override','empty-override','ordinary','unknown','legacy'])
+def test_uncomposed_early_response_preserves_host_and_dispatch(mode):
+    from api_agent.api.application import Application, RuntimeHandler
+    from django.urls import re_path
+    async def run():
+        runtime=Runtime('example')
+        create_application(runtime)
+        scope=ingress_scope()
+        expected=400
+        if mode == 'host':
+            scope['headers']=[(b'host',b'invalid.example')]
+        elif mode == 'query':
+            scope['query_string']=b'\xff'
+        elif mode == 'empty-override':
+            runtime.urlconf=()
+        elif mode == 'override':
+            async def custom(request):
+                pytest.fail('custom route must dispatch through Django')
+            runtime.urlconf=type('CustomRoutes',(),{'urlpatterns':[re_path(r'^app/agent/chat$',custom)]})
+        elif mode == 'ordinary':
+            scope['path']='/app/agent/internals/health'
+        elif mode == 'unknown':
+            scope['path']='/missing'
+        else:
+            runtime.services={'studio_backend':object()}
+        calls=[]
+        class Handler(RuntimeHandler):
+            async def __call__(self,scope,receive,send):
+                calls.append(scope['path'])
+        async def receive():
+            pytest.fail('early response received a body')
+        sent=[]
+        async def send(message):
+            sent.append(message)
+        await Application(runtime,Handler())(scope,receive,send)
+        if mode in ('host','query'):
+            assert sent[0]['status'] == expected and not calls
+        else:
+            assert calls == [scope['path']] and not sent
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('reuse_capability',['chat','chat_stream'])
+def test_retained_sources_reject_reuse_and_enforce_total_owner_bound(reuse_capability):
+    async def run():
+        bridge=backend()
+        bridge.lifecycle.max_active=bridge.lifecycle.max_terminal=1
+        body=payload()
+        first=await bridge.handle(request(body),'chat_stream')
+        owner=bridge._responses[body['session_id']]
+        await bridge.lifecycle.wait_turn(bridge._owner_id,owner.turn)
+        owner.turn._finished-=bridge.lifecycle.terminal_ttl+1
+        for _ in range(3):
+            response=await bridge.handle(request(body),reuse_capability)
+            assert response.status_code == 409
+        second_body=payload()
+        second=await bridge.handle(request(second_body),'chat_stream')
+        second_owner=bridge._responses[second_body['session_id']]
+        await bridge.lifecycle.wait_turn(bridge._owner_id,second_owner.turn)
+        assert len(bridge._responses) == 2
+        assert (await bridge.handle(request(payload()),'chat_stream')).status_code == 409
+        await bridge.aclose()
+        assert not bridge._responses
+        for response in (first,second):
+            assert [frame async for frame in response.streaming_content] == []
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('retirement',['close','iterate','retry'])
+def test_response_retirement_allows_reuse_without_stale_removal(retirement):
+    from api_agent.providers.control import CleanupPendingError
+    async def run():
+        bridge=backend()
+        body=payload()
+        response=await bridge.handle(request(body),'chat_stream')
+        old=bridge._responses[body['session_id']]
+        await bridge.lifecycle.wait_turn(bridge._owner_id,old.turn)
+        old.turn._finished-=bridge.lifecycle.terminal_ttl+1
+        if retirement == 'iterate':
+            assert [part async for part in response.streaming_content][-1].startswith(b'event: done')
+        elif retirement == 'close':
+            await old.aclose()
+        else:
+            source=old.source
+            class PendingSource:
+                pending=True
+                async def aclose(self):
+                    if self.pending:
+                        raise RuntimeError('pending source')
+                    await source.aclose()
+            pending=PendingSource()
+            old.source=pending
+            with pytest.raises(CleanupPendingError) as error:
+                await old.aclose()
+            assert (await bridge.handle(request(body),'chat_stream')).status_code == 409
+            assert bridge._responses[body['session_id']] is old
+            pending.pending=False
+            await error.value.retry()
+        assert body['session_id'] not in bridge._responses
+        replacement=await bridge.handle(request(body),'chat_stream')
+        assert replacement.status_code == 200
+        current=bridge._responses[body['session_id']]
+        await old.aclose()
+        assert bridge._responses[body['session_id']] is current
+        await bridge.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('efforts',[None,(),('off',)])
+def test_configured_reasoning_default_rejects_incompatible_alternate(efforts):
+    async def run():
+        calls=[]
+        async def describe(**kwargs):
+            return (AvailableSelection('example',features=('reasoning_effort',),reasoning_efforts=('high',)),
+                    AvailableSelection('other',features=('reasoning_effort',) if efforts is not None else (),reasoning_efforts=efforts))
+        async def complete(*args,**kwargs):
+            calls.append(True)
+        bridge=backend(describe=describe,complete=complete,reasoning_default='high')
+        for capability,body,method in [('models',None,'GET'),('chat',payload(model='other'),'POST')]:
+            assert (await bridge.handle(request(body,method),capability)).status_code == 400
+        assert not calls
+        await bridge.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('configured',[None,'off','high'])
+def test_every_advertised_selection_accepts_omitted_reasoning(configured):
+    async def run():
+        calls=[]
+        async def describe(**kwargs):
+            return (AvailableSelection('example',features=('reasoning_effort',),reasoning_efforts=('off','high')),
+                    AvailableSelection('other') if configured is None else
+                    AvailableSelection('other',features=('reasoning_effort',),reasoning_efforts=('off','high')))
+        async def complete(value,**kwargs):
+            calls.append((value.selected_llm,value.payload.generation.reasoning_effort))
+            return LLMResult(Message('assistant',(TextContent('answer'),)))
+        bridge=backend(describe=describe,complete=complete,reasoning_default=configured)
+        response=await bridge.handle(request(method='GET'),'models')
+        for row in json.loads(response.content)['models']:
+            assert (await bridge.handle(request(payload(model=row['value'])),'chat')).status_code == 200
+        assert calls == [('example',configured),('other',configured)]
         await bridge.aclose()
     asyncio.run(run())

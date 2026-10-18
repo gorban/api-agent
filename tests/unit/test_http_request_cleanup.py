@@ -300,3 +300,56 @@ def test_interrupted_backend_shutdown_retries_only_unacknowledged_auth_phase(mon
         await error.value.cleanup_pending.retry()
         assert calls == ['engine'] and bridge.owner._closed
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('path',[None,'/custom','/app/agent/chat'])
+def test_configured_injected_handler_keeps_every_path_and_cleanup(path):
+    from api_agent.api import create_application
+    async def run():
+        create_application(Runtime('example'))
+        calls=[]
+        scope={'type':'http'}
+        if path is not None:
+            scope['path']=path
+        original=dict(scope)
+        async def dispose():
+            calls.append('closed')
+        async def injected(request_scope,receive,send):
+            assert request_scope['api_agent_runtime'].pack_id == 'example'
+            assert receive is None and send is None
+            calls.append('handled')
+            request_scope['api_agent_http_cleanup'].append(dispose)
+        await Application(Runtime('example'),injected)(scope,None,None)
+        assert calls == ['handled','closed'] and scope == original
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('path',[None,'/custom','/app/agent/chat'])
+def test_unconfigured_injected_handler_is_independent_in_fresh_process(path):
+    import os
+    import subprocess
+    import sys
+    script='''
+import asyncio
+from django.conf import settings
+from api_agent.api.application import Application, Runtime
+assert not settings.configured
+scope={'type':'http'}
+path=PATH_VALUE
+if path is not None:
+    scope['path']=path
+original=dict(scope)
+calls=[]
+async def dispose():
+    calls.append('closed')
+async def injected(request_scope,receive,send):
+    assert request_scope['api_agent_runtime'].pack_id == 'example'
+    assert receive is None and send is None
+    calls.append('handled')
+    request_scope['api_agent_http_cleanup'].append(dispose)
+asyncio.run(Application(Runtime('example'),injected)(scope,None,None))
+assert calls == ['handled','closed'] and scope == original
+assert not settings.configured
+'''.replace('PATH_VALUE',repr(path))
+    result=subprocess.run([sys.executable,'-c',script],env=dict(os.environ),capture_output=True,text=True,timeout=10)
+    assert result.returncode == 0, result.stdout+result.stderr

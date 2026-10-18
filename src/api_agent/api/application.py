@@ -3,7 +3,9 @@ import asyncio
 from api_agent.runtime.tasks import settle
 import os
 import inspect
-from django.core.handlers.asgi import ASGIHandler
+from io import BytesIO
+from django.core.handlers.asgi import ASGIHandler, ASGIRequest, get_script_prefix
+from django.urls import resolve, Resolver404
 from api_agent.providers.loading import ProviderError, _task
 from .routes import RouteRegistrar
 from api_agent.providers.control import CleanupPendingError, OperationalError
@@ -277,13 +279,42 @@ class Application:
                 backend = (self.runtime.services or {}).get('studio_backend')
                 ingress = getattr(backend, 'handle_asgi', None)
                 if ingress is None:
-                    await self._django_app(request_scope, receive, send)
+                    if (backend is not None or not isinstance(self._django_app, RuntimeHandler)
+                            or not await self._deferred_response(request_scope, send)):
+                        await self._django_app(request_scope, receive, send)
                 else:
                     await ingress(request_scope, receive, send, self._django_app)
             finally:
                 await close_http_callbacks(cleanups)
         else:
             raise ValueError(f"Unsupported ASGI scope: {scope['type']}")
+
+
+    async def _deferred_response(self, scope, send):
+        """Resolve unavailable built-in capabilities without acquiring a request body."""
+        from . import views
+        path = scope.get('path', '').removeprefix(get_script_prefix(scope))
+        urlconf = self.runtime.urlconf if self.runtime.urlconf is not None else settings.ROOT_URLCONF
+        try:
+            match = resolve(path, urlconf=urlconf)
+        except Resolver404:
+            return False
+        if match.func not in (views.models, views.chat, views.chat_stream,
+                views.chat_cancel, views.chat_heartbeat, views.result_set, views.result_sets):
+            return False
+        with BytesIO() as body:
+            try:
+                request = ASGIRequest(scope, body)
+                request.get_host()
+            except (DisallowedHost, UnicodeDecodeError):
+                response = HttpResponseBadRequest()
+            else:
+                response = await match.func(request, *match.args, **match.kwargs)
+        await send({'type': 'http.response.start', 'status': response.status_code,
+                    'headers': [(name.lower().encode('latin1'), value.encode('latin1'))
+                                for name, value in response.items()]})
+        await send({'type': 'http.response.body', 'body': response.content})
+        return True
 
 
 class ValidateHostMiddleware:
