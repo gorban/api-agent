@@ -52,5 +52,9 @@
 
 ## Documentation organization
 
+- [ ] Deliver the [resource-pack integration guide](implementation_plan_c1.md):
+  concise README positioning and extension list, exact public interfaces,
+  independently owned sibling-pack skeleton, wrapper bootstrap, configuration
+  composition/precedence and executable documentation checks.
 - [x] Keep the four README-linked user guides directly under docs/. Move implementation requirements/checklists to docs/prds/ and provider architecture/contracts to docs/architecture/. Update outgoing declaration links, guide links and active inbound pack/parent review links.
 - [x] Preserve uncommitted user wording/spacing edits separately from the relocation commit. Carry existing exact-content public scan exemptions to the relocated paths without widening their scope.
