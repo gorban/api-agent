@@ -83,6 +83,9 @@ All tests start selected. Add positional selectors to preselect tests, or adjust
 selection in the TUI. Append `--no-std-in` for terminal automation, or export
 `NO_STD_IN=True` for multiple commands. Integration requires `--start=True` or `--debug`;
 E2E requires `--start=E2E` as human acceptance. These tests may spend tokens.
+With `DEBUG=True` and more than one distinct integration or E2E test selected,
+execution asks for literal `y` before opening browsers, including with `--no-std-in`.
+Set `DEBUG=False` and omit `--debug` to avoid the prompt.
 See [test controls and automation](docs/development.md#testing).
 
 ### For full coverage

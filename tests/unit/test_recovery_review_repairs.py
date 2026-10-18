@@ -117,7 +117,7 @@ def test_non_recovery_terminal_dispatch_without_termios(monkeypatch, activation)
          patch('api_agent.config.dotenv.read_dotenv', return_value={}), \
          patch('api_agent.runtime.worktrees.verify_worktrees'), \
          patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
-         patch('api_agent.testing.collection.collect_tests', return_value=[SimpleNamespace(tags=frozenset())]), \
+         patch('api_agent.testing.collection.collect_tests', return_value=[SimpleNamespace(id='base::selected.py::test_case', tags=frozenset())]), \
          patch('api_agent.testing.launched.run_launched_integration',
                return_value=SimpleNamespace(exit_code=0)) as runner, \
          patch('builtins.__import__', side_effect=import_without_termios):
