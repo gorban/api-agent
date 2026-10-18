@@ -12,3 +12,5 @@ The integration's successful prompt and finalized evidence do not establish a us
 - [ ] Defer Studio frontend human acceptance until either working Run local or this retained interactive session provides a usable backend. Then review themes, composer/history, Stop/retry, clarifications and selection/message metadata. Prior automated Studio-request and Allure acceptance remains valid.
 
 No additional live authentication or paid inference is authorized by this requirements task. Use controlled verification; any live review follows the user's existing spending instructions.
+
+[Interactive cache acceptance](implementation_plan_f2g.md) additionally requires long idle pauses before another manually submitted request; cache retention is provider-dependent rather than a universal31minute guarantee.

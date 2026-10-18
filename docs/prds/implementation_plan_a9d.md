@@ -42,3 +42,5 @@ retain their review items; completion does not grant human acceptance.
 - [Configuration review history](implementation_plan_a9b.md)
 
 - [Operation-required forward continuation](implementation_plan_a9c.md)
+
+Current human acceptance covers the delivered terminal configuration, test selection/launch controls, results/navigation and timing presentation. Future operation consumers and unrelated technical gates remain separate.
