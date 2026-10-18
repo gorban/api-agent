@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from api_agent.runtime.containers import Container, ContainerError, ContainerRuntime
@@ -158,8 +158,8 @@ def test_scoped_inventory_and_fresh_stop_use_inspect_and_full_ids():
         assert runtime.inventory() == (Container(item['Id'], 'api', 'api:dev', 'running'),)
         runtime.stop([item['Id'], item['Id']])
         assert [call.args[0][1:] for call in run.call_args_list] == [['ps', '--all', '--quiet', '--no-trunc', '--filter', 'label=api-agent.managed=true'], ['inspect', item['Id']], ['inspect', item['Id']], ['stop', '--time', '10', item['Id']]]
-        assert all(call.kwargs == dict(capture_output=True,text=True,timeout=5,check=False) for call in run.call_args_list[:-1])
-        assert run.call_args_list[-1].kwargs == dict(capture_output=True,text=True,timeout=17,check=False)
+        assert all(call.kwargs == dict(capture_output=True,text=True,timeout=5,check=False,env=ANY) for call in run.call_args_list[:-1])
+        assert run.call_args_list[-1].kwargs == dict(capture_output=True,text=True,timeout=17,check=False,env=ANY)
 
 
 def test_inventory_includes_stopped_and_filters_unowned_session_and_distrobox():

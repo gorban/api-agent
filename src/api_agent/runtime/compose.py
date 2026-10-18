@@ -153,8 +153,12 @@ def validate_document(document, scope, profiles):
         raise ComposeError('Compose services are required.')
     jaeger = services.get('jaeger', {})
     if (jaeger.get('command') != ['--config', '/etc/jaeger/config.json']
-            or jaeger.get('volumes') != JAEGER_VOLUMES):
-        raise ComposeError('Jaeger requires its controlled persistent storage and configuration.')
+            or jaeger.get('volumes') != JAEGER_VOLUMES
+            or jaeger.get('ports') != [
+                '127.0.0.1:4318:4318',
+                '127.0.0.1:${SA_JAEGER_VIEWER_PORT:?controlled local development value required}:16686',
+            ]):
+        raise ComposeError('Jaeger requires its controlled persistent storage, configuration and ports.')
     active = []
     for name, service in services.items():
         if set(service) - {'command', 'depends_on', 'entrypoint', 'environment',
@@ -267,7 +271,16 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         if (badger['ephemeral'] is not False
                 or badger['directories'] != {'keys': '/tmp/jaeger/keys', 'values': '/tmp/jaeger/values'}
                 or parsed_jaeger['extensions']['jaeger_query']['storage']['traces'] != 'local_traces'
-                or parsed_jaeger['exporters']['jaeger_storage_exporter']['trace_storage'] != 'local_traces'):
+                or parsed_jaeger['exporters']['jaeger_storage_exporter']['trace_storage'] != 'local_traces'
+                or parsed_jaeger['service'] != {
+                    'extensions': ['jaeger_storage', 'jaeger_query'],
+                    'pipelines': {'traces': {'receivers': ['otlp'],
+                        'processors': ['batch'], 'exporters': ['jaeger_storage_exporter']}},
+                }
+                or parsed_jaeger['receivers'] != {
+                    'otlp': {'protocols': {'http': {'endpoint': '0.0.0.0:4318'}}},
+                }
+                or parsed_jaeger['processors'] != {'batch': {}}):
             raise ComposeError('Controlled Jaeger storage must be persistent.')
     except (OSError, ValueError, KeyError, TypeError) as error:
         if isinstance(error, ComposeError):
