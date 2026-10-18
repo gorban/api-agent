@@ -202,12 +202,15 @@ function fillSelect(id, entries, selected) {
 }
 function syncSettings() {
   const models = [...new Map(catalog.map(x => [x.selected_llm, {id: x.selected_llm, name: x.display_name}])).values()];
-  fillSelect('model', models, state.settings.model);
-  const entries = catalog.filter(x => x.selected_llm === state.settings.model);
+  const model = state.settings.model || catalog.defaultSelection || '';
+  fillSelect('model', models, model);
+  const entries = catalog.filter(x => x.selected_llm === model);
   fillSelect('version', entries.filter(x => x.version).map(x => ({id: x.version})), state.settings.version);
   const selected = entries.find(x => x.version === state.settings.version) || entries[0];
   fillSelect('reasoning', (selected?.reasoning_efforts || []).map(id => ({id})), state.settings.reasoning);
   const label = selected?.display_name || state.settings.model || 'Provider default';
+  $('backend-default').textContent = state.settings.model ? 'Use backend default' : 'Keep selected model';
+  $('backend-default').disabled = !model;
   $('model-short-name').textContent = label + (state.settings.reasoning ? ': ' + state.settings.reasoning : '');
   const selection = resolveSelection(catalog, state.settings);
   $('model-status').textContent = catalogStatus || (selection.valid ? '' : selection.error);
@@ -232,11 +235,15 @@ async function loadModels() {
     const r = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(5000)});
     const data = await readJSONResponse(r);
     catalog = normalizeCatalog(data);
-    if (!state.settings.model && catalog.defaultSelection) { state.settings.model = catalog.defaultSelection; save(); }
     catalogStatus = catalog.length ? '' : 'No model choices are available. Reconnect before sending.';
     syncSettings();
   } catch { catalogStatus ||= 'Model list unavailable. Reconnect before sending.'; $('model-status').textContent = catalogStatus; }
 }
+$('backend-default').addEventListener('click', () => {
+  if (state.settings.model) state.settings = defaults();
+  else state.settings.model = $('model').value;
+  syncSettings(); save();
+});
 $('settings-nav').addEventListener('click', () => { settingsOpener = document.activeElement; $('settings').showModal(); });
 $('close-settings').addEventListener('click', () => $('settings').close());
 let backdropStart = false;

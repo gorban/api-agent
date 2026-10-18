@@ -90,7 +90,7 @@ export async function readResponse(response, callbacks = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('Invalid stream event');
     onActivity();
     if (name === 'session') {
-      if (phase !== 'initial' || typeof value.session_id !== 'string' || !value.session_id || (callbacks.sessionId && value.session_id !== callbacks.sessionId) || value.heartbeat_interval_ms !== 10000 || value.heartbeat_timeout_ms !== 30000 || Object.keys(value).sort().join(',') !== 'heartbeat_interval_ms,heartbeat_timeout_ms,session_id') throw Error('Invalid stream session');
+      if (phase !== 'initial' || typeof value.session_id !== 'string' || !value.session_id || (callbacks.sessionId && value.session_id !== callbacks.sessionId) || ![value.heartbeat_interval_ms, value.heartbeat_timeout_ms].every(ms => typeof ms === 'number' && Number.isFinite(ms) && ms > 0 && ms <= 2147483647) || value.heartbeat_interval_ms >= value.heartbeat_timeout_ms || Object.keys(value).sort().join(',') !== 'heartbeat_interval_ms,heartbeat_timeout_ms,session_id') throw Error('Invalid stream session');
       session = value.session_id; phase = 'stream'; callbacks.onSession?.(value); return;
     }
     if (name === 'token') {

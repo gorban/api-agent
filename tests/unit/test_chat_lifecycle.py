@@ -764,3 +764,98 @@ def test_watchdog_fail_stop_survives_settlement_scheduler_rejection(monkeypatch)
         assert isinstance(turn._watch_error, RuntimeError)
         await engine.aclose()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('pruning', ['ttl', 'capacity'])
+def test_captured_response_cleanup_preserves_reused_session(pruning):
+    async def exercise():
+        engine = registry(max_terminal=1)
+        entered, drained = asyncio.Event(), asyncio.Event()
+        async def completed(context):
+            return 'original'
+        async def blocked(context):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                drained.set()
+        original = engine.start('owner', 'session', completed, context=OperationContext('original'))
+        await engine.wait('owner', 'session')
+        if pruning == 'ttl':
+            original._finished -= engine.terminal_ttl
+        else:
+            engine.start('owner', 'another', completed, context=OperationContext('another'))
+            await engine.wait('owner', 'another')
+        replacement = engine.start('owner', 'session', blocked, context=OperationContext('replacement'))
+        await entered.wait()
+
+        observed = await engine.wait_turn('owner', original)
+        state = await engine.disconnect_turn('owner', original)
+
+        assert not drained.is_set()
+        assert replacement.state == 'running' and not replacement.done.is_set()
+        assert state == 'completed' and observed is original and observed.result == 'original'
+        assert engine.heartbeat('owner', 'session') == 'running'
+        await engine.aclose()
+        assert drained.is_set() and replacement.state == 'cancelled'
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('invalid', ['owner', 'lifecycle', 'handle'])
+@pytest.mark.parametrize('operation', ['disconnect_turn', 'wait_turn'])
+def test_captured_response_cleanup_enforces_backend_owner(invalid, operation):
+    async def exercise():
+        engine, other = registry(), registry()
+        entered, drained = asyncio.Event(), asyncio.Event()
+        async def invoke(context):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                drained.set()
+        turn = engine.start('owner', 'session', invoke, context=OperationContext('request'))
+        await entered.wait()
+        target = other if invalid == 'lifecycle' else engine
+        owner = 'other' if invalid == 'owner' else 'owner'
+        handle = object() if invalid == 'handle' else turn
+
+        with pytest.raises(ValueError, match='ownership mismatch'):
+            await getattr(target, operation)(owner, handle)
+
+        assert turn.state == 'running' and not drained.is_set()
+        await engine.aclose()
+        await other.aclose()
+        assert drained.is_set()
+    asyncio.run(exercise())
+
+
+def test_captured_response_cleanup_pending_receipts_and_overlap_retain_resource():
+    async def exercise():
+        engine = registry()
+        entered, release, disposed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def dispose():
+            entered.set()
+            await release.wait()
+            disposed.set()
+        async def invoke(context):
+            raise CleanupPendingError(('resource',), dispose)
+        turn = engine.start('owner', 'session', invoke, context=OperationContext('request'))
+        await entered.wait()
+
+        with pytest.raises(CleanupPendingError) as pending:
+            await engine.disconnect_turn('owner', turn)
+
+        assert turn.state == 'cleanup_pending' and not turn.done.is_set()
+        assert not disposed.is_set()
+        with pytest.raises(ValueError, match='unavailable'):
+            engine.start('owner', 'session', invoke, context=OperationContext('replacement'))
+        retry = asyncio.create_task(pending.value.retry())
+        overlap = asyncio.create_task(engine.disconnect_turn('owner', turn))
+        await asyncio.sleep(0)
+        release.set()
+        await retry
+        assert await overlap == 'cancelled'
+        assert disposed.is_set() and turn.done.is_set()
+        assert not turn.context.retained_tasks
+        await engine.aclose()
+    asyncio.run(exercise())

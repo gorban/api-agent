@@ -272,8 +272,14 @@ class Application:
             # The copy prevents a caller's reusable scope from retaining runtime state.
             cleanups = []
             try:
-                await self._django_app({**scope, "api_agent_runtime": self.runtime,
-                                        "api_agent_http_cleanup": cleanups}, receive, send)
+                request_scope = {**scope, "api_agent_runtime": self.runtime,
+                                 "api_agent_http_cleanup": cleanups}
+                backend = (self.runtime.services or {}).get('studio_backend')
+                ingress = getattr(backend, 'handle_asgi', None)
+                if ingress is None:
+                    await self._django_app(request_scope, receive, send)
+                else:
+                    await ingress(request_scope, receive, send, self._django_app)
             finally:
                 await close_http_callbacks(cleanups)
         else:

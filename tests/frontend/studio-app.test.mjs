@@ -918,3 +918,129 @@ test('actual HTTP EOF truncations preserve partial text and remain incomplete an
     }
   } finally {await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
+
+async function controlledHTTPStudio(handle) {
+  const {createServer}=await import('node:http');let uiOrigin;
+  const api=createServer((request,response)=>{
+    response.setHeader('Access-Control-Allow-Origin',uiOrigin);
+    if(request.method==='OPTIONS'){
+      response.setHeader('Access-Control-Allow-Methods','GET, POST');
+      response.setHeader('Access-Control-Allow-Headers','content-type');
+      response.writeHead(204);response.end();return;
+    }
+    let body='';request.on('data',chunk=>body+=chunk);
+    request.on('end',()=>handle(request,response,body));
+  });
+  await new Promise(resolve=>api.listen(0,'127.0.0.1',resolve));
+  const {server:ui}=createStudioServer({UI_LISTENER_URL:'http://127.0.0.1:9443',AGENT_DJANGO_URL:'http://127.0.0.1:'+api.address().port,API_AGENT_UI_LAUNCH_TOKEN:'synthetic-browser-test-token'});
+  await new Promise(resolve=>ui.listen(0,'127.0.0.1',resolve));uiOrigin='http://127.0.0.1:'+ui.address().port;
+  const browser=await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER||undefined});
+  const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);
+  await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
+  return {page,async close(){await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}};
+}
+
+test('actual HTTP follows changing backend defaults until explicit choice and restores policy on reset',async()=>{
+  const alternative={...model,selected_llm:'alternative',display_name:'Alternative model'};
+  const posts=[];let defaultModel='sample',fail=false;
+  const studio=await controlledHTTPStudio((request,response,body)=>{
+    response.setHeader('Content-Type','application/json');
+    if(request.url.endsWith('/models')){response.end(JSON.stringify({models:[wireModel(model),wireModel(alternative)],default:defaultModel,reasoning_default:null}));return;}
+    const input=JSON.parse(body);
+    if(!request.url.endsWith('/stream')){response.end(JSON.stringify({session_id:input.session_id,status:'cancelled'}));return;}
+    posts.push(input);
+    if(fail){response.writeHead(503);response.end('Retry this response');return;}
+    response.end(JSON.stringify(wireResult(result('Reply '+posts.length),input.session_id)));
+  });
+  const {page}=studio;
+  try{
+    await page.locator('#prompt').fill('First default');await page.locator('#send').click();await page.getByText('Reply 1',{exact:true}).waitFor();
+    assert.equal(posts[0].model,'sample');
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'');
+    defaultModel='alternative';await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model').value==='alternative');
+    assert.equal(await page.locator('#model-short-name').textContent(),'Alternative model');
+    assert.equal(await page.locator('#model option').count(),2);
+    fail=true;await page.locator('#prompt').fill('New default');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+    assert.equal(posts[1].model,'alternative');
+    defaultModel='sample';await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model').value==='sample');
+    fail=false;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Reply 3',{exact:true}).waitFor();
+    assert.equal(posts[2].model,'alternative');assert.notEqual(posts[2].session_id,posts[1].session_id);
+    await page.locator('#settings-nav').click();await page.locator('#model').selectOption('sample');await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
+    defaultModel='alternative';await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-short-name').textContent==='Sample model: off');
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'sample');
+    await page.locator('#settings-nav').click();await page.getByRole('button',{name:'Use backend default'}).click();
+    assert.equal(await page.locator('#model').inputValue(),'alternative');assert.equal(await page.locator('#model-short-name').textContent(),'Alternative model');
+    assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings),{model:'',version:'',reasoning:''});
+    await page.locator('#close-settings').click();await page.locator('#prompt').fill('Reset policy');await page.locator('#send').click();await page.getByText('Reply 4',{exact:true}).waitFor();
+    assert.equal(posts[3].model,'alternative');assert.equal('reasoning_effort' in posts[3],false);
+  }finally{await studio.close();}
+});
+
+test('actual HTTP schedules advertised heartbeat timing and preserves absolute deadline and Stop cleanup',async()=>{
+  const calls=[],streams=[];let invalid=false;
+  const studio=await controlledHTTPStudio((request,response,body)=>{
+    if(request.url.endsWith('/models')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));return;}
+    const {session_id}=JSON.parse(body);calls.push({path:request.url,session_id});
+    if(request.url.endsWith('/stream')){
+      response.setHeader('Content-Type','text/event-stream');
+      response.write(frame('session',{session_id,heartbeat_interval_ms:invalid?0:5000,heartbeat_timeout_ms:15000}));
+      if(!invalid)response.write(frame('token',{content:'Advertised timing draft'}));
+      streams.push(response);return;
+    }
+    response.setHeader('Content-Type','application/json');response.end(JSON.stringify({session_id,status:request.url.endsWith('/cancel')?'cancelled':'running'}));
+  });
+  const {page}=studio;
+  try{
+    await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+1000));await page.locator('#prompt').fill('Advertised cadence');await page.locator('#send').click();await page.getByText('Advertised timing draft',{exact:true}).waitFor();
+    await page.clock.fastForward(4999);await page.waitForTimeout(50);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,0);
+    await page.clock.fastForward(2);await page.waitForTimeout(100);
+    assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,1);
+    const first=streams[0];first.end(finishFrames(calls[0].session_id,result('Advertised timing completed')));await page.getByText('Advertised timing completed',{exact:true}).waitFor();
+    await page.clock.fastForward(5001);await page.waitForTimeout(50);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,1);
+    await page.locator('#prompt').fill('Stop advertised cadence');await page.locator('#send').click();await page.getByText('Advertised timing draft',{exact:true}).waitFor();
+    await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();await page.waitForTimeout(50);
+    const stoppedHeartbeats=calls.filter(x=>x.path.endsWith('/heartbeat')).length;
+    await page.clock.fastForward(15001);await page.waitForTimeout(50);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,stoppedHeartbeats);
+    await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Advertised timing draft',{exact:true}).waitFor();
+    await page.clock.fastForward(150001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/too long/);
+    invalid=true;const before=calls.filter(x=>x.path.endsWith('/cancel')).length;
+    await page.getByRole('button',{name:'Retry response'}).click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+    assert.match(await page.locator('.error-note').textContent(),/Invalid stream session/);
+    for(let attempt=0;attempt<100&&calls.filter(x=>x.path.endsWith('/cancel')).length===before;attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,before+1);
+  }finally{for(const stream of streams)stream.end();await studio.close();}
+});
+
+test('native keyboard can pin the sole current model and reset backend policy without altering retry identity',async()=>{
+  const alternative={...model,selected_llm:'alternative',display_name:'Alternative model'};
+  const posts=[];let expanded=false,fail=true;
+  const studio=await controlledHTTPStudio((request,response,body)=>{
+    response.setHeader('Content-Type','application/json');
+    if(request.url.endsWith('/models')){response.end(JSON.stringify({models:(expanded?[model,alternative]:[model]).map(wireModel),default:expanded?'alternative':'sample',reasoning_default:null}));return;}
+    const input=JSON.parse(body);
+    if(!request.url.endsWith('/stream')){response.end(JSON.stringify({session_id:input.session_id,status:'cancelled'}));return;}
+    posts.push(input);
+    if(fail){response.writeHead(503);response.end('Retry original pinned model');return;}
+    response.end(JSON.stringify(wireResult(result('Pinned retry completed'),input.session_id)));
+  });
+  const {page}=studio;
+  try{
+    await page.locator('#settings-nav').click();
+    assert.equal(await page.locator('#model option').count(),1);
+    await page.locator('#model').focus();await page.keyboard.press('Space');await page.keyboard.press('Home');await page.keyboard.press('Enter');
+    assert.equal(await page.getByRole('button',{name:'Keep selected model'}).isVisible(),true);
+    await page.getByRole('button',{name:'Keep selected model'}).focus();await page.keyboard.press('Enter');
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'sample');
+    await page.locator('#close-settings').click();
+    expanded=true;await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model option[value="alternative"]'));
+    assert.equal(await page.locator('#model').inputValue(),'sample');
+    await page.locator('#prompt').fill('Pinned original');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+    assert.equal(posts[0].model,'sample');
+    await page.locator('#settings-nav').click();await page.getByRole('button',{name:'Use backend default'}).click();
+    assert.equal(await page.locator('#model').inputValue(),'alternative');
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'');
+    await page.locator('#close-settings').click();fail=false;
+    await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Pinned retry completed',{exact:true}).waitFor();
+    assert.equal(posts[1].model,'sample');assert.notEqual(posts[1].session_id,posts[0].session_id);
+  }finally{await studio.close();}
+});

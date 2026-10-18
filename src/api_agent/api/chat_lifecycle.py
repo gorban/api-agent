@@ -41,6 +41,7 @@ class Turn:
     _seen_receipts: dict = field(default_factory=dict)
     _cleanup_task: asyncio.Task | None = None
     _finished: float | None = None
+    _lifecycle: object = field(default=None, repr=False, compare=False)
 
 
 class ChatLifecycle:
@@ -85,7 +86,7 @@ class ChatLifecycle:
         key = owner_id, session_id
         if key in self._turns:
             raise ValueError('Chat session already exists')
-        turn = Turn(owner_id, session_id, context, _heartbeat=time.monotonic())
+        turn = Turn(owner_id, session_id, context, _heartbeat=time.monotonic(), _lifecycle=self)
         self._turns[key] = turn
         try:
             turn.task = _spawn(self._execute(turn, invoke))
@@ -250,7 +251,15 @@ class ChatLifecycle:
         return turn.state
 
     async def wait(self, owner_id, session_id):
-        turn = self._turns[(owner_id, session_id)]
+        return await self.wait_turn(owner_id, self._turns[(owner_id, session_id)])
+
+    def _validate_turn(self, owner_id, turn):
+        if not isinstance(turn, Turn) or turn._lifecycle is not self or turn.owner_id != owner_id:
+            raise ValueError('Chat turn ownership mismatch')
+
+    async def wait_turn(self, owner_id, turn):
+        """Wait for the captured admitted operation without resolving its key."""
+        self._validate_turn(owner_id, turn)
         if not turn.task.cancelled():
             try:
                 await asyncio.shield(turn.task)
@@ -265,6 +274,19 @@ class ChatLifecycle:
         turn = self._turns.get((owner_id, session_id))
         if turn is None:
             return 'unknown'
+        if not turn.done.is_set():
+            turn._cancelled = True
+            _cancel_once(turn.task, turn._requested)
+            await self._retry(turn)
+        return turn.state
+
+    async def disconnect_turn(self, owner_id, turn):
+        """Dispose a captured response's exact turn, even after status eviction.
+
+        A response owner must retain this handle rather than resolve its session
+        again: terminal retention can expire before that response is closed.
+        """
+        self._validate_turn(owner_id, turn)
         if not turn.done.is_set():
             turn._cancelled = True
             _cancel_once(turn.task, turn._requested)

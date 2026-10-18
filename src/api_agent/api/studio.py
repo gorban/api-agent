@@ -8,10 +8,13 @@ import hmac
 import ipaddress
 import json
 import math
+from io import BytesIO
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
+from django.core.exceptions import DisallowedHost
+from django.core.handlers.asgi import ASGIRequest, get_script_prefix
 
 from . import chat_contract
 from .chat_lifecycle import ChatLifecycle
@@ -119,7 +122,7 @@ class StudioBackend:
             return self._response({'code': 'unavailable'}, 503)
         return self._response({'code': 'unknown'}, 502)
 
-    async def handle(self, request, capability):
+    def _admit(self, request, capability):
         # Browsers cannot attach the nonce to preflight; validate its exact intent.
         if request.method == 'OPTIONS':
             if (not self._local(request) or request.headers.get('Origin') != self.origin
@@ -134,15 +137,88 @@ class StudioBackend:
         elif request.method != ('GET' if capability == 'models' else 'POST'):
             return self._response({'code': 'method_not_allowed'}, 405)
         else:
+            return None
+        return self._cors(response)
+
+    def _cors(self, response):
+        response['Access-Control-Allow-Origin'] = self.origin
+        response['Vary'] = 'Origin'
+        return response
+
+    async def handle(self, request, capability):
+        response = self._admit(request, capability)
+        if response is None:
             try:
                 response = await self._execute(request, capability)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 response = self._error(error)
-        response['Access-Control-Allow-Origin'] = self.origin
-        response['Vary'] = 'Origin'
-        return response
+        return self._cors(response)
+
+    async def handle_asgi(self, scope, receive, send, dispatch):
+        routes = {'/app/agent/models': 'models', '/app/agent/chat': 'chat',
+                  '/app/agent/chat/stream': 'chat_stream',
+                  '/app/agent/chat/cancel': 'chat_cancel',
+                  '/app/agent/chat/heartbeat': 'chat_heartbeat'}
+        capability = routes.get(scope.get('path', '').removeprefix(get_script_prefix(scope)))
+        if capability is None:
+            return await dispatch(scope, receive, send)
+        seen = set()
+        response = None
+        for name, value in scope.get('headers', ()):
+            name = name.decode('latin1').lower()
+            if name in seen and name in ('origin', 'x-api-agent-session', 'host',
+                    'access-control-request-method', 'access-control-request-headers'):
+                response = self._response({'code': 'forbidden'}, 403)
+                break
+            seen.add(name)
+        if response is None:
+            try:
+                with BytesIO() as metadata_stream:
+                    request = ASGIRequest(scope, metadata_stream)
+                    request.get_host()
+                    response = self._admit(request, capability)
+            except (DisallowedHost, UnicodeDecodeError):
+                response = self._response({'code': 'invalid_request'}, 400)
+        if response is not None:
+            return await self._send_asgi(self._cors(response), send)
+        if self.closed:
+            return await self._send_asgi(self._cors(self._response({'code': 'unavailable'}, 503)), send)
+        async with report_timeout('Application HTTP request', self.timeout) as budget:
+            body = bytearray()
+            try:
+                async with asyncio.timeout(budget.remaining):
+                    while True:
+                        message = await receive()
+                        if message['type'] == 'http.disconnect':
+                            return
+                        chunk = message.get('body', b'')
+                        if len(body) + len(chunk) > self.body_limit:
+                            response = self._response({'code': 'invalid_request'}, 413)
+                            break
+                        body.extend(chunk)
+                        if not message.get('more_body', False):
+                            break
+            except TimeoutError:
+                return await self._send_asgi(self._cors(self._response({'code': 'deadline'}, 408)), send)
+            if response is not None:
+                return await self._send_asgi(self._cors(response), send)
+            delivered = False
+            async def bounded_receive():
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    return {'type': 'http.request', 'body': bytes(body), 'more_body': False}
+                return await receive()
+            return await dispatch(scope, bounded_receive, send)
+
+    @staticmethod
+    async def _send_asgi(response, send):
+        await send({'type': 'http.response.start', 'status': response.status_code,
+                    'headers': [(name.lower().encode('latin1'), value.encode('latin1'))
+                                for name, value in response.items()]})
+        await send({'type': 'http.response.body', 'body': response.content})
 
     def _body(self, request):
         body = request.read(self.body_limit + 1)
@@ -163,6 +239,8 @@ class StudioBackend:
             else:
                 status = self.lifecycle.heartbeat(self._owner_id, session_id)
             return self._response({'session_id': session_id, 'status': status})
+        hints = (chat_contract.heartbeat(self.lifecycle.heartbeat_interval, self.lifecycle.expiry)
+                 if capability == 'chat_stream' else None)
         row = None if capability == 'models' else self._body(request)
         if capability != 'models':
             chat_contract.completion(row, 'default', self.reasoning_default)
@@ -173,8 +251,9 @@ class StudioBackend:
             try:
                 selections = self.policy.filter(await self.owner.call(self.describe, context=context))
                 default = self.policy.select_default(selections)
+                application_catalog = chat_contract.catalog(selections, default, self.reasoning_default)
                 if capability == 'models':
-                    return self._response(chat_contract.catalog(selections, default, self.reasoning_default))
+                    return self._response(application_catalog)
                 session_id, value = chat_contract.completion(row, default, self.reasoning_default)
                 self.policy.require_allowed(value.selected_llm)
                 selection = next((item for item in selections if item.selected_llm == value.selected_llm), None)
@@ -225,14 +304,14 @@ class StudioBackend:
                         callbacks = getattr(request, 'scope', {}).get('api_agent_http_cleanup')
                         if callbacks is not None:
                             callbacks.append(owner.aclose)
-                        owner.source = self._events(session_id, turn, queue)
+                        owner.source = self._events(session_id, turn, queue, hints)
                         return StreamingHttpResponse(owner.source,
                             content_type='text/event-stream', headers={'Cache-Control': 'private, no-store'})
                     except BaseException:
                         await _finish(owner.aclose())
                         raise
                 try:
-                    terminal = await self.lifecycle.wait(self._owner_id, session_id)
+                    terminal = await self.lifecycle.wait_turn(self._owner_id, turn)
                     if terminal.state == 'completed':
                         return self._response(terminal.result)
                     if terminal.state == 'cancelled':
@@ -240,7 +319,7 @@ class StudioBackend:
                     raise terminal.error
                 except asyncio.CancelledError:
                     try:
-                        await _finish(self.lifecycle.disconnect(self._owner_id, session_id))
+                        await _finish(self.lifecycle.disconnect_turn(self._owner_id, turn))
                     except CleanupPendingError:
                         pass
                     raise
@@ -248,8 +327,8 @@ class StudioBackend:
                 if not transferred:
                     await self._release_context(context)
 
-    async def _events(self, session_id, turn, queue):
-        source = self._raw_events(session_id, turn, queue)
+    async def _events(self, session_id, turn, queue, hints):
+        source = self._raw_events(session_id, turn, queue, hints)
         total = count = 0
         try:
             async for body in source:
@@ -266,14 +345,12 @@ class StudioBackend:
             if owner is not None and owner.turn is turn:
                 self._responses.pop(session_id, None)
 
-    async def _raw_events(self, session_id, turn, queue):
+    async def _raw_events(self, session_id, turn, queue, hints):
         settled = False
         waiter = None
         try:
-            waiter = _spawn(self.lifecycle.wait(self._owner_id, session_id))
-            yield chat_contract.frame('session', {'session_id': session_id,
-                'heartbeat_interval_ms': int(self.lifecycle.heartbeat_interval * 1000),
-                'heartbeat_timeout_ms': int(self.lifecycle.expiry * 1000)})
+            waiter = _spawn(self.lifecycle.wait_turn(self._owner_id, turn))
+            yield chat_contract.frame('session', {'session_id': session_id, **hints})
             while not waiter.done() or not queue.empty():
                 if not queue.empty():
                     yield chat_contract.frame('token', {'content': queue.get_nowait()})
@@ -307,7 +384,7 @@ class StudioBackend:
         finally:
             try:
                 if not settled:
-                    await _finish(self.lifecycle.disconnect(self._owner_id, session_id))
+                    await _finish(self.lifecycle.disconnect_turn(self._owner_id, turn))
             finally:
                 if waiter is not None:
                     if not waiter.done():
@@ -346,7 +423,8 @@ class ResponseCleanup:
     async def aclose(self):
         if self._callbacks is None:
             async def disconnect():
-                await self.backend.lifecycle.disconnect(self.backend._owner_id, self.session_id)
+                if self.turn is not None:
+                    await self.backend.lifecycle.disconnect_turn(self.backend._owner_id, self.turn)
             self._callbacks = [disconnect]
             if self.source is not None:
                 self._callbacks.append(self.source.aclose)

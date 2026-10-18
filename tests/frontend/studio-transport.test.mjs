@@ -164,3 +164,26 @@ for(const [name,newline] of [['LF','\n'],['CRLF','\r\n'],['CR','\r']])test('comp
  await readResponse(response((start+finish(result)).replaceAll('\n',newline)+': trailing comment'));
  let question;await readResponse(response((start+frame('clarification',{id:'q',question:'Q',options:['One']})).replaceAll('\n',newline)+': trailing comment'+newline),{onClarification:value=>question=value});assert.equal(question.id,'q');
 });
+
+for (const [interval, timeout] of [[5000,15000],[.5,1],[2147483646,2147483647]]) {
+ test(`advertised heartbeat timings ${interval}/${timeout} reach the session observer`,async()=>{
+  const admitted={session_id:id,heartbeat_interval_ms:interval,heartbeat_timeout_ms:timeout};
+  let observed;
+  await readResponse(response(frame('session',admitted)+finish(result)),{onSession:value=>{observed=value;}});
+  assert.deepEqual(observed,admitted);
+ });
+}
+for (const [interval, timeout] of [[0,15000],[-1,15000],[5000,0],[5000,-1],[5000,5000],[15000,5000],[null,15000],['5000',15000],[true,15000],[5000,null],[5000,'15000'],[5000,true],[2147483647,2147483648],[2147483648,2147483649],[Infinity,15000],[5000,Infinity]]) {
+ test(`invalid advertised heartbeat timings ${interval}/${timeout} cancel the response reader`,async()=>{
+  let cancelled=false,observed=false;
+  const body=new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode(frame('session',{session_id:id,heartbeat_interval_ms:interval,heartbeat_timeout_ms:timeout})));},cancel(){cancelled=true;}});
+  await assert.rejects(readResponse(response(body),{onSession:()=>{observed=true;}}),/Invalid stream session/);
+  assert.equal(cancelled,true);
+  assert.equal(observed,false);
+ });
+}
+
+test('overflowing JSON numeric heartbeat timings are rejected before scheduling',async()=>{
+ const session=frame('session',{session_id:id,heartbeat_interval_ms:5000,heartbeat_timeout_ms:15000}).replace('5000','1e999');
+ await assert.rejects(readResponse(response(session)),/Invalid stream session/);
+});
