@@ -15,4 +15,5 @@
 - [x] Controlled stored-parent, multi-attempt child, direct-child, independent-duty, cycle and cancellation checks pass; real competing processes remain excluded until acknowledgement and enter afterward. Rescue every test-owned duty and file descriptor.
 - [x] Focused mutations reject loss of child advancement, premature parent acknowledgement, duplicate cleanup, cancellation of an active owner ticket and confusion between stale and current callback ancestry. Applicable source coverage is complete for lines and branches.
 - [x] Complete independent adversarial review before joined validation.
-- [ ] Complete joined unit/package gates, scoped delivery and external PR review; preserve any failed evidence. Human acceptance remains separate.
+- [x] Complete joined unit/package gates, scoped delivery and external PR review; preserve any failed evidence.
+- [ ] Human review of the coordinated cleanup verification remains open; no additional manual workflow is required.

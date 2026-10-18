@@ -20,4 +20,5 @@ The capability module participates in workflow sampling fingerprints. Changing i
 - [x] Use the original page's Settings controls to choose the advertised GPT-Luna family, version 5.6 exact model ID, and off. Send “Respond with exactly: Maybe” once; require exactly `Maybe` after trimming surrounding whitespace only (case and punctuation remain significant), and exact outgoing model/effort differing from backend defaults. Runtime catalog or inference failures fail rather than skip or substitute a model.
 - [x] Preserve normal usage/Allure capture, selected browser ownership, and DEBUG retention. Offline controls precede any separately authorized live smoke.
 - [x] Complete internal independent review, renewed joined gates and the separately authorized live settings smoke. The real Settings flow selected version 5.6/off and returned exactly `Maybe`; one requested/actual model call reported zero reasoning tokens.
-- [ ] Complete external PR review and frontend human interaction acceptance. The live automated settings smoke does not replace that acceptance.
+- [x] Complete external PR review.
+- [ ] Complete frontend human interaction acceptance. The live automated settings smoke does not replace that acceptance.

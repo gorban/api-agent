@@ -57,4 +57,4 @@ Delivered generic inference/model request contracts are human-accepted. Frontend
   controlled catalogs; exact authored frontend coverage and focused mutations.
   Provider/wire contracts and sampling qualification remain unchanged.
 
-- [ ] Complete external PR review, including family display casing and missing saved-family presentation repairs. Controlled validation does not replace frontend human interaction acceptance.
+- [x] Complete external PR review, including family display casing and missing saved-family presentation repairs. Controlled validation does not replace frontend human interaction acceptance.
