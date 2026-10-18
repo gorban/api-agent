@@ -33,6 +33,42 @@ def test_tampered_calibration_rejected(key, value):
         validate_calibration(report, DECLARED, {'model': 'synthetic'})
 
 
+@pytest.mark.parametrize('category', ['fingerprint_version', 'sampling_method', 'model',
+    'dependency_versions', 'python_version', 'backend', 'provider_identity',
+    'user_input_hash', 'effective_settings', 'sources'])
+def test_stale_diagnostic_identifies_category_without_values(category, monkeypatch):
+    from api_agent.workflows import sampling
+    arithmetic = lambda *args: pytest.fail('Stale evidence reached statistical validation')
+    monkeypatch.setattr(sampling, 'measured_calibration', arithmetic)
+    with pytest.raises(ValueError) as caught:
+        validate_calibration({category: 'old-private-value'}, DECLARED,
+                             {category: 'new-private-value'})
+    message = str(caught.value)
+    assert f'Changed categories: {category}.' in message
+    assert 'docs/workflow_calibration.md' in message
+    assert 'real LLM calls' in message
+    assert 'old-private-value' not in message
+    assert 'new-private-value' not in message
+
+
+@pytest.mark.parametrize('report', [None, [], 'private-value', {}])
+def test_invalid_or_unknown_fingerprint_diagnostic_uses_fixed_fallback(report):
+    with pytest.raises(ValueError) as caught:
+        validate_calibration(report, DECLARED, {'private-field-name': 'private-value'})
+    message = str(caught.value)
+    assert 'Changed categories: report structure or additional fingerprint fields.' in message
+    assert 'private-field-name' not in message
+    assert 'private-value' not in message
+
+
+def test_stale_diagnostic_lists_only_changed_categories_in_fixed_order():
+    saved = {'model': 'same', 'sources': {'file': 'old'}, 'effective_settings': {'cache': None}}
+    current = {'sources': {'file': 'new'}, 'model': 'same', 'effective_settings': {'cache': 'medium'}}
+    with pytest.raises(ValueError) as caught:
+        validate_calibration(saved, DECLARED, current)
+    assert 'Changed categories: effective_settings, sources.' in str(caught.value)
+
+
 @pytest.mark.parametrize('observations,required,ceiling', [([], {'a'}, 60), ([{'a'}], set(), 60), ([{'b'}], {'a'}, 60), ([{'a'}]*61, {'a'}, 60), ([{'a'}], {'a'}, 61), ([set()]*60, {'a'}, 60)])
 def test_invalid_or_insufficient_pilot(observations, required, ceiling):
     with pytest.raises(ValueError):

@@ -71,7 +71,17 @@ def measured_calibration(records, required, *, ceiling=60):
 def validate_calibration(report, required, fingerprint):
     """Recompute every claim before a coverage run can consume a saved pilot."""
     if type(report) is not dict or any(report.get(key) != value for key, value in fingerprint.items()):
-        raise ValueError('Calibration is stale for model, effective settings or sources')
+        # Emit fixed category names only: neither saved evidence nor configured
+        # values belong in a prerequisite diagnostic.
+        categories = ('fingerprint_version', 'sampling_method', 'model', 'dependency_versions',
+                      'python_version', 'backend', 'provider_identity', 'user_input_hash',
+                      'effective_settings', 'sources')
+        changed = [name for name in categories if type(report) is dict and name in fingerprint
+                   and report.get(name) != fingerprint[name]]
+        detail = ', '.join(changed) or 'report structure or additional fingerprint fields'
+        raise ValueError('Calibration is stale for model, effective settings or sources. '
+                         f'Changed categories: {detail}. Refresh calibration explicitly; '
+                         'see docs/workflow_calibration.md. The maintenance pilot makes real LLM calls.')
     expected = measured_calibration(report.get('records'), required)
     if any(type(report.get(key)) is not type(value) or report.get(key) != value for key, value in expected.items()):
         raise ValueError('Calibration claims do not match exact recomputed bounds')

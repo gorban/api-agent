@@ -8,6 +8,8 @@ Review a fresh pilot when the selected model or serving revision changes; when e
 
 Read the fingerprint diagnostic rather than copying a different model's budget. Preserve the observed settings, trial records, source/dependency identity and methodology with every reviewed baseline. A wider timeout must not rewrite what an older pilot actually used.
 
+Stale diagnostics list changed categories such as `effective_settings`, `sources` or `dependency_versions`, without disclosing configured values. A first-attempt failure at this preflight makes no graph inference calls; DEBUG does not bypass qualification. Returning settings to an older profile cannot repair changed source bindings. A fresh pilot and independent review are required before replacing the packaged entry; the command below consumes real inference usage.
+
 ## Procedure
 
 1. Freeze the intended fixture, provider and configuration. Use the standard selected GPT subscription and model policy; finish other suites using the same account first.
