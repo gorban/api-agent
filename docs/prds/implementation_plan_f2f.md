@@ -30,3 +30,5 @@ Deliver this contract before integrating the reviewed frontend foundation. Reaso
 [Implemented core contracts, verification and remaining joins](implementation_plan_f2f1.md). Sample UI pickers/tags and their human acceptance remain open; base completion does not certify the later frontend or application joins.
 
 - [ ] Frontend human acceptance is deferred until working Run local or [retained interactive Studio](implementation_plan_i2c2.md) provides a usable backend. Technical review and the accepted automated request do not replace this interaction review.
+
+Delivered generic inference/model request contracts are human-accepted. Frontend controls remain under the existing deferred interactive-review checkpoint; this approval does not waive it.

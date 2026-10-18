@@ -217,3 +217,8 @@ Pricing sources, verified 2026-10-10: [Luna](https://developers.openai.com/api/d
 - [x] Preserve the human-approved unique prefix for each cache-test attempt, reuse that prefix for the two calls, and assert zero first-call cache reads followed by the route's required cache reuse. Discard the older pending two-file/branching rewrite and its backup as explicitly directed by the user.
 
 - [ ] Complete [partitioned credential protection](implementation_plan_f2e.md), including independent review and the repository gate.
+
+## Current human acceptance
+
+- [x] The delivered generic inference/model contracts are human-accepted. This does not close future runtime/platform conformance or frontend/application acceptance.
+- [ ] Cache-policy human testing is deferred to [interactive cache acceptance](implementation_plan_f2g.md), after working Run local or retained Studio interaction. Earlier cache replay instructions remain historical; no immediate paid run is requested.
