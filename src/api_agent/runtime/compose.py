@@ -152,13 +152,19 @@ def validate_document(document, scope, profiles):
     if not services:
         raise ComposeError('Compose services are required.')
     jaeger = services.get('jaeger', {})
-    if (jaeger.get('command') != ['--config', '/etc/jaeger/config.json']
-            or jaeger.get('volumes') != JAEGER_VOLUMES
-            or jaeger.get('ports') != [
+    jaeger_labels = dict(scope.labels('otel'))
+    jaeger_labels['api-agent.scope'] = '${SA_SCOPE:?controlled local development value required}'
+    if jaeger != {
+            'image': 'cr.jaegertracing.io/jaegertracing/jaeger:2.21.0',
+            'profiles': ['otel'],
+            'labels': jaeger_labels,
+            'command': ['--config', '/etc/jaeger/config.json'],
+            'volumes': JAEGER_VOLUMES,
+            'ports': [
                 '127.0.0.1:4318:4318',
                 '127.0.0.1:${SA_JAEGER_VIEWER_PORT:?controlled local development value required}:16686',
-            ]):
-        raise ComposeError('Jaeger requires its controlled persistent storage, configuration and ports.')
+            ]}:
+        raise ComposeError('Jaeger requires its controlled persistent storage, configuration and ports; unsupported declaration drift.')
     active = []
     for name, service in services.items():
         if set(service) - {'command', 'depends_on', 'entrypoint', 'environment',
@@ -267,10 +273,14 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
             raise ComposeError('Controlled Jaeger configuration is missing or symlinked.')
         jaeger_bytes = jaeger_config.read_bytes()
         parsed_jaeger = json.loads(jaeger_bytes)
-        badger = parsed_jaeger['extensions']['jaeger_storage']['backends']['local_traces']['badger']
-        if (badger['ephemeral'] is not False
-                or badger['directories'] != {'keys': '/tmp/jaeger/keys', 'values': '/tmp/jaeger/values'}
-                or parsed_jaeger['extensions']['jaeger_query']['storage']['traces'] != 'local_traces'
+        if (parsed_jaeger['extensions']['jaeger_storage']['backends']['local_traces']['badger']['ephemeral'] is not False
+                or parsed_jaeger['extensions'] != {
+                    'jaeger_query': {'storage': {'traces': 'local_traces'}},
+                    'jaeger_storage': {'backends': {'local_traces': {'badger': {
+                        'directories': {'keys': '/tmp/jaeger/keys', 'values': '/tmp/jaeger/values'},
+                        'ephemeral': False, 'ttl': {'spans': '168h'},
+                    }}}},
+                }
                 or parsed_jaeger['exporters']['jaeger_storage_exporter']['trace_storage'] != 'local_traces'
                 or parsed_jaeger['service'] != {
                     'extensions': ['jaeger_storage', 'jaeger_query'],

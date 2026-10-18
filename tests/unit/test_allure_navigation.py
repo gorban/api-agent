@@ -202,22 +202,26 @@ def test_viewer_failure_preserves_results_and_cleanup_can_retry(tmp_path,monkeyp
         viewer=Viewer(fail=True,close_fail=True)
         app.allure_viewer=viewer
         async with app.run_test() as pilot:
-            await pilot.pause()
-            app.mode='integration'
-            app.unit_rows={'one':('FAILED','one','1s')}
-            app.show('test-results','Results',rows=list(app.unit_rows.items()))
-            await pilot.pause()
-            app.receive_allure_snapshot(snapshot(),app._inspection_generation)
-            await app.open_selected_allure()
-            assert notices[-1]=='Preview unavailable'
-            assert app.unit_rows['one'][0]=='FAILED'
-            assert await app.close_allure() is False
-            assert app.allure_viewer is viewer
-            assert await app.end_inspection() is False
-            viewer.close_fail=False
-            assert await app.close_allure() is True
-            assert app.allure_viewer is None and viewer.closed
-            assert await app.close_allure() is True
+            try:
+                await pilot.pause()
+                app.mode='integration'
+                app.unit_rows={'one':('FAILED','one','1s')}
+                app.show('test-results','Results',rows=list(app.unit_rows.items()))
+                await pilot.pause()
+                app.receive_allure_snapshot(snapshot(),app._inspection_generation)
+                await app.open_selected_allure()
+                assert notices[-1]=='Could not open Allure history; check reporting setup and storage.'
+                assert app.unit_rows['one'][0]=='FAILED'
+                assert await app.close_allure() is False
+                assert app.allure_viewer is viewer
+                assert await app.end_inspection() is False
+                viewer.close_fail=False
+                assert await app.close_allure() is True
+                assert app.allure_viewer is None and viewer.closed
+                assert await app.close_allure() is True
+            finally:
+                viewer.close_fail=False
+                await app.close_allure()
     asyncio.run(scenario())
 
 
@@ -244,7 +248,7 @@ def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_pat
             assert source.local_root == tmp_path / ('secondary' if secondary else 'working')
             assert not app.test_run_active()
             if failed:
-                assert 'History unavailable' in str(app.screen.query_one('#error',Static).content)
+                assert 'Could not open Allure history; check reporting setup and storage.' in str(app.screen.query_one('#error',Static).content)
             else:
                 assert 'http://127.0.0.1:5252/archive.html' in str(app.screen.query_one('#body',Static).content)
                 assert str(app.screen.query_one('#body',Static).content).count('http://127.0.0.1:5252/archive.html') == 1

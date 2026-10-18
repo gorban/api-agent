@@ -1,5 +1,6 @@
 """Workbench-owned Allure navigation, independent of test execution."""
 import asyncio
+import re
 from functools import cached_property, wraps
 from uuid import uuid4
 from rich.segment import Segment
@@ -13,6 +14,48 @@ from textual.widgets import DataTable, Input, Static
 from .clipboard import ClipboardError, copy_text
 
 MAX_RETAINED_ALLURE_BYTES = 128 * 1024 * 1024
+_HISTORY_OPEN_ERROR = 'Could not open Allure history; check reporting setup and storage.'
+_KNOWN_HISTORY_VIEWER_MESSAGES = frozenset({
+    'No finalized integration or E2E Allure runs are available',
+    'Allure history retrieval timed out',
+    'Could not discover finalized Allure history',
+    'Could not fetch the exact Allure run; check reporting storage',
+    'Conflicting immutable Allure run manifests',
+    'Exact finalized Allure run is unavailable locally or in S3',
+    'Finalized Allure manifest binding changed',
+    'Symlinked Allure history is forbidden',
+    'Allure manifest exceeds viewer limit',
+    'Allure history directory identity mismatch',
+    'Allure artifact digest mismatch or size limit exceeded',
+    'Allure result references a missing attachment',
+    'Allure viewer is closed',
+    'Allure server cleanup remains pending',
+    'Allure could not start; install Allure 2 and check Java on PATH',
+    'Allure timed out; check Java and the viewer generation timeout',
+    'Invalid ALLURE_CLI; provide a command and quote arguments containing spaces',
+    'Unsupported Allure CLI; an externally installed Allure 2 version is required',
+    'Allure 2 CLI command is missing from PATH; configure ALLURE_CLI or install with brew install allure; see https://allurereport.org/docs/v2/install/',
+    'Owned Allure report server did not become ready',
+    'The exact selected Allure result is unavailable',
+    'Allure did not preserve the exact selected attempt',
+    'Allure generation produced no report',
+    'Allure generated an invalid selected-result link',
+})
+
+
+def _known_history_viewer_message(error):
+    from api_agent.testing.allure_source import ViewerError
+    if (type(error) is ViewerError and len(error.args) == 1
+            and type(error.args[0]) is str):
+        message = error.args[0]
+        if message in _KNOWN_HISTORY_VIEWER_MESSAGES:
+            return message
+        port = re.fullmatch(r'Allure viewer port ([0-9]{1,5}) is occupied; stop its owner or configure ALLURE_VIEWER_PORT', message)
+        if port and 1 <= int(port[1]) <= 65535:
+            return f'Allure viewer port {int(port[1])} is occupied; stop its owner or configure ALLURE_VIEWER_PORT'
+        if re.fullmatch(r'Allure command failed \(exit -?[0-9]{1,3}\); check ALLURE_CLI, its host PATH and Java installation', message):
+            return 'Allure command failed; check ALLURE_CLI, its host PATH and Java installation'
+    return None
 
 
 class AllureLinkContent(Content):
@@ -178,7 +221,8 @@ class AllureNavigation:
                 self.show_allure_location(location)
         except Exception as error:
             if generation is self._allure_generation:
-                self.notify(str(error), severity='error', timeout=10)
+                self.notify(_known_history_viewer_message(error) or _HISTORY_OPEN_ERROR,
+                            severity='error', timeout=10)
         finally:
             if generation is self._allure_generation:
                 self._allure_opening = False
@@ -292,7 +336,7 @@ class AllureNavigation:
             page = self.allure_page() if generation is self._allure_generation else None
             if page is not None:
                 self.operation_status = 3
-                page.query_one('#error', Static).update(str(error))
+                page.query_one('#error', Static).update(_known_history_viewer_message(error) or _HISTORY_OPEN_ERROR)
         finally:
             if generation is self._allure_generation:
                 self._allure_opening = False
@@ -303,9 +347,7 @@ class AllureNavigation:
         from threading import Event
         from api_agent.runtime.tasks import offload
         from api_agent.testing.collection import repository_label
-        from api_agent.testing.history_restore import (HistoryRestoreCancelled,
-            HistoryRestoreError, restore_missing_history)
-        from api_agent.testing.suite_lock import SuiteBusyError
+        from api_agent.testing.history_restore import known_restore_message, restore_missing_history
 
         if self._allure_opening:
             return
@@ -349,8 +391,7 @@ class AllureNavigation:
         except Exception as error:
             if generation is self._allure_generation:
                 self.operation_status = 3
-                message = (str(error) if type(error) in
-                           {HistoryRestoreError, HistoryRestoreCancelled, SuiteBusyError} else unexpected)
+                message = known_restore_message(error) or _known_history_viewer_message(error) or unexpected
                 page = self.allure_page()
                 if page is not None:
                     page.query_one('#error', Static).update(message)

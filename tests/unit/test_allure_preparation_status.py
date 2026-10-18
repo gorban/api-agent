@@ -67,7 +67,8 @@ def test_selected_preparation_survives_results_refresh(tmp_path, monkeypatch, mo
                 await pilot.press('escape')
                 await pilot.pause()
                 assert app.screen.kind == 'test-results' and not app.screen.query_one('#allure-loading', Static).display
-                assert notices and ('Controlled report failure' in str(notices[-1]) if failure else 'Allure' in str(notices[-1]))
+                assert notices and ('Could not open Allure history; check reporting setup and storage.' in str(notices[-1])
+                                    if failure else 'Allure' in str(notices[-1]))
             finally:
                 release.set()
                 request.cancel()

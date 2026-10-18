@@ -20,6 +20,46 @@ class HistoryRestoreCancelled(HistoryRestoreError):
     """The caller cancelled before another immutable object write."""
 
 
+_UNEXPECTED_RESTORE = 'Could not restore finalized Allure history; check secondary files and S3 storage.'
+_KNOWN_RESTORE_MESSAGES = frozenset({
+    'Allure history restore was cancelled.',
+    'Allure history restore timed out.',
+    'Could not inspect the destination Allure manifest.',
+    _UNEXPECTED_RESTORE,
+    'Destination Allure run has different immutable manifest bytes.',
+    'Select secondary history and an S3 destination before restoring.',
+    'Secondary history exceeds the restore entry limit.',
+    'Secondary history exceeds the restore run limit.',
+    'Secondary history manifest exceeds the size limit.',
+    'Secondary history run identity differs from its directory.',
+    'Symlinked secondary history is forbidden.',
+})
+_KNOWN_BUSY_MESSAGES = frozenset({
+    'Another test suite is running. Wait for it to finish or stop it before starting this suite.',
+    'Only the active test-suite owner can delegate its worker.',
+    'The test-suite owner has already stopped.',
+})
+
+
+def known_restore_message(error):
+    """Return only a fixed, public error message; callback exception text is untrusted."""
+    error_type = type(error)
+    if (error_type is not HistoryRestoreError and error_type is not HistoryRestoreCancelled
+            and error_type is not SuiteBusyError):
+        return None
+    if len(error.args) != 1 or type(error.args[0]) is not str:
+        return None
+    message = error.args[0]
+    if type(error) is HistoryRestoreCancelled:
+        return ('Allure history restore was cancelled.'
+                if message == 'Allure history restore was cancelled.' else None)
+    if type(error) is HistoryRestoreError and message in _KNOWN_RESTORE_MESSAGES:
+        return message
+    if type(error) is SuiteBusyError and message in _KNOWN_BUSY_MESSAGES:
+        return message
+    return None
+
+
 def _active(cancelled, budget):
     if cancelled():
         raise HistoryRestoreCancelled('Allure history restore was cancelled.')
@@ -121,7 +161,10 @@ def restore_missing_history(repo, secondary_directory, storage, *, progress=lamb
                         restored += 1
                     progress(done, total)
                 return restored
-    except (HistoryRestoreError, SuiteBusyError):
-        raise
+    except (HistoryRestoreError, SuiteBusyError) as error:
+        message = known_restore_message(error)
+        if message is not None:
+            raise type(error)(message) from None
+        raise HistoryRestoreError(_UNEXPECTED_RESTORE) from None
     except Exception:
-        raise HistoryRestoreError('Could not restore finalized Allure history; check secondary files and S3 storage.') from None
+        raise HistoryRestoreError(_UNEXPECTED_RESTORE) from None

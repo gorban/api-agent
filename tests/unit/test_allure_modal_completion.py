@@ -133,7 +133,8 @@ def test_history_generation_updates_its_page_beneath_quit_confirmation(tmp_path,
                 await pilot.pause()
                 assert app.screen is page
                 if failed:
-                    assert 'Controlled history failure' in str(page.query_one('#error', Static).content)
+                    assert str(page.query_one('#error', Static).content) == 'Could not open Allure history; check reporting setup and storage.'
+                    assert 'Controlled history failure' not in str(page.query_one('#error', Static).content)
                     assert app.operation_status == 3
                 else:
                     assert REPORT + '\n\nBrowser CDP' in str(page.query_one('#body', Static).content)
