@@ -7,6 +7,7 @@ from django.core.handlers.asgi import ASGIHandler
 from api_agent.providers.loading import ProviderError, _task
 from .routes import RouteRegistrar
 from api_agent.providers.control import CleanupPendingError, OperationalError
+from .http_cleanup import close_http_callbacks
 
 from dataclasses import dataclass, field
 import re
@@ -269,7 +270,12 @@ class Application:
                     return
         elif scope["type"] == "http":
             # The copy prevents a caller's reusable scope from retaining runtime state.
-            await self._django_app({**scope, "api_agent_runtime": self.runtime}, receive, send)
+            cleanups = []
+            try:
+                await self._django_app({**scope, "api_agent_runtime": self.runtime,
+                                        "api_agent_http_cleanup": cleanups}, receive, send)
+            finally:
+                await close_http_callbacks(cleanups)
         else:
             raise ValueError(f"Unsupported ASGI scope: {scope['type']}")
 

@@ -63,7 +63,7 @@ async def studio_endpoint(provider, selection):
 
 
 @asynccontextmanager
-async def agent_endpoint(provider, selection, origin, nonce, *, listener=None):
+async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None):
     """Own the real Agent HTTP bridge for the selected UI runtime."""
     import uvicorn
     async with AsyncExitStack() as cleanup:
@@ -81,7 +81,8 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None):
         backend = StudioBackend(owner=LLMSessionOwner(object()), describe=describe, complete=complete,
             policy=ModelSelectionPolicy({'LLM_ALLOWED_MODELS': re.escape(selection),
                                          'LLM_DEFAULT_MODEL': re.escape(selection)}),
-            origin=origin, nonce=nonce, scrub=lambda _: 'Selected provider rejected the request.')
+            origin=origin, nonce=nonce, scrub=lambda _: 'Selected provider rejected the request.',
+            reasoning_default=reasoning_default)
         cleanup.push_async_callback(_cleanup, backend.aclose)
         runtime = Runtime('demo', services={'studio_backend': backend})
         application = create_application(runtime)
@@ -137,7 +138,7 @@ async def browser_prompt(prepared):
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     async with component_timeout('Studio browser request', 150):
-        await expect(page.locator('#model option')).to_have_count(2)
+        await expect(page.locator('#model option')).to_have_count(1)
         await page.locator('#prompt').fill('Answer with exactly: Ok')
         await page.locator('#send').click()
         status = page.locator('.assistant .metadata-grid dd').last
@@ -170,7 +171,8 @@ def ui_provider_backend(studio_configuration, llm_provider, llm_selection):
     async def backend(values):
         nonce = secrets.token_urlsafe(32)
         async with agent_endpoint(llm_provider, llm_selection,
-                                  values['UI_LISTENER_URL'], nonce) as endpoint:
+                                  values['UI_LISTENER_URL'], nonce,
+                                  reasoning_default=values.get('LLM_REASONING_EFFORT') or None) as endpoint:
             yield {'agent_url': endpoint, 'access_token': nonce}
     return backend
 

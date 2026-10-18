@@ -14,7 +14,7 @@ async function startCoverage(page, {instrument = true} = {}) {
     if (!['app.js','appearance.js','markdown.js','reply.js'].includes(name)) return route.continue();
     const response=await route.fetch();
     const body=instrumenter.instrumentSync(await response.text(),new URL(name,root).pathname);
-    await route.fulfill({response,body});
+    await fulfill(route,{response,body});
   });
   if (process.env.STUDIO_COVERAGE_FILE) { await page.coverage.startJSCoverage({resetOnNavigation:false}); coveredPages.add(page); }
 }
@@ -33,6 +33,30 @@ test.before(async () => { await new Promise(resolve => server.listen(0,'127.0.0.
 test.after(async () => { if(process.env.STUDIO_ISTANBUL_FILE) await writeFile(process.env.STUDIO_ISTANBUL_FILE,JSON.stringify(instrumentedCoverage)); if (process.env.STUDIO_COVERAGE_FILE) await writeFile(process.env.STUDIO_COVERAGE_FILE,JSON.stringify(coverage)); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
 const root = new URL('../../apps/api-agent-ui/public/', import.meta.url);
 const model = {selected_llm:'sample',description:'Sample',features:['reasoning_effort'],display_name:'Sample model',version:'v1',family:null,max_output_tokens:null,context_length:null,reasoning_efforts:['off','low']};
+function wireModel({selected_llm, display_name, ...metadata}) { return {...metadata,value:selected_llm,label:display_name}; }
+function wireResult(value, session_id) { const {text,...metadata}=value; return {...metadata,session_id,response_text:text}; }
+const frame=(event,data)=>`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+const sessionFrame=id=>frame('session',{session_id:id,heartbeat_interval_ms:10000,heartbeat_timeout_ms:30000});
+const finishFrames=(id,value)=>frame('response_complete',{session_id:id})+frame('result',wireResult(value,id))+frame('done',{session_id:id});
+async function fulfill(route, fixture) {
+  fixture={...fixture};
+  const path=new URL(route.request().url()).pathname;
+  if(path==='/app/agent/models' && fixture.json) {
+    const envelope=Array.isArray(fixture.json)?{models:fixture.json,default:fixture.json[0]?.selected_llm??null}:fixture.json;
+    fixture.json={...envelope,models:envelope.models.map(wireModel),reasoning_default:null};
+  }
+  if(path==='/app/agent/chat/stream') {
+    const id=route.request().postDataJSON().session_id;
+    if(fixture.json?.outcome) fixture.json=wireResult(fixture.json,id);
+    if(fixture.contentType==='text/event-stream' && fixture.body?.includes('"kind"')) {
+      fixture.body=sessionFrame(id)+fixture.body.replace(/data: ([^\n]+)\n\n/g,(_,raw)=>{
+        const value=JSON.parse(raw);
+        return value.kind==='completed'?finishFrames(id,value.payload):frame(value.kind==='text'?'token':value.kind,value.kind==='text'?{content:value.payload.text}:value.payload);
+      });
+    }
+  }
+  return route.fulfill(fixture);
+}
 test('Studio selection, safe rendering, question editing, and unavailable continuation', async () => {
   const browser = await chromium.launch({headless:true, executablePath:process.env.STUDIO_BROWSER || undefined});
   try {
@@ -41,16 +65,16 @@ test('Studio selection, safe rendering, question editing, and unavailable contin
     let requests = [];
     await page.route('http://127.0.0.1:1/**', async route => {
       const url = new URL(route.request().url());
-      if (url.pathname === '/config.json') return route.fulfill({json:{apiOrigin:'http://localhost'}});
-      if (url.pathname === '/app/agent/models') return route.fulfill({json:[model]});
+      if (url.pathname === '/config.json') return fulfill(route,{json:{apiOrigin:'http://localhost'}});
+      if (url.pathname === '/app/agent/models') return fulfill(route,{json:[model]});
       if (url.pathname === '/app/agent/chat/stream') {
         requests.push(route.request().postDataJSON());
-        return route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'q1',question:'What should we make?',options:['A small tool','A plan']}})+'\n\n'});
+        return fulfill(route,{contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'q1',question:'What should we make?',options:['A small tool','A plan']}})+'\n\n'});
       }
       return route.continue();
     });
     await page.goto(host);
-    assert.equal(await page.locator('#model-short-name').textContent(), 'Provider default');
+    await page.waitForFunction(()=>document.querySelector('#model-short-name').textContent==='Sample model');
     await page.locator('#settings-nav').click();
     await page.locator('#model').selectOption('sample');
     assert.equal(await page.locator('#model-short-name').textContent(), 'Sample model');
@@ -64,9 +88,9 @@ test('Studio selection, safe rendering, question editing, and unavailable contin
     await page.locator('#prompt').fill('<b>Make something</b>');
     await page.locator('#prompt').press('Control+Enter');
     await page.locator('legend').waitFor();
-    assert.equal(requests[0].selected_llm, 'sample');
+    assert.equal(requests[0].model, 'sample');
     assert.equal(requests[0].reasoning_effort, 'off');
-    assert.deepEqual(requests[0].messages, [{role:'user',text:'<b>Make something</b>'}]);
+    assert.deepEqual(requests[0].messages, [{role:'user',content:'<b>Make something</b>'}]);
     assert.equal(await page.locator('.user .message-body b').count(),0);
     await page.getByRole('button',{name:'A small tool',exact:true}).click();
     assert.equal(await page.locator('#prompt').inputValue(), 'A small tool');
@@ -99,9 +123,9 @@ for (const [name, fixture, expected] of [
     const page = await browser.newPage(); await startCoverage(page);
     await page.route('http://127.0.0.1:1/**', async route => {
       const path = new URL(route.request().url()).pathname;
-      if (path === '/config.json') return route.fulfill({json:{apiOrigin:'http://localhost'}});
-      if (path === '/app/agent/models') return route.fulfill({json:[model]});
-      if (path === '/app/agent/chat/stream') return route.fulfill(fixture);
+      if (path === '/config.json') return fulfill(route,{json:{apiOrigin:'http://localhost'}});
+      if (path === '/app/agent/models') return fulfill(route,{json:[model]});
+      if (path === '/app/agent/chat/stream') return fulfill(route,fixture);
       return route.continue();
     });
     await page.goto(host);
@@ -128,11 +152,11 @@ test('capable continuation adapter restores draft and preserves question identit
     const page = await browser.newPage(); await startCoverage(page);
     await page.route('http://127.0.0.1:1/**', async route => {
       const path = new URL(route.request().url()).pathname;
-      if (path === '/config.json') return route.fulfill({json:{apiOrigin:'http://localhost'}});
-      if (path === '/app/agent/models') return route.fulfill({json:[model]});
+      if (path === '/config.json') return fulfill(route,{json:{apiOrigin:'http://localhost'}});
+      if (path === '/app/agent/models') return fulfill(route,{json:[model]});
       if (path === '/app/agent/chat/stream') {
         await new Promise(resolve => setTimeout(resolve,300));
-        return route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'exact-question',question:'Which approach?',options:['Suggested']}})+'\n\n'});
+        return fulfill(route,{contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'exact-question',question:'Which approach?',options:['Suggested']}})+'\n\n'});
       }
       return route.continue();
     });
@@ -140,9 +164,9 @@ test('capable continuation adapter restores draft and preserves question identit
       const response = await route.fetch();
       const body = (await response.text()).replace('export const supportsContinuation = false;', 'export const supportsContinuation = true;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/, `export async function submitContinuation(input) {
         window.continuationInput = input;
-        return new Response(JSON.stringify({text:'Acknowledged',outcome:'completed',usage:{input_tokens:null,output_tokens:null,cached_input_tokens:null,reasoning_tokens:null}}),{headers:{'content-type':'application/json'}});
+        return new Response(JSON.stringify({session_id:input.session,response_text:'Acknowledged',outcome:'completed',usage:{input_tokens:null,output_tokens:null,cached_input_tokens:null,reasoning_tokens:null}}),{headers:{'content-type':'application/json'}});
       }`);
-      await route.fulfill({response,body});
+      await fulfill(route,{response,body});
     });
     await page.goto(host);
     await page.locator('#settings-nav').click();
@@ -170,15 +194,17 @@ async function openStudio(handler, init) {
   if (init) await context.addInitScript(init);
   const page = await context.newPage(); await startCoverage(page);
   await page.route('http://127.0.0.1:1/**', async route => {
-    if (new URL(route.request().url()).pathname === '/app/agent/models') return route.fulfill({json:{models:[model],default:'sample'}});
+    if (new URL(route.request().url()).pathname === '/app/agent/models') return fulfill(route,{json:{models:[model],default:'sample'}});
+    if (new URL(route.request().url()).pathname.match(/\/(heartbeat|cancel)$/)) return fulfill(route,{json:{session_id:route.request().postDataJSON().session_id,status:'running'}});
     return handler(route);
   });
   await page.goto(host);
+  await page.waitForFunction(()=>[...document.querySelector('#model').options].some(option=>option.textContent==='Sample model'));
   return {browser,context,page};
 }
 const result = (text, extra = {}) => ({text,outcome:'completed',usage:{input_tokens:null,output_tokens:null,cached_input_tokens:null,reasoning_tokens:null},...extra});
 test('reported metadata stays immutable after settings changes and reload; history and draft persist', async () => {
-  const {browser,page} = await openStudio(route => route.fulfill({json:result('Saved reply',{actual_model:'reported-model',serving_revision:'revision-1',service_tier:'standard'})}));
+  const {browser,page} = await openStudio(route => fulfill(route,{json:result('Saved reply',{actual_model:'reported-model',serving_revision:'revision-1',service_tier:'standard'})}));
   try {
     await page.locator('#prompt').fill('Saved request'); await page.locator('#send').click();
     await page.getByText('Saved reply',{exact:true}).waitFor();
@@ -222,7 +248,7 @@ test('appearance follows system live, explicit overrides, and storage events acr
   } finally { await closeBrowser(browser); }
 });
 test('storage failures retain page usability and explain unavailable persistence', async () => {
-  const {browser,page} = await openStudio(route => route.fulfill({json:result('Still works')}), () => {
+  const {browser,page} = await openStudio(route => fulfill(route,{json:result('Still works')}), () => {
     Storage.prototype.getItem = () => { throw Error('unavailable'); };
     Storage.prototype.setItem = () => { throw Error('unavailable'); };
   });
@@ -234,7 +260,7 @@ test('storage failures retain page usability and explain unavailable persistence
   } finally { await closeBrowser(browser); }
 });
 for (const status of [400,401,403,429,500,503]) test('HTTP '+status+' never becomes success', async () => {
-  const {browser,page} = await openStudio(route => route.fulfill({status,body:'Synthetic failure'}));
+  const {browser,page} = await openStudio(route => fulfill(route,{status,body:'Synthetic failure'}));
   try {
     await page.locator('#prompt').fill('Hello'); await page.locator('#send').click();
     await page.getByRole('button',{name:'Retry response'}).waitFor();
@@ -247,7 +273,7 @@ test('Stop preserves new draft and Retry sends original request once', async () 
   const {browser,page} = await openStudio(route => {
     count++;
     if (count === 1) { first = route; return new Promise(() => {}); }
-    return route.fulfill({json:result('Retried')});
+    return fulfill(route,{json:result('Retried')});
   });
   try {
     await page.locator('#prompt').fill('Original'); await page.locator('#send').click();
@@ -265,23 +291,20 @@ test('Stop preserves new draft and Retry sends original request once', async () 
     assert.equal(count,2);
   } finally { await closeBrowser(browser); }
 });
-test('deadline explains timeout and restores composer availability', async () => {
+test('active request survives thirty seconds until explicit Stop', async () => {
   let pending;
-  const {browser,page} = await openStudio(route => { pending = route; return new Promise(() => {}); });
+  const {browser,page}=await openStudio(route=>{pending=route;return new Promise(()=>{});});
   try {
-    await page.clock.install();
-    await page.locator('#prompt').fill('Wait'); await page.locator('#send').click();
-    await page.locator('#stop').waitFor();
-    await page.clock.fastForward(30001);
-    await page.getByRole('button',{name:'Retry response'}).waitFor();
-    assert.match(await page.locator('.error-note').textContent(),/too long/);
-    assert.equal(await page.locator('#send').isEnabled(),true);
-    await pending?.abort().catch(() => {});
-  } finally { await closeBrowser(browser); }
+    await page.clock.install();await page.locator('#prompt').fill('Wait');await page.locator('#send').click();
+    await page.locator('#stop').waitFor();await page.clock.fastForward(30001);
+    assert.equal(await page.locator('#stop').isVisible(),true);
+    await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+    await pending?.abort().catch(()=>{});
+  } finally {await closeBrowser(browser);}
 });
 test('follow latest pauses on user scroll and resumes explicitly; composer remains stationary', async () => {
   const text = Array.from({length:80},(_,i) => 'Paragraph '+i+' with sufficient content.').join('\n\n');
-  const {browser,page} = await openStudio(route => route.fulfill({json:result(text)}));
+  const {browser,page} = await openStudio(route => fulfill(route,{json:result(text)}));
   try {
     await page.locator('#prompt').fill('Long reply'); await page.locator('#send').click();
     await page.getByText('Paragraph 79 with sufficient content.',{exact:true}).waitFor();
@@ -298,7 +321,7 @@ test('follow latest pauses on user scroll and resumes explicitly; composer remai
 });
 test('interrupted saved response is honest after reload and stale selection blocks requests', async () => {
   let calls=0;
-  const {browser,page} = await openStudio(route => { calls++; return route.fulfill({json:result('Unexpected')}); }, () => {
+  const {browser,page} = await openStudio(route => { calls++; return fulfill(route,{json:result('Unexpected')}); }, () => {
     const requested={model:'removed-model',version:'old',reasoning:'high'};
     localStorage.setItem('api-agent-studio-v2',JSON.stringify({session:'saved-session',draft:'Preserved draft',settings:requested,messages:[{id:'u',role:'user',text:'Old question',requested},{id:'a',role:'assistant',text:'Partial response',request:'Old question',requested,pending:true}]}));
   });
@@ -316,7 +339,7 @@ test('explicit approval buttons preserve server labels; arbitrary typed approval
   let calls=0;
   const {browser,page} = await openStudio(route => {
     calls++;
-    return route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'approval',payload:{id:'approval-1',question:'Apply this plan?',options:[{id:'accept',label:'Apply exact plan'},{id:'decline',label:'Keep current plan'}]}})+'\n\n'});
+    return fulfill(route,{contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'approval',payload:{id:'approval-1',question:'Apply this plan?',options:[{id:'accept',label:'Apply exact plan'},{id:'decline',label:'Keep current plan'}]}})+'\n\n'});
   });
   try {
     await page.locator('#prompt').fill('Plan please'); await page.locator('#send').click();
@@ -329,7 +352,7 @@ test('explicit approval buttons preserve server labels; arbitrary typed approval
   } finally { await closeBrowser(browser); }
 });
 test('provider refusal remains a visible response with unreported model metadata', async () => {
-  const {browser,page} = await openStudio(route => route.fulfill({json:result('I cannot fulfill that request.',{outcome:'refused'})}));
+  const {browser,page} = await openStudio(route => fulfill(route,{json:result('I cannot fulfill that request.',{outcome:'refused'})}));
   try {
     await page.locator('#prompt').fill('Request'); await page.locator('#send').click();
     await page.getByText('I cannot fulfill that request.',{exact:true}).waitFor();
@@ -341,7 +364,7 @@ for (const kind of ['approval','clarification']) test(kind+' retry retains exact
   let ordinary=0;
   const {browser,page} = await openStudio(route => {
     ordinary++;
-    return route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({kind,payload:{id:'question-exact',question:'Choose next step',options:kind === 'approval' ? [{id:'option-exact',label:'Proceed exactly'}] : ['Proceed exactly']}})+'\n\n'});
+    return fulfill(route,{contentType:'text/event-stream',body:'data: '+JSON.stringify({kind,payload:{id:'question-exact',question:'Choose next step',options:kind === 'approval' ? [{id:'option-exact',label:'Proceed exactly'}] : ['Proceed exactly']}})+'\n\n'});
   });
   try {
     await page.route('**/transport.js', async route => {
@@ -349,9 +372,9 @@ for (const kind of ['approval','clarification']) test(kind+' retry retains exact
       const body=(await response.text()).replace('export const supportsContinuation = false;', 'export let supportsContinuation = true; window.setContinuationSupport = value => supportsContinuation = value;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/, `export async function submitContinuation(input) {
         (window.continuationCalls ||= []).push(structuredClone(input));
         if (window.continuationCalls.length === 1) throw Error('Synthetic continuation failure');
-        return new Response(JSON.stringify(${JSON.stringify(result('Continuation retried'))}),{headers:{'content-type':'application/json'}});
+        return new Response(JSON.stringify({...${JSON.stringify(wireResult(result('Continuation retried'),'placeholder'))},session_id:input.session}),{headers:{'content-type':'application/json'}});
       }`);
-      await route.fulfill({response,body});
+      await fulfill(route,{response,body});
     });
     await reloadPage(page);
     await page.locator('#prompt').fill('Original request'); await page.locator('#send').click();
@@ -374,7 +397,7 @@ for (const kind of ['approval','clarification']) test(kind+' retry retains exact
     await page.getByText('Continuation retried',{exact:true}).waitFor({timeout:5000});
     const calls=await page.evaluate(() => window.continuationCalls);
     assert.equal(calls.length,2);
-    assert.deepEqual(calls[1],calls[0]);
+    assert.notEqual(calls[1].session,calls[0].session);assert.deepEqual({...calls[1],session:calls[0].session},calls[0]);
     assert.deepEqual(calls[1].reply,{kind,id:'question-exact',text:'Proceed exactly',...(kind === 'approval' ? {option_id:'option-exact'} : {})});
     assert.equal(ordinary,1);
     assert.equal(await page.locator('#prompt').inputValue(),'Preserved next draft');
@@ -383,7 +406,7 @@ for (const kind of ['approval','clarification']) test(kind+' retry retains exact
 });
 for (const [field, value, correction, error] of [['version','obsolete','',/version is no longer/],['reasoning','high','off',/reasoning setting is unsupported/]]) test('correcting stale '+field+' clears validation and permits actual send', async () => {
   let calls=0;
-  const {browser,page} = await openStudio(route => { calls++; return route.fulfill({json:result('Valid corrected request')}); });
+  const {browser,page} = await openStudio(route => { calls++; return fulfill(route,{json:result('Valid corrected request')}); });
   try {
     await page.evaluate(({field,value}) => {
       const requested={model:'sample',version:'v1',reasoning:'', [field]:value};
@@ -405,10 +428,10 @@ for (const [field, value, correction, error] of [['version','obsolete','',/versi
 test('settings changes preserve actual catalog network failure', async () => {
   const {browser,page} = await openStudio(route => route.abort());
   try {
-    await page.route('**/app/agent/models',route => route.fulfill({status:503,body:'Unavailable'}));
+    await page.route('**/app/agent/models',route => fulfill(route,{status:503,body:'Unavailable'}));
     await reloadPage(page); await page.locator('#settings-nav').click();
     await page.waitForFunction(() => document.querySelector('#model-status').textContent.includes('Model list unavailable'));
-    await page.locator('#model').selectOption('');
+    await page.locator('#model').dispatchEvent('change');
     assert.match(await page.locator('#model-status').textContent(),/Model list unavailable/);
     await page.locator('#version').selectOption('');
     assert.match(await page.locator('#model-status').textContent(),/Model list unavailable/);
@@ -417,7 +440,7 @@ test('settings changes preserve actual catalog network failure', async () => {
 test('deep valid Markdown falls back to literal text and keeps chat usable', async () => {
   const source='>'.repeat(8000)+' <img src="https://passive.invalid/fallback" onerror="window.fallbackPwned=1"><script>window.fallbackPwned=2</script>';
   let calls=0;
-  const {browser,page} = await openStudio(route => route.fulfill({json:result(++calls === 1 ? source : 'Next response')}));
+  const {browser,page} = await openStudio(route => fulfill(route,{json:result(++calls === 1 ? source : 'Next response')}));
   try {
     const errors=[], passive=[];page.on('pageerror',error => errors.push(error.message));page.on('request',request => { if(request.url().includes('passive.invalid')) passive.push(request.url()); });
     await page.locator('#prompt').fill('Deep quote'); await page.locator('#send').click();
@@ -479,8 +502,8 @@ test('actual cross-origin HTTP nonce preflights catalog and chat without persist
     }
     if (request.headers['x-api-agent-session'] !== nonce) {response.writeHead(403);response.end();return;}
     response.setHeader('Content-Type','application/json');
-    if (request.url === '/app/agent/models') response.end(JSON.stringify({models:[model],default:'sample'}));
-    else {request.resume();request.on('end',() => response.end(JSON.stringify(result('Actual CORS response'))));}
+    if (request.url === '/app/agent/models') response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));
+    else {let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>response.end(JSON.stringify(wireResult(result('Actual CORS response'),JSON.parse(body).session_id))));}
   });
   await new Promise(resolve => api.listen(0,'127.0.0.1',resolve));
   const {server:ui}=createStudioServer({UI_LISTENER_URL:'http://127.0.0.1:9443',AGENT_DJANGO_URL:'http://127.0.0.1:'+api.address().port,API_AGENT_UI_LAUNCH_TOKEN:'synthetic-browser-test-token',API_AGENT_UI_ACCESS_TOKEN:nonce});
@@ -503,7 +526,7 @@ test('actual cross-origin HTTP nonce preflights catalog and chat without persist
 for (const config of [null, [], {}, {apiOrigin:'file:///invalid'}, {apiOrigin:'http://user:pass@localhost'}, {apiOrigin:'http://localhost/path'}, {apiOrigin:'http://localhost/?token=x'}, {apiOrigin:'http://localhost/#token'}, {apiOrigin:32}, {apiOrigin:'http://localhost',extra:true}, {apiOrigin:'http://localhost',apiHeaders:null}, {apiOrigin:'http://localhost',apiHeaders:[]}, {apiOrigin:'http://localhost',apiHeaders:{}}, {apiOrigin:'http://localhost',apiHeaders:{Authorization:'forbidden'}}, {apiOrigin:'http://localhost',apiHeaders:{'X-API-Agent-Session':'short'}}, {apiOrigin:'http://localhost',apiHeaders:{'X-API-Agent-Session':'a'.repeat(32),Authorization:'forbidden'}}]) test('rejects malformed or unauthorized config '+JSON.stringify(config), async () => {
   const {browser,page}=await openStudio(route=>route.abort());
   try {
-    await page.route('**/config.json',route=>route.fulfill({json:config}));
+    await page.route('**/config.json',route=>fulfill(route,{json:config}));
     await reloadPage(page);await page.locator('#settings-nav').click();
     await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('configuration could not be loaded'));
     assert.equal(await page.locator('.message').count(),0);
@@ -553,11 +576,11 @@ test('appearance storage updates reach original tab and write failures stay visi
 });
 test('allowlisted in-memory header reaches fixture requests and never enters stored state', async () => {
   const nonce='fixture_session_nonce_0123456789012345', received=[];
-  const {browser,page}=await openStudio(route=>{received.push(route.request().headers());return route.fulfill({json:result('Header fixture response')});});
+  const {browser,page}=await openStudio(route=>{received.push(route.request().headers());return fulfill(route,{json:result('Header fixture response')});});
   try {
     await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
-    await page.route('**/config.json',route=>route.fulfill({json:{apiOrigin:'http://127.0.0.1:1',apiHeaders:{'X-API-Agent-Session':nonce}}}));
-    await page.route('**/app/agent/models',route=>{received.push(route.request().headers());return route.fulfill({json:{models:[model],default:'sample'}});});
+    await page.route('**/config.json',route=>fulfill(route,{json:{apiOrigin:'http://127.0.0.1:1',apiHeaders:{'X-API-Agent-Session':nonce}}}));
+    await page.route('**/app/agent/models',route=>{received.push(route.request().headers());return fulfill(route,{json:{models:[model],default:'sample'}});});
     await reloadPage(page);
     await page.locator('#prompt').fill('In-memory nonce');await page.locator('#send').click();
     await page.getByText('Header fixture response',{exact:true}).waitFor();
@@ -567,7 +590,7 @@ test('allowlisted in-memory header reaches fixture requests and never enters sto
   } finally {await closeBrowser(browser);}
 });
 test('composer validation, starter keyboard send, follow inputs and dialog backdrop preserve intent', async()=>{
-  const {browser,page}=await openStudio(route=>route.fulfill({json:result(Array.from({length:35},(_,i)=>'Line '+i).join('\n\n'))}));
+  const {browser,page}=await openStudio(route=>fulfill(route,{json:result(Array.from({length:35},(_,i)=>'Line '+i).join('\n\n'))}));
   try{
     await page.locator('#send').click();assert.equal(await page.locator('#prompt').getAttribute('aria-invalid'),'true');
     await page.locator('[data-prompt]').first().click();assert.equal(await page.locator('#prompt').getAttribute('aria-invalid'),null);
@@ -604,8 +627,8 @@ for(const kind of ['clarification','approval'])test('persisted '+kind+' resumes 
   const {browser,page}=await openStudio(route=>route.abort());
   try{
     await page.route('**/transport.js',async route=>{
-      const response=await route.fetch();const body=(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/,`export async function submitContinuation(input){window.persistedReply=input.reply;return new Response(JSON.stringify(${JSON.stringify(result('Resumed answer'))}),{headers:{'content-type':'application/json'}});}`);
-      await route.fulfill({response,body});
+      const response=await route.fetch();const body=(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/,`export async function submitContinuation(input){window.persistedReply=input.reply;return new Response(JSON.stringify({...${JSON.stringify(wireResult(result('Resumed answer'),'placeholder'))},session_id:input.session}),{headers:{'content-type':'application/json'}});}`);
+      await fulfill(route,{response,body});
     });
     await page.evaluate(kind=>{const settings={model:'sample',version:'v1',reasoning:''};localStorage.setItem('api-agent-studio-v2',JSON.stringify({session:'saved',draft:'Edited answer',settings,reply:{messageId:'a',savedDraft:'Earlier draft'},messages:[{id:'a',role:'assistant',text:'Question',requested:settings,question:{id:'persisted-q',question:'Your choice?',kind,options:kind==='clarification'?['Suggested']:[{id:'accept',label:'Accept exact'}]}}]}));},kind);
     await reloadPage(page);await page.locator('legend').waitFor();await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
@@ -646,7 +669,7 @@ test('system appearance change while the head is loading safely precedes body co
 });
 test('queued retry and toolbar actions cannot duplicate an active request or lose its draft',async()=>{
   const ready=Promise.withResolvers();let calls=0;
-  const {browser,page}=await openStudio(route=>{calls++;if(calls===1)return route.fulfill({status:503,body:'Retry me'});ready.resolve(route);return new Promise(()=>{});});
+  const {browser,page}=await openStudio(route=>{calls++;if(calls===1)return fulfill(route,{status:503,body:'Retry me'});ready.resolve(route);return new Promise(()=>{});});
   try{
     await page.locator('#prompt').fill('Original');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     const oldRetry=await page.getByRole('button',{name:'Retry response'}).elementHandle();
@@ -656,15 +679,15 @@ test('queued retry and toolbar actions cannot duplicate an active request or los
     await page.locator('#prompt').press('Control+Enter');
     await page.locator('#new-chat').dispatchEvent('click');await page.locator('#undo-new-chat').dispatchEvent('click');
     assert.equal(calls,2);assert.equal(await page.locator('#prompt').inputValue(),'Next draft');assert.equal(await page.locator('.user').count(),1);
-    await pending.fulfill({json:result('Queued retry done')});await page.getByText('Queued retry done',{exact:true}).waitFor();
+    await fulfill(pending,{json:result('Queued retry done')});await page.getByText('Queued retry done',{exact:true}).waitFor();
     await page.locator('#stop').dispatchEvent('click');await page.locator('#undo-new-chat').dispatchEvent('click');
     assert.equal(await page.locator('#prompt').inputValue(),'Next draft');assert.equal(await page.locator('.user').count(),1);
   }finally{await closeBrowser(browser);}
 });
 test('queued old clarification option cannot overwrite the restored draft during continuation',async()=>{
-  const {browser,page}=await openStudio(route=>route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'q',question:'Choose',options:['Suggested']}})+'\n\n'}));
+  const {browser,page}=await openStudio(route=>fulfill(route,{contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'q',question:'Choose',options:['Suggested']}})+'\n\n'}));
   try{
-    await page.route('**/transport.js',async route=>{const response=await route.fetch();const body=(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/,`export async function submitContinuation(){window.continuationCount=(window.continuationCount||0)+1;return new Promise(resolve=>{window.finishContinuation=()=>resolve(new Response(JSON.stringify(${JSON.stringify(result('Continued'))}),{headers:{'content-type':'application/json'}}));});}`);await route.fulfill({response,body});});
+    await page.route('**/transport.js',async route=>{const response=await route.fetch();const body=(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/,`export async function submitContinuation(input){window.continuationSession=input.session;window.continuationCount=(window.continuationCount||0)+1;return new Promise(resolve=>{window.finishContinuation=()=>resolve(new Response(JSON.stringify({...${JSON.stringify(wireResult(result('Continued'),'placeholder'))},session_id:window.continuationSession}),{headers:{'content-type':'application/json'}}));});}`);await fulfill(route,{response,body});});
     await reloadPage(page);await page.locator('#prompt').fill('Ask');await page.locator('#send').click();await page.getByRole('button',{name:'Suggested',exact:true}).waitFor();
     const oldOption=await page.getByRole('button',{name:'Suggested',exact:true}).elementHandle();
     const oldCustom=await page.getByRole('button',{name:'Choose your own answer below…'}).elementHandle();
@@ -682,8 +705,8 @@ test('progressive HTTP responses preserve metadata focus, finish Stop focus, and
   const api=createServer((request,response)=>{
     response.setHeader('Access-Control-Allow-Origin',uiOrigin);
     if(request.method==='OPTIONS'){response.setHeader('Access-Control-Allow-Methods','POST');response.setHeader('Access-Control-Allow-Headers','content-type');response.writeHead(204);response.end();return;}
-    if(request.url==='/app/agent/models'){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({models:[model],default:'sample'}));return;}
-    request.resume();response.setHeader('Content-Type','text/event-stream');response.write('data: '+JSON.stringify({kind:'text',payload:{text:'Initial draft'}})+'\n\n');response.on('error',()=>{});ready.resolve(response);
+    if(request.url==='/app/agent/models'){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));return;}
+    let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{const id=JSON.parse(body).session_id;if(request.url.endsWith('/cancel')||request.url.endsWith('/heartbeat')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({session_id:id,status:'running'}));return;}response.sessionId=id;response.setHeader('Content-Type','text/event-stream');response.write(sessionFrame(id)+frame('token',{content:'Initial draft'}));response.on('error',()=>{});ready.resolve(response);});
   });
   await new Promise(resolve=>api.listen(0,'127.0.0.1',resolve));
   const {server:ui}=createStudioServer({UI_LISTENER_URL:'http://127.0.0.1:9443',AGENT_DJANGO_URL:'http://127.0.0.1:'+api.address().port,API_AGENT_UI_LAUNCH_TOKEN:'synthetic-browser-test-token'});
@@ -693,28 +716,28 @@ test('progressive HTTP responses preserve metadata focus, finish Stop focus, and
     const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
     await page.locator('#prompt').fill('First');await page.locator('#send').click();const first=await ready.promise;await page.getByText('Initial draft',{exact:true}).waitFor();
     await page.locator('.assistant summary').press('Enter');assert.equal(await page.locator('.assistant details').getAttribute('open'),'');
-    first.end('data: '+JSON.stringify({kind:'completed',payload:result('First final')})+'\n\n');await page.getByText('First final',{exact:true}).waitFor();
+    first.end(finishFrames(first.sessionId,result('First final')));await page.getByText('First final',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.activeElement.tagName),'SUMMARY');assert.equal(await page.locator('.assistant details').getAttribute('open'),'');
     ready=Promise.withResolvers();await page.locator('#prompt').fill('Second');await page.locator('#send').click();const second=await ready.promise;await page.getByText('Initial draft',{exact:true}).waitFor();await page.locator('#stop').focus();
-    second.end('data: '+JSON.stringify({kind:'completed',payload:result('Second final')})+'\n\n');await page.getByText('Second final',{exact:true}).waitFor();
+    second.end(finishFrames(second.sessionId,result('Second final')));await page.getByText('Second final',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.activeElement.id),'prompt');
     ready=Promise.withResolvers();await page.locator('#prompt').fill('Third');await page.locator('#send').click();const third=await ready.promise;await page.getByText('Initial draft',{exact:true}).waitFor();
     const closed=new Promise(resolve=>third.once('close',resolve));await page.locator('#stop').click();await closed;
-    third.end('data: '+JSON.stringify({kind:'completed',payload:result('Late forbidden final')})+'\n\n');
+    third.end(finishFrames(third.sessionId,result('Late forbidden final')));
     await page.getByRole('button',{name:'Retry response'}).waitFor();assert.equal(await page.getByText('Late forbidden final',{exact:true}).count(),0);assert.match(await page.locator('.error-note').textContent(),/stopped/);
   }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
 test('configuration HTTP failure blocks sending and keeps the draft',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
-  try{await page.route('**/config.json',route=>route.fulfill({status:503,body:'Unavailable'}));await reloadPage(page);await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');assert.equal(await page.locator('.message').count(),0);await page.locator('#settings-nav').click();assert.match(await page.locator('#model-status').textContent(),/configuration could not be loaded/);}finally{await closeBrowser(browser);}
+  try{await page.route('**/config.json',route=>fulfill(route,{status:503,body:'Unavailable'}));await reloadPage(page);await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');assert.equal(await page.locator('.message').count(),0);await page.locator('#settings-nav').click();assert.match(await page.locator('#model-status').textContent(),/configuration could not be loaded/);}finally{await closeBrowser(browser);}
 });
 test('empty catalog communicates unavailable choices without inventing a default',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
-  try{await page.route('**/app/agent/models',route=>route.fulfill({json:{models:[],default:null}}));await reloadPage(page);await page.locator('#settings-nav').click();await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('No model choices'));await page.locator('#close-settings').click();await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('.message').count(),0);assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');}finally{await closeBrowser(browser);}
+  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[],default:null}}));await reloadPage(page);await page.locator('#settings-nav').click();await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('No model choices'));await page.locator('#close-settings').click();await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('.message').count(),0);assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');}finally{await closeBrowser(browser);}
 });
 test('unversioned provider model succeeds without manufacturing a version',async()=>{
-  const {browser,page}=await openStudio(route=>route.fulfill({json:result('Unversioned response')}));
-  try{await page.route('**/app/agent/models',route=>route.fulfill({json:{models:[{...model,version:null}],default:'sample'}}));await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));await page.locator('#prompt').fill('Hello');await page.locator('#send').click();await page.getByText('Unversioned response',{exact:true}).waitFor();assert.match(await page.locator('.assistant .metadata-grid').textContent(),/Reported versionNot reported/);}finally{await closeBrowser(browser);}
+  const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Unversioned response')}));
+  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[{...model,version:null}],default:'sample'}}));await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));await page.locator('#prompt').fill('Hello');await page.locator('#send').click();await page.getByText('Unversioned response',{exact:true}).waitFor();assert.match(await page.locator('.assistant .metadata-grid').textContent(),/Reported versionNot reported/);}finally{await closeBrowser(browser);}
 });
 test('network connection failure is incomplete and retryable',async()=>{
   const {browser,page}=await openStudio(route=>route.abort('failed'));
@@ -735,27 +758,27 @@ test('retry refuses an unavailable original model without changing its saved tex
 test('persisted question with an unavailable original model cannot resolve or consume its draft',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
   try{
-    await page.route('**/transport.js',async route=>{const response=await route.fetch();await route.fulfill({response,body:(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;')});});
+    await page.route('**/transport.js',async route=>{const response=await route.fetch();await fulfill(route,{response,body:(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;')});});
     await page.evaluate(()=>{const settings={model:'sample',version:'v1',reasoning:''},requested={model:'removed',version:'old',reasoning:''};localStorage.setItem('api-agent-studio-v2',JSON.stringify({session:'saved',draft:'Edited answer',settings,reply:{messageId:'a',savedDraft:'Earlier draft'},messages:[{id:'a',role:'assistant',text:'Old question',requested,question:{id:'q',question:'Your choice?',kind:'clarification',options:['Suggested']}}]}));});
     await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));await page.locator('#send').click();
     assert.match(await page.locator('#status').textContent(),/question’s model selection is no longer available/);assert.equal(await page.locator('#prompt').inputValue(),'Edited answer');assert.equal(await page.locator('#reply-context').isVisible(),true);
   }finally{await closeBrowser(browser);}
 });
 test('continuation adapter abort is honestly interrupted and retains exact reply for retry',async()=>{
-  const {browser,page}=await openStudio(route=>route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'q',question:'Choose',options:['Suggested']}})+'\n\n'}));
+  const {browser,page}=await openStudio(route=>fulfill(route,{contentType:'text/event-stream',body:'data: '+JSON.stringify({kind:'clarification',payload:{id:'q',question:'Choose',options:['Suggested']}})+'\n\n'}));
   try{
-    await page.route('**/transport.js',async route=>{const response=await route.fetch();const body=(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/,`export async function submitContinuation(){throw new DOMException('External interruption','AbortError');}`);await route.fulfill({response,body});});
+    await page.route('**/transport.js',async route=>{const response=await route.fetch();const body=(await response.text()).replace('export const supportsContinuation = false;','export const supportsContinuation = true;').replace(/export async function submitContinuation\(\) \{[\s\S]*?\n\}/,`export async function submitContinuation(){throw new DOMException('External interruption','AbortError');}`);await fulfill(route,{response,body});});
     await reloadPage(page);await page.locator('#prompt').fill('Ask');await page.locator('#send').click();await page.getByRole('button',{name:'Suggested',exact:true}).click();await page.locator('#send').click();
     await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/connection was interrupted/);
   }finally{await closeBrowser(browser);}
 });
 test('repeated adapter metadata cannot overwrite the first reported identity',async()=>{
-  const {browser,page}=await openStudio(route=>route.fulfill({json:result('Metadata response')}));
+  const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Metadata response')}));
   try{
     await page.route('**/transport.js',async route=>{
       const response=await route.fetch();let body=await response.text();body=body.replace('export async function readResponse(response, callbacks = {})','async function baseReadResponse(response, callbacks = {})');
       body+=`\nexport async function readResponse(response,callbacks){callbacks.onMetadata({model:'first-model',version:'first-version',reasoning:'low',actual_model:'first-model',service_tier:'first-tier',serving_revision:'first-revision'});callbacks.onMetadata({model:'later-model',version:'later-version',reasoning:'high',actual_model:'later-model',service_tier:'later-tier',serving_revision:'later-revision'});return baseReadResponse(response,callbacks);}\n`;
-      await route.fulfill({response,body});
+      await fulfill(route,{response,body});
     });
     await reloadPage(page);await page.locator('#prompt').fill('Report identity');await page.locator('#send').click();await page.getByText('Metadata response',{exact:true}).waitFor();
     const metadata=await page.locator('.assistant .metadata-grid').textContent();assert.match(metadata,/first-model/);assert.match(metadata,/first-version/);assert.match(metadata,/first-revision/);assert.doesNotMatch(metadata,/later-/);
@@ -765,7 +788,7 @@ test('catalog raw cap cancels real HTTP before EOF and preserves the unsent draf
   const {createServer}=await import('node:http');let uiOrigin,posts=0;const closed=Promise.withResolvers();
   const api=createServer((request,response)=>{
     response.setHeader('Access-Control-Allow-Origin',uiOrigin);
-    if(request.url==='/app/agent/models'){response.setHeader('Content-Type','application/json');response.once('close',()=>closed.resolve());response.on('error',()=>{});response.write(' '.repeat(131073)+JSON.stringify({models:[model],default:'sample'}));return;}
+    if(request.url==='/app/agent/models'){response.setHeader('Content-Type','application/json');response.once('close',()=>closed.resolve());response.on('error',()=>{});response.write(' '.repeat(131073)+JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));return;}
     posts++;response.writeHead(500);response.end();
   });
   await new Promise(resolve=>api.listen(0,'127.0.0.1',resolve));
@@ -781,7 +804,7 @@ test('catalog raw cap cancels real HTTP before EOF and preserves the unsent draf
   }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
 test('Stop during asynchronous request admission prevents invoking the transport',async()=>{
-  let posts=0;const {browser,page}=await openStudio(route=>{posts++;return route.fulfill({json:result('Unexpected')});});
+  let posts=0;const {browser,page}=await openStudio(route=>{posts++;return fulfill(route,{json:result('Unexpected')});});
   try{
     await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));await page.locator('#prompt').fill('Stop before dispatch');
     await page.evaluate(()=>{const original=window.fetch.bind(window);window.fetch=(url,options)=>{if(String(url).includes('/chat/'))window.chatTransportCalled=true;return original(url,options);};document.querySelector('#composer').requestSubmit();document.querySelector('#stop').click();});
@@ -809,4 +832,89 @@ test('finite padded catalog rejects the raw bytes even though its semantic JSON 
     await page.locator('#prompt').fill('Finite cap retained draft');await page.locator('#send').click();
     assert.equal(await page.locator('#prompt').inputValue(),'Finite cap retained draft');assert.equal(await page.locator('.message').count(),0);assert.equal(posts,0);
   }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
+});
+test('actual HTTP heartbeat survives hidden state, Stop and persisted pagehide cancel with admission',async()=>{
+  const {createServer}=await import('node:http');const nonce='synthetic_lifecycle_nonce_0123456789';let uiOrigin;
+  const calls=[];const streams=[];let rejectHeartbeat=false, completedHeartbeat=false, malformedHeartbeat='', failCancel=false, cancelFailures=0;
+  const api=createServer((request,response)=>{
+    response.setHeader('Access-Control-Allow-Origin',uiOrigin);
+    if(request.method==='OPTIONS'){response.setHeader('Access-Control-Allow-Methods','GET, POST');response.setHeader('Access-Control-Allow-Headers','content-type,x-api-agent-session');response.writeHead(204);response.end();return;}
+    if(request.url.endsWith('/models')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));return;}
+    let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{
+      const {session_id}=JSON.parse(body);calls.push({path:request.url,session_id,nonce:request.headers['x-api-agent-session'],origin:request.headers.origin});
+      if(request.url.endsWith('/stream')){response.setHeader('Content-Type','text/event-stream');response.write(sessionFrame(session_id)+frame('token',{content:'Still running'}));streams.push(response);return;}
+      if(request.url.endsWith('/cancel')&&failCancel){cancelFailures++;response.writeHead(503);response.end('Cancellation unavailable');return;}
+      let value={session_id,status:request.url.endsWith('/cancel')?'cancelled':rejectHeartbeat?'unknown':completedHeartbeat?'completed':'running'};
+      if(request.url.endsWith('/heartbeat')){
+        if(malformedHeartbeat==='null')value=null;
+        if(malformedHeartbeat==='session')value.session_id='foreign';
+        if(malformedHeartbeat==='status')value.status='unexpected';
+        if(malformedHeartbeat==='extra')value.extra=true;
+      }
+      response.setHeader('Content-Type','application/json');response.end(JSON.stringify(value));
+    });
+  });
+  await new Promise(resolve=>api.listen(0,'127.0.0.1',resolve));
+  const {server:ui}=createStudioServer({UI_LISTENER_URL:'http://127.0.0.1:9443',AGENT_DJANGO_URL:'http://127.0.0.1:'+api.address().port,API_AGENT_UI_LAUNCH_TOKEN:'synthetic-browser-test-token',API_AGENT_UI_ACCESS_TOKEN:nonce});
+  await new Promise(resolve=>ui.listen(0,'127.0.0.1',resolve));uiOrigin='http://127.0.0.1:'+ui.address().port;
+  const browser=await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER||undefined});
+  try {
+    const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);await page.waitForFunction(()=>document.querySelector('#model').value==='sample');await page.clock.install();
+    await page.locator('#prompt').fill('First');await page.locator('#send').click();await page.getByText('Still running',{exact:true}).waitFor();
+    await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
+    await page.clock.fastForward(10001);await page.waitForTimeout(100);
+    assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,1);assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,0);
+    await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+    await page.waitForTimeout(100);assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,1);
+    const first=calls[0].session_id;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();
+    await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await page.getByRole('button',{name:'Retry response'}).waitFor();await page.waitForTimeout(100);
+    assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,2);assert.notEqual(calls.filter(x=>x.path.endsWith('/stream'))[1].session_id,first);
+    const heartbeatCount=calls.filter(x=>x.path.endsWith('/heartbeat')).length;await page.clock.fastForward(30001);await page.waitForTimeout(100);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,heartbeatCount);
+    completedHeartbeat=true;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.waitForTimeout(100);assert.equal(await page.locator('#stop').isVisible(),true);const completing=streams.at(-1);const completingId=calls.filter(x=>x.path.endsWith('/stream')).at(-1).session_id;completing.end(finishFrames(completingId,result('Completed after heartbeat')));await page.getByText('Completed after heartbeat',{exact:true}).waitFor();completedHeartbeat=false;
+    await page.locator('#prompt').fill('Another operation');await page.locator('#send').click();await page.getByText('Still running',{exact:true}).waitFor();await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+    for(const malformed of ['null','session','status','extra']){
+      malformedHeartbeat=malformed;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/Invalid agent lifecycle response/);
+    }
+    malformedHeartbeat='';
+    rejectHeartbeat=true;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/no longer running/);
+    rejectHeartbeat=false;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(150001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/too long/);
+    await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false})));
+    failCancel=true;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/stopped/);for(let attempt=0;attempt<100&&cancelFailures===0;attempt++)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(cancelFailures,1);failCancel=false;
+    const exitPage=await browser.newPage();await startCoverage(exitPage);await exitPage.goto(uiOrigin);await exitPage.waitForFunction(()=>document.querySelector('#model').value==='sample');await exitPage.locator('#prompt').fill('Navigate away');await exitPage.locator('#send').click();await exitPage.getByText('Still running',{exact:true}).waitFor();const beforeExit=calls.filter(x=>x.path.endsWith('/cancel')).length;const navigating=streams.at(-1);await exitPage.goto('about:blank');
+    for(let attempt=0;attempt<100&&!navigating.destroyed;attempt++)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(navigating.destroyed,true);assert.ok(calls.filter(x=>x.path.endsWith('/cancel')).length<=beforeExit+1);
+    await exitPage.goto(uiOrigin);await exitPage.waitForFunction(()=>document.querySelector('#model').value==='sample');await exitPage.locator('#prompt').fill('Close active tab');await exitPage.locator('#send').click();await exitPage.getByText('Still running',{exact:true}).waitFor();const beforeClose=calls.filter(x=>x.path.endsWith('/cancel')).length;const closing=streams.at(-1);await exitPage.close();
+    for(let attempt=0;attempt<100&&!closing.destroyed;attempt++)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(closing.destroyed,true);assert.ok(calls.filter(x=>x.path.endsWith('/cancel')).length<=beforeClose+1);
+    assert.ok(calls.every(x=>x.nonce===nonce&&x.origin===uiOrigin));assert.equal(await page.evaluate(token=>JSON.stringify({...localStorage,...sessionStorage}).includes(token),nonce),false);
+  } finally {for(const stream of streams)stream.end();await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
+});
+test('actual HTTP EOF truncations preserve partial text and remain incomplete and retryable',async()=>{
+  const {createServer}=await import('node:http');const nonce='synthetic_eof_nonce_0123456789012345';let uiOrigin,ready=Promise.withResolvers();
+  const api=createServer((request,response)=>{
+    response.setHeader('Access-Control-Allow-Origin',uiOrigin);
+    if(request.method==='OPTIONS'){response.setHeader('Access-Control-Allow-Methods','GET, POST');response.setHeader('Access-Control-Allow-Headers','content-type,x-api-agent-session');response.writeHead(204);response.end();return;}
+    if(request.url.endsWith('/models')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));return;}
+    let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{
+      const {session_id}=JSON.parse(body);
+      assert.equal(request.headers['x-api-agent-session'],nonce);
+      if(!request.url.endsWith('/stream')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({session_id,status:'cancelled'}));return;}
+      response.setHeader('Content-Type','text/event-stream');response.write(sessionFrame(session_id)+frame('token',{content:'Incremental partial'}));ready.resolve({response,session_id});
+    });
+  });
+  await new Promise(resolve=>api.listen(0,'127.0.0.1',resolve));
+  const {server:ui}=createStudioServer({UI_LISTENER_URL:'http://127.0.0.1:9443',AGENT_DJANGO_URL:'http://127.0.0.1:'+api.address().port,API_AGENT_UI_LAUNCH_TOKEN:'synthetic-browser-test-token',API_AGENT_UI_ACCESS_TOKEN:nonce});
+  await new Promise(resolve=>ui.listen(0,'127.0.0.1',resolve));uiOrigin='http://127.0.0.1:'+ui.address().port;
+  const browser=await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER||undefined});
+  try {
+    for(const ending of ['none','LF','CR']){
+      ready=Promise.withResolvers();const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);await page.waitForFunction(()=>document.querySelector('#model').value==='sample');
+      await page.locator('#prompt').fill('Original request');await page.locator('#send').click();const active=await ready.promise;
+      await page.getByText('Incremental partial',{exact:true}).waitFor();assert.equal(await page.locator('#stop').isVisible(),true);
+      const done=frame('done',{session_id:active.session_id}).slice(0,-2)+(ending==='none'?'':ending==='LF'?'\n':'\r');
+      active.response.end(frame('response_complete',{session_id:active.session_id})+frame('result',wireResult(result('Authoritative partial'),active.session_id))+done);
+      await page.getByRole('button',{name:'Retry response'}).waitFor();
+      assert.match(await page.locator('.error-note').textContent(),/Incomplete|terminal/);assert.match(await page.locator('.assistant .metadata-grid').textContent(),/StatusIncomplete/);
+      assert.notEqual(await page.locator('#status').textContent(),'Response complete.');assert.equal(await page.locator('.assistant .message-body').textContent(),'Authoritative partial\n');
+      const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).messages.at(-1));assert.equal(saved.pending,false);assert.match(saved.error,/Incomplete|terminal/);
+    }
+  } finally {await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
