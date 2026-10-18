@@ -10,7 +10,9 @@ These are requirements; registering them does not deliver runtime wiring or auth
 
 The [initial LocalStack routing/reuse slice](implementation_plan_h2a3.md) is
 pulled forward for current test review, after fixture hang protection. It does
-not complete last-session shutdown or the management UI.
+not complete the management UI. The bounded [LocalStack session follow-on](implementation_plan_h2a2a.md)
+adds lazy workbench/operation ownership and verified same-object restart; broader
+tracing persistence and management acceptance remain open.
 
 ## 1. Session ownership before runtime wiring
 

@@ -90,7 +90,9 @@ def test_disconnect_retains_native_completion_until_drained(connection):
     asyncio.run(run())
 
 
-def test_server_cleanup_failure_still_closes_node_and_socket(connection, monkeypatch):
+@pytest.mark.parametrize('host_failure', [False, True])
+def test_server_cleanup_failure_retains_node_and_socket_until_retry(connection, monkeypatch, host_failure):
+    from api_agent.providers.control import CleanupPendingError
     async def run():
         provider = Provider()
         provider.release.set()
@@ -102,23 +104,44 @@ def test_server_cleanup_failure_still_closes_node_and_socket(connection, monkeyp
             child = await spawn(*args, **kwargs)
             children.append(child)
             return child
+        failed = False
         async def fail_server(server, task):
-            # First settle the real server, then simulate its terminal failure.
+            nonlocal failed
+            # A failed parent acknowledgement must keep every later duty.
             await original_close(server, task)
-            raise RuntimeError('controlled server failure')
+            if not failed:
+                failed = True
+                raise RuntimeError('controlled server failure')
         def record_application(runtime):
             listeners.append(runtime)
             return create(runtime)
         original_close = connection._close_server
+        original_host_close = connection._close_host
+        host_failed = False
+        async def close_host(process):
+            nonlocal host_failed
+            if host_failure and not host_failed:
+                host_failed = True
+                raise CleanupPendingError((process,), lambda: original_host_close(process))
+            await original_host_close(process)
+        monkeypatch.setattr(connection, '_close_host', close_host)
         monkeypatch.setattr(connection.asyncio, 'create_subprocess_exec', record_spawn)
         monkeypatch.setattr(connection, '_close_server', fail_server)
         monkeypatch.setattr(connection, 'create_application', record_application)
         try:
             async with httpx.AsyncClient(trust_env=False) as client:
-                with pytest.raises(RuntimeError, match='controlled server failure'):
+                with pytest.raises(CleanupPendingError) as pending:
                     async with connection.studio_endpoint(provider, 'sample') as origin:
                         config = (await client.get(origin + '/config.json')).json()
                         assert (await send(client, config, origin)).status_code == 200
+                assert children[0].returncode is None
+                if host_failure:
+                    with pytest.raises(CleanupPendingError) as host_pending:
+                        await pending.value.retry()
+                    assert children[0].returncode is None
+                    await host_pending.value.retry()
+                else:
+                    await pending.value.retry()
                 assert children[0].returncode is not None
                 assert listeners[0]._closed
                 assert not pending_contexts(listeners[0].services['studio_backend'])
@@ -327,3 +350,42 @@ def test_studio_precondition_checks_frontend_ownership_before_llm_setup(connecti
     else:
         with pytest.raises(pytest.skip.Exception,match='included Studio'):
             connection.studio_configuration.__wrapped__(requirements)
+
+
+@pytest.mark.parametrize('failure_kind', ['none', 'cancel', 'pending', 'error'])
+def test_cleanup_preserves_child_receipt_when_its_caller_is_cancelled(connection, failure_kind):
+    from api_agent.providers.control import CleanupPendingError
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        settled = []
+        async def retry_child(): settled.append('retried')
+        receipt = CleanupPendingError((settled,), retry_child)
+        child_error = asyncio.CancelledError()
+        child_error.cleanup_pending = receipt
+        first = True
+        async def action():
+            nonlocal first
+            entered.set()
+            await release.wait()
+            if first:
+                first = False
+                if failure_kind == 'cancel': raise child_error
+                if failure_kind == 'pending': raise receipt
+                if failure_kind == 'error': raise RuntimeError('controlled cleanup failure')
+            settled.append('closed')
+        task = asyncio.create_task(connection._cleanup(action))
+        await entered.wait()
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as stopped:
+            await task
+        if failure_kind == 'none':
+            assert settled == ['closed']
+            assert not hasattr(stopped.value, 'cleanup_pending')
+        else:
+            pending = stopped.value.cleanup_pending
+            assert isinstance(pending, CleanupPendingError)
+            if failure_kind == 'cancel': assert stopped.value is child_error
+            await pending.retry()
+            assert settled == (['closed'] if failure_kind == 'error' else ['retried'])
+    asyncio.run(run())

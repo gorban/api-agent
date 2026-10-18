@@ -520,11 +520,11 @@ class PrerequisiteManager:
         except (KeyError, TypeError, ValueError) as error:
             raise PrerequisiteError('Invalid prerequisite inspection response.') from error
 
-    def verify_reporting_storage(self, identifier, directory, deadline):
+    def verify_reporting_storage(self, identifier, directory, deadline, *, cleanup=False):
         """Verify the retained controlled bind and named volume before adoption."""
         from .reporting_metadata import _directory
         try:
-            records = json.loads(self._command((self.plan.command[0], 'inspect', identifier), deadline))
+            records = json.loads(self._command((self.plan.command[0], 'inspect', identifier), deadline, cleanup=cleanup))
             record, = records
             if record['Id'] != identifier:
                 raise ValueError()
@@ -551,7 +551,7 @@ class PrerequisiteManager:
             volume, = [item for item in mounts if item.get('Name') == name]
             if volume['Type'] != 'volume' or volume['Destination'] != destination:
                 raise ValueError()
-            volumes = json.loads(self._command((self.plan.command[0], 'volume', 'inspect', name), deadline))
+            volumes = json.loads(self._command((self.plan.command[0], 'volume', 'inspect', name), deadline, cleanup=cleanup))
             actual, = volumes
             labels = actual['Labels']
             if actual['Name'] != name or any(labels.get(key) != value for key, value in self.scope.labels('localstack').items()):
@@ -559,12 +559,12 @@ class PrerequisiteManager:
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
             raise PrerequisiteError('Reporting storage ownership or captured assets could not be verified.') from error
 
-    def _verified_digest_image(self, expected, actual_id, deadline):
+    def _verified_digest_image(self, expected, actual_id, deadline, *, cleanup=False):
         """Verify a container's immutable image against the locally resolved pin."""
         if not isinstance(actual_id, str) or not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', actual_id):
             return False
         try:
-            inspected = json.loads(self._command((self.plan.command[0], 'image', 'inspect', expected), deadline))
+            inspected = json.loads(self._command((self.plan.command[0], 'image', 'inspect', expected), deadline, cleanup=cleanup))
             if not isinstance(inspected, list) or len(inspected) != 1:
                 return False
             image = inspected[0]
@@ -584,7 +584,7 @@ class PrerequisiteManager:
         except (ValueError, TypeError, AttributeError, KeyError):
             return False
 
-    def _compatible(self, inventory, deadline, *, allow_stopped=False):
+    def _compatible(self, inventory, deadline, *, allow_stopped=False, cleanup=False):
         desired = {}
         verified = {}
         for item in inventory.values():
@@ -597,7 +597,7 @@ class PrerequisiteManager:
                 else:
                     image_key = (expected, item.image_id)
                     if image_key not in verified:
-                        verified[image_key] = self._verified_digest_image(expected, item.image_id, deadline)
+                        verified[image_key] = self._verified_digest_image(expected, item.image_id, deadline, cleanup=cleanup)
                     # Engines may normalize Config.Image (including adding :latest).
                     # The running image ID and the requested repo digest are proof.
                     image_matches = verified[image_key]
@@ -657,10 +657,12 @@ class PrerequisiteManager:
                 return self.lease
             initial = self._inventory(deadline)
             if expected_ids is not None and (set(initial) != set(expected_ids)
-                    or any(not item.running for item in initial.values())):
+                    or (reporting_directory is None and any(not item.running for item in initial.values()))):
                 raise PrerequisiteError('Registered reporting container changed or stopped; no restart was attempted.')
             compatible = self._compatible(initial, deadline, allow_stopped=True)
             if reporting_directory is not None:
+                if set(compatible) != {'localstack'}:
+                    raise PrerequisiteError('Registered reporting service changed; no restart was attempted.')
                 for identifier in expected_ids:
                     self.verify_reporting_storage(identifier, reporting_directory, deadline)
             existing = {name: item for name, item in compatible.items() if item.running}
@@ -672,7 +674,11 @@ class PrerequisiteManager:
             snapshot = None
             missing = tuple(name for name in self.plan.services if name not in existing)
             try:
-                if missing:
+                if restarted and reporting_directory is not None:
+                    # Restart only the registered immutable objects. Compose up
+                    # would select a fresh snapshot rather than the retained bind.
+                    self._command((self.plan.command[0], 'start', *sorted(restarted)), deadline)
+                elif missing:
                     override = self.directory / f'{self.scope.id}-labels.json'
                     if override.is_symlink():
                         raise PrerequisiteError('Compose ownership override may not be a symlink.')
@@ -701,7 +707,7 @@ class PrerequisiteManager:
                             and all(self.probe(profile, min(1, max(.001, deadline - self.now())),
                                     self.environment) for profile in self.plan.profiles)):
                         _check(deadline, self.cancelled, self.now)
-                        if 'localstack' in current:
+                        if 'localstack' in current and reporting_directory is None:
                             self._command((self.plan.command[0], 'exec', current['localstack'].id,
                                 '/bin/sh', '/etc/localstack/init/ready.d/10-api-agent-s3.sh'), deadline)
                             _check(deadline, self.cancelled, self.now)
@@ -737,7 +743,7 @@ class PrerequisiteManager:
         from api_agent.runtime.tasks import offload
         await offload(self.release, retain=False)
 
-    def release(self, *, retain=False):
+    def release(self, *, retain=False, reporting_ids=None, reporting_directory=None):
         if self.lease is None and self._rollback is None:
             return ()
         deadline = self.now() + 15
@@ -749,7 +755,25 @@ class PrerequisiteManager:
             if self._rollback is not None:
                 return self._rollback_acquisition(journal, deadline)
             journal.pop(self.lease.invocation_id, None)
-            stopped = () if retain else self._stop_new(self.lease.owned_ids, journal, deadline)
+            if reporting_ids is not None and not retain:
+                # The final consumer may have reused every object. Ownership is
+                # the verified registry chain, not which invocation created it.
+                current = self._inventory(deadline, cleanup=True)
+                if set(current) != set(reporting_ids):
+                    raise PrerequisiteError('Registered reporting container changed; cleanup remains owned.')
+                compatible = self._compatible(current, deadline, allow_stopped=True, cleanup=True)
+                if set(compatible) != {'localstack'}:
+                    raise PrerequisiteError('Registered reporting service changed; cleanup remains owned.')
+                for identifier in reporting_ids:
+                    self.verify_reporting_storage(identifier, reporting_directory, deadline, cleanup=True)
+                protected = {item for record in journal.values() for item in record['ids']}
+                eligible = tuple(sorted(item for item in reporting_ids
+                    if item not in protected and current[item].running))
+                if eligible:
+                    self._command((self.plan.command[0], 'stop', '--time', '5', *eligible), deadline, cleanup=True)
+                stopped = eligible
+            else:
+                stopped = () if retain else self._stop_new(self.lease.owned_ids, journal, deadline)
             _write_journal(self.directory, self.scope, journal)
             # Both running and stopped container definitions keep their original
             # bind source. Removal/asset garbage collection requires an explicit

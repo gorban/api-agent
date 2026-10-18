@@ -3,8 +3,9 @@
 [Shared reporting lifecycle](implementation_plan_h2a2.md) · [Fixed ports](implementation_plan_h2a.md)
 
 Bring this narrow slice forward for test and human-review usability. It does
-not implement the complete Reporting UI, persistent tracing stack migration or
-last-TUI lifecycle. Complete the separate publication-fixture hang-protection
+not implement the complete Reporting UI or persistent tracing stack migration.
+The bounded [LocalStack session follow-on](implementation_plan_h2a2a.md) owns
+last-consumer shutdown and retained-instance restart. Complete the separate publication-fixture hang-protection
 gate before runtime wiring. Preserve the exclusive suite/accounting guard.
 
 ## Routing and administration
@@ -62,13 +63,13 @@ gate before runtime wiring. Preserve the exclusive suite/accounting guard.
 - [x] Human-review cross-checkout reuse and fixed-port errors after the exact
   delivered behavior and any existing-installation transition are explained.
 
-Normal test publication continues preserving the managed service after the
-operation releases it until the separate session-owned shutdown consumer is
-implemented. Do not claim last-TUI stopping from operation leases alone.
-A stopped registered container is refused, including a canonical instance stopped
-by explicit release(retain=False); this slice never automatically restarts or
-replaces it. Session-owned shutdown must first add verified stopped-instance
-recovery under the shared registry and original-journal locks.
+The initial retained-running behavior is extended by the bounded
+[LocalStack session follow-on](implementation_plan_h2a2a.md): active operations
+release after publication, workbenches hold separate lazy session leases until
+quit, and the last normal consumer stops only verified registered objects while
+retaining their volumes. Registered stopped objects restart with the same pinned
+container and original captured bind under both ownership locks. Unregistered
+stopped installations still refuse adoption. Broader acceptance remains separate.
 LangFuse/Jaeger reuse and persistent storage keep their broader lifecycle gates.
 Allure's generated report viewer is not a storage service: reuse requires an
 exact selected-run binding or an explicitly implemented multi-run viewer, never

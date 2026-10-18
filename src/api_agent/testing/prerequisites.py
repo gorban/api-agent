@@ -15,12 +15,13 @@ class RecordingPrerequisites:
     """
 
     def __init__(self, *, prepare_dependencies, plan, manager, cancel_event=None,
-                 timeout=120):
+                 timeout=120, reporting_session=None):
         if timeout <= 0:
             raise ValueError('timeout must be positive')
         self.prepare_dependencies = prepare_dependencies
         self.plan = plan
         self.manager = manager
+        self.reporting_session = reporting_session
         self.cancel_event = cancel_event if cancel_event is not None else Event()
         self.timeout = timeout
         self.owned_manager = None
@@ -54,6 +55,9 @@ class RecordingPrerequisites:
             self.lease = self.owned_manager.acquire()
             acquired = True
             self._check_cancelled()
+            if self.reporting_session is not None:
+                self.reporting_session(selected_plan)
+            self._check_cancelled()
         except BaseException as primary:
             self.lease = getattr(self.owned_manager, 'lease', None)
             # Successful storage acquisition stays leased until the interrupted
@@ -72,16 +76,17 @@ class RecordingPrerequisites:
         self.prepared = False
 
     def finish(self):
-        """Relinquish leases, keeping owned LocalStack running for history."""
+        """Relinquish active use only after recording/publication settles."""
         if self.pending_cleanup is not None:
             raise self.pending_cleanup
         if self.owned_manager is None:
             return
+        retain = self.prepared and getattr(self.owned_manager, 'session_lifecycle', False) is not True
         try:
-            self.owned_manager.release(retain=self.prepared)
+            self.owned_manager.release(retain=retain)
         except BaseException:
             cleanup = OperationCleanup(self.owned_manager, None, None,
-                self.lease or getattr(self.owned_manager, 'lease', None) or self.owned_manager, self.prepared,
+                self.lease or getattr(self.owned_manager, 'lease', None) or self.owned_manager, retain,
                 self.timeout, complete=self._complete)
             self.pending_cleanup = CleanupPendingError((self.owned_manager,), cleanup.retry)
             raise self.pending_cleanup from None
@@ -90,7 +95,7 @@ class RecordingPrerequisites:
 
 def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(),
                                  engine_environment=None, cancel_event=None, timeout=120,
-                                 provider_config=None, provider_kinds=()):
+                                 provider_config=None, provider_kinds=(), reporting_session=None):
     """Build inert hooks using the shared reports installer and scoped manager."""
     from api_agent.runtime.dependencies import active_environment, ensure_environment
     from api_agent.runtime.compose import plan_compose
@@ -114,4 +119,6 @@ def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(
             engine_environment=engine_environment, cancelled=cancelled, deadline_seconds=timeout)
             if plan.profiles == ('localstack',) else PrerequisiteManager(plan, scope, ownership_directory,
             engine_environment=engine_environment, cancelled=cancelled, deadline_seconds=timeout)),
-        cancel_event=cancel_event, timeout=timeout)
+        cancel_event=cancel_event, timeout=timeout,
+        reporting_session=(lambda plan: reporting_session(plan, engine_environment=engine_environment,
+            deadline_seconds=timeout)) if reporting_session is not None else None)
