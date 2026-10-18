@@ -9,9 +9,11 @@ contract. Provider transport and authentication values remain internal.
   output/context limits, family and optional reasoning choices. Resolve one exact
   offered default through selection policy. Return `reasoning_default` as the
   explicitly configured effort or null for provider deferral; never infer it from
-  supported choices. Validate a configured reasoning default against every
-  advertised offered model before advertising it or invoking inference. Preserve
-  omitted reasoning choices versus an empty list.
+  supported choices. Catalog reads preserve all allowed selections even when
+  their reasoning capabilities differ. Validate the effective explicit or
+  configured reasoning effort against the actual chosen model before inference;
+  an incompatible alternative cannot block a valid default or catalog discovery.
+  Preserve omitted/unknown reasoning choices versus an empty supported list.
 - [x] Accept a fresh operation `session_id` (canonical UUID or null to allocate),
   optional model, role/content messages and bounded optional generation controls.
   Missing model selects the exact catalog default. Omitted reasoning/cache/output
@@ -67,7 +69,7 @@ contract. Provider transport and authentication values remain internal.
   callback waits to a fresh five-second cleanup budget; retain a hung task without
   cancelling or restarting it on retry. Shutdown signals all operations and
   attempts every response/context, retaining authentication until all settle.
-- [x] Renew applicable exact coverage, independent adversarial review, installed
+- [ ] Renew applicable exact coverage, independent adversarial review, installed
   package and public-boundary gates before accepting this delivery.
 - [ ] Human review of the joined included Studio and alternate adapter behavior.
 
@@ -86,4 +88,14 @@ qualification or authorize a paid pilot.
 
 No live authentication, inference or report-history mutation is required by this contract work.
 
-The renewed joined unit gate passed 10,422 tests and 27 subtest records at exact 100% line and branch coverage. Eleven controlled HTTP checks, the installed wheel from a different working directory, licenses and source-boundary checks passed. Independent adversarial reviews cover authoritative request metadata before body acquisition, bounded ingress, configured-default validation across offered choices, retained-response bounds and captured-turn disposal. Unavailable built-in routes return before body acquisition; explicitly injected handlers retain authority. The shared callback registry deduplicates transferred receipt duties across different callbacks and overlapping waiters. Human acceptance remains separate.
+At the prior checkpoint, the joined unit gate passed 10,422 tests and 27 subtest records at exact 100% line and branch coverage. Eleven controlled HTTP checks, the installed wheel from a different working directory, licenses and source-boundary checks passed. Independent adversarial reviews cover authoritative request metadata before body acquisition, bounded ingress, configured-default validation for the actual chosen selection, retained-response bounds and captured-turn disposal. Unavailable built-in routes return before body acquisition; explicitly injected handlers retain authority. The shared callback registry deduplicates transferred receipt duties across different callbacks and overlapping waiters. Human acceptance remains separate.
+
+
+Mixed-catalog controls additionally load the real original Studio page with a
+compatible default, an unknown-capability model and an explicitly incompatible
+alternative. Catalog loading performs no inference. The UI checks inherited
+configured reasoning as well as explicit overrides; a supported explicit
+alternative remains usable. Failed catalog loading reports a fixed HTTP status
+without publishing response bodies, and browser-request diagnostics include the
+model-status message. Existing request and fetch timeouts are unchanged. These
+controls do not renew unrelated workflow qualification or claim live acceptance.

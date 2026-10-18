@@ -36,9 +36,13 @@ export function normalizeCatalog(input) {
 }
 export function resolveSelection(catalog, {model, version = '', reasoning = ''}) {
   const selection = catalog.find(row => row.selected_llm === (model || catalog.defaultSelection));
+  const effort = reasoning || catalog.reasoningDefault;
   let error = '';
   if (!selection) error = 'Choose an available model.';
   else if (version && selection.version !== version) error = 'This model version is no longer available.';
-  else if (reasoning && (!selection.features.includes('reasoning_effort') || !selection.reasoning_efforts?.includes(reasoning))) error = 'This reasoning setting is unsupported.';
+  else if (effort && (!selection.features.includes('reasoning_effort') || !selection.reasoning_efforts?.includes(effort))) {
+    if (selection.reasoning_efforts === undefined || selection.reasoning_efforts === null) error = 'Reasoning support for this model is unknown; the selected or configured effort cannot be verified.';
+    else error = reasoning ? 'This reasoning setting is unsupported.' : 'The configured reasoning default is unsupported for this model.';
+  }
   return {valid: !error, error, selection};
 }

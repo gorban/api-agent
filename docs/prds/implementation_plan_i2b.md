@@ -39,7 +39,29 @@ The initial buffered provider-shaped HTTP proof below is historical. The current
   only the process environment boundary.
 - [x] Launch under shared progress/deadlines, use verified TLS and bounded local
   HTTP readiness, and require the exact per-launch ephemeral identity header.
-  A foreign listener cannot satisfy readiness. Drain the owned direct host on
+  Enforce the clipped absolute startup budget before each probe and after every
+  probe result or transport error, before admitting readiness or retrying. A
+  consumed cancellation cannot extend startup, admit a late matching identity,
+  or replace an expired deadline with a later child-exit outcome. Client context
+  disposal must finish before a final clipped-budget check acknowledges success;
+  a late client exit cannot consume expiry and transfer process ownership or
+  replace the expired outcome with a transport error. Ordinary pre-deadline
+  errors and genuine external cancellation retain their original classification,
+  including an original external interruption followed by expiry during client
+  disposal; preserve its cancellation arguments and owned cleanup duties.
+  Process-level interruptions also retain their exact exception objects after
+  expiry; only ordinary exceptions receive deadline normalization.
+  Tighter parent deadlines remain authoritative. A foreign listener cannot satisfy readiness. Drain the owned direct host on
   launch failure or cancellation; retain cleanup retries and never signal a
   cached process-group identity. Preserve provider dependency ownership until
   cleanup confirms exit.
+
+
+Controlled readiness proofs include deadline-consuming clients, late matching
+and foreign responses, cancellation transformed into a transport error, an
+expired client-entry scope and a tighter inherited deadline with exact retained
+cleanup. Real loopback HTTP controls require an observed foreign identity before
+cutoff and verify owned-child disposal while the foreign listener stays alive.
+A bounded outer watchdog does not replace that observed-response ordering proof.
+These controls establish the deadline invariant; they do not identify which
+third-party transport consumed cancellation in any particular prior execution.

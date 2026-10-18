@@ -187,3 +187,16 @@ test('overflowing JSON numeric heartbeat timings are rejected before scheduling'
  const session=frame('session',{session_id:id,heartbeat_interval_ms:5000,heartbeat_timeout_ms:15000}).replace('5000','1e999');
  await assert.rejects(readResponse(response(session)),/Invalid stream session/);
 });
+
+test('mixed catalog validates inherited reasoning only for the chosen selection',()=>{
+ const unknown={...model,value:'unknown',features:[]};delete unknown.reasoning_efforts;
+ const empty={...model,value:'empty',features:['reasoning_effort'],reasoning_efforts:[]};
+ const alternate={...model,value:'alternate',reasoning_efforts:['off']};
+ const rows=normalizeCatalog(catalog([model,unknown,empty,alternate],{reasoning_default:'low'}));
+ assert.equal(rows[1].reasoning_efforts,undefined);assert.deepEqual(rows[2].reasoning_efforts,[]);
+ assert.equal(resolveSelection(rows,{model:''}).valid,true);
+ assert.match(resolveSelection(rows,{model:'unknown'}).error,/support.*unknown/);
+ for(const choice of ['empty','alternate'])assert.match(resolveSelection(rows,{model:choice}).error,/configured reasoning default is unsupported/);
+ assert.equal(resolveSelection(rows,{model:'alternate',reasoning:'off'}).valid,true);
+ assert.equal(resolveSelection(normalizeCatalog(catalog([unknown],{default:'unknown'})),{model:'unknown'}).valid,true);
+});

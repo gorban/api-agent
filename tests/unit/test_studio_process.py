@@ -202,23 +202,39 @@ def test_actual_http_wrong_identity_never_admits_foreign_server(monkeypatch):
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     children = []
-    popen = process.subprocess.Popen
+    popen, actual_client = process.subprocess.Popen, httpx.AsyncClient
     def spawn(*args, **kwargs):
         child = popen(*args, **kwargs)
         children.append(child)
         return child
     monkeypatch.setattr(process.subprocess, 'Popen', spawn)
     async def run():
-        with pytest.raises(TimeoutError):
-            await launcher(timeout=.1).start((sys.executable, '-c', 'import time; time.sleep(30)'),
-                cwd='.', host='127.0.0.1', port=server.server_port, scheme='http', env={})
-        assert children[0].poll() is not None
-        async with httpx.AsyncClient(trust_env=False) as client:
-            response = await client.head(f'http://127.0.0.1:{server.server_port}/')
-        assert response.headers['X-UI-Launch-Token'] == 'foreign-host-token'
+        async with actual_client(trust_env=False) as real:
+            class VerifiedForeign(Client):
+                async def head(self, url):
+                    if self.urls:
+                        raise TimeoutError('Controlled retry cutoff after the foreign response')
+                    response = await real.head(url)
+                    assert response.headers['X-UI-Launch-Token'] == 'foreign-host-token'
+                    self.urls.append(url)
+                    return response
+            client = VerifiedForeign(None)
+            monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+            # The response is observed before the controlled cutoff; this larger
+            # outer budget is only a safety watchdog, not the identity proof.
+            with pytest.raises(TimeoutError):
+                await launcher(timeout=2).start((sys.executable, '-c', 'import time; time.sleep(30)'),
+                    cwd='.', host='127.0.0.1', port=server.server_port, scheme='http', env={})
+            assert len(client.urls) == 1 and children[0].poll() is not None
+            response = await real.head(f'http://127.0.0.1:{server.server_port}/')
+            assert response.headers['X-UI-Launch-Token'] == 'foreign-host-token'
     try:
         asyncio.run(run())
     finally:
+        for child in children:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=2)
         server.shutdown()
         server.server_close()
         thread.join()
@@ -323,4 +339,298 @@ def test_actual_node_parent_pipe_eof_stops_listener_without_signal():
         finally:
             await owned.aclose()
         assert not owned._terminated and not owned._killed
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('matching', [False, True])
+def test_consumed_probe_deadline_cannot_retry_or_admit_a_late_response(monkeypatch, matching):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+    class Consumed(Client):
+        def __init__(self):
+            super().__init__(None)
+            self.cancelled = False
+        async def __aexit__(self, kind, error, traceback):
+            pass
+        async def head(self, url):
+            self.urls.append(url)
+            if len(self.urls) == 1:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+            else:
+                child.code = 0  # A later natural exit cannot replace the timeout.
+            return httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43 if matching else 'foreign'})
+    client = Consumed()
+    monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+    async def run():
+        owned = None
+        try:
+            with pytest.raises(TimeoutError):
+                owned = await launcher(timeout=.03).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={})
+            assert client.cancelled and len(client.urls) == 1
+            assert child.code == 0 and child.terminations == 1
+        finally:
+            if owned is not None: await owned.aclose()
+    asyncio.run(run())
+
+
+def test_budget_expired_during_client_entry_prevents_any_probe(monkeypatch):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    class ConsumedEntry(Client):
+        async def __aenter__(self):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return self
+        async def head(self, url):
+            self.urls.append(url)
+            child.code = 0
+            return httpx.Response(503)
+    client = ConsumedEntry(None)
+    monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+    async def run():
+        with pytest.raises(TimeoutError):
+            await launcher(timeout=.03).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={})
+        assert client.urls == []
+        assert child.terminations == 1
+    asyncio.run(run())
+
+
+def test_consumed_deadline_with_actual_foreign_http_and_owned_child(monkeypatch, record_property):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+    import sys
+    from time import monotonic
+    from api_agent.providers import progress
+    clock = progress._clock
+    offset = 0
+    monkeypatch.setattr(progress, '_clock', lambda: clock() + offset)
+    class Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header('X-UI-Launch-Token', 'foreign-host-token')
+            self.end_headers()
+        def log_message(self, *args): pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    children = []
+    popen, actual_client = process.subprocess.Popen, httpx.AsyncClient
+    def spawn(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(process.subprocess, 'Popen', spawn)
+    async def run():
+        async with actual_client(trust_env=False) as real:
+            class Consumed(Client):
+                async def head(self, url):
+                    self.urls.append(url)
+                    nonlocal offset
+                    response = await real.head(url)
+                    if len(self.urls) == 1:
+                        # Expire the shared absolute budget only after a real
+                        # foreign response was observed, then consume its cancel.
+                        offset = 3
+                        task = asyncio.current_task()
+                        task.cancel()
+                        try:
+                            await asyncio.sleep(0)
+                        except asyncio.CancelledError:
+                            task.uncancel()
+                    return response
+            client = Consumed(None)
+            monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+            started = monotonic()
+            try:
+                with pytest.raises(TimeoutError):
+                    await launcher(timeout=2).start((sys.executable, '-c', 'import time; time.sleep(.4)'),
+                        cwd='.', host='127.0.0.1', port=server.server_port, scheme='http', env={})
+                assert len(client.urls) == 1
+                assert children[0].poll() is not None
+                response = await real.head(f'http://127.0.0.1:{server.server_port}/')
+                assert response.headers['X-UI-Launch-Token'] == 'foreign-host-token'
+            finally:
+                record_property('elapsed_seconds', monotonic() - started)
+                record_property('owned_child_returncode', children[0].poll() if children else None)
+                for child in children:
+                    if child.poll() is None:
+                        child.terminate()
+                        child.wait(timeout=2)
+    try:
+        asyncio.run(run())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_probe_deadline_uses_clipped_parent_budget_and_retains_exact_cleanup(monkeypatch):
+    from api_agent.providers.progress import component_timeout
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+    class Consumed(Client):
+        async def head(self, url):
+            self.urls.append(url)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43})
+    client = Consumed(None)
+    monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+    async def run():
+        owned = None
+        try:
+            with pytest.raises(CleanupPendingError) as stopped:
+                async with component_timeout('Tighter prerequisite deadline', .03):
+                    owned = await launcher(timeout=2).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={})
+            pending = stopped.value
+            owner, = pending.owners
+            assert isinstance(owner, process.OwnedStudioProcess) and owner.process is child
+            assert len(client.urls) == 1 and child.terminations == 0
+            # An expired parent can also bound immediate cleanup. Its exact
+            # receipt must still finish outside that completed parent scope.
+            await pending.retry()
+            assert child.code == 0 and child.terminations == 1
+        finally:
+            if owned is not None: await owned.aclose()
+    asyncio.run(run())
+
+
+def test_probe_http_error_after_consumed_deadline_remains_timeout(monkeypatch):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    class Consumed(Client):
+        async def head(self, url):
+            self.urls.append(url)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise httpx.ConnectError('Controlled transport failure after deadline')
+    client = Consumed(None)
+    monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+    async def run():
+        with pytest.raises(TimeoutError):
+            await launcher(timeout=.03).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={})
+        assert len(client.urls) == 1 and child.terminations == 1 and child.code == 0
+    asyncio.run(run())
+
+
+def test_successful_probe_client_exit_cannot_consume_startup_deadline(monkeypatch):
+    child=Child();monkeypatch.setattr(process.subprocess,'Popen',lambda *a,**kw:child)
+    monkeypatch.setattr(process,'token_urlsafe',lambda _:'a'*43)
+    class ConsumedExit(Client):
+        async def __aexit__(self,*args):
+            try:await asyncio.Event().wait()
+            except asyncio.CancelledError:pass
+    client=ConsumedExit(httpx.Response(200,headers={'X-UI-Launch-Token':'a'*43}))
+    monkeypatch.setattr(process.httpx,'AsyncClient',lambda **kw:client)
+    async def run():
+        owned=None
+        try:
+            with pytest.raises(TimeoutError):
+                owned=await launcher(timeout=.02).start(('node',),cwd='.',host='localhost',port=8000,scheme='http',env={})
+            assert child.terminations==1
+        finally:
+            if owned is not None:await owned.aclose()
+    asyncio.run(run())
+
+
+def test_consumed_exit_deadline_http_error_keeps_timeout_classification(monkeypatch):
+    child=Child();monkeypatch.setattr(process.subprocess,'Popen',lambda *a,**kw:child)
+    monkeypatch.setattr(process,'token_urlsafe',lambda _:'a'*43)
+    class ConsumedExit(Client):
+        async def __aexit__(self,*args):
+            try:await asyncio.Event().wait()
+            except asyncio.CancelledError:raise httpx.ReadError('synthetic exit error after deadline')
+    client=ConsumedExit(httpx.Response(200,headers={'X-UI-Launch-Token':'a'*43}))
+    monkeypatch.setattr(process.httpx,'AsyncClient',lambda **kw:client)
+    async def run():
+        with pytest.raises(TimeoutError):
+            await launcher(timeout=.02).start(('node',),cwd='.',host='localhost',port=8000,scheme='http',env={})
+        assert child.terminations==1
+    asyncio.run(run())
+
+
+def test_pre_deadline_client_exit_error_preserves_failure_and_owned_disposal(monkeypatch):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+    failure = httpx.ReadError('Controlled pre-deadline client exit failure')
+    class FailedExit(Client):
+        async def __aexit__(self, *args): raise failure
+    client = FailedExit(httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43}))
+    monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+    async def run():
+        with pytest.raises(httpx.ReadError) as stopped:
+            await launcher(timeout=2).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={})
+        assert stopped.value is failure and child.terminations == 1
+    asyncio.run(run())
+
+
+def test_external_cancellation_during_client_exit_retains_cancellation(monkeypatch):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+    async def run():
+        entered = asyncio.Event()
+        class WaitingExit(Client):
+            async def __aexit__(self, *args):
+                entered.set()
+                await asyncio.Event().wait()
+        client = WaitingExit(httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43}))
+        monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+        task = asyncio.create_task(launcher(timeout=2).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={}))
+        await entered.wait()
+        task.cancel('controlled external cancellation')
+        with pytest.raises(asyncio.CancelledError) as stopped: await task
+        assert str(stopped.value) == 'controlled external cancellation'
+        assert child.terminations == 1 and child.code == 0
+    asyncio.run(run())
+
+
+def test_original_external_cancel_survives_later_expiry_during_client_disposal(monkeypatch):
+    child=Child();monkeypatch.setattr(process.subprocess,'Popen',lambda *a,**kw:child)
+    async def run():
+        entered=asyncio.Event()
+        class SlowExit(Client):
+            async def head(self,url):
+                entered.set();await asyncio.Event().wait()
+            async def __aexit__(self,*args):
+                assert isinstance(args[1],asyncio.CancelledError)
+                try:await asyncio.Event().wait()
+                except asyncio.CancelledError:pass
+        monkeypatch.setattr(process.httpx,'AsyncClient',lambda **kw:SlowExit(None))
+        task=asyncio.create_task(launcher(timeout=.04).start(('node',),cwd='.',host='localhost',port=8000,scheme='http',env={}))
+        await entered.wait();task.cancel('original-external-cancel')
+        with pytest.raises(asyncio.CancelledError) as interrupted:await task
+        assert interrupted.value.args==('original-external-cancel',)
+        assert child.code==0 and child.terminations==1
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_expired_client_disposal_preserves_process_interruption(monkeypatch, kind):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+    failure = kind('controlled process interruption')
+    class InterruptedExit(Client):
+        async def __aexit__(self, *args):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise failure
+    client = InterruptedExit(httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43}))
+    monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+    async def run():
+        with pytest.raises(kind) as stopped:
+            await launcher(timeout=.02).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={})
+        assert stopped.value is failure
+        assert child.terminations == 1 and child.code == 0
     asyncio.run(run())

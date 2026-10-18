@@ -615,19 +615,22 @@ def test_asgi_body_wait_owns_disconnect_deadline_and_cancellation(end):
 
 
 @pytest.mark.parametrize('features,efforts',[((),None),(('reasoning_effort',),None),(('reasoning_effort',),('low',))])
-def test_configured_reasoning_default_rejected_before_catalog_or_inference(features,efforts):
+def test_configured_reasoning_default_rejects_only_incompatible_selected_model(features,efforts):
     async def run():
         calls=[]
         async def describe(**kwargs):
             return (AvailableSelection('example',features=features,reasoning_efforts=efforts),
                     AvailableSelection('other',features=('reasoning_effort',),reasoning_efforts=('high',)))
-        async def complete(*args,**kwargs):
-            calls.append(True)
+        async def complete(value,**kwargs):
+            calls.append(value.selected_llm)
+            return LLMResult(Message('assistant',(TextContent('answer'),)))
         bridge=backend(describe=describe,complete=complete,reasoning_default='high')
-        for capability,body,method in [('models',None,'GET'),('chat',payload(),'POST')]:
-            response=await bridge.handle(request(body,method),capability)
-            assert response.status_code == 400
+        assert (await bridge.handle(request(method='GET'),'models')).status_code == 200
+        response=await bridge.handle(request(payload()),'chat')
+        assert response.status_code == 502 and json.loads(response.content)['code'] == 'unsupported'
         assert calls == []
+        assert (await bridge.handle(request(payload(model='other')),'chat')).status_code == 200
+        assert calls == ['other']
         await bridge.aclose()
     asyncio.run(run())
 
@@ -939,19 +942,29 @@ def test_response_retirement_allows_reuse_without_stale_removal(retirement):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('efforts',[None,(),('off',)])
-def test_configured_reasoning_default_rejects_incompatible_alternate(efforts):
+@pytest.mark.parametrize('efforts,override_status,expected',[(None,502,['example']),((),502,['example']),(('off',),200,['example','other'])])
+def test_mixed_catalog_preserves_choices_and_rejects_incompatible_selected_effort(efforts,override_status,expected):
     async def run():
         calls=[]
         async def describe(**kwargs):
             return (AvailableSelection('example',features=('reasoning_effort',),reasoning_efforts=('high',)),
                     AvailableSelection('other',features=('reasoning_effort',) if efforts is not None else (),reasoning_efforts=efforts))
-        async def complete(*args,**kwargs):
-            calls.append(True)
+        async def complete(value,**kwargs):
+            calls.append(value.selected_llm)
+            return LLMResult(Message('assistant',(TextContent('answer'),)))
         bridge=backend(describe=describe,complete=complete,reasoning_default='high')
-        for capability,body,method in [('models',None,'GET'),('chat',payload(model='other'),'POST')]:
-            assert (await bridge.handle(request(body,method),capability)).status_code == 400
-        assert not calls
+        response=await bridge.handle(request(method='GET'),'models')
+        assert response.status_code == 200
+        rows=json.loads(response.content)['models']
+        assert [row['value'] for row in rows] == ['example','other']
+        assert rows[1].get('reasoning_efforts') == (list(efforts) if efforts is not None else None)
+        assert calls == []
+        assert (await bridge.handle(request(payload()),'chat')).status_code == 200
+        rejected=await bridge.handle(request(payload(model='other')),'chat')
+        assert rejected.status_code == 502 and json.loads(rejected.content)['code'] == 'unsupported'
+        assert calls == ['example']
+        assert (await bridge.handle(request(payload(model='other',reasoning_effort='off')),'chat')).status_code == override_status
+        assert calls == expected
         await bridge.aclose()
     asyncio.run(run())
 

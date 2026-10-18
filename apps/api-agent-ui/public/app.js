@@ -230,14 +230,15 @@ const configuration = fetch('/config.json', {signal:configSignal}).then(r => rea
 // Attach rejection handling immediately; sending still receives the configuration error.
 configuration.catch(() => { catalogStatus = 'The API configuration could not be loaded.'; $('model-status').textContent = catalogStatus; });
 async function loadModels() {
+  let response;
   try {
     await configuration;
-    const r = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(5000)});
-    const data = await readJSONResponse(r);
+    response = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(5000)});
+    const data = await readJSONResponse(response);
     catalog = normalizeCatalog(data);
     catalogStatus = catalog.length ? '' : 'No model choices are available. Reconnect before sending.';
     syncSettings();
-  } catch { catalogStatus ||= 'Model list unavailable. Reconnect before sending.'; $('model-status').textContent = catalogStatus; }
+  } catch { catalogStatus ||= response && !response.ok ? `Model list unavailable (HTTP ${response.status}). Reconnect before sending.` : 'Model list unavailable. Reconnect before sending.'; $('model-status').textContent = catalogStatus; }
 }
 $('backend-default').addEventListener('click', () => {
   if (state.settings.model) state.settings = defaults();

@@ -79,7 +79,7 @@ class StudioProcesses:
                            API_AGENT_UI_PARENT_LIVENESS='stdin-v1')
         process = None
         try:
-            async with component_timeout('Studio process launch', self.timeout):
+            async with component_timeout('Studio process launch', self.timeout) as budget:
                 # Popen completes ownership transfer before the next cancellation point.
                 try:
                     child = subprocess.Popen(argv, cwd=cwd, env=environment, stdin=subprocess.PIPE,
@@ -90,18 +90,37 @@ class StudioProcesses:
                 process = OwnedStudioProcess(child, timeout=self.cleanup_timeout)
                 address = '[' + host + ']' if ':' in host else host
                 url = f'{scheme}://{address}:{port}/'
-                async with httpx.AsyncClient(verify=self.ssl_context, trust_env=False, timeout=.25) as client:
-                    while True:
-                        if child.poll() is not None:
-                            raise SetupPrerequisiteError('Studio exited before verified readiness')
-                        try:
-                            response = await client.head(url)
-                            identity = response.headers.get('X-UI-Launch-Token', '').encode()
-                            if response.status_code == 200 and hmac.compare_digest(identity, token.encode()):
-                                return process
-                        except httpx.HTTPError:
-                            pass
-                        await asyncio.sleep(.02)
+                try:
+                    async with httpx.AsyncClient(verify=self.ssl_context, trust_env=False, timeout=.25) as client:
+                        while True:
+                            if budget.remaining == 0:
+                                raise TimeoutError('Studio readiness deadline expired')
+                            if child.poll() is not None:
+                                raise SetupPrerequisiteError('Studio exited before verified readiness')
+                            try:
+                                response = await client.head(url)
+                            except httpx.HTTPError:
+                                response = None
+                            # A transport can consume cancellation. The clipped
+                            # absolute budget still governs retries and admission.
+                            if budget.remaining == 0:
+                                raise TimeoutError('Studio readiness deadline expired')
+                            if response is not None:
+                                identity = response.headers.get('X-UI-Launch-Token', '').encode()
+                                if response.status_code == 200 and hmac.compare_digest(identity, token.encode()):
+                                    break
+                            await asyncio.sleep(.02)
+                except asyncio.CancelledError:
+                    # Preserve the original interruption; the timeout context
+                    # classifies its own cancellation using cancellation counts.
+                    raise
+                except Exception:
+                    if budget.remaining == 0:
+                        raise TimeoutError('Studio readiness deadline expired')
+                    raise
+                if budget.remaining == 0:
+                    raise TimeoutError('Studio readiness deadline expired')
+                return process
         except BaseException as primary:
             if process is not None:
                 try:
