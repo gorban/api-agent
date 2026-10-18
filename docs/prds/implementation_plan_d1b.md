@@ -20,7 +20,7 @@
 - [x] Verify configuration precedence/visibility, source isolation and missing/empty paths, publication independence, installed-package behavior and exact applicable coverage.
 
 - [x] Independently recheck secondary-source selection and refreshed archive links, preserving earlier viewer closures.
-- [ ] Human review toggle visibility and secondary-only browsing with a configured existing directory. No new inference is needed.
+- [x] Human review toggle visibility and secondary-only browsing with a configured existing directory. No new inference is needed.
 
 ## CLI and browser
 
@@ -31,7 +31,7 @@
 ## Acceptance
 
 - [x] Independently review controlled CLI/HTTP/browser, local/S3 integrity, malformed/late history, conflict, cancellation, process and retry controls. Require exact applicable coverage, installed-package independence, licenses and public-boundary checks.
-- [ ] Human review multiple run routes, refresh, browser-opening failure diagnostics and owned cleanup. Selected-test/live-preview acceptance remains in its own child.
+- [x] Human review multiple run routes, refresh, browser-opening failure diagnostics and owned cleanup. Selected-test/live-preview acceptance remains in its own child.
 
 Native cross-launch history: [requirements and acceptance](implementation_plan_d1c.md).
 

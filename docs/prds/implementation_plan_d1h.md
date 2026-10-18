@@ -10,7 +10,7 @@
 - [x] Prepare the archive in linear space using shared per-mode snapshots and index ranges. Offload construction with cooperative deadline/cancellation checks and bound index bytes before publication. A failed/cancelled build preserves the previous published index and route bindings; keep the complete archive and immutable snapshot/count identity.
 - [x] Commit index replacement and retrieval bindings under one publication lock. Failed replacement retains previous bindings; HTTP readers wait for the commit point. Drain cancellation during publication. If an interrupted replacement is proven complete from its owned bytes, reconcile the committed bindings before preserving interruption or recovering a completed I/O operation.
 - [x] Verify current-only, smaller/default/larger windows, pass-rate statistics, sparse tests, malformed/native truncated data, exact outcomes and history links with genuine CLI/browser proof, source configuration, mutations, installed package, exact coverage and independent review.
-- [ ] Human review a larger history window and its per-test History/pass-rate presentation. Existing history needs no migration or deletion.
+- [x] Human review a larger history window and its per-test History/pass-rate presentation. Existing history needs no migration or deletion.
 
 - [x] Complete the [archive generation budget repair](implementation_plan_d1h1.md) before the larger-window acceptance retry.
 
