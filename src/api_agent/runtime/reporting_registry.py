@@ -45,6 +45,8 @@ def _occupied(port):
 
 class SharedReportingManager:
     """Retain the underlying manager across failure and retryable release."""
+    session_lifecycle = True
+
     def __init__(self, plan, *, engine_environment=None, cancelled=lambda: False,
                  deadline_seconds=120, registry_directory=None, identity=engine_identity,
                  manager_factory=PrerequisiteManager, occupied=_occupied):
@@ -178,7 +180,22 @@ class SharedReportingManager:
             info = directory.stat()
             if [info.st_dev, info.st_ino] != self.ownership_identity:
                 raise PrerequisiteError('Retained reporting journal directory changed; cleanup remains owned.')
-            self.manager.release(retain=retain)
+            record = _read(path)
+            if not self.intent and self.manager._rollback is None:
+                # Revalidate metadata before releasing the exact retained owner.
+                try:
+                    self._manager(record, budget.remaining)
+                except (KeyError, TypeError, ValueError, OSError) as error:
+                    raise PrerequisiteError('Invalid reporting binding; cleanup remains owned.') from error
+                if record['scope'] != self.manager.scope.id or record['directory'] != str(directory):
+                    raise PrerequisiteError('Reporting registration changed; cleanup remains owned.')
+                retained_ids = self.lease.container_ids if self.lease is not None else ()
+                if self.lease is not None and tuple(record['ids']) != tuple(retained_ids):
+                    raise PrerequisiteError('Reporting container registration changed; cleanup remains owned.')
+                self.manager.release(retain=retain, reporting_ids=tuple(retained_ids),
+                                     reporting_directory=directory)
+            else:
+                self.manager.release(retain=retain)
             if self.intent:
                 if self.manager._inventory(time.monotonic() + budget.remaining):
                     raise PrerequisiteError('Reporting provisioning cleanup remains pending.')

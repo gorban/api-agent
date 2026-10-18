@@ -146,6 +146,7 @@ class AllureNavigation:
         self.refresh_allure_loading()
         self.screen.refresh_bindings()
         try:
+            await self.prepare_allure_reporting()
             location = await self._allure().show_preview(*selected, source=self.allure_source)
             if generation is self._allure_generation:
                 self.show_allure_location(location)
@@ -209,6 +210,21 @@ class AllureNavigation:
             self.notify(Content.assemble('Could not open the link automatically; open manually:\n', url),
                         severity='error', timeout=15)
 
+    async def prepare_allure_reporting(self):
+        values = self.session.result().values
+        if (values.get('ALLURE_S3_BUCKET') and values.get('ALLURE_S3_USE_LOCALSTACK')
+                and not values.get('ALLURE_VIEW_SECONDARY', False)):
+            import os
+            from api_agent.runtime.compose import plan_compose, ENGINE_ENVIRONMENT_KEYS
+            from api_agent.runtime.ownership import StackScope
+            from api_agent.runtime.tasks import offload
+            environment = {key: os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ}
+            config = {key: value for key, value in values.items()
+                      if key.startswith('ALLURE_S3_') or key == 'ALLURE_LOCALSTACK_PORT'}
+            plan = plan_compose(config, StackScope.from_roots(self.context.base_root, self.context.pack_root),
+                                engine_environment=environment)
+            await offload(self.reporting_sessions.acquire, plan, engine_environment=environment)
+
     def allure_source(self):
         from api_agent.testing.allure_viewer import RunSource
         from api_agent.testing.storage import RunStorage
@@ -235,6 +251,7 @@ class AllureNavigation:
                             (('refresh-allure', 'Refresh history'),))
             if generation is not self._allure_generation:
                 return
+            await self.prepare_allure_reporting()
             location = await self._allure().show_archive(self.allure_source())
             if generation is self._allure_generation:
                 self.operation_status = 0

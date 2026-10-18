@@ -537,9 +537,14 @@ def ui_provider_session(request, ui_provider_loop, ui_provider_backend):
     finally:
         try:
             try:
-                loop.run_until_complete(owner.capture(getattr(request.node, '_api_agent_ui_outcome', 'failure')))
-            except Exception:
-                pass
+                retire = getattr(ui_provider_backend, 'retire_test', None)
+                if retire is not None:
+                    retire()
+            finally:
+                try:
+                    loop.run_until_complete(owner.capture(getattr(request.node, '_api_agent_ui_outcome', 'failure')))
+                except Exception:
+                    pass
         finally:
             # The inspection owner retains even an interrupted browser transfer.
             # Its explicit disposal performs transfer, then inspection, then host.

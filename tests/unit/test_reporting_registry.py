@@ -41,6 +41,11 @@ class ReportingEngine(Engine):
         return identifier
 
     def run(self, command, **kwargs):
+        if command[1] == 'start':
+            self.commands.append((command, kwargs))
+            for identifier in command[2:]:
+                self.records[identifier]['State']['Running'] = True
+            return ''
         if command[1:3] == ('volume', 'inspect'):
             self.commands.append((command, kwargs))
             return json.dumps([{'Name': command[3], 'Labels': self.owner.scope.labels('localstack')}])
@@ -67,7 +72,7 @@ def storage(tmp_path):
 
 
 def mutation_commands(engine):
-    return [command for command, _ in engine.commands if 'up' in command or command[1] in {'exec', 'stop'}]
+    return [command for command, _ in engine.commands if 'up' in command or command[1] in {'exec', 'stop', 'start'}]
 
 
 def binding(storage):
@@ -96,7 +101,7 @@ def test_two_checkouts_share_one_server_and_journal(storage, tmp_path):
     first.release(retain=True)
 
 
-@pytest.mark.parametrize('change', ['bucket', 'region', 'assets', 'stopped', 'replaced', 'directory'])
+@pytest.mark.parametrize('change', ['bucket', 'region', 'assets', 'replaced', 'directory'])
 def test_incompatible_binding_refuses_before_mutation(storage, change):
     first = storage.create()
     lease = first.acquire()
@@ -105,7 +110,6 @@ def test_incompatible_binding_refuses_before_mutation(storage, change):
     config = dict(CONFIG)
     if change == 'bucket': config['ALLURE_S3_BUCKET'] = 'other-results'
     if change == 'region': config['ALLURE_S3_REGION'] = 'eu-west-1'
-    if change == 'stopped': storage.engine.records[lease.container_ids[0]]['State']['Running'] = False
     if change == 'replaced': storage.engine.records.clear()
     if change in {'assets', 'directory'}:
         path, record = binding(storage)

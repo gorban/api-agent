@@ -83,3 +83,5 @@ reply controls with exact authored line/branch coverage.
 - [x] Human acceptance of the one-prompt Studio integration through the prepared selected UI session, Agent HTTP bridge and recorded evidence. Full workflow execution and application E2E remain separate.
 
 Post-test interaction and its known deadline/client-lifetime gap are tracked in [retained Studio interaction](implementation_plan_i2c2.md). Frontend human acceptance is deferred until that capability or working Run local is available; the accepted automated request remains distinct.
+
+Human review reconfirmed the automated Studio `Ok` request and the previously accepted reporting and authentication behavior. Full manual interaction, explicit selection and long-idle cache acceptance remain deferred to a usable retained session or Run local; they do not block implementation of that capability.

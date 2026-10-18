@@ -34,17 +34,16 @@ def worker_harness(tmp_path, monkeypatch):
                             events=[], handles=[], descriptors=[], retained=False, rows=None,
                             output='worker evidence\n')
     original_pipe, original_close = os.pipe, os.close
-    original_inspection = inspection.IntegrationInspection
+    original_inspection_init = inspection.IntegrationInspection.__init__
     def pipe():
         pair = original_pipe()
         for descriptor in pair:
             metadata = os.fstat(descriptor)
             state.descriptors.append((descriptor, metadata.st_dev, metadata.st_ino))
         return pair
-    def track_inspection(*args, **kwargs):
-        handle = original_inspection(*args, **kwargs)
+    def track_inspection(handle, *args, **kwargs):
+        original_inspection_init(handle, *args, **kwargs)
         state.handles.append(handle)
-        return handle
     def close_owned_descriptor(descriptor, device, inode):
         try:
             metadata = os.fstat(descriptor)
@@ -54,7 +53,7 @@ def worker_harness(tmp_path, monkeypatch):
         if (metadata.st_dev, metadata.st_ino) == (device, inode):
             original_close(descriptor)
     monkeypatch.setattr(integration.os, 'pipe', pipe)
-    monkeypatch.setattr(inspection, 'IntegrationInspection', track_inspection)
+    monkeypatch.setattr(inspection.IntegrationInspection, '__init__', track_inspection)
     monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: (identity,))
     monkeypatch.setattr(integration.threading, 'Thread', DormantThread)
     def popen(args, **kwargs):

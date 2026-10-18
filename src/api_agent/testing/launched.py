@@ -13,7 +13,7 @@ from .requirements import plan_integration_requirements
 
 @suite_locked
 def run_launched_integration(context, tests, config, *, accepted=False,
-                             no_std_in=False, prerequisites=None, **options):
+                             no_std_in=False, prerequisites=None, reporting_session=None, **options):
     """Acquire storage lazily; retain its cleanup handle through every outcome.
 
     Test recording finishes before the prerequisite lease is released. Only
@@ -31,7 +31,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
             ownership_directory=context.owner_root / 'artifacts' / 'prerequisites',
             engine_environment={key: os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ},
             cancel_event=cancelled, provider_config=config,
-            provider_kinds=plan.provider_kinds)
+            provider_kinds=plan.provider_kinds, reporting_session=reporting_session)
     prepare = options.pop('prepare', None)
 
     def before(usage):

@@ -6,6 +6,8 @@ This is the target format for future runtime conversion. Existing phase-one Mark
 
 The ordered migration and behavior-preservation acceptance live in [B1b](implementation_plan_b1b.md); this file owns the target resource/viewer contract.
 
+Review the [contract freeze checklist](implementation_plan_b1b1.md) before dependent conversion.
+
 ## Resource layout
 
 - [ ] Use root `flow.md.html` as the human entry and `README.md` for navigation. Application repositories also retain their launcher, license and required packaging, pack-manifest and Git metadata at root. Place declaration children under `workflows/components/`, `workflows/contracts/`, `workflows/routing/`, `workflows/streams/`, `workflows/overlays/`, with `workflows/runtime.md.html` for progressive disclosure. Keep prerequisites in `docs/`, source bindings in `cfg/` and sample generation/preview tools in `tools/`. Callable implementations remain native Python in their owning source package.

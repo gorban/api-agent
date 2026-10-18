@@ -411,3 +411,16 @@ def test_buffered_sse_rejects_framing_that_exceeds_consumer_bound(text):
         assert all(len(part.encode()) <= 131072 for part in frames)
         await backend.aclose()
     asyncio.run(run())
+
+
+def test_closed_session_returns_fixed_actionable_message_without_exception_content():
+    from api_agent.providers.contracts import SessionClosedError
+    async def run():
+        backend, _ = setup_bridge()
+        response = backend._error(SessionClosedError('synthetic confidential diagnostic'))
+        assert response.status_code == 503
+        assert json.loads(response.content) == {'code': 'unavailable', 'message':
+            'This session is unavailable. Wait for suite completion, or start a new session.'}
+        assert b'confidential' not in response.content
+        await backend.aclose()
+    asyncio.run(run())

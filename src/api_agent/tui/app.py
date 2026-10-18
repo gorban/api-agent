@@ -912,6 +912,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
         self.unit_runner = unit_runner
         self.integration_runner = integration_runner
         self.initialize_allure()
+        from api_agent.tui.reporting import ReportingSessions
+        self.reporting_sessions = ReportingSessions()
+        self.pending_shutdown_cleanup = None
         self.integration_unattended = False
         self.integration_persisted = None
         from api_agent.testing.inspection_controls import InspectionGroup
@@ -1594,6 +1597,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
                         active, accepted=True, interaction=interaction,
                         content_policy=content_policy,
+                        **self.reporting_runner_options(runner),
                         **self.historical_runner_options(runner),
                         **self.allure_runner_options(runner, generation),
                         usage_output=lambda text: self.call_from_thread(self.receive_usage, text, generation),
@@ -1682,6 +1686,43 @@ class ApiAgentApp(AllureNavigation, App[int]):
                           (("menu", "Main menu"),))
         finally:
             self.finish_test_run()
+
+    def reporting_runner_options(self, runner):
+        import inspect
+        parameters = inspect.signature(runner).parameters
+        if 'reporting_session' in parameters:
+            return {'reporting_session': self.reporting_sessions.acquire}
+        return {}
+
+    async def close_reporting_sessions(self):
+        try:
+            await self.reporting_sessions.aclose()
+        except BaseException as error:
+            self.operation_status = 3
+            self.pending_shutdown_cleanup = self.shutdown_cleanup_receipt()
+            if not isinstance(error, Exception):
+                error.cleanup_pending = self.pending_shutdown_cleanup
+                raise
+            return False
+        self.pending_shutdown_cleanup = None
+        return True
+
+    def shutdown_cleanup_receipt(self):
+        from api_agent.providers.control import CleanupPendingError
+        inspection = self.pending_inspection_cleanup
+        sessions = self.reporting_sessions
+        async def retry():
+            # Inspection may still publish or access storage; retain session
+            # ownership until its complete subtree has acknowledged disposal.
+            if inspection is not None:
+                await inspection.retry()
+            await sessions.aclose()
+            self.pending_shutdown_cleanup = None
+        owners = ((inspection,) if inspection is not None else ()) + (sessions,)
+        error = CleanupPendingError(owners, retry)
+        error.inspections = getattr(inspection, 'inspections', ())
+        error.inspection_group = getattr(inspection, 'inspection_group', self.inspections)
+        return error
 
     def inspection_cleanup_active(self):
         return self.inspections.active or self.recording_cleanup is not None or self.allure_viewer is not None
@@ -2221,6 +2262,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
             await self.test_run.stop_and_wait()
         if not await self.end_inspection(force=True):
             return
+        if not await self.close_reporting_sessions():
+            self.notify("Reporting cleanup incomplete; retry Quit to finish releasing the session.", severity="error", timeout=10)
+            return
         self.exit(self.operation_status)
 
     async def on_unmount(self):
@@ -2233,6 +2277,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
         finally:
             if self.inspection_cleanup_active():
                 self.pending_inspection_cleanup = self.inspection_cleanup_receipt()
+                self.pending_shutdown_cleanup = self.shutdown_cleanup_receipt()
+            else:
+                await self.close_reporting_sessions()
 
     def test_run_active(self):
         return self.test_run is not None and self.test_run.active
@@ -2314,13 +2361,13 @@ def run_tui(context, schema, argv=(), environ=None) -> int:
     try:
         result = app.run()
     except BaseException as error:
-        pending = getattr(app, 'pending_inspection_cleanup', None)
+        pending = getattr(app, 'pending_shutdown_cleanup', None) or getattr(app, 'pending_inspection_cleanup', None)
         if pending is not None:
             error.cleanup_pending = pending
             error.inspections = pending.inspections
             error.inspection_group = pending.inspection_group
         raise
-    pending = getattr(app, 'pending_inspection_cleanup', None)
+    pending = getattr(app, 'pending_shutdown_cleanup', None) or getattr(app, 'pending_inspection_cleanup', None)
     if pending is not None:
         raise pending from None
     if getattr(app, "console_error", None):

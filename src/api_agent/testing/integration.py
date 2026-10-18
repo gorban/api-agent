@@ -546,6 +546,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     emit(RunnerEvent('inspection_open', text=endpoint))
                 backend.watch_inspection(lambda kind: emit(RunnerEvent(kind)))
             check_cancellation()
+            if after_run is not None and not callback_failed and not cancelled:
+                from .inspection_gate import publish_manual_accounting_ready
+                publish_manual_accounting_ready(inspections)
             result = IntegrationRunResult(130 if cancelled else int(result.exit_code != 0 or callback_failed or failed),
                                           final_tests(), ''.join(chunks), cancelled, result.inspections)
             emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))

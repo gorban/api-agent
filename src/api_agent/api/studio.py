@@ -119,7 +119,8 @@ class StudioBackend:
         if isinstance(error, (ContractError, ValueError, UnicodeError)):
             return self._response({'code': 'invalid_request'}, 400)
         if isinstance(error, SessionClosedError):
-            return self._response({'code': 'unavailable'}, 503)
+            return self._response({'code': 'unavailable',
+                'message': 'This session is unavailable. Wait for suite completion, or start a new session.'}, 503)
         return self._response({'code': 'unknown'}, 502)
 
     def _admit(self, request, capability):

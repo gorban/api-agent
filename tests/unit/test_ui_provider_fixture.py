@@ -128,3 +128,45 @@ def test_selected_backend_follows_shared_fixture_retained_owner(fixture_owner,tm
     r.retained[0].close()
     r.owner.aclose.assert_awaited_once()
     assert loop.is_closed()
+
+
+@pytest.mark.parametrize('retire_error', [None, RuntimeError('retirement failed'), asyncio.CancelledError()])
+def test_backend_retirement_precedes_capture_and_keeps_disposal(fixture_owner, monkeypatch, retire_error):
+    r = fixture_owner
+    monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
+    r.owner.inspection = None
+    order = []
+    def retire():
+        order.append('retire')
+        if retire_error is not None:
+            raise retire_error
+    async def capture(phase): order.append('capture')
+    async def close(): order.append('close')
+    r.owner.capture.side_effect = capture
+    r.owner.aclose.side_effect = close
+    backend = SimpleNamespace(retire_test=retire)
+    loop = asyncio.new_event_loop()
+    fixture = setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()), loop, backend)
+    assert next(fixture) == 'prepared'
+    if retire_error is not None:
+        with pytest.raises(type(retire_error)): fixture.close()
+    else:
+        fixture.close()
+    assert order == ['retire', 'capture', 'close']
+    assert loop.is_closed()
+
+
+def test_setup_failure_retires_unused_backend_before_capture(fixture_owner, monkeypatch):
+    r = fixture_owner
+    monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
+    r.owner.inspection = None
+    r.owner.start.side_effect = RuntimeError('setup failed')
+    retire = Mock()
+    loop = asyncio.new_event_loop()
+    fixture = setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()), loop,
+        SimpleNamespace(retire_test=retire))
+    with pytest.raises(RuntimeError, match='setup failed'): next(fixture)
+    retire.assert_called_once_with()
+    r.owner.capture.assert_awaited_once_with('failure')
+    r.owner.aclose.assert_awaited_once()
+    assert loop.is_closed()

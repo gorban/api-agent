@@ -11,12 +11,13 @@ import pytest
 
 from api_agent.api import Runtime, create_application
 from api_agent.api.studio import StudioBackend
-from api_agent.providers.progress import component_timeout, report_timeout
+from api_agent.providers.progress import component_timeout, report_timeout, independent_timeout_scope
 from api_agent.providers.control import CleanupPendingError, finish_cleanup
 from api_agent.runtime.tasks import offload, settle
 from api_agent.providers.selection import ModelSelectionPolicy
 from api_agent.providers.sessions import LLMSessionOwner
 from api_agent.ui.provider import app_directory
+from api_agent.testing.studio_retained import StudioCleanup
 
 
 pytestmark = pytest.mark.feature('Studio chat')
@@ -28,8 +29,10 @@ async def studio_endpoint(provider, selection):
     if node is None:
         pytest.skip('The included Studio browser test requires Node.js.')
     async with AsyncExitStack() as cleanup:
+        duties = StudioCleanup()
+        cleanup.push_async_callback(_cleanup, duties.aclose)
         listener = socket.socket()
-        cleanup.callback(listener.close)
+        duties.push(_close_socket, listener)
         listener.bind(('127.0.0.1', 0))
         listener.listen()
         listener.setblocking(False)
@@ -53,42 +56,54 @@ async def studio_endpoint(provider, selection):
                 process = await asyncio.shield(spawning)
             except asyncio.CancelledError:
                 process = await settle(spawning)
-                cleanup.push_async_callback(_cleanup, _close_host, process)
+                duties.push(_close_host, process)
                 raise
-            cleanup.push_async_callback(_cleanup, _close_host, process)
+            duties.push(_close_host, process)
             origin = (await process.stdout.readline()).decode().strip()
             assert origin.startswith('http://127.0.0.1:'), 'Studio did not announce a loopback listener.'
-        async with agent_endpoint(provider, selection, origin, nonce, listener=listener):
-            yield origin
+        bridge = agent_endpoint(provider, selection, origin, nonce, listener=listener)
+        await bridge.__aenter__()
+        duties.push(bridge.__aexit__, None, None, None)
+        yield origin
 
 
 @asynccontextmanager
-async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None):
+async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None):
     """Own the real Agent HTTP bridge for the selected UI runtime."""
     import uvicorn
     async with AsyncExitStack() as cleanup:
+        duties = StudioCleanup()
+        cleanup.push_async_callback(_cleanup, duties.aclose)
         if listener is None:
             listener = socket.socket()
-            cleanup.callback(listener.close)
+            duties.push(_close_socket, listener)
             listener.bind(('127.0.0.1', 0))
             listener.listen()
             listener.setblocking(False)
         endpoint = f'http://127.0.0.1:{listener.getsockname()[1]}'
+        from api_agent.testing.studio_retained import RetainedStudio
+        retained = isinstance(provider, RetainedStudio)
+        if retained:
+            duties.push(provider.aclose)
         async def describe(*, auth):
-            return await offload(provider.describe)
+            return await provider.describe() if retained else await offload(provider.describe)
         async def complete(request, *, auth, context):
-            return await context.run(offload(provider.complete, request))
+            call = provider.complete(request) if retained else offload(provider.complete, request)
+            return await context.run(call)
         backend = StudioBackend(owner=LLMSessionOwner(object()), describe=describe, complete=complete,
             policy=ModelSelectionPolicy({'LLM_ALLOWED_MODELS': re.escape(selection),
-                                         'LLM_DEFAULT_MODEL': re.escape(selection)}),
+                                         'LLM_DEFAULT_MODEL': re.escape(selection), **(policy_config or {})}),
             origin=origin, nonce=nonce, scrub=lambda _: 'Selected provider rejected the request.',
             reasoning_default=reasoning_default)
-        cleanup.push_async_callback(_cleanup, backend.aclose)
+        duties.push(backend.aclose)
         runtime = Runtime('demo', services={'studio_backend': backend})
         application = create_application(runtime)
         server = uvicorn.Server(uvicorn.Config(application, log_level='error', access_log=False, timeout_graceful_shutdown=1))
-        task = asyncio.create_task(server.serve(sockets=[listener]))
-        cleanup.push_async_callback(_cleanup, _close_server, server, task)
+        # A long-lived listener must not inherit completed UI startup budgets.
+        # Each admitted HTTP request still creates its own bounded context.
+        with independent_timeout_scope():
+            task = asyncio.create_task(server.serve(sockets=[listener]))
+        duties.push(_close_server, server, task)
         async with component_timeout('Studio agent readiness', 10):
             while not server.started:
                 assert not task.done(), 'Agent listener stopped before readiness.'
@@ -96,9 +111,32 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
         yield endpoint
 
 
+async def _close_socket(listener):
+    listener.close()
+
+
 async def _cleanup(action, *args):
-    """Each stack callback finishes independently despite caller cancellation."""
-    await finish_cleanup(action(*args))
+    """Settle owned work without losing its original interruption receipt."""
+    failures = []
+    async def dispose():
+        try:
+            await action(*args)
+        except BaseException as error:
+            # Return failures as data through finish_cleanup: a task ending in
+            # CancelledError otherwise loses the error's ownership attributes.
+            failures.append(error)
+    try:
+        await finish_cleanup(dispose())
+    except asyncio.CancelledError as cancelled:
+        if failures:
+            failure = failures[0]
+            if isinstance(failure, asyncio.CancelledError):
+                raise failure
+            cancelled.cleanup_pending = (failure if isinstance(failure, CleanupPendingError)
+                else CleanupPendingError((action,), lambda: _cleanup(action, *args)))
+        raise
+    if failures:
+        raise failures[0]
 
 
 async def _close_server(server, task):
@@ -138,7 +176,7 @@ async def browser_prompt(prepared):
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     async with component_timeout('Studio browser request', 150):
-        await expect(page.locator('#model option')).to_have_count(1)
+        await expect(page.locator('#model')).to_have_value(re.compile(r'.+'))
         await page.locator('#prompt').fill('Answer with exactly: Ok')
         await page.locator('#send').click()
         status = page.locator('.assistant .metadata-grid dd').last
@@ -167,13 +205,33 @@ def studio_configuration(integration_config):
 @pytest.fixture
 def ui_provider_backend(studio_configuration, llm_provider, llm_selection):
     """Bind the chosen provider to the real HTTP contract before UI launch."""
+    retained = []
     @asynccontextmanager
     async def backend(values):
         nonce = secrets.token_urlsafe(32)
-        async with agent_endpoint(llm_provider, llm_selection,
+        provider = llm_provider
+        if values.get('DEBUG') is True:
+            from api_agent.testing.provider_setup import _read_snapshot, _worker_manager_registry
+            from api_agent.testing.studio_retained import RetainedStudio, retained_provider_factory
+            from api_agent.testing.inspection_gate import manual_accounting_ready
+            data = _read_snapshot()
+            provider = RetainedStudio(llm_provider,
+                retained_provider_factory(data, _worker_manager_registry(data)), manual_accounting_ready)
+            retained.append(provider)
+        async with agent_endpoint(provider, llm_selection,
                                   values['UI_LISTENER_URL'], nonce,
-                                  reasoning_default=values.get('LLM_REASONING_EFFORT') or None) as endpoint:
-            yield {'agent_url': endpoint, 'access_token': nonce}
+                                  reasoning_default=values.get('LLM_REASONING_EFFORT') or None,
+                                  policy_config={key: values[key] for key in
+                                    ('LLM_ALLOWED_MODELS', 'LLM_DEFAULT_MODEL') if key in values}) as endpoint:
+            try:
+                yield {'agent_url': endpoint, 'access_token': nonce}
+            finally:
+                if provider is not llm_provider:
+                    provider.retire_test()
+    def retire_test():
+        for provider in retained:
+            provider.retire_test()
+    backend.retire_test = retire_test
     return backend
 
 
