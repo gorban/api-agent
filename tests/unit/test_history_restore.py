@@ -1,11 +1,13 @@
 """Controlled S3 and local-file checks for explicit history restoration."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 import threading
 from types import SimpleNamespace
 from contextlib import contextmanager
+from uuid import uuid4
 
 import pytest
 from botocore.exceptions import ClientError, CredentialRetrievalError, EndpointConnectionError
@@ -15,7 +17,8 @@ from api_agent.testing.history_restore import (HistoryRestoreCancelled,
 from api_agent.testing import history_restore
 from api_agent.testing import suite_lock as suite_lock_module
 from api_agent.testing.storage import RunStorage
-from api_agent.tui.allure import AllureNavigation
+from api_agent.testing.allure_source import RunSource, ViewerError, validate_manifest
+from api_agent.tui.allure import AllureNavigation, _known_history_viewer_message
 from test_allure_viewer import run, save
 from test_recording_storage import FakeS3
 from test_tui import fixture
@@ -77,6 +80,48 @@ def test_different_committed_manifest_rejects_before_missing_artifact_upload(his
         restore_missing_history('sample', local, storage)
 
     assert s3.objects == {key: b'different committed manifest'}
+
+
+def test_competing_manifest_after_preflight_wins_without_merged_visible_run(history):
+    manifest, files, local, _, s3, storage = history
+    run_id = manifest['run_id']
+    manifest_key = storage._key('sample', run_id, 'manifest.json')
+    competitor_id = str(uuid4())
+    competitor_name = competitor_id + '-result.json'
+    competitor_body = json.dumps({'uuid': competitor_id, 'status': 'passed',
+                                   'name': 'competitor', 'fullName': 'competitor'}).encode()
+    competitor = dict(manifest, files={competitor_name: hashlib.sha256(competitor_body).hexdigest()})
+    validate_manifest(competitor, repo='sample')
+    competitor_manifest = json.dumps(competitor).encode()
+    competitor_key = storage._key('sample', run_id, competitor_name)
+    original_put = s3.put_object
+    observed = []
+
+    def concurrent_put(**kwargs):
+        if not observed:
+            # Preflight has already reported no manifest; an independent writer commits now.
+            assert manifest_key not in s3.objects
+            s3.objects[competitor_key] = competitor_body
+            s3.objects[manifest_key] = competitor_manifest
+        observed.append(kwargs['Key'])
+        return original_put(**kwargs)
+
+    s3.put_object = concurrent_put
+    with pytest.raises(HistoryRestoreError):
+        restore_missing_history('sample', local, storage)
+
+    assert observed == [storage._key('sample', run_id, name) for name in sorted(files)] + [manifest_key]
+    assert s3.objects[manifest_key] == competitor_manifest
+    assert s3.objects[competitor_key] == competitor_body
+    assert {name: s3.objects[storage._key('sample', run_id, name)] for name in files} == files
+    source = RunSource('sample', storage=storage)
+    assert source.history() == [competitor]
+    assert source.load(competitor) == {competitor_name: competitor_body}
+    retained = dict(s3.objects)
+    observed.clear()
+    with pytest.raises(HistoryRestoreError, match='different immutable manifest'):
+        restore_missing_history('sample', local, storage)
+    assert observed == [] and s3.objects == retained
 
 
 def test_corrupt_artifact_blocks_all_writes_for_its_run(history):
@@ -567,7 +612,7 @@ def test_restore_tui_safe_error_targets_current_page_or_notice(history, monkeypa
     def fail(*args, **kwargs):
         if stale:
             app._allure_generation = object()
-        raise HistoryRestoreError('Could not restore finalized Allure history.')
+        raise HistoryRestoreError('Allure history restore timed out.')
     monkeypatch.setattr(history_restore, 'restore_missing_history', fail)
 
     asyncio.run(app.restore_allure_secondary_history())
@@ -578,9 +623,9 @@ def test_restore_tui_safe_error_targets_current_page_or_notice(history, monkeypa
     else:
         assert app.operation_status == 3
         if page_visible:
-            assert displayed == ['Could not restore finalized Allure history.']
+            assert displayed == ['Allure history restore timed out.']
         else:
-            assert ('notice', 'Could not restore finalized Allure history.',
+            assert ('notice', 'Allure history restore timed out.',
                     {'severity': 'error', 'timeout': 10}) in app.events
     assert s3.objects == {}
 
@@ -700,8 +745,8 @@ def test_restore_tui_masks_unexpected_configuration_read(history):
 
     asyncio.run(app.restore_allure_secondary_history())
 
-    assert app.events == [('notice', 'Could not restore Allure history; check reporting setup and storage.',
-                           {'severity': 'error', 'timeout': 10})]
+    assert ('notice', 'Could not restore Allure history; check reporting setup and storage.',
+            {'severity': 'error', 'timeout': 10}) in app.events
     assert s3.objects == {}
 
 
@@ -757,3 +802,214 @@ def test_restore_tui_configuration_interruption_preserves_owned_state(history):
     assert app._allure_tasks == set()
     assert not app._allure_opening and app._allure_loading == ''
     assert app.events == [] and s3.objects == {}
+
+
+@pytest.mark.parametrize('error_type', [HistoryRestoreError, HistoryRestoreCancelled,
+                                        suite_lock_module.SuiteBusyError])
+def test_forged_typed_progress_failure_is_normalized(history, error_type):
+    _, _, local, _, s3, storage = history
+    def progress(done, total):
+        raise error_type('synthetic-secret')
+
+    with pytest.raises(HistoryRestoreError) as caught:
+        restore_missing_history('sample', local, storage, progress=progress)
+
+    assert type(caught.value) is HistoryRestoreError
+    assert str(caught.value) == 'Could not restore finalized Allure history; check secondary files and S3 storage.'
+    assert s3.objects == {}
+    with suite_lock_module.suite_lock():
+        pass
+
+
+@pytest.mark.parametrize('error_type', [HistoryRestoreError, HistoryRestoreCancelled,
+                                        suite_lock_module.SuiteBusyError])
+def test_forged_typed_tui_prepare_failure_never_displays_callback_text(history, error_type):
+    _, _, local, _, s3, storage = history
+    app = RestoreHarness(local, storage)
+    async def failed_prepare():
+        raise error_type('synthetic-secret')
+    app.prepare = failed_prepare
+
+    asyncio.run(app.restore_allure_secondary_history())
+
+    assert ('notice', 'Could not restore Allure history; check reporting setup and storage.',
+            {'severity': 'error', 'timeout': 10}) in app.events
+    assert app._allure_tasks == set() and not app._allure_opening
+    assert app._allure_loading == '' and s3.objects == {}
+
+
+def test_typed_error_with_untrusted_args_is_never_stringified(history):
+    _, _, local, _, s3, storage = history
+    class SecretArg:
+        def __str__(self):
+            raise AssertionError('untrusted __str__ called')
+    with pytest.raises(HistoryRestoreError, match='Could not restore finalized'):
+        restore_missing_history('sample', local, storage,
+            progress=lambda done, total: (_ for _ in ()).throw(HistoryRestoreError(SecretArg())))
+    assert s3.objects == {}
+
+
+def test_typed_error_with_untrusted_cause_is_rebuilt(history):
+    _, _, local, _, s3, storage = history
+    def progress(done, total):
+        try:
+            raise RuntimeError('synthetic-secret')
+        except RuntimeError as cause:
+            raise HistoryRestoreError('Allure history restore timed out.') from cause
+
+    with pytest.raises(HistoryRestoreError) as caught:
+        restore_missing_history('sample', local, storage, progress=progress)
+
+    assert str(caught.value) == 'Allure history restore timed out.'
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    assert s3.objects == {}
+
+
+def test_typed_error_with_allowed_message_discards_diagnostic_notes(history):
+    _, _, local, _, s3, storage = history
+    def progress(done, total):
+        error = HistoryRestoreError('Allure history restore timed out.')
+        error.add_note('synthetic-secret')
+        raise error
+
+    with pytest.raises(HistoryRestoreError) as caught:
+        restore_missing_history('sample', local, storage, progress=progress)
+
+    assert str(caught.value) == 'Allure history restore timed out.'
+    assert not getattr(caught.value, '__notes__', None)
+    assert 'synthetic-secret' not in ''.join(__import__('traceback').format_exception(caught.value))
+    assert s3.objects == {}
+
+
+def test_forged_typed_error_discards_untrusted_cause_and_notes(history):
+    _, _, local, _, s3, storage = history
+    def progress(done, total):
+        try:
+            raise RuntimeError('synthetic-secret-cause')
+        except RuntimeError as cause:
+            error = suite_lock_module.SuiteBusyError('synthetic-secret-message')
+            error.add_note('synthetic-secret-note')
+            raise error from cause
+
+    with pytest.raises(HistoryRestoreError) as caught:
+        restore_missing_history('sample', local, storage, progress=progress)
+
+    assert type(caught.value) is HistoryRestoreError
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    assert not getattr(caught.value, '__notes__', None)
+    rendered = ''.join(__import__('traceback').format_exception(caught.value))
+    assert 'synthetic-secret' not in rendered
+    assert s3.objects == {}
+
+
+def test_unknown_exception_metaclass_is_not_executed_by_restore_filter(history):
+    _, _, local, _, s3, storage = history
+    class HostileMeta(type):
+        def __hash__(cls):
+            raise RuntimeError('synthetic-secret-metaclass')
+    class HostileError(HistoryRestoreError, metaclass=HostileMeta):
+        pass
+    secret = 'synthetic-secret'
+
+    with pytest.raises(HistoryRestoreError) as caught:
+        restore_missing_history('sample', local, storage,
+            progress=lambda done, total: (_ for _ in ()).throw(HostileError(secret)))
+
+    assert type(caught.value) is HistoryRestoreError
+    assert 'synthetic-secret' not in ''.join(__import__('traceback').format_exception(caught.value))
+    assert s3.objects == {}
+
+
+@pytest.mark.parametrize('failure', [RuntimeError('synthetic-secret'),
+                                     ViewerError('synthetic-secret'),
+                                     ViewerError('No finalized integration or E2E Allure runs are available')])
+def test_history_open_displays_only_known_viewer_messages(history, tmp_path, monkeypatch, failure):
+    _, _, local, _, s3, storage = history
+    app = fixture(tmp_path, fields={'ALLURE_RESULTS_DIR': {'type': 'str', 'default': str(local)}})
+    async def failed_setup():
+        raise failure
+    monkeypatch.setattr(app, 'prepare_allure_reporting', failed_setup)
+
+    async def scenario():
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            await app.show_allure_history()
+            await pilot.pause()
+            shown = str(app.screen.query_one('#error', Static).render())
+            expected = ('No finalized integration or E2E Allure runs are available'
+                        if failure.args[0].startswith('No finalized')
+                        else 'Could not open Allure history; check reporting setup and storage.')
+            assert expected in shown
+            assert 'synthetic-secret' not in shown
+            assert app.operation_status == 3 and not app._allure_opening
+    asyncio.run(scenario())
+    assert s3.objects == {}
+
+
+@pytest.mark.parametrize(('message', 'expected'), [
+    ('Allure 2 CLI command is missing from PATH; configure ALLURE_CLI or install with brew install allure; see https://allurereport.org/docs/v2/install/',
+     'Allure 2 CLI command is missing from PATH; configure ALLURE_CLI or install with brew install allure; see https://allurereport.org/docs/v2/install/'),
+    ('Allure viewer port 16686 is occupied; stop its owner or configure ALLURE_VIEWER_PORT',
+     'Allure viewer port 16686 is occupied; stop its owner or configure ALLURE_VIEWER_PORT'),
+    ('Allure command failed (exit 127); check ALLURE_CLI, its host PATH and Java installation',
+     'Allure command failed; check ALLURE_CLI, its host PATH and Java installation'),
+    ('Allure viewer port 16686 is occupied; stop its owner or configure ALLURE_VIEWER_PORT synthetic-secret', None),
+    ('Allure command failed (exit 127); check ALLURE_CLI, its host PATH and Java installation synthetic-secret', None),
+    ('Allure viewer port 00000 is occupied; stop its owner or configure ALLURE_VIEWER_PORT', None),
+    ('Allure viewer port 65536 is occupied; stop its owner or configure ALLURE_VIEWER_PORT', None),
+])
+def test_history_viewer_guidance_is_structured_and_bounded(message, expected):
+    assert _known_history_viewer_message(ViewerError(message)) == expected
+
+
+@pytest.mark.parametrize('message', [
+    'The exact selected Allure result is unavailable',
+    'Allure did not preserve the exact selected attempt',
+    'Allure generation produced no report',
+    'Allure generated an invalid selected-result link',
+])
+def test_selected_viewer_retains_only_fixed_diagnostics(message):
+    assert _known_history_viewer_message(ViewerError(message)) == message
+    assert _known_history_viewer_message(ViewerError(message + ' synthetic-secret')) is None
+
+
+@pytest.mark.parametrize(('failure', 'expected'), [
+    (RuntimeError('synthetic-secret'), 'Could not open Allure history; check reporting setup and storage.'),
+    (ViewerError('synthetic-secret'), 'Could not open Allure history; check reporting setup and storage.'),
+    (ViewerError('Allure could not start; install Allure 2 and check Java on PATH'),
+     'Allure could not start; install Allure 2 and check Java on PATH'),
+])
+def test_selected_report_displays_only_controlled_errors(history, tmp_path, monkeypatch, failure, expected):
+    _, _, local, _, s3, storage = history
+    app = fixture(tmp_path, fields={'ALLURE_RESULTS_DIR': {'type': 'str', 'default': str(local)}})
+    monkeypatch.setattr(app, 'selected_allure_result', lambda screen: (object(), object()))
+    async def failed_setup():
+        raise failure
+    monkeypatch.setattr(app, 'prepare_allure_reporting', failed_setup)
+    notices = []
+    monkeypatch.setattr(app, 'notify', lambda message, **kwargs: notices.append((message, kwargs)))
+
+    async def scenario():
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            await app.open_selected_allure()
+            assert (expected, {'severity': 'error', 'timeout': 10}) in notices
+            assert all('synthetic-secret' not in message for message, _ in notices)
+            assert not app._allure_opening and app._allure_loading == ''
+    asyncio.run(scenario())
+    assert s3.objects == {}
+
+
+def test_restore_refresh_preserves_known_viewer_setup_guidance(history, monkeypatch):
+    _, files, local, _, s3, storage = history
+    app = RestoreHarness(local, storage)
+    monkeypatch.setattr('api_agent.testing.collection.repository_label', lambda context, root: 'sample')
+    async def failed_archive(source):
+        raise ViewerError('Allure could not start; install Allure 2 and check Java on PATH')
+    app._allure = lambda: SimpleNamespace(show_archive=failed_archive)
+
+    asyncio.run(app.restore_allure_secondary_history())
+
+    assert ('notice', 'Allure could not start; install Allure 2 and check Java on PATH',
+            {'severity': 'error', 'timeout': 10}) in app.events
+    assert len(s3.objects) == len(files) + 1

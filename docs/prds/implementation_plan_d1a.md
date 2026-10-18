@@ -85,3 +85,7 @@ budget accounting and unavailable reasons.
 - [x] Show orange `Preparing selected integration run in Allure…` or `Preparing selected E2E run in Allure…` immediately above the footer while a selected-report request is pending. This is persistent screen state, not a toast. Preserve it when remaining tests finish, when results refresh, and when details/confirmation screens resume.
 - [x] Clear only the matching request's status after its actual link notification or failure; cancellation and leave/close clear it. Stale requests cannot erase a newer status. Keep errors and current test timing/outcomes independent. Verify partial/final completion ordering, failure, cancellation, resumed views and selected mode.
 - [x] Human review the persistent orange preparation status from a partial completion through the completed-results transition, until the selected report link or failure appears.
+
+## Controlled error display
+
+- [x] Main-menu history opening/refresh and selected-report preparation display only approved public diagnostics. Never trust arbitrary text merely because an exception has a recognized type. Preserve actionable configured-port and missing-CLI guidance through validated, bounded message forms; unexpected adapter/setup failures use fixed messages. Restore uses the same policy through its [bounded requirements](implementation_plan_h2a2c.md). Do not retain callback exception notes or raw chains when normalizing ordinary errors. Preserve cancellation, owned task settlement and stale-generation isolation.

@@ -4,7 +4,7 @@
 
 - [x] Offer an explicit action from configured `ALLURE_SECONDARY_DIR` to configured `ALLURE_S3_BUCKET` and prefix. Refuse absent source or destination and never infer a restore from a preview, collection, or ordinary history browsing.
 - [x] Bound the scan, manifest count and size, artifact count and individual/aggregate bytes, and total operation time. Validate original run UUIDs, manifest identities, result identities and attachment references. Reject symlinks, nonregular files and content changes; never read a file again after verifying different bytes for publication.
-- [ ] Verify a complete local run before sending any of its objects. Refuse an existing different destination manifest before adding artifact keys. Use conditional writes: equal bytes are idempotent, differing bytes fail without overwrite. Publish the original manifest last; cancellation or failure may leave uncommitted artifacts for exact-byte retry. The committed-destination race guarantee remains under review.
+- [x] Verify a complete local run before sending any of its objects. Refuse a different destination manifest observed at preflight before adding artifact keys. Use conditional writes: equal bytes are idempotent, differing bytes fail without overwrite. Publish the original manifest last as the sole visibility point; cancellation, failure or a lost concurrent publication may leave unreferenced artifacts for exact-byte retry. Prove the competing-publisher race with controlled storage and a manifest-based reader.
 - [x] Reuse the workbench reporting session for managed storage ownership and keep the explicit restore task responsive to cancellation and Close/Quit. Report bounded progress and safe errors without credentials or artifact contents. Refresh the history viewer after successful restoration; retain the secondary files and all existing destination evidence.
 - [x] Prove missing, equal, conflicting, partial, corrupt, symlinked, oversized and late-finalized runs with controlled S3 and local IPC fixtures. Check cancellation and rerun behavior. Do not use real history or live bucket writes for automated proof. Independent adversarial controls include SDK-error disclosure, cancellation at storage boundaries, and future-artifact rereads.
 
@@ -20,3 +20,11 @@ Unexpected ordinary storage, progress, reporting setup, or viewer errors display
 
 The joined unit gate passed 10,884 cases and 27 subtests with exact measured line and branch coverage. Installed-package resource checks, meaningful mutations, independent review, licenses and public-boundary checks passed.
 External review reopened the destination race policy and unexpected-error boundary; prior gate evidence is historical until the repairs and review complete.
+
+## Controlled callback diagnostics
+
+- [x] Typed callback errors are not trusted by class alone: only exact public messages from a finite set may reach the restore UI. Ordinary history opening, selected-report preview, and post-restore viewer refresh use the same bounded-display policy, retaining known CLI setup and occupied-port guidance through exact messages or validated numeric templates. Cancellation and other interruptions still propagate.
+
+## Concurrent destination publication
+
+An independently committed manifest may appear after the preflight read and before the restore's final conditional manifest write. In that race, the restore must fail without overwriting the competitor's manifest or any immutable object. Artifact keys uploaded by the losing restore may remain unreferenced. Readers expose only artifacts referenced by the committed manifest, never an apparent merged run. No automatic orphan cleanup occurs; a later explicit restore checks exact bytes again. The publication lock coordinates this workbench's suites, not independent destination writers.

@@ -7,7 +7,7 @@ import shutil
 import pytest
 
 from api_agent.runtime.compose import (ComposeError, plan_compose, snapshot_compose,
-                                       validate_document)
+                                       validate_document, rebind_reporting_plan)
 from test_compose import Scope
 
 
@@ -162,6 +162,70 @@ def test_published_jaeger_receiver_must_reach_persistent_storage(tmp_path, mutat
     else:
         document['processors']['batch'] = {'send_batch_size': 1}
     config.write_text(json.dumps(document))
+
+    with pytest.raises(ComposeError, match='storage must be persistent'):
+        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+
+
+@pytest.mark.parametrize(('key', 'value'), [
+    ('image', 'docker.io/library/python:3.13-slim'),
+    ('entrypoint', ['python', '-m', 'http.server']),
+    ('user', '0'),
+    ('environment', {'SPAN_STORAGE_TYPE': 'memory'}),
+    ('healthcheck', {'test': ['CMD', 'true']}),
+    ('profiles', ['langfuse']),
+])
+def test_jaeger_requires_the_reviewed_service_identity(key, value):
+    document = json.loads(plan_compose({}, Scope()).assets['compose.json'])
+    document['services']['jaeger'][key] = value
+
+    with pytest.raises(ComposeError, match='controlled persistent storage'):
+        validate_document(document, Scope(), ('otel',))
+
+
+@pytest.mark.parametrize(('section', 'value'), [
+    ('jaeger_query', {'storage': {'traces': 'local_traces'},
+                      'http': {'endpoint': '0.0.0.0:16687'}}),
+    ('jaeger_query', {'storage': {'traces': 'local_traces'},
+                      'http': {'endpoint': '127.0.0.1:16686'}}),
+    ('jaeger_storage', {'backends': {'local_traces': {'badger': {
+        'directories': {'keys': '/tmp/jaeger/keys', 'values': '/tmp/jaeger/values'},
+        'ephemeral': False, 'ttl': {'spans': '1h'}}}}}),
+])
+def test_jaeger_requires_reviewed_query_binding_and_retention(tmp_path, section, value):
+    source = plan_compose({}, Scope()).directory
+    directory = tmp_path / 'compose'
+    shutil.copytree(source, directory)
+    path = directory / 'jaeger-config.json'
+    document = json.loads(path.read_text())
+    document['extensions'][section] = value
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(ComposeError, match='storage must be persistent'):
+        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+
+
+def test_rebinding_ownership_preserves_reviewed_jaeger_assets():
+    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope())
+    other = Scope(id='fedcba9876543210', project='sa-fedcba9876543210')
+
+    rebound = rebind_reporting_plan(plan, other)
+
+    assert rebound.assets is plan.assets
+    assert rebound.environment['SA_SCOPE'] == other.id
+    assert rebound.command[rebound.command.index('--project-name') + 1] == other.project
+    assert rebound.services == ('jaeger',)
+
+
+@pytest.mark.parametrize('ephemeral', [0, 0.0])
+def test_jaeger_ephemeral_requires_json_false(tmp_path, ephemeral):
+    source = plan_compose({}, Scope()).directory
+    directory = tmp_path / 'compose'
+    shutil.copytree(source, directory)
+    path = directory / 'jaeger-config.json'
+    document = json.loads(path.read_text())
+    document['extensions']['jaeger_storage']['backends']['local_traces']['badger']['ephemeral'] = ephemeral
+    path.write_text(json.dumps(document))
 
     with pytest.raises(ComposeError, match='storage must be persistent'):
         plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
