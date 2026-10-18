@@ -25,4 +25,4 @@ self-retaining aggregate cleanup receipt. Alternate collectors must be qualified
 for independently transferred successor duties before reuse; this slice does
 not promise an unrestricted loader cleanup protocol.
 
-The joined 32-worker unit gate passed 10,884 cases and 27 subtests at exact measured line and branch coverage. Independent guards and installed-package/public-boundary checks passed.
+Technical implementation and independent/external review are complete. The final joined 32-worker gate passed 10,955 tests and 27 subtests at exact measured line and branch coverage. Independent guards and installed-package/license/public-boundary checks passed. Human acceptance remains open.

@@ -37,7 +37,7 @@ For tracing, `TRACE_MODE` selects the backend and `TRACE_TARGET` supplies its ad
 ## 2. Durable reporting storage
 
 - [ ] Preserve S3 history and tracing data across normal stops and container recreation. Inventory versions and storage formats before changes; obtain recoverable backups for migrations and verify restored identities and bytes.
-- [ ] Configure Jaeger with a supported persistent storage backend and named volumes, including any supporting service. Pin compatible versions and verify traces survive stop/restart and recreation. Do not rely on its default in-memory storage or a volume without a configured durable backend.
+- [x] Configure Jaeger with a supported persistent storage backend and named volumes, including any supporting service. Pin compatible versions and verify traces survive stop/restart and recreation. Do not rely on its default in-memory storage or a volume without a configured durable backend.
 - [ ] Verify the selected LangFuse stack's database/object-store persistence and graceful flush. Start the configured tracing backend; do not implicitly enable both tracing alternatives. Reporting container shutdown never implies data deletion.
 
 ## 3. Reporting and container management
@@ -55,9 +55,9 @@ and current storage access; it does not complete tracing or last-session shutdow
 
 ## 4. Restore missing history from secondary storage
 
-- [ ] Add an explicit synchronization action from `ALLURE_SECONDARY_DIR` to the selected S3 history destination. Inspect finalized manifests and verify artifact hashes, original run UUIDs and destination identity. Reuse immutable conditional writes and manifest-last publication.
-- [ ] Upload only missing runs/artifacts. Existing equal bytes are idempotent success; differing bytes or invalid/incomplete manifests are reported without overwrite or combining runs. Handle partial uploads, cancellation, late manifests and retries. Protect active producers throughout synchronization.
-- [ ] Show progress and actionable storage errors without credentials. Refresh the viewer/history index after successful synchronization while preserving original evidence. No history reset or automatic deletion of the secondary store is implied.
+- [x] Add an explicit synchronization action from `ALLURE_SECONDARY_DIR` to the selected S3 history destination. Inspect finalized manifests and verify artifact hashes, original run UUIDs and destination identity. Reuse immutable conditional writes and manifest-last publication.
+- [x] Upload only missing runs/artifacts. Existing equal bytes are idempotent success; differing bytes or invalid/incomplete manifests are reported without overwrite or combining runs. Handle partial uploads, cancellation, late manifests and retries. Protect active producers throughout synchronization.
+- [x] Show progress and actionable storage errors without credentials. Refresh the viewer/history index after successful synchronization while preserving original evidence. No history reset or automatic deletion of the secondary store is implied.
 
 ## Acceptance and dependencies
 
