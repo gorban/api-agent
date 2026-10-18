@@ -11,7 +11,8 @@ from api_agent.telemetry.usage import QuotaSnapshot, QuotaReadError
 
 NOW = datetime(2026, 10, 11, tzinfo=timezone.utc)
 ACCOUNT = {'account': {'type': 'chatgpt', 'email': 'User@example.test', 'planType': 'pro'}}
-WINDOW = {'usedPercent': 28, 'windowDurationMins': 10080, 'resetsAt': 1792295916}
+RESET = NOW + timedelta(days=7)
+WINDOW = {'usedPercent': 28, 'windowDurationMins': 10080, 'resetsAt': int(RESET.timestamp())}
 DATA = {'rateLimitsByLimitId': {'codex': {'limitId': 'codex', 'primary': WINDOW, 'secondary': None}}}
 CONNECTION = SimpleNamespace(email='user@example.test', subject='verified-subject', access_token='app-secret')
 
@@ -35,6 +36,8 @@ class Process:
 
 @pytest.fixture
 def client(monkeypatch):
+    monkeypatch.setattr(q, 'datetime', SimpleNamespace(
+        now=lambda tz: NOW.astimezone(tz), fromtimestamp=datetime.fromtimestamp))
     p = Process()
     calls = []
     async def spawn(*args, **kwargs): calls.append((args, kwargs)); return p
@@ -48,6 +51,7 @@ def test_read_matching_native_account_preserves_integer_precision_and_route(clie
     result = asyncio.run(q.read_quota(CONNECTION, period='week'))
     assert isinstance(result, QuotaSnapshot) and result.pct_used == 28 and result.pct_step == 1
     assert result.reset_at == datetime.fromtimestamp(WINDOW['resetsAt'], timezone.utc)
+    assert result.captured_at == NOW
     assert result.window_id.startswith('codex:') and 'verified-subject' not in result.window_id
     assert len(result.window_id) < 100
     assert [f['method'] for f in p.written] == ['initialize', 'initialized', 'account/read', 'account/rateLimits/read', 'account/read']
@@ -219,3 +223,16 @@ def test_rpc_deadline_has_fresh_synchronous_cleanup(client, monkeypatch):
     p.readline=blocked
     assert asyncio.run(q.read_quota(CONNECTION,period='week'))==QuotaReadError('request')
     assert p.signals==['terminate'] and p.waits==1
+
+
+@pytest.mark.parametrize('offset', [-1, 0, 1], ids=['just-before', 'exact-reset', 'just-after'])
+def test_quota_read_requires_reset_strictly_after_observation(client, monkeypatch, offset):
+    observed = RESET + timedelta(microseconds=offset)
+    monkeypatch.setattr(q.datetime, 'now', lambda tz: observed.astimezone(tz))
+    result = asyncio.run(q.read_quota(CONNECTION, period='week'))
+    if offset < 0:
+        assert isinstance(result, QuotaSnapshot)
+        assert result.captured_at == observed and result.reset_at == RESET
+    else:
+        assert result == QuotaReadError('response')
+    assert client[0].signals == ['terminate'] and client[0].waits == 1

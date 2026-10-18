@@ -25,8 +25,8 @@ contract. Provider transport and authentication values remain internal.
   Uncomposed built-in capability routes resolve against the runtime URL table and
   return their existing 501/method/preflight responses before any body receive;
   custom routes retain their own dispatch and Host validation remains enforced.
-  Limit this optimization to the factory runtime handler; directly injected
-  handlers remain authoritative for every path and Django settings state.
+  Limit this optimization to the exact factory runtime handler type; injected
+  handlers, including subclasses overriding dispatch, remain authoritative for every path and Django settings state.
 - [x] Return JSON results with session identifier, response text, outcome, measured
   usage and optional actual model, service tier, serving revision and billing.
   Validate provider results using their existing contract before publication.
@@ -86,4 +86,4 @@ qualification or authorize a paid pilot.
 
 No live authentication, inference or report-history mutation is required by this contract work.
 
-The renewed joined unit gate passed 10,412 tests and 27 subtest records at exact 100% line and branch coverage. Eleven controlled HTTP checks, the installed wheel from a different working directory, licenses and source-boundary checks passed. Independent adversarial reviews cover authoritative request metadata before body acquisition, bounded ingress, configured-default validation across offered choices, retained-response bounds and captured-turn disposal. Unavailable built-in routes return before body acquisition; explicitly injected handlers retain authority. The shared callback registry deduplicates transferred receipt duties across different callbacks and overlapping waiters. Human acceptance remains separate.
+The renewed joined unit gate passed 10,422 tests and 27 subtest records at exact 100% line and branch coverage. Eleven controlled HTTP checks, the installed wheel from a different working directory, licenses and source-boundary checks passed. Independent adversarial reviews cover authoritative request metadata before body acquisition, bounded ingress, configured-default validation across offered choices, retained-response bounds and captured-turn disposal. Unavailable built-in routes return before body acquisition; explicitly injected handlers retain authority. The shared callback registry deduplicates transferred receipt duties across different callbacks and overlapping waiters. Human acceptance remains separate.

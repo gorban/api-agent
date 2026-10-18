@@ -279,7 +279,7 @@ class Application:
                 backend = (self.runtime.services or {}).get('studio_backend')
                 ingress = getattr(backend, 'handle_asgi', None)
                 if ingress is None:
-                    if (backend is not None or not isinstance(self._django_app, RuntimeHandler)
+                    if (backend is not None or type(self._django_app) is not RuntimeHandler
                             or not await self._deferred_response(request_scope, send)):
                         await self._django_app(request_scope, receive, send)
                 else:
