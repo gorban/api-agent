@@ -48,7 +48,7 @@ comparable versions and a unique highest version. Missing metadata, no matches
 and tied highest versions fail explicitly. Regex evaluation has bounded input
 and execution; malformed patterns fail configuration validation.
 
-The base defaults allow GPT-6 Luna, Haiku and Sol and choose the newest Luna.
+The base defaults allow GPT-6 Luna, Terra and Sol and choose the newest Luna.
 Providers/resource packs and .env/ENV/CLI may override these generic declarations.
 `llm_selection` resolves this default for the small shared request integration;
 it requires catalog access. Explicit allowed `complete(request)` calls still do
