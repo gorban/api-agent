@@ -287,7 +287,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         pending = getattr(self.app, '_pending_cost_refresh', None)
         if pending is self.app.selection and self.kind == 'tests':
             self.app._pending_cost_refresh = None
-            self.call_after_refresh(self.app.refresh_rows)
+            self.call_after_refresh(self.app.refresh_picker_costs, self, pending)
 
     @property
     def focus_chain(self):
@@ -2044,6 +2044,17 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 'Toggle groups or individual tests with Enter. Press s to start selected tests.\n' +
                 selected_summary(self.cost_estimator, self.selection.selected_ids))
 
+    def refresh_picker_costs(self, screen, selection):
+        # Refresh belongs to the picker which queued it, after its DOM mounts.
+        if (selection is not self.selection or not screen.is_attached
+                or not screen.is_mounted or not screen.is_running or self.test_run_active()):
+            return
+        if screen is self.screen:
+            self.refresh_rows()
+        elif screen in self.screen_stack:
+            # A modal may cover the picker between scheduling and execution.
+            self._pending_cost_refresh = selection
+
     async def synchronize_cost_history(self, snapshot, selection):
         try:
             replacement = await asyncio.to_thread(snapshot.synchronize)
@@ -2056,7 +2067,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 self.cost_estimator = replacement or snapshot
                 self.cost_estimator.picker_configuration = getattr(snapshot, 'picker_configuration', None)
             if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'tests':
-                self.refresh_rows()
+                self.screen.call_after_refresh(self.refresh_picker_costs, self.screen, selection)
             else:
                 # A modal temporarily covers the same picker. Keep its result
                 # and redraw once the original picker becomes active again.

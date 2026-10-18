@@ -55,6 +55,7 @@ def test_late_refresh_rebuilds_for_new_settings_without_replacing_selection(conf
     from api_agent.tui.app import WorkbenchScreen
     picker = WorkbenchScreen('tests', 'Select integration tests', '', (), ())
     app._screen_stacks[app._current_mode] = [picker]
+    picker.call_after_refresh = Mock()
     values['TEST_COST_HISTORY_DAYS'] = 30
 
     asyncio.run(app.synchronize_cost_history(original, selected))
@@ -63,7 +64,8 @@ def test_late_refresh_rebuilds_for_new_settings_without_replacing_selection(conf
     assert app.cost_estimator is snapshots[-1] and app.cost_estimator is not stale_result
     assert app.cost_estimator.value == 30
     assert app.cost_estimator.picker_configuration == deepcopy(values)
-    app.refresh_rows.assert_called_once()
+    app.refresh_rows.assert_not_called()
+    picker.call_after_refresh.assert_called_once_with(app.refresh_picker_costs, picker, selected)
     app.run_worker.assert_called_once()
 
 

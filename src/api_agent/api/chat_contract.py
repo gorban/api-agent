@@ -33,9 +33,6 @@ def catalog(selections, default, reasoning_default):
         raise ContractError('Invalid application default')
     if reasoning_default is not None and reasoning_default not in EFFORTS:
         raise ContractError('Invalid reasoning default')
-    if reasoning_default is not None and any('reasoning_effort' not in row['features']
-            or reasoning_default not in row.get('reasoning_efforts', ()) for row in rows):
-        raise ContractError('Configured reasoning default is not supported')
     models = []
     for row in rows:
         row['value'] = row.pop('selected_llm')

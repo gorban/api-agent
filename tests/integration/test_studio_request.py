@@ -176,7 +176,11 @@ async def browser_prompt(prepared):
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     async with component_timeout('Studio browser request', 150):
-        await expect(page.locator('#model')).to_have_value(re.compile(r'.+'))
+        try:
+            await expect(page.locator('#model')).to_have_value(re.compile(r'.+'))
+        except AssertionError as error:
+            diagnostic = await page.locator('#model-status').inner_text()
+            raise AssertionError('Studio model choices are unavailable: ' + diagnostic) from error
         await page.locator('#prompt').fill('Answer with exactly: Ok')
         await page.locator('#send').click()
         status = page.locator('.assistant .metadata-grid dd').last
