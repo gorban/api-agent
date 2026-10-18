@@ -1,4 +1,6 @@
 import io
+import asyncio
+from contextlib import nullcontext
 import json
 import hashlib
 from uuid import uuid4
@@ -167,7 +169,9 @@ def test_retry_partial_upload_and_reject_mismatched_existing(tmp_path):
     with pytest.raises(StorageError):
         storage.persist(*source)
     assert storage.latest('example') is None
-    assert not (tmp_path / 'copies').exists()
+    target = tmp_path / 'copies/example' / source[1]['run_id']
+    assert (target / 'a-result.json').read_bytes() == b'{}'
+    assert json.loads((target / 'manifest.json').read_bytes()) == source[1]
     storage.persist(*source)
     assert storage.latest('example')['run_id'] == source[1]['run_id']
     key = storage._key('example', source[1]['run_id'], 'a-result.json')
@@ -176,7 +180,7 @@ def test_retry_partial_upload_and_reject_mismatched_existing(tmp_path):
         storage.persist(*source)
 
 
-def test_secondary_manifest_only_after_primary_and_retry(tmp_path):
+def test_secondary_manifest_follows_its_own_verified_artifacts_and_retry(tmp_path):
     s3 = FakeS3()
     storage = RunStorage('bucket', client=s3, secondary_directory=tmp_path / 'copies')
     source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z')
@@ -445,3 +449,294 @@ def test_only_managed_localstack_endpoint_uses_synthetic_credentials(monkeypatch
         assert calls[0]['aws_secret_access_key'] == 'test'
     else:
         assert 'aws_access_key_id' not in calls[0] and 'aws_secret_access_key' not in calls[0]
+
+
+@pytest.fixture
+def independent_publication(tmp_path, monkeypatch):
+    source, manifest = staged(tmp_path, str(uuid4()), '2026-01-01T00:00:00Z', 'failed')
+    secondary = tmp_path / 'secondary'
+    state = SimpleNamespace(source=source, manifest=manifest, secondary=secondary,
+                            copied=[], local_error=None, primary_error=None,
+                            primary_failure_name='a-result.json', attempted=[])
+
+    class ObservedS3(FakeS3):
+        def put_object(self, **request):
+            name = request['Key'].rsplit('/', 1)[-1]
+            state.attempted.append(name)
+            if state.primary_error is not None and name == state.primary_failure_name:
+                raise state.primary_error
+            super().put_object(**request)
+
+    state.client = ObservedS3()
+    state.storage = RunStorage('synthetic-results', client=state.client,
+                               secondary_directory=secondary)
+    copy_once = state.storage._copy_once
+
+    def copy(directory_fd, name, data):
+        state.copied.append(name)
+        if state.local_error is not None:
+            raise state.local_error
+        copy_once(directory_fd, name, data)
+
+    monkeypatch.setattr(state.storage, '_copy_once', copy)
+    state.target = secondary / manifest['repo'] / manifest['run_id']
+    return state
+
+
+def assert_complete_secondary(state):
+    assert json.loads((state.target / 'manifest.json').read_bytes()) == state.manifest
+    for name, digest in state.manifest['files'].items():
+        assert hashlib.sha256((state.target / name).read_bytes()).hexdigest() == digest
+    assert state.copied[-1] == 'manifest.json'
+
+
+def assert_complete_primary(state):
+    key = state.storage._key(state.manifest['repo'], state.manifest['run_id'], 'manifest.json')
+    assert json.loads(state.client.objects[key]) == state.manifest
+    for name, digest in state.manifest['files'].items():
+        key = state.storage._key(state.manifest['repo'], state.manifest['run_id'], name)
+        assert hashlib.sha256(state.client.objects[key]).hexdigest() == digest
+    assert state.attempted[-1] == 'manifest.json'
+
+
+def test_primary_connection_failure_still_commits_secondary_and_reports_failure(independent_publication):
+    state = independent_publication
+    state.primary_error = ConnectionRefusedError('synthetic private transport detail')
+
+    with pytest.raises(StorageError, match='^Could not persist Allure run$') as caught:
+        state.storage.persist(state.source, state.manifest)
+
+    assert caught.value.__cause__ is None
+    assert_complete_secondary(state)
+    assert state.client.objects == {}
+    assert state.attempted == ['a-result.json']
+
+
+def test_primary_client_initialization_failure_still_commits_secondary(independent_publication, monkeypatch):
+    state = independent_publication
+    def unavailable_client():
+        raise OSError('synthetic initialization failure')
+    monkeypatch.setattr(state.storage, '_client', unavailable_client)
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert_complete_secondary(state)
+    assert state.attempted == []
+
+
+def test_secondary_failure_retains_complete_primary_and_reports_failure(independent_publication):
+    state = independent_publication
+    state.local_error = OSError('synthetic local failure')
+
+    with pytest.raises(StorageError, match='^Could not persist Allure run$'):
+        state.storage.persist(state.source, state.manifest)
+
+    assert_complete_primary(state)
+    assert state.copied == ['a-result.json']
+    assert not (state.target / 'manifest.json').exists()
+
+
+def test_both_failures_attempt_both_without_a_completion_marker(independent_publication):
+    state = independent_publication
+    state.primary_error = ConnectionRefusedError('synthetic primary failure')
+    state.local_error = OSError('synthetic secondary failure')
+
+    with pytest.raises(StorageError, match='^Could not persist Allure run$'):
+        state.storage.persist(state.source, state.manifest)
+
+    assert state.attempted == ['a-result.json']
+    assert state.copied == ['a-result.json']
+    assert state.client.objects == {}
+    assert not (state.target / 'manifest.json').exists()
+
+
+@pytest.mark.parametrize('filename', ['a-result.json', 'manifest.json'])
+def test_primary_conflict_does_not_prevent_verified_secondary(independent_publication, filename):
+    state = independent_publication
+    conflict_key = state.storage._key(state.manifest['repo'], state.manifest['run_id'], filename)
+    state.client.objects[conflict_key] = b'conflicting immutable bytes'
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert_complete_secondary(state)
+    assert state.client.objects[conflict_key] == b'conflicting immutable bytes'
+
+
+@pytest.mark.parametrize('filename', ['a-result.json', 'manifest.json'])
+def test_secondary_conflict_keeps_primary_and_never_overwrites_existing(independent_publication, filename):
+    state = independent_publication
+    state.target.mkdir(parents=True)
+    conflict = state.target / filename
+    conflict.write_bytes(b'conflicting immutable bytes')
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert_complete_primary(state)
+    assert conflict.read_bytes() == b'conflicting immutable bytes'
+
+
+@pytest.mark.parametrize('filename', ['a-result.json', 'manifest.json'])
+def test_primary_partial_failure_retains_secondary_for_safe_retry(independent_publication, filename):
+    state = independent_publication
+    state.primary_failure_name = filename
+    state.primary_error = OSError('synthetic interrupted destination')
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert_complete_secondary(state)
+    original_receipt = (state.target / 'manifest.json').read_bytes()
+    state.primary_error = None
+    state.storage.persist(state.source, state.manifest)
+    assert_complete_primary(state)
+    assert (state.target / 'manifest.json').read_bytes() == original_receipt
+
+
+@pytest.mark.parametrize('interrupt', [KeyboardInterrupt, SystemExit, asyncio.CancelledError])
+def test_primary_interruption_propagates_without_starting_secondary(independent_publication, interrupt):
+    state = independent_publication
+    interrupted = interrupt()
+    state.primary_error = interrupted
+
+    with pytest.raises(interrupt) as caught:
+        state.storage.persist(state.source, state.manifest)
+
+    assert caught.value is interrupted
+    assert state.copied == []
+    assert not state.secondary.exists()
+
+
+@pytest.mark.parametrize('interrupt', [KeyboardInterrupt, SystemExit, asyncio.CancelledError])
+def test_secondary_interruption_propagates_and_preserves_primary(independent_publication, interrupt):
+    state = independent_publication
+    interrupted = interrupt()
+    state.local_error = interrupted
+
+    with pytest.raises(interrupt) as caught:
+        state.storage.persist(state.source, state.manifest)
+
+    assert caught.value is interrupted
+    assert_complete_primary(state)
+    assert state.copied == ['a-result.json']
+    assert not (state.target / 'manifest.json').exists()
+
+
+def test_invalid_common_manifest_does_not_attempt_either_destination(independent_publication):
+    state = independent_publication
+    (state.source / 'manifest.json').write_bytes(b'{}')
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert state.attempted == state.copied == []
+    assert not state.secondary.exists()
+
+
+def test_failed_primary_does_not_allow_changed_secondary_source(independent_publication, monkeypatch):
+    state = independent_publication
+    put_once = state.storage._put_once
+    def fail_after_source_change(key, body):
+        (state.source / 'a-result.json').write_bytes(b'changed source')
+        return put_once(key, body)
+    monkeypatch.setattr(state.storage, '_put_once', fail_after_source_change)
+    state.primary_error = OSError('synthetic primary failure')
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert state.copied == []
+    assert not (state.target / 'manifest.json').exists()
+    assert state.client.objects == {}
+
+
+def test_failed_primary_never_reads_replaced_secondary_symlink(independent_publication, tmp_path, monkeypatch):
+    state = independent_publication
+    outside = tmp_path / 'foreign'
+    outside.write_bytes(b'{}')
+    def replace_then_fail(key, body):
+        artifact = state.source / 'a-result.json'
+        artifact.unlink()
+        artifact.symlink_to(outside)
+        raise StorageError('synthetic primary failure')
+    monkeypatch.setattr(state.storage, '_put_once', replace_then_fail)
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert state.copied == []
+    assert not (state.target / 'manifest.json').exists()
+    assert outside.read_bytes() == b'{}'
+
+
+def test_failed_primary_preserves_pinned_source_root_for_secondary(independent_publication, tmp_path, monkeypatch):
+    import shutil
+    state = independent_publication
+    foreign = tmp_path / 'foreign'
+    shutil.copytree(state.source, foreign)
+    (foreign / 'a-result.json').write_bytes(b'untrusted root bytes')
+    def replace_root_then_fail(key, body):
+        state.source.rename(tmp_path / 'pinned-original')
+        state.source.symlink_to(foreign, target_is_directory=True)
+        raise StorageError('synthetic primary failure')
+    monkeypatch.setattr(state.storage, '_put_once', replace_root_then_fail)
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert_complete_secondary(state)
+    assert state.client.objects == {}
+
+
+@pytest.fixture
+def owned_directory_descriptors(monkeypatch):
+    opened = set()
+    original_open, original_close = os.open, os.close
+    def open_directory(path, flags, *args, **kwargs):
+        descriptor = original_open(path, flags, *args, **kwargs)
+        if flags & os.O_DIRECTORY:
+            opened.add(descriptor)
+        return descriptor
+    def close(descriptor):
+        original_close(descriptor)
+        opened.discard(descriptor)
+    monkeypatch.setattr(os, 'open', open_directory)
+    monkeypatch.setattr(os, 'close', close)
+    yield opened
+    assert opened == set()
+
+
+@pytest.mark.parametrize('error, expected', [
+    (None, nullcontext()),
+    (OSError('synthetic local failure'), pytest.raises(StorageError)),
+    (KeyboardInterrupt(), pytest.raises(KeyboardInterrupt)),
+    (asyncio.CancelledError(), pytest.raises(asyncio.CancelledError)),
+])
+def test_both_destination_directory_descriptors_close_on_every_exit(
+        independent_publication, owned_directory_descriptors, error, expected):
+    state = independent_publication
+    state.local_error = error
+
+    with expected:
+        state.storage.persist(state.source, state.manifest)
+
+    assert owned_directory_descriptors == set()
+    assert_complete_primary(state)
+
+
+def test_failed_secondary_link_removes_temporary_and_closes_owned_directories(
+        independent_publication, owned_directory_descriptors, monkeypatch):
+    state = independent_publication
+    def fail_link(*args, **kwargs):
+        raise OSError('synthetic local link failure')
+    monkeypatch.setattr(os, 'link', fail_link)
+
+    with pytest.raises(StorageError):
+        state.storage.persist(state.source, state.manifest)
+
+    assert owned_directory_descriptors == set()
+    assert list(state.target.glob('.allure-*')) == []
+    assert not (state.target / 'manifest.json').exists()
+    assert_complete_primary(state)

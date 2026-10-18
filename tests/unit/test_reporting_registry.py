@@ -1,10 +1,13 @@
 """Shared reporting uses synthetic engines and real disposable ownership journals."""
 from copy import deepcopy
+from dataclasses import replace
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
+from types import MappingProxyType
 
 import pytest
 
@@ -99,6 +102,483 @@ def test_two_checkouts_share_one_server_and_journal(storage, tmp_path):
     assert len([command for command, _ in storage.engine.commands if 'up' in command]) == 1
     assert first.acquire() is not None  # retained server remains reusable
     first.release(retain=True)
+
+
+@pytest.mark.parametrize('stopped', [False, True])
+@pytest.mark.parametrize('legacy_three_assets', [False, True])
+def test_retained_localstack_reuses_exact_object(storage, stopped, legacy_three_assets):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    if legacy_three_assets:
+        old_assets.pop('jaeger-config.json')
+    else:
+        old_assets['jaeger-config.json'] += b'\n'
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    initial = original.acquire()
+    original.release(retain=True)
+    identifier, = initial.container_ids
+    path, record = binding(storage)
+    saved_record = path.read_bytes()
+    snapshot = dict(old_assets)
+    if stopped:
+        storage.engine.records[identifier]['State']['Running'] = False
+    before = mutation_commands(storage.engine)
+
+    joined = storage.create()
+    lease = joined.acquire()
+
+    assert lease.container_ids == (identifier,)
+    assert path.read_bytes() == saved_record
+    assert dict(joined.manager.plan.assets) == snapshot
+    assert set(record['assets']) == set(snapshot)
+    delta = mutation_commands(storage.engine)[len(before):]
+    assert delta == ([('docker', 'start', identifier)] if stopped else [])
+    joined.release(retain=True)
+    assert path.read_bytes() == saved_record
+
+
+@pytest.mark.parametrize('during_cleanup', [False, True])
+def test_malformed_registered_retained_compose_is_wrapped_without_losing_owner(storage, during_cleanup):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    original.acquire()
+    original.release(retain=True)
+    joined = storage.create()
+    if during_cleanup:
+        joined.acquire()
+    path, record = binding(storage)
+    saved_record = path.read_bytes()
+    snapshot = Path(next(iter(storage.engine.records.values()))['Mounts'][0]['Source']).parent
+    compose_path = snapshot / 'compose.json'
+    saved_compose = compose_path.read_bytes()
+    invalid = b'{broken-json'
+    compose_path.unlink()
+    compose_path.write_bytes(invalid)
+    compose_path.chmod(0o444)
+    record['assets']['compose.json'] = sha256(invalid).hexdigest()
+    metadata._write(path, record)
+    altered_record = path.read_bytes()
+    before = mutation_commands(storage.engine)
+
+    try:
+        with pytest.raises(p.PrerequisiteError, match=(
+                'cleanup remains owned' if during_cleanup else 'no initialization was performed')):
+            if during_cleanup:
+                joined.release(retain=True)
+            else:
+                joined.acquire()
+        assert mutation_commands(storage.engine) == before
+        assert path.read_bytes() == altered_record
+        if during_cleanup:
+            assert joined.lease is not None
+    finally:
+        compose_path.unlink()
+        compose_path.write_bytes(saved_compose)
+        compose_path.chmod(0o444)
+        path.write_bytes(saved_record)
+    if during_cleanup:
+        joined.release(retain=True)
+        assert joined.lease is None
+
+
+@pytest.mark.parametrize('drift', ['missing-object', 'changed-hook', 'changed-compose',
+                                   'changed-fingerprint', 'writable-bind', 'dotdot-bind'])
+def test_retained_plan_refuses_drift_without_engine_mutation(storage, drift):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    initial = original.acquire()
+    original.release(retain=True)
+    identifier, = initial.container_ids
+    path, record = binding(storage)
+    saved_record = path.read_bytes()
+    snapshot = original.manager.snapshot_directory
+    if snapshot is None:
+        snapshot = Path(storage.engine.records[identifier]['Mounts'][0]['Source']).parent
+    if drift == 'missing-object':
+        storage.engine.records.clear()
+    elif drift == 'changed-hook':
+        (snapshot / 'localstack-ready.sh').write_bytes(b'changed')
+    elif drift == 'changed-compose':
+        (snapshot / 'compose.json').unlink()
+        (snapshot / 'compose.json').write_bytes(b'changed')
+        (snapshot / 'compose.json').chmod(0o444)
+    elif drift == 'changed-fingerprint':
+        storage.engine.records[identifier]['Config']['Labels'][p.CONFIG_LABEL] = '0' * 64
+    elif drift == 'dotdot-bind':
+        hook = storage.engine.records[identifier]['Mounts'][0]
+        source = Path(hook['Source'])
+        hook['Source'] = str(source.parent / '..' / source.parent.name / source.name)
+    else:
+        storage.engine.records[identifier]['Mounts'][0]['RW'] = True
+    before = mutation_commands(storage.engine)
+
+    with pytest.raises(p.PrerequisiteError):
+        storage.create().acquire()
+
+    assert mutation_commands(storage.engine) == before
+    assert path.read_bytes() == saved_record
+
+
+def test_invalid_registered_original_directory_refuses_before_lock_or_engine(storage):
+    original = storage.create()
+    original.acquire()
+    original.release(retain=True)
+    path, record = binding(storage)
+    record.pop('directory_identity')
+    metadata._write(path, record)
+    before = list(storage.engine.commands)
+
+    with pytest.raises(p.PrerequisiteError, match='Invalid reporting binding'):
+        storage.create().acquire()
+
+    assert storage.engine.commands == before
+
+
+def test_registered_scope_cannot_create_lock_in_other_directory(storage, tmp_path):
+    original = storage.create()
+    original.acquire()
+    original.release(retain=True)
+    path, record = binding(storage)
+    outside = tmp_path / 'unrelated-owner'
+    outside.mkdir(mode=0o700)
+    info = outside.stat()
+    record['directory'] = str(outside)
+    record['directory_identity'] = [info.st_dev, info.st_ino]
+    metadata._write(path, record)
+    before = list(storage.engine.commands)
+
+    with pytest.raises(p.PrerequisiteError, match='Invalid reporting binding'):
+        storage.create().acquire()
+
+    assert list(outside.iterdir()) == []
+    assert storage.engine.commands == before
+
+
+def test_same_normalized_fingerprint_cannot_replace_exact_selected_spec(storage):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    initial = original.acquire()
+    original.release(retain=True)
+    identifier, = initial.container_ids
+    snapshot = Path(storage.engine.records[identifier]['Mounts'][0]['Source']).parent
+    compose = json.loads((snapshot / 'compose.json').read_bytes())
+    volumes = compose['services']['localstack']['volumes']
+    hook_mount = next(value for value in volumes if '/etc/localstack/init/ready.d/' in value)
+    volumes[volumes.index(hook_mount)] = ('sha256:' + original.plan.environment['SA_LOCALSTACK_READY_DIGEST']
+        + ':/etc/localstack/init/ready.d/10-api-agent-s3.sh:ro,z')
+    body = json.dumps(compose).encode()
+    (snapshot / 'compose.json').unlink()
+    (snapshot / 'compose.json').write_bytes(body)
+    (snapshot / 'compose.json').chmod(0o444)
+    path, record = binding(storage)
+    record['assets']['compose.json'] = sha256(body).hexdigest()
+    metadata._write(path, record)
+    before = mutation_commands(storage.engine)
+
+    with pytest.raises(p.PrerequisiteError, match='Retained LocalStack service differs'):
+        storage.create().acquire()
+
+    assert mutation_commands(storage.engine) == before
+
+
+def test_shared_reporting_rejects_other_selected_service(storage):
+    plan = storage.create().plan
+    mixed = replace(plan, services=('localstack', 'jaeger'))
+    with pytest.raises(p.PrerequisiteError, match='only the LocalStack profile'):
+        r.SharedReportingManager(mixed, registry_directory=storage.registry,
+            identity=lambda *args, **kwargs: storage.generation, manager_factory=storage.factory)
+    assert storage.engine.commands == []
+
+
+@pytest.mark.parametrize('drift', ['extra-snapshot-entry', 'missing-snapshot-entry',
+                                   'group-writable-asset', 'symlink-asset'])
+def test_retained_snapshot_requires_exact_trusted_files(storage, drift):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    initial = original.acquire()
+    original.release(retain=True)
+    identifier, = initial.container_ids
+    snapshot = Path(storage.engine.records[identifier]['Mounts'][0]['Source']).parent
+    if drift == 'extra-snapshot-entry':
+        (snapshot / 'unexpected.txt').write_bytes(b'unreviewed')
+    elif drift == 'missing-snapshot-entry':
+        (snapshot / 'empty.env').unlink()
+    elif drift == 'group-writable-asset':
+        (snapshot / 'compose.json').chmod(0o664)
+    else:
+        target = snapshot / 'compose.json'
+        target.unlink()
+        target.symlink_to(snapshot / 'empty.env')
+    before = mutation_commands(storage.engine)
+
+    with pytest.raises(p.PrerequisiteError):
+        storage.create().acquire()
+
+    assert mutation_commands(storage.engine) == before
+
+
+def test_retained_snapshot_parent_replacement_during_read_refuses(storage, monkeypatch):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    initial = original.acquire()
+    original.release(retain=True)
+    identifier, = initial.container_ids
+    snapshot = Path(storage.engine.records[identifier]['Mounts'][0]['Source']).parent
+    scanned = [False]
+    scandir = os.scandir
+    stat = Path.stat
+    def after_listing(directory):
+        entries = scandir(directory)
+        if isinstance(directory, int):
+            scanned[0] = True
+        return entries
+    def replaced_parent(path, *args, **kwargs):
+        info = stat(path, *args, **kwargs)
+        if path == snapshot and scanned[0]:
+            return SimpleNamespace(st_dev=info.st_dev, st_ino=info.st_ino + 1)
+        return info
+    monkeypatch.setattr(r.os, 'scandir', after_listing)
+    monkeypatch.setattr(Path, 'stat', replaced_parent)
+    before = mutation_commands(storage.engine)
+
+    with pytest.raises(p.PrerequisiteError, match='Retained reporting assets could not be verified'):
+        storage.create().acquire()
+
+    assert scanned[0] and mutation_commands(storage.engine) == before
+
+
+def test_retained_snapshot_parent_permission_change_before_open_refuses(storage, monkeypatch):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    initial = original.acquire()
+    original.release(retain=True)
+    identifier, = initial.container_ids
+    snapshot = Path(storage.engine.records[identifier]['Mounts'][0]['Source']).parent
+    opened = os.open
+    changed = [False]
+    def change_mode_at_open(path, flags, *args, **kwargs):
+        if path == snapshot and flags & os.O_DIRECTORY:
+            snapshot.chmod(0o770)
+            changed[0] = True
+        return opened(path, flags, *args, **kwargs)
+    monkeypatch.setattr(r.os, 'open', change_mode_at_open)
+    before = mutation_commands(storage.engine)
+
+    with pytest.raises(p.PrerequisiteError, match='Retained reporting assets could not be verified'):
+        storage.create().acquire()
+
+    assert changed[0] and mutation_commands(storage.engine) == before
+
+
+def test_container_identity_change_between_inventory_and_bind_inspection_refuses(storage):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    original.acquire()
+    original.release(retain=True)
+    before = mutation_commands(storage.engine)
+    factory = storage.factory
+    inspected = [0]
+    def inconsistent_factory(*args, **kwargs):
+        manager = factory(*args, **kwargs)
+        runner = manager.runner
+        def changed_second_inspect(command, **options):
+            result = runner(command, **options)
+            if len(command) == 3 and command[1] == 'inspect':
+                inspected[0] += 1
+                if inspected[0] == 2:
+                    rows = json.loads(result)
+                    rows[0]['Id'] = 'f' * 64
+                    return json.dumps(rows)
+            return result
+        manager.runner = changed_second_inspect
+        return manager
+    joined = storage.create()
+    joined.factory = inconsistent_factory
+
+    with pytest.raises(p.PrerequisiteError, match='Retained reporting assets could not be verified'):
+        joined.acquire()
+
+    assert inspected[0] == 2 and mutation_commands(storage.engine) == before
+
+
+def test_current_selected_service_drift_refuses_legacy_reuse(storage):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    original.acquire()
+    original.release(retain=True)
+    joined = storage.create()
+    assets = dict(joined.plan.assets)
+    compose = json.loads(assets['compose.json'])
+    compose['services']['localstack']['image'] = 'unreviewed:image'
+    assets['compose.json'] = json.dumps(compose).encode()
+    joined.plan = replace(joined.plan, assets=MappingProxyType(assets))
+    before = mutation_commands(storage.engine)
+
+    with pytest.raises(p.PrerequisiteError, match='Selected LocalStack configuration changed'):
+        joined.acquire()
+
+    assert mutation_commands(storage.engine) == before
+
+
+def test_original_directory_dotdot_is_not_lock_authority(storage):
+    original = storage.create()
+    original.acquire()
+    original.release(retain=True)
+    path, record = binding(storage)
+    directory = Path(record['directory'])
+    record['directory'] = str(directory / '..' / directory.name)
+    metadata._write(path, record)
+    before = list(storage.engine.commands)
+
+    with pytest.raises(p.PrerequisiteError, match='Invalid reporting binding'):
+        storage.create().acquire()
+
+    assert storage.engine.commands == before
+
+
+def test_selected_jaeger_requires_its_captured_config_asset(tmp_path):
+    scope = StackScope.from_roots(tmp_path / 'checkout', tmp_path / 'pack')
+    plan = plan_compose({'TRACE_MODE': 'OTEL'}, scope)
+    assets = dict(plan.assets)
+    assets.pop('jaeger-config.json')
+
+    with pytest.raises(p.PrerequisiteError, match='Selected Jaeger configuration is missing'):
+        p.PrerequisiteManager(replace(plan, assets=MappingProxyType(assets)), scope, tmp_path / 'journal')
+
+
+def test_retained_read_uses_remaining_parent_deadline(storage, monkeypatch):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    original.acquire()
+    original.release(retain=True)
+    before = mutation_commands(storage.engine)
+    read_assets = r._retained_assets
+    def expire_after_read(*args, **kwargs):
+        assets = read_assets(*args, **kwargs)
+        import time
+        time.sleep(.2)
+        return assets
+    monkeypatch.setattr(r, '_retained_assets', expire_after_read)
+
+    with pytest.raises(p.PrerequisiteError, match='cancelled or timed out'):
+        storage.create(deadline_seconds=.1).acquire()
+
+    assert mutation_commands(storage.engine) == before
+
+
+def test_cancelled_retained_asset_read_never_starts_or_leases(storage, monkeypatch):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    original.acquire()
+    original.release(retain=True)
+    before = mutation_commands(storage.engine)
+    cancelled = [False]
+    opened = os.open
+    def cancel_at_compose(path, flags, *args, **kwargs):
+        descriptor = opened(path, flags, *args, **kwargs)
+        if path == 'compose.json' and kwargs.get('dir_fd') is not None:
+            cancelled[0] = True
+        return descriptor
+    monkeypatch.setattr(r.os, 'open', cancel_at_compose)
+
+    with pytest.raises(p.PrerequisiteError, match='cancelled or timed out'):
+        storage.create(cancelled=lambda: cancelled[0]).acquire()
+
+    assert mutation_commands(storage.engine) == before
+    path, _ = binding(storage)
+    assert path.exists()
+
+
+def test_retained_snapshot_change_after_read_refuses_before_reuse(storage):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    initial = original.acquire()
+    original.release(retain=True)
+    identifier, = initial.container_ids
+    snapshot = Path(storage.engine.records[identifier]['Mounts'][0]['Source']).parent
+    before = mutation_commands(storage.engine)
+    factory = storage.factory
+    calls = [0]
+    def change_after_capture(*args, **kwargs):
+        manager = factory(*args, **kwargs)
+        calls[0] += 1
+        if calls[0] == 2:
+            path = snapshot / 'compose.json'
+            path.unlink()
+            path.write_bytes(b'changed after captured read')
+            path.chmod(0o444)
+        return manager
+    joined = storage.create()
+    joined.factory = change_after_capture
+
+    with pytest.raises(p.PrerequisiteError, match='captured assets'):
+        joined.acquire()
+
+    assert calls[0] == 2
+    assert mutation_commands(storage.engine) == before
+
+
+def test_cancelled_owner_can_release_recovered_legacy_binding(storage):
+    original = storage.create()
+    old_assets = dict(original.plan.assets)
+    old_assets.pop('jaeger-config.json')
+    old_assets['compose.json'] += b'\n'
+    original.plan = replace(original.plan, assets=MappingProxyType(old_assets))
+    original.acquire()
+    original.release(retain=True)
+    cancelled = [False]
+    factory = storage.factory
+    def checked_factory(*args, **kwargs):
+        manager = factory(*args, **kwargs)
+        runner = manager.runner
+        def reject_canceled(command, **options):
+            if options['cancelled']():
+                raise p.PrerequisiteError('Synthetic canceled command')
+            return runner(command, **options)
+        manager.runner = reject_canceled
+        return manager
+    joined = storage.create(cancelled=lambda: cancelled[0])
+    joined.factory = checked_factory
+    joined.acquire()
+    cancelled[0] = True
+
+    joined.release(retain=True)
+
+    assert joined.lease is None and joined.pending_cleanup is None
 
 
 @pytest.mark.parametrize('change', ['bucket', 'region', 'assets', 'replaced', 'directory'])
