@@ -15,6 +15,18 @@ extension as a Python-file provider if it uses a different registration contract
   Explain omitted/unsupported capabilities, lazy credential setup, cancellation,
   timeout clipping, retained cleanup and credential-safe evidence. Select with
   `LLM_PROVIDER`; adjust allowed/default model patterns for the new families.
+  Explain provider-specific cost cohorts and non-secret `cost_affecting` route,
+  billing and guardrail settings; identical model IDs do not make provider prices
+  interchangeable. Link the [Bedrock adapter plan](implementation_plan_f4.md).
+  Make the implementor's obligations explicit: supply actual usage and validated
+  rate/charge provenance, declare stable billing/region/guardrail-policy/version
+  dimensions and identify request transformations affecting charged usage. The
+  shared estimator cannot detect an undeclared server-side policy change or infer
+  compatibility from a display name. Keep ancillary non-token charges and unknown
+  overhead distinct from model tokens, preserve any unattributed total and never
+  borrow another provider's rate card or calibration factor. Link the detailed
+  [provider/profile qualification](implementation_plan_f3c.md) and describe how to
+  prove separation using equal model IDs and token counts with different costs.
   Describe subscription versus API-key adapters only where an authorized upstream
   interface actually supports that mode; never silently switch funding routes.
 - [ ] Use Anthropic as an endpoint-translation example, without claiming a

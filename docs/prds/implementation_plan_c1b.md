@@ -47,6 +47,12 @@
   an operation condition. Explain TUI default acknowledgement/provenance and why
   reviewing configuration/help/collection does not import factories or initiate
   credentials, containers or paid inference.
+- [ ] Include a provider-local non-secret billing/guardrail-profile example marked
+  `cost_affecting=true`. Show how changing the route or policy version partitions
+  both token predictions and quota calibration even for the same model/version.
+  Explain the implementor's pricing/usage/provenance responsibilities and current
+  factory-file identity limits; missing compatibility or undisclosed overhead is
+  not permission to mix cohorts or claim a complete measured cost.
 - [ ] Explain that separate external packs/providers retain their own licensing and
   copyright notices; keep api-agent and third-party notices intact when adapting
   or redistributing their actual material. Recommend upstream checkout updates

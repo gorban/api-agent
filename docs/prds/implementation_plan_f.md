@@ -2,6 +2,10 @@
 
 Follow the [shared contracts](implementation_plan_m.md) and [external LLM adapter checklist](implementation_plan_f1.md). Core tests exercise synthetic adapters; the selected provider owns authentication protocols, cache/refresh, headers and upstream pricing metadata. Shared accounting validates that metadata and owns suite allocation, historical calibration and presentation.
 
+The additional [included Amazon Bedrock adapter](implementation_plan_f4.md) is
+planned through these same boundaries, with provider-specific pricing and
+guardrail/billing-profile compatibility; it is not yet implemented.
+
 The [included personal GPT adapter](implementation_plan_f2.md) is early work; real public demo UI/API applications are deferred. Non-inference access adapters are separately activated and cannot serve completions. Keep their quota snapshots separate from selected GPT inference usage/cost. The application picker describes its actual inference provider, not an unrelated access-test catalog. API-key operation retrieves the password field through the same selected LLM User role/index and password-manager interface; it does not reuse subscription tokens or open subscription login.
 
 ## Checklist
