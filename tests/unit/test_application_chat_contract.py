@@ -829,12 +829,12 @@ def test_uncomposed_capabilities_resolve_before_any_body_receive(mounted,path,me
 
 
 @pytest.mark.parametrize('mode',['host','query','override','empty-override','ordinary','unknown','legacy'])
-def test_uncomposed_early_response_preserves_host_and_dispatch(mode):
-    from api_agent.api.application import Application, RuntimeHandler
+def test_uncomposed_early_response_preserves_host_and_dispatch(monkeypatch,mode):
+    from api_agent.api.application import RuntimeHandler
     from django.urls import re_path
     async def run():
         runtime=Runtime('example')
-        create_application(runtime)
+        app=create_application(runtime)
         scope=ingress_scope()
         expected=400
         if mode == 'host':
@@ -854,15 +854,15 @@ def test_uncomposed_early_response_preserves_host_and_dispatch(mode):
         else:
             runtime.services={'studio_backend':object()}
         calls=[]
-        class Handler(RuntimeHandler):
-            async def __call__(self,scope,receive,send):
-                calls.append(scope['path'])
+        async def dispatch(self,scope,receive,send):
+            calls.append(scope['path'])
+        monkeypatch.setattr(RuntimeHandler,'__call__',dispatch)
         async def receive():
             pytest.fail('early response received a body')
         sent=[]
         async def send(message):
             sent.append(message)
-        await Application(runtime,Handler())(scope,receive,send)
+        await app(scope,receive,send)
         if mode in ('host','query'):
             assert sent[0]['status'] == expected and not calls
         else:

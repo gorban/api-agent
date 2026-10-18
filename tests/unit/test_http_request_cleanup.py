@@ -353,3 +353,65 @@ assert not settings.configured
 '''.replace('PATH_VALUE',repr(path))
     result=subprocess.run([sys.executable,'-c',script],env=dict(os.environ),capture_output=True,text=True,timeout=10)
     assert result.returncode == 0, result.stdout+result.stderr
+
+
+@pytest.mark.parametrize('path',['/custom','/app/agent/chat','/app/agent/models'])
+@pytest.mark.parametrize('composed',[False,True])
+def test_injected_runtime_handler_subclass_owns_dispatch_and_cleanup(path,composed):
+    from api_agent.api import create_application
+    from api_agent.api.application import RuntimeHandler
+    from test_application_chat_contract import backend,ingress_scope
+    async def run():
+        bridge=backend() if composed else None
+        runtime=Runtime('example',services={'studio_backend':bridge} if composed else None)
+        create_application(runtime)
+        calls=[]
+        class InjectedHandler(RuntimeHandler):
+            async def __call__(self,scope,receive,send):
+                calls.append(('handled',scope['path']))
+                async def dispose():
+                    calls.append(('closed',scope['path']))
+                scope['api_agent_http_cleanup'].append(dispose)
+                await send({'type':'http.response.start','status':299,'headers':[]})
+                await send({'type':'http.response.body','body':b'injected'})
+        scope=ingress_scope(path,'GET' if path.endswith('/models') else 'POST')
+        original=dict(scope)
+        received=[]
+        async def receive():
+            received.append(True)
+            return {'type':'http.request','body':b'{}'}
+        sent=[]
+        async def send(message):
+            sent.append(message)
+        await Application(runtime,InjectedHandler())(scope,receive,send)
+        assert sent[0]['status'] == 299 and sent[1]['body'] == b'injected'
+        assert calls == [('handled',path),('closed',path)] and scope == original
+        assert len(received) == (1 if composed and path != '/custom' else 0)
+        if bridge is not None:
+            await bridge.aclose()
+    asyncio.run(run())
+
+
+def test_composed_admission_precedes_injected_subclass_dispatch():
+    from api_agent.api import create_application
+    from api_agent.api.application import RuntimeHandler
+    from test_application_chat_contract import backend,ingress_scope
+    async def run():
+        bridge=backend()
+        runtime=Runtime('example',services={'studio_backend':bridge})
+        create_application(runtime)
+        class InjectedHandler(RuntimeHandler):
+            async def __call__(self,*args):
+                pytest.fail('unauthorized request reached injected dispatch')
+        scope=ingress_scope()
+        scope['headers']=[(name,b'wrong' if name == b'x-api-agent-session' else value)
+                          for name,value in scope['headers']]
+        async def receive():
+            pytest.fail('unauthorized request received body')
+        sent=[]
+        async def send(message):
+            sent.append(message)
+        await Application(runtime,InjectedHandler())(scope,receive,send)
+        assert sent[0]['status'] == 403
+        await bridge.aclose()
+    asyncio.run(run())
