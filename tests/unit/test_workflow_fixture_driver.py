@@ -39,6 +39,53 @@ def test_packaged_original_measurements_remain_readable():
     assert report['hits']['second_draft'] == report['routes']['next_a'] + report['routes']['next_b']
 
 
+def test_reviewed_reasoning_equivalence_keeps_original_observations_and_exact_guard(monkeypatch):
+    from api_agent.workflows.sampling import measured_calibration
+    report = driver._baselines()[0]
+    source = 'src/api_agent/llm_providers/gpt/reasoning.py'
+    receipt = report['carry_forward']
+    assert receipt == {
+        'kind': 'reviewed_request_equivalence', 'model': 'gpt-6-luna',
+        'route': 'official_subscription_responses', 'reasoning_effort': 'low',
+        'source': source,
+        'original_source_sha256': '8ea914b93096b4a48af3023da129d172ae474575b002562317459666df97a43c',
+        'current_source_sha256': '03db69e5535cb82583f1acf2b0dedc1efc1cb843bacec2738ccb645c449dc7a2',
+        'original_fixture_sha256': '8c12b099e26e0e2c9955ba3e2fe5543ae00179d3814fea313db522de6bb0c3d9',
+        'basis': ('Deterministic old/new request-admission and native-wire equivalence for the retained '
+                  'model and route; original pilot observations and bound are unchanged.'),
+        'new_pilot': False}
+    assert report['sources'][source] == receipt['current_source_sha256']
+    assert report['trials'] == 20 and report['max_runs'] == 22
+    assert report['records'][0]['trial'] == 1 and report['records'][-1]['trial'] == 20
+    assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
+    reviewed_config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
+    assert driver.fingerprint('gpt-6-luna', reviewed_config)['sources'][source] == receipt['current_source_sha256']
+    assert driver.baseline_limit('gpt-6-luna', reviewed_config) == 22
+
+    original = Path.read_bytes
+    def changed(path):
+        body = original(path)
+        return body + b'\n# different behavior\n' if path.name == 'reasoning.py' else body
+    monkeypatch.setattr(Path, 'read_bytes', changed)
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', reviewed_config)
+
+
+def test_provenance_receipt_cannot_admit_the_old_or_an_unrelated_source(monkeypatch):
+    reviewed_config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
+    source = 'src/api_agent/llm_providers/gpt/reasoning.py'
+    report = deepcopy(driver._baselines()[0])
+    report['sources'][source] = report['carry_forward']['original_source_sha256']
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', reviewed_config)
+
+    report['sources'][source] = report['carry_forward']['current_source_sha256']
+    report['sources']['src/api_agent/llm_providers/gpt/inference.py'] = '0' * 64
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', reviewed_config)
+
+
 @pytest.mark.parametrize('setting,value', [('GPT_API_MODE', 'completions'),
     ('LLM_CACHE_POLICY', 'off'), ('GPT_AUTH_MODE', 'api_key'),
     ('WORKFLOW_LLM_TIMEOUT_SECONDS', 30), ('WORKFLOW_GRAPH_TIMEOUT_SECONDS', 5)])

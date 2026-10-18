@@ -82,3 +82,11 @@ export function resolveSelection(catalog, {model, family = '', version = '', rea
   }
   return {valid: !error, error, selection};
 }
+
+// Unresolved family choices advertise only capabilities verified for every row.
+export function reasoningEfforts(catalog, settings) {
+  const {selection} = resolveSelection(catalog, settings);
+  const rows = selection ? [selection] : settings.family && !settings.model && !settings.version ? catalog.filter(row => row.family === settings.family) : [];
+  if (!rows.length || rows.some(row => !row.features.includes('reasoning_effort') || !Array.isArray(row.reasoning_efforts))) return [];
+  return efforts.filter(effort => rows.every(row => row.reasoning_efforts.includes(effort)));
+}

@@ -1,6 +1,6 @@
 import {renderMarkdown} from './markdown.js';
 import {requestPayload, readResponse, readJSONResponse, supportsContinuation, submitContinuation} from './transport.js';
-import {normalizeCatalog, resolveSelection, modelGroups} from './catalog.js';
+import {normalizeCatalog, resolveSelection, modelGroups, reasoningEfforts} from './catalog.js';
 import {beginReply, takeReply, customAnswer} from './reply.js';
 const $ = id => document.getElementById(id);
 const REQUEST_TIMEOUT_MS = 150000;
@@ -31,6 +31,7 @@ function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catc
 function announce(text) { $('status').textContent = text; }
 function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
 function clearPromptError() { $('prompt-error').hidden = true; $('prompt-error').textContent = ''; $('prompt').removeAttribute('aria-invalid'); }
+function rejectPrompt(text) { $('prompt-error').textContent = text; $('prompt-error').hidden = false; $('prompt').setAttribute('aria-invalid', 'true'); announce(text); focusComposer(); }
 function focusComposer() { $('prompt').focus({preventScroll: true}); }
 function scrollLatest() { const c = $('conversation-scroll'); c.scrollTop = c.scrollHeight; }
 function follow() { if ($('follow-latest').checked) scrollLatest(); }
@@ -225,7 +226,7 @@ function syncSettings() {
   const versions = grouped ? entries.map(row => ({id: row.selected_llm, name: (row.version || 'Unknown version') + (entries.filter(other => other.version === row.version).length > 1 || !row.version ? ' — ' + row.selected_llm : '')})) : entries.filter(row => row.version).map(row => ({id: row.version}));
   const unresolvedVersion = grouped && state.settings.version && (!selection.selection || selection.selection.version !== state.settings.version);
   fillSelect('version', versions, unresolvedVersion ? '' : grouped ? (state.settings.model ? state.settings.model : state.settings.version && selection.selection.selected_llm) || '' : state.settings.version, unresolvedVersion ? 'Unresolved version: ' + state.settings.version : 'Provider default');
-  fillSelect('reasoning', (selection.selection?.reasoning_efforts || []).map(id => ({id})), state.settings.reasoning);
+  fillSelect('reasoning', reasoningEfforts(catalog, state.settings).map(id => ({id})), state.settings.reasoning);
   const label = selection.selection?.display_name || group?.name || state.settings.family || state.settings.model || 'Provider default';
   $('backend-default').textContent = state.settings.model || state.settings.family ? 'Use backend default' : 'Keep selected model';
   $('backend-default').disabled = !$('model').value;
@@ -290,10 +291,10 @@ $('prompt').addEventListener('input', () => { clearPromptError(); state.draft = 
 $('composer').addEventListener('submit', e => {
   e.preventDefault(); if (active) return;
   const text = $('prompt').value.trim();
-  if (!text) { $('prompt-error').textContent = 'Write a message to get started.'; $('prompt-error').hidden = false; $('prompt').setAttribute('aria-invalid', 'true'); announce('Write a message to get started.'); focusComposer(); return; }
+  if (!text) { rejectPrompt('Write a message to get started.'); return; }
   if (state.reply) { submitReply(text); return; }
   const selection = resolveSelection(catalog, state.settings);
-  if (!selection.valid) { announce(selection.error); return; }
+  if (!selection.valid) { rejectPrompt(selection.error); return; }
   state.draft = ''; $('prompt').value = ''; focusComposer(); run(text, {...state.settings});
 });
 $('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('composer').requestSubmit(); } });

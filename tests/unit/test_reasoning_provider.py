@@ -152,16 +152,17 @@ def test_compatible_catalog_keeps_capability_unknown():
     assert selection.features == ()
 
 
+@pytest.mark.parametrize('model', ('gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol'))
 @pytest.mark.parametrize('effort', (None, '', 'off', 'low', 'medium', 'high'))
 @pytest.mark.parametrize('mode', ('responses', 'completions'))
-def test_luna_56_official_wire_and_catalog(effort, mode):
-    selection, = _catalog({'data': [{'id': 'gpt-5.6-luna'}]}, False,
+def test_56_official_wire_and_catalog(model, effort, mode):
+    selection, = _catalog({'data': [{'id': model}]}, False,
         'synthetic-token', base_url=BASE)
     assert selection.reasoning_efforts == ('off', 'low', 'medium', 'high')
     assert selection.features == ('reasoning_effort',)
     _, body = validate_text_request(base_url=BASE, access_token='synthetic-token',
         subscription=False, api_mode=mode, request=request(selection.selected_llm, effort))
-    assert body['model'] == 'gpt-5.6-luna'
+    assert body['model'] == model
     expected = {} if not effort else ({'reasoning': {'effort': 'none' if effort == 'off' else effort}}
         if mode == 'responses' else {'reasoning_effort': 'none' if effort == 'off' else effort})
     assert {key: body[key] for key in ('reasoning', 'reasoning_effort') if key in body} == expected
@@ -170,13 +171,41 @@ def test_luna_56_official_wire_and_catalog(effort, mode):
 @pytest.mark.parametrize('base,model', [
     (BASE, 'gpt-5.6-luna-2026-10-18'),
     (BASE, 'gpt-5.6-luna-latest'),
+    (BASE, 'gpt-5.6-terra-2026-10-18'),
+    (BASE, 'gpt-5.6-sol-latest'),
     ('https://openrouter.ai/api/v1', 'openai/gpt-5.6-luna'),
+    ('https://openrouter.ai/api/v1', 'openai/gpt-5.6-terra'),
+    ('https://openrouter.ai/api/v1', 'openai/gpt-5.6-sol'),
     ('https://compatible.example/v1', 'gpt-5.6-luna'),
+    ('https://compatible.example/v1', 'gpt-5.6-terra'),
+    ('https://compatible.example/v1', 'gpt-5.6-sol'),
 ])
-def test_luna_56_unverified_routes_and_versions(base, model):
+def test_56_unverified_routes_and_versions(base, model):
     selection, = _catalog({'data': [{'id': model}]}, False, 'synthetic-token', base_url=base)
     assert selection.reasoning_efforts is None
     assert selection.features == ()
     with pytest.raises(ProviderAccessError, match='not verified'):
         reasoning_fields(request(model, 'off'), base_url=base, api_mode='responses')
     assert reasoning_fields(request(model, ''), base_url=base, api_mode='responses') == {}
+
+
+@pytest.mark.parametrize('model', ('gpt-5.6-terra', 'gpt-5.6-sol'))
+@pytest.mark.parametrize('effort', (None, '', 'off', 'high'))
+def test_56_new_effort_capability_does_not_change_chat_tool_route(model, effort):
+    _, body = validate_text_request(base_url=BASE, access_token='synthetic-token',
+        subscription=False, api_mode='completions', request=request(model, effort, tools=True))
+    assert body['model'] == model
+    assert body['tools'][0]['function']['name'] == 'lookup'
+    if effort:
+        assert body['reasoning_effort'] == ('none' if effort == 'off' else effort)
+    else:
+        assert 'reasoning_effort' not in body
+
+
+@pytest.mark.parametrize('effort', (None, '', 'high'))
+def test_56_luna_existing_chat_tool_restriction_is_unchanged(effort):
+    with pytest.raises(ProviderAccessError, match='requires Responses'):
+        reasoning_fields(request('gpt-5.6-luna', effort, tools=True),
+            base_url=BASE, api_mode='completions')
+    assert reasoning_fields(request('gpt-5.6-luna', 'off', tools=True),
+        base_url=BASE, api_mode='completions') == {'reasoning_effort': 'none'}

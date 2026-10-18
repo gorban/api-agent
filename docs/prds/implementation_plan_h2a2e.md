@@ -7,4 +7,6 @@
 - [x] Running objects are reused and stopped objects restart by their verified immutable ID. Missing, replaced or incompatible objects refuse before Compose creation. Keep Jaeger startup and broader asset-bundle migration separate. Refuse changed hooks, selected service, owner, mount, volume, or registry facts without altering the engine or registry.
 - [x] Prove exact running and stopped reuse, refusal cases, cleanup/retry, and a bypass mutation with controlled engine and filesystem fixtures. No live service is needed for automated proof.
 
-- [ ] Human acceptance: rerun a previously blocked selection using a verified retained installation. Review refusal and interruption proofs without changing real data.
+- [x] Human acceptance: rerun a previously blocked selection using a verified retained installation. Review refusal and interruption proofs without changing real data.
+
+Human acceptance of this delivered LocalStack scope is recorded. This does not accept broader tracing, management, destructive storage actions, or additional native-platform behavior. No additional manual observations are inferred from that signoff.

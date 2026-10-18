@@ -29,7 +29,7 @@ creating-worker retention and explicit cleanup checkpoint.
 - [x] Require meaningful unit/frontend assertions and focused mutations, exact applicable line/branch coverage, installed relocated-resource loading, host/browser lifecycle tests, license checks and independent adversarial review.
 - [x] Preserve the original worker-owned DEBUG UI browser after parallel test completion. Define controller ownership/handoff before implementation; retain the creating loop, report inspection endpoints and finalize test evidence before user-driven browser closure. Prove cancellation, worker loss, cleanup retries and no resource leaks through actual parallel runners. Serial controller inspection is verified but does not close this requirement; resolve it before application E2E.
 - [x] Audit independently authored source, intended index and actual commit metadata while preserving unrelated changes. Keep private handoff/provenance outside this repository.
-- [ ] Human review of the joined provider/theme/settings/continuation behavior, deferred until working Run local or [retained interactive Studio](implementation_plan_i2c2.md). Actual listening agent, authentication, inference and first application E2E retain their owning application gates.
+- [x] Human review of the joined provider/theme/settings/continuation behavior, deferred until working Run local or [retained interactive Studio](implementation_plan_i2c2.md). Actual listening agent, authentication, inference and first application E2E retain their owning application gates.
 
 ## Verification checkpoint
 
@@ -45,3 +45,16 @@ implementation gap with independent controlled proofs; full application E2E and
 workflow execution retain their separate gates.
 
 - [x] The compact composer model indicator appends `: <reasoning>` for every explicitly selected effort, including off; provider-default effort has no suffix. Preserve model/version selection and immutable per-message metadata.
+
+## Keyboard send after conversation reset
+
+- [x] Preserve selected model/version/effort across New chat. A typed draft sent with Ctrl+Enter uses that exact selection and only the fresh conversation's messages.
+- [x] Present unsupported or unknown selection capabilities beside the composer when sending is blocked, retain the typed draft, and make the reason accessible through the existing prompt description. Do not silently choose a capability or manufacture a request.
+- [x] Keep active stream exclusion, Stop, New chat and Undo coherent. A deliberate reset clears the draft; Undo restores it until the next accepted send. Corrected advertised capabilities allow the preserved selection to send.
+- [x] Independently review the controlled browser regressions and complete joined verification. Human review remains open.
+
+- [x] When a chosen family has an unresolved Provider default version, offer only reasoning efforts supported by every advertised row with verified reasoning support. Unknown support yields no explicit choices. Preserve version rejection without choosing a fallback; empty reasoning inherits configured effort, while empty configuration remains omitted upstream.
+
+Human acceptance of retained Studio is recorded; the new reasoning and visible composer-rejection follow-ups remain separate. Long-idle cache review is not accepted by this signoff.
+
+- [ ] Human review of the new reasoning choices and composer rejection presentation. Prior retained Studio acceptance remains recorded.
