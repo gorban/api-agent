@@ -126,3 +126,111 @@ def test_browser_helper_rejects_incompatible_default_before_sending(connection, 
         finally:
             await owner.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('saved,outcome', [('sample', 'valid'), ('unknown', 'unknown'), ('alternate', 'unsupported'), ('sample', 'failure')])
+def test_saved_selection_waits_for_real_catalog_settlement(connection, tmp_path, monkeypatch, saved, outcome):
+    import playwright.async_api
+    real_expect = playwright.async_api.expect
+    async def run():
+        provider = MixedProvider()
+        backend = connection.ui_provider_backend.__wrapped__(None, provider, 'sample')
+        owner = UIIntegrationOwner({'config': {
+            'UI_LISTENER_URL': 'http://127.0.0.1:9443',
+            'UI_PROVIDER': str(Path(included.__file__)) + ':create_provider',
+            'LLM_DEFAULT_MODEL': 'sample', 'LLM_ALLOWED_MODELS': 'sample|unknown|alternate',
+            'LLM_REASONING_EFFORT': 'low'}, 'owner_root': str(tmp_path)}, None, backend=backend)
+        release, entered, waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        prompt = None
+        class ObservedExpectation:
+            def __init__(self, locator): self.assertion = real_expect(locator)
+            def __getattr__(self, name): return getattr(self.assertion, name)
+            async def to_have_attribute(self, name, value, **options):
+                if name == 'data-catalog-state': waiting.set()
+                return await self.assertion.to_have_attribute(name, value, **options)
+        try:
+            prepared = await owner.start()
+            page = prepared.session.page
+            await expect(page.locator('#model-status')).to_have_attribute('data-catalog-state', 'settled')
+            await page.evaluate("""model => localStorage.setItem('api-agent-studio-v2', JSON.stringify({
+                session: crypto.randomUUID(), messages: [], draft: '', reply: null,
+                settings: {model, version: '', reasoning: ''}
+            }))""", saved)
+            async def hold_models(route):
+                entered.set()
+                await release.wait()
+                if outcome == 'failure':
+                    await route.fulfill(status=400, content_type='application/json', body='{"error":{"code":"invalid_request","message":"synthetic-private-detail"}}')
+                else:
+                    await route.continue_()
+            await page.route('**/app/agent/models', hold_models)
+            await page.reload(wait_until='domcontentloaded')
+            await entered.wait()
+            await expect(page.locator('#model')).to_have_value(saved)
+            await expect(page.locator('#model-status')).to_have_attribute('data-catalog-state', 'loading')
+            monkeypatch.setattr(playwright.async_api, 'expect', ObservedExpectation)
+            prompt = asyncio.create_task(connection.browser_prompt(prepared))
+            observation = asyncio.create_task(waiting.wait())
+            done, _ = await asyncio.wait({prompt, observation}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+            try:
+                assert observation in done and waiting.is_set()
+                assert not prompt.done()
+                assert await page.locator('#prompt').input_value() == ''
+                assert provider.calls == []
+                assert await page.locator('.user').count() == 0
+            finally:
+                observation.cancel()
+                await asyncio.gather(observation, return_exceptions=True)
+            release.set()
+            if outcome == 'valid':
+                assert await prompt == 'Ok'
+                assert len(provider.calls) == 1
+                assert provider.calls[0].selected_llm == saved
+                assert await page.locator('.user').count() == 1
+            else:
+                message = {'unknown': 'support for this model is unknown', 'unsupported': 'unsupported', 'failure': 'HTTP 400'}[outcome]
+                with pytest.raises(AssertionError, match=message): await prompt
+                assert provider.calls == []
+                assert await page.locator('#prompt').input_value() == ''
+                assert 'synthetic-private-detail' not in await page.locator('#model-status').inner_text()
+            await expect(page.locator('#model-status')).to_have_attribute('data-catalog-state', 'settled')
+            assert await page.locator('#model').input_value() == saved
+        finally:
+            release.set()
+            if prompt is not None:
+                if not prompt.done(): prompt.cancel()
+                await asyncio.gather(prompt, return_exceptions=True)
+            await owner.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('state', [None, 'unexpected'])
+def test_missing_catalog_readiness_fails_bounded_before_prompt(connection, tmp_path, monkeypatch, state):
+    import playwright.async_api
+    real_expect = playwright.async_api.expect
+    class BoundedExpectation:
+        def __init__(self, locator): self.assertion = real_expect(locator)
+        def __getattr__(self, name): return getattr(self.assertion, name)
+        async def to_have_attribute(self, name, value, **options):
+            assert name == 'data-catalog-state' and value == 'settled'
+            assert options['timeout'] == 15000
+            return await self.assertion.to_have_attribute(name, value, timeout=30)
+    async def run():
+        provider = MixedProvider()
+        backend = connection.ui_provider_backend.__wrapped__(None, provider, 'sample')
+        owner = UIIntegrationOwner({'config': {'UI_LISTENER_URL': 'http://127.0.0.1:9443',
+            'UI_PROVIDER': str(Path(included.__file__)) + ':create_provider'},
+            'owner_root': str(tmp_path)}, None, backend=backend)
+        try:
+            prepared = await owner.start()
+            page = prepared.session.page
+            await expect(page.locator('#model-status')).to_have_attribute('data-catalog-state', 'settled')
+            await page.locator('#model-status').evaluate("(element, value) => value === null ? element.removeAttribute('data-catalog-state') : element.setAttribute('data-catalog-state', value)", state)
+            monkeypatch.setattr(playwright.async_api, 'expect', BoundedExpectation)
+            with pytest.raises(AssertionError, match='Studio catalog did not settle:'):
+                await connection.browser_prompt(prepared)
+            assert await page.locator('#prompt').input_value() == ''
+            assert provider.calls == []
+        finally:
+            await owner.aclose()
+    asyncio.run(run())

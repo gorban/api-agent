@@ -112,17 +112,17 @@ def test_modal_configuration_resync_keeps_pending_redraw_with_original_picker(tm
             await app.synchronize_cost_history(previous, selected)
             await app.workers.wait_for_complete()
             assert app.cost_estimator is snapshots[-1] and app.cost_estimator.value == 30
-            assert app._pending_cost_refresh == (picker, selected)
+            assert picker._pending_cost_refresh is selected
             redraw = Mock()
             monkeypatch.setattr(app, 'refresh_rows', redraw)
             await app.show('tests', 'Replacement during settings refresh', rows=picker.rows)
             await pilot.pause()
             redraw.assert_not_called()
-            assert app._pending_cost_refresh == (picker, selected)
+            assert picker._pending_cost_refresh is selected
             app.pop_screen()
             await pilot.pause()
             app.pop_screen()
             await pilot.pause()
-            assert app.screen is picker and app._pending_cost_refresh is None
+            assert app.screen is picker and picker._pending_cost_refresh is None
             redraw.assert_called_once_with()
     asyncio.run(scenario())

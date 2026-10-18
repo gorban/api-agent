@@ -177,6 +177,12 @@ async def browser_prompt(prepared):
     page.on('pageerror', lambda error: errors.append(str(error)))
     async with component_timeout('Studio browser request', 150):
         try:
+            # Existing config and catalog fetches each allow five seconds.
+            await expect(page.locator('#model-status')).to_have_attribute('data-catalog-state', 'settled', timeout=15000)
+        except AssertionError as error:
+            diagnostic = await page.locator('#model-status').inner_text()
+            raise AssertionError('Studio catalog did not settle: ' + diagnostic) from error
+        try:
             await expect(page.locator('#model')).to_have_value(re.compile(r'.+'))
         except AssertionError as error:
             diagnostic = await page.locator('#model-status').inner_text()

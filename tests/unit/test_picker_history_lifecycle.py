@@ -77,7 +77,7 @@ def test_deferred_history_redraw_retains_picker_ownership(tmp_path, monkeypatch,
                 if transition == 'running':
                     monkeypatch.setattr(app, 'test_run_active', lambda: False)
                 if transition == 'modal':
-                    assert app._pending_cost_refresh == (picker, selection)
+                    assert picker._pending_cost_refresh is selection
                     app.pop_screen()
                     await pilot.pause()
                     resume, resume_args = queued.pop()
