@@ -1,5 +1,6 @@
 """Bounded application values, independent of provider transport vocabulary."""
 import json
+import math
 from uuid import UUID, uuid4
 
 from ..providers.catalog import catalog_to_wire
@@ -32,6 +33,10 @@ def catalog(selections, default, reasoning_default):
         raise ContractError('Invalid application default')
     if reasoning_default is not None and reasoning_default not in EFFORTS:
         raise ContractError('Invalid reasoning default')
+    selected = next(row for row in rows if row['selected_llm'] == default)
+    if reasoning_default is not None and ('reasoning_effort' not in selected['features']
+            or reasoning_default not in selected.get('reasoning_efforts', ())):
+        raise ContractError('Configured reasoning default is not supported')
     models = []
     for row in rows:
         row['value'] = row.pop('selected_llm')
@@ -79,3 +84,12 @@ def frame(name, value):
     if max(len(body), len(json.dumps(value, separators=(',', ':')).encode())) > 131072:
         raise ContractError('Application event exceeds byte limit')
     return body
+
+
+def heartbeat(interval, timeout):
+    values = (interval, timeout)
+    if any(type(value) not in (int, float) or not 0 < value <= 2147483.647
+           or not math.isfinite(value) for value in values) or interval >= timeout:
+        raise ContractError('Invalid application heartbeat timing')
+    return {'heartbeat_interval_ms': interval * 1000,
+            'heartbeat_timeout_ms': timeout * 1000}

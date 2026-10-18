@@ -95,7 +95,7 @@ def test_response_owner_preserves_both_disposal_duties(engine_error,source_error
     async def run():
         calls=[]
         class Engine:
-            async def disconnect(self,*args):
+            async def disconnect_turn(self,*args):
                 calls.append('engine')
                 if engine_error:
                     raise engine_error()
@@ -110,6 +110,7 @@ def test_response_owner_preserves_both_disposal_duties(engine_error,source_error
             _responses={}
         backend=Backend()
         owner=ResponseCleanup(backend,'session')
+        owner.turn=object()
         owner.source=Source()
         backend._responses['session']=owner
         expected=asyncio.CancelledError if asyncio.CancelledError in (engine_error,source_error) else CleanupPendingError
