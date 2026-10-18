@@ -236,10 +236,10 @@ class AllureNavigation:
             self.notify(Content.assemble('Could not open the link automatically; open manually:\n', url),
                         severity='error', timeout=15)
 
-    async def prepare_allure_reporting(self):
+    async def prepare_allure_reporting(self, *, for_restore=False):
         values = self.session.result().values
         if (values.get('ALLURE_S3_BUCKET') and values.get('ALLURE_S3_USE_LOCALSTACK')
-                and not values.get('ALLURE_VIEW_SECONDARY', False)):
+                and (for_restore or not values.get('ALLURE_VIEW_SECONDARY', False))):
             import os
             from api_agent.runtime.compose import plan_compose, ENGINE_ENVIRONMENT_KEYS
             from api_agent.runtime.ownership import StackScope
@@ -251,13 +251,13 @@ class AllureNavigation:
                                 engine_environment=environment)
             await offload(self.reporting_sessions.acquire, plan, engine_environment=environment)
 
-    def allure_source(self):
+    def allure_source(self, *, primary=False):
         from api_agent.testing.allure_viewer import RunSource
         from api_agent.testing.storage import RunStorage
         from api_agent.testing.collection import repository_label
         values = self.session.result().values
         storage = None
-        secondary = values.get('ALLURE_VIEW_SECONDARY', False)
+        secondary = values.get('ALLURE_VIEW_SECONDARY', False) and not primary
         if values.get('ALLURE_S3_BUCKET') and not secondary:
             storage = RunStorage(values['ALLURE_S3_BUCKET'],
                 prefix=values.get('ALLURE_S3_PREFIX', 'allure'),
@@ -274,8 +274,11 @@ class AllureNavigation:
         generation = self._allure_generation
         self._allure_opening = True
         try:
-            await self.show('allure', 'Allure history', 'Preparing recorded integration/E2E runs…',
-                            (('refresh-allure', 'Refresh history'),))
+            values = self.session.result().values
+            actions = [('refresh-allure', 'Refresh history')]
+            if values.get('ALLURE_SECONDARY_DIR') and values.get('ALLURE_S3_BUCKET'):
+                actions.append(('allure-restore-secondary', 'Restore missing secondary history'))
+            await self.show('allure', 'Allure history', 'Preparing recorded integration/E2E runs…', tuple(actions))
             if generation is not self._allure_generation:
                 return
             await self.prepare_allure_reporting()
@@ -293,6 +296,66 @@ class AllureNavigation:
         finally:
             if generation is self._allure_generation:
                 self._allure_opening = False
+
+    @_owned_opener
+    async def restore_allure_secondary_history(self):
+        """Run the explicit restore outside the UI loop, then refresh primary history."""
+        from threading import Event
+        from api_agent.runtime.tasks import offload
+        from api_agent.testing.collection import repository_label
+        from api_agent.testing.history_restore import restore_missing_history
+
+        if self._allure_opening:
+            return
+        values = self.session.result().values
+        if not values.get('ALLURE_SECONDARY_DIR') or not values.get('ALLURE_S3_BUCKET'):
+            self.notify('Configure secondary history and an S3 bucket before restoring.',
+                        severity='error', timeout=10)
+            return
+        generation = self._allure_generation
+        cancellation = Event()
+        self._allure_opening = True
+        self._allure_loading = 'Checking finalized secondary history…'
+        self.refresh_allure_loading()
+
+        def progress(done, total):
+            self.call_from_thread(self._restore_allure_progress, generation, done, total)
+
+        try:
+            await self.prepare_allure_reporting(for_restore=True)
+            if generation is not self._allure_generation:
+                return
+            source = self.allure_source(primary=True)
+            repo = repository_label(self.context, self.context.owner_root)
+            restored = await offload(restore_missing_history, repo, values['ALLURE_SECONDARY_DIR'],
+                                     source.storage, progress=progress, cancelled=cancellation.is_set,
+                                     cancellation=cancellation)
+            if generation is self._allure_generation:
+                location = await self._allure().show_archive(source)
+                self.operation_status = 0
+                self.show_allure_location(location)
+                self.notify(f'Verified {restored} finalized secondary runs in S3.', timeout=10)
+        except asyncio.CancelledError:
+            cancellation.set()
+            raise
+        except Exception as error:
+            if generation is self._allure_generation:
+                self.operation_status = 3
+                page = self.allure_page()
+                if page is not None:
+                    page.query_one('#error', Static).update(str(error))
+                else:
+                    self.notify(str(error), severity='error', timeout=10)
+        finally:
+            if generation is self._allure_generation:
+                self._allure_opening = False
+                self._allure_loading = ''
+                self.refresh_allure_loading()
+
+    def _restore_allure_progress(self, generation, done, total):
+        if generation is self._allure_generation:
+            self._allure_loading = f'Restoring secondary history: {done}/{total} finalized runs'
+            self.refresh_allure_loading()
 
     def stop_allure_admission(self, *, shutdown=False):
         self._allure_shutdown |= shutdown

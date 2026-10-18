@@ -5,8 +5,14 @@
 service has one profile and the three ownership labels. Compose itself supplies
 project/service labels. All published ports bind `127.0.0.1`; databases, Redis,
 ClickHouse, and the Langfuse worker have no host ports. Persistent data uses
-project-scoped named volumes. Jaeger uses its default in-memory development
-storage, so its traces reset when its container restarts.
+project-scoped named volumes. The Jaeger 2.21 OTEL profile uses a controlled
+v2 configuration with single-node Badger storage in `jaeger-badger`. The volume
+mounts at `/tmp`, whose image directory is writable by Jaeger's non-root UID
+10001; storage lives below `/tmp/jaeger` and survives normal stop and container
+recreation. Its seven-day span TTL bounds retained local development data.
+`JAEGER_VIEWER_PORT` selects the loopback host port for the viewer (16686 by
+default), while OTLP ingestion remains at loopback port 4318. External trace
+endpoints do not select this managed profile.
 
 The planner passes explicit project, project directory, file, and the controlled
 empty env file. Its subprocess environment contains generated synthetic
@@ -53,6 +59,11 @@ Config validation discards stdout/stderr to avoid exposing resolved secrets.
   and [download](https://www.jaegertracing.io/download/): supported v2 image
   `cr.jaegertracing.io/jaegertracing/jaeger:2.21.0`, with OTLP HTTP port 4318
   and browser UI port 16686. No obsolete `all-in-one` v1 image is used.
+- [Jaeger 2.21 Badger](https://www.jaegertracing.io/docs/2.21/storage/badger/)
+  supports local persistence for a single-node all-in-one deployment; its
+  [sample v2 configuration](https://github.com/jaegertracing/jaeger/blob/v2.21.0/cmd/jaeger/config-badger.yaml)
+  defines the storage/query/exporter wiring. The included JSON configuration is
+  independently authored and packaged with the controlled Compose assets.
 - Both the [v3.163.0 Langfuse compose](https://github.com/langfuse/langfuse/blob/v3.163.0/docker-compose.yml)
   and current upstream compose select Chainguard MinIO. The controlled profile
   pins its image digest and uses the included `mc ready local` health check.
@@ -86,7 +97,8 @@ AWS. Its content digest and selected bucket/region participate in configuration
 compatibility, so an existing stack with different initialization must be
 reviewed instead of silently reused.
 
-The public hook is the only permitted bind mount. The planner resolves its source
+The LocalStack init hook and packaged Jaeger config are the controlled
+service-specific read-only bind assets. The planner resolves the hook source
 from checkout or installed package assets, validates and snapshots a real file,
 and mounts it read-only at the fixed `ready.d` path using exact short `ro,z`
 syntax. This supplies shared SELinux labeling through Podman-backed Compose;
@@ -98,7 +110,7 @@ checks that the selected bucket remains readable before result publication.
 
 The hook and mount contracts follow [LocalStack initialization hooks](https://docs.localstack.cloud/aws/customization/advanced/initialization-hooks/)
 and [Compose bind mount options](https://docs.docker.com/reference/compose-file/services/).
-Config-only validation permits only this controlled hook bind. Unit tests execute
+Config-only validation permits only these controlled binds. Unit tests execute
 the hook against a controlled fake `awslocal`; scoped live diagnostics also check
 engine provisioning. Interactive integration/E2E acceptance remains separate.
 

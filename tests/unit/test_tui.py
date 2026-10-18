@@ -1673,7 +1673,8 @@ def test_menu_directional_navigation_skips_disabled_container_button(tmp_path):
             await pilot.pause()
             await pilot.press('c')
             await pilot.pause()
-            assert app.screen.query_one('#mode-cleanup-containers', Button).disabled
+            assert not app.screen.query_one('#mode-cleanup-containers', Button).disabled
+            app.screen.query_one('#mode-cleanup-containers', Button).disabled = True
             logs = app.screen.query_one('#mode-deployment-logs', Button)
             review = app.screen.query_one('#review-config', Button)
             for down, up in (('down', 'up'), ('j', 'k')):

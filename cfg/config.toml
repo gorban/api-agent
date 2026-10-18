@@ -47,6 +47,14 @@ review_optional = true
 conditional_defaults = [{when = {TRACE_MODE = "LangFuse"}, value = "http://localhost:3000"}, {when = {TRACE_MODE = "OTEL"}, value = "http://localhost:4318/v1/traces"}]
 help = "Optional trace destination. Defaults to the selected trace mode's local endpoint."
 
+[fields.JAEGER_VIEWER_PORT]
+type = "int"
+default = 16686
+review_optional = true
+help = "Loopback host port for the locally managed Jaeger trace viewer; OTLP ingestion remains on port 4318."
+[fields.JAEGER_VIEWER_PORT.applies_when]
+TRACE_MODE = "OTEL"
+
 [fields.LOG_CONTENT]
 type = "bool"
 default = false

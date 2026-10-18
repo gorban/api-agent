@@ -81,12 +81,12 @@ def test_container_inventory_and_stop_errors_are_visible_and_recoverable(tmp_pat
             app.container_runtime = SimpleNamespace(inventory=failure('Container engine refused connection'), stop=failure('stop failed'))
             await app._refresh_container_inventory()
             await pilot.pause()
-            assert 'refused' in app.container_summary
+            assert app.container_summary == 'Container inventory unavailable.'
             app.container_runtime = SimpleNamespace(inventory=failure('private engine detail'), stop=failure('stop failed'))
             await app._refresh_container_inventory()
             await pilot.pause()
             assert app.container_summary == 'Container inventory unavailable.'
-            item = SimpleNamespace(id='id', name='name', image='image', status='running')
+            item = SimpleNamespace(id='id', name='name', image='image', status='running', running=True)
             app.container_runtime = SimpleNamespace(inventory=lambda: (item,), stop=failure('stop failed'))
             await app._refresh_container_inventory()
             await pilot.pause()
@@ -416,7 +416,7 @@ def test_failure_scroll_bindings_and_navigation_ignore_empty_tables(tmp_path):
 def test_container_success_confirmation_and_keyboard_stop(tmp_path):
     async def scenario():
         stopped = []
-        item = SimpleNamespace(id='owned', name='fixture', image='fixture:image', status='running')
+        item = SimpleNamespace(id='owned', name='fixture', image='fixture:image', status='running', running=True)
         inventory = [item]
         def stop(ids):
             stopped.extend(ids)

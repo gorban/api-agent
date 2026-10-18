@@ -45,7 +45,7 @@ def test_cleanup_requires_literal_y_and_refreshes(tmp_path):
             assert app.screen.query_one(DataTable).row_count == 2
             await app.choose('menu')
             await pilot.pause()
-            assert 'Running containers: 1' in str(app.screen.query_one('#body', Static).content)
+            assert 'Managed containers: 1 running' in str(app.screen.query_one('#body', Static).content)
     asyncio.run(scenario())
 
 
@@ -75,7 +75,7 @@ def test_container_all_selection_tracks_individuals_and_empty_inventory(tmp_path
                 assert not app.screen.query(DataTable)
                 return
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0)[1] == 'All'
+            assert table.get_row_at(0)[1] == 'All running'
             assert table.get_row_at(0)[0] == ''
             await pilot.press('enter')
             assert app.container_marked == {item.id for item in items}
@@ -114,18 +114,18 @@ def test_menu_container_button_empty_running_and_unavailable(tmp_path):
         async with app.run_test() as pilot:
             await pilot.pause()
             button = app.screen.query_one('#mode-cleanup-containers')
-            assert str(button.label) == 'No running containers to stop'
-            assert button.disabled
+            assert str(button.label) == 'Container management'
+            assert not button.disabled
             items.append(Container('abc', 'api', 'image', 'Up'))
             app.refresh_container_inventory()
             await pilot.pause()
-            assert str(button.label) == 'Stop running containers'
+            assert str(button.label) == 'Container management'
             assert not button.disabled
-            assert 'Running containers: 1' in str(app.screen.query_one('#body', Static).content)
+            assert 'Managed containers: 1 running' in str(app.screen.query_one('#body', Static).content)
             items = None
             app.refresh_container_inventory()
             await pilot.pause()
-            assert str(button.label) == 'Stop running containers'
+            assert str(button.label) == 'Container management'
             assert not button.disabled
             assert 'unavailable' in str(app.screen.query_one('#body', Static).content)
     asyncio.run(scenario())
@@ -157,17 +157,17 @@ def test_scoped_inventory_and_fresh_stop_use_inspect_and_full_ids():
         runtime = ContainerRuntime('/bin/docker', SCOPE)
         assert runtime.inventory() == (Container(item['Id'], 'api', 'api:dev', 'running'),)
         runtime.stop([item['Id'], item['Id']])
-        assert [call.args[0][1:] for call in run.call_args_list] == [['ps', '--quiet', '--no-trunc', '--filter', 'label=api-agent.managed=true'], ['inspect', item['Id']], ['inspect', item['Id']], ['stop', '--time', '10', item['Id']]]
+        assert [call.args[0][1:] for call in run.call_args_list] == [['ps', '--all', '--quiet', '--no-trunc', '--filter', 'label=api-agent.managed=true'], ['inspect', item['Id']], ['inspect', item['Id']], ['stop', '--time', '10', item['Id']]]
         assert all(call.kwargs == dict(capture_output=True,text=True,timeout=5,check=False) for call in run.call_args_list[:-1])
         assert run.call_args_list[-1].kwargs == dict(capture_output=True,text=True,timeout=17,check=False)
 
 
-def test_inventory_filters_unowned_stopped_session_and_distrobox():
+def test_inventory_includes_stopped_and_filters_unowned_session_and_distrobox():
     items = [record(), record('b'*64, State={'Running':False}), record('c'*64, Name='/session'), record('d'*64, Config={'Labels':{}}), record('e'*64)]
     items[-1]['Config']['Labels']['distrobox.name'] = 'dev'
     runtime = ContainerRuntime('docker', SCOPE)
-    with patch('api_agent.runtime.containers.session_container_identity', return_value={'session'}), patch.object(runtime, '_run', side_effect=['ids',json.dumps(items)]):
-        assert [item.id for item in runtime.inventory()] == ['a'*64]
+    with patch('api_agent.runtime.containers.session_container_identity', return_value={'session'}), patch.object(runtime, '_run', side_effect=[' '.join(item['Id'] for item in items),json.dumps(items)]):
+        assert [item.id for item in runtime.inventory()] == ['a'*64, 'b'*64]
     with patch.object(runtime, '_run', return_value=''):
         assert runtime.inventory() == ()
 

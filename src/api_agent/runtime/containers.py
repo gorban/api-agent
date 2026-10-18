@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from contextlib import nullcontext
 import json
 import os
+import re
+import time
 from pathlib import Path
 import shlex
 import shutil
@@ -21,6 +23,7 @@ class Container:
     name: str
     image: str
     status: str
+    running: bool = True
 
 
 def session_container_identity():
@@ -75,9 +78,9 @@ class ContainerRuntime:
             raise ContainerError(f"Container engine command failed (exit {result.returncode}).")
         return result.stdout
 
-    def _inspect(self, identifiers):
+    def _inspect(self, identifiers, *, reader=None):
         try:
-            records = json.loads(self._run(["inspect", *identifiers]))
+            records = json.loads((reader or self._run)(["inspect", *identifiers]))
             if not isinstance(records, list):
                 raise ValueError("Expected inspect array")
             for record in records:
@@ -86,7 +89,8 @@ class ContainerRuntime:
                         or not record["Id"]
                         or not isinstance(record.get("Name"), str)
                         or not isinstance(record.get("Config"), dict)
-                        or not isinstance(record.get("State"), dict)):
+                        or not isinstance(record.get("State"), dict)
+                        or type(record["State"].get("Running")) is not bool):
                     raise ValueError("Invalid inspect record")
             return records
         except (ValueError, TypeError) as error:
@@ -103,20 +107,23 @@ class ContainerRuntime:
         if self.scope is None:
             return ()
         identifiers = self._run([
-            "ps", "--quiet", "--no-trunc",
+            "ps", "--all", "--quiet", "--no-trunc",
             "--filter", "label=api-agent.managed=true",
         ]).split()
         if not identifiers:
             return ()
+        if len(set(identifiers)) != len(identifiers) or any(not re.fullmatch('[0-9a-f]{64}', identifier) for identifier in identifiers):
+            raise ContainerError('Container inventory unavailable: invalid container IDs.')
         records = self._inspect(identifiers)
+        if len(records) != len(identifiers) or {record['Id'] for record in records} != set(identifiers):
+            raise ContainerError('Container inventory unavailable: identities changed.')
         if any(self.scope.is_legacy(record['Config'].get('Labels')) for record in records):
             raise ContainerError('Previous path-based stack scope exists; review and release its leases and containers before migration.')
         protected = session_container_identity()
         return tuple(Container(record["Id"], record["Name"].lstrip("/"),
                                str(record["Config"].get("Image", "")),
-                               str(record["State"].get("Status", "")))
-                     for record in records
-                     if self._eligible(record, protected) and record["State"].get("Running") is True)
+                               str(record["State"].get("Status", "")), record["State"]["Running"])
+                     for record in records if self._eligible(record, protected))
 
     def stop(self, identifiers):
         if self.scope is None:
@@ -145,3 +152,37 @@ class ContainerRuntime:
                           timeout=min(120, 5 + 12 * len(identifiers)))
         except PrerequisiteError:
             raise ContainerError("Cannot verify active prerequisite leases; cleanup refused.") from None
+
+
+    def logs(self, identifier, *, cancelled=lambda: False, scrubber=None):
+        """Read one freshly verified object's finite tail; never follow output."""
+        from api_agent.providers.progress import report_timeout_sync
+        from api_agent.testing.diagnostics import CredentialScrubber
+        from .prerequisites import run_command, PrerequisiteError
+        if self.scope is None or not isinstance(identifier, str) or not re.fullmatch('[0-9a-f]{64}', identifier):
+            raise ContainerError('Select a managed container before viewing logs.')
+        executable = self.executable or shutil.which('docker') or shutil.which('podman')
+        if not executable:
+            raise ContainerError('Container logs unavailable: docker and podman are absent from PATH.')
+        scrubber = scrubber or CredentialScrubber(dict(os.environ))
+        with report_timeout_sync('Container logs', 5) as budget:
+            def command(arguments, *, combine_output=False):
+                return run_command((executable, *arguments), environment=dict(os.environ),
+                    directory=Path.cwd(), deadline=time.monotonic() + budget.remaining,
+                    cancelled=cancelled, combine_output=combine_output, output_scrubber=scrubber,
+                    output_limit=65536 if combine_output else None)
+            try:
+                records = self._inspect((identifier,), reader=command)
+                protected = session_container_identity()
+                if (len(records) != 1 or records[0]['Id'] != identifier
+                        or not self._eligible(records[0], protected)):
+                    raise ContainerError('Selected container is no longer owned by this stack scope.')
+                text = command(('logs', '--tail', '200', identifier), combine_output=True)
+            except PrerequisiteError as error:
+                # Keep a shared collector's exact disposal capability, without
+                # exposing engine diagnostics or transport addresses in the UI.
+                safe = ContainerError('Container logs unavailable or cancelled.')
+                if getattr(error, 'cleanup_pending', None) is not None:
+                    safe.cleanup_pending = error.cleanup_pending
+                raise safe from None
+        return text

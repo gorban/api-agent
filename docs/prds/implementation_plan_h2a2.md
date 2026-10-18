@@ -14,9 +14,19 @@ not complete the management UI. The bounded [LocalStack session follow-on](imple
 adds lazy workbench/operation ownership and verified same-object restart; broader
 tracing persistence and management acceptance remain open.
 
+The next bounded foundations have separate acceptance gates:
+
+- [Local Jaeger persistence and viewer port](implementation_plan_h2a2b.md).
+- [Verified secondary history restoration](implementation_plan_h2a2c.md).
+- [Running/stopped container inventory and logs](implementation_plan_h2a2d.md).
+
+These slices do not complete cross-checkout tracing shutdown, volume deletion or
+the combined Reporting menu.
+
 ## 1. Session ownership before runtime wiring
 
 - [ ] Use the selected backend and canonical endpoint for routing. Keep local installation identity/session records internal and independent of checkout paths; do not require a trusted remote registration or UUID match before publishing. Validate locally managed configuration, service versions, enabled profiles and ownership labels before reuse. Reject incompatible or unrelated listeners with clear diagnostics; preserve fixed application ports.
+- [ ] Deliver verified asset-bundle upgrade/recovery for existing installations without weakening compatibility checks. A bundle change can currently refuse an older LocalStack-only binding even when its selected service fingerprint is unchanged. Preserve original ownership evidence and durable data; coordinate backups before any approved migration, replacement or metadata update.
 - [ ] Give each TUI a process-owned session lease and each noninteractive operation an active-use lease. Verify process identity across PID reuse; uncertainty refuses destructive cleanup. Keep publication-only access separate from lifecycle administration.
 - [ ] Coordinate acquisition, final release and shutdown under one lifecycle protocol. A joining launch cannot race the final owner's stop. One TUI quitting does not stop services still needed by another TUI or active operation.
 - [ ] Finish or synchronously cancel the quitting session's operations, settle accounting/publication and flush reporting before releasing its lease. Stop only verified managed containers when no remaining consumer needs them; retain every named volume. Respect dependency order and report incomplete cleanup with recoverable retry duties.
@@ -38,7 +48,7 @@ and current storage access; it does not complete tracing or last-session shutdow
 
 - [ ] Replace the Allure-only menu entry with Reporting: serve Allure and the configured tracing stack, display stable endpoints and join the same managed installation. Keep immutable run selection and publication attribution.
 - [ ] Inventory every managed host publication. Preserve endpoint-URL configuration for tracing ingestion; declare a review-visible Jaeger viewer port instead of fixing it at 16686. Remove unnecessary object-store host publications (currently 9090/9091), or provide review-visible host ports where required and align advertised endpoints. Keep explicit conflict/reuse checks and coordinate existing consumers before reconfiguration.
-- [ ] Expand container management to inventory managed running/stopped containers and volumes, inspect logs and stop eligible containers. Keep the screen accessible when no containers are running. Reuse shared selectable, scrollable, copyable log pages from Run local instead of duplicating them.
+- [ ] Expand container management to inventory managed running/stopped containers and volumes, inspect logs and stop eligible containers. Keep the screen accessible when no containers are running. Reuse shared selectable, scrollable, copyable log pages from Run local instead of duplicating them. Before adding an alternate collector, qualify transferred successor cleanup duties and retained independent owners; the initial log page uses the shared command collector.
 - [ ] Offer Delete volumes with a preview of the affected managed installation, containers and volumes and a `y` confirmation. Cascade graceful stop, removal of eligible containers referencing those volumes, then volume deletion. The user need not perform intermediate steps. Normal Stop retains containers/volumes unless the chosen action requires container removal.
 - [ ] Recheck ownership and active-operation/publication leases at the destructive action, serialize against new acquisition and refuse to disrupt another active operation. An idle management session must not block its own authorized cleanup; coordinate idle sessions and invalidate stale bindings before later reuse. Never stop the host execution container or delete unrelated/external Docker resources. Engine-wide pruning is outside this scoped action.
 - [ ] Report progress, partial failures and retryable remaining work accurately. Cancellation before confirmation performs no mutation; cancellation after it must settle initiated work without claiming a completed purge.
