@@ -15,7 +15,7 @@
   passkey heading, never another security challenge or automatic DOM action there.
   Verify same-document overlays and both interaction policies with real controlled
   browser pages, retaining pinned document identity and accepted-callback priority.
-- [ ] Human acceptance of actual challenge pages remains deferred.
+- [x] Human acceptance of actual challenge pages remains deferred.
 
 Native operating-system WebAuthn dialogs are outside DOM observation; heading recognition cannot reliably detect them. This attended path does not inject a virtual authenticator; [selected-login software passkeys](implementation_plan_a2a2.md) have their own explicit scope. No challenge is bypassed, and disappearance of a challenge is not authentication success. Only the fully verified OAuth connection completes authentication.
 
@@ -26,3 +26,5 @@ Failed or blocked document disposal retains ownership for retry with a fixed cle
 Focused mutations independently remove post-lookup validation, pre-submit validation, challenge checks, unknown-stage checks, submission deduplication and submitted-document identity. Cleanup mutations exercise callback-before-release ordering, primary-error receipts, progress-finalization cancellation ownership, provider retention, disposal-task coalescing, bounded waits and suppression of login retries during pending cleanup. Each targeted regression fails under its mutation and passes after restoration. Before the route extension, the joined 8,888-unit gate passed at exact 100% measured line/branch coverage; independent review and installed-package checks passed. These controlled probes do not establish live challenge acceptance.
 
 Route extension: 268 focused tests cover exact authority/path controls, consent-style headings with visible or already pinned controls, same-document resumption, one actual factory headless-to-visible retry, and accepted callbacks while the route remains visible. Four focused mutations separately remove route detection, HTTPS binding, authority binding and exact-path binding. The renewed 8,904-unit gate passes at exact 100% measured line/branch coverage, alongside independent route and shutdown-fixture reviews and installed-package checks. Native-dialog and human-acceptance limitations remain unchanged.
+
+Human acceptance of the delivered authentication/DEBUG behavior is recorded. This does not claim additional challenge replay, native-dialog support or completion of separately deferred capabilities; new defects remain independent work.

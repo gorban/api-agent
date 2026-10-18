@@ -26,7 +26,7 @@
 - [x] Verify controlled refresh rejection/recovery, identity and visibility,
   concurrency/cancellation and real pytest setup failures/skips. Complete exact
   applicable unit coverage, wheel/licenses and source/index/metadata checks.
-- [ ] Human-review the next expired-cache DEBUG sign-in and successful selected
+- [x] Human-review the next expired-cache DEBUG sign-in and successful selected
   test. Controlled verification requires no paid inference.
 
 
@@ -43,3 +43,5 @@ The installed-wheel replay verifies HTTP400 renewal, serialized cache save and
 disposal outside the checkout. Package, required licenses and public boundary
 checks pass. No paid inference is needed for these proofs; live renewal and the
 selected browser request remain human acceptance.
+
+Human acceptance of the delivered authentication/DEBUG behavior is recorded. This does not claim additional challenge replay, native-dialog support or completion of separately deferred capabilities; new defects remain independent work.

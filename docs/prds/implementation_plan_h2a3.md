@@ -59,7 +59,7 @@ gate before runtime wiring. Preserve the exclusive suite/accounting guard.
   unit line/branch coverage, wheel/installed resources, licenses, and public
   source/index/metadata boundaries. Use controlled/disposable services first;
   no paid inference is required to certify storage routing or lifecycle.
-- [ ] Human-review cross-checkout reuse and fixed-port errors after the exact
+- [x] Human-review cross-checkout reuse and fixed-port errors after the exact
   delivered behavior and any existing-installation transition are explained.
 
 Normal test publication continues preserving the managed service after the
@@ -127,3 +127,5 @@ assets, journal generation/bytes, user settings and all 200 stored-object metada
 entries. No service restart, initialization, relabeling or stored-object write
 was performed.
 Human acceptance remains separate. No paid inference verifies this slice.
+
+Human acceptance of the delivered reporting robustness scope is recorded; future reporting lifecycle administration and platform-specific gates remain separate.

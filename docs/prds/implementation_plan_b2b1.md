@@ -20,7 +20,7 @@ Implementation, qualification and delivery verification are complete; human acce
 - [x] Synthetic maintenance transport/cancellation/cleanup proofs and installed baseline loading pass.
 - [x] Full applicable units pass exact 100% lines/branches; independent review and public-boundary/metadata audit close.
 - [x] A separately selected native maintenance pilot finalizes successfully and its candidate is reviewed before check-in. Retain failures as historical evidence.
-- [ ] Human review confirms all normal integration tests are selectable without a calibration test or a local calibration-file prerequisite.
+- [x] Human review confirms all normal integration tests are selectable without a calibration test or a local calibration-file prerequisite.
 
 
 ## Buffered coverage cap

@@ -56,7 +56,7 @@ start attended; same-operation physical-device handoff is not certified.
   handles for a known absent password. Remember confirmed absence within the
   current workflow, not manager-access failures. Repeated polls keep the active
   component clock stable without suppressing real progress or cleanup events.
-- [ ] Human-review the selected-login passkey route and retained-browser cleanup.
+- [x] Human-review the selected-login passkey route and retained-browser cleanup.
 
 1Password passkey retrieval remains unsupported. Its CLI login-recovery work
 retains its separate deferred schedule. No new inbox integration is included.
@@ -81,3 +81,5 @@ Paused-route timing renewal: 9,245 units pass at 32 workers with exact
 coverage of 22,270 statements and 8,426 branches. Real offline pages reproduce
 the previous repeated cleanup clock; installed-package and independent mutation
 controls verify stable polling, resumed routes and unchanged real cleanup.
+
+Human acceptance of the delivered authentication/DEBUG behavior is recorded. This does not claim additional challenge replay, native-dialog support or completion of separately deferred capabilities; new defects remain independent work.

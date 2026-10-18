@@ -99,4 +99,6 @@ stopped on all six nodes. Both native runs published recorded evidence.
 Independent review recomputed these statistical claims. The bounds retain
 the stated independence and unchanged-settings assumptions.
 
-- [ ] Human review of grammar, diagram, native evidence and execution interface.
+- [x] Human review of grammar, diagram, native evidence and execution interface.
+
+Phase-one human acceptance is recorded for the delivered integration and available evidence; it does not refresh changed sampling fingerprints, fix the separate provider-cache issue or certify future declarative-format/application work.

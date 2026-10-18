@@ -53,7 +53,7 @@ Native browser/OS prompts are not reliably exposed through page DOM selectors.
   cancellation, timeouts, cleanup and credential exclusion with independent
   rejection mutations. Require applicable exact unit coverage and independent
   review before enabling it.
-- [ ] Human-review supported manager authentication and physical-key handoff.
+- [x] Human acceptance of the currently delivered manager authentication. Future physical-key handoff enhancements retain their own implementation and native-review gates.
 
 String helpers continue to support username/password/TOTP. The optional
 [structured selected-login capability](implementation_plan_a2a2.md) is separate.

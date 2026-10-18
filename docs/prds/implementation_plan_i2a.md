@@ -29,7 +29,7 @@ creating-worker retention and explicit cleanup checkpoint.
 - [x] Require meaningful unit/frontend assertions and focused mutations, exact applicable line/branch coverage, installed relocated-resource loading, host/browser lifecycle tests, license checks and independent adversarial review.
 - [x] Preserve the original worker-owned DEBUG UI browser after parallel test completion. Define controller ownership/handoff before implementation; retain the creating loop, report inspection endpoints and finalize test evidence before user-driven browser closure. Prove cancellation, worker loss, cleanup retries and no resource leaks through actual parallel runners. Serial controller inspection is verified but does not close this requirement; resolve it before application E2E.
 - [x] Audit independently authored source, intended index and actual commit metadata while preserving unrelated changes. Keep private handoff/provenance outside this repository.
-- [ ] Human review of the joined provider/theme/settings/continuation behavior. Actual listening agent, authentication, inference and first application E2E retain their owning application gates.
+- [ ] Human review of the joined provider/theme/settings/continuation behavior, deferred until working Run local or [retained interactive Studio](implementation_plan_i2c2.md). Actual listening agent, authentication, inference and first application E2E retain their owning application gates.
 
 ## Verification checkpoint
 
