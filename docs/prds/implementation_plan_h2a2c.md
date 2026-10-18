@@ -18,8 +18,7 @@ A failed later run does not roll back earlier finalized runs. Cancellation waits
 for an already-started bounded storage call to settle before releasing ownership.
 Unexpected ordinary storage, progress, reporting setup, or viewer errors display only controlled messages; cancellation and other interruptions still propagate.
 
-The joined unit gate passed 10,884 cases and 27 subtests with exact measured line and branch coverage. Installed-package resource checks, meaningful mutations, independent review, licenses and public-boundary checks passed.
-External review reopened the destination race policy and unexpected-error boundary; prior gate evidence is historical until the repairs and review complete.
+Technical implementation and independent/external review are complete under the concurrent-publication contract below. The final joined 32-worker gate passed 10,955 tests and 27 subtests at exact measured line and branch coverage; installed-package, mutation, license and public-boundary checks passed. Human acceptance remains open.
 
 ## Controlled callback diagnostics
 
