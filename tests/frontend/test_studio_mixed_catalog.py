@@ -92,3 +92,37 @@ def test_catalog_http_failure_is_visible_in_browser_request_diagnostic(connectio
         finally:
             await owner.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('default,diagnostic', [('unknown', 'support for this model is unknown'), ('alternate', 'unsupported')])
+def test_browser_helper_rejects_incompatible_default_before_sending(connection, tmp_path, default, diagnostic):
+    async def run():
+        provider = MixedProvider()
+        backend = connection.ui_provider_backend.__wrapped__(None, provider, default)
+        owner = UIIntegrationOwner({'config': {
+            'UI_LISTENER_URL': 'http://127.0.0.1:9443',
+            'UI_PROVIDER': str(Path(included.__file__)) + ':create_provider',
+            'LLM_DEFAULT_MODEL': default, 'LLM_ALLOWED_MODELS': 'sample|unknown|alternate',
+            'LLM_REASONING_EFFORT': 'low'}, 'owner_root': str(tmp_path)}, None, backend=backend)
+        try:
+            prepared = await owner.start()
+            page = prepared.session.page
+            await expect(page.locator('#model')).to_have_value(default)
+            await expect(page.locator('#model-status')).to_contain_text(diagnostic)
+            with pytest.raises(AssertionError, match='Studio model selection is unavailable: .*' + diagnostic):
+                await asyncio.wait_for(connection.browser_prompt(prepared), 2)
+            assert provider.calls == []
+            assert await page.locator('#prompt').input_value() == ''
+            assert await page.locator('.assistant').count() == 0
+            assert await page.locator('.user').count() == 0
+            await page.locator('#settings-nav').click()
+            await page.locator('#model').select_option('sample')
+            await expect(page.locator('#model-status')).to_have_text('')
+            await page.keyboard.press('Escape')
+            assert await connection.browser_prompt(prepared) == 'Ok'
+            assert len(provider.calls) == 1
+            assert provider.calls[0].selected_llm == 'sample'
+            assert await page.locator('.user').count() == 1
+        finally:
+            await owner.aclose()
+    asyncio.run(run())

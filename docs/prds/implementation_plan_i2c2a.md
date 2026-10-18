@@ -29,7 +29,12 @@ The allowed configured catalog, default-model policy, versions and reasoning
 choices remain available. Mixed known, unknown and unsupported model reasoning
 metadata cannot invalidate the whole catalog. Validate the effective configured
 or explicitly chosen effort only for the selected model before inference; the
-UI explains incompatible inherited defaults without inferring missing metadata. The automated prompt still uses the configured default
+UI explains incompatible inherited defaults without inferring missing metadata. The automated prompt checks the selected model diagnostic and Send readiness
+before writing or submitting its single prompt. An unknown or unsupported
+inherited reasoning default fails immediately with the model diagnostic, even
+when the catalog also offers a compatible alternative; no automatic model switch
+or provider call occurs. A compatible chosen model remains selected and sends
+exactly once. The automated prompt still uses the configured default
 and asks for `Ok`; it does not narrow all subsequent selections to that model.
 
 Manual calls use an independent in-memory usage ledger, distinct activity IDs,

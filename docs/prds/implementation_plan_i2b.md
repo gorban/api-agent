@@ -51,6 +51,13 @@ The initial buffered provider-shaped HTTP proof below is historical. The current
   disposal; preserve its cancellation arguments and owned cleanup duties.
   Process-level interruptions also retain their exact exception objects after
   expiry; only ordinary exceptions receive deadline normalization.
+  Detect a newly requested cancellation consumed by client entry, a readiness
+  probe or client exit while the clipped budget remains live, before retry or
+  ownership transfer. Preserve cancellation state without inventing a lost
+  message or clearing the caller's cancellation count. Normally propagated
+  cancellation retains its original exception and arguments. If consumption is
+  first observed after the clipped deadline expires, deadline expiry takes
+  priority with exact cleanup duties retained; do not reconstruct lost timing.
   Tighter parent deadlines remain authoritative. A foreign listener cannot satisfy readiness. Drain the owned direct host on
   launch failure or cancellation; retain cleanup retries and never signal a
   cached process-group identity. Preserve provider dependency ownership until

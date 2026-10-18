@@ -256,7 +256,7 @@ def test_sync_during_modal_refreshes_after_close(tmp_path, monkeypatch):
                         break
                 assert isinstance(app.screen, SettingHelpDialog)
                 assert app.cost_estimator is replacement
-                assert app._pending_cost_refresh is app.selection
+                assert app._pending_cost_refresh == (picker, app.selection)
                 await pilot.press('escape')
                 await pilot.pause()
                 assert app.screen is picker and app.focused is table

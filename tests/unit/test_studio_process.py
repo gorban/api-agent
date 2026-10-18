@@ -634,3 +634,84 @@ def test_expired_client_disposal_preserves_process_interruption(monkeypatch, kin
         assert stopped.value is failure
         assert child.terminations == 1 and child.code == 0
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('stage', ['entry', 'head', 'exit'])
+@pytest.mark.parametrize('translate_error', [False, True])
+def test_consumed_external_cancel_never_admits_readiness(monkeypatch, stage, translate_error):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+    async def run():
+        entered = asyncio.Event()
+        async def consume():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if translate_error:
+                    raise httpx.ReadError('controlled consumed interruption')
+        class Consumed(Client):
+            async def __aenter__(self):
+                if stage == 'entry': await consume()
+                return self
+            async def head(self, url):
+                self.urls.append(url)
+                if stage == 'head' and len(self.urls) == 1: await consume()
+                return httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43})
+            async def __aexit__(self, *args):
+                if stage == 'exit': await consume()
+        client = Consumed(None)
+        monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
+        task = asyncio.create_task(launcher(timeout=2).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={}))
+        await entered.wait()
+        task.cancel('external message consumed by transport')
+        with pytest.raises(asyncio.CancelledError) as stopped:
+            await task
+        assert stopped.value.args == ()  # The transport lost the original message.
+        assert task.cancelling() == 1  # Ownership code never clears caller state.
+        assert len(client.urls) == (0 if stage == 'entry' else 1)
+        assert child.terminations == 1 and child.code == 0
+    asyncio.run(run())
+
+
+def test_consumed_external_cancel_retains_exact_failed_cleanup(monkeypatch):
+    child = Child(exit_on='never')
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    async def run():
+        entered = asyncio.Event()
+        class Consumed(Client):
+            async def head(self, url):
+                entered.set()
+                try: await asyncio.Event().wait()
+                except asyncio.CancelledError: raise httpx.ReadError('controlled consumed cancellation')
+        monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: Consumed(None))
+        task = asyncio.create_task(launcher(timeout=2, cleanup_timeout=.03).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={}))
+        await entered.wait()
+        task.cancel('lost message')
+        with pytest.raises(asyncio.CancelledError) as stopped: await task
+        pending = stopped.value.cleanup_pending
+        assert isinstance(pending, CleanupPendingError)
+        owner, = pending.owners
+        assert owner.process is child and task.cancelling() == 1
+        child.code = 0
+        await pending.retry()
+        assert owner._closing.done() and owner._closing.exception() is None
+    asyncio.run(run())
+
+
+def test_preexisting_cancellation_count_does_not_reject_new_start(monkeypatch):
+    child = Child()
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+    monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: Client(httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43})))
+    async def run():
+        task = asyncio.current_task()
+        task.cancel('preexisting consumed cancellation')
+        try: await asyncio.sleep(0)
+        except asyncio.CancelledError: pass
+        owner = await launcher(timeout=2).start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={})
+        assert task.cancelling() == 1
+        await owner.aclose()
+        assert child.terminations == 1
+    asyncio.run(run())

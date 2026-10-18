@@ -285,9 +285,10 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if self.kind == 'test-results':
             self.call_after_refresh(self.app.update_test_results, self)
         pending = getattr(self.app, '_pending_cost_refresh', None)
-        if pending is self.app.selection and self.kind == 'tests':
+        if (pending is not None and pending[0] is self
+                and pending[1] is self.app.selection and self.kind == 'tests'):
             self.app._pending_cost_refresh = None
-            self.call_after_refresh(self.app.refresh_picker_costs, self, pending)
+            self.call_after_refresh(self.app.refresh_picker_costs, self, pending[1])
 
     @property
     def focus_chain(self):
@@ -2053,7 +2054,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
             self.refresh_rows()
         elif screen in self.screen_stack:
             # A modal may cover the picker between scheduling and execution.
-            self._pending_cost_refresh = selection
+            self._pending_cost_refresh = (screen, selection)
 
     async def synchronize_cost_history(self, snapshot, selection):
         try:
@@ -2071,7 +2072,9 @@ class ApiAgentApp(AllureNavigation, App[int]):
             else:
                 # A modal temporarily covers the same picker. Keep its result
                 # and redraw once the original picker becomes active again.
-                self._pending_cost_refresh = selection
+                picker = next(screen for screen in reversed(self.screen_stack)
+                              if isinstance(screen, WorkbenchScreen) and screen.kind == 'tests')
+                self._pending_cost_refresh = (picker, selection)
             if changed:
                 self.run_worker(self.synchronize_cost_history(self.cost_estimator, selection),
                                 group='cost-history', exclusive=True)

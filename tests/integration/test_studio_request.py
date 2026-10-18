@@ -181,6 +181,9 @@ async def browser_prompt(prepared):
         except AssertionError as error:
             diagnostic = await page.locator('#model-status').inner_text()
             raise AssertionError('Studio model choices are unavailable: ' + diagnostic) from error
+        diagnostic = await page.locator('#model-status').inner_text()
+        assert not diagnostic, 'Studio model selection is unavailable: ' + diagnostic
+        await expect(page.locator('#send')).to_be_enabled()
         await page.locator('#prompt').fill('Answer with exactly: Ok')
         await page.locator('#send').click()
         status = page.locator('.assistant .metadata-grid dd').last

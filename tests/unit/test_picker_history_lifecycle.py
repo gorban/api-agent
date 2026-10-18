@@ -77,7 +77,7 @@ def test_deferred_history_redraw_retains_picker_ownership(tmp_path, monkeypatch,
                 if transition == 'running':
                     monkeypatch.setattr(app, 'test_run_active', lambda: False)
                 if transition == 'modal':
-                    assert app._pending_cost_refresh is selection
+                    assert app._pending_cost_refresh == (picker, selection)
                     app.pop_screen()
                     await pilot.pause()
                     resume, resume_args = queued.pop()
@@ -98,3 +98,20 @@ def test_deferred_history_never_queries_unready_dom(tmp_path, state):
     app.refresh_rows = Mock()
     app.refresh_picker_costs(screen, selection)
     app.refresh_rows.assert_not_called()
+
+
+def test_picker_redraw_before_collection_does_not_touch_unmounted_rows(tmp_path, monkeypatch):
+    app = fixture(tmp_path)
+    picker = WorkbenchScreen('tests', 'Awaiting collection', '', (), ())
+    app._screen_stacks[app._current_mode] = [picker]
+    assert app.selection is None and not picker.is_mounted
+    query = Mock(side_effect=AssertionError('Uncomposed picker DOM was queried'))
+    render = Mock(side_effect=AssertionError('Uncollected picker rows were rendered'))
+    monkeypatch.setattr(picker, 'query_one', query)
+    monkeypatch.setattr(picker, 'render_search_rows', render)
+
+    app.refresh_rows()
+
+    query.assert_not_called()
+    render.assert_not_called()
+    assert app.selection is None
