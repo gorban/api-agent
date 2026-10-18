@@ -21,7 +21,7 @@ def test_terminal_start_or_debug_dispatches_recorded_integration(activation, val
     dotenv = {activation: value} if source == 'dotenv' else {}
     if source == 'cli':
         args.append('--' + activation.lower() + '=' + value)
-    selected = [SimpleNamespace(tags=frozenset())]
+    selected = [SimpleNamespace(id='base::selected.py::test_case', tags=frozenset())]
     def execute(context, tests, config, **options):
         assert tests is selected and config['START'] == (value if activation == 'START' else 'False')
         assert config['DEBUG'] is (activation == 'DEBUG') and config['NO_STD_IN']

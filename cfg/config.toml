@@ -11,8 +11,8 @@ version = 1
 [fields.LLM_ALLOWED_MODELS]
 type = "str"
 validation = "regex"
-default = '(?:openai/)?gpt-6(?:\.\d+)*-(?:luna|haiku|sol)(?:-\d{4}-\d{2}-\d{2})?'
-help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows GPT-6 Luna, Haiku and Sol, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
+default = '(?:openai/)?gpt-6(?:\.\d+)*-(?:luna|terra|sol)(?:-\d{4}-\d{2}-\d{2})?'
+help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows GPT-6 Luna, Terra and Sol, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
 
 [fields.LLM_DEFAULT_MODEL]
 cost_affecting = true
@@ -96,7 +96,7 @@ acknowledge_default = false
 type = "bool"
 default = false
 acknowledge_default = false
-help = "Disable interactive input; used for scripted access like from CI or Agents."
+help = "Disable interactive input except explicit worktree and multi-test DEBUG safety confirmations; used for scripted access like from CI or Agents."
 
 [fields.COLLECT_ONLY]
 type = "bool"

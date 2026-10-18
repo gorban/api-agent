@@ -120,6 +120,9 @@ Authentication and recovery remain bounded by their enclosing deadlines.
 
 For terminal integration execution, combine `--no-std-in` with `--start`
 (or `--start=E2E`). `--debug` additionally retains login browsers for inspection.
+When `DEBUG=True` and more than one distinct integration or E2E test is selected,
+confirm with literal `y` at the browser-window warning, including under `--no-std-in`.
+Set `DEBUG=False` and omit `--debug` to avoid the prompt; `--start` does not bypass it.
 E2E requires its acceptance screen unless explicitly accepted with `--start=E2E`,
 which also permits terminal execution. Normal startup configuration checks and
 confirmed-newer-worktree approval still apply. The [automation task](prds/implementation_plan_a.md#terminal-integration-automation)

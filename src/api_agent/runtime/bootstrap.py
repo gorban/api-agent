@@ -259,6 +259,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 from api_agent.testing.launched import run_launched_integration
                 from api_agent.telemetry.privacy import ContentPolicy
                 tests = collect_tests(context, 'integration', result.positionals, config=result.values)
+                from api_agent.testing.debug_confirmation import debug_warning, confirm_terminal_debug
+                warning = debug_warning('integration', result.values.get('DEBUG'), tests)
+                if not confirm_terminal_debug(warning):
+                    print('DEBUG multi-test confirmation declined or unavailable. No tests or resources were started.', file=sys.stderr)
+                    return 3
                 from api_agent.testing.requirements import plan_integration_requirements
                 if plan_integration_requirements(tests).requires_ui_session:
                     result = resolve_config(schema, argv=argv, environ=os.environ,
@@ -343,7 +348,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
     lines = ['Usage: ./launch.py [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
     callouts = {
         'HELP': '-h, --help: print help without execution configuration validation.',
-        'NO_STD_IN': '--no-std-in: disable interactive input after the worktree gate.',
+        'NO_STD_IN': '--no-std-in: disable interactive input except explicit worktree and multi-test DEBUG safety confirmations.',
         'COLLECT_ONLY': '--collect-only: list selected tests without running them.',
         'START': '--start: start the selected TUI operation after normal startup checks; --start=E2E explicitly accepts E2E execution without its human-review screen.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',

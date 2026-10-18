@@ -1006,6 +1006,28 @@ class ApiAgentApp(AllureNavigation, App[int]):
             return self.switch_screen(screen)
         return self.push_screen(screen)
 
+    async def confirm_debug_selection(self, mode, selected_tests, cancel_event):
+        from api_agent.testing.debug_confirmation import debug_warning
+        warning = debug_warning(mode, self.session.result().values.get('DEBUG'), selected_tests)
+        if warning is None:
+            return True
+        confirmation = asyncio.get_running_loop().create_future()
+        def respond(accepted):
+            if not confirmation.done():
+                confirmation.set_result(accepted)
+        dialog = QuitDialog(warning)
+        self.push_screen(dialog, respond)
+        try:
+            while not confirmation.done() and not cancel_event.is_set():
+                await asyncio.sleep(.05)
+            if cancel_event.is_set():
+                if self.screen is dialog:
+                    self.pop_screen()
+                return False
+            return await confirmation
+        finally:
+            confirmation.cancel()
+
     async def on_mount(self):
         result = self.session.result()
         from api_agent.runtime.starting import start_configuration_errors, start_requested
@@ -1579,6 +1601,13 @@ class ApiAgentApp(AllureNavigation, App[int]):
             self.selection.refresh_for_run(fresh)
             if not self.selection.selected_tests:
                 raise ValueError("No selected tests remain after recollection")
+            selected = frozenset(test.id for test in self.selection.selected_tests)
+            if selected != getattr(self, '_debug_approved_selection', None):
+                if not await self.confirm_debug_selection('integration', self.selection.selected_tests,
+                                                          self.collection_cancel):
+                    self.show_selection()
+                    return
+                self._debug_approved_selection = selected
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
             self.show_unit_results(self.unit_progress())
             from api_agent.testing.requirements import plan_integration_requirements
@@ -2241,6 +2270,22 @@ class ApiAgentApp(AllureNavigation, App[int]):
                     return
                 if not self.selection.selected_ids:
                     raise ValueError(NO_TEST_SELECTION_MESSAGE)
+                from api_agent.testing.debug_confirmation import debug_warning
+                warning = debug_warning(self.mode, self.session.result().values.get('DEBUG'),
+                                        self.selection.selected_tests)
+                if warning:
+                    selected = frozenset(test.id for test in self.selection.selected_tests)
+                    def after_debug_confirmation(accepted):
+                        if accepted:
+                            self._debug_approved_selection = selected
+                            self.run_worker(self.choose('confirmed-continue'),
+                                            group='debug-confirmation', exclusive=True)
+                        else:
+                            self.show_selection()
+                    self.push_screen(QuitDialog(warning), after_debug_confirmation)
+                    return
+                await self.choose('confirmed-continue')
+            elif key == 'confirmed-continue':
                 if self.mode == "e2e":
                     from api_agent.runtime.starting import e2e_accepted
                     if e2e_accepted(self.session.result()):
@@ -2250,6 +2295,8 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 elif self.mode == "unit":
                     self.start_unit_run()
                 else:
+                    if not self.session.result().values.get('DEBUG'):
+                        self._debug_approved_selection = None
                     index = self.session.result().values.get('UNATTENDED_USER_INDEX')
                     if index is not None and index not in dict(self.account_options()):
                         raise ValueError('UNATTENDED_USER_INDEX has no eligible configured account; choose a user or manual login.')

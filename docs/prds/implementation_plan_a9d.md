@@ -2,6 +2,9 @@
 
 [TUI requirements](implementation_plan_a.md) · [Coverage disclosure](implementation_plan_a9.md).
 
+[Multi-test DEBUG confirmation](implementation_plan_a9g.md) protects selected
+integration and future E2E execution from unexpectedly opening several browsers.
+
 Configuration review offers reproducible settings without making valid defaults
 an operation prerequisite. Preserve startup intent separately from execution
 authorization and main-menu navigation.
