@@ -12,6 +12,8 @@ import shlex
 import shutil
 import subprocess
 
+from .compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment
+
 
 class ContainerError(RuntimeError):
     pass
@@ -59,6 +61,12 @@ def is_session_container(identifier, names, identities):
     return False
 
 
+def _engine_environment():
+    """Keep the supported engine/wrapper transport without provider context."""
+    return controlled_engine_environment({key: value for key, value in os.environ.items()
+                                          if key in ENGINE_ENVIRONMENT_KEYS})
+
+
 class ContainerRuntime:
     def __init__(self, executable=None, scope=None, *, ownership_directory=None):
         self.executable = executable
@@ -70,7 +78,8 @@ class ContainerRuntime:
         if not executable:
             raise ContainerError("Container inventory unavailable: docker and podman are absent from PATH.")
         try:
-            result = subprocess.run([executable, *arguments], capture_output=True, text=True, timeout=timeout, check=False)
+            result = subprocess.run([executable, *arguments], capture_output=True, text=True, timeout=timeout, check=False,
+                                    env=_engine_environment())
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ContainerError(f"Container engine unavailable: {type(error).__name__}.") from error
         if result.returncode:
@@ -167,7 +176,7 @@ class ContainerRuntime:
         scrubber = scrubber or CredentialScrubber(dict(os.environ))
         with report_timeout_sync('Container logs', 5) as budget:
             def command(arguments, *, combine_output=False):
-                return run_command((executable, *arguments), environment=dict(os.environ),
+                return run_command((executable, *arguments), environment=_engine_environment(),
                     directory=Path.cwd(), deadline=time.monotonic() + budget.remaining,
                     cancelled=cancelled, combine_output=combine_output, output_scrubber=scrubber,
                     output_limit=65536 if combine_output else None)

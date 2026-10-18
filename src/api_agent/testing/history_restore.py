@@ -3,12 +3,12 @@ import json
 import os
 from pathlib import Path
 from contextlib import ExitStack
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import ClientError
 
 from api_agent.providers.progress import report_timeout_sync
 
-from .allure_source import MAX_ARTIFACT, MAX_MANIFEST, ViewerError, component, validate_manifest, verified_files
-from .storage import RunStorage, StorageError
+from .allure_source import MAX_ARTIFACT, MAX_MANIFEST, component, validate_manifest, verified_files
+from .storage import RunStorage
 from .suite_lock import SuiteBusyError, suite_lock
 
 
@@ -63,8 +63,8 @@ def restore_missing_history(repo, secondary_directory, storage, *, progress=lamb
         raise HistoryRestoreError('Select secondary history and an S3 destination before restoring.')
     if type(max_runs) is not int or not 1 <= max_runs <= 10000:
         raise ValueError('Invalid restore run limit')
-    base = Path(secondary_directory)
     try:
+        base = Path(secondary_directory)
         with suite_lock(), report_timeout_sync('Allure history restore', timeout) as budget:
             with ExitStack() as stack:
                 base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -123,5 +123,5 @@ def restore_missing_history(repo, secondary_directory, storage, *, progress=lamb
                 return restored
     except (HistoryRestoreError, SuiteBusyError):
         raise
-    except (ViewerError, StorageError, BotoCoreError, OSError, ValueError, TypeError, KeyError):
+    except Exception:
         raise HistoryRestoreError('Could not restore finalized Allure history; check secondary files and S3 storage.') from None

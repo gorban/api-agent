@@ -6,7 +6,7 @@
 
 - [x] Keep the pinned Jaeger 2.21 all-in-one service under the OTEL profile and UID 10001. Configure its supported Badger backend with non-ephemeral storage and a project-scoped, labelled named volume. Retain the volume through normal stop and container recreation.
 - [x] Provide the Jaeger v2 configuration as a controlled packaged asset. Validate its exact mount and bytes in the source checkout and installed wheel; reject arbitrary or shadowing mounts and unscoped volumes.
-- [x] Declare a review-visible local Jaeger viewer port, defaulting to 16686, while preserving the fixed loopback OTLP ingestion endpoint. Reject invalid ports and collisions among selected Jaeger ingestion, viewer and LocalStack publications before startup; leave external trace endpoints unmanaged.
+- [x] Declare a review-visible local Jaeger viewer port, defaulting to 16686, while preserving the fixed loopback OTLP ingestion endpoint and exact reviewed container-port mappings. Require the published receiver to feed the persistent storage exporter through the controlled active service graph; declared but disconnected storage is insufficient. Reject invalid ports and collisions among selected Jaeger ingestion, viewer and LocalStack publications before startup; leave external trace endpoints unmanaged.
 - [x] Verify rootless write permissions and trace retrieval after isolated stop and recreation with disposable data. Do not modify existing services or volumes. Keep broader reporting session ownership, management, restore and UI work in their own requirements.
 - [ ] Human acceptance: review a bookmarked viewer endpoint and retained disposable trace after recreation.
 

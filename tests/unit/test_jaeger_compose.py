@@ -68,7 +68,31 @@ def test_jaeger_rejects_missing_persistence_contract(mutation):
         validate_document(document, Scope(), ('otel',))
 
 
-@pytest.mark.parametrize('mutation', ['ephemeral', 'path', 'query', 'exporter'])
+@pytest.mark.parametrize('mutation', ['viewer_destination', 'ingest_destination',
+                                     'extra_mapping', 'reordered_mappings'])
+def test_jaeger_rejects_port_mapping_drift_before_start(tmp_path, mutation):
+    source = plan_compose({}, Scope()).directory
+    directory = tmp_path / 'compose'
+    shutil.copytree(source, directory)
+    path = directory / 'compose.json'
+    document = json.loads(path.read_text())
+    ports = document['services']['jaeger']['ports']
+    if mutation == 'viewer_destination':
+        ports[1] = ports[1].replace(':16686', ':4318')
+    elif mutation == 'ingest_destination':
+        ports[0] = '127.0.0.1:4318:16686'
+    elif mutation == 'extra_mapping':
+        ports.append('127.0.0.1:16687:16686')
+    else:
+        ports.reverse()
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(ComposeError, match='controlled persistent storage, configuration and ports'):
+        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+
+
+@pytest.mark.parametrize('mutation', ['ephemeral', 'path', 'query', 'exporter',
+                                     'pipeline_debug_only', 'pipeline_exporters_wrong_type'])
 def test_jaeger_rejects_nonpersistent_or_disconnected_storage(tmp_path, mutation):
     source = plan_compose({}, Scope()).directory
     directory = tmp_path / 'compose'
@@ -82,6 +106,10 @@ def test_jaeger_rejects_nonpersistent_or_disconnected_storage(tmp_path, mutation
         backend['directories']['keys'] = '/tmp/other'
     elif mutation == 'query':
         document['extensions']['jaeger_query']['storage']['traces'] = 'other'
+    elif mutation == 'pipeline_debug_only':
+        document['service']['pipelines']['traces']['exporters'] = ['debug']
+    elif mutation == 'pipeline_exporters_wrong_type':
+        document['service']['pipelines']['traces']['exporters'] = 'jaeger_storage_exporter'
     else:
         document['exporters']['jaeger_storage_exporter']['trace_storage'] = 'other'
     config.write_text(json.dumps(document))
@@ -109,4 +137,31 @@ def test_controlled_jaeger_config_must_be_real_valid_file(tmp_path, damage):
         config.write_text('[]')
 
     with pytest.raises(ComposeError, match='Jaeger configuration'):
+        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+
+
+@pytest.mark.parametrize('mutation', ['unpublished_receiver', 'missing_storage_extension',
+                                     'listener_drift', 'processor_drift'])
+def test_published_jaeger_receiver_must_reach_persistent_storage(tmp_path, mutation):
+    source = plan_compose({}, Scope()).directory
+    directory = tmp_path / 'compose'
+    shutil.copytree(source, directory)
+    config = directory / 'jaeger-config.json'
+    document = json.loads(config.read_text())
+    if mutation == 'unpublished_receiver':
+        document['receivers']['otlp/storage'] = {
+            'protocols': {'http': {'endpoint': '0.0.0.0:4319'}}}
+        document['service']['pipelines']['traces']['receivers'] = ['otlp/storage']
+        document['exporters']['debug'] = {}
+        document['service']['pipelines']['traces/debug'] = {
+            'receivers': ['otlp'], 'exporters': ['debug']}
+    elif mutation == 'missing_storage_extension':
+        document['service']['extensions'].remove('jaeger_storage')
+    elif mutation == 'listener_drift':
+        document['receivers']['otlp']['protocols']['http']['endpoint'] = '0.0.0.0:4319'
+    else:
+        document['processors']['batch'] = {'send_batch_size': 1}
+    config.write_text(json.dumps(document))
+
+    with pytest.raises(ComposeError, match='storage must be persistent'):
         plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)

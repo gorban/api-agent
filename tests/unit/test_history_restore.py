@@ -18,6 +18,8 @@ from api_agent.testing.storage import RunStorage
 from api_agent.tui.allure import AllureNavigation
 from test_allure_viewer import run, save
 from test_recording_storage import FakeS3
+from test_tui import fixture
+from textual.widgets import Static
 
 
 @pytest.fixture(autouse=True)
@@ -618,3 +620,140 @@ def test_restore_progress_ignores_stale_generation(history):
     assert app.events == [] and app._allure_loading == ''
     app._restore_allure_progress(app._allure_generation, 1, 2)
     assert app._allure_loading == 'Restoring secondary history: 1/2 finalized runs'
+
+
+@pytest.mark.parametrize('phase', ['get', 'read', 'put', 'progress'])
+def test_unexpected_adapter_failures_are_safe_and_do_not_commit(history, monkeypatch, phase):
+    manifest, files, local, _, s3, storage = history
+    secret = 'synthetic-secret'
+    if phase == 'get':
+        s3.get_object = lambda **kwargs: (_ for _ in ()).throw(RuntimeError(secret))
+    elif phase == 'read':
+        original = RunStorage._read_source
+        def fail_after_manifest(path, **kwargs):
+            if path != 'manifest.json':
+                raise RuntimeError(secret)
+            return original(path, **kwargs)
+        monkeypatch.setattr(RunStorage, '_read_source', staticmethod(fail_after_manifest))
+    elif phase == 'put':
+        monkeypatch.setattr(storage, '_put_once', lambda key, body: (_ for _ in ()).throw(RuntimeError(secret)))
+    else:
+        def progress(done, total):
+            raise RuntimeError(secret)
+
+    with pytest.raises(HistoryRestoreError) as caught:
+        restore_missing_history('sample', local, storage,
+            progress=progress if phase == 'progress' else lambda done, total: None)
+
+    assert secret not in str(caught.value)
+    assert s3.objects == {}
+
+
+@pytest.mark.parametrize('phase', ['prepare', 'storage', 'viewer'])
+def test_mounted_tui_masks_unexpected_failures(history, tmp_path, monkeypatch, phase):
+    manifest, files, local, _, s3, storage = history
+    secret = 'synthetic-secret'
+    app = fixture(tmp_path, fields={
+        'ALLURE_SECONDARY_DIR': {'type': 'str', 'default': str(local)},
+        'ALLURE_S3_BUCKET': {'type': 'str', 'default': 'selected-bucket'},
+    })
+    monkeypatch.setattr('api_agent.testing.collection.repository_label', lambda context, root: 'sample')
+    async def prepared(*, for_restore=False):
+        if phase == 'prepare':
+            raise RuntimeError(secret)
+    monkeypatch.setattr(app, 'prepare_allure_reporting', prepared)
+    monkeypatch.setattr(app, 'allure_source', lambda *, primary=False: SimpleNamespace(storage=storage))
+    if phase == 'storage':
+        s3.get_object = lambda **kwargs: (_ for _ in ()).throw(RuntimeError(secret))
+    if phase == 'viewer':
+        async def failed_view(source):
+            raise RuntimeError(secret)
+        monkeypatch.setattr(app, '_allure', lambda: SimpleNamespace(show_archive=failed_view))
+
+    async def scenario():
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            app.show('allure', 'Allure history', 'Ready', (('refresh-allure', 'Refresh history'),))
+            await pilot.pause()
+            await app.restore_allure_secondary_history()
+            await pilot.pause()
+            shown = str(app.screen.query_one('#error', Static).render())
+            expected = ('Could not restore finalized Allure history; check secondary files and S3 storage.'
+                        if phase == 'storage' else 'Could not restore Allure history; check reporting setup and storage.')
+            assert expected in shown
+            assert secret not in shown and secret not in app._allure_loading
+            assert app.operation_status == 3
+    asyncio.run(scenario())
+
+    if phase == 'viewer':
+        assert len(s3.objects) == len(files) + 1
+    else:
+        assert s3.objects == {}
+
+
+def test_restore_tui_masks_unexpected_configuration_read(history):
+    manifest, files, local, _, s3, storage = history
+    app = RestoreHarness(local, storage)
+    def failed_result():
+        raise RuntimeError('synthetic-secret')
+    app.session = SimpleNamespace(result=failed_result)
+
+    asyncio.run(app.restore_allure_secondary_history())
+
+    assert app.events == [('notice', 'Could not restore Allure history; check reporting setup and storage.',
+                           {'severity': 'error', 'timeout': 10})]
+    assert s3.objects == {}
+
+
+class RestoreInterruption(BaseException):
+    """Controlled interruption outside ordinary adapter failures."""
+
+
+def test_restore_interruption_preserves_identity_and_releases_suite_lease(history):
+    _, _, local, _, s3, storage = history
+    interruption = RestoreInterruption('synthetic restore interruption')
+    def interrupted_progress(done, total):
+        raise interruption
+
+    with pytest.raises(RestoreInterruption) as caught:
+        restore_missing_history('sample', local, storage, progress=interrupted_progress)
+
+    assert caught.value is interruption
+    assert s3.objects == {}
+    with suite_lock_module.suite_lock():
+        pass
+
+
+def test_restore_tui_prepare_interruption_preserves_owned_state(history):
+    _, _, local, _, s3, storage = history
+    app = RestoreHarness(local, storage)
+    interruption = RestoreInterruption('synthetic reporting interruption')
+    async def interrupted_prepare():
+        raise interruption
+    app.prepare = interrupted_prepare
+
+    with pytest.raises(RestoreInterruption) as caught:
+        asyncio.run(app.restore_allure_secondary_history())
+
+    assert caught.value is interruption
+    assert app._allure_tasks == set()
+    assert not app._allure_opening and app._allure_loading == ''
+    assert not any(event[0] == 'notice' for event in app.events)
+    assert s3.objects == {}
+
+
+def test_restore_tui_configuration_interruption_preserves_owned_state(history):
+    _, _, local, _, s3, storage = history
+    app = RestoreHarness(local, storage)
+    interruption = RestoreInterruption('synthetic configuration interruption')
+    def interrupted_result():
+        raise interruption
+    app.session = SimpleNamespace(result=interrupted_result)
+
+    with pytest.raises(RestoreInterruption) as caught:
+        asyncio.run(app.restore_allure_secondary_history())
+
+    assert caught.value is interruption
+    assert app._allure_tasks == set()
+    assert not app._allure_opening and app._allure_loading == ''
+    assert app.events == [] and s3.objects == {}

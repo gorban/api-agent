@@ -303,12 +303,20 @@ class AllureNavigation:
         from threading import Event
         from api_agent.runtime.tasks import offload
         from api_agent.testing.collection import repository_label
-        from api_agent.testing.history_restore import restore_missing_history
+        from api_agent.testing.history_restore import (HistoryRestoreCancelled,
+            HistoryRestoreError, restore_missing_history)
+        from api_agent.testing.suite_lock import SuiteBusyError
 
         if self._allure_opening:
             return
-        values = self.session.result().values
-        if not values.get('ALLURE_SECONDARY_DIR') or not values.get('ALLURE_S3_BUCKET'):
+        unexpected = 'Could not restore Allure history; check reporting setup and storage.'
+        try:
+            values = self.session.result().values
+            missing = not values.get('ALLURE_SECONDARY_DIR') or not values.get('ALLURE_S3_BUCKET')
+        except Exception:
+            self.notify(unexpected, severity='error', timeout=10)
+            return
+        if missing:
             self.notify('Configure secondary history and an S3 bucket before restoring.',
                         severity='error', timeout=10)
             return
@@ -341,11 +349,13 @@ class AllureNavigation:
         except Exception as error:
             if generation is self._allure_generation:
                 self.operation_status = 3
+                message = (str(error) if type(error) in
+                           {HistoryRestoreError, HistoryRestoreCancelled, SuiteBusyError} else unexpected)
                 page = self.allure_page()
                 if page is not None:
-                    page.query_one('#error', Static).update(str(error))
+                    page.query_one('#error', Static).update(message)
                 else:
-                    self.notify(str(error), severity='error', timeout=10)
+                    self.notify(message, severity='error', timeout=10)
         finally:
             if generation is self._allure_generation:
                 self._allure_opening = False
