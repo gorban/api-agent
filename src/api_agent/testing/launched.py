@@ -53,6 +53,14 @@ def run_launched_integration(context, tests, config, *, accepted=False,
             retained = primary if primary is not None else error
             retained.recorded_result = execution
             retained.recording_prerequisites = prerequisites
-            retained.cleanup_pending = prerequisites.pending_cleanup
+            from .suite_lock import _cleanup_receipts
+            receipts = tuple(_cleanup_receipts(retained))
+            pending = prerequisites.pending_cleanup
+            if pending is not None and all(pending is not receipt for receipt in receipts):
+                target = receipts[-1] if receipts else retained
+                target.cleanup_pending = pending
+            elif pending is retained and getattr(retained, 'cleanup_pending', None) is None:
+                # Existing consumers use this alias even for a direct receipt.
+                retained.cleanup_pending = pending
             if primary is None:
                 raise

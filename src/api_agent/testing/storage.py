@@ -1,5 +1,10 @@
 """S3 primary persistence with immutable run keys and optional local copies."""
 from pathlib import Path
+from _thread import start_new_thread
+from _thread import start_new_thread as _start_creation
+from concurrent.futures import Future
+from concurrent.futures import Future as _CreationFuture
+from threading import RLock
 import json
 import hashlib
 import os
@@ -10,9 +15,118 @@ from datetime import datetime, timezone
 from uuid import UUID
 from uuid import uuid4
 
+from api_agent.providers.control import CleanupPendingError
+from .suite_lock import _dispose_descriptor
+
 
 class StorageError(RuntimeError):
     """Bounded error that never includes provider response text."""
+
+
+class _CopyCleanup:
+    """Retain one exact temporary name and its directory until unlink settles."""
+    def __init__(self, directory_fd, temporary):
+        self.directory_fd = os.dup(directory_fd)
+        self.temporary = temporary
+        self.closing = None
+        self.creation = None
+        self.stream = None
+        self.identity = None
+        self.guard = RLock()
+
+    def __enter__(self):
+        return self
+
+    def create(self):
+        ticket = _CreationFuture()
+        try:
+            self.creation = ticket
+            _start_creation(self._create, (ticket,))
+        except BaseException:
+            if ticket.cancel():
+                self.creation = None
+            raise
+        return ticket.result()
+
+    def _create(self, ticket):
+        if not ticket.set_running_or_notify_cancel():
+            return
+        try:
+            def opener(name, flags):
+                return os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=self.directory_fd)
+            self.stream = open(self.temporary, 'xb', opener=opener)
+            entry = os.fstat(self.stream.fileno())
+            self.identity = entry.st_dev, entry.st_ino
+        except BaseException as error:
+            ticket.set_exception(error)
+        else:
+            ticket.set_result(self.stream)
+
+    def _cleanup(self):
+        if self.directory_fd is None:
+            return
+        if self.closing is None:
+            if self.creation is not None and not self.creation.cancelled():
+                self.creation.exception()
+            if self.stream is not None:
+                if self.identity is None:
+                    entry = os.fstat(self.stream.fileno())
+                    self.identity = entry.st_dev, entry.st_ino
+                self.stream.close()
+                try:
+                    entry = os.stat(self.temporary, dir_fd=self.directory_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (entry.st_dev, entry.st_ino) != self.identity or not stat.S_ISREG(entry.st_mode):
+                        raise StorageError('Temporary copy ownership changed')
+                    os.unlink(self.temporary, dir_fd=self.directory_fd)
+            ticket = Future()
+            try:
+                self.closing = ticket
+                start_new_thread(_dispose_descriptor, (self.directory_fd, ticket))
+            except BaseException:
+                if ticket.cancel():
+                    self.closing = None
+                raise
+        self.closing.result()
+        self.directory_fd = None
+
+    async def aclose(self):
+        import asyncio
+        from api_agent.runtime.tasks import offload
+        try:
+            await offload(self._finish)
+        except asyncio.CancelledError as error:
+            self._retain(error, CleanupPendingError((self,), self.aclose))
+            raise
+
+    def __exit__(self, kind, original, traceback):
+        return self._finish(original)
+
+    def _finish(self, original=None):
+        with self.guard:
+            return self._finish_owned(original)
+
+    def _finish_owned(self, original):
+        try:
+            self._cleanup()
+        except BaseException as cleanup:
+            pending = CleanupPendingError((self,), self.aclose)
+            if original is not None and not isinstance(original, Exception):
+                self._retain(original, pending)
+                return False
+            if not isinstance(cleanup, Exception):
+                self._retain(cleanup, pending)
+                raise
+            raise pending from None
+
+
+    def _retain(self, error, pending):
+        pending.cleanup_pending = getattr(error, 'cleanup_pending', None)
+        error.cleanup_pending = pending
+        owners = (*getattr(error, 'retained_owners', ()), self)
+        error.retained_owners = tuple({id(owner): owner for owner in owners}.values())
 
 
 class RunStorage:
@@ -89,10 +203,9 @@ class RunStorage:
     @staticmethod
     def _copy_once(directory_fd, name, data):
         temporary = f'.allure-{uuid4()}'
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o600, dir_fd=directory_fd)
-        try:
-            with os.fdopen(descriptor, 'wb') as stream:
+        with _CopyCleanup(directory_fd, temporary) as copy:
+            directory_fd = copy.directory_fd
+            with copy.create() as stream:
                 stream.write(data)
             try:
                 os.link(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
@@ -105,8 +218,6 @@ class RunStorage:
                         raise StorageError('Could not persist Allure run') from None
                     if stream.read(len(data) + 1) != data:
                         raise StorageError('Could not persist Allure run') from None
-        finally:
-            os.unlink(temporary, dir_fd=directory_fd)
 
     @staticmethod
     def _read_source(path, *, directory_fd=None, max_bytes=None):
@@ -168,10 +279,14 @@ class RunStorage:
                                     raise StorageError('Could not persist Allure run')
                                 self._copy_once(run_fd, name, body)
                             self._copy_once(run_fd, 'manifest.json', manifest_body)
+                    except CleanupPendingError:
+                        raise
                     except Exception:
                         failed = True
                 if failed:
                     raise StorageError('Could not persist Allure run')
+        except CleanupPendingError:
+            raise
         except Exception:
             raise StorageError('Could not persist Allure run') from None
         return self._key(repo, run_id, 'manifest.json')
