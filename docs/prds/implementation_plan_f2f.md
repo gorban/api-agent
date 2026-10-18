@@ -22,7 +22,7 @@ Deliver this contract before integrating the reviewed frontend foundation. Reaso
 
 - [x] Parameterize omitted/off/low/medium/high across supported synthetic providers, API modes and model versions; verify exact wire mapping, unsupported rejection before calls, explicit precedence, cache/client identity and no fallback. Mutations must detect dropped effort, off-to-omitted coercion and history pooling across incompatible efforts.
 - [x] Verify UI picker validation, stale catalog/version handling, send-time snapshots, per-message tags, concurrent conversations and preserved metadata on partial/failed results. Test source and relocated installed packages, IPC and API streaming with controlled transports.
-- [x] Include new request-mapping modules and resolved effort in workflow sampling fingerprints and structural evidence. Preserve prior reviewed measurements unchanged; stale qualification rejects before setup/inference and requires a fresh independently reviewed pilot rather than replacement hashes to retain its cap.
+- [x] Include new request-mapping modules and resolved effort in workflow sampling fingerprints and structural evidence. Preserve prior reviewed measurements unchanged; stale qualification rejects before setup/inference. A changed source requires a fresh independently reviewed pilot or a narrowly reviewed request-equivalence carry-forward for the exact sampled model and route; neither may silently replace observations or relax unrelated fingerprint checks.
 - [x] Independently review the contract and joined UI extension; require applicable exact unit line/branch coverage, package/license and public tree/index/metadata checks. Human acceptance covers picker choices, default-versus-off and message history. No additional paid inference is needed for the deterministic gate; live capability checks remain separately authorized.
 
 ## Base delivery checkpoint
@@ -58,3 +58,11 @@ Delivered generic inference/model request contracts are human-accepted. Frontend
   Provider/wire contracts and sampling qualification remain unchanged.
 
 - [x] Complete external PR review, including family display casing and missing saved-family presentation repairs. Controlled validation does not replace frontend human interaction acceptance.
+
+## Additional verified 5.6 reasoning selections
+
+- [x] Advertise common off, low, medium and high reasoning controls for the documented GPT-5.6 Terra and Sol aliases on the official API route. Map off to native none; omit an unselected effort so the provider default remains effective. Keep unverified routes, aliases and dated IDs unknown.
+- [x] For a family whose advertised versions all have known controls, selecting the version labelled Provider default uses the catalog's configured exact default row when that row belongs to the family. Use that concrete row's reasoning choices. If the configured default belongs elsewhere, show only the verified common efforts across every advertised family version while requiring an explicit version before sending; never choose a version by row order or infer it from a family label.
+- [x] Verify the catalog, request wire, HTTP selection and frontend family flow with controlled transports and boundary mutations. The changed reasoning module must be reconciled with the sampling fingerprint; this task does not authorize paid inference.
+- [x] Keep model-specific Chat tool-route restrictions independent from effort availability. Adding a verified effort alias must not silently reject omitted, empty, off or high requests with functions on a route that already admitted those requests. Preserve existing documented GPT-6 and prior 5.6 Luna restrictions until separately reviewed.
+- [x] Carry forward the last GPT-6 Luna workflow measurements and operating bound only after independent old/new request-admission and native-wire equivalence review. Retain the original measurement rows, computed statistics and source fingerprint in provenance; bind the reviewed current source digest without calling it a new pilot. The unchanged validator must still reject future changes to settings, dependencies or any other sampling source before setup or inference.

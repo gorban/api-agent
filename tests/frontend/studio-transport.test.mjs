@@ -222,6 +222,18 @@ test('explicit family metadata groups versions and preserves opaque/colliding id
  assert.deepEqual(modelGroups([]),[]);
 });
 
+test('family provider default uses the configured exact row for reasoning',()=>{
+ const row=(value,version)=>({...model,value,version,label:'GPT-'+version+'-Terra',family:'gpt-terra',reasoning_efforts:['off','low','medium','high']});
+ const first=row('gpt-5.6-terra','5.6'),second=row('gpt-6-terra','6');
+ const known=normalizeCatalog(catalog([first,second],{default:'gpt-5.6-terra'}));
+ const selected=resolveSelection(known,{family:'gpt-terra',model:'',version:'',reasoning:'high'});
+ assert.equal(selected.valid,true);assert.equal(selected.selection.selected_llm,'gpt-5.6-terra');
+ const reversed=normalizeCatalog(catalog([second,first],{default:'gpt-5.6-terra'}));
+ assert.equal(resolveSelection(reversed,{family:'gpt-terra',model:'',version:'',reasoning:'off'}).selection.selected_llm,'gpt-5.6-terra');
+ const outside=normalizeCatalog(catalog([first,second,{...model,value:'outside'}],{default:'outside'}));
+ assert.match(resolveSelection(outside,{family:'gpt-terra',model:'',version:'',reasoning:'high'}).error,/Choose an advertised version/);
+});
+
 test('family labels remove an exact advertised separated version suffix as one value',()=>{
  const row=(value,label,version,family='family')=>({...model,value,label,version,family});
  for(const [label,version,expected] of [['Family-2024-01-01','2024-01-01','Family'],['Family-alpha-beta','alpha-beta','Family'],['FaMiLy_release-candidate','release-candidate','FaMiLy'],['Different-2024-01-01','2024-01-01','family'],['Family-2024-01-02','2024-01-01','family']]){

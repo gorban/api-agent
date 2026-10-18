@@ -19,3 +19,10 @@ Joined validation, package/license and public boundary checks passed. This quali
 Human review accepted the normal workflow coverage run without stale-calibration rejection on the earlier qualified source. That observed acceptance remains valid. Subsequent source changes must still satisfy the strict fingerprint gate; a changed binding requires fresh authorized qualification and independent review before replacing any baseline. Earlier measurements are immutable and must not be relabeled as observations of a later source.
 
 The later source changes invalidated the earlier baseline. The renewed independently reviewed pilot above satisfies that source gate, and current strict preflight passes. The earlier accepted run and measurements remain unchanged; renewed qualification does not qualify the separate provider-cache failure.
+
+## Later request-equivalent source binding
+
+- [x] After independent review confirms the changed reasoning module preserves GPT-6 Luna request admission and native wire behavior for the sampled official subscription Responses route, carry forward the existing 20 trial rows, their exact recomputed bounds and cap 22. The original source digest and baseline-file digest remain in provenance. Bind the current reasoning source digest as a reviewed equivalent source, explicitly without a new pilot or new inference observation.
+- [x] Keep the ordinary fingerprint validator and binomial recomputation unchanged. Any later settings, dependency or source drift, including another edit to the reasoning module, must still fail preflight before provider setup or inference.
+
+The original qualification and acceptance statements above describe their historical source binding. The carry-forward is a separate source-equivalence decision for the same model, route and effective settings; it does not change the observed 5/8/7 routes, minimum 18, four-run margin or cap 22.

@@ -97,7 +97,9 @@ denies new requests without losing the disposal duty.
   These controls isolate history/cache state.
 - [x] Independent review, applicable exact coverage and package/public-boundary
   gates cover the joined implementation.
-- [ ] Human frontend acceptance covers idle pauses, composer/history, Stop/retry,
+- [x] Human frontend acceptance covers idle pauses, composer/history, Stop/retry,
   themes, clarifications and metadata with the retained backend.
 
 No live authentication or additional paid inference is part of these controls.
+
+Human acceptance of the delivered retained Studio scope is recorded. Newly reported reasoning-capability and composer-diagnostic defects have separate requirements; long-idle cache acceptance remains separate. No additional manual observations are inferred from that signoff.

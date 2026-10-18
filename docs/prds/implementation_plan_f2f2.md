@@ -11,7 +11,7 @@
 
 ## Qualification boundary
 
-The capability module participates in workflow sampling fingerprints. Changing it invalidates prior qualification; retain prior measurements and require separately authorized fresh qualification rather than replacing source hashes. This capability change does not authorize inference or paid sampling.
+The capability module participates in workflow sampling fingerprints. A changed source invalidates the old exact binding. The retained GPT-6 Luna measurements may be carried forward only through independently reviewed request-equivalence evidence for that exact sampled model and route, with the original source digest and observations retained in provenance. Future unrelated drift still fails the normal fingerprint check. This capability change does not authorize inference or paid sampling.
 
 ## Studio settings integration
 
@@ -21,4 +21,4 @@ The capability module participates in workflow sampling fingerprints. Changing i
 - [x] Preserve normal usage/Allure capture, selected browser ownership, and DEBUG retention. Offline controls precede any separately authorized live smoke.
 - [x] Complete internal independent review, renewed joined gates and the separately authorized live settings smoke. The real Settings flow selected version 5.6/off and returned exactly `Maybe`; one requested/actual model call reported zero reasoning tokens.
 - [x] Complete external PR review.
-- [ ] Complete frontend human interaction acceptance. The live automated settings smoke does not replace that acceptance.
+- [x] Frontend human interaction acceptance is recorded as part of the delivered retained Studio scope. Newly reported reasoning/composer follow-ups remain separate; the live automated settings smoke alone did not establish acceptance.

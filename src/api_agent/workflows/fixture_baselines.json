@@ -14,6 +14,18 @@
         "second_format": 0.36204651348821093,
         "second_guard": 0.36204651348821093
       },
+      "carry_forward": {
+        "basis": "Deterministic old/new request-admission and native-wire equivalence for the retained model and route; original pilot observations and bound are unchanged.",
+        "current_source_sha256": "03db69e5535cb82583f1acf2b0dedc1efc1cb843bacec2738ccb645c449dc7a2",
+        "kind": "reviewed_request_equivalence",
+        "model": "gpt-6-luna",
+        "new_pilot": false,
+        "original_fixture_sha256": "8c12b099e26e0e2c9955ba3e2fe5543ae00179d3814fea313db522de6bb0c3d9",
+        "original_source_sha256": "8ea914b93096b4a48af3023da129d172ae474575b002562317459666df97a43c",
+        "reasoning_effort": "low",
+        "route": "official_subscription_responses",
+        "source": "src/api_agent/llm_providers/gpt/reasoning.py"
+      },
       "confidence": 0.95,
       "dependency_versions": {
         "httpx": "0.28.1",
@@ -301,7 +313,7 @@
         "src/api_agent/llm_providers/gpt/endpoint.py": "45dc995946481c54bfb2312f61637329136e42321aa36ea3ee6e56559d9e0720",
         "src/api_agent/llm_providers/gpt/factory.py": "0065b50eb67b0f4efe9fc18676a1bbf99b645dd31de627e9c2c30660de7aa376",
         "src/api_agent/llm_providers/gpt/inference.py": "7d3c4be245713b1e2f509eb678ad5d782f34e5ec25912c5fd0bd5e7ee0c79d5a",
-        "src/api_agent/llm_providers/gpt/reasoning.py": "8ea914b93096b4a48af3023da129d172ae474575b002562317459666df97a43c",
+        "src/api_agent/llm_providers/gpt/reasoning.py": "03db69e5535cb82583f1acf2b0dedc1efc1cb843bacec2738ccb645c449dc7a2",
         "src/api_agent/llm_providers/gpt/rich.py": "0222e258b3ec8ff3c5d5435e7fea50749efd2d30487e4640397f4c5b48f6bf77",
         "src/api_agent/providers/cache_policy.py": "e05387ad862633fa738b82a6421053fa402c44ae87386674571ced006ff5faa5",
         "src/api_agent/providers/contracts.py": "e61d6876cf1b281383c808b8ed4a0f5afed6615d051ed66cb013a89a4b9d97b3",

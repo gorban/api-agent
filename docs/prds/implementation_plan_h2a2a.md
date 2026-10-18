@@ -63,7 +63,7 @@ parent requirements.
 
 - [x] Independent review, focused mutation controls and exact applicable unit
   line/branch coverage; installed-resource and public-boundary gates.
-- [ ] Human acceptance with two coordinated workbenches and retained data after
+- [x] Human acceptance with two coordinated workbenches and retained data after
   an explicitly approved real service stop/restart.
 - [ ] Platform-specific process/engine validation beyond the tested Linux envelope.
 
@@ -72,3 +72,5 @@ prunes stale leases and verifies the existing object; no exit handler promises
 instant crash shutdown or lossless unflushed writes. The existing macOS process
 identity fallback remains subject to its own native acceptance. Native Windows
 managed-engine/session support is not claimed.
+
+Human acceptance of this delivered LocalStack scope is recorded. This does not accept broader tracing, management, destructive storage actions, or additional native-platform behavior. No additional manual observations are inferred from that signoff.

@@ -143,6 +143,45 @@ def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, suppl
     asyncio.run(run())
 
 
+def test_http_catalog_and_send_keep_exact_known_family_default_selection():
+    import httpx
+    from uuid import uuid4
+    from api_agent.llm_providers.gpt.discovery import _catalog
+    from api_agent.providers.llm import LLMResult, Message, TextContent
+    selections = _catalog({'data': [{'id': model} for model in ('gpt-5.6-terra', 'gpt-5.6-sol')]},
+                          False, 'synthetic-token', base_url='https://api.openai.com/v1')
+
+    class Provider:
+        def __init__(self): self.calls = []
+        def describe(self): return selections
+        def complete(self, request):
+            self.calls.append(request)
+            return LLMResult(Message('assistant', (TextContent('Maybe'),)))
+
+    async def run():
+        provider = Provider()
+        headers = {'Origin': 'http://localhost:9443', 'X-API-Agent-Session': 'x' * 32}
+        async with bridge.agent_endpoint(provider, 'gpt-5.6-terra', 'http://localhost:9443', 'x' * 32,
+                policy_config={'LLM_ALLOWED_MODELS': r'gpt-5\.6-(terra|sol)'}) as url:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url + '/app/agent/models', headers=headers)
+                assert response.status_code == 200
+                catalog = response.json()
+                assert catalog['default'] == 'gpt-5.6-terra'
+                assert [(row['value'], row['reasoning_efforts']) for row in catalog['models']] == [
+                    ('gpt-5.6-terra', ['off', 'low', 'medium', 'high']),
+                    ('gpt-5.6-sol', ['off', 'low', 'medium', 'high'])]
+                result = await client.post(url + '/app/agent/chat', headers=headers, json={
+                    'model': catalog['default'], 'reasoning_effort': 'off', 'session_id': str(uuid4()),
+                    'messages': [{'role': 'user', 'content': 'Maybe'}]})
+                assert result.status_code == 200 and result.json()['response_text'] == 'Maybe'
+        assert len(provider.calls) == 1
+        assert provider.calls[0].selected_llm == 'gpt-5.6-terra'
+        assert provider.calls[0].payload.generation.reasoning_effort == 'off'
+
+    asyncio.run(run())
+
+
 def test_stopped_server_before_readiness_fails_and_closes_listener(monkeypatch):
     import uvicorn
     seen=[]
