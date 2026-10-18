@@ -26,4 +26,5 @@ The ordinary runtime now uses the existing provider fixture and shared applicati
 
 The frozen prompt passed one live six-call comparison: low reasoning counts were zero and medium counts were 95, 84 and 89, giving signed gaps +95, +84 and +89. Internal independent review and joined validation are complete. Earlier correctness-gated failures remain historical evidence; they do not qualify the current usage-only rule. This single smoke does not establish population reliability.
 
-- [ ] Complete external PR review and human acceptance.
+- [x] Complete external PR review.
+- [ ] Human acceptance of the usage-only comparison remains open.
