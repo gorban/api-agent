@@ -48,3 +48,15 @@ Official references: [generation](https://allurereport.org/docs/v2/generate-repo
 - [x] Independently review this regression repair. Earlier human acceptance above remains historical and does not accept this new failure-path behavior.
 
 - [ ] Human acceptance of this repair: review the controlled primary-outage/local-copy evidence and confirm normal publication after the blocked startup is repaired. Earlier approvals remain recorded above.
+
+## Interrupted temporary-copy cleanup
+
+- [x] Preserve the exact publication interruption when temporary unlink also fails. Retain the exact temporary name and a pinned directory owner through the existing cleanup receipt; preserve earlier duties and require explicit acknowledgement before releasing owned descriptors.
+- [x] Keep cleanup retries safe after directory replacement and numeric descriptor reuse, including interrupted close acknowledgement. Retrying temporary cleanup never claims publication success or deletes committed artifacts. Async retry keeps the event loop responsive and drains owned close work.
+- [x] Transfer direct and attached publication cleanup receipts through recorded execution and launched/TUI ownership. Additional prerequisite cleanup appends its duty without replacing earlier receipts; suite exclusion lasts until every retained duty acknowledges completion.
+- [x] Independently review combined primary outage, secondary interruption and cleanup failure, ordinary cleanup failure, exact retries, consumer ownership and descriptor controls. Earlier human approvals do not accept this additional failure path.
+
+- [x] Acknowledge exclusive temporary creation before claiming cleanup ownership. Creation failures and collisions preserve pre-existing files, links and nonregular entries; cleanup validates the acquired inode and refuses replacements observed by that check. Preserve interruption ownership across creation acknowledgement and release unused directory pins safely.
+- [x] Join cleanup duties by object identity without invoking receipt-defined equality. Distinct duties remain retained even when a receipt overrides equality or raises from it.
+
+Publication assumes coordinated writers reserve each operation’s random temporary name; arbitrary external mutation of that entry between filesystem operations is outside this cleanup guarantee.

@@ -175,6 +175,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         try:
             callback(*args)
         except Exception as error:
+            from .suite_lock import _cleanup_receipts
+            if name == 'after_run' and any(_cleanup_receipts(error)):
+                raise
             callback_failed = True
             disabled.add(name)
             chunks.append(f'{name} callback failed; details withheld.\n')
