@@ -4,6 +4,8 @@ Contracts: https://developers.openai.com/api/docs/guides/reasoning
 and https://developers.openai.com/api/docs/guides/deployment-checklist.
 OpenRouter contracts: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
 and https://openrouter.ai/api/v1/models (verified 2026-10-15).
+Luna 5.6 official contract: https://developers.openai.com/api/docs/models/gpt-5.6-luna
+(verified 2026-10-18; no dated snapshot listed).
 Only published aliases are listed: a date-shaped suffix is not evidence of support.
 """
 from api_agent.providers.contracts import ProviderAccessError
@@ -17,10 +19,13 @@ _EFFORTS = {
 }
 
 
+# Official verification does not establish support on another route.
+_OFFICIAL_EFFORTS = {**_EFFORTS, 'gpt-5.6-luna': ('off', 'low', 'medium', 'high')}
+
 def reasoning_efforts(selection, *, base_url):
     """Return verified common choices without authentication or discovery I/O."""
     if base_url == OFFICIAL_BASE_URL:
-        return _EFFORTS.get(selection)
+        return _OFFICIAL_EFFORTS.get(selection)
     if base_url == 'https://openrouter.ai/api/v1':
         return {'openai/' + model: choices for model, choices in _EFFORTS.items()}.get(selection)
     return None

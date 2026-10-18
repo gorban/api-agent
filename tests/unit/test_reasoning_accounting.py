@@ -243,3 +243,36 @@ def test_pending_unknown_and_explicit_omission_are_not_interchangeable(saved_evi
     tracker.record_inference(first['call_id'], 'test', first)
     with pytest.raises(ValueError, match='Conflicting inference identity'):
         tracker.record_inference(second['call_id'], 'test', second)
+
+
+@pytest.mark.parametrize('mode', ('responses', 'completions'))
+def test_luna_56_worker_preserves_off_over_default(mode, request_value, result_value):
+    from api_agent.providers.setup_registry import SetupRegistry
+    from api_agent.providers.setup_transport import SetupServer
+    from api_agent.llm_providers.gpt.inference import validate_text_request
+    request = replace(request_value, selected_llm='gpt-5.6-luna',
+        payload=replace(request_value.payload, generation=GenerationOptions(reasoning_effort='off')))
+    observed = []
+    async def complete(value):
+        _, body = validate_text_request(base_url='https://api.openai.com/v1',
+            access_token='synthetic-token', subscription=False, api_mode=mode, request=value)
+        observed.append((value, body))
+        return result_value
+    async def scenario():
+        owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock())
+        registry = SetupRegistry('operation', 'selected', lambda: owner)
+        server = SetupServer(registry, 'synthetic-luna-capability-value-000000000')
+        endpoint = await server.start()
+        remote = RemoteIntegrationLLM(endpoint, {'LLM_REASONING_EFFORT': 'high'})
+        try:
+            await asyncio.to_thread(remote.complete, request)
+            value, body = observed[0]
+            assert value.selected_llm == 'gpt-5.6-luna'
+            assert value.payload.generation.reasoning_effort == 'off'
+            expected = {'reasoning': {'effort': 'none'}} if mode == 'responses' else {'reasoning_effort': 'none'}
+            assert {key: body[key] for key in ('reasoning', 'reasoning_effort') if key in body} == expected
+        finally:
+            await asyncio.to_thread(remote.close)
+            await server.aclose()
+            await registry.aclose()
+    asyncio.run(scenario())

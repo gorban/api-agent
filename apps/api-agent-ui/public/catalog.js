@@ -34,13 +34,47 @@ export function normalizeCatalog(input) {
   Object.defineProperty(catalog, 'reasoningDefault', {value: reasoningDefault});
   return catalog;
 }
-export function resolveSelection(catalog, {model, version = '', reasoning = ''}) {
-  const selection = catalog.find(row => row.selected_llm === (model || catalog.defaultSelection));
+// Group presentation uses metadata only; option values remain separate handles.
+export function modelGroups(catalog) {
+  const groups = [];
+  for (const row of catalog) {
+    let group = row.family === null ? null : groups.find(item => item.family === row.family);
+    if (!group) {
+      let value = row.selected_llm;
+      if (row.family !== null) {
+        value = JSON.stringify(['family', row.family]);
+        while (catalog.some(item => item.selected_llm === value)) value = '~' + value;
+      }
+      group = {value, family: row.family, rows: [], name: row.display_name};
+      groups.push(group);
+    }
+    group.rows.push(row);
+  }
+  for (const group of groups) if (group.family !== null) {
+    const labels = new Set(group.rows.map(row => {
+      const parts = row.display_name.split(/([ _-]+)/);
+      const label = parts.filter(part => !row.version || part !== row.version).join('').replace(/([ _-])\1+/g, '$1').replace(/^[ _-]+|[ _-]+$/g, '');
+      return label.toLowerCase() === group.family.toLowerCase() ? label : group.family;
+    }));
+    group.name = labels.size === 1 ? [...labels][0] : group.family;
+  }
+  return groups;
+}
+export function resolveSelection(catalog, {model, family = '', version = '', reasoning = ''}) {
+  let selection, error = '';
+  if (family && model) error = 'Choose a family or a concrete model, not both.';
+  else if (family) {
+    const rows = catalog.filter(row => row.family === family);
+    const matches = version ? rows.filter(row => row.version === version) : rows.filter(row => row.selected_llm === catalog.defaultSelection);
+    if (!rows.length) error = 'This model family is no longer available.';
+    else if (matches.length > 1) error = 'This family version is ambiguous; choose a concrete model ID.';
+    else if (!matches.length) error = version ? 'This model version is no longer available.' : 'Choose an advertised version for this family.';
+    else selection = matches[0];
+  } else selection = catalog.find(row => row.selected_llm === (model || catalog.defaultSelection));
   const effort = reasoning || catalog.reasoningDefault;
-  let error = '';
-  if (!selection) error = 'Choose an available model.';
-  else if (version && selection.version !== version) error = 'This model version is no longer available.';
-  else if (effort && (!selection.features.includes('reasoning_effort') || !selection.reasoning_efforts?.includes(effort))) {
+  if (!error && !selection) error = 'Choose an available model.';
+  else if (!error && version && selection.version !== version) error = 'This model version is no longer available.';
+  else if (!error && effort && (!selection.features.includes('reasoning_effort') || !selection.reasoning_efforts?.includes(effort))) {
     if (selection.reasoning_efforts === undefined || selection.reasoning_efforts === null) error = 'Reasoning support for this model is unknown; the selected or configured effort cannot be verified.';
     else error = reasoning ? 'This reasoning setting is unsupported.' : 'The configured reasoning default is unsupported for this model.';
   }

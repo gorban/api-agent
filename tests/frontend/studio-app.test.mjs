@@ -733,7 +733,7 @@ test('configuration HTTP failure blocks sending and keeps the draft',async()=>{
 });
 test('empty catalog communicates unavailable choices without inventing a default',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
-  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[],default:null}}));await reloadPage(page);await page.locator('#settings-nav').click();await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('No model choices'));await page.locator('#close-settings').click();await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('.message').count(),0);assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');}finally{await closeBrowser(browser);}
+  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[],default:null}}));await reloadPage(page);await page.locator('#settings-nav').click();await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('No model choices'));const errors=[];page.on('pageerror',error=>errors.push(error.message));assert.equal(await page.locator('#backend-default').isDisabled(),true);await page.locator('#backend-default').dispatchEvent('click');assert.deepEqual(errors,[]);assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'');await page.locator('#close-settings').click();await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('.message').count(),0);assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');}finally{await closeBrowser(browser);}
 });
 test('unversioned provider model succeeds without manufacturing a version',async()=>{
   const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Unversioned response')}));
@@ -919,7 +919,7 @@ test('actual HTTP EOF truncations preserve partial text and remain incomplete an
   } finally {await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
 
-async function controlledHTTPStudio(handle) {
+async function controlledHTTPStudio(handle, ready = 'sample') {
   const {createServer}=await import('node:http');let uiOrigin;
   const api=createServer((request,response)=>{
     response.setHeader('Access-Control-Allow-Origin',uiOrigin);
@@ -936,7 +936,7 @@ async function controlledHTTPStudio(handle) {
   await new Promise(resolve=>ui.listen(0,'127.0.0.1',resolve));uiOrigin='http://127.0.0.1:'+ui.address().port;
   const browser=await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER||undefined});
   const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);
-  await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
+  await page.waitForFunction(value=>[...document.querySelector('#model').options].some(option=>option.value===value),ready);
   return {page,async close(){await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}};
 }
 
@@ -1043,4 +1043,159 @@ test('native keyboard can pin the sole current model and reset backend policy wi
     await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Pinned retry completed',{exact:true}).waitFor();
     assert.equal(posts[1].model,'sample');assert.notEqual(posts[1].session_id,posts[0].session_id);
   }finally{await studio.close();}
+});
+
+
+test('family picker sends exact version IDs and pins old retries across family/default changes',async()=>{
+ const family=JSON.stringify(['family','gpt-luna']),solFamily=JSON.stringify(['family','gpt-sol']);
+ const row=(selected_llm,display_name,version,group,reasoning_efforts)=>({...model,selected_llm,display_name,version,family:group,reasoning_efforts});
+ const l6=row('gpt-6-luna','GPT-6-Luna','6','gpt-luna',['off','high']);
+ const l56=row('gpt-5.6-luna','GPT-5.6-Luna','5.6','gpt-luna',['off','low']);
+ const alias=row('luna-current','GPT-Luna',null,'gpt-luna',['off']);
+ const sol=row('gpt-6-sol','GPT-6-Sol','6','gpt-sol',['off']);
+ let rows=[l6,l56,alias,sol,model],defaultModel=l6.selected_llm,fail=false;
+ const posts=[];
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:rows.map(wireModel),default:defaultModel,reasoning_default:null}));return;}
+  const input=JSON.parse(body);
+  if(!request.url.endsWith('/stream')){response.end(JSON.stringify({session_id:input.session_id,status:'cancelled'}));return;}
+  posts.push(input);
+  if(fail){response.writeHead(503);response.end('Synthetic retry');return;}
+  response.end(JSON.stringify(wireResult(result('Family reply '+posts.length),input.session_id)));
+ },family);
+ const {page}=studio;
+ try{
+  await page.locator('#settings-nav').click();
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['GPT-Luna','GPT-Sol','Sample model']);
+  assert.deepEqual(await page.locator('#version option').allTextContents(),['Provider default','6','5.6','Unknown version — luna-current']);
+  await page.locator('#version').selectOption(l56.selected_llm);
+  assert.deepEqual(await page.locator('#reasoning option').allTextContents(),['Provider default','off','low']);
+  await page.locator('#reasoning').selectOption('low');assert.equal(await page.locator('#model-short-name').textContent(),'GPT-5.6-Luna: low');await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Older version');await page.locator('#send').click();await page.getByText('Family reply 1',{exact:true}).waitFor();
+  assert.equal(posts[0].model,l56.selected_llm);assert.equal(posts[0].reasoning_effort,'low');
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('api-agent-studio-v2'));value.settings={model:'',family:'gpt-luna',version:'5.6',reasoning:'low'};localStorage.setItem('api-agent-studio-v2',JSON.stringify(value));});
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.locator('#settings-nav').click();assert.equal(await page.locator('#version').inputValue(),l56.selected_llm);assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'');
+  await page.locator('#version').selectOption(l6.selected_llm);assert.equal(await page.locator('#reasoning').inputValue(),'');
+  await page.locator('#reasoning').selectOption('high');await page.locator('#close-settings').click();
+  fail=true;await page.locator('#prompt').fill('Pinned version');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+  assert.equal(posts[1].model,l6.selected_llm);assert.equal(posts[1].reasoning_effort,'high');
+  defaultModel=alias.selected_llm;await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption(solFamily);
+  assert.match(await page.locator('#model-status').textContent(),/Choose an advertised version/);
+  await page.locator('#version').selectOption(sol.selected_llm);await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
+  fail=false;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Family reply 3',{exact:true}).waitFor();
+  assert.equal(posts[2].model,l6.selected_llm);assert.equal(posts[2].reasoning_effort,'high');
+  await page.locator('#prompt').fill('New family');await page.locator('#send').click();await page.getByText('Family reply 4',{exact:true}).waitFor();
+  assert.equal(posts[3].model,sol.selected_llm);assert.equal(posts[3].reasoning_effort,'off');
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption(family);assert.equal(await page.locator('#version').inputValue(),'');
+  assert.equal(await page.locator('#model-status').textContent(),''); // Explicit family follows only its advertised backend default.
+  await page.locator('#close-settings').click();await page.locator('#prompt').fill('Family alias');await page.locator('#send').click();await page.getByText('Family reply 5',{exact:true}).waitFor();
+  assert.equal(posts[4].model,alias.selected_llm);
+  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')));
+  assert.equal(saved.settings.family,'gpt-luna');assert.equal(saved.settings.model,'');
+  assert.equal(saved.messages.at(-1).selectionSnapshot.model,alias.selected_llm);assert.equal(saved.messages.at(-1).selectionSnapshot.family,'');
+  assert.equal(saved.messages[0].requested.model,l56.selected_llm);assert.equal(saved.messages[1].selectionSnapshot.model,l56.selected_llm);
+  await page.locator('#settings-nav').click();await page.locator('#version').selectOption(alias.selected_llm);assert.equal(await page.locator('#version').inputValue(),alias.selected_llm);
+  assert.equal(await page.locator('#model-status').textContent(),'');
+  await page.locator('#version').selectOption('');assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.family),'gpt-luna');
+ }finally{await studio.close();}
+});
+
+
+test('family picker distinguishes ambiguous versions, opaque selector collisions and inherited reasoning',async()=>{
+ const key=JSON.stringify(['family','gpt-luna']),family='~'+key;
+ const row=(selected_llm,version,reasoning_efforts)=>({...model,selected_llm,version,family:'gpt-luna',display_name:version?'GPT-'+version+'-Luna':'GPT-Luna',reasoning_efforts});
+ const rows=[row('l6','6',['off','high']),row('l6-copy','6',['off']),row('l56','5.6',['low']),row('unknown-a',null,['off']),row('unknown-b',null,['off']),{...model,selected_llm:key,display_name:'Opaque selector'},{...model,selected_llm:'gpt-luna',display_name:'Opaque family ID'}];
+ const posts=[];
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:rows.map(wireModel),default:'l6',reasoning_default:'low'}));return;}
+  const input=JSON.parse(body);
+  if(!request.url.endsWith('/stream')){response.end(JSON.stringify({session_id:input.session_id,status:'cancelled'}));return;}
+  posts.push(input);response.end(JSON.stringify(wireResult(result('Disambiguated '+posts.length),input.session_id)));
+ },family);
+ const {page}=studio;
+ try{
+  await page.locator('#settings-nav').click();
+  assert.match(await page.locator('#model-status').textContent(),/configured reasoning default is unsupported/);
+  assert.deepEqual(await page.locator('#version option').allTextContents(),['Provider default','6 — l6','6 — l6-copy','5.6','Unknown version — unknown-a','Unknown version — unknown-b']);
+  await page.locator('#version').selectOption('l56');assert.equal(await page.locator('#model-status').textContent(),'');
+  await page.locator('#close-settings').click();await page.locator('#prompt').fill('Inherited low');await page.locator('#send').click();await page.getByText('Disambiguated 1',{exact:true}).waitFor();
+  assert.equal(posts[0].model,'l56');assert.equal('reasoning_effort' in posts[0],false);
+  await page.locator('#settings-nav').click();await page.locator('#version').selectOption('l6-copy');await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Exact duplicate ID');await page.locator('#send').click();await page.getByText('Disambiguated 2',{exact:true}).waitFor();assert.equal(posts[1].model,'l6-copy');
+  await page.locator('#settings-nav').click();await page.locator('#version').selectOption('unknown-b');await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Known ID unknown version');await page.locator('#send').click();await page.getByText('Disambiguated 3',{exact:true}).waitFor();assert.equal(posts[2].model,'unknown-b');
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption(key);await page.locator('#reasoning').selectOption('low');await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Opaque collision');await page.locator('#send').click();await page.getByText('Disambiguated 4',{exact:true}).waitFor();assert.equal(posts[3].model,key);
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption('gpt-luna');await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Opaque family name');await page.locator('#send').click();await page.getByText('Disambiguated 5',{exact:true}).waitFor();assert.equal(posts[4].model,'gpt-luna');
+  // Saved family intent remains distinct and stale versions never pick an arbitrary row.
+  await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('api-agent-studio-v2'));value.settings={model:'',family:'gpt-luna',version:'6',reasoning:''};localStorage.setItem('api-agent-studio-v2',JSON.stringify(value));});
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.locator('#settings-nav').click();assert.match(await page.locator('#model-status').textContent(),/ambiguous/);assert.equal(await page.locator('#version option:checked').textContent(),'Unresolved version: 6');
+  await page.locator('#close-settings').click();await page.locator('#prompt').fill('Must not send');await page.locator('#send').click();assert.match(await page.locator('#status').textContent(),/ambiguous/);assert.equal(posts.length,5);
+  await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('api-agent-studio-v2'));value.settings.version='retired';localStorage.setItem('api-agent-studio-v2',JSON.stringify(value));});
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.locator('#settings-nav').click();assert.match(await page.locator('#model-status').textContent(),/version is no longer/);
+  await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('api-agent-studio-v2'));value.settings={model:'l56',family:'',version:'retired',reasoning:''};localStorage.setItem('api-agent-studio-v2',JSON.stringify(value));});
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');await page.locator('#settings-nav').click();assert.equal(await page.locator('#version option:checked').textContent(),'Unresolved version: retired');
+  await page.locator('#model').dispatchEvent('change');assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.version),'');
+  await page.getByRole('button',{name:'Use backend default'}).click();await page.getByRole('button',{name:'Keep selected model'}).click();assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'l6');
+  await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('api-agent-studio-v2'));value.settings={model:'',family:'missing-family',version:'',reasoning:''};localStorage.setItem('api-agent-studio-v2',JSON.stringify(value));});
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');await page.locator('#settings-nav').click();await page.locator('#model').dispatchEvent('change');assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.family),'missing-family');assert.match(await page.locator('#model-status').textContent(),/family is no longer/);
+ }finally{await studio.close();}
+});
+
+for(const target of ['settings','requested','snapshot'])for(const family of [3,'x'.repeat(201),'bad\nfamily','bad\u2000family','gpt-luna'])test('saved family intent rejects '+target+' '+JSON.stringify(family),async()=>{
+ const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Unexpected')}));
+ try{
+  await page.evaluate(({target,family})=>{
+   const base={model:'sample',version:'',reasoning:''};
+   const saved={session:crypto.randomUUID(),draft:'',messages:[],reply:null,settings:base};
+   if(target==='settings')saved.settings={...base,family};
+   else saved.messages=[{id:'u',role:'user',text:'Untrusted saved message',requested:target==='requested'?{...base,family}:base,...(target==='snapshot'?{selectionSnapshot:{...base,family}}:{})}];
+   localStorage.setItem('api-agent-studio-v2',JSON.stringify(saved));
+  },{target,family});
+  await reloadPage(page);assert.equal(await page.locator('#storage-warning').isVisible(),true);
+  assert.equal(await page.locator('.user').count(),0);assert.equal(await page.locator('#prompt').inputValue(),'');
+ }finally{await closeBrowser(browser);}
+});
+for(const snapshot of [null,{model:'',family:'gpt-luna',version:'',reasoning:''}])test('saved family messages require an exact snapshot '+JSON.stringify(snapshot),async()=>{
+ const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Unexpected')}));
+ try{
+  await page.evaluate(snapshot=>localStorage.setItem('api-agent-studio-v2',JSON.stringify({session:crypto.randomUUID(),draft:'',reply:null,settings:{model:'sample',version:'',reasoning:''},messages:[{id:'u',role:'user',text:'Unpinned family message',requested:{model:'',family:'gpt-luna',version:'',reasoning:''},selectionSnapshot:snapshot}]})),snapshot);
+  await reloadPage(page);assert.equal(await page.locator('#storage-warning').isVisible(),true);assert.equal(await page.locator('.user').count(),0);
+ }finally{await closeBrowser(browser);}
+});
+
+test('family default retries keep their send-time ID after the configured family default changes',async()=>{
+ const family=JSON.stringify(['family','gpt-luna']);
+ const older={...model,selected_llm:'old',display_name:'GPT-5.6-Luna',version:'5.6',family:'gpt-luna'};
+ const newer={...older,selected_llm:'new',display_name:'GPT-6-Luna',version:'6'};
+ let defaultModel='new',fail=true;const posts=[];
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:[older,newer].map(wireModel),default:defaultModel,reasoning_default:null}));return;}
+  const input=JSON.parse(body);
+  if(!request.url.endsWith('/stream')){response.end(JSON.stringify({session_id:input.session_id,status:'cancelled'}));return;}
+  posts.push(input);
+  if(fail){response.writeHead(503);response.end('Controlled failure');return;}
+  response.end(JSON.stringify(wireResult(result('Family retry pinned'),input.session_id)));
+ },family);
+ const {page}=studio;
+ try{
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption(family);await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Family default retry');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+  assert.equal(posts[0].model,'new');defaultModel='old';fail=false;await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  assert.equal(await page.locator('#model-short-name').textContent(),'GPT-5.6-Luna: off');
+  await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Family retry pinned',{exact:true}).waitFor();
+  assert.equal(posts[1].model,'new');assert.equal(posts[1].reasoning_effort,'off');
+  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')));
+  assert.equal(saved.messages[0].requested.family,'gpt-luna');assert.equal(saved.messages[0].selectionSnapshot.model,'new');assert.equal(saved.messages[1].selectionSnapshot.model,'new');
+  await page.locator('.assistant summary').click();assert.match(await page.locator('.assistant .metadata-grid').textContent(),/Resolved catalog modelnew/);
+ }finally{await studio.close();}
 });

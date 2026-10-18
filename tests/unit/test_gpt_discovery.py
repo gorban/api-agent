@@ -215,3 +215,12 @@ def test_enclosing_deadline_and_cancellation_close_response_without_retry():
                 await task
             assert not client.is_closed
     asyncio.run(run())
+
+
+def test_luna_56_catalog_api_keeps_exact_capability_boundary():
+    rows, requests = run_discovery(httpx.Response(200, json={'data': [
+        {'id': 'gpt-5.6-luna'}, {'id': 'gpt-5.6-luna-2026-10-18'}]}))
+    assert rows[0].selected_llm == 'gpt-5.6-luna'
+    assert rows[0].reasoning_efforts == ('off', 'low', 'medium', 'high')
+    assert rows[1].reasoning_efforts is None
+    assert [(sent.method, str(sent.url)) for sent in requests] == [('GET', BASE + '/models')]

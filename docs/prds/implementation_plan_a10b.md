@@ -28,3 +28,6 @@
 ## Verification
 
 [Detailed capture and disposal evidence](implementation_plan_a10b1.md) preserves prior checkpoints and their scope. Current repairs require renewed controlled-process, mutation, coverage and installed-package verification.
+
+Stored cleanup-handle progress and kernel lease acknowledgement are specified in
+[stored cleanup receipt progress](implementation_plan_a10b2.md).

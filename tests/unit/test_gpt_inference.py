@@ -572,3 +572,18 @@ def test_native_refusal_is_a_safe_accounted_outcome(responses):
     assert value.outcome == 'refused'
     assert value.payload.content[0].text == 'Cannot comply'
     assert value.usage.input_tokens == 3
+
+
+@pytest.mark.parametrize('mode', ('responses', 'completions'))
+def test_luna_56_off_native_transport(mode):
+    req = LLMRequest('gpt-5.6-luna', CompletionRequest(
+        (Message('user', (TextContent('A bounded task'),)),),
+        generation=GenerationOptions(reasoning_effort='off')))
+    value, calls = run(httpx.Response(200, json=result(mode == 'responses')), api_mode=mode, req=req)
+    assert value.payload.content[0].text == 'Ok'
+    assert len(calls) == 1
+    body = json.loads(calls[0].content)
+    assert body['model'] == 'gpt-5.6-luna'
+    expected = {'reasoning': {'effort': 'none'}} if mode == 'responses' else {'reasoning_effort': 'none'}
+    assert {key: body[key] for key in ('reasoning', 'reasoning_effort') if key in body} == expected
+    assert str(calls[0].url) == BASE + ('/responses' if mode == 'responses' else '/chat/completions')

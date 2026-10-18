@@ -205,6 +205,11 @@ class _ReceiptRetention:
         # successors. A cycle needs no second invocation of that same body.
         if self in ancestors:
             return
+        # A stored parent can keep reporting the same replacement until its
+        # child acknowledges. Advance that known duty before calling it again.
+        if not self.disposed:
+            for state in tuple(self.successors):
+                await state._retry((), {}, ancestors | {self})
         if not self.disposed:
             try:
                 await self.original_retry(*args, **kwargs)

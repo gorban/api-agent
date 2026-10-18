@@ -1,6 +1,6 @@
 import {renderMarkdown} from './markdown.js';
 import {requestPayload, readResponse, readJSONResponse, supportsContinuation, submitContinuation} from './transport.js';
-import {normalizeCatalog, resolveSelection} from './catalog.js';
+import {normalizeCatalog, resolveSelection, modelGroups} from './catalog.js';
 import {beginReply, takeReply, customAnswer} from './reply.js';
 const $ = id => document.getElementById(id);
 const REQUEST_TIMEOUT_MS = 150000;
@@ -10,8 +10,9 @@ const fresh = () => ({session: crypto.randomUUID(), messages: [], draft: '', rep
 let state = fresh(), active = null, catalog = [], catalogStatus = '', apiOrigin, apiHeaders = Object.freeze({}), settingsOpener;
 const field = value => typeof value === 'string' && value.length < 1000;
 const questionValid = q => !q || (field(q.id) && typeof q.question === 'string' && ['clarification', 'approval'].includes(q.kind) && Array.isArray(q.options) && q.options.every(x => q.kind === 'clarification' ? typeof x === 'string' : x && field(x.id) && typeof x.label === 'string'));
-const settingsValid = x => x && ['model', 'version', 'reasoning'].every(k => field(x[k]));
-const valid = x => x && field(x.session) && typeof x.draft === 'string' && settingsValid(x.settings) && Array.isArray(x.messages) && x.messages.every(m => m && field(m.id) && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string' && settingsValid(m.requested) && questionValid(m.question));
+const settingsValid = x => x && ['model', 'version', 'reasoning'].every(k => field(x[k])) && (x.family === undefined || (field(x.family) && [...x.family].length <= 200 && !/[\p{C}\p{Z}]/u.test(x.family.replaceAll(' ','')) && !(x.family && x.model)));
+const snapshotValid = x => settingsValid(x) && !!x.model;
+const valid = x => x && field(x.session) && typeof x.draft === 'string' && settingsValid(x.settings) && Array.isArray(x.messages) && x.messages.every(m => m && field(m.id) && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string' && settingsValid(m.requested) && (!m.selectionSnapshot || snapshotValid(m.selectionSnapshot)) && (!m.requested.family || !!m.selectionSnapshot) && questionValid(m.question));
 function storageFailure() { $('storage-note').textContent = 'Not saved in this browser'; $('storage-warning').textContent = 'Browser storage is unavailable. Your conversation is kept until this page closes.'; $('storage-warning').hidden = false; }
 try {
   const raw = localStorage.getItem(KEY);
@@ -39,7 +40,8 @@ function responseDetails(m) {
   const grid = el('dl', 'metadata-grid');
   const display = (value, fallback) => typeof value === 'string' && value ? value : fallback;
   for (const [key, value] of [
-    ['Requested model', display(m.requested.model, 'Provider default')],
+    ['Requested model', display(m.requested.family || m.requested.model, 'Provider default')],
+    ['Resolved catalog model', display(m.selectionSnapshot?.model || m.requested.model, 'Not recorded')],
     ['Reported model', display(m.actual?.actual_model || m.actual?.model, 'Not reported')],
     ['Requested version', display(m.requested.version, 'Provider default')],
     ['Reported version', display(m.actual?.version, 'Not reported')],
@@ -81,7 +83,7 @@ function submitReply(text, optionId) {
     return;
   }
   const message = state.messages.find(m => m.id === state.reply?.messageId);
-  if (!message || !resolveSelection(catalog, message.requested).valid) { announce('The question’s model selection is no longer available.'); return; }
+  if (!message || !resolveSelection(catalog, message.selectionSnapshot || message.requested).valid) { announce('The question’s model selection is no longer available.'); return; }
   const reply = takeReply(state, text, optionId);
   if (!reply) { announce('Choose an explicit approval option.'); return; }
   $('prompt').value = state.draft;
@@ -144,11 +146,12 @@ async function run(text, requested, retryMessage, reply) {
   const messages = history.filter(m => !m.error && !m.pending).map(({role, text}) => ({role, text}));
   const controller = new AbortController();
   const request = {controller, sessionId: crypto.randomUUID(), heartbeat: null, stopped: false}; active = request;
-  if (!retryMessage) state.messages.push({id: crypto.randomUUID(), role: 'user', text, requested: {...requested}});
+  const snapshot = {...requested, family: '', model: selection.selection.selected_llm, version: selection.selection.version || requested.version};
+  if (!retryMessage) state.messages.push({id: crypto.randomUUID(), role: 'user', text, requested: {...requested}, selectionSnapshot: {...snapshot}});
   const m = retryMessage || {id: crypto.randomUUID(), role: 'assistant', request: text, requested: {...requested}};
   if (!retryMessage) {
     m.requestReply = reply ? structuredClone(reply) : null;
-    m.selectionSnapshot = {...requested, model: selection.selection.selected_llm, version: selection.selection.version || requested.version};
+    m.selectionSnapshot = {...snapshot};
   }
   Object.assign(m, {text: '', actual: {}, error: '', pending: true});
   if (!retryMessage) state.messages.push(m);
@@ -193,26 +196,29 @@ async function run(text, requested, retryMessage, reply) {
     render(); follow(); save();
   }
 }
-function fillSelect(id, entries, selected) {
+function fillSelect(id, entries, selected, placeholder = 'Provider default') {
   const select = $(id); select.replaceChildren();
-  if (id !== 'model') select.add(new Option('Provider default', ''));
+  if (id !== 'model') select.add(new Option(placeholder, ''));
   for (const item of entries) select.add(new Option(item.name || item.id, item.id));
   if (selected && !entries.some(x => x.id === selected)) select.add(new Option(selected + ' (saved selection)', selected));
   select.value = selected;
 }
 function syncSettings() {
-  const models = [...new Map(catalog.map(x => [x.selected_llm, {id: x.selected_llm, name: x.display_name}])).values()];
-  const model = state.settings.model || catalog.defaultSelection || '';
-  fillSelect('model', models, model);
-  const entries = catalog.filter(x => x.selected_llm === model);
-  fillSelect('version', entries.filter(x => x.version).map(x => ({id: x.version})), state.settings.version);
-  const selected = entries.find(x => x.version === state.settings.version) || entries[0];
-  fillSelect('reasoning', (selected?.reasoning_efforts || []).map(id => ({id})), state.settings.reasoning);
-  const label = selected?.display_name || state.settings.model || 'Provider default';
-  $('backend-default').textContent = state.settings.model ? 'Use backend default' : 'Keep selected model';
-  $('backend-default').disabled = !model;
-  $('model-short-name').textContent = label + (state.settings.reasoning ? ': ' + state.settings.reasoning : '');
+  const groups = modelGroups(catalog);
+  const concrete = state.settings.model || (!state.settings.family && catalog.defaultSelection);
+  const group = groups.find(item => state.settings.family ? item.family === state.settings.family : item.rows.some(row => row.selected_llm === concrete));
+  fillSelect('model', groups.map(item => ({id: item.value, name: item.name})), group?.value || state.settings.model || state.settings.family || '');
+  const entries = group?.rows || [];
   const selection = resolveSelection(catalog, state.settings);
+  const grouped = group?.family !== null && group !== undefined;
+  const versions = grouped ? entries.map(row => ({id: row.selected_llm, name: (row.version || 'Unknown version') + (entries.filter(other => other.version === row.version).length > 1 || !row.version ? ' — ' + row.selected_llm : '')})) : entries.filter(row => row.version).map(row => ({id: row.version}));
+  const unresolvedVersion = grouped && state.settings.version && (!selection.selection || selection.selection.version !== state.settings.version);
+  fillSelect('version', versions, unresolvedVersion ? '' : grouped ? (state.settings.model ? state.settings.model : state.settings.version && selection.selection.selected_llm) || '' : state.settings.version, unresolvedVersion ? 'Unresolved version: ' + state.settings.version : 'Provider default');
+  fillSelect('reasoning', (selection.selection?.reasoning_efforts || []).map(id => ({id})), state.settings.reasoning);
+  const label = selection.selection?.display_name || group?.name || state.settings.family || state.settings.model || 'Provider default';
+  $('backend-default').textContent = state.settings.model || state.settings.family ? 'Use backend default' : 'Keep selected model';
+  $('backend-default').disabled = !$('model').value;
+  $('model-short-name').textContent = label + (state.settings.reasoning ? ': ' + state.settings.reasoning : '');
   $('model-status').textContent = catalogStatus || (selection.valid ? '' : selection.error);
 }
 const configSignal = AbortSignal.timeout(5000);
@@ -242,8 +248,8 @@ async function loadModels() {
   finally { $('model-status').dataset.catalogState = 'settled'; }
 }
 $('backend-default').addEventListener('click', () => {
-  if (state.settings.model) state.settings = defaults();
-  else state.settings.model = $('model').value;
+  if (state.settings.model || state.settings.family) state.settings = defaults();
+  else { const selected = resolveSelection(catalog, state.settings).selection; if (selected) state.settings.model = selected.selected_llm; }
   syncSettings(); save();
 });
 $('settings-nav').addEventListener('click', () => { settingsOpener = document.activeElement; $('settings').showModal(); });
@@ -253,7 +259,21 @@ function outsideDialog(event) { const r = $('settings').getBoundingClientRect();
 $('settings').addEventListener('pointerdown', e => { backdropStart = outsideDialog(e); });
 $('settings').addEventListener('click', e => { if (backdropStart && outsideDialog(e)) $('settings').close(); backdropStart = false; });
 $('settings').addEventListener('close', () => settingsOpener?.focus({preventScroll: true}));
-for (const id of ['model', 'version', 'reasoning']) $(id).addEventListener('change', () => { state.settings[id] = $(id).value; if (id === 'model') state.settings.version = ''; if (id !== 'reasoning') state.settings.reasoning = ''; syncSettings(); save(); });
+for (const id of ['model', 'version', 'reasoning']) $(id).addEventListener('change', () => {
+  const groups = modelGroups(catalog);
+  const current = groups.find(group => group.value === $('model').value);
+  if (!current) { syncSettings(); return; }
+  if (id === 'model') {
+    state.settings = current.family === null ? {model: current.rows[0].selected_llm, version: '', reasoning: ''} : {model: '', family: current.family, version: '', reasoning: ''};
+  } else if (id === 'version' && current.family !== null) {
+    const row = current.rows.find(item => item.selected_llm === $('version').value);
+    state.settings = row ? {model: row.selected_llm, version: row.version || '', reasoning: ''} : {model: '', family: current.family, version: '', reasoning: ''};
+  } else {
+    state.settings[id] = $(id).value;
+    if (id !== 'reasoning') state.settings.reasoning = '';
+  }
+  syncSettings(); save();
+});
 $('prompt').value = state.draft;
 $('prompt').addEventListener('input', () => { clearPromptError(); state.draft = $('prompt').value; save(); });
 $('composer').addEventListener('submit', e => {

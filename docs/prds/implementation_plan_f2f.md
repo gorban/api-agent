@@ -1,6 +1,6 @@
 # Reasoning effort and conversation model identity
 
-[LLM requirements](implementation_plan_f.md) · [Included provider](implementation_plan_f2.md) · [Frontend integration](implementation_plan_i2.md)
+[LLM requirements](implementation_plan_f.md) · [Included provider](implementation_plan_f2.md) · [Frontend integration](implementation_plan_i2.md) · [Verified 5.6 capability](implementation_plan_f2f2.md) · [Reasoning comparison](implementation_plan_f2f3.md)
 
 Deliver this contract before integrating the reviewed frontend foundation. Reasoning controls are request semantics, not a promise of hidden reasoning visibility. Existing authentication, inference-spending and acceptance gates remain unchanged.
 
@@ -32,3 +32,27 @@ Deliver this contract before integrating the reviewed frontend foundation. Reaso
 - [ ] Frontend human acceptance is deferred until working Run local or [retained interactive Studio](implementation_plan_i2c2.md) provides a usable backend. Technical review and the accepted automated request do not replace this interaction review.
 
 Delivered generic inference/model request contracts are human-accepted. Frontend controls remain under the existing deferred interactive-review checkpoint; this approval does not waive it.
+
+## Grouped Studio family and version picker
+
+- [ ] Group models only by explicit catalog family metadata. Show one family
+  choice and its advertised versions, retaining separate opaque models when
+  family is unknown. Preserve provider family labels verbatim unless removing
+  an explicitly advertised version from a display label yields that same family
+  (case-insensitively); then retain its display casing, such as `GPT-Luna`.
+- [ ] Keep concrete catalog IDs distinct from labels and family intent. Resolve
+  a family default only through the catalog's configured default within that
+  family; otherwise require an explicit version/ID. Unknown versions remain
+  unknown; duplicate versions must be disambiguated by concrete ID or rejected,
+  never chosen by catalog order. No provider ID parsing or capability inference.
+- [ ] Validate optional saved family intent and reject contradictory family and
+  concrete-ID requests. Existing exact-ID settings, conversations and retries
+  remain compatible without silent migration or model/version substitution.
+  New family-intent messages require an exact-ID snapshot; absent or family-only
+  snapshots cannot be re-resolved against later defaults. At Send pin the exact
+  resolved ID/version for retries and keep requested family
+  intent separate from reported metadata. Picker changes affect future sends only.
+- [ ] Verify real settings clicks, persisted preferences/history, stale versions,
+  default alias changes, opaque/colliding IDs and per-version reasoning against
+  controlled catalogs; exact authored frontend coverage and focused mutations.
+  Provider/wire contracts and sampling qualification remain unchanged.

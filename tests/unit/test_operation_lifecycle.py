@@ -633,33 +633,90 @@ def test_start_failure_before_yield_keeps_pending_runtime_and_lease(rig):
 def test_cancellation_during_cleanup_preserves_body_and_retained_owner(rig,body_error,finish_cleanup):
     runner,events,_=rig
     async def scenario():
+        completion_timeout = runner.timeout
         entered,finish=asyncio.Event(),asyncio.Event()
+        runtime_entered,runtime_finish,released=asyncio.Event(),asyncio.Event(),asyncio.Event()
+        loop = asyncio.get_running_loop()
+        runtime_times = []
+        delayed_finish = None
         class Listener:
             async def start(self,*args): pass
             async def wait_ready(self,*args): pass
             async def stop(self):
                 entered.set()
                 await finish.wait()
-        runner.listener=Listener
-        runner.timeout=.02
+                events.append('listener-stop')
+        class Runtime:
+            async def astart(self): pass
+            async def aclose(self):
+                runtime_times.append(loop.time())
+                runtime_entered.set()
+                await runtime_finish.wait()
+                runtime_times.append(loop.time())
+                events.append('runtime-close')
+        manager_factory = runner.manager
+        def observed_manager(plan,cancelled):
+            manager = manager_factory(plan,cancelled)
+            class ObservedManager:
+                def acquire(self): return manager.acquire()
+                def release(self,*,retain):
+                    manager.release(retain=retain)
+                    loop.call_soon_threadsafe(released.set)
+            return ObservedManager()
+        listener,runtime=Listener(),Runtime()
+        runner.listener=lambda: listener
+        runner.compose_runtime=lambda *args: runtime
+        runner.manager=observed_manager
+        # Only deliberately blocked cleanup is expected to exhaust this budget.
+        if not finish_cleanup: runner.timeout=.02
         primary=ValueError('body')
         async def operation():
             async with runner.open():
                 if body_error: raise primary
         task=asyncio.create_task(operation())
-        await entered.wait()
-        task.cancel()
-        if finish_cleanup: finish.set()
-        with pytest.raises(ValueError if body_error else asyncio.CancelledError) as error:
-            await task
-        if body_error: assert error.value is primary
-        if not finish_cleanup:
-            assert isinstance(error.value.cleanup_pending,CleanupPendingError)
-            assert runner.pending_cleanup is error.value.cleanup_pending
-            assert 'release:False' not in events
+        try:
+            await asyncio.wait_for(entered.wait(),completion_timeout)
+            task.cancel()
+            assert not runtime_entered.is_set() and not released.is_set()
+            if finish_cleanup:
+                finish.set()
+                await asyncio.wait_for(runtime_entered.wait(),completion_timeout)
+                assert not released.is_set()
+                # Deliberately exceed the former 20ms window after actual entry.
+                delayed_finish=loop.call_later(.05,runtime_finish.set)
+                await asyncio.wait_for(released.wait(),completion_timeout)
+                assert runtime_times[1]-runtime_times[0] >= .02
+            with pytest.raises(ValueError if body_error else asyncio.CancelledError) as error:
+                await task
+            if body_error: assert error.value is primary
+            if not finish_cleanup:
+                pending=error.value.cleanup_pending
+                assert isinstance(pending,CleanupPendingError)
+                assert runner.pending_cleanup is pending
+                owner=pending.retry.__self__
+                assert owner.listener is listener and owner.runtime is runtime and owner.lease=='lease'
+                assert not runtime_entered.is_set() and not released.is_set()
+                assert 'release:False' not in events
+                finish.set()
+                runtime_finish.set()
+                # Retry acknowledges completion, rather than another intentional expiry.
+                owner.timeout=completion_timeout
+                await asyncio.wait_for(pending.retry(),completion_timeout)
+            else:
+                assert getattr(primary,'cleanup_pending',None) is None
+            assert runner.pending_cleanup is None
+            assert events.count('listener-stop')==events.count('runtime-close')==events.count('release:False')==1
+        finally:
+            if delayed_finish is not None: delayed_finish.cancel()
             finish.set()
-            await error.value.cleanup_pending.retry()
-        assert events.count('release:False')==1
+            runtime_finish.set()
+            if not task.done(): task.cancel()
+            await asyncio.wait_for(asyncio.gather(task,return_exceptions=True),completion_timeout)
+            if runner.pending_cleanup is not None:
+                pending=runner.pending_cleanup
+                pending.retry.__self__.timeout=completion_timeout
+                await asyncio.wait_for(pending.retry(),completion_timeout)
+        assert not [owned for owned in asyncio.all_tasks() if owned is not asyncio.current_task() and not owned.done()]
     asyncio.run(scenario())
 
 

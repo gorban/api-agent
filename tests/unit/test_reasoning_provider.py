@@ -150,3 +150,33 @@ def test_compatible_catalog_keeps_capability_unknown():
     selection, = _catalog({'data':[{'id':'gpt-6-luna'}]}, False, 'synthetic-token', base_url='https://compatible.example/v1')
     assert selection.reasoning_efforts is None
     assert selection.features == ()
+
+
+@pytest.mark.parametrize('effort', (None, '', 'off', 'low', 'medium', 'high'))
+@pytest.mark.parametrize('mode', ('responses', 'completions'))
+def test_luna_56_official_wire_and_catalog(effort, mode):
+    selection, = _catalog({'data': [{'id': 'gpt-5.6-luna'}]}, False,
+        'synthetic-token', base_url=BASE)
+    assert selection.reasoning_efforts == ('off', 'low', 'medium', 'high')
+    assert selection.features == ('reasoning_effort',)
+    _, body = validate_text_request(base_url=BASE, access_token='synthetic-token',
+        subscription=False, api_mode=mode, request=request(selection.selected_llm, effort))
+    assert body['model'] == 'gpt-5.6-luna'
+    expected = {} if not effort else ({'reasoning': {'effort': 'none' if effort == 'off' else effort}}
+        if mode == 'responses' else {'reasoning_effort': 'none' if effort == 'off' else effort})
+    assert {key: body[key] for key in ('reasoning', 'reasoning_effort') if key in body} == expected
+
+
+@pytest.mark.parametrize('base,model', [
+    (BASE, 'gpt-5.6-luna-2026-10-18'),
+    (BASE, 'gpt-5.6-luna-latest'),
+    ('https://openrouter.ai/api/v1', 'openai/gpt-5.6-luna'),
+    ('https://compatible.example/v1', 'gpt-5.6-luna'),
+])
+def test_luna_56_unverified_routes_and_versions(base, model):
+    selection, = _catalog({'data': [{'id': model}]}, False, 'synthetic-token', base_url=base)
+    assert selection.reasoning_efforts is None
+    assert selection.features == ()
+    with pytest.raises(ProviderAccessError, match='not verified'):
+        reasoning_fields(request(model, 'off'), base_url=base, api_mode='responses')
+    assert reasoning_fields(request(model, ''), base_url=base, api_mode='responses') == {}

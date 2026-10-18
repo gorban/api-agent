@@ -142,15 +142,25 @@ def test_stable_retry_cannot_silently_complete_a_distinct_successor():
     original = CleanupPendingError((object(),), original_retry)
     with locks.suite_lock():
         locks.retain_cleanup_receipt(original)
-    with pytest.raises(CleanupPendingError): asyncio.run(original.retry())
-    with pytest.raises(CleanupPendingError) as pending: asyncio.run(original.retry())
-    assert pending.value is successor and len(original_calls) == 2
-    assert successor_calls == ['attempt']
-    assert_competing_suite_blocked()
-    allow_cleanup = True
-    asyncio.run(original.retry())
-    assert len(original_calls) == 2 and len(successor_calls) == 2
-    assert_competing_suite_allowed()
+    try:
+        with pytest.raises(CleanupPendingError): asyncio.run(original.retry())
+        with pytest.raises(CleanupPendingError) as pending: asyncio.run(original.retry())
+        assert pending.value is successor and len(original_calls) == 1
+        assert successor_calls == ['attempt']
+        assert_competing_suite_blocked()
+        allow_cleanup = True
+        asyncio.run(original.retry())
+        assert len(original_calls) == 1 and len(successor_calls) == 2
+        assert_competing_suite_allowed()
+        asyncio.run(original.retry())
+        asyncio.run(successor.retry())
+        assert len(original_calls) == 1 and len(successor_calls) == 2
+    finally:
+        allow_cleanup = True
+        asyncio.run(successor.retry())
+        asyncio.run(original.retry())
+        assert_competing_suite_allowed()
+
 
 
 @pytest.mark.parametrize('failed_retries', [1, 3])
