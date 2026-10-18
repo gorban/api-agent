@@ -61,7 +61,7 @@ parent requirements.
 
 ## Acceptance and limits
 
-- [ ] Independent review, focused mutation controls and exact applicable unit
+- [x] Independent review, focused mutation controls and exact applicable unit
   line/branch coverage; installed-resource and public-boundary gates.
 - [ ] Human acceptance with two coordinated workbenches and retained data after
   an explicitly approved real service stop/restart.
