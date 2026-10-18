@@ -78,7 +78,7 @@ denies new requests without losing the disposal duty.
   publication remains unavailable. Original artifacts and test prompt counts
   stay frozen, and end-inspection closes original workers and listeners.
   These controls isolate history/cache state.
-- [ ] Independent review, applicable exact coverage and package/public-boundary
+- [x] Independent review, applicable exact coverage and package/public-boundary
   gates cover the joined implementation.
 - [ ] Human frontend acceptance covers idle pauses, composer/history, Stop/retry,
   themes, clarifications and metadata with the retained backend.
