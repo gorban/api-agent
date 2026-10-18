@@ -293,7 +293,12 @@
       },
       "ports": [
         "127.0.0.1:4318:4318",
-        "127.0.0.1:16686:16686"
+        "127.0.0.1:${SA_JAEGER_VIEWER_PORT:?controlled local development value required}:16686"
+      ],
+      "command": ["--config", "/etc/jaeger/config.json"],
+      "volumes": [
+        "jaeger-badger:/tmp",
+        "${SA_JAEGER_CONFIG:?controlled local development value required}:/etc/jaeger/config.json:ro,z"
       ]
     },
     "localstack": {
@@ -328,6 +333,13 @@
     }
   },
   "volumes": {
+    "jaeger-badger": {
+      "labels": {
+        "api-agent.managed": "true",
+        "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
+        "api-agent.profile": "otel"
+      }
+    },
     "langfuse-postgres": {
       "labels": {
         "api-agent.managed": "true",

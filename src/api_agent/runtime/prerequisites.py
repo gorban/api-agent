@@ -123,8 +123,10 @@ def _check(deadline, cancelled, now):
 
 
 def run_command(command, *, environment, directory, deadline, cancelled,
-                now=time.monotonic):
+                now=time.monotonic, combine_output=False, output_scrubber=None, output_limit=None):
     """Bound combined output while running; always reap the owned process group."""
+    if output_limit is not None and (type(output_limit) is not int or output_limit < 256):
+        raise ValueError('Invalid combined output byte limit')
     captured = {'stdout': bytearray(), 'stderr': bytearray()}
     totals = {'stdout': 0, 'stderr': 0}
     process = None
@@ -132,14 +134,15 @@ def run_command(command, *, environment, directory, deadline, cancelled,
     def evidence():
         from api_agent.testing.diagnostics import CredentialScrubber, scrub_command
         original_length = len(shlex.join(str(part) for part in command))
-        command_text = shlex.join(scrub_command(command, environment))
+        scrubber = output_scrubber if output_scrubber is not None else CredentialScrubber(environment)
+        safe_arguments = tuple(scrubber(str(part)) for part in command)
+        command_text = shlex.join(scrub_command(safe_arguments, environment))
         omitted = max(0, original_length - 4096)
         command_text = command_text[:4096]
         if omitted:
             command_text += f' [truncated: {omitted} command characters omitted]'
         status = process.returncode if process is not None else None
         lines = [f'Command: {command_text}', f'Exit code: {status if status is not None else "unavailable"}']
-        scrubber = CredentialScrubber(environment)
         for stream in ('stdout', 'stderr'):
             # Keep the complete bounded capture until scrubbing so a registered
             # value spanning reads or the tail boundary cannot expose its suffix.
@@ -190,6 +193,20 @@ def run_command(command, *, environment, directory, deadline, cancelled,
                     stdout.append(chunk)
         if process.returncode:
             raise PrerequisiteError(f'Prerequisite command failed (exit {process.returncode}).')
+        if combine_output:
+            from api_agent.testing.diagnostics import CredentialScrubber
+            scrubber = output_scrubber if output_scrubber is not None else CredentialScrubber(environment)
+            safe_streams = {stream: scrubber.capture(captured[stream]) for stream in ('stdout', 'stderr')}
+            if output_limit is not None:
+                # Keep both origins visible even when a single line is huge.
+                # Scrubbing must precede every cut, including UTF-8 boundaries.
+                allowance = (output_limit - len('stdout:\n\n\nstderr:\n')) // 2
+                marker = '[Earlier output omitted]\n'
+                for stream, text in safe_streams.items():
+                    data = text.encode('utf-8')
+                    if len(data) > allowance:
+                        safe_streams[stream] = marker + data[-(allowance - len(marker)):].decode('utf-8', errors='ignore')
+            return '\n\n'.join(f'{stream}:\n{safe_streams[stream]}' for stream in ('stdout', 'stderr'))
         return b''.join(stdout).decode('utf-8', errors='replace')
     except BaseException as error:
         primary_error = error
@@ -208,85 +225,85 @@ def run_command(command, *, environment, directory, deadline, cancelled,
             cleanup.__cause__ = error
             interruption = (primary_error if primary_error is not None and not isinstance(primary_error, Exception)
                 else error if not isinstance(error, Exception) else None)
+            target = interruption if interruption is not None else cleanup
             if interruption is not None:
                 prior_causes = (primary_error,) if primary_error is not None and primary_error is not interruption else ()
                 interruption.diagnostic_errors = (*getattr(interruption, 'diagnostic_errors', ()), *prior_causes, cleanup)
-                interruption.local_details = evidence()
-                from api_agent.providers.control import CleanupPendingError
-                from api_agent.testing.suite_lock import _cleanup_receipts
-                duties = {}
-                successor_chains = {}
-                process_pending = not disposal_complete(process)
-                def add_duties(failure):
-                    added = []
-                    # Aggregate diagnostic attachment must not erase the original
-                    # successor chain used to decide whether a duty was replaced.
-                    if id(failure) not in successor_chains or getattr(failure, 'cleanup_pending', None) is not receipt:
-                        successor_chains[id(failure)] = (failure, tuple(_cleanup_receipts(failure)))
-                    for duty in successor_chains[id(failure)][1]:
-                        if duty is not receipt:
-                            if id(duty) not in duties:
-                                duties[id(duty)] = [duty, True]
-                            added.append(duty)
-                    receipt.receipts = tuple(state[0] for state in duties.values())
-                    return added
-                def update_owners():
-                    owners = [owner for duty, pending in duties.values() if pending for owner in duty.owners]
-                    if process_pending:
-                        owners.append(process)
-                    receipt.owners = tuple({id(owner): owner for owner in owners}.values())
-                retry_lock = asyncio.Lock()
-                async def retry_cleanup():
-                    # Cancellation waits for owned offloads to settle before this
-                    # lock admits a successor retry of the same receipt.
+            target.local_details = evidence()
+            from api_agent.providers.control import CleanupPendingError
+            from api_agent.testing.suite_lock import _cleanup_receipts
+            duties = {}
+            successor_chains = {}
+            process_pending = not disposal_complete(process)
+            def add_duties(failure):
+                added = []
+                # Aggregate diagnostic attachment must not erase the original
+                # successor chain used to decide whether a duty was replaced.
+                if id(failure) not in successor_chains or getattr(failure, 'cleanup_pending', None) is not receipt:
+                    successor_chains[id(failure)] = (failure, tuple(_cleanup_receipts(failure)))
+                for duty in successor_chains[id(failure)][1]:
+                    if duty is not receipt:
+                        if id(duty) not in duties:
+                            duties[id(duty)] = [duty, True]
+                        added.append(duty)
+                receipt.receipts = tuple(state[0] for state in duties.values())
+                return added
+            def update_owners():
+                owners = [owner for duty, pending in duties.values() if pending for owner in duty.owners]
+                if process_pending:
+                    owners.append(process)
+                receipt.owners = tuple({id(owner): owner for owner in owners}.values())
+            retry_lock = asyncio.Lock()
+            async def retry_cleanup():
+                # Cancellation waits for owned offloads to settle before this
+                # lock admits a successor retry of the same receipt.
+                try:
+                    async with retry_lock:
+                        await retry_owned_cleanup()
+                except BaseException as retry_error:
+                    retry_error.cleanup_pending = receipt
+                    raise
+            async def retry_owned_cleanup():
+                from api_agent.runtime.tasks import offload
+                nonlocal process_pending
+                failures = []
+                for state in tuple(duties.values()):
+                    duty, pending = state
+                    if not pending:
+                        continue
                     try:
-                        async with retry_lock:
-                            await retry_owned_cleanup()
+                        await duty.retry()
+                        state[1] = False
                     except BaseException as retry_error:
-                        retry_error.cleanup_pending = receipt
-                        raise
-                async def retry_owned_cleanup():
-                    from api_agent.runtime.tasks import offload
-                    nonlocal process_pending
-                    failures = []
-                    for state in tuple(duties.values()):
-                        duty, pending = state
-                        if not pending:
-                            continue
-                        try:
-                            await duty.retry()
+                        successors = add_duties(retry_error)
+                        if successors and all(successor is not duty for successor in successors):
                             state[1] = False
-                        except BaseException as retry_error:
-                            successors = add_duties(retry_error)
-                            if successors and all(successor is not duty for successor in successors):
-                                state[1] = False
-                            retry_error.cleanup_pending = receipt
-                            failures.append(retry_error)
-                    if process_pending and disposal_complete(process):
+                        retry_error.cleanup_pending = receipt
+                        failures.append(retry_error)
+                if process_pending and disposal_complete(process):
+                    process_pending = False
+                if process_pending:
+                    try:
+                        await offload(finalize, process)
                         process_pending = False
-                    if process_pending:
-                        try:
-                            await offload(finalize, process)
+                    except BaseException as retry_error:
+                        successors = add_duties(retry_error)
+                        if disposal_complete(process) or successors:
                             process_pending = False
-                        except BaseException as retry_error:
-                            successors = add_duties(retry_error)
-                            if disposal_complete(process) or successors:
-                                process_pending = False
-                            retry_error.cleanup_pending = receipt
-                            failures.append(retry_error)
-                    update_owners()
-                    if failures:
-                        selected = next((failure for failure in failures if not isinstance(failure, Exception)), failures[0])
-                        secondary = tuple(failure for failure in failures if failure is not selected)
-                        selected.diagnostic_errors = (*getattr(selected, 'diagnostic_errors', ()), *secondary)
-                        raise selected
-                receipt = CleanupPendingError((), retry_cleanup)
-                add_duties(primary_error)
-                add_duties(error)
+                        retry_error.cleanup_pending = receipt
+                        failures.append(retry_error)
                 update_owners()
-                interruption.cleanup_pending = receipt
-                raise interruption
-            raise cleanup from error
+                if failures:
+                    selected = next((failure for failure in failures if not isinstance(failure, Exception)), failures[0])
+                    secondary = tuple(failure for failure in failures if failure is not selected)
+                    selected.diagnostic_errors = (*getattr(selected, 'diagnostic_errors', ()), *secondary)
+                    raise selected
+            receipt = CleanupPendingError((), retry_cleanup)
+            add_duties(primary_error)
+            add_duties(error)
+            update_owners()
+            target.cleanup_pending = receipt
+            raise target
         finally:
             if primary_error is not None:
                 primary_error.local_details = evidence()
@@ -462,8 +479,9 @@ class PrerequisiteManager:
         self.timeout, self.now, self.sleep, self.identity = deadline_seconds, now, sleep, identity
         document = json.loads(plan.assets['compose.json'])
         self.specs = {name: _interpolate(document['services'][name], self.environment) for name in plan.services}
-        fingerprint_environment = {**self.environment, 'SA_LOCALSTACK_READY_HOOK':
-            'sha256:' + self.environment['SA_LOCALSTACK_READY_DIGEST']}
+        fingerprint_environment = {**self.environment,
+            'SA_LOCALSTACK_READY_HOOK': 'sha256:' + self.environment['SA_LOCALSTACK_READY_DIGEST'],
+            'SA_JAEGER_CONFIG': 'sha256:' + sha256(plan.assets['jaeger-config.json']).hexdigest()}
         self.fingerprints = {name: sha256(json.dumps(_interpolate(document['services'][name],
             fingerprint_environment), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
                              for name, spec in self.specs.items()}
@@ -558,6 +576,52 @@ class PrerequisiteManager:
                 raise ValueError()
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
             raise PrerequisiteError('Reporting storage ownership or captured assets could not be verified.') from error
+
+    def verify_jaeger_storage(self, identifier, deadline, *, cleanup=False):
+        """Adopt only the owned immutable config bind and scoped Badger volume."""
+        try:
+            records = json.loads(self._command((self.plan.command[0], 'inspect', identifier), deadline,
+                                               cleanup=cleanup))
+            record, = records
+            if record['Id'] != identifier:
+                raise ValueError()
+            mounts = record['Mounts']
+            if (not isinstance(mounts, list) or len(mounts) != 2
+                    or {item['Destination'] for item in mounts} != {'/etc/jaeger/config.json', '/tmp'}):
+                raise ValueError()
+            bind, = [item for item in mounts if item['Destination'] == '/etc/jaeger/config.json']
+            source = Path(bind['Source'])
+            parent = source.parent
+            if (bind['Type'] != 'bind' or bind.get('RW') is not False
+                    or source.name != 'jaeger-config.json' or not parent.is_relative_to(self.directory)):
+                raise ValueError()
+            inside_count = len(parent.relative_to(self.directory).parts) + 1
+            for directory in (parent, *parent.parents)[:inside_count]:
+                info = directory.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o022):
+                    raise ValueError()
+            for name, expected in self.plan.assets.items():
+                path = parent / name
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                            or info.st_mode & 0o022 or info.st_size > len(expected)
+                            or stream.read(len(expected) + 1) != expected):
+                        raise ValueError()
+            volume, = [item for item in mounts if item['Destination'] == '/tmp']
+            name = self.scope.project + '_jaeger-badger'
+            if (volume['Type'] != 'volume' or volume.get('Name') != name
+                    or volume.get('RW') is not True):
+                raise ValueError()
+            actual, = json.loads(self._command((self.plan.command[0], 'volume', 'inspect', name), deadline,
+                                               cleanup=cleanup))
+            if (actual['Name'] != name or any(actual['Labels'].get(key) != value
+                    for key, value in self.scope.labels('otel').items())):
+                raise ValueError()
+        except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
+            raise PrerequisiteError('Jaeger storage ownership or captured assets could not be verified.') from error
 
     def _verified_digest_image(self, expected, actual_id, deadline, *, cleanup=False):
         """Verify a container's immutable image against the locally resolved pin."""
@@ -660,6 +724,8 @@ class PrerequisiteManager:
                     or (reporting_directory is None and any(not item.running for item in initial.values()))):
                 raise PrerequisiteError('Registered reporting container changed or stopped; no restart was attempted.')
             compatible = self._compatible(initial, deadline, allow_stopped=True)
+            if 'jaeger' in compatible:
+                self.verify_jaeger_storage(compatible['jaeger'].id, deadline)
             if reporting_directory is not None:
                 if set(compatible) != {'localstack'}:
                     raise PrerequisiteError('Registered reporting service changed; no restart was attempted.')
@@ -690,7 +756,8 @@ class PrerequisiteManager:
                     self.snapshot_directory = snapshot
                     command, environment = snapshot_compose(self.plan, snapshot)
                     self.environment = MappingProxyType({**self.environment,
-                        'SA_LOCALSTACK_READY_HOOK': environment['SA_LOCALSTACK_READY_HOOK']})
+                        'SA_LOCALSTACK_READY_HOOK': environment['SA_LOCALSTACK_READY_HOOK'],
+                        'SA_JAEGER_CONFIG': environment['SA_JAEGER_CONFIG']})
                     self._command((*command, '-f', str(override), 'up', '-d',
                         '--no-recreate', *missing), deadline)
                 while True:
@@ -707,6 +774,8 @@ class PrerequisiteManager:
                             and all(self.probe(profile, min(1, max(.001, deadline - self.now())),
                                     self.environment) for profile in self.plan.profiles)):
                         _check(deadline, self.cancelled, self.now)
+                        if 'jaeger' in current:
+                            self.verify_jaeger_storage(current['jaeger'].id, deadline)
                         if 'localstack' in current and reporting_directory is None:
                             self._command((self.plan.command[0], 'exec', current['localstack'].id,
                                 '/bin/sh', '/etc/localstack/init/ready.d/10-api-agent-s3.sh'), deadline)

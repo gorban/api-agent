@@ -136,7 +136,7 @@ def test_validation_never_starts_engine_and_discards_secrets():
         return SimpleNamespace(returncode=0, stdout='private', stderr='private')
     assert validate_compose(plan, runner=run)
     assert calls[0][0][-2:] == ('config', '--quiet')
-    assert {k: v for k, v in calls[0][1]['env'].items() if k != 'SA_LOCALSTACK_READY_HOOK'} == {k: v for k, v in plan.environment.items() if k != 'SA_LOCALSTACK_READY_HOOK'}
+    assert {k: v for k, v in calls[0][1]['env'].items() if k not in {'SA_LOCALSTACK_READY_HOOK', 'SA_JAEGER_CONFIG'}} == {k: v for k, v in plan.environment.items() if k not in {'SA_LOCALSTACK_READY_HOOK', 'SA_JAEGER_CONFIG'}}
     assert calls[0][1]['capture_output'] is True
     assert not validate_compose(plan_compose({}, Scope()), runner=run)
     assert len(calls) == 1
@@ -161,7 +161,7 @@ def test_installed_compose_assets_are_found_without_cwd(tmp_path, monkeypatch):
     module.parent.mkdir(parents=True)
     assets.mkdir(parents=True)
     module.write_text('# installed module')
-    for name in ('compose.json', 'empty.env', 'localstack-ready.sh'):
+    for name in ('compose.json', 'empty.env', 'localstack-ready.sh', 'jaeger-config.json'):
         (assets / name).write_text((source_plan.directory / name).read_text())
     unrelated = tmp_path / 'unrelated'
     unrelated.mkdir()
@@ -370,7 +370,7 @@ def test_localstack_readonly_hook_mount_and_configuration_contract():
         mount = {'type': 'bind', 'source': '/private',
                  'target': '/etc/localstack/init/ready.d/10-api-agent-s3.sh', **change}
         altered['services'][name]['volumes'] = [mount]
-        with pytest.raises(ComposeError, match='controlled LocalStack hook'):
+        with pytest.raises(ComposeError, match='controlled LocalStack hook' if name == 'localstack' else 'Jaeger requires'):
             validate_document(altered, Scope(), plan.profiles)
 
 

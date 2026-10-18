@@ -349,7 +349,7 @@ def test_history_ignores_uncommitted_directories(tmp_path, run):
 def test_history_rejects_symlinked_run_child(tmp_path, run):
     manifest, files, _ = run
     directory = save(tmp_path, manifest, files)
-    target = directory.with_name('stored-run')
+    target = tmp_path / 'stored-run'
     directory.rename(target)
     directory.symlink_to(target, target_is_directory=True)
 

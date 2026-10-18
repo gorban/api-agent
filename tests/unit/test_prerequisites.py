@@ -3,13 +3,15 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 
 import pytest
 
-from api_agent.runtime.compose import plan_compose
+from api_agent.runtime.compose import plan_compose, snapshot_compose
 from api_agent.runtime.ownership import StackScope
 import api_agent.runtime.prerequisites as p
 
@@ -32,6 +34,7 @@ class Engine:
         self.fail_stop = False
         self.fail_hook = False
         self.image_inspections = {}
+        self.volume_labels = None
 
     def add(self, name, *, fingerprint=None, image=None, image_id=None, running=True, foreign=False, profile=None):
         self.counter += 1
@@ -45,6 +48,18 @@ class Engine:
         record = {'Id': identifier, 'Config': {'Image': image or owner.specs[name]['image'], 'Labels': labels},
                   'Image': image_id or 'sha256:' + '1' * 64,
                   'State': {'Running': running}}
+        if name == 'jaeger':
+            source = Path(owner.environment['SA_JAEGER_CONFIG'])
+            if not source.is_relative_to(owner.directory):
+                owner.directory.mkdir(parents=True, exist_ok=True)
+                directory = Path(tempfile.mkdtemp(prefix='jaeger-test-assets-', dir=owner.directory))
+                _, captured = snapshot_compose(owner.plan, directory)
+                source = Path(captured['SA_JAEGER_CONFIG'])
+            record['Mounts'] = [
+                {'Type': 'bind', 'Source': str(source), 'Destination': '/etc/jaeger/config.json', 'RW': False},
+                {'Type': 'volume', 'Name': owner.scope.project + '_jaeger-badger',
+                 'Destination': '/tmp', 'RW': True},
+            ]
         if self.health: record['State']['Health'] = {'Status': self.health}
         self.records[identifier] = record
         return identifier
@@ -62,6 +77,9 @@ class Engine:
                 repository = repository[:repository.rfind(':')]
             return json.dumps([{'Id': 'sha256:' + '1' * 64,
                                 'RepoDigests': [repository + '@' + digest]}])
+        if command[1:3] == ('volume', 'inspect'):
+            return json.dumps([{'Name': command[3], 'Labels': self.volume_labels
+                                or self.owner.scope.labels('otel')}])
         if command[1] == 'stop':
             if self.fail_stop: raise p.PrerequisiteError('stop failed')
             for identifier in command[4:]: self.records[identifier]['State']['Running'] = False
@@ -131,6 +149,130 @@ def test_reuse_exact_existing_and_retained_tests(setup):
     assert not any('up' in command for command, _ in engine.commands)
     assert manager.release(retain=True) == ()
     assert engine.records[identifier]['State']['Running']
+
+
+@pytest.mark.parametrize('damage', ['writable_bind', 'foreign_bind', 'shadow_keys',
+                                     'shadow_values', 'shadow_parent', 'wrong_volume',
+                                     'foreign_volume', 'changed_config', 'symlink_config'])
+def test_jaeger_adoption_rejects_untrusted_storage(setup, damage, tmp_path):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier = engine.add('jaeger')
+    mounts = engine.records[identifier]['Mounts']
+    config = Path(mounts[0]['Source'])
+    if damage == 'writable_bind':
+        mounts[0]['RW'] = True
+    elif damage == 'foreign_bind':
+        mounts[0]['Source'] = str(tmp_path / 'foreign' / config.name)
+    elif damage in {'shadow_keys', 'shadow_values', 'shadow_parent'}:
+        target = {'shadow_keys': '/tmp/jaeger/keys', 'shadow_values': '/tmp/jaeger/values',
+                  'shadow_parent': '/tmp/jaeger'}[damage]
+        mounts.append({'Type': 'bind', 'Source': str(tmp_path / 'foreign'),
+                       'Destination': target, 'RW': True})
+    elif damage == 'wrong_volume':
+        mounts[1]['Name'] = 'unrelated-volume'
+    elif damage == 'foreign_volume':
+        engine.volume_labels = {**manager.scope.labels('otel'), 'api-agent.scope': 'f' * 16}
+    elif damage == 'changed_config':
+        config.chmod(0o600)
+        config.write_text('{}')
+        config.chmod(0o444)
+    else:
+        alternate = config.with_name('valid-alternate.json')
+        alternate.write_bytes(config.read_bytes())
+        alternate.chmod(0o444)
+        config.unlink()
+        config.symlink_to(alternate)
+
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+        manager.acquire()
+    assert not any('up' in command for command, _ in engine.commands)
+
+
+def test_jaeger_storage_verification_rejects_mismatched_inspect_identity(setup):
+    create, engine, clock, _, _ = setup
+    manager = create()
+    identifier = engine.add('jaeger')
+    engine.records[identifier]['Id'] = 'f' * 64
+
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+        manager.verify_jaeger_storage(identifier, clock.now() + 30)
+
+
+def test_jaeger_storage_verification_rejects_unsafe_snapshot_ancestor(setup):
+    create, engine, clock, _, _ = setup
+    manager = create()
+    identifier = engine.add('jaeger')
+    directory = Path(engine.records[identifier]['Mounts'][0]['Source']).parent
+    original_mode = directory.stat().st_mode & 0o777
+    try:
+        directory.chmod(0o777)
+        with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+            manager.verify_jaeger_storage(identifier, clock.now() + 30)
+    finally:
+        directory.chmod(original_mode)
+
+
+@pytest.mark.parametrize('depth', [0, 2])
+def test_jaeger_storage_verifies_each_owned_ancestor_through_root(setup, depth):
+    create, engine, clock, _, _ = setup
+    manager = create()
+    identifier = engine.add('jaeger')
+    directory = manager.directory.joinpath(*(['nested'] * depth))
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, content in manager.plan.assets.items():
+        asset = directory / name
+        asset.write_bytes(content)
+        asset.chmod(0o444)
+    engine.records[identifier]['Mounts'][0]['Source'] = str(directory / 'jaeger-config.json')
+
+    manager.verify_jaeger_storage(identifier, clock.now() + 30)
+
+
+@pytest.mark.parametrize('unsafe_level', ['intermediate', 'ownership_root'])
+def test_jaeger_storage_rejects_unsafe_owned_ancestor(setup, unsafe_level):
+    create, engine, clock, _, _ = setup
+    manager = create()
+    identifier = engine.add('jaeger')
+    intermediate = manager.directory / 'intermediate'
+    directory = intermediate / 'snapshot'
+    directory.mkdir(parents=True)
+    for name, content in manager.plan.assets.items():
+        asset = directory / name
+        asset.write_bytes(content)
+        asset.chmod(0o444)
+    engine.records[identifier]['Mounts'][0]['Source'] = str(directory / 'jaeger-config.json')
+    unsafe = intermediate if unsafe_level == 'intermediate' else manager.directory
+    original_mode = unsafe.stat().st_mode & 0o777
+    try:
+        unsafe.chmod(0o777)
+        with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+            manager.verify_jaeger_storage(identifier, clock.now() + 30)
+    finally:
+        unsafe.chmod(original_mode)
+
+
+def test_jaeger_fingerprint_uses_captured_content_independent_of_source_path(setup, tmp_path):
+    _, engine, clock, scope, _ = setup
+    source = plan_compose({}, scope).directory
+    copies = [tmp_path / name for name in ('first', 'second')]
+    for directory in copies:
+        shutil.copytree(source, directory)
+
+    def manager(directory):
+        plan = plan_compose({'TRACE_MODE': 'OTEL'}, scope, compose_directory=directory)
+        return p.PrerequisiteManager(plan, scope, tmp_path / 'ownership', command_runner=engine.run,
+            readiness_probe=lambda *args: True, now=clock.now, sleep=clock.sleep,
+            identity=lambda pid: 'boot:start')
+
+    first, same = (manager(directory) for directory in copies)
+    assert first.environment['SA_JAEGER_CONFIG'] != same.environment['SA_JAEGER_CONFIG']
+    assert first.fingerprints['jaeger'] == same.fingerprints['jaeger']
+
+    config = copies[1] / 'jaeger-config.json'
+    config.write_bytes(config.read_bytes() + b'\n')
+    changed = manager(copies[1])
+    assert changed.fingerprints['jaeger'] != first.fingerprints['jaeger']
 
 
 def test_digest_pin_reuses_normalized_container_only_when_image_identity_matches(setup):
@@ -701,7 +843,7 @@ def test_cross_process_leases_with_real_controlled_fake_cli(tmp_path, child_exit
     state_path, metadata_path = tmp_path / 'fake-engine.json', tmp_path / 'fake-metadata.json'
     state_path.write_text('{}')
     executable = tmp_path / 'fake-engine'
-    script = '''import json,sys
+    script = '''import json,os,sys
 from pathlib import Path
 state_path=Path(STATE_PATH)
 metadata_path=Path(METADATA_PATH)
@@ -714,11 +856,17 @@ elif args[0]=='inspect':
 elif args[0]=='stop':
  for identifier in args[3:]: records[identifier]['State']['Running']=False
  state_path.write_text(json.dumps(records))
+elif args[0]=='volume' and args[1]=='inspect':
+ metadata=json.loads(metadata_path.read_text())
+ labels=metadata['jaeger']['Labels']
+ print(json.dumps([{'Name':args[2],'Labels':{key:labels[key] for key in ('api-agent.managed','api-agent.scope','api-agent.profile')}}]))
 elif args[0]=='compose' and 'up' in args:
  metadata=json.loads(metadata_path.read_text())
  for name in args[args.index('--no-recreate')+1:]:
   identifier=f'{len(records)+1:064x}'
-  records[identifier]={'Id':identifier,'Config':metadata[name],'State':{'Running':True}}
+  records[identifier]={'Id':identifier,'Config':metadata[name],'State':{'Running':True},'Mounts':[
+   {'Type':'bind','Source':os.environ['SA_JAEGER_CONFIG'],'Destination':'/etc/jaeger/config.json','RW':False},
+   {'Type':'volume','Name':args[args.index('--project-name')+1]+'_jaeger-badger','Destination':'/tmp','RW':True}]}
  state_path.write_text(json.dumps(records))
 else:
  sys.exit(9)
@@ -1071,6 +1219,7 @@ def test_execution_uses_reviewed_compose_and_hook_snapshot(setup, tmp_path, chan
         document = json.loads((assets / 'compose.json').read_text())
         document['services']['jaeger']['ports'] = ['0.0.0.0:4318:4318']
         (assets / 'compose.json').write_text(json.dumps(document))
+        (assets / 'jaeger-config.json').write_text('{}')
         (assets / 'localstack-ready.sh').write_text('changed unsafe hook')
         (assets / 'empty.env').write_text('SA_SCOPE=foreign')
     if change_at == 'plan': mutate()
@@ -1089,6 +1238,8 @@ def test_execution_uses_reviewed_compose_and_hook_snapshot(setup, tmp_path, chan
             assert path.read_bytes() == plan.assets['compose.json']
             hook = Path(kwargs['environment']['SA_LOCALSTACK_READY_HOOK'])
             assert hook.read_bytes() == plan.assets['localstack-ready.sh']
+            jaeger = Path(kwargs['environment']['SA_JAEGER_CONFIG'])
+            assert jaeger.read_bytes() == plan.assets['jaeger-config.json']
             assert hook.stat().st_mode & 0o111 == 0o111
             assert Path(command[command.index('--env-file') + 1]).read_bytes() == plan.assets['empty.env']
         return original(command, **kwargs)
@@ -1097,6 +1248,7 @@ def test_execution_uses_reviewed_compose_and_hook_snapshot(setup, tmp_path, chan
     assert observed and manager.fingerprints == fingerprints
     manager.release(retain=True)
     assert Path(manager.environment['SA_LOCALSTACK_READY_HOOK']).read_bytes() == plan.assets['localstack-ready.sh']
+    assert Path(manager.environment['SA_JAEGER_CONFIG']).read_bytes() == plan.assets['jaeger-config.json']
     # A second manager can reuse the same reviewed plan despite a distinct snapshot path.
     second = p.PrerequisiteManager(plan, scope, manager.directory, command_runner=engine.run,
         readiness_probe=lambda *args: True, now=clock.now, sleep=clock.sleep, identity=lambda pid: 'boot:start')

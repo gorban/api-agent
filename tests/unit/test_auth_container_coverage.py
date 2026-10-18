@@ -129,12 +129,13 @@ def test_container_inventory_accepts_scoped_inspect_and_rejects_nonobject(monkey
     runtime = containers.ContainerRuntime('/safe/docker', scope=scope)
     labels = {**scope.labels('otel'), 'com.docker.compose.project': scope.project,
               'com.docker.compose.service': 'jaeger'}
-    record = {'Id': 'abc', 'Name': '/jaeger', 'Config': {'Labels': labels, 'Image': 'trace-image'},
+    identifier = 'a' * 64
+    record = {'Id': identifier, 'Name': '/jaeger', 'Config': {'Labels': labels, 'Image': 'trace-image'},
               'State': {'Running': True, 'Status': 'running'}}
     monkeypatch.setattr(containers, 'session_container_identity', lambda: frozenset())
-    monkeypatch.setattr(runtime, '_run', Mock(side_effect=['abc', json.dumps([record])]))
-    assert runtime.inventory() == (containers.Container('abc', 'jaeger', 'trace-image', 'running'),)
-    monkeypatch.setattr(runtime, '_run', Mock(side_effect=['abc', '[1, 2]']))
+    monkeypatch.setattr(runtime, '_run', Mock(side_effect=[identifier, json.dumps([record])]))
+    assert runtime.inventory() == (containers.Container(identifier, 'jaeger', 'trace-image', 'running'),)
+    monkeypatch.setattr(runtime, '_run', Mock(side_effect=[identifier, '[1, 2]']))
     with pytest.raises(containers.ContainerError, match='invalid engine response'):
         runtime.inventory()
 
@@ -148,11 +149,18 @@ def test_non_posix_wait_timeout_disposes_once(monkeypatch):
     assert process.wait.call_count == 2
 
 
-@pytest.mark.parametrize('record', ['[{"Id":"abc"}]', '[{"Name":"api"}]'])
-def test_container_inventory_requires_id_and_name(monkeypatch, record):
-    runtime = containers.ContainerRuntime('/safe/docker', scope=StackScope('0123456789abcdef'))
+@pytest.mark.parametrize('missing_field', ['Id', 'Name'])
+def test_container_inventory_requires_id_and_name(monkeypatch, missing_field):
+    scope = StackScope('0123456789abcdef')
+    runtime = containers.ContainerRuntime('/safe/docker', scope=scope)
+    labels = {**scope.labels('otel'), 'com.docker.compose.project': scope.project,
+              'com.docker.compose.service': 'jaeger'}
+    identifier = 'a' * 64
+    record = {'Id': identifier, 'Name': '/jaeger', 'Config': {'Labels': labels},
+              'State': {'Running': True, 'Status': 'running'}}
+    del record[missing_field]
     monkeypatch.setattr(containers, 'session_container_identity', lambda: frozenset())
-    monkeypatch.setattr(runtime, '_run', Mock(side_effect=['abc', record]))
+    monkeypatch.setattr(runtime, '_run', Mock(side_effect=[identifier, json.dumps([record])]))
     with pytest.raises(containers.ContainerError, match='invalid engine response'):
         runtime.inventory()
 

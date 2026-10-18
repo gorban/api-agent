@@ -22,6 +22,9 @@ class ComposeError(ValueError):
 
 LOCALSTACK_HOOK_MOUNT = ('${SA_LOCALSTACK_READY_HOOK:?controlled local development value required}'
                         ':/etc/localstack/init/ready.d/10-api-agent-s3.sh:ro,z')
+JAEGER_CONFIG_MOUNT = ('${SA_JAEGER_CONFIG:?controlled local development value required}'
+                       ':/etc/jaeger/config.json:ro,z')
+JAEGER_VOLUMES = ['jaeger-badger:/tmp', JAEGER_CONFIG_MOUNT]
 
 
 class Scope(Protocol):
@@ -67,6 +70,13 @@ def _localstack_port(config):
     port = 4566 if port is None else port
     if type(port) is not int or not 1 <= port <= 65535:
         raise ComposeError('ALLURE_LOCALSTACK_PORT must be a port from 1 to 65535.')
+    return port
+
+
+def _jaeger_viewer_port(config):
+    port = config.get('JAEGER_VIEWER_PORT', 16686)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ComposeError('JAEGER_VIEWER_PORT must be a port from 1 to 65535.')
     return port
 
 
@@ -141,6 +151,10 @@ def validate_document(document, scope, profiles):
     services = document.get('services', {})
     if not services:
         raise ComposeError('Compose services are required.')
+    jaeger = services.get('jaeger', {})
+    if (jaeger.get('command') != ['--config', '/etc/jaeger/config.json']
+            or jaeger.get('volumes') != JAEGER_VOLUMES):
+        raise ComposeError('Jaeger requires its controlled persistent storage and configuration.')
     active = []
     for name, service in services.items():
         if set(service) - {'command', 'depends_on', 'entrypoint', 'environment',
@@ -165,6 +179,8 @@ def validate_document(document, scope, profiles):
                 raise ComposeError('Compose dependency must belong to the same profile.')
         for volume in service.get('volumes', []):
             if name == 'localstack' and volume == LOCALSTACK_HOOK_MOUNT:
+                continue
+            if name == 'jaeger' and volume == JAEGER_CONFIG_MOUNT:
                 continue
             if isinstance(volume, dict):
                 raise ComposeError('Compose bind mounts require the controlled LocalStack hook.')
@@ -207,6 +223,11 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         raise ComposeError('Invalid Compose executable.')
     directory = (Path(compose_directory) if compose_directory else default_compose_directory()).resolve()
     profiles = selected_profiles(config)
+    viewer_port = _jaeger_viewer_port(config)
+    localstack_port = _localstack_port(config)
+    if 'otel' in profiles and (viewer_port == 4318 or
+            ('localstack' in profiles and localstack_port in {4318, viewer_port})):
+        raise ComposeError('Managed Jaeger and LocalStack host ports must not conflict.')
     try:
         compose_bytes = (directory / 'compose.json').read_bytes()
         document = json.loads(compose_bytes)
@@ -225,7 +246,8 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         command += ('--profile', profile)
     environment = {**controlled_engine_environment(engine_environment),
                    **local_development_environment(scope)}
-    environment['SA_LOCALSTACK_PORT'] = str(_localstack_port(config))
+    environment['SA_LOCALSTACK_PORT'] = str(localstack_port)
+    environment['SA_JAEGER_VIEWER_PORT'] = str(viewer_port)
     hook = directory / 'localstack-ready.sh'
     try:
         if hook.is_symlink() or not hook.is_file():
@@ -235,6 +257,23 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         environment['SA_LOCALSTACK_READY_DIGEST'] = sha256(hook_bytes).hexdigest()
     except OSError as error:
         raise ComposeError('Cannot read controlled LocalStack ready hook.') from error
+    jaeger_config = directory / 'jaeger-config.json'
+    try:
+        if jaeger_config.is_symlink() or not jaeger_config.is_file():
+            raise ComposeError('Controlled Jaeger configuration is missing or symlinked.')
+        jaeger_bytes = jaeger_config.read_bytes()
+        parsed_jaeger = json.loads(jaeger_bytes)
+        badger = parsed_jaeger['extensions']['jaeger_storage']['backends']['local_traces']['badger']
+        if (badger['ephemeral'] is not False
+                or badger['directories'] != {'keys': '/tmp/jaeger/keys', 'values': '/tmp/jaeger/values'}
+                or parsed_jaeger['extensions']['jaeger_query']['storage']['traces'] != 'local_traces'
+                or parsed_jaeger['exporters']['jaeger_storage_exporter']['trace_storage'] != 'local_traces'):
+            raise ComposeError('Controlled Jaeger storage must be persistent.')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        if isinstance(error, ComposeError):
+            raise
+        raise ComposeError('Invalid or missing controlled Jaeger configuration.') from error
+    environment['SA_JAEGER_CONFIG'] = str(jaeger_config.resolve())
     bucket = config.get('ALLURE_S3_BUCKET')
     region = config.get('ALLURE_S3_REGION')
     bucket = 'allure-results' if bucket is None else bucket
@@ -257,7 +296,7 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
                 environment['SA_' + key] = value
     return ComposePlan(profiles, services, command, directory, MappingProxyType(environment),
         MappingProxyType({'compose.json': compose_bytes, 'empty.env': empty_bytes,
-                          'localstack-ready.sh': hook_bytes}))
+                          'localstack-ready.sh': hook_bytes, 'jaeger-config.json': jaeger_bytes}))
 
 
 def validate_compose(plan, *, runner=subprocess.run):
@@ -293,6 +332,7 @@ def snapshot_compose(plan, directory):
                     for i, arg in enumerate(command))
     environment = dict(plan.environment)
     environment['SA_LOCALSTACK_READY_HOOK'] = str(directory / 'localstack-ready.sh')
+    environment['SA_JAEGER_CONFIG'] = str(directory / 'jaeger-config.json')
     return command, environment
 
 

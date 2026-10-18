@@ -17,6 +17,7 @@ from api_agent.tui.test_table import TestTable
 from api_agent.tui.search import GroupedUserFooter, SearchBar, SearchInput
 from api_agent.tui.clipboard import ClipboardError, copy_text
 from api_agent.tui.allure import AllureNavigation
+from api_agent.tui.container_management import ContainerManagement
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -27,7 +28,7 @@ MODES = (("run-local", "Run local"), ("unit", "Unit tests w/ coverage"),
          ("integration", "Integration tests"), ("e2e", "E2E tests"),
          ("allure", "Allure serve"), ("deployment-logs", "Deployment logs"),
          ("config-cleanup", "Clear .env configuration"),
-         ("cleanup-containers", "Stop running containers"),
+         ("cleanup-containers", "Container management"),
          ("unattended-auth", "Setup unattended authentication"))
 E2E_WARNING = ("Human acceptance is mandatory to continue with E2E tests. If you are an agent, "
                "decline unless you have first checked with the user and received their explicit "
@@ -848,7 +849,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         await self.app.choose("skip")
 
 
-class ApiAgentApp(AllureNavigation, App[int]):
+class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     @property
     def schema(self):
         return getattr(self.session, "schema", self._initial_schema)
@@ -1370,43 +1371,19 @@ class ApiAgentApp(AllureNavigation, App[int]):
         self.refresh_container_inventory()
 
     def refresh_container_inventory(self):
-        self.run_worker(self._refresh_container_inventory(), group="containers", exclusive=True)
+        self.refresh_managed_containers()
 
     async def _refresh_container_inventory(self):
-        try:
-            self.containers = await asyncio.to_thread(self.container_runtime.inventory)
-            self.container_marked.intersection_update(item.id for item in self.containers)
-            self.container_summary = f"Running containers: {len(self.containers)}"
-        except Exception as error:
-            self.containers = ()
-            self.container_marked.clear()
-            self.container_summary = str(error)
-            if not self.container_summary.startswith("Container"):
-                self.container_summary = "Container inventory unavailable."
-        if self.mode == "cleanup-containers" and isinstance(self.screen, WorkbenchScreen):
-            self.show_containers()
-        elif isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "menu":
-            self.call_after_refresh(self.update_container_menu)
+        await self._refresh_managed_containers()
 
     def update_container_menu(self):
-        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "menu":
-            self.screen.query_one("#body", Static).update(self.container_summary)
-            button = self.screen.query_one("#mode-cleanup-containers", Button)
-            confirmed_empty = self.container_summary == "Running containers: 0"
-            button.label = "No running containers to stop" if confirmed_empty else "Stop running containers"
-            button.disabled = confirmed_empty
+        self.update_managed_container_menu()
 
     def show_containers(self):
-        rows = [(item.id, ("✓" if item.id in self.container_marked else "", item.id, item.name, item.image, item.status)) for item in self.containers]
-        if self.containers:
-            all_selected = all(item.id in self.container_marked for item in self.containers)
-            rows.insert(0, ("container-all", ("✓" if all_selected else "", "All", "", "", "")))
-        self.show("containers", "Stop running containers", self.container_summary +
-                  "\nEnter selects/unselects rows. Stop selected asks for confirmation. Containers and volumes are not removed.",
-                  (("stop-containers", "Stop selected containers (s)"), ("refresh-containers", "Refresh inventory")), rows)
+        self.show_container_management()
 
     def request_container_stop(self):
-        selected = tuple(item for item in self.containers if item.id in self.container_marked)
+        selected = tuple(item for item in self.containers if item.running and item.id in self.container_marked)
         if not selected:
             raise ValueError("Select at least one running container.")
         self.push_screen(StopContainersDialog(selected), lambda yes: self.run_worker(
@@ -1729,6 +1706,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
 
     async def close_reporting_sessions(self):
         try:
+            await self.close_container_logs()
             await self.reporting_sessions.aclose()
         except BaseException as error:
             self.operation_status = 3
@@ -1749,9 +1727,11 @@ class ApiAgentApp(AllureNavigation, App[int]):
             # ownership until its complete subtree has acknowledged disposal.
             if inspection is not None:
                 await inspection.retry()
+            await self.close_container_logs()
             await sessions.aclose()
             self.pending_shutdown_cleanup = None
-        owners = ((inspection,) if inspection is not None else ()) + (sessions,)
+        logs = getattr(self, "container_log_screen", None)
+        owners = ((inspection,) if inspection is not None else ()) + ((logs,) if logs is not None else ()) + (sessions,)
         error = CleanupPendingError(owners, retry)
         error.inspections = getattr(inspection, 'inspections', ())
         error.inspection_group = getattr(inspection, 'inspection_group', self.inspections)
@@ -2165,17 +2145,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
             self.selection.toggle(key)
             self.refresh_rows()
         elif self.screen.kind == "containers":
-            ids = {item.id for item in self.containers}
-            if key == "container-all":
-                self.container_marked = set() if ids <= self.container_marked else ids
-            elif key in ids:
-                self.container_marked.symmetric_difference_update({key})
-            table = self.screen.query_one(DataTable)
-            column = next(iter(table.columns))
-            for item in self.containers:
-                table.update_cell(item.id, column, "✓" if item.id in self.container_marked else "")
-            if ids:
-                table.update_cell("container-all", column, "✓" if ids <= self.container_marked else "")
+            self.toggle_managed_container(key)
 
     def refresh_rows(self):
         if self.screen.kind == "tests" and self.selection is None:
@@ -2240,6 +2210,11 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 self.request_container_stop()
             elif key == "refresh-containers":
                 self.refresh_container_inventory()
+            elif key == "container-logs":
+                self.request_container_logs()
+            elif key == "allure-restore-secondary":
+                if not self._allure_opening:
+                    self.run_worker(self.restore_allure_secondary_history(), group="allure-restore", exclusive=True)
             elif key == "refresh-allure":
                 if not self._allure_opening:
                     self.run_worker(self.show_allure_history(), group="allure-viewer", exclusive=False)
@@ -2325,6 +2300,13 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 await self.confirm_quit()
         except Exception as error:
             self.screen.query_one("#error", Static).update(str(error))
+
+    async def action_quit(self):
+        from .logs import LogScreen
+        if isinstance(self.screen, LogScreen):
+            await self.screen.action_quit_request()
+        else:
+            await super().action_quit()
 
     async def confirm_quit(self):
         self.stop_allure_admission(shutdown=True)

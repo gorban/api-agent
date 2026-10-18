@@ -31,7 +31,7 @@ def test_operation_screens_have_no_container_tab_stops(tmp_path, mode):
                             'test_example.py', 'test_example.py::test_one')
         app = fixture(tmp_path, mode, collector=lambda *args: [identity])
         app.container_runtime.inventory = lambda: (SimpleNamespace(
-            id='owned-container', name='Owned test prerequisite', image='example', status='running'),)
+            id='owned-container', name='Owned test prerequisite', image='example', status='running', running=True),)
         async with app.run_test(size=(75, 22)) as pilot:
             await pilot.pause()
             await app.workers.wait_for_complete()
