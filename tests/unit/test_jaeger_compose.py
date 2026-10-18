@@ -118,6 +118,29 @@ def test_jaeger_rejects_nonpersistent_or_disconnected_storage(tmp_path, mutation
         plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
 
 
+@pytest.mark.parametrize(('section', 'replacement'), [
+    pytest.param('exporters', {'jaeger_storage_exporter': {
+        'trace_storage': 'local_traces',
+        'queue': {'enabled': True, 'num_consumers': 10, 'queue_size': 1000}}}, id='queue'),
+    pytest.param('exporters', {'jaeger_storage_exporter': {'trace_storage': 'local_traces'},
+                               'debug': {}}, id='other_exporter'),
+    pytest.param('exporters', {'jaeger_storage_exporter': {
+        'trace_storage': 'local_traces', 'retry_on_failure': {'enabled': True}}}, id='extra_option'),
+    pytest.param('connectors', {'unreviewed': {}}, id='other_section'),
+])
+def test_jaeger_rejects_storage_exporter_option_drift(tmp_path, section, replacement):
+    source = plan_compose({}, Scope()).directory
+    directory = tmp_path / 'compose'
+    shutil.copytree(source, directory)
+    config = directory / 'jaeger-config.json'
+    document = json.loads(config.read_text())
+    document[section] = replacement
+    config.write_text(json.dumps(document))
+
+    with pytest.raises(ComposeError, match='storage must be persistent'):
+        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+
+
 @pytest.mark.parametrize('damage', ['missing', 'symlink', 'malformed', 'wrong_type'])
 def test_controlled_jaeger_config_must_be_real_valid_file(tmp_path, damage):
     source = plan_compose({}, Scope()).directory
