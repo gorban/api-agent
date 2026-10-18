@@ -121,7 +121,7 @@ class RunStorage:
             os.close(descriptor)
 
     def persist(self, directory, manifest):
-        """Upload all content, then manifest last as the durable commit marker."""
+        """Attempt each destination; commit its manifest only after verified content."""
         source = Path(directory)
         repo, run_id = manifest['repo'], manifest['run_id']
         if (not isinstance(repo, str) or not repo or repo in {'.', '..'} or any(c in repo for c in '/\\\0')
@@ -138,32 +138,40 @@ class RunStorage:
             with ExitStack() as sources:
                 source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 sources.callback(os.close, source_fd)
-                client = self._client()
                 manifest_body = self._read_source('manifest.json', directory_fd=source_fd)
                 if json.loads(manifest_body) != manifest:
                     raise ValueError('Manifest does not match finalized metadata')
-                for name in sorted(names):
-                    body = self._read_source(name, directory_fd=source_fd)
-                    if hashlib.sha256(body).hexdigest() != names[name]:
-                        raise ValueError('Artifact digest mismatch')
-                    self._put_once(self._key(repo, run_id, name), body)
-                self._put_once(self._key(repo, run_id, 'manifest.json'), manifest_body)
+                failed = False
+                try:
+                    for name in sorted(names):
+                        body = self._read_source(name, directory_fd=source_fd)
+                        if hashlib.sha256(body).hexdigest() != names[name]:
+                            raise ValueError('Artifact digest mismatch')
+                        self._put_once(self._key(repo, run_id, name), body)
+                    self._put_once(self._key(repo, run_id, 'manifest.json'), manifest_body)
+                except Exception:
+                    failed = True
                 if self.secondary_directory:
-                    base = self.secondary_directory.resolve()
-                    base.mkdir(parents=True, exist_ok=True)
-                    with ExitStack() as stack:
-                        base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                        stack.callback(os.close, base_fd)
-                        repo_fd = self._open_directory(base_fd, repo)
-                        stack.callback(os.close, repo_fd)
-                        run_fd = self._open_directory(repo_fd, run_id)
-                        stack.callback(os.close, run_fd)
-                        for name in sorted(names):
-                            body = self._read_source(name, directory_fd=source_fd)
-                            if hashlib.sha256(body).hexdigest() != names[name]:
-                                raise StorageError('Could not persist Allure run')
-                            self._copy_once(run_fd, name, body)
-                        self._copy_once(run_fd, 'manifest.json', manifest_body)
+                    try:
+                        base = self.secondary_directory.resolve()
+                        base.mkdir(parents=True, exist_ok=True)
+                        with ExitStack() as stack:
+                            base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                            stack.callback(os.close, base_fd)
+                            repo_fd = self._open_directory(base_fd, repo)
+                            stack.callback(os.close, repo_fd)
+                            run_fd = self._open_directory(repo_fd, run_id)
+                            stack.callback(os.close, run_fd)
+                            for name in sorted(names):
+                                body = self._read_source(name, directory_fd=source_fd)
+                                if hashlib.sha256(body).hexdigest() != names[name]:
+                                    raise StorageError('Could not persist Allure run')
+                                self._copy_once(run_fd, name, body)
+                            self._copy_once(run_fd, 'manifest.json', manifest_body)
+                    except Exception:
+                        failed = True
+                if failed:
+                    raise StorageError('Could not persist Allure run')
         except Exception:
             raise StorageError('Could not persist Allure run') from None
         return self._key(repo, run_id, 'manifest.json')

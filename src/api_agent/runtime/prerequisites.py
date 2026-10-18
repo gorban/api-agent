@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import fcntl
 from hashlib import sha256
@@ -479,9 +479,12 @@ class PrerequisiteManager:
         self.timeout, self.now, self.sleep, self.identity = deadline_seconds, now, sleep, identity
         document = json.loads(plan.assets['compose.json'])
         self.specs = {name: _interpolate(document['services'][name], self.environment) for name in plan.services}
+        if 'jaeger' in plan.services and 'jaeger-config.json' not in plan.assets:
+            raise PrerequisiteError('Selected Jaeger configuration is missing.')
         fingerprint_environment = {**self.environment,
-            'SA_LOCALSTACK_READY_HOOK': 'sha256:' + self.environment['SA_LOCALSTACK_READY_DIGEST'],
-            'SA_JAEGER_CONFIG': 'sha256:' + sha256(plan.assets['jaeger-config.json']).hexdigest()}
+            'SA_LOCALSTACK_READY_HOOK': 'sha256:' + self.environment['SA_LOCALSTACK_READY_DIGEST']}
+        if 'jaeger-config.json' in plan.assets:
+            fingerprint_environment['SA_JAEGER_CONFIG'] = 'sha256:' + sha256(plan.assets['jaeger-config.json']).hexdigest()
         self.fingerprints = {name: sha256(json.dumps(_interpolate(document['services'][name],
             fingerprint_environment), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
                              for name, spec in self.specs.items()}
@@ -699,14 +702,16 @@ class PrerequisiteManager:
         self._rollback = None
         return stopped
 
-    def acquire(self, *, expected_ids=None, reporting_directory=None):
+    def acquire(self, *, expected_ids=None, reporting_directory=None, _prelocked=False, _deadline=None):
         if self._rollback is not None:
             raise PrerequisiteError('Prerequisite rollback remains pending; release before acquiring again.')
         if self.lease is not None:
             return self.lease
         deadline = self.now() + self.timeout
-        with _locked(self.directory, self.scope, deadline=deadline, cancelled=self.cancelled,
-                     now=self.now, sleep=self.sleep):
+        if _deadline is not None:
+            deadline = min(deadline, _deadline)
+        with (nullcontext() if _prelocked else _locked(self.directory, self.scope, deadline=deadline,
+                     cancelled=self.cancelled, now=self.now, sleep=self.sleep)):
             for legacy in self.scope.legacy_ids:
                 if (self.directory / f'{legacy}.json').exists():
                     raise PrerequisiteError(f'Previous path-based ownership journal {legacy}.json exists; review and release its leases before migration.')
@@ -812,12 +817,15 @@ class PrerequisiteManager:
         from api_agent.runtime.tasks import offload
         await offload(self.release, retain=False)
 
-    def release(self, *, retain=False, reporting_ids=None, reporting_directory=None):
+    def release(self, *, retain=False, reporting_ids=None, reporting_directory=None,
+                _prelocked=False, _deadline=None):
         if self.lease is None and self._rollback is None:
             return ()
         deadline = self.now() + 15
-        with _locked(self.directory, self.scope, deadline=deadline, cancelled=lambda: False,
-                     now=self.now, sleep=self.sleep):
+        if _deadline is not None:
+            deadline = min(deadline, _deadline)
+        with (nullcontext() if _prelocked else _locked(self.directory, self.scope, deadline=deadline,
+                     cancelled=lambda: False, now=self.now, sleep=self.sleep)):
             if self.lease is None and self._rollback is None:
                 return ()
             journal = _read_journal(self.directory, self.scope, self.identity)

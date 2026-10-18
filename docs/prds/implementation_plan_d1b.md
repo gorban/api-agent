@@ -38,3 +38,13 @@ Native cross-launch history: [requirements and acceptance](implementation_plan_d
 Official references: [generation](https://allurereport.org/docs/v2/generate-report/), [installation](https://allurereport.org/docs/v2/install/) and [Homebrew formula](https://formulae.brew.sh/formula/allure).
 
 - [x] Add review-visible ALLURE_CLI, default allure, accepting a quoted executable and optional command-prefix arguments. Parse to an argument vector without shell execution. Use the same prefix for bounded version checking and generation; missing commands, malformed quoting and nonzero exits are actionable. Document host/container PATH differences and explicit host executable paths.
+
+
+## Independent publication attempts
+
+- [x] Attempt every configured publication destination after an ordinary destination failure, including a secondary copy when primary connection, upload or immutable-content verification fails. Secondary viewing policy never controls publication. Overall publication fails unless all configured destinations succeed.
+- [x] Keep each destination immutable and independently verified, with its manifest written last. Preserve successful receipts and partial evidence for safe retries; never mark incomplete or conflicting content complete. Source validation, pinned descriptors and symlink/nonregular-file protections apply throughout both attempts.
+- [x] Preserve immediate interruption/cancellation propagation and owned cleanup: an interruption must not start another destination or become an ordinary storage error. Verify controlled primary/local/both failures, manifest ordering, retries, source changes and descriptor cleanup without live storage.
+- [x] Independently review this regression repair. Earlier human acceptance above remains historical and does not accept this new failure-path behavior.
+
+- [ ] Human acceptance of this repair: review the controlled primary-outage/local-copy evidence and confirm normal publication after the blocked startup is repaired. Earlier approvals remain recorded above.
