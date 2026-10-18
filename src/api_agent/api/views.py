@@ -13,7 +13,7 @@ def methods(*allowed):
         @wraps(view)
         async def wrapped(request, *args, **kwargs):
             capability = view.__name__
-            if capability in ("models", "chat", "chat_stream"):
+            if capability in ("models", "chat", "chat_stream", "chat_cancel", "chat_heartbeat"):
                 backend = (_runtime(request).services or {}).get("studio_backend")
                 if backend is not None:
                     return await backend.handle(request, capability)

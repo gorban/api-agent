@@ -171,7 +171,12 @@ async def report_timeout(name, timeout):
                 emit(True)
 
         emit(True)
-        task = asyncio.create_task(heartbeat())
+        heartbeat_work = heartbeat()
+        try:
+            task = asyncio.create_task(heartbeat_work)
+        except BaseException:
+            heartbeat_work.close()
+            raise
 
         async def stop_heartbeat():
             task.cancel()
@@ -181,7 +186,14 @@ async def report_timeout(name, timeout):
             yield budget
         finally:
             try:
-                await finish_cleanup(stop_heartbeat())
+                stop_work = stop_heartbeat()
+                try:
+                    await finish_cleanup(stop_work)
+                except BaseException:
+                    stop_work.close()
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    raise
             finally:
                 emit(False)
     finally:

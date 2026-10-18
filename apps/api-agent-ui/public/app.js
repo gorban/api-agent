@@ -3,6 +3,7 @@ import {requestPayload, readResponse, readJSONResponse, supportsContinuation, su
 import {normalizeCatalog, resolveSelection} from './catalog.js';
 import {beginReply, takeReply, customAnswer} from './reply.js';
 const $ = id => document.getElementById(id);
+const REQUEST_TIMEOUT_MS = 150000;
 const KEY = 'api-agent-studio-v2';
 const defaults = () => ({model: '', version: '', reasoning: ''});
 const fresh = () => ({session: crypto.randomUUID(), messages: [], draft: '', reply: null, settings: defaults()});
@@ -142,7 +143,7 @@ async function run(text, requested, retryMessage, reply) {
   const history = retryMessage ? state.messages.slice(0, Math.max(0, state.messages.indexOf(retryMessage) - 1)) : state.messages;
   const messages = history.filter(m => !m.error && !m.pending).map(({role, text}) => ({role, text}));
   const controller = new AbortController();
-  const request = {controller, stopped: false, timedOut: false}; active = request;
+  const request = {controller, sessionId: crypto.randomUUID(), heartbeat: null, stopped: false}; active = request;
   if (!retryMessage) state.messages.push({id: crypto.randomUUID(), role: 'user', text, requested: {...requested}});
   const m = retryMessage || {id: crypto.randomUUID(), role: 'assistant', request: text, requested: {...requested}};
   if (!retryMessage) {
@@ -154,15 +155,23 @@ async function run(text, requested, retryMessage, reply) {
   render(); follow(); save();
   const messageBody = [...$('conversation').children].find(node => node.dataset.messageId === m.id).querySelector('.message-body');
   announce('Waiting for api-agent. You can stop at any time.');
-  const timer = setTimeout(() => { request.timedOut = true; controller.abort(); }, 30000);
+
+  const timer = setTimeout(() => { request.failure = 'The agent took too long to respond. Please try again.'; stopRequest(request); }, REQUEST_TIMEOUT_MS);
   try {
     await configuration;
     if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-    const response = reply ? await submitContinuation({session: state.session, text, messages, requested: {...m.selectionSnapshot}, reply: structuredClone(m.requestReply)}, {signal: controller.signal}) : await fetch(apiOrigin + '/app/agent/chat/stream', {
+    request.dispatched = true;
+    const response = reply ? await submitContinuation({session: request.sessionId, text, messages, requested: {...m.selectionSnapshot}, reply: structuredClone(m.requestReply)}, {signal: controller.signal}) : await fetch(apiOrigin + '/app/agent/chat/stream', {
       method: 'POST', headers: {'Content-Type': 'application/json', Accept: 'text/event-stream, application/json', ...apiHeaders},
-      body: JSON.stringify(requestPayload({session: crypto.randomUUID(), text, messages, requested: {...requested, model: selection.selection.selected_llm}, reply})), signal: controller.signal
+      body: JSON.stringify(requestPayload({session: request.sessionId, text, messages, requested: {...requested, model: selection.selection.selected_llm}, reply})), signal: controller.signal
     });
     await readResponse(response, {
+      sessionId: request.sessionId,
+      onSession(session) {
+        request.heartbeat = setInterval(() => {
+          void controlRequest('heartbeat', request).catch(error => { request.failure = error.message; controller.abort(); });
+        }, session.heartbeat_interval_ms);
+      },
       onText(text, replace) {
         m.text = replace ? text : m.text + text;
         renderMarkdown(messageBody, m.text);
@@ -175,16 +184,18 @@ async function run(text, requested, retryMessage, reply) {
     });
     announce('Response complete.');
   } catch (error) {
-    m.error = request.stopped ? 'Response stopped. You can retry when you’re ready.' : request.timedOut ? 'The agent took too long to respond. Please try again.' : error instanceof SyntaxError ? 'The agent returned an unreadable response. Please try again.' : error instanceof TypeError ? 'Couldn’t connect to api-agent. Please try again when the agent is available.' : error.name === 'AbortError' ? 'The connection was interrupted. Please try again.' : error.message;
+    m.error = request.failure ? request.failure : request.stopped ? 'Response stopped. You can retry when you’re ready.' : error instanceof SyntaxError ? 'The agent returned an unreadable response. Please try again.' : error instanceof TypeError ? 'Couldn’t connect to api-agent. Please try again when the agent is available.' : error.name === 'AbortError' ? 'The connection was interrupted. Please try again.' : error.message;
+    if (!request.stopped && request.dispatched) void controlRequest('cancel', request).catch(() => {});
     announce(m.error);
   } finally {
-    clearTimeout(timer); m.pending = false; active = null;
+    clearTimeout(timer); clearInterval(request.heartbeat); m.pending = false; active = null;
     if (beginReply(state, m)) $('prompt').value = state.draft;
     render(); follow(); save();
   }
 }
 function fillSelect(id, entries, selected) {
-  const select = $(id); select.replaceChildren(new Option('Provider default', ''));
+  const select = $(id); select.replaceChildren();
+  if (id !== 'model') select.add(new Option('Provider default', ''));
   for (const item of entries) select.add(new Option(item.name || item.id, item.id));
   if (selected && !entries.some(x => x.id === selected)) select.add(new Option(selected + ' (saved selection)', selected));
   select.value = selected;
@@ -201,7 +212,8 @@ function syncSettings() {
   const selection = resolveSelection(catalog, state.settings);
   $('model-status').textContent = catalogStatus || (selection.valid ? '' : selection.error);
 }
-const configuration = fetch('/config.json').then(r => { if (!r.ok) throw Error('Unable to load the API configuration.'); return r.json(); }).then(c => {
+const configSignal = AbortSignal.timeout(5000);
+const configuration = fetch('/config.json', {signal:configSignal}).then(r => readJSONResponse(r, {signal:configSignal})).then(c => {
   if (!c || typeof c !== 'object' || Array.isArray(c) || Object.keys(c).some(key => !['apiOrigin', 'apiHeaders'].includes(key)) || typeof c.apiOrigin !== 'string') throw Error('Invalid API configuration.');
   const url = new URL(c.apiOrigin);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('Invalid API configuration.');
@@ -220,6 +232,7 @@ async function loadModels() {
     const r = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(5000)});
     const data = await readJSONResponse(r);
     catalog = normalizeCatalog(data);
+    if (!state.settings.model && catalog.defaultSelection) { state.settings.model = catalog.defaultSelection; save(); }
     catalogStatus = catalog.length ? '' : 'No model choices are available. Reconnect before sending.';
     syncSettings();
   } catch { catalogStatus ||= 'Model list unavailable. Reconnect before sending.'; $('model-status').textContent = catalogStatus; }
@@ -244,7 +257,23 @@ $('composer').addEventListener('submit', e => {
   state.draft = ''; $('prompt').value = ''; focusComposer(); run(text, {...state.settings});
 });
 $('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('composer').requestSubmit(); } });
-$('stop').addEventListener('click', () => { if (active) { active.stopped = true; active.controller.abort(); focusComposer(); } });
+async function controlRequest(action, request, keepalive = false) {
+  const response = await fetch(apiOrigin + '/app/agent/chat/' + action, {
+    method: 'POST', headers: {'Content-Type': 'application/json', ...apiHeaders},
+    body: JSON.stringify({session_id: request.sessionId}), keepalive,
+    signal: AbortSignal.timeout(5000)
+  });
+  const value = await readJSONResponse(response);
+  if (!value || value.session_id !== request.sessionId || !['running','completed','cancelled','failed','cleanup_pending','unknown'].includes(value.status) || Object.keys(value).sort().join(',') !== 'session_id,status') throw Error('Invalid agent lifecycle response');
+  if (action === 'heartbeat' && !['running','completed','failed'].includes(value.status)) throw Error('The agent request is no longer running. Please retry.');
+}
+function stopRequest(request, keepalive = false) {
+  request.stopped = true; clearInterval(request.heartbeat);
+  if (apiOrigin && request.dispatched) void controlRequest('cancel', request, keepalive).catch(() => {});
+  request.controller.abort();
+}
+$('stop').addEventListener('click', () => { if (active) { stopRequest(active); focusComposer(); } });
+window.addEventListener('pagehide', () => { if (active) stopRequest(active, true); });
 $('new-chat').addEventListener('click', () => { if (active) return; clearPromptError(); const settings = state.settings; if (state.messages.length || state.draft) previousChat = structuredClone(state); savePrevious(); state = fresh(); state.settings = settings; $('prompt').value = ''; render(); $('conversation-scroll').scrollTop = 0; save(); focusComposer(); announce(previousChat ? 'A new conversation is ready. Undo new chat is available until you send a message.' : 'A new conversation is ready.'); });
 document.querySelectorAll('[data-prompt]').forEach(b => b.addEventListener('click', () => { clearPromptError(); $('prompt').value = b.dataset.prompt; state.draft = b.dataset.prompt; save(); focusComposer(); }));
 $('follow-latest').addEventListener('change', () => { if ($('follow-latest').checked) scrollLatest(); });

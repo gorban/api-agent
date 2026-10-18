@@ -14,3 +14,8 @@ Requests to the API go directly to the configured origin. The host performs no
 inference and does not proxy API requests. SIGINT/SIGTERM stop the listener and
 close its connections. Source and installed package startup do not depend on the
 current working directory.
+
+The browser consumes the shared [application chat HTTP contract](../../docs/architecture/application_http_v1.md),
+including named SSE, heartbeat and cancellation. Composition must supply an
+active backend; absent capabilities return HTTP 501. A retained test browser does
+not itself extend the test provider's execution lifetime.

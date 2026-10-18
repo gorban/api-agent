@@ -1,115 +1,81 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-const load = name => import(new URL('../../apps/api-agent-ui/public/' + name,import.meta.url));
-const {requestPayload,readResponse,readJSONResponse} = await load('transport.js');
-const {normalizeCatalog,resolveSelection} = await load('catalog.js');
-const result = {text:'final',outcome:'completed',usage:{input_tokens:null,output_tokens:null,cached_input_tokens:null,reasoning_tokens:null}};
-const response = (text,type='text/event-stream',status=200) => new Response(text,{status,headers:{'content-type':type}});
-test('DEL text uses the same escaped JSON byte budget as the agent', async () => {
- const text='\x7f'.repeat(22000);
- assert.throws(()=>requestPayload({text,requested:{model:'m'}}),/byte limit/);
- await assert.rejects(readResponse(response(JSON.stringify({...result,text}),'application/json')),/byte limit/);
+import {requestPayload,readResponse,readJSONResponse,supportsContinuation,submitContinuation} from '../../apps/api-agent-ui/public/transport.js';
+import {normalizeCatalog,resolveSelection} from '../../apps/api-agent-ui/public/catalog.js';
+const id='a4e3aa9d-5387-49ef-92e0-6a7122079f28';
+const usage={input_tokens:null,output_tokens:null,cached_input_tokens:null,reasoning_tokens:null};
+const result={session_id:id,response_text:'final',outcome:'completed',usage};
+const model={value:'m',label:'Model',description:'',features:['reasoning_effort'],version:'v',family:null,max_output_tokens:null,context_length:null,reasoning_efforts:['off','low']};
+const catalog=(rows=[model],extra={})=>({models:rows,default:rows.length?'m':null,reasoning_default:null,...extra});
+const response=(body,type='text/event-stream',status=200)=>new Response(body,{status,headers:{'content-type':type}});
+const frame=(event,value)=>`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`;
+const start=frame('session',{session_id:id,heartbeat_interval_ms:10000,heartbeat_timeout_ms:30000});
+const finish=value=>frame('response_complete',{session_id:id})+frame('result',value)+frame('done',{session_id:id});
+test('request uses application DTO and omission differs from explicit off',()=>{
+ const input={session:id,text:'next',messages:[{role:'assistant',text:'prior'}],requested:{model:'m',reasoning:'off'}};
+ assert.deepEqual(requestPayload(input),{session_id:id,model:'m',messages:[{role:'assistant',content:'prior'},{role:'user',content:'next'}],reasoning_effort:'off'});
+ assert.equal('reasoning_effort' in requestPayload({...input,requested:{model:'m'}}),false);
+ for(const invalid of [{...input,reply:{}},{...input,requested:null},{...input,requested:{model:''}},{...input,session:2},{...input,text:2},{...input,text:'x'.repeat(32769)},{...input,messages:Array(64).fill({role:'user',text:'x'})},{...input,messages:[{role:'tool',text:'x'}]},{...input,requested:{model:'m',reasoning:'extra'}},{...input,text:'\x7f'.repeat(22000)}])assert.throws(()=>requestPayload(invalid));
 });
-test('request preserves explicit off and real conversation wire shape', () => {
- const input = {session:'s',messages:[{role:'assistant',text:'prior'}],text:'next',requested:{model:'m',reasoning:'off'}};
- assert.deepEqual(requestPayload(input),{selected_llm:'m',request_id:'s',messages:[{role:'assistant',text:'prior'},{role:'user',text:'next'}],max_output_tokens:null,cache_policy:null,reasoning_effort:'off'});
- assert.equal('reasoning_effort' in requestPayload({...input,requested:{model:'m',reasoning:''}}),false);
- assert.throws(() => requestPayload({...input,reply:{id:'q'}}),/not implemented/);
- assert.throws(() => requestPayload({...input,text:'x'.repeat(32769)}),/Invalid/);
+test('catalog preserves exact backend default and advertised metadata',()=>{
+ const rows=normalizeCatalog(catalog());
+ assert.equal(rows.defaultSelection,'m');assert.equal(rows.reasoningDefault,null);
+ assert.equal(rows[0].selected_llm,'m');assert.equal(rows[0].display_name,'Model');
+ assert.equal(resolveSelection(rows,{model:'',reasoning:'off'}).valid,true);
+ for(const selection of [{model:'missing'},{model:'m',version:'old'},{model:'m',reasoning:'high'}])assert.equal(resolveSelection(rows,selection).valid,false);
+ assert.deepEqual(normalizeCatalog(catalog([])),[]);
+ assert.equal(normalizeCatalog(catalog([model],{reasoning_default:'low'})).reasoningDefault,'low');
 });
-test('catalog uses exact selection and rejects unsupported stale controls', () => {
- const row={selected_llm:'m',description:'',features:['reasoning_effort'],display_name:'Model',version:'v',family:null,max_output_tokens:null,context_length:null,reasoning_efforts:['off']};
- const rows=normalizeCatalog([row]); assert.deepEqual(rows,[row]);
- assert.equal(resolveSelection(rows,{model:'m',version:'v',reasoning:'off'}).valid,true);
- for(const s of [{model:'x'},{model:'m',version:'old'},{model:'m',reasoning:'high'}]) assert.equal(resolveSelection(rows,s).valid,false);
- assert.throws(() => normalizeCatalog([row,row]),/Invalid/);
- assert.throws(() => normalizeCatalog([{...row,features:['imaginary']}]),/Invalid/);
+test('catalog rejects malformed and ambiguous public DTOs',()=>{
+ for(const value of [null,[],{},catalog([model,model]),catalog([model],{default:'missing'}),catalog([model],{default:null}),catalog([model],{reasoning_default:'extra'}),catalog([model],{extra:1}),catalog(Array(257).fill(model)),...[
+  {value:''},{description:'x'.repeat(513)},{label:'\n'},{version:2},{family:''},{extra:1},{max_output_tokens:0},{context_length:1.5},{features:['invented']},{features:['tools','tools']},{reasoning_efforts:['bad']},{reasoning_efforts:['off','off']},{reasoning_efforts:'off'}
+ ].map(delta=>catalog([{...model,...delta}]))])assert.throws(()=>normalizeCatalog(value),/Invalid/);
+ assert.equal(resolveSelection(normalizeCatalog(catalog([{...model,features:[],reasoning_efforts:null}])),{model:'m',reasoning:'off'}).valid,false);
 });
-test('SSE split bytes and CRLF replace partial with authoritative terminal text', async () => {
- const text='data: '+JSON.stringify({kind:'text',payload:{text:'é'}})+'\r\n\r\ndata: '+JSON.stringify({kind:'completed',payload:{...result,actual_model:'reported'}})+'\r\n\r\n';
- const bytes=new TextEncoder().encode(text); let i=0;
- const r=new Response(new ReadableStream({pull(c){if(i===bytes.length)c.close();else c.enqueue(bytes.slice(i,++i));}}),{headers:{'content-type':'text/event-stream'}});
- const seen=[],meta=[];await readResponse(r,{onText:(...v)=>seen.push(v),onMetadata:v=>meta.push(v)});
- assert.deepEqual(seen,[['é',false],['final',true]]);assert.deepEqual(meta,[{actual_model:'reported',model:'reported'}]);
+test('named SSE is genuinely incremental across UTF-8 and CRLF byte splits',async()=>{
+ const bytes=new TextEncoder().encode((start+frame('token',{content:'é'})+finish({...result,actual_model:'reported'})).replaceAll('\n','\r\n'));
+ let offset=0;const seen=[],metadata=[];
+ const stream=new ReadableStream({pull(controller){if(offset===bytes.length)controller.close();else controller.enqueue(bytes.slice(offset,++offset));}});
+ await readResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}),{sessionId:id,onText:(...value)=>seen.push(value),onMetadata:value=>metadata.push(value)});
+ assert.deepEqual(seen,[['é',false],['final',true]]);assert.deepEqual(metadata,[{actual_model:'reported',model:'reported'}]);
 });
-test('JSON result replaces and unknown metadata stays absent',async()=>{let actual;await readResponse(response(JSON.stringify(result),'application/json'),{onMetadata:v=>actual=v});assert.deepEqual(actual,{});});
-test('errors, missing terminal and post-terminal frames fail honestly',async()=>{
- for(const [body,pattern] of [['data: {"kind":"text","payload":{"text":"partial"}}\n\n',/without a terminal/],['data: {"kind":"error","message":"failed"}\n\n',/failed/],['data: {"kind":"heartbeat"}\n\n',/Unsupported/],['data: '+JSON.stringify({kind:'completed',payload:result})+'\n\ndata: {"kind":"text","payload":{"text":"late"}}\n\n',/follows terminal/]]) await assert.rejects(readResponse(response(body)),pattern);
- await assert.rejects(readResponse(response('deferred','application/json',501)),/HTTP 501: deferred/);
- await assert.rejects(readResponse(response('x'.repeat(131073),'application/json')),/byte limit/);
+test('valid JSON result preserves nullable evidence and reported billing',async()=>{
+ let metadata;await readResponse(response(JSON.stringify({...result,billing:{usd:null,request_id:null,generation_id:null}}),'application/json'),{sessionId:id,onMetadata:value=>metadata=value});assert.deepEqual(metadata,{});
+ assert.deepEqual(await readJSONResponse(response('{}','application/json')),{});
 });
-test('structured question retains options and cancellation aborts',async()=>{
- const q={id:'q',question:'Choose',options:['One','Custom']};let seen;
- await readResponse(response('data: '+JSON.stringify({kind:'clarification',payload:q})+'\n\n'),{onClarification:v=>seen=v});assert.deepEqual(seen,q);
- const controller=new AbortController();controller.abort();await assert.rejects(readResponse(response('{}','application/json'),{signal:controller.signal}),{name:'AbortError'});
+test('invalid sequence, missing done and foreign sessions never become successful',async()=>{
+ for(const text of ['',frame('token',{content:'early'}),start+frame('token',{content:'partial'}),start+frame('result',result),start+frame('done',{session_id:id}),start+frame('response_complete',{session_id:'foreign'}),start+finish(result)+frame('token',{content:'late'}),start+start,start+frame('unknown',{}),start+frame('token',{content:2}),start+frame('response_complete',{session_id:id,extra:1}),start+finish({...result,session_id:'foreign'}),start+finish(result).replace('event: done','event: done\nevent: done')])await assert.rejects(readResponse(response(text),{sessionId:id}));
+ await assert.rejects(readResponse(response(start+finish(result)),{sessionId:'foreign'}),/session/);
 });
-test('malformed catalogs and optional capability metadata are rejected precisely',()=>{
- const row={selected_llm:'m',description:'',features:[],display_name:'',version:null,family:null,max_output_tokens:null,context_length:null};
- assert.deepEqual(normalizeCatalog([]),[]);assert.deepEqual(normalizeCatalog([row]),[row]);
- for(const bad of [null,{},Array(257).fill(row),[{...row,description:'x'.repeat(513)}],[{...row,selected_llm:''}],[{...row,version:12}],[{...row,family:''}],[{...row,display_name:'\n'}],[{...row,extra:1}],[{...row,max_output_tokens:0}],[{...row,context_length:1.5}],[{...row,reasoning_efforts:['bad']}],[{...row,features:['tools','tools']}],[{...row,reasoning_efforts:['off','off']}],[{...row,features:'tools'}],[{...row,reasoning_efforts:'off'}],[{...row,family:'f',max_output_tokens:12,description:'x'.repeat(131073)}]]) assert.throws(()=>normalizeCatalog(bad),/Invalid/);
- assert.equal(resolveSelection([row],{model:'m',reasoning:'off'}).valid,false);
- assert.equal(resolveSelection([{...row,features:['reasoning_effort']}],{model:'m',reasoning:'low'}).valid,false);
-});
-test('request bounds and effort guard reject malformed inputs',()=>{
- const x={text:'x',requested:{model:'m'}};assert.equal(requestPayload(x).request_id,'');
- for(const bad of [{...x,requested:null},{...x,requested:{model:''}},{...x,session:2},{...x,text:3},{...x,messages:[{role:'tool',text:'x'}]},{...x,messages:Array(64).fill({role:'user',text:'x'})},{...x,requested:{model:'m',reasoning:'extra'}},{...x,messages:Array(5).fill({role:'user',text:'x'.repeat(32768)})}]) assert.throws(()=>requestPayload(bad));
-});
-test('strict results reject invalid usage, metadata, encoding and content',async()=>{
- for(const bad of [null,{...result,text:7},{...result,outcome:'fake'},{...result,usage:[]},{...result,usage:{}},{...result,usage:{...result.usage,x:1}},{...result,usage:{...result.usage,input_tokens:-1}},{...result,usage:{...result.usage,input_tokens:1,cached_input_tokens:2}},{...result,usage:{...result.usage,output_tokens:1,reasoning_tokens:2}},{...result,actual_model:''}]) await assert.rejects(readResponse(response(JSON.stringify(bad),'application/json')),/Invalid/);
- await assert.rejects(readResponse(response('bad','text/plain')),/content type/);
- await assert.rejects(readResponse(new Response(null)),/Empty/);
- await assert.rejects(readResponse(new Response(new Uint8Array([255]),{headers:{'content-type':'application/json'}})));
-});
-test('SSE fields, final frame, heartbeats and structured approval',async()=>{
- let activity=0,approval;
- const q={id:'a',question:'Continue?',options:[{id:'yes',label:'Allow'}]};
- await readResponse(response(': comment\nevent: result\nid: 1\nretry: 50\ndata: '+JSON.stringify({kind:'heartbeat'})+'\n\ndata: '+JSON.stringify({kind:'approval',payload:q})+'\r'),{heartbeat:true,onActivity:()=>activity++,onApproval:v=>approval=v});
- assert.equal(activity,2);assert.deepEqual(approval,q);
- for(const frame of ['bad: x','data: null','data: {}','data: {"kind":"clarification","payload":{"id":"x","question":"q","options":[4]}}','data: {"kind":"approval","payload":{"id":"x","question":"q","options":[{}]}}','data: {"kind":"error"}']) await assert.rejects(readResponse(response(frame+'\n\n')));
-});
-test('abort during pending read cancels owned reader',async()=>{
- const c=new AbortController();let cancelled=false;
- const r=new Response(new ReadableStream({pull(){c.abort();},cancel(){cancelled=true;}}),{headers:{'content-type':'text/event-stream'}});
- await assert.rejects(readResponse(r,{signal:c.signal}),{name:'AbortError'});assert.equal(cancelled,true);
-});
-test('remaining optional boundaries retain safe defaults',async()=>{
- const {supportsContinuation,submitContinuation}=await load('transport.js');assert.equal(supportsContinuation,false);await assert.rejects(submitContinuation({}),/not implemented/);
- await assert.rejects(readResponse(response('','application/json',501)),/HTTP 501$/);
- await readResponse(response(JSON.stringify({...result,usage:{...result.usage,input_tokens:0,output_tokens:0}}),'application/json'));
- await readResponse(response('data: '+JSON.stringify({kind:'clarification',payload:{id:'x',question:'Q',options:[]}})+'\n\n'));
- await readResponse(response('data: '+JSON.stringify({kind:'approval',payload:{id:'x',question:'Q',options:[]}})+'\n\n'));
- const row={selected_llm:'m',description:'',features:[],display_name:'',version:null,family:null,max_output_tokens:2147483648,context_length:null};assert.throws(()=>normalizeCatalog([row]),/Invalid/);
-});
-test('server default is explicit, validated and never guessed',()=>{
- const row={selected_llm:'m',description:'',features:[],display_name:'',version:null,family:null,max_output_tokens:null,context_length:null};
- const rows=normalizeCatalog({models:[row],default:'m'});
- assert.equal(rows.defaultSelection,'m');assert.equal(resolveSelection(rows,{model:''}).selection.selected_llm,'m');
- assert.equal(resolveSelection(normalizeCatalog([row]),{model:''}).valid,false);
- assert.equal(resolveSelection(normalizeCatalog({models:[row],default:null}),{model:''}).valid,false);
- for(const envelope of [{models:[row],default:'missing'},{models:[row],default:2},{models:[row]}, {models:[row],default:'m',extra:1}]) assert.throws(()=>normalizeCatalog(envelope),/Invalid/);
-});
-test('text results reject unknown, rich and invalid billing before terminal callbacks',async()=>{
- for(const invalid of [{...result,unknown:'unexpected'},{...result,version:2,payload:{calls:[{name:'tool'}]}},{...result,billing:{usd:-1,request_id:null,generation_id:null}}]) {
-  const seen=[];
-  await assert.rejects(readResponse(response(JSON.stringify(invalid),'application/json'),{onText:(...v)=>seen.push(v)}),/Unsupported inference result fields|Invalid reported billing evidence/);
-  await assert.rejects(readResponse(response('data: '+JSON.stringify({kind:'completed',payload:invalid})+'\n\n'),{onText:(...v)=>seen.push(v)}),/Unsupported inference result fields|Invalid reported billing evidence/);
-  assert.deepEqual(seen,[]);
+test('errors and cancellation fail while named questions preserve explicit options',async()=>{
+ for(const name of ['error','cancelled'])await assert.rejects(readResponse(response(start+frame(name,{session_id:id,code:'failed',message:'failure'}))),/failure|cancelled/);
+ for(const kind of ['clarification','approval']){
+  const question={id:'q',question:'Choose',options:kind==='clarification'?['One']:[{id:'yes',label:'Allow'}]};let seen;
+  await readResponse(response(start+frame(kind,question)),{onClarification:value=>seen=value,onApproval:value=>seen=value});assert.deepEqual(seen,question);
+  await assert.rejects(readResponse(response(start+frame(kind,{...question,options:[4]}))));
  }
- for(const billing of [null,{usd:null,request_id:null,generation_id:null},{usd:0.01,request_id:'r:1',generation_id:'g-2'}]) await readResponse(response(JSON.stringify({...result,billing}),'application/json'));
- for(const billing of [7,[],{usd:0},{usd:1e13,request_id:null,generation_id:null},{usd:'1',request_id:null,generation_id:null},{usd:0,request_id:3,generation_id:null},{usd:0,request_id:'bad id',generation_id:null}]) await assert.rejects(readResponse(response(JSON.stringify({...result,billing}),'application/json')),/Invalid reported billing evidence/);
+ assert.equal(supportsContinuation,false);await assert.rejects(submitContinuation(),/not implemented/);
 });
-test('Python codepoint and ASCII escaped wire byte bounds match',async()=>{
- const model='😀'.repeat(150);
- assert.equal(requestPayload({text:'ok',requested:{model}}).selected_llm,model);
- assert.throws(()=>requestPayload({text:'漢'.repeat(22000),requested:{model:'m'}}),/byte limit/);
- const row={selected_llm:model,description:'',features:[],display_name:'',version:'😀'.repeat(70),family:null,max_output_tokens:null,context_length:null};
- assert.equal(normalizeCatalog([row])[0].version,row.version);
- const huge=Array.from({length:60},(_,i)=>({...row,selected_llm:'m'+i,description:'漢'.repeat(400)}));
- assert.throws(()=>normalizeCatalog(huge),/Invalid provider catalog/);
- const asciiHuge=Array.from({length:256},(_,i)=>({...row,selected_llm:'m'+i,version:null,description:'x'.repeat(512)}));
- assert.throws(()=>normalizeCatalog(asciiHuge),/Invalid provider catalog/);
- await assert.rejects(readResponse(response(JSON.stringify({...result,text:'漢'.repeat(22000)}),'application/json')),/byte limit/);
- await readResponse(response(JSON.stringify({...result,actual_model:model}),'application/json'));
+test('strict result validation rejects unsupported or dishonest evidence',async()=>{
+ for(const value of [null,{...result,session_id:2},{...result,response_text:7},{...result,outcome:'fake'},{...result,usage:[]},{...result,usage:{}},{...result,usage:{...usage,x:1}},{...result,usage:{...usage,input_tokens:-1}},{...result,usage:{...usage,input_tokens:1,cached_input_tokens:2}},{...result,usage:{...usage,output_tokens:1,reasoning_tokens:2}},{...result,actual_model:''},{...result,extra:1},{...result,billing:{usd:-1,request_id:null,generation_id:null}},{...result,billing:[]},{...result,billing:{usd:0,request_id:'bad id',generation_id:null}}])await assert.rejects(readResponse(response(JSON.stringify(value),'application/json')));
+});
+test('bounded HTTP readers cancel malformed, oversized and aborted bodies',async()=>{
+ for(const r of [response('Unavailable','application/json',503),response('','application/json',501),response('bad','text/plain'),new Response(null),response('x'.repeat(131073),'application/json'),new Response(new Uint8Array([255]),{headers:{'content-type':'application/json'}}),response('bad: field\n\n'),response('data: null\n\n')])await assert.rejects(readResponse(r));
+ const controller=new AbortController();let cancelled=false;
+ const r=new Response(new ReadableStream({pull(){controller.abort();},cancel(){cancelled=true;}}),{headers:{'content-type':'text/event-stream'}});
+ await assert.rejects(readResponse(r,{signal:controller.signal}),{name:'AbortError'});assert.equal(cancelled,true);
+ await assert.rejects(readResponse(response('{}','application/json'),{signal:controller.signal}),{name:'AbortError'});
+});
+test('SSE comments and allowed framing retain terminal validation',async()=>{
+ await readResponse(response(': heartbeat\nid: 1\nretry: 50\n'+start+finish(result)));
+ await assert.rejects(readResponse(response(start+'event: token\ndata: {"content":"partial"}\r')),/terminal|Incomplete/);
+});
+test('stream budget permits token plus authoritative terminal overhead and bounds frames separately',async()=>{
+ const content='é'.repeat(20000);let text='';
+ await readResponse(response(start+frame('token',{content})+finish({...result,response_text:content})),{onText:(value,replace)=>text=replace?value:text+value});assert.equal(text,content);
+ await assert.rejects(readResponse(response(start+frame('token',{content:'x'.repeat(131073)}))),/frame.*byte limit/);
+ await assert.rejects(readResponse(response(start+frame('token',{content:''}).repeat(8192))),/event limit/);
+ await assert.rejects(readResponse(response(start+(': '+'x'.repeat(1000)+'\n\n').repeat(1050))),/byte limit/);
 });
 test('rejecting underlying cancellation remains handled and preserves AbortError',async()=>{
  const controller=new AbortController();const unhandled=[];
@@ -122,11 +88,11 @@ test('rejecting underlying cancellation remains handled and preserves AbortError
 });
 test('cleanup catches disposal rejection without masking terminal result',async()=>{
  let sent=false;
- const stream=new ReadableStream({pull(c){if(!sent){sent=true;c.enqueue(new TextEncoder().encode('data: '+JSON.stringify({kind:'completed',payload:result})+'\n\n'));}else c.close();},cancel(){return Promise.reject(Error('cleanup'));}});
+ const stream=new ReadableStream({pull(c){if(!sent){sent=true;c.enqueue(new TextEncoder().encode(start+finish(result)));}else c.close();},cancel(){return Promise.reject(Error('cleanup'));}});
  await readResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}));
 });
 test('callback failure survives rejected cleanup cancellation',async()=>{
- const stream=new ReadableStream({start(c){c.enqueue(new TextEncoder().encode('data: {"kind":"text","payload":{"text":"partial"}}\n\n'));},cancel(){return Promise.reject(Error('cleanup failed'));}});
+ const stream=new ReadableStream({start(c){c.enqueue(new TextEncoder().encode(start+frame('token',{content:'partial'})));},cancel(){return Promise.reject(Error('cleanup failed'));}});
  await assert.rejects(readResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}),{onText(){throw Error('callback failed');}}),/callback failed/);
 });
 test('bounded JSON reader admits exact raw limit and rejects one extra whitespace byte',async()=>{
@@ -165,4 +131,36 @@ test('bounded JSON reader preserves abort over a rejected source cancellation',a
   await assert.rejects(readJSONResponse(new Response(stream,{headers:{'content-type':'application/json'}}),{signal:controller.signal}),{name:'AbortError'});
   await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(unhandled,[]);assert.equal(stream.locked,false);
  }finally{process.off('unhandledRejection',listener);}
+});
+test('nullable counts, default question callbacks and optional session observer retain strict boundaries',async()=>{
+ await readResponse(response(JSON.stringify({...result,usage:{input_tokens:0,output_tokens:0,cached_input_tokens:0,cache_write_tokens:0,reasoning_tokens:0}}),'application/json'));
+ for(const kind of ['clarification','approval'])await readResponse(response(start+frame(kind,{id:'q',question:'Q',options:[]})));
+ let admitted;await readResponse(response(start+finish(result)),{onSession:value=>admitted=value});assert.equal(admitted.session_id,id);
+ await assert.rejects(readResponse(response(start+frame('error',{session_id:id,code:'failed'}))),/Agent stream failed/);
+ await assert.rejects(readResponse(response(frame('clarification',{id:'q',question:'Q',options:[]}))),/question sequence/);
+ await assert.rejects(readResponse(response('x'.repeat(131073))),/frame.*byte limit/);
+ const unicode={...model,value:'😀'.repeat(150),version:'😀'.repeat(70)};
+ assert.equal(normalizeCatalog(catalog([unicode],{default:unicode.value}))[0].version,unicode.version);
+ assert.throws(()=>normalizeCatalog(catalog([{...model,context_length:2147483648}])));
+});
+test('known totals permit unknown component counts without inventing component evidence',async()=>{
+ await readResponse(response(JSON.stringify({...result,usage:{...usage,input_tokens:0,output_tokens:0}}),'application/json'));
+});
+test('application result rejects legacy text and every completion frame binds its admitted session',async()=>{
+ await assert.rejects(readResponse(response(JSON.stringify({...result,text:'legacy'}),'application/json')),/Unsupported/);
+ await assert.rejects(readResponse(response(start+frame('response_complete',{session_id:'foreign'})+frame('result',result)+frame('done',{session_id:id}))),/session/);
+ const other={...model,value:'other',label:'Other'};const rows=normalizeCatalog(catalog([other,model]));assert.equal(resolveSelection(rows,{model:''}).selection.selected_llm,'m');
+});
+test('CRLF framing counts both raw separator bytes independently of semantic JSON size',async()=>{
+ const oversized='event: token\r\n'+':\r\n'.repeat(44000)+'data: {"content":"x"}\r\n\r\n';
+ assert.ok(new TextEncoder().encode(oversized).byteLength>131072);
+ await assert.rejects(readResponse(response(start+oversized+finish(result))),/frame.*byte limit/);
+});
+
+for(const [name,ending] of [['missing both LF delimiters',frame('done',{session_id:id}).slice(0,-2)],['missing blank line',frame('done',{session_id:id}).slice(0,-1)],['single trailing CR',frame('done',{session_id:id}).slice(0,-2)+'\r']])test('truncated terminal framing rejects '+name,async()=>{
+ await assert.rejects(readResponse(response(start+frame('response_complete',{session_id:id})+frame('result',result)+ending)),/Incomplete|terminal/);
+});
+for(const [name,newline] of [['LF','\n'],['CRLF','\r\n'],['CR','\r']])test('complete '+name+' delimiters admit terminal and question frames with trailing comments',async()=>{
+ await readResponse(response((start+finish(result)).replaceAll('\n',newline)+': trailing comment'));
+ let question;await readResponse(response((start+frame('clarification',{id:'q',question:'Q',options:['One']})).replaceAll('\n',newline)+': trailing comment'+newline),{onClarification:value=>question=value});assert.equal(question.id,'q');
 });

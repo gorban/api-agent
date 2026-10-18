@@ -1,6 +1,7 @@
 """Controlled bridge requests never access external providers."""
 import asyncio
 import json
+from uuid import uuid4
 
 import pytest
 from django.test import RequestFactory
@@ -40,8 +41,8 @@ def request(method='GET', body=None, **headers):
 
 
 def payload(**changes):
-    return json.dumps(dict(selected_llm='example', messages=[{'role': 'user', 'text': 'hi'}],
-                          max_output_tokens=None, cache_policy=None, request_id='one') | changes).encode()
+    return json.dumps(dict(model='example', messages=[{'role': 'user', 'content': 'hi'}],
+                          session_id=str(uuid4())) | changes).encode()
 
 
 def test_catalog_and_completion_share_owner():
@@ -51,8 +52,8 @@ def test_catalog_and_completion_share_owner():
         answer = await backend.handle(request('POST', payload()), 'chat')
         stream = await backend.handle(request('POST', payload()), 'chat_stream')
         assert json.loads(catalog.content)['default'] == 'example'
-        assert json.loads(answer.content)['text'] == 'hello'
-        assert [json.loads(frame[6:])['kind'] for frame in stream.content.decode().strip().split('\n\n')] == ['completed']
+        assert json.loads(answer.content)['response_text'] == 'hello'
+        assert [part.decode().splitlines()[0] async for part in stream.streaming_content] == ['event: session', 'event: token', 'event: response_complete', 'event: result', 'event: done']
         assert [item for item in calls if isinstance(item, str)] == ['catalog'] * 3
         await backend.aclose()
         assert (await backend.handle(request(), 'models')).status_code == 503
@@ -70,13 +71,14 @@ def test_admission_precedes_provider_access(headers):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('body', [b'{', b'{"a":1,"a":2}', b'{"a":NaN}', payload(selected_llm='missing'), payload(request_id=''), payload(reasoning_effort='high')])
+@pytest.mark.parametrize('body', [b'{', b'{"a":1,"a":2}', b'{"a":NaN}', payload(model='missing'), payload(session_id=''), payload(reasoning_effort='high')],
+                         ids=['malformed-json', 'duplicate-key', 'nonfinite-number', 'unknown-model', 'empty-session', 'unsupported-reasoning'])
 def test_invalid_requests_do_not_complete(body):
     async def run():
         backend, calls = setup_bridge()
         response = await backend.handle(request('POST', body), 'chat')
         assert response.status_code in (400, 502)
-        assert calls == (['catalog'] if body in (payload(selected_llm='missing'), payload(reasoning_effort='high')) else [])
+        assert all(item == 'catalog' for item in calls)
         await backend.aclose()
     asyncio.run(run())
 
@@ -178,8 +180,7 @@ def test_deadline_and_active_disposal():
         task = asyncio.create_task(backend.handle(request('POST', payload()), 'chat'))
         await asyncio.sleep(.01)
         await backend.aclose()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        assert (await task).status_code == 409
     asyncio.run(run())
 
 
@@ -229,7 +230,7 @@ def test_real_asgi_routing_to_backend():
             'headers': [(b'host', b'testserver'), (b'origin', ORIGIN.encode()),
                         (b'x-api-agent-session', NONCE.encode()), (b'content-type', b'application/json')]}, receive, send)
         assert sent[0]['status'] == 200
-        assert json.loads(b''.join(item.get('body', b'') for item in sent[1:]))['text'] == 'hello'
+        assert json.loads(b''.join(item.get('body', b'') for item in sent[1:]))['response_text'] == 'hello'
         assert len(calls) == 2
         await backend.aclose()
     asyncio.run(run())
@@ -238,7 +239,7 @@ def test_real_asgi_routing_to_backend():
 def test_duplicate_valid_field_is_rejected_before_discovery():
     async def run():
         backend, calls = setup_bridge()
-        duplicate = payload()[:-1] + b', "selected_llm":"example"}'
+        duplicate = payload()[:-1] + b', "model":"example"}'
         response = await backend.handle(request('POST', duplicate), 'chat')
         assert response.status_code == 400
         assert not calls
@@ -333,9 +334,8 @@ def test_pending_nested_cleanup_retains_auth_and_supports_disposal_retry(cancel_
                 assert response.status_code == 502
             assert cancelled.is_set()
             assert contexts[0].retained_tasks
-            assert tuple(backend._contexts.values()) == (contexts[0],)
-            assert backend.closed
-            assert (await backend.handle(request(), 'models')).status_code == 503
+            assert not backend._contexts
+            assert any(turn.context is contexts[0] and turn.state == 'cleanup_pending' for turn in backend.lifecycle._turns.values())
             with pytest.raises(CleanupPendingError) as pending:
                 await backend.aclose()
             assert pending.value.owners == (backend,)
@@ -391,25 +391,23 @@ def test_buffered_sse_does_not_duplicate_large_unicode_result():
         backend, calls = setup_bridge(complete=complete)
         response = await backend.handle(request('POST', payload()), 'chat_stream')
         assert response.status_code == 200
-        assert len(response.content) <= 131072
-        frames = response.content.decode().strip().split('\n\n')
-        assert len(frames) == 1
-        frame = json.loads(frames[0][6:])
-        assert frame['kind'] == 'completed'
-        assert frame['payload']['text'] == text
+        frames = [part.decode() async for part in response.streaming_content]
+        assert all(len(part.encode()) <= 131072 for part in frames)
+        result = json.loads(frames[-2].splitlines()[1][6:])
+        assert result['response_text'] == text
         await backend.aclose()
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('text', ['\n' * 65450, '😀' * 10910])
+@pytest.mark.parametrize('text', ['\n' * 65450, '😀' * 12000], ids=['escaped', 'unicode'])
 def test_buffered_sse_rejects_framing_that_exceeds_consumer_bound(text):
     async def run():
         async def complete(*args, **kwargs):
             return LLMResult(Message('assistant', (TextContent(text),)))
         backend, calls = setup_bridge(complete=complete)
         response = await backend.handle(request('POST', payload()), 'chat_stream')
-        assert response.status_code == 400
-        assert json.loads(response.content) == {'code': 'invalid_request'}
-        assert len(response.content) <= 131072
+        frames = [part.decode() async for part in response.streaming_content]
+        assert frames[-1].startswith('event: error')
+        assert all(len(part.encode()) <= 131072 for part in frames)
         await backend.aclose()
     asyncio.run(run())

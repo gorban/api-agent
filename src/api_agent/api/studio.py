@@ -11,9 +11,11 @@ import math
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from django.http import HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 
-from ..providers.catalog import catalog_to_wire
+from . import chat_contract
+from .chat_lifecycle import ChatLifecycle
+from .http_cleanup import close_http_callbacks
 from ..providers.contracts import ContractError, ProviderAccessError, SessionClosedError
 from ..providers.control import CleanupPendingError, OperationalError, OperationContext, finish_cleanup
 from ..providers.inference import request_from_wire, result_to_wire
@@ -28,7 +30,7 @@ class StudioBackend:
     scrub callback must remove caller-known credential values from safe errors.
     """
     def __init__(self, *, owner, describe, complete, policy, origin, nonce,
-                 scrub, timeout=120, body_limit=131072):
+                 scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None):
         parts = urlsplit(origin)
         if (parts.scheme not in ('http', 'https') or parts.hostname not in ('localhost', '127.0.0.1', '::1')
                 or parts.path or parts.query or parts.fragment or parts.username or parts.password
@@ -40,20 +42,39 @@ class StudioBackend:
         self.owner, self.describe, self.complete, self.policy = owner, describe, complete, policy
         self.origin, self._nonce, self.scrub = origin, nonce, scrub
         self.timeout, self.body_limit, self.closed = timeout, body_limit, False
+        if reasoning_default is not None and reasoning_default not in chat_contract.EFFORTS:
+            raise ValueError('Invalid reasoning default')
+        if stream is not None and not callable(stream):
+            raise ValueError('Invalid stream callback')
+        self.reasoning_default, self.stream = reasoning_default, stream
+        self.lifecycle = ChatLifecycle()
+        self._owner_id = str(uuid4())
         self._contexts = {}
+        self._responses = {}
+        self._shutdown_callbacks = None
 
     async def aclose(self):
         self.closed = True
-        for context in tuple(self._contexts.values()):
-            try:
-                await self._release_context(context)
-            except CleanupPendingError:
-                raise CleanupPendingError((self,), self.aclose) from None
+        if self._shutdown_callbacks is None:
+            self._shutdown_callbacks = [self.lifecycle.aclose]
+            self._shutdown_callbacks.extend(response.aclose for response in tuple(self._responses.values()))
+            for context in tuple(self._contexts.values()):
+                async def release(selected=context):
+                    await self._release_context(selected)
+                self._shutdown_callbacks.append(release)
+        try:
+            await close_http_callbacks(self._shutdown_callbacks)
+        except CleanupPendingError:
+            raise CleanupPendingError((self,), self.aclose) from None
+        except asyncio.CancelledError as error:
+            error.cleanup_pending = CleanupPendingError((self,), self.aclose)
+            raise
+        self._contexts.clear()
         await self.owner.aclose()
 
     async def _release_context(self, context):
         try:
-            await finish_cleanup(context.aclose())
+            await _finish(context.aclose())
         finally:
             if context.retained_tasks:
                 self.closed = True
@@ -72,6 +93,8 @@ class StudioBackend:
                 hmac.compare_digest(request.headers.get('X-API-Agent-Session', '').encode(), self._nonce.encode()))
 
     def _response(self, value, status=200):
+        if len(json.dumps(value).encode()) > 131072:
+            raise ContractError('Application response exceeds byte limit')
         response = JsonResponse(value, status=status)
         response['Cache-Control'] = 'private, no-store'
         return response
@@ -121,51 +144,175 @@ class StudioBackend:
         response['Vary'] = 'Origin'
         return response
 
+    def _body(self, request):
+        body = request.read(self.body_limit + 1)
+        if request.content_type != 'application/json' or len(body) > self.body_limit:
+            raise ContractError('Invalid request body')
+        return json.loads(body, object_pairs_hook=_object, parse_constant=_constant)
+
     async def _execute(self, request, capability):
         if self.closed:
             raise SessionClosedError('Studio bridge closed')
+        if capability in ('chat_cancel', 'chat_heartbeat'):
+            row = self._body(request)
+            if type(row) is not dict or set(row) != {'session_id'} or row['session_id'] is None:
+                raise ContractError('Invalid lifecycle request')
+            session_id = chat_contract.session_identifier(row['session_id'])
+            if capability == 'chat_cancel':
+                status = await self.lifecycle.cancel(self._owner_id, session_id)
+            else:
+                status = self.lifecycle.heartbeat(self._owner_id, session_id)
+            return self._response({'session_id': session_id, 'status': status})
+        row = None if capability == 'models' else self._body(request)
         if capability != 'models':
-            body = request.read(self.body_limit + 1)
-            if request.content_type != 'application/json' or len(body) > self.body_limit:
-                raise ContractError('Invalid request body')
-            row = json.loads(body, object_pairs_hook=_object, parse_constant=_constant)
-            if type(row) is not dict or 'version' in row:
-                raise ContractError('Expected text completion')
-            value = request_from_wire(row)
-            if not value.request_id:
-                raise ContractError('Request identifier required')
+            chat_contract.completion(row, 'default', self.reasoning_default)
         async with report_timeout('Studio request', self.timeout) as budget:
             context = OperationContext(str(uuid4()), budget.deadline)
             self._contexts[context.correlation_id] = context
+            transferred = False
             try:
                 selections = self.policy.filter(await self.owner.call(self.describe, context=context))
+                default = self.policy.select_default(selections)
                 if capability == 'models':
-                    return self._response({'models': catalog_to_wire(selections),
-                                           'default': self.policy.select_default(selections)})
+                    return self._response(chat_contract.catalog(selections, default, self.reasoning_default))
+                session_id, value = chat_contract.completion(row, default, self.reasoning_default)
                 self.policy.require_allowed(value.selected_llm)
                 selection = next((item for item in selections if item.selected_llm == value.selected_llm), None)
                 if selection is None:
                     raise ContractError('Unknown model')
                 selection.validate(value)
-                async def operation(*, auth):
-                    return await self.complete(value, auth=auth, context=context)
-                result = result_to_wire(await self.owner.call(operation, context=context))
-                if capability == 'chat_stream':
-                    frame = {'kind': 'completed', 'payload': result}
-                    body = ('data: ' + json.dumps(frame, ensure_ascii=False, separators=(',', ':')) + '\n\n').encode()
-                    if max(len(body), len(json.dumps(frame, separators=(',', ':')).encode())) > 131072:
-                        raise ContractError('Studio response exceeds its byte limit')
-                    return HttpResponse(body, content_type='text/event-stream',
-                                        headers={'Cache-Control': 'private, no-store'})
-                return self._response(result)
-            finally:
-                cancelled = asyncio.current_task().cancelling()
+                queue = asyncio.Queue(maxsize=16)
+                async def invoke(context):
+                    async with report_timeout('Studio completion', self.timeout):
+                        if capability == 'chat_stream' and self.stream is not None:
+                            async def operation(*, auth):
+                                return self.stream(value, auth=auth, context=context)
+                            final = None
+                            chunks = []
+                            chunk_bytes = 0
+                            async with self.owner.stream(operation, context=context) as events:
+                                async for event in events:
+                                    if event.kind == 'text':
+                                        chunks.append(event.payload.text)
+                                        chunk_bytes += len(event.payload.text.encode())
+                                        if chunk_bytes > 131072 or len(chunks) > 4096:
+                                            raise ContractError('Application stream exceeds byte limit')
+                                        await queue.put(event.payload.text)
+                                    elif event.kind == 'completed':
+                                        final = chat_contract.result(session_id, event.payload)
+                                    else:
+                                        raise ContractError('Unsupported application stream event')
+                            if final is None or ''.join(chunks) != final['response_text']:
+                                raise ContractError('Invalid stream completion')
+                            return final
+                        async def operation(*, auth):
+                            return await self.complete(value, auth=auth, context=context)
+                        return chat_contract.result(session_id, await self.owner.call(operation, context=context))
+                response_owner = ResponseCleanup(self, session_id) if capability == 'chat_stream' else None
+                if len(self._responses) >= self.lifecycle.max_active + self.lifecycle.max_terminal:
+                    return self._response({'code': 'session_unavailable'}, 409)
                 try:
-                    await self._release_context(context)
-                except CleanupPendingError:
-                    if cancelled:
-                        raise asyncio.CancelledError from None
+                    turn = self.lifecycle.start(self._owner_id, session_id, invoke, context=context)
+                except ValueError:
+                    return self._response({'code': 'session_unavailable'}, 409)
+                transferred = True
+                self._contexts.pop(context.correlation_id, None)
+                if capability == 'chat_stream':
+                    owner = response_owner
+                    owner.turn = turn
+                    self._responses[session_id] = owner
+                    try:
+                        callbacks = getattr(request, 'scope', {}).get('api_agent_http_cleanup')
+                        if callbacks is not None:
+                            callbacks.append(owner.aclose)
+                        owner.source = self._events(session_id, turn, queue)
+                        return StreamingHttpResponse(owner.source,
+                            content_type='text/event-stream', headers={'Cache-Control': 'private, no-store'})
+                    except BaseException:
+                        await _finish(owner.aclose())
+                        raise
+                try:
+                    terminal = await self.lifecycle.wait(self._owner_id, session_id)
+                    if terminal.state == 'completed':
+                        return self._response(terminal.result)
+                    if terminal.state == 'cancelled':
+                        return self._response({'session_id': session_id, 'code': 'cancelled'}, 409)
+                    raise terminal.error
+                except asyncio.CancelledError:
+                    try:
+                        await _finish(self.lifecycle.disconnect(self._owner_id, session_id))
+                    except CleanupPendingError:
+                        pass
                     raise
+            finally:
+                if not transferred:
+                    await self._release_context(context)
+
+    async def _events(self, session_id, turn, queue):
+        source = self._raw_events(session_id, turn, queue)
+        total = count = 0
+        try:
+            async for body in source:
+                total += len(body)
+                count += 1
+                # Reserve a bounded terminal error within the shared stream cap.
+                if total > chat_contract.STREAM_BYTES - 1024 or count >= chat_contract.STREAM_EVENTS:
+                    yield chat_contract.frame('error', {'session_id': session_id, 'code': 'invalid_request'})
+                    return
+                yield body
+        finally:
+            await source.aclose()
+            owner = self._responses.get(session_id)
+            if owner is not None and owner.turn is turn:
+                self._responses.pop(session_id, None)
+
+    async def _raw_events(self, session_id, turn, queue):
+        settled = False
+        waiter = None
+        try:
+            waiter = _spawn(self.lifecycle.wait(self._owner_id, session_id))
+            yield chat_contract.frame('session', {'session_id': session_id,
+                'heartbeat_interval_ms': int(self.lifecycle.heartbeat_interval * 1000),
+                'heartbeat_timeout_ms': int(self.lifecycle.expiry * 1000)})
+            while not waiter.done() or not queue.empty():
+                if not queue.empty():
+                    yield chat_contract.frame('token', {'content': queue.get_nowait()})
+                    continue
+                read = _spawn(queue.get())
+                try:
+                    done, _ = await asyncio.wait((read, waiter), return_when=asyncio.FIRST_COMPLETED)
+                    if read in done:
+                        yield chat_contract.frame('token', {'content': read.result()})
+                finally:
+                    if not read.done():
+                        read.cancel()
+                        await asyncio.gather(read, return_exceptions=True)
+            terminal = await waiter
+            settled = True
+            if terminal.state == 'cancelled':
+                yield chat_contract.frame('cancelled', {'session_id': session_id})
+                return
+            if terminal.state != 'completed':
+                raise terminal.error
+            if self.stream is None:
+                yield chat_contract.frame('token', {'content': terminal.result['response_text']})
+            yield chat_contract.frame('response_complete', {'session_id': session_id})
+            yield chat_contract.frame('result', terminal.result)
+            yield chat_contract.frame('done', {'session_id': session_id})
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            payload = json.loads(self._error(error).content)
+            yield chat_contract.frame('error', {'session_id': session_id, **payload})
+        finally:
+            try:
+                if not settled:
+                    await _finish(self.lifecycle.disconnect(self._owner_id, session_id))
+            finally:
+                if waiter is not None:
+                    if not waiter.done():
+                        waiter.cancel()
+                    await asyncio.gather(waiter, return_exceptions=True)
 
 
 def _object(pairs):
@@ -179,3 +326,44 @@ def _object(pairs):
 
 def _constant(value):
     raise ContractError('Nonfinite JSON number')
+
+
+def _spawn(coroutine):
+    try:
+        return asyncio.create_task(coroutine)
+    except BaseException:
+        coroutine.close()
+        raise
+
+
+class ResponseCleanup:
+    """Keep both operation and exact iterator disposal reachable from the backend."""
+    def __init__(self, backend, session_id):
+        self.backend, self.session_id = backend, session_id
+        self.source = self.turn = None
+        self._callbacks = None
+
+    async def aclose(self):
+        if self._callbacks is None:
+            async def disconnect():
+                await self.backend.lifecycle.disconnect(self.backend._owner_id, self.session_id)
+            self._callbacks = [disconnect]
+            if self.source is not None:
+                self._callbacks.append(self.source.aclose)
+        try:
+            await close_http_callbacks(self._callbacks)
+        except CleanupPendingError:
+            raise CleanupPendingError((self,), self.aclose) from None
+        except asyncio.CancelledError as error:
+            error.cleanup_pending = CleanupPendingError((self,), self.aclose)
+            raise
+        if self.backend._responses.get(self.session_id) is self:
+            self.backend._responses.pop(self.session_id, None)
+
+
+async def _finish(coroutine):
+    try:
+        return await finish_cleanup(coroutine)
+    except BaseException:
+        coroutine.close()
+        raise

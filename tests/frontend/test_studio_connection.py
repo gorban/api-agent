@@ -3,6 +3,7 @@ import asyncio
 import importlib.util
 from pathlib import Path
 import threading
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -41,11 +42,17 @@ async def wait_event(event):
             await asyncio.sleep(.01)
 
 
+def pending_contexts(backend):
+    """Observe discovery and transferred inference ownership without conflating them."""
+    return (*backend._contexts.values(), *(turn.context for turn in backend.lifecycle._turns.values()
+        if not turn.done.is_set()))
+
+
 async def send(client, config, origin):
     return await client.post(config['apiOrigin'] + '/app/agent/chat',
         headers={'Origin': origin, **config['apiHeaders']}, json={
-            'selected_llm': 'sample', 'request_id': 'controlled', 'max_output_tokens': None,
-            'cache_policy': None, 'messages': [{'role': 'user', 'text': 'synthetic'}]})
+            'model': 'sample', 'session_id': str(uuid4()),
+            'messages': [{'role': 'user', 'content': 'synthetic'}]})
 
 
 def test_disconnect_retains_native_completion_until_drained(connection):
@@ -69,12 +76,12 @@ def test_disconnect_retains_native_completion_until_drained(connection):
                         await task
                     await asyncio.sleep(.1)
                     assert not provider.finished.is_set()
-                    assert active[0]._contexts
-                    context = next(iter(active[0]._contexts.values()))
+                    assert pending_contexts(active[0])
+                    context = pending_contexts(active[0])[0]
                     assert context.retained_tasks
                     provider.release.set()
                     await wait_event(provider.finished)
-            assert not active[0]._contexts
+            assert not pending_contexts(active[0])
             assert active[0].owner._closed
             assert provider.finished.is_set()
         finally:
@@ -114,7 +121,7 @@ def test_server_cleanup_failure_still_closes_node_and_socket(connection, monkeyp
                         assert (await send(client, config, origin)).status_code == 200
                 assert children[0].returncode is not None
                 assert listeners[0]._closed
-                assert not listeners[0].services['studio_backend']._contexts
+                assert not pending_contexts(listeners[0].services['studio_backend'])
                 assert provider.finished.is_set()
                 with pytest.raises(httpx.ConnectError):
                     await client.get(origin)
@@ -158,11 +165,11 @@ def test_disconnect_retains_native_catalog_discovery_until_drained(connection, m
                         await task
                     await asyncio.sleep(.1)
                     assert not provider.finished.is_set()
-                    assert active[0]._contexts
+                    assert pending_contexts(active[0])
                     assert active[0].owner._calls
                     provider.release.set()
                     await wait_event(provider.finished)
-            assert not active[0]._contexts
+            assert not pending_contexts(active[0])
             assert active[0].owner._closed
         finally:
             provider.release.set()

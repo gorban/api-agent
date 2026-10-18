@@ -2,6 +2,10 @@
 
 ## Checklist
 
+The shared text application contract is documented in [Application HTTP](../architecture/application_http_v1.md).
+
+- [ ] Complete the shared application HTTP and Studio lifecycle checkpoint: [application contracts](implementation_plan_i2c3.md), [heartbeat and cancellation](implementation_plan_i2c4.md), and [Studio consumer](implementation_plan_i2c5.md). Keep provider wire contracts independent of browser DTOs; retained post-test interaction remains separately owned by [I2c2](implementation_plan_i2c2.md).
+
 - [ ] Complete [reviewed frontend integration](implementation_plan_i2.md) after [reasoning/model identity](implementation_plan_f2f.md), preserving current runtime behavior and independently reviewing the joined candidate.
 
 - [ ] Inspect the current frontend consumers as each API contract becomes relevant, and expand the implementation task with the required paths, request fields, response fields, authentication/session binding, and lifecycle behavior. Use publicly available API documentation and user-approved independently authored contracts as contract evidence. Start with the UI renderer, including its action-endpoint, result-set, and stream-event consumers.

@@ -2,6 +2,8 @@
 
 [Studio frontend](implementation_plan_i2a.md)
 
+The initial buffered provider-shaped HTTP proof below is historical. The current shared browser-facing DTO, named SSE and heartbeat/cancel requirements are owned by [I2c3](implementation_plan_i2c3.md), [I2c4](implementation_plan_i2c4.md) and [I2c5](implementation_plan_i2c5.md). The provider wire contract remains separate.
+
 - [x] Composition explicitly authorizes and injects a caller-owned backend with
   a persistent LLM session owner, catalog/completion callbacks, model policy,
   exact loopback browser origin and ephemeral session nonce. No automatic
