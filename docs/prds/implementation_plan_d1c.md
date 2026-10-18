@@ -14,7 +14,7 @@
 
 - [x] Verify current-launch totals, failure/success history and trends, exact prior-test/attachment links, retries, independent modes, first launch, late upload/refresh, immutable context routes, stale/corrupt input, transfer limits and interrupted generation. Detect omitted history transfer and pooled-launch mutations.
 - [x] Prove actual Allure CLI/HTTP/Chromium history navigation with controlled results, installed-package loading, exact applicable line/branch coverage and boundary/license/index/metadata checks; obtain independent review. No paid inference is needed.
-- [ ] Human review the latest report, History tab, trend navigation, archive and exact selected attempt.
+- [x] Human review the latest report, History tab, trend navigation, archive and exact selected attempt.
 
 ## Future format changes
 
@@ -28,4 +28,4 @@ Official formats: [history](https://allurereport.org/docs/how-it-works-history-f
 - [x] List integration `n / N` passed tests, and E2E `first n / N (x.x%) — final n / N (x.x%)`. Obtain counts from verified result JSON without downloading attachments; distinguish logical parameterized tests from attempts and preserve all-confirmations-pass final semantics. Unavailable or ambiguous counts are explicit, never fabricated. Legacy E2E retries without the original confirmation count cannot establish a final pass count; the E2E runner contract records that policy before this can be shown. Keep failed/interrupted launch status explicit beside the primary counts; a passing final retry does not erase an immutable run-level failure. Successful rows omit the old completed status.
 - [x] On opening a past archive row, derive Trend widgets from up to count minus one earlier and later same-mode launches (default 19 each). Keep original current results, per-test History, stored artifacts and native chronological history transfer unchanged. Use genuine Allure-generated chronological data, validate the transferred overlap, and preserve optional/absent owner executor URLs and build numbers without inventing them. Use immutable context routes; later uploads require new routes.
 - [x] Verify complete/newest archive rows, counts/retries/modes, unknown data, past/future boundaries, genuine CLI/browser Trend rendering, exact selected outcomes/History, source switching/corruption, lifecycle, installed package, exact unit coverage and independent review.
-- [ ] Human acceptance of archive-first navigation, counts and surrounding Trend charts.
+- [x] Human acceptance of archive-first navigation, counts and surrounding Trend charts.

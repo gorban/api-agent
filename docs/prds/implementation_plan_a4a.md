@@ -37,7 +37,7 @@
   visibility and credential exclusion, including secrets inside ordinary inputs,
   split text, registration races and trusted icons. Preserve content-disabled
   gates, immutable recording, exact coverage and independent privacy review.
-- [ ] Human-review the refined original screenshots before accepting this change.
+- [x] Human-review the refined original screenshots before accepting this change.
 - [x] Independently review the capture policy and recording join.
 
 ## Limits and remaining acceptance

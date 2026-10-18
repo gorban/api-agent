@@ -79,3 +79,5 @@ The installed wheel runs its selected included provider and rendered action
 from an unrelated working directory, captures original masked pixels and
 disposes its process/browser. Frontend coverage passes 112 cases plus five
 reply controls with exact authored line/branch coverage.
+
+- [x] Human acceptance of the one-prompt Studio integration through the prepared selected UI session, Agent HTTP bridge and recorded evidence. Full workflow execution and application E2E remain separate.

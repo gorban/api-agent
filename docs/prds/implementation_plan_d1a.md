@@ -52,7 +52,7 @@
 - [x] Freeze native history bytes into the current report route. Refresh/late history produces a distinct route when its history changes. Live previews retain their pending-publication/accounting label and use their start timestamp for derived viewer metadata; do not invent a finalized manifest.
 - [x] Bound optional prior-history preparation under the selected viewer deadline, reserving time for current evidence. Construct the optional source inside this fallback boundary. If history construction/retrieval/verification fails or its child deadline expires, open the verified current attempt without history and display an explicit history-unavailable notice. Never fall back to S3 in secondary-only mode. Retain and drain timed-out synchronous history work without consuming the current report’s remaining time. Permit at most one unfinished history preparation per viewer; repeated clicks open current evidence without starting more reads until it settles. Cleanup must preserve retry ownership until that work settles; preserve external cancellation.
 - [x] Verify passed/failed/live/finalized selection, unrelated tests and modes, parameters, self/future exclusion, bounded history, source isolation, missing/corrupt history, timeouts, cancellation, immutable routes and real Allure CLI/HTTP history links; renew exact coverage, installed-package and public-boundary gates with independent review.
-- [ ] Human review the same completed test through the shortcut and history viewer with both history-source policies. No additional paid inference is required for deterministic acceptance.
+- [x] Human review the same completed test through the shortcut and history viewer with both history-source policies. No additional paid inference is required for deterministic acceptance.
 
 ## Acceptance
 
@@ -62,7 +62,7 @@
 - [x] Prove original DEBUG browsers and accounting/suite exclusion stay intact;
   verify owned server/browser/staging disposal and cleanup retry. Complete exact
   applicable coverage, installed/package/license/boundary and independent review.
-- [ ] Human review one completed test while another remains running, then a
+- [x] Human review one completed test while another remains running, then a
   completed suite; inspect its original screenshot and confirm cleanup on exit.
   No paid inference is required for controlled acceptance.
 
@@ -84,4 +84,4 @@ budget accounting and unavailable reasons.
 
 - [x] Show orange `Preparing selected integration run in Allure…` or `Preparing selected E2E run in Allure…` immediately above the footer while a selected-report request is pending. This is persistent screen state, not a toast. Preserve it when remaining tests finish, when results refresh, and when details/confirmation screens resume.
 - [x] Clear only the matching request's status after its actual link notification or failure; cancellation and leave/close clear it. Stale requests cannot erase a newer status. Keep errors and current test timing/outcomes independent. Verify partial/final completion ordering, failure, cancellation, resumed views and selected mode.
-- [ ] Human review the persistent orange preparation status from a partial completion through the completed-results transition, until the selected report link or failure appears.
+- [x] Human review the persistent orange preparation status from a partial completion through the completed-results transition, until the selected report link or failure appears.
