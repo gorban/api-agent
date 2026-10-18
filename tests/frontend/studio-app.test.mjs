@@ -1199,3 +1199,52 @@ test('family default retries keep their send-time ID after the configured family
   await page.locator('.assistant summary').click();assert.match(await page.locator('.assistant .metadata-grid').textContent(),/Resolved catalog modelnew/);
  }finally{await studio.close();}
 });
+
+test('family picker preserves display casing for whole dated and hyphenated version suffixes',async()=>{
+ const rows=[{...model,selected_llm:'dated',display_name:'Family-2024-01-01',version:'2024-01-01',family:'family'},
+  {...model,selected_llm:'preview',display_name:'Family-release-candidate',version:'release-candidate',family:'family'}];
+ const posts=[],family=JSON.stringify(['family','family']);
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:rows.map(wireModel),default:'dated',reasoning_default:null}));return;}
+  const input=JSON.parse(body);posts.push(input);response.end(JSON.stringify(wireResult(result('Selected suffix version'),input.session_id)));
+ },family);
+ try{
+  const {page}=studio;await page.locator('#settings-nav').click();
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['Family']);
+  assert.deepEqual(await page.locator('#version option').allTextContents(),['Provider default','2024-01-01','release-candidate']);
+  await page.locator('#version').selectOption('preview');await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Whole advertised version');await page.locator('#send').click();await page.getByText('Selected suffix version',{exact:true}).waitFor();
+  assert.equal(posts.length,1);assert.equal(posts[0].model,'preview');assert.equal(posts[0].reasoning_effort,'off');
+ }finally{await studio.close();}
+});
+
+test('missing saved family uses display-only intent despite opaque ID and handle collisions',async()=>{
+ const family='retired-family',handle=JSON.stringify(['missing-family',family]);
+ const rows=[model,{...model,selected_llm:family,display_name:'Opaque impostor'},
+  {...model,selected_llm:handle,display_name:'Opaque handle'},
+  {...model,selected_llm:'~'+handle,display_name:'Opaque prefixed handle'},
+  {...model,selected_llm:'~~'+handle,display_name:'Other-6',family:'other',version:'6'}];
+ const posts=[];
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:rows.map(wireModel),default:'sample',reasoning_default:null}));return;}
+  const input=JSON.parse(body);posts.push(input);response.end(JSON.stringify(wireResult(result('Explicit opaque selection'),input.session_id)));
+ });
+ try{
+  const {page}=studio;
+  await page.evaluate(family=>{const saved={session:crypto.randomUUID(),draft:'',messages:[],reply:null,settings:{family,model:'',version:'',reasoning:''}};localStorage.setItem('api-agent-studio-v2',JSON.stringify(saved));},family);
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');await page.locator('#settings-nav').click();
+  assert.equal(await page.locator('#model option:checked').textContent(),family+' (saved family)');
+  assert.equal(await page.locator('#model option:checked').isDisabled(),true);
+  const selected=await page.locator('#model').inputValue();assert.ok(!rows.some(row=>row.selected_llm===selected));
+  assert.equal(await page.locator('#model option').evaluateAll(options=>new Set(options.map(option=>option.value)).size===options.length),true);
+  await page.locator('#model').dispatchEvent('change');
+  assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings),{family,model:'',version:'',reasoning:''});
+  await page.locator('#close-settings').click();await page.locator('#prompt').fill('Must preserve missing family');await page.locator('#send').click();
+  assert.match(await page.locator('#status').textContent(),/family is no longer/);assert.equal(posts.length,0);
+  assert.equal(await page.locator('.message').count(),0);
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption(family);await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();await page.locator('#send').click();await page.getByText('Explicit opaque selection',{exact:true}).waitFor();
+  assert.equal(posts.length,1);assert.equal(posts[0].model,family);
+ }finally{await studio.close();}
+});

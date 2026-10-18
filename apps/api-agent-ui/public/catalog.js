@@ -52,6 +52,8 @@ export function modelGroups(catalog) {
   }
   for (const group of groups) if (group.family !== null) {
     const labels = new Set(group.rows.map(row => {
+      const suffixLabel = row.version && row.display_name.endsWith(row.version) ? row.display_name.slice(0, -row.version.length).replace(/[ _-]+$/, '') : '';
+      if (suffixLabel.toLowerCase() === group.family.toLowerCase()) return suffixLabel;
       const parts = row.display_name.split(/([ _-]+)/);
       const label = parts.filter(part => !row.version || part !== row.version).join('').replace(/([ _-])\1+/g, '$1').replace(/^[ _-]+|[ _-]+$/g, '');
       return label.toLowerCase() === group.family.toLowerCase() ? label : group.family;

@@ -199,7 +199,11 @@ async function run(text, requested, retryMessage, reply) {
 function fillSelect(id, entries, selected, placeholder = 'Provider default') {
   const select = $(id); select.replaceChildren();
   if (id !== 'model') select.add(new Option(placeholder, ''));
-  for (const item of entries) select.add(new Option(item.name || item.id, item.id));
+  for (const item of entries) {
+    const option = new Option(item.name || item.id, item.id);
+    option.disabled = !!item.disabled;
+    select.add(option);
+  }
   if (selected && !entries.some(x => x.id === selected)) select.add(new Option(selected + ' (saved selection)', selected));
   select.value = selected;
 }
@@ -207,7 +211,14 @@ function syncSettings() {
   const groups = modelGroups(catalog);
   const concrete = state.settings.model || (!state.settings.family && catalog.defaultSelection);
   const group = groups.find(item => state.settings.family ? item.family === state.settings.family : item.rows.some(row => row.selected_llm === concrete));
-  fillSelect('model', groups.map(item => ({id: item.value, name: item.name})), group?.value || state.settings.model || state.settings.family || '');
+  const models = groups.map(item => ({id: item.value, name: item.name}));
+  let selectedModel = group?.value || state.settings.model || '';
+  if (!group && state.settings.family) {
+    selectedModel = JSON.stringify(['missing-family', state.settings.family]);
+    while (catalog.some(row => row.selected_llm === selectedModel)) selectedModel = '~' + selectedModel;
+    models.push({id: selectedModel, name: state.settings.family + ' (saved family)', disabled: true});
+  }
+  fillSelect('model', models, selectedModel);
   const entries = group?.rows || [];
   const selection = resolveSelection(catalog, state.settings);
   const grouped = group?.family !== null && group !== undefined;

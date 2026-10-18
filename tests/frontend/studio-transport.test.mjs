@@ -221,3 +221,12 @@ test('explicit family metadata groups versions and preserves opaque/colliding id
  assert.equal(resolveSelection(duplicate,{model:'second',version:'6'}).selection.selected_llm,'second');
  assert.deepEqual(modelGroups([]),[]);
 });
+
+test('family labels remove an exact advertised separated version suffix as one value',()=>{
+ const row=(value,label,version,family='family')=>({...model,value,label,version,family});
+ for(const [label,version,expected] of [['Family-2024-01-01','2024-01-01','Family'],['Family-alpha-beta','alpha-beta','Family'],['FaMiLy_release-candidate','release-candidate','FaMiLy'],['Different-2024-01-01','2024-01-01','family'],['Family-2024-01-02','2024-01-01','family']]){
+  const rows=normalizeCatalog(catalog([row('m',label,version)]));
+  assert.equal(modelGroups(rows)[0].name,expected);
+  assert.equal(resolveSelection(rows,{model:'m'}).selection.selected_llm,'m');
+ }
+});
