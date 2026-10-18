@@ -16,23 +16,138 @@ from uuid import UUID
 from uuid import uuid4
 
 from api_agent.providers.control import CleanupPendingError
-from .suite_lock import _dispose_descriptor
+from .suite_lock import _dispose_descriptor, _cleanup_receipts
 
 
 class StorageError(RuntimeError):
     """Bounded error that never includes provider response text."""
 
 
-class _CopyCleanup:
+def _storage_error(message, original):
+    error = StorageError(message)
+    pending = tuple(_cleanup_receipts(original))
+    if pending:
+        error.cleanup_pending = pending[0]
+        error.retained_owners = getattr(original, 'retained_owners', ())
+    return error
+
+
+class _Cleanup:
+    """Retain every cleanup duty while preserving the original interruption."""
+    def __init__(self):
+        self.guard = RLock()
+
+    async def aclose(self):
+        import asyncio
+        from api_agent.runtime.tasks import offload
+        try:
+            await offload(self._finish)
+        except asyncio.CancelledError as error:
+            self._retain(error, CleanupPendingError((self,), self.aclose))
+            raise
+
+    def __exit__(self, kind, original, traceback):
+        return self._finish(original)
+
+    def _finish(self, original=None):
+        with self.guard:
+            return self._finish_owned(original)
+
+    def _finish_owned(self, original):
+        try:
+            self._cleanup()
+        except BaseException as cleanup:
+            pending = CleanupPendingError((self,), self.aclose)
+            if original is not None and not isinstance(original, Exception):
+                self._retain(original, pending)
+                self._append(pending, cleanup if isinstance(cleanup, CleanupPendingError) else getattr(cleanup, 'cleanup_pending', None))
+                return False
+            if not isinstance(cleanup, Exception):
+                self._retain(cleanup, pending)
+                previous = original if isinstance(original, CleanupPendingError) else getattr(original, 'cleanup_pending', None)
+                self._append(pending, previous)
+                raise
+            previous = original if isinstance(original, CleanupPendingError) else getattr(original, 'cleanup_pending', None)
+            self._append(pending, cleanup if isinstance(cleanup, CleanupPendingError) else getattr(cleanup, 'cleanup_pending', None))
+            self._append(pending, previous)
+            raise pending from None
+
+
+    def _retain(self, error, pending):
+        pending.cleanup_pending = getattr(error, 'cleanup_pending', None)
+        error.cleanup_pending = pending
+        owners = (*getattr(error, 'retained_owners', ()), self)
+        error.retained_owners = tuple({id(owner): owner for owner in owners}.values())
+
+
+    @staticmethod
+    def _append(pending, following):
+        receipts = tuple(_cleanup_receipts(pending))
+        if following is not None and all(following is not item for item in receipts):
+            target = receipts[-1] if receipts else pending
+            target.cleanup_pending = following
+
+
+class _DescriptorCleanup(_Cleanup):
+    """Close one raw descriptor once, retaining its native acknowledgement."""
+    def __init__(self, descriptor):
+        super().__init__()
+        self.descriptor = descriptor
+        self.closing = None
+
+    def __enter__(self):
+        return self.descriptor
+
+    def _cleanup(self):
+        if self.descriptor is None:
+            return
+        if self.closing is None:
+            ticket = self._close_ticket()
+            try:
+                self.closing = ticket
+                self._start_close(ticket)
+            except BaseException:
+                if ticket.cancel():
+                    self.closing = None
+                raise
+        self.closing.result()
+        self.descriptor = None
+
+
+    def _close_ticket(self):
+        return Future()
+
+    def _start_close(self, ticket):
+        start_new_thread(_dispose_descriptor, (self.descriptor, ticket))
+
+
+class _ResourceCleanup(_Cleanup):
+    """Retry an idempotent resource close through its owned object."""
+    def __init__(self, resource):
+        super().__init__()
+        self.resource = resource
+
+    def __enter__(self):
+        return self.resource
+
+    def _cleanup(self):
+        if self.resource is not None:
+            self.resource.close()
+            self.resource = None
+
+
+class _CopyCleanup(_DescriptorCleanup):
     """Retain one exact temporary name and its directory until unlink settles."""
     def __init__(self, directory_fd, temporary):
-        self.directory_fd = os.dup(directory_fd)
+        super().__init__(os.dup(directory_fd))
         self.temporary = temporary
-        self.closing = None
         self.creation = None
         self.stream = None
         self.identity = None
-        self.guard = RLock()
+
+    @property
+    def directory_fd(self):
+        return self.descriptor
 
     def __enter__(self):
         return self
@@ -81,52 +196,7 @@ class _CopyCleanup:
                     if (entry.st_dev, entry.st_ino) != self.identity or not stat.S_ISREG(entry.st_mode):
                         raise StorageError('Temporary copy ownership changed')
                     os.unlink(self.temporary, dir_fd=self.directory_fd)
-            ticket = Future()
-            try:
-                self.closing = ticket
-                start_new_thread(_dispose_descriptor, (self.directory_fd, ticket))
-            except BaseException:
-                if ticket.cancel():
-                    self.closing = None
-                raise
-        self.closing.result()
-        self.directory_fd = None
-
-    async def aclose(self):
-        import asyncio
-        from api_agent.runtime.tasks import offload
-        try:
-            await offload(self._finish)
-        except asyncio.CancelledError as error:
-            self._retain(error, CleanupPendingError((self,), self.aclose))
-            raise
-
-    def __exit__(self, kind, original, traceback):
-        return self._finish(original)
-
-    def _finish(self, original=None):
-        with self.guard:
-            return self._finish_owned(original)
-
-    def _finish_owned(self, original):
-        try:
-            self._cleanup()
-        except BaseException as cleanup:
-            pending = CleanupPendingError((self,), self.aclose)
-            if original is not None and not isinstance(original, Exception):
-                self._retain(original, pending)
-                return False
-            if not isinstance(cleanup, Exception):
-                self._retain(cleanup, pending)
-                raise
-            raise pending from None
-
-
-    def _retain(self, error, pending):
-        pending.cleanup_pending = getattr(error, 'cleanup_pending', None)
-        error.cleanup_pending = pending
-        owners = (*getattr(error, 'retained_owners', ()), self)
-        error.retained_owners = tuple({id(owner): owner for owner in owners}.values())
+        super()._cleanup()
 
 
 class RunStorage:
@@ -179,16 +249,20 @@ class RunStorage:
     def _put_once(self, key, data):
         try:
             self._client().put_object(Bucket=self.bucket, Key=key, Body=data, IfNoneMatch='*')
-        except Exception:
+        except CleanupPendingError:
+            raise
+        except Exception as error:
+            if any(_cleanup_receipts(error)):
+                raise _storage_error('Could not persist Allure run', error) from None
             # A retry is safe only when the object already has precisely these bytes.
             try:
                 body = self._client().get_object(Bucket=self.bucket, Key=key)['Body']
-                try:
+                with _ResourceCleanup(body):
                     existing = body.read(len(data) + 1)
-                finally:
-                    body.close()
-            except Exception:
-                raise StorageError('Could not persist Allure run') from None
+            except CleanupPendingError:
+                raise
+            except Exception as error:
+                raise _storage_error('Could not persist Allure run', error) from None
             if existing != data:
                 raise StorageError('Could not persist Allure run') from None
 
@@ -205,31 +279,31 @@ class RunStorage:
         temporary = f'.allure-{uuid4()}'
         with _CopyCleanup(directory_fd, temporary) as copy:
             directory_fd = copy.directory_fd
-            with copy.create() as stream:
-                stream.write(data)
+            stream = copy.create()
+            stream.write(data)
+            stream.flush()
             try:
                 os.link(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
                         follow_symlinks=False)
             except FileExistsError:
                 existing_fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
                                       dir_fd=directory_fd)
-                with os.fdopen(existing_fd, 'rb') as stream:
-                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                        raise StorageError('Could not persist Allure run') from None
-                    if stream.read(len(data) + 1) != data:
-                        raise StorageError('Could not persist Allure run') from None
+                with _DescriptorCleanup(existing_fd):
+                    with _ResourceCleanup(os.fdopen(existing_fd, 'rb', closefd=False)) as stream:
+                        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                            raise StorageError('Could not persist Allure run') from None
+                        if stream.read(len(data) + 1) != data:
+                            raise StorageError('Could not persist Allure run') from None
 
     @staticmethod
     def _read_source(path, *, directory_fd=None, max_bytes=None):
         """Reject links and nonregular staging entries before any blocking read."""
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd)
-        try:
+        with _DescriptorCleanup(descriptor):
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise StorageError('Could not persist Allure run')
-            with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            with _ResourceCleanup(os.fdopen(descriptor, 'rb', closefd=False)) as stream:
                 return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
-        finally:
-            os.close(descriptor)
 
     def persist(self, directory, manifest):
         """Attempt each destination; commit its manifest only after verified content."""
@@ -248,7 +322,7 @@ class RunStorage:
         try:
             with ExitStack() as sources:
                 source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                sources.callback(os.close, source_fd)
+                sources.enter_context(_DescriptorCleanup(source_fd))
                 manifest_body = self._read_source('manifest.json', directory_fd=source_fd)
                 if json.loads(manifest_body) != manifest:
                     raise ValueError('Manifest does not match finalized metadata')
@@ -260,7 +334,11 @@ class RunStorage:
                             raise ValueError('Artifact digest mismatch')
                         self._put_once(self._key(repo, run_id, name), body)
                     self._put_once(self._key(repo, run_id, 'manifest.json'), manifest_body)
-                except Exception:
+                except CleanupPendingError:
+                    raise
+                except Exception as error:
+                    if any(_cleanup_receipts(error)):
+                        raise _storage_error('Could not persist Allure run', error) from None
                     failed = True
                 if self.secondary_directory:
                     try:
@@ -268,11 +346,11 @@ class RunStorage:
                         base.mkdir(parents=True, exist_ok=True)
                         with ExitStack() as stack:
                             base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                            stack.callback(os.close, base_fd)
+                            stack.enter_context(_DescriptorCleanup(base_fd))
                             repo_fd = self._open_directory(base_fd, repo)
-                            stack.callback(os.close, repo_fd)
+                            stack.enter_context(_DescriptorCleanup(repo_fd))
                             run_fd = self._open_directory(repo_fd, run_id)
-                            stack.callback(os.close, run_fd)
+                            stack.enter_context(_DescriptorCleanup(run_fd))
                             for name in sorted(names):
                                 body = self._read_source(name, directory_fd=source_fd)
                                 if hashlib.sha256(body).hexdigest() != names[name]:
@@ -281,14 +359,16 @@ class RunStorage:
                             self._copy_once(run_fd, 'manifest.json', manifest_body)
                     except CleanupPendingError:
                         raise
-                    except Exception:
+                    except Exception as error:
+                        if any(_cleanup_receipts(error)):
+                            raise _storage_error('Could not persist Allure run', error) from None
                         failed = True
                 if failed:
                     raise StorageError('Could not persist Allure run')
         except CleanupPendingError:
             raise
-        except Exception:
-            raise StorageError('Could not persist Allure run') from None
+        except Exception as error:
+            raise _storage_error('Could not persist Allure run', error) from None
         return self._key(repo, run_id, 'manifest.json')
 
     def history(self, repo, *, max_pages=100, budget=None, require_accounting=False):
@@ -321,10 +401,8 @@ class RunStorage:
                         continue
                     try:
                         body = client.get_object(Bucket=self.bucket, Key=key)['Body']
-                        try:
+                        with _ResourceCleanup(body):
                             data = body.read(MAX_BYTES + 1)
-                        finally:
-                            body.close()
                         if len(data) > MAX_BYTES:
                             raise ValueError('Oversized history manifest')
                         manifest = json.loads(data)
@@ -338,9 +416,11 @@ class RunStorage:
                             not any(c in name for c in '/\\\0') and isinstance(digest, str) and
                             len(digest) == 64 and all(c in '0123456789abcdef' for c in digest)
                             for name, digest in files.items())
-                    except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+                    except (ValueError, TypeError, AttributeError, json.JSONDecodeError) as error:
+                        if any(_cleanup_receipts(error)):
+                            raise _storage_error('Could not load Allure history', error) from None
                         if require_accounting:
-                            raise StorageError('Could not load Allure history') from None
+                            raise _storage_error('Could not load Allure history', error) from None
                         continue
                     if (manifest.get('schema') == 1 and manifest.get('repo') == repo and valid_id and valid_time and
                             manifest.get('mode') in {'integration', 'e2e'} and
@@ -358,8 +438,10 @@ class RunStorage:
                 if token in seen_tokens:
                     raise ValueError('Repeated history page')
                 seen_tokens.add(token)
-        except Exception:
-            raise StorageError('Could not load Allure history') from None
+        except CleanupPendingError:
+            raise
+        except Exception as error:
+            raise _storage_error('Could not load Allure history', error) from None
         return [manifest for _, manifest in sorted(rows, key=lambda row: (row[0], row[1]['run_id']))]
 
     def latest(self, repo):
@@ -377,12 +459,12 @@ class RunStorage:
                 raise StorageError('Could not load Allure history')
             try:
                 body = self._client().get_object(Bucket=self.bucket, Key=self._key(repo, manifest['run_id'], 'accounting.json'))['Body']
-                try:
+                with _ResourceCleanup(body):
                     payload = body.read(MAX_BYTES + 1)
-                finally:
-                    body.close()
                 if len(payload) > MAX_BYTES or hashlib.sha256(payload).hexdigest() != manifest['files']['accounting.json']:
                     raise StorageError('Could not load Allure history')
                 yield manifest, payload
-            except Exception:
-                raise StorageError('Could not load Allure history') from None
+            except CleanupPendingError:
+                raise
+            except Exception as error:
+                raise _storage_error('Could not load Allure history', error) from None

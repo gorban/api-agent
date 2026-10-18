@@ -418,6 +418,7 @@ def test_source_descriptors_are_closed_on_success_and_failure(tmp_path, monkeypa
     storage = RunStorage('bucket', client=s3)
     opened = set()
     original_open, original_close = os.open, os.close
+    original_closerange = os.closerange
     def track_open(*args, **kwargs):
         descriptor = original_open(*args, **kwargs)
         opened.add(descriptor)
@@ -425,6 +426,10 @@ def test_source_descriptors_are_closed_on_success_and_failure(tmp_path, monkeypa
     def track_close(descriptor):
         original_close(descriptor)
         opened.remove(descriptor)
+    def track_range(low, high):
+        original_closerange(low, high)
+        opened.difference_update(range(low, high))
+    monkeypatch.setattr(os, 'closerange', track_range)
     monkeypatch.setattr(os, 'open', track_open)
     monkeypatch.setattr(os, 'close', track_close)
     if failure == 'none':
@@ -694,6 +699,7 @@ def test_failed_primary_preserves_pinned_source_root_for_secondary(independent_p
 def owned_directory_descriptors(monkeypatch):
     opened = set()
     original_open, original_close = os.open, os.close
+    original_closerange = os.closerange
     def open_directory(path, flags, *args, **kwargs):
         descriptor = original_open(path, flags, *args, **kwargs)
         if flags & os.O_DIRECTORY:
@@ -702,6 +708,10 @@ def owned_directory_descriptors(monkeypatch):
     def close(descriptor):
         original_close(descriptor)
         opened.discard(descriptor)
+    def track_range(low, high):
+        original_closerange(low, high)
+        opened.difference_update(range(low, high))
+    monkeypatch.setattr(os, 'closerange', track_range)
     monkeypatch.setattr(os, 'open', open_directory)
     monkeypatch.setattr(os, 'close', close)
     yield opened

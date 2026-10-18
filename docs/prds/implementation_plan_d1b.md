@@ -60,3 +60,10 @@ Official references: [generation](https://allurereport.org/docs/v2/generate-repo
 - [x] Join cleanup duties by object identity without invoking receipt-defined equality. Distinct duties remain retained even when a receipt overrides equality or raises from it.
 
 Publication assumes coordinated writers reserve each operation’s random temporary name; arbitrary external mutation of that entry between filesystem operations is outside this cleanup guarantee.
+
+## Surrounding publication cleanup
+
+- [x] Preserve the original interruption through source-reader, existing-target, writer, SDK-body and outer-directory disposal failures. Retain every direct or attached cleanup duty, including ordinary inner pending receipts, through the existing recording/launched/TUI recovery contract.
+- [x] Use acknowledged one-time disposal for raw descriptors. Pending cleanup never retries an ambiguously closed numeric descriptor; nonowning read wrappers and owned SDK objects keep explicit, separate cleanup ownership.
+- [x] Verify actual close-launch/acknowledgement failures, numeric descriptor reuse, multiple simultaneous pending owners and suite exclusion until all duties settle. Successful temporary or descriptor cleanup remains separate from publication success.
+- [x] Independently review these surrounding cleanup boundaries and renew joined verification. Prior approvals and earlier interruption closures remain recorded; this additional failure path has not received human acceptance.
