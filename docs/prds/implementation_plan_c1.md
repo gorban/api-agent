@@ -16,6 +16,9 @@ application template or duplicating executable configuration inventories.
   where needed; retain existing incoming links and avoid competing guides.
 - [ ] Complete the [interface and behavior inventory](implementation_plan_c1a.md)
   and [bootstrap, configuration and example](implementation_plan_c1b.md).
+- [ ] In the guide's provider-author checklist, assign cost-profile declarations,
+  provider-specific pricing/usage evidence and honest ancillary-charge handling
+  to the adapter implementor; shared model names do not imply shared costs.
 - [ ] Link the actual bundled `flow.md.html` and explain selection of a custom
   graph, node additions/replacements and tools after the declarative workflow
   conversion is delivered. Preserve root entry and nested resources; do not

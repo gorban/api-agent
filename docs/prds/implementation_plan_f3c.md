@@ -17,6 +17,29 @@ The current implementation prices calls separately, sums their list equivalents 
 
 ## Cohorts and optional accuracy work
 
+- [ ] Qualify provider and billing-route separation with identical model/version,
+  reasoning, token counts and test identity but distinct provider costs. Predictions,
+  quota fits, reported-charge averages and rate snapshots must not cross provider
+  cohorts. Existing provider identity fingerprints the factory file contents and
+  symbol, not its path/display name or all imported helpers. Existing route/auth
+  separation depends on declared cost-affecting settings. Verify relocated copies
+  remain compatible while distinct effective billing/guardrail profiles do not;
+  require a stable non-secret profile identity where that fingerprint is insufficient.
+- [ ] Cover the same adapter with changed endpoint, region, guardrail/version,
+  inference profile, service tier, billing policy or request transformations.
+  Declare relevant non-secret settings `cost_affecting=true`; missing or unknown
+  required profile evidence stays unavailable. An unobserved server-side policy
+  change cannot be inferred from model identity alone: retain the uncertainty,
+  split cohorts when identified and never retroactively rewrite original costs.
+- [ ] Distinguish provider-added charged model tokens from ancillary fixed/unit
+  charges. Qualified reported totals and provider-specific quota calibration may
+  include overhead, but a token-only list equivalent may omit it. Preserve any
+  unattributed remainder and unknown costs; do not invent guardrail token counts
+  or label proportional estimates as itemized measured charges. Blocked requests
+  with zero model tokens may still incur charges. Extend generic charge evidence
+  only as needed under a validated versioned contract. Keep the accepted shared
+  calibration factor within each compatible provider/profile; sharing a model name
+  never authorizes sharing that factor across providers.
 - [ ] Define prediction cohorts for explicit model/version/reasoning selections and dynamic workflow paths. Investigate current all-signatures-conflict behavior before changing it: preserve separate cohorts, strict compatibility and honest unknown predictions when the next graph path is unknowable. Do not merge differing efforts merely because their per-token rates match; their usage distributions may differ.
 - [ ] Validate whether one factor is accurate enough as model/effort proportions change. The shared factor is the accepted policy. Separate model/effort factors are outside this delivery; reconsider only on a new accuracy requirement with identifiable, qualified observations. In particular, mixed suites whose model weights always move together cannot identify separate factors. Record uncertainty, required sample coverage and a materiality decision before implementing a more complex estimator. Never generate paid calls solely to fit factors without separate authorization.
 - [ ] Keep declared pricing dimensions explicit. Current standard text pricing has model/token-category/context dimensions; reasoning effort is recorded as a usage/cohort setting, not an invented price multiplier. A provider charging differently by effort, tier or route needs validated additional rate dimensions or unavailable pricing. Multiple provider/quota accounts require separate meter observations before combining totals; a shared suite delta is insufficient.
