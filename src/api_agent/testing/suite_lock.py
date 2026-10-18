@@ -17,6 +17,7 @@ from api_agent.telemetry.history import cache_path
 
 _CURRENT = ContextVar('api_agent_suite_lease', default=None)
 _DELEGATED_THREAD = ContextVar('api_agent_suite_worker', default=None)
+_RETRY_PATH = ContextVar('api_agent_cleanup_retry_path', default=frozenset())
 
 
 class SuiteBusyError(ValueError):
@@ -47,6 +48,8 @@ class _Lease:
 
     closing: object = field(default=None, repr=False)
     receipts: dict = field(default_factory=dict, repr=False)
+
+    retry_waits: dict = field(default_factory=dict, repr=False)
 
     def retain(self, identifier):
         with self.guard:
@@ -175,9 +178,12 @@ class _ReceiptRetention:
         self.successors = set()
         self.parents = []
         self.notifying = False
+        self.running = self.retry_task = None
 
     def _acknowledge(self):
         with self.lease.guard:
+            if self.running is not None:
+                return
             if not self.acknowledged:
                 self.lease.release(id(self.pending))
                 self.acknowledged = True
@@ -199,12 +205,62 @@ class _ReceiptRetention:
 
     async def retry(self, *args, **kwargs):
         await self._retry(args, kwargs, set())
+        with self.lease.guard:
+            if not self.acknowledged or self.successors:
+                raise self.pending
 
     async def _retry(self, args, kwargs, ancestors):
-        # Ancestors have already completed their own disposal before visiting
-        # successors. A cycle needs no second invocation of that same body.
+        # A traversal cycle never repeats an ancestor's disposal body.
         if self in ancestors:
             return
+        task = asyncio.current_task()
+        while True:
+            with self.lease.guard:
+                # Inherited ancestry can reject an awaited callback cycle,
+                # never authorize disposal. Bind it to this exact attempt so
+                # old child-task contexts do not reject later retries.
+                if (self.running is not None and (self, self.running) in _RETRY_PATH.get()
+                        and self.retry_task is not task):
+                    raise self.pending
+                if self.retry_task is task:
+                    return
+                previous = self.running
+                if previous is None:
+                    ticket = Future()
+                    self.running, self.retry_task = ticket, task
+                    break
+                # Two active traversals can approach a cycle from opposite
+                # ends. Export pending ownership instead of closing that wait
+                # cycle or claiming that the still-active duty has completed.
+                owner = self.retry_task
+                while owner in self.lease.retry_waits:
+                    owner = self.lease.retry_waits[owner]
+                if owner is task:
+                    raise self.pending
+                self.lease.retry_waits[task] = self.retry_task
+            try:
+                # Native tickets support different loops; an interrupted
+                # observer must never cancel the active disposal's ticket.
+                await asyncio.shield(asyncio.wrap_future(previous))
+            finally:
+                with self.lease.guard:
+                    del self.lease.retry_waits[task]
+        token = _RETRY_PATH.set(_RETRY_PATH.get() | {(self, ticket)})
+        try:
+            await self._retry_owned(args, kwargs, ancestors)
+        finally:
+            _RETRY_PATH.reset(token)
+            with self.lease.guard:
+                self.running = self.retry_task = None
+                try:
+                    if self.disposed:
+                        self._acknowledge()
+                finally:
+                    ticket.set_result(None)
+
+    async def _retry_owned(self, args, kwargs, ancestors):
+        # Ancestors have already completed their own disposal before visiting
+        # successors. A cycle needs no second invocation of that same body.
         # A stored parent can keep reporting the same replacement until its
         # child acknowledges. Advance that known duty before calling it again.
         if not self.disposed:
