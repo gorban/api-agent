@@ -273,7 +273,10 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
             raise ComposeError('Controlled Jaeger configuration is missing or symlinked.')
         jaeger_bytes = jaeger_config.read_bytes()
         parsed_jaeger = json.loads(jaeger_bytes)
-        if (parsed_jaeger['extensions']['jaeger_storage']['backends']['local_traces']['badger']['ephemeral'] is not False
+        if not isinstance(parsed_jaeger, dict):
+            raise TypeError('Invalid Jaeger configuration')
+        if (set(parsed_jaeger) != {'service', 'extensions', 'receivers', 'processors', 'exporters'}
+                or parsed_jaeger['extensions']['jaeger_storage']['backends']['local_traces']['badger']['ephemeral'] is not False
                 or parsed_jaeger['extensions'] != {
                     'jaeger_query': {'storage': {'traces': 'local_traces'}},
                     'jaeger_storage': {'backends': {'local_traces': {'badger': {
@@ -281,7 +284,8 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
                         'ephemeral': False, 'ttl': {'spans': '168h'},
                     }}}},
                 }
-                or parsed_jaeger['exporters']['jaeger_storage_exporter']['trace_storage'] != 'local_traces'
+                or parsed_jaeger['exporters'] != {
+                    'jaeger_storage_exporter': {'trace_storage': 'local_traces'}}
                 or parsed_jaeger['service'] != {
                     'extensions': ['jaeger_storage', 'jaeger_query'],
                     'pipelines': {'traces': {'receivers': ['otlp'],

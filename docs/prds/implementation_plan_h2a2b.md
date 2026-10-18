@@ -15,3 +15,7 @@ The [Jaeger 2.21 Badger guide](https://www.jaegertracing.io/docs/2.21/storage/ba
 Isolated rootless verification sent a synthetic OTLP span to the managed service, queried it through Jaeger before and after normal release, container removal and recreation, and confirmed that the new container read the original trace from the same named volume. Both disposable containers and the volume were removed afterward. A built wheel included all controlled Compose assets and resolved them from an unrelated working directory; its Compose configuration validated.
 
 The joined 32-worker unit gate passed 10,884 cases and 27 subtests at exact measured line and branch coverage, with installed-package, license, public-boundary and independent review checks. Older managed reporting bindings keep their original asset identity; this slice does not silently migrate an existing installation when the asset bundle changes.
+
+## Exact storage exporter declaration
+
+- [ ] Require the active Jaeger storage exporter mapping to match the reviewed declaration exactly: `jaeger_storage_exporter` with `trace_storage: local_traces` and no extra exporter keys or options. In particular, reject an enabled storage-exporter queue, which changes when an accepted span reaches Badger. Cover this with a controlled config mutation and a check that disabling the exporter guard makes the rejection test fail.
