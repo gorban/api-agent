@@ -253,7 +253,7 @@ def test_close_acknowledgement_interruption_cannot_touch_reused_descriptor(
                 self.interrupted = True
                 raise original
             return value
-    monkeypatch.setattr(module, 'Future', InterruptedAcknowledgement)
+    monkeypatch.setattr(module._CopyCleanup, '_close_ticket', lambda self: InterruptedAcknowledgement())
 
     with pytest.raises(KeyboardInterrupt) as caught:
         publication.storage.persist(publication.source, publication.manifest)
@@ -284,13 +284,13 @@ def test_close_launch_interruption_retains_exact_acknowledgement(
     publication, faults = independent_publication, copy_faults
     original = KeyboardInterrupt()
     delayed = []
-    native = module.start_new_thread
+    native = module._CopyCleanup._start_close
     def interrupted_start(callback, arguments):
         delayed.append((callback, arguments))
         if launch == 'started':
             callback(*arguments)
         raise original
-    monkeypatch.setattr(module, 'start_new_thread', interrupted_start)
+    monkeypatch.setattr(module._CopyCleanup, '_start_close', lambda self, ticket: interrupted_start(module._dispose_descriptor, (self.descriptor, ticket)))
 
     with pytest.raises(KeyboardInterrupt) as caught:
         publication.storage.persist(publication.source, publication.manifest)
@@ -298,7 +298,7 @@ def test_close_launch_interruption_retains_exact_acknowledgement(
     assert caught.value is original
     retained = original.cleanup_pending.owners[0]
     assert retained.directory_fd is not None
-    monkeypatch.setattr(module, 'start_new_thread', native)
+    monkeypatch.setattr(module._CopyCleanup, '_start_close', native)
     asyncio.run(original.cleanup_pending.retry())
     assert faults.retained == set()
     # A delayed launch whose ticket was cancelled must never dispose again.
