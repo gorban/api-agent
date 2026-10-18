@@ -9,8 +9,8 @@ contract. Provider transport and authentication values remain internal.
   output/context limits, family and optional reasoning choices. Resolve one exact
   offered default through selection policy. Return `reasoning_default` as the
   explicitly configured effort or null for provider deferral; never infer it from
-  supported choices. Validate a configured reasoning default against the exact
-  selected default model before advertising it or invoking inference. Preserve
+  supported choices. Validate a configured reasoning default against every
+  advertised offered model before advertising it or invoking inference. Preserve
   omitted reasoning choices versus an empty list.
 - [x] Accept a fresh operation `session_id` (canonical UUID or null to allocate),
   optional model, role/content messages and bounded optional generation controls.
@@ -22,6 +22,11 @@ contract. Provider transport and authentication values remain internal.
   body bytes. Count actual chunks before Django buffering; reject completed or
   open oversized bodies immediately without further draining or spooling. Own
   bounded body waits, cancellation and disconnect through the ASGI request.
+  Uncomposed built-in capability routes resolve against the runtime URL table and
+  return their existing 501/method/preflight responses before any body receive;
+  custom routes retain their own dispatch and Host validation remains enforced.
+  Limit this optimization to the factory runtime handler; directly injected
+  handlers remain authoritative for every path and Django settings state.
 - [x] Return JSON results with session identifier, response text, outcome, measured
   usage and optional actual model, service tier, serving revision and billing.
   Validate provider results using their existing contract before publication.
@@ -51,6 +56,10 @@ contract. Provider transport and authentication values remain internal.
   response waits and disposal to the captured admitted turn, so terminal eviction
   and reuse of its session identifier cannot affect a replacement operation. Bound
   never-consumed response ownership and close unscheduled cleanup coroutines.
+  Reject session identifier reuse while its exact response owner remains retained,
+  including pending disposal; count every retained source toward the owner bound
+  and close all sources at shutdown. Retirement permits reuse, while repeated old
+  cleanup cannot remove or cancel the replacement.
   Keep first-class callback/task/receipt state: retire acknowledged disposal
   before preserving waiter interruption, follow transferred child retries once
   across distinct callbacks through registry-wide receipt/task identity, and
@@ -77,4 +86,4 @@ qualification or authorize a paid pilot.
 
 No live authentication, inference or report-history mutation is required by this contract work.
 
-The repaired joined unit gate passed 10,368 tests and 27 subtest records at exact 100% line and branch coverage. Eleven controlled HTTP checks, the installed wheel from a different working directory, licenses and source-boundary checks passed. Independent adversarial reviews cover authoritative request metadata before body acquisition, bounded ingress, configured-default validation and captured-turn disposal. The shared callback registry deduplicates transferred receipt duties across different callbacks and overlapping waiters. Human acceptance remains separate.
+The renewed joined unit gate passed 10,412 tests and 27 subtest records at exact 100% line and branch coverage. Eleven controlled HTTP checks, the installed wheel from a different working directory, licenses and source-boundary checks passed. Independent adversarial reviews cover authoritative request metadata before body acquisition, bounded ingress, configured-default validation across offered choices, retained-response bounds and captured-turn disposal. Unavailable built-in routes return before body acquisition; explicitly injected handlers retain authority. The shared callback registry deduplicates transferred receipt duties across different callbacks and overlapping waiters. Human acceptance remains separate.

@@ -3,8 +3,13 @@
 This optional, text-only adapter serves the included Studio and other UI clients.
 It translates browser values into the existing LLM provider contracts; provider
 transport values and authentication sessions are not browser DTOs. Composition
-must explicitly inject the backend. Without it, these application capabilities
-return HTTP 501. This contract does not execute an application workflow.
+must explicitly inject the backend. Without it, the built-in application capabilities
+return HTTP 501 before acquiring any body bytes. An unavailable capability must
+not spool input before reporting its status. Explicit custom route tables remain
+authoritative, including an empty table. Invalid request metadata returns a
+bounded error; outbound header names follow the lowercase
+[ASGI response contract](https://asgi.readthedocs.io/en/stable/specs/www.html#response-start-send-event).
+This contract does not execute an application workflow.
 
 ## Admission and discovery
 
@@ -31,8 +36,10 @@ must not replace it with a newer family member merely because one is offered.
 Preserve an existing valid explicit user selection. `reasoning_default` is a
 configured effort or null: null means omit the request setting and defer to the
 provider. Supported effort choices do not establish a default, and omission is
-distinct from explicit `off`. A configured effort must be supported by the exact
-policy default before catalog discovery advertises it. Catalog discovery performs
+distinct from explicit `off`. A configured effort must be supported by every
+offered selection before catalog discovery advertises the catalog or chat
+invokes inference. Reject inconsistent composition rather than silently dropping
+the configured setting for an alternate model. Catalog discovery performs
 no inference. Unset UI model settings follow later backend policy changes without
 becoming saved explicit choices; users can reset an explicit choice to policy.
 
@@ -109,6 +116,9 @@ blocks unsafe new admission. ASGI request ownership explicitly disposes the exac
 stream source even when disconnect occurs while writing a yielded frame; iterator
 finalization or garbage collection alone is insufficient. Response disposal targets the exact captured operation, so an old response cannot
 cancel or wait for a newer operation that reuses its identifier after retention.
+Count every retained response owner and reject reuse of its session identifier
+until that exact owner retires. Shutdown and retry settle every retained source;
+closing an older retired source cannot remove a newer owner.
 Ordinary cancellation does not close the persistent
 authentication owner. Already incurred usage remains part of accounting.
 

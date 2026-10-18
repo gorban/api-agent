@@ -288,7 +288,7 @@ class StudioBackend:
                             return await self.complete(value, auth=auth, context=context)
                         return chat_contract.result(session_id, await self.owner.call(operation, context=context))
                 response_owner = ResponseCleanup(self, session_id) if capability == 'chat_stream' else None
-                if len(self._responses) >= self.lifecycle.max_active + self.lifecycle.max_terminal:
+                if session_id in self._responses or len(self._responses) >= self.lifecycle.max_active + self.lifecycle.max_terminal:
                     return self._response({'code': 'session_unavailable'}, 409)
                 try:
                     turn = self.lifecycle.start(self._owner_id, session_id, invoke, context=context)
