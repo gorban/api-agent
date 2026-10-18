@@ -34,6 +34,14 @@ provider cost quotes and local quota observations. They emit no pytest inference
 or quota events, append no original Allure artifacts and update no historical
 suite records. Original suite quota measurements finish before manual access.
 The suite exclusion lease stays retained until inspection cleanup finishes.
+Completed inference retains its terminal outcome, timestamp and reported tokens
+exactly once even when optional cost quoting or quote export fails. Ordinary
+quote/export failure means unavailable cost; it cannot turn completed inference
+into a failed response. Quoting interruptions still propagate after terminal
+usage is captured. Failed inference retains any provider-reported usage without
+quoting a successful result. No quote/export error text enters accounting.
+A queued manual-provider creation rechecks closure under its ownership lock;
+closing the session cannot permit a later factory call or reopen the owner.
 
 End-inspection closes HTTP request ownership before disposing the manual
 provider and its authentication browsers on their creating loop. Incomplete
@@ -54,6 +62,11 @@ denies new requests without losing the disposal duty.
 - [x] HTTP requests after startup scope expiry remain bounded and usable.
 - [x] Controlled cancellation, provider failure with usage, unavailable token
   metadata and retryable provider disposal retain accounting and cleanup.
+- [x] Optional quote exceptions, invalid quotes and failed/invalid quote export
+  retain completed outcomes and tokens with unavailable cost. Quote/export
+  interruptions preserve terminal usage before propagating; successful quotes
+  and failed inference usage remain attributable once. A creation-lock barrier
+  verifies that queued work cannot create a provider after session closure.
 - [x] Default unit controls independently cover adapter selection, reasoning,
   usage metadata, retirement, provider failure, cancellation and ordered retry
   duties at exact line/branch coverage. Real endpoint controls retry exported

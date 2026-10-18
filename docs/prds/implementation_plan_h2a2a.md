@@ -44,6 +44,21 @@ parent requirements.
   identity, canceled cleanup, independent ownership refusals and storage-publication
   lease retention using synthetic engines and disposable journals/processes.
 
+## In-flight viewer ownership
+
+- [x] Own history/selected-preview opening before its first await and recheck the
+  navigation generation after reporting preparation. Back/End inspection and
+  Quit close admission before draining those operations; storage/provider work
+  cannot outlive the reporting lease it needs. Dispose the final late viewer only
+  after its opener and managed viewer drains settle.
+- [x] Reuse the existing bounded operation-cleanup owner for cancellation and retry.
+  Export pending opener/viewer duties even when no viewer exists yet. Cancel each
+  opener at most once; a timed observer never abandons its active cleanup task.
+  Normal Back permits reopening after successful disposal. Quit/unmount keep
+  admission closed, including secondary and publication-only history.
+- [x] Apply independent cleanup cancellation to the final provisioning inventory,
+  including repeated failure and recovery of a canceled acquisition intent.
+
 ## Acceptance and limits
 
 - [ ] Independent review, focused mutation controls and exact applicable unit

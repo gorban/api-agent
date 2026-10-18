@@ -324,3 +324,34 @@ def test_released_owner_cannot_recover_stop_authority_from_current_registration(
     owner.release()
     assert owner.lease is None and storage.engine.records[identifier]['State']['Running']
     assert mutation_commands(storage.engine) == before
+
+
+def test_canceled_failed_provision_retries_stop_and_final_intent_inventory(storage):
+    cancel = Event()
+    owner = storage.create(cancelled=cancel.is_set)
+    factory = owner.factory
+    def checked_factory(*args, **kwargs):
+        manager = factory(*args, **kwargs)
+        original = manager.runner
+        def runner(command, **options):
+            if options['cancelled']():
+                raise p.PrerequisiteCancelled('synthetic canceled acquisition token')
+            return original(command, **options)
+        manager.runner = runner
+        return manager
+    owner.factory = checked_factory
+    storage.engine.fail_up = storage.engine.fail_stop = True
+    with pytest.raises(p.PrerequisiteError) as failed: owner.acquire()
+    receipt = failed.value.cleanup_pending
+    cancel.set()
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    with pytest.raises(CleanupPendingError): asyncio.run(receipt.retry())
+    assert owner.intent and owner.manager._rollback is not None
+    storage.engine.fail_stop = False
+    with pytest.raises(CleanupPendingError): asyncio.run(receipt.retry())
+    assert owner.intent and owner.manager._rollback is None
+    storage.engine.records.clear()  # independently recovered disposable fixture
+    asyncio.run(receipt.retry())
+    assert cancel.is_set() and not owner.intent and owner.pending_cleanup is None
+    assert not list(storage.registry.glob('*.json'))

@@ -1725,7 +1725,8 @@ class ApiAgentApp(AllureNavigation, App[int]):
         return error
 
     def inspection_cleanup_active(self):
-        return self.inspections.active or self.recording_cleanup is not None or self.allure_viewer is not None
+        return (self.inspections.active or self.recording_cleanup is not None
+                or self.allure_viewer is not None or self.allure_cleanup_active())
 
     def discard_finished_inspection(self):
         if not self.inspection_cleanup_active():
@@ -1746,11 +1747,14 @@ class ApiAgentApp(AllureNavigation, App[int]):
         group = self.inspections
         recording = self.recording_cleanup
         viewer = self.allure_viewer
+        allure_cleanup = (self.begin_allure_cleanup() if self.allure_cleanup_active() else None)
         pending = recording.pending_cleanup if recording is not None else None
         generation = self._inspection_generation
         async def retry():
             cleaned = True
-            if viewer is not None:
+            if allure_cleanup is not None:
+                cleaned = await self.wait_allure_cleanup(allure_cleanup)
+            elif viewer is not None:
                 try:
                     await viewer.aclose()
                 except Exception:
@@ -1777,6 +1781,8 @@ class ApiAgentApp(AllureNavigation, App[int]):
                 elif self.integration_exit_status is not None:
                     self.operation_status = self.integration_exit_status
         owners = (group,) + ((viewer,) if viewer is not None else ())
+        if allure_cleanup is not None:
+            owners += (allure_cleanup,)
         if recording is not None:
             owners += (recording,)
         error = CleanupPendingError(owners, retry)
@@ -2255,6 +2261,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
             self.screen.query_one("#error", Static).update(str(error))
 
     async def confirm_quit(self):
+        self.stop_allure_admission(shutdown=True)
         if self.mode in {"unit", "integration"} and self.unit_rows and self.unit_result is None:
             self.operation_status = 130
         self.collection_cancel.set()
@@ -2268,6 +2275,7 @@ class ApiAgentApp(AllureNavigation, App[int]):
         self.exit(self.operation_status)
 
     async def on_unmount(self):
+        self.stop_allure_admission(shutdown=True)
         self._inspection_shutdown = True
         self.collection_cancel.set()
         if self.test_run_active():

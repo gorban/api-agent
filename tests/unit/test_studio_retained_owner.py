@@ -246,3 +246,150 @@ def test_interrupted_retained_cleanup_receipt_finishes_remaining_duties(manual):
         inspection_close.assert_awaited_once()
         assert seen[-1][0] == 'provider_close'
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', ['quote_exception', 'invalid_quote', 'export_exception', 'invalid_export'])
+def test_completed_manual_usage_survives_optional_quote_failure(manual, monkeypatch, tmp_path, failure):
+    from api_agent.providers.llm import LLMRequest, CompletionRequest
+    factory, seen, _ = manual
+    events = tmp_path / 'events'
+    events.write_bytes(b'frozen suite\n')
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(events))
+    async def run():
+        owner = RetainedStudio(Automated(), factory, lambda: True)
+        owner.retire_test()
+        await owner.describe()
+        implementation = owner.manual.provider.implementation
+        quoted = []
+        def quote(request, result):
+            quoted.append(result.usage)
+            if failure == 'quote_exception': raise RuntimeError('synthetic-secret-quote')
+            if failure == 'invalid_quote': return {'list_cost_usd': -1, 'payment': None}
+            return {'list_cost_usd': .25, 'payment': None}
+        implementation.quote_cost = quote
+        if failure in ('export_exception', 'invalid_export'):
+            def export(value):
+                if failure == 'export_exception': raise RuntimeError('synthetic-secret-export')
+                return {'list_cost_usd': -2, 'payment': None}
+            monkeypatch.setattr(owner.manual.emissions, 'content_export', export)
+        request = LLMRequest('sample', CompletionRequest((Message('user', (TextContent('synthetic'),)),)))
+        result = await owner.complete(request)
+        assert result.payload.content == (TextContent('manual'),)
+        assert quoted == [Usage(2, 3)]
+        assert [row[0] for row in seen].count('complete') == 1
+        fact, = owner.usage.inference_calls.values()
+        assert fact['outcome'] == 'completed' and fact['finished_at'] is not None
+        assert fact['usage']['input_tokens'] == 2 and fact['usage']['output_tokens'] == 3
+        assert fact['quote'] is None
+        report = owner.usage.report()
+        assert report['prompt_count'] == 1 and report['estimated_cost_usd'] is None
+        assert report.get('list_cost_usd') is None
+        usage, = report['usage_rows']
+        assert usage['llm_calls'] == 1 and usage['total_tokens'] == 5
+        assert 'synthetic-secret' not in repr(fact) + repr(report)
+        assert events.read_bytes() == b'frozen suite\n'
+        await owner.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('stage', ['quote', 'export'])
+def test_quote_interruption_propagates_after_completed_usage_capture(manual, monkeypatch, stage):
+    from api_agent.providers.llm import LLMRequest, CompletionRequest
+    factory, _, _ = manual
+    async def run():
+        owner = RetainedStudio(Automated(), factory, lambda: True)
+        owner.retire_test()
+        await owner.describe()
+        interruption = asyncio.CancelledError('synthetic-secret-interruption')
+        def quote(request, result):
+            if stage == 'quote': raise interruption
+            return {'list_cost_usd': .25, 'payment': None}
+        owner.manual.provider.implementation.quote_cost = quote
+        if stage == 'export':
+            def export(value): raise interruption
+            monkeypatch.setattr(owner.manual.emissions, 'content_export', export)
+        request = LLMRequest('sample', CompletionRequest((Message('user', (TextContent('synthetic'),)),)))
+        with pytest.raises(asyncio.CancelledError) as stopped: await owner.complete(request)
+        assert stopped.value is interruption
+        fact, = owner.usage.inference_calls.values()
+        assert fact['outcome'] == 'completed' and fact['finished_at'] is not None
+        assert fact['usage']['input_tokens'] == 2 and fact['usage']['output_tokens'] == 3
+        report = owner.usage.report()
+        assert report['prompt_count'] == 1
+        usage, = report['usage_rows']
+        assert usage['llm_calls'] == 1 and usage['total_tokens'] == 5
+        assert 'synthetic-secret' not in repr(fact) + repr(report)
+        await owner.aclose()
+    asyncio.run(run())
+
+
+def test_valid_manual_quote_keeps_cost_and_usage_once(manual):
+    from api_agent.providers.llm import LLMRequest, CompletionRequest
+    factory, _, _ = manual
+    async def run():
+        owner = RetainedStudio(Automated(), factory, lambda: True)
+        owner.retire_test()
+        await owner.describe()
+        quote = {'list_cost_usd': .25, 'payment': None}
+        owner.manual.provider.implementation.quote_cost = lambda request, result: quote
+        request = LLMRequest('sample', CompletionRequest((Message('user', (TextContent('synthetic'),)),)))
+        await owner.complete(request)
+        fact, = owner.usage.inference_calls.values()
+        assert fact['quote'] == quote and fact['outcome'] == 'completed'
+        report = owner.usage.report()
+        assert report['prompt_count'] == 1 and report['list_cost_usd'] == .25
+        usage, = report['usage_rows']
+        assert usage['llm_calls'] == 1 and usage['total_tokens'] == 5
+        await owner.aclose()
+    asyncio.run(run())
+
+
+def test_closing_while_creation_waits_never_calls_manual_factory():
+    from unittest.mock import Mock
+    async def run():
+        waiting = asyncio.Event()
+        def ready():
+            waiting.set()
+            return True
+        factory = Mock(return_value=SimpleNamespace(
+            _describe=AsyncMock(return_value=(AvailableSelection('sample'),)),
+            _close=AsyncMock(), inspection=None, closed=False))
+        owner = RetainedStudio(Automated(), factory, ready)
+        owner.retire_test()
+        async with owner._creation:
+            task = asyncio.create_task(owner.describe())
+            await waiting.wait()
+            await owner.aclose()
+        with pytest.raises(SessionClosedError): await task
+        factory.assert_not_called()
+        assert owner.manual is None and owner.phase == 'closed'
+    asyncio.run(run())
+
+
+def test_failed_inference_keeps_reported_usage_without_optional_quoting(manual):
+    from api_agent.providers.llm import LLMRequest, CompletionRequest
+    from unittest.mock import Mock
+    factory, _, _ = manual
+    async def run():
+        owner = RetainedStudio(Automated(), factory, lambda: True)
+        owner.retire_test()
+        await owner.describe()
+        failure = ProviderAccessError('unknown', 'synthetic-secret-provider', usage=Usage(2, 3))
+        async def fail(request, *, auth): raise failure
+        implementation = owner.manual.provider.implementation
+        implementation.acomplete = fail
+        implementation.quote_cost = Mock(side_effect=AssertionError('failed calls cannot be quoted'))
+        request = LLMRequest('sample', CompletionRequest((Message('user', (TextContent('synthetic'),)),)))
+        with pytest.raises(ProviderAccessError) as stopped: await owner.complete(request)
+        assert stopped.value is failure
+        implementation.quote_cost.assert_not_called()
+        fact, = owner.usage.inference_calls.values()
+        assert fact['outcome'] == 'failed' and fact['finished_at'] is not None
+        assert fact['usage']['input_tokens'] == 2 and fact['usage']['output_tokens'] == 3
+        report = owner.usage.report()
+        assert report['prompt_count'] == 1 and report['estimated_cost_usd'] is None
+        usage, = report['usage_rows']
+        assert usage['llm_calls'] == 1 and usage['total_tokens'] == 5
+        assert 'synthetic-secret' not in repr(fact) + repr(report)
+        await owner.aclose()
+    asyncio.run(run())
