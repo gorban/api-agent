@@ -23,8 +23,10 @@ Deliver this contract before integrating the reviewed frontend foundation. Reaso
 - [x] Parameterize omitted/off/low/medium/high across supported synthetic providers, API modes and model versions; verify exact wire mapping, unsupported rejection before calls, explicit precedence, cache/client identity and no fallback. Mutations must detect dropped effort, off-to-omitted coercion and history pooling across incompatible efforts.
 - [ ] Verify UI picker validation, stale catalog/version handling, send-time snapshots, per-message tags, concurrent conversations and preserved metadata on partial/failed results. Test source and relocated installed packages, IPC and API streaming with controlled transports.
 - [x] Include new request-mapping modules and resolved effort in workflow sampling fingerprints and structural evidence. Preserve prior reviewed measurements unchanged; stale qualification rejects before setup/inference and requires a fresh independently reviewed pilot rather than replacement hashes to retain its cap.
-- [ ] Independently review the contract and joined UI extension; require applicable exact unit line/branch coverage, package/license and public tree/index/metadata checks. Human acceptance covers picker choices, default-versus-off and message history. No additional paid inference is needed for the deterministic gate; live capability checks remain separately authorized.
+- [x] Independently review the contract and joined UI extension; require applicable exact unit line/branch coverage, package/license and public tree/index/metadata checks. Human acceptance covers picker choices, default-versus-off and message history. No additional paid inference is needed for the deterministic gate; live capability checks remain separately authorized.
 
 ## Base delivery checkpoint
 
 [Implemented core contracts, verification and remaining joins](implementation_plan_f2f1.md). Sample UI pickers/tags and their human acceptance remain open; base completion does not certify the later frontend or application joins.
+
+- [ ] Frontend human acceptance is deferred until working Run local or [retained interactive Studio](implementation_plan_i2c2.md) provides a usable backend. Technical review and the accepted automated request do not replace this interaction review.

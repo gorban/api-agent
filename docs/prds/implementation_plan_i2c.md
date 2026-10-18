@@ -11,6 +11,8 @@ The bounded [prepared integration checkpoint](implementation_plan_i2c1.md)
 owns the first selected-provider consumer, isolated test listeners and optional
 preparation. Run local and application E2E remain separate consumers below.
 
+The [retained interactive-session follow-up](implementation_plan_i2c2.md) owns post-test provider lifetime, fresh request deadlines and separate accounting. Studio frontend acceptance waits for that capability or working Run local.
+
 ## Activation and visibility
 
 | Operation | UI provider and browser | Authentication at startup |

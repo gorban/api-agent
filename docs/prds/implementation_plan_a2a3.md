@@ -39,10 +39,12 @@
   response descriptions, unknown error strings, codes, tokens or key material.
   Keep refresh behavior and cleanup ownership intact. Verify malformed and
   oversized responses, transport failures and credential-bearing error fields.
-- [ ] Human-review discovery-only direct registration with an uncached selected
+- [x] Human-review discovery-only direct registration with an uncached selected
   account configured with password and passkey; observe the offered post-password
   challenge. Make no inference calls to exercise authentication.
 
 Provider setup uses direct application authorization only. Shared password,
 TOTP and software-passkey support remains available throughout that flow; no
 preliminary ChatGPT session or cookie heuristic is required.
+
+Human acceptance of the delivered authentication/DEBUG behavior is recorded. This does not claim additional challenge replay, native-dialog support or completion of separately deferred capabilities; new defects remain independent work.

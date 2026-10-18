@@ -18,7 +18,7 @@ A startup watchdog does not bound the subsequent cancel-and-await cleanup. Coope
 - [x] Use focused mutations removing each wait bound, disabling independent supervision and falsely acknowledging cleanup. The intended assertions must fail; restore all changes before acceptance.
 - [x] Run focused repetitions/concurrency proofs and applicable exact unit line/branch coverage, wheel/license and public-boundary gates. Preserve failed attempts; do not accept lower concurrency or retry-to-green as a repair.
 - [x] Complete independent adversarial review of bounded failure, owned-process disposal and coverage preservation.
-- [ ] Human acceptance of the hardening evidence. No new manual TUI workflow, live login, paid inference or real history modification is required.
+- [x] Human acceptance of the hardening evidence. No new manual TUI workflow, live login, paid inference or real history modification is required.
 
 ## Test structure
 
@@ -47,3 +47,5 @@ Mutation controls distinguish a watchdog rejection from normal successful cleanu
 the independent mutation supervisor also verifies every nested child is disposed.
 The original failed attempts remain in review evidence. Human acceptance remains
 separate from the resolved implementation gate.
+
+Human acceptance of the delivered reporting robustness scope is recorded; future reporting lifecycle administration and platform-specific gates remain separate.
