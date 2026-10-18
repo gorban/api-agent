@@ -217,14 +217,15 @@ def test_review_pending_http_cleanup_preserves_manual_dependencies(connection, m
     from api_agent.providers.control import CleanupPendingError
     factory, seen, _ = manual
     saved = []
-    original = connection.StudioBackend
+    from api_agent.testing import studio_http
+    original = studio_http.StudioBackend
     class Backend(original):
         async def aclose(self):
             if len(saved) < 2:
                 saved.append(self)
                 raise CleanupPendingError((self,), self.aclose)
             await super().aclose()
-    monkeypatch.setattr(connection, 'StudioBackend', Backend)
+    monkeypatch.setattr(studio_http, 'StudioBackend', Backend)
     async def run():
         retained = RetainedStudio(Automated(), factory, lambda: True)
         retained.retire_test()

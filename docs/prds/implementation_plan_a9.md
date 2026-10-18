@@ -23,3 +23,6 @@ Configuration/startup navigation has its own [requirements grouping](implementat
 
 [Large unit selections](implementation_plan_a9e.md) preserve execution when
 parameterized identities exceed the operating system command argument budget.
+
+[Dependency-aware test domains](implementation_plan_a9f.md) are an unimplemented
+future proposal, scheduled after all profiling and authentication work.

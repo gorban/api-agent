@@ -1,5 +1,6 @@
 """Controlled real HTTP fixture regressions; no browser or external provider."""
 import asyncio
+from api_agent.testing import studio_http
 import importlib.util
 from pathlib import Path
 import threading
@@ -55,16 +56,16 @@ async def send(client, config, origin):
             'messages': [{'role': 'user', 'content': 'synthetic'}]})
 
 
-def test_disconnect_retains_native_completion_until_drained(connection):
+def test_disconnect_retains_native_completion_until_drained(connection, monkeypatch):
     async def run():
         provider = Provider()
         active = []
-        original = connection.StudioBackend
+        original = studio_http.StudioBackend
         def observe(**kwargs):
             backend = original(**kwargs)
             active.append(backend)
             return backend
-        connection.StudioBackend = observe
+        monkeypatch.setattr(studio_http, 'StudioBackend', observe)
         try:
             async with connection.studio_endpoint(provider, 'sample') as origin:
                 async with httpx.AsyncClient(trust_env=False) as client:
@@ -99,7 +100,7 @@ def test_server_cleanup_failure_retains_node_and_socket_until_retry(connection, 
         children = []
         listeners = []
         spawn = connection.asyncio.create_subprocess_exec
-        create = connection.create_application
+        create = studio_http.create_application
         async def record_spawn(*args, **kwargs):
             child = await spawn(*args, **kwargs)
             children.append(child)
@@ -126,8 +127,8 @@ def test_server_cleanup_failure_retains_node_and_socket_until_retry(connection, 
             await original_host_close(process)
         monkeypatch.setattr(connection, '_close_host', close_host)
         monkeypatch.setattr(connection.asyncio, 'create_subprocess_exec', record_spawn)
-        monkeypatch.setattr(connection, '_close_server', fail_server)
-        monkeypatch.setattr(connection, 'create_application', record_application)
+        monkeypatch.setattr(studio_http, '_close_server', fail_server)
+        monkeypatch.setattr(studio_http, 'create_application', record_application)
         try:
             async with httpx.AsyncClient(trust_env=False) as client:
                 with pytest.raises(CleanupPendingError) as pending:
@@ -170,12 +171,12 @@ def test_disconnect_retains_native_catalog_discovery_until_drained(connection, m
     async def run():
         provider = CatalogProvider()
         active = []
-        original = connection.StudioBackend
+        original = studio_http.StudioBackend
         def observe(**kwargs):
             backend = original(**kwargs)
             active.append(backend)
             return backend
-        monkeypatch.setattr(connection, 'StudioBackend', observe)
+        monkeypatch.setattr(studio_http, 'StudioBackend', observe)
         try:
             async with connection.studio_endpoint(provider, 'sample') as origin:
                 async with httpx.AsyncClient(trust_env=False) as client:

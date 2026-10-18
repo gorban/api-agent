@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {requestPayload,readResponse,readJSONResponse,supportsContinuation,submitContinuation} from '../../apps/api-agent-ui/public/transport.js';
-import {normalizeCatalog,resolveSelection} from '../../apps/api-agent-ui/public/catalog.js';
+import {normalizeCatalog,resolveSelection,modelGroups} from '../../apps/api-agent-ui/public/catalog.js';
 const id='a4e3aa9d-5387-49ef-92e0-6a7122079f28';
 const usage={input_tokens:null,output_tokens:null,cached_input_tokens:null,reasoning_tokens:null};
 const result={session_id:id,response_text:'final',outcome:'completed',usage};
@@ -199,4 +199,25 @@ test('mixed catalog validates inherited reasoning only for the chosen selection'
  for(const choice of ['empty','alternate'])assert.match(resolveSelection(rows,{model:choice}).error,/configured reasoning default is unsupported/);
  assert.equal(resolveSelection(rows,{model:'alternate',reasoning:'off'}).valid,true);
  assert.equal(resolveSelection(normalizeCatalog(catalog([unknown],{default:'unknown'})),{model:'unknown'}).valid,true);
+});
+
+
+test('explicit family metadata groups versions and preserves opaque/colliding identities',()=>{
+ const row=(value,label,version,family)=>({...model,value,label,version,family});
+ const rows=[row('l6','GPT-6-Luna','6','gpt-luna'),row('l56','GPT-5.6-Luna','5.6','gpt-luna'),row('opaque','Opaque',null,null),row('["family","gpt-luna"]','Collision',null,null),row('other','Not a family label','1','opaque-family'),row('unknown','Custom',null,'custom'),row('mixed','Different','2','custom')];
+ const c=normalizeCatalog(catalog(rows,{default:'l6'})),groups=modelGroups(c);
+ assert.equal(groups.length,5);assert.equal(groups[0].name,'GPT-Luna');
+ assert.equal(groups[0].value,'~["family","gpt-luna"]');assert.equal(groups[1].value,'opaque');
+ assert.equal(groups[3].name,'opaque-family');assert.equal(groups[4].name,'custom');
+ assert.equal(resolveSelection(c,{model:'["family","gpt-luna"]'}).selection.selected_llm,'["family","gpt-luna"]');
+ assert.equal(resolveSelection(c,{family:'gpt-luna',model:''}).selection.selected_llm,'l6');
+ assert.equal(resolveSelection(c,{family:'gpt-luna',model:'',version:'5.6'}).selection.selected_llm,'l56');
+ assert.match(resolveSelection(c,{family:'missing',model:''}).error,/family is no longer/);
+ assert.match(resolveSelection(c,{family:'gpt-luna',model:'l6'}).error,/not both/);
+ assert.match(resolveSelection(c,{family:'gpt-luna',model:'',version:'old'}).error,/version is no longer/);
+ assert.match(resolveSelection(c,{family:'custom',model:''}).error,/Choose an advertised version/);
+ const duplicate=normalizeCatalog(catalog([...rows,row('second','GPT-6-Luna','6','gpt-luna')],{default:'l6'}));
+ assert.match(resolveSelection(duplicate,{family:'gpt-luna',model:'',version:'6'}).error,/ambiguous/);
+ assert.equal(resolveSelection(duplicate,{model:'second',version:'6'}).selection.selected_llm,'second');
+ assert.deepEqual(modelGroups([]),[]);
 });

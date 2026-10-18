@@ -10,9 +10,9 @@
         "first_draft": 0.7871199821209823,
         "first_format": 0.7871199821209823,
         "first_guard": 0.7871199821209823,
-        "second_draft": 0.46036511831056104,
-        "second_format": 0.46036511831056104,
-        "second_guard": 0.46036511831056104
+        "second_draft": 0.36204651348821093,
+        "second_format": 0.36204651348821093,
+        "second_guard": 0.36204651348821093
       },
       "confidence": 0.95,
       "dependency_versions": {
@@ -42,14 +42,14 @@
         "first_draft": 20,
         "first_format": 20,
         "first_guard": 20,
-        "second_draft": 15,
-        "second_format": 15,
-        "second_guard": 15
+        "second_draft": 13,
+        "second_format": 13,
+        "second_guard": 13
       },
-      "max_runs": 17,
-      "minimum_missing_node_bound": 0.00098724257507006,
-      "minimum_runs": 13,
-      "missing_node_bound": 8.371852331830926e-05,
+      "max_runs": 22,
+      "minimum_missing_node_bound": 0.0009190169693321882,
+      "minimum_runs": 18,
+      "missing_node_bound": 0.00015222275946124523,
       "model": "gpt-6-luna",
       "provider_identity": {
         "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
@@ -74,9 +74,12 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 2
         },
         {
@@ -88,19 +91,16 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 3
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 4
         },
         {
@@ -119,9 +119,12 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 6
         },
         {
@@ -152,24 +155,18 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_a",
+          "route": "skip",
           "trial": 9
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 10
         },
         {
@@ -202,16 +199,19 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 13
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 14
         },
         {
@@ -230,33 +230,30 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 16
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 17
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 18
         },
         {
@@ -268,26 +265,23 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 19
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 20
         }
       ],
       "routes": {
         "next_a": 5,
-        "next_b": 10,
-        "skip": 5
+        "next_b": 8,
+        "skip": 7
       },
       "safety_margin": 4,
       "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
@@ -307,7 +301,7 @@
         "src/api_agent/llm_providers/gpt/endpoint.py": "45dc995946481c54bfb2312f61637329136e42321aa36ea3ee6e56559d9e0720",
         "src/api_agent/llm_providers/gpt/factory.py": "0065b50eb67b0f4efe9fc18676a1bbf99b645dd31de627e9c2c30660de7aa376",
         "src/api_agent/llm_providers/gpt/inference.py": "7d3c4be245713b1e2f509eb678ad5d782f34e5ec25912c5fd0bd5e7ee0c79d5a",
-        "src/api_agent/llm_providers/gpt/reasoning.py": "4e7afb31cd1fc6f346b65db34425c40058ca0da00e11f18968eed6311dc8fc81",
+        "src/api_agent/llm_providers/gpt/reasoning.py": "8ea914b93096b4a48af3023da129d172ae474575b002562317459666df97a43c",
         "src/api_agent/llm_providers/gpt/rich.py": "0222e258b3ec8ff3c5d5435e7fea50749efd2d30487e4640397f4c5b48f6bf77",
         "src/api_agent/providers/cache_policy.py": "e05387ad862633fa738b82a6421053fa402c44ae87386674571ced006ff5faa5",
         "src/api_agent/providers/contracts.py": "e61d6876cf1b281383c808b8ed4a0f5afed6615d051ed66cb013a89a4b9d97b3",
@@ -320,7 +314,7 @@
         "src/api_agent/providers/setup_transport.py": "4098b7d3f03934fe2962ade14ae2450daf0e230aaa83270a82beb5468432daa1",
         "src/api_agent/providers/shared_setup.py": "81b978108cb2d378012534c7aecb1095fef9ee98902ca0c846695183e178192d",
         "src/api_agent/runtime/tasks.py": "9a2783e2eb15c302e98cacd84d16ebd96348627bc682b025ffc0042073cc4146",
-        "src/api_agent/testing/provider_setup.py": "b38c9bfd897147c6df23ad29098857c59abdefc505bb946bc01ec15c05b6ab99",
+        "src/api_agent/testing/provider_setup.py": "7523115faf1bb79a326816c6ab9c6e2086aee7f3db7301bf7a75e9114e03d939",
         "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
         "src/api_agent/workflows/contrived.py": "90904a72abd75be553f936bfad1de11f5b8ab28fedb09a758885d39fcb9cb31e",
         "src/api_agent/workflows/execution.py": "0c4471785859c74724a6ad6a5a3c55c86c5be73c05dacd73735d56d0940b369f",

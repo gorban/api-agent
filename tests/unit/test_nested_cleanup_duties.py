@@ -175,22 +175,37 @@ def test_receipt_chain_deduplicates_a_cycle_and_repeated_registration():
 
 def test_successor_dependencies_can_cycle_without_repeating_disposal():
     attempts = [0, 0]
+    rescue = False
     async def first():
         attempts[0] += 1
-        if attempts[0] == 1: raise two
+        if attempts[0] == 1 and not rescue: raise two
     async def second():
         attempts[1] += 1
-        if attempts[1] == 1: raise one
+        if attempts[1] == 1 and not rescue: raise one
     one, two = CleanupPendingError((), first), CleanupPendingError((), second)
-    with locks.suite_lock(): locks.retain_cleanup_receipt(one)
-    with pytest.raises(CleanupPendingError): asyncio.run(one.retry())
-    with pytest.raises(CleanupPendingError): asyncio.run(two.retry())
-    assert_competing_suite_blocked()
-    asyncio.run(one.retry())
-    assert attempts == [2, 2]
-    asyncio.run(two.retry())
-    assert attempts == [2, 2]
-    assert_competing_suite_allowed()
+    with locks.suite_lock():
+        lease = locks._CURRENT.get()
+        locks.retain_cleanup_receipt(one)
+    try:
+        with pytest.raises(CleanupPendingError) as initial: asyncio.run(one.retry())
+        assert initial.value is two
+        with pytest.raises(CleanupPendingError) as cyclic: asyncio.run(two.retry())
+        assert cyclic.value is one
+        assert_competing_suite_blocked()
+        asyncio.run(one.retry())
+        # Known replacement disposal acknowledges the parent without repeating
+        # its original callback. Both retained capabilities are then idempotent.
+        assert attempts == [1, 2]
+        assert lease.fd is None
+        asyncio.run(two.retry())
+        asyncio.run(one.retry())
+        assert attempts == [1, 2]
+        assert_competing_suite_allowed()
+    finally:
+        rescue = True
+        asyncio.run(two.retry())
+        asyncio.run(one.retry())
+        assert lease.fd is None
 
 
 def test_already_acknowledged_successor_can_complete_a_new_predecessor():
@@ -210,15 +225,42 @@ def test_already_acknowledged_successor_can_complete_a_new_predecessor():
 
 
 def test_repeated_failed_successor_does_not_add_duplicate_parent_callbacks():
-    async def complete(): pass
+    allow_cleanup = False
+    parent_calls, child_attempts, completed = [], [], []
+    async def complete():
+        child_attempts.append('attempt')
+        if not allow_cleanup:
+            raise next_receipt
+        completed.append('closed')
     next_receipt = CleanupPendingError((), complete)
-    async def retry(): raise next_receipt
+    async def retry():
+        parent_calls.append('attempt')
+        raise next_receipt
     original = CleanupPendingError((), retry)
     with locks.suite_lock():
         lease = locks._CURRENT.get()
         locks.retain_cleanup_receipt(original)
-    with pytest.raises(CleanupPendingError): asyncio.run(original.retry())
-    with pytest.raises(CleanupPendingError): asyncio.run(original.retry())
-    assert len(lease.receipts[id(next_receipt)].parents) == 1
-    asyncio.run(next_receipt.retry())
-    assert_competing_suite_allowed()
+    try:
+        with pytest.raises(CleanupPendingError) as first: asyncio.run(original.retry())
+        assert first.value is next_receipt
+        for _ in range(2):
+            with pytest.raises(CleanupPendingError) as pending: asyncio.run(original.retry())
+            assert pending.value is next_receipt
+            assert len(lease.receipts[id(next_receipt)].parents) == 1
+            assert completed == []
+            assert_competing_suite_blocked()
+        assert parent_calls == ['attempt'] and child_attempts == ['attempt', 'attempt']
+        allow_cleanup = True
+        asyncio.run(next_receipt.retry())
+        assert completed == ['closed']
+        assert not lease.receipts[id(next_receipt)].parents
+        assert lease.fd is None
+        assert_competing_suite_allowed()
+        asyncio.run(original.retry())
+        asyncio.run(next_receipt.retry())
+        assert parent_calls == ['attempt'] and len(child_attempts) == 3 and completed == ['closed']
+    finally:
+        allow_cleanup = True
+        asyncio.run(next_receipt.retry())
+        asyncio.run(original.retry())
+        assert lease.fd is None
