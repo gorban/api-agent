@@ -78,6 +78,13 @@ class StudioProcesses:
         environment = dict(env, API_AGENT_UI_LAUNCH_TOKEN=token,
                            API_AGENT_UI_PARENT_LIVENESS='stdin-v1')
         process = None
+        task = asyncio.current_task()
+        cancellations = task.cancelling()
+        def preserve_interruption():
+            # A transport may consume cancellation without clearing its request.
+            # Its lost message is unavailable; do not invent it or uncancel it.
+            if task.cancelling() > cancellations:
+                raise asyncio.CancelledError
         try:
             async with component_timeout('Studio process launch', self.timeout) as budget:
                 # Popen completes ownership transfer before the next cancellation point.
@@ -95,6 +102,7 @@ class StudioProcesses:
                         while True:
                             if budget.remaining == 0:
                                 raise TimeoutError('Studio readiness deadline expired')
+                            preserve_interruption()
                             if child.poll() is not None:
                                 raise SetupPrerequisiteError('Studio exited before verified readiness')
                             try:
@@ -105,6 +113,7 @@ class StudioProcesses:
                             # absolute budget still governs retries and admission.
                             if budget.remaining == 0:
                                 raise TimeoutError('Studio readiness deadline expired')
+                            preserve_interruption()
                             if response is not None:
                                 identity = response.headers.get('X-UI-Launch-Token', '').encode()
                                 if response.status_code == 200 and hmac.compare_digest(identity, token.encode()):
@@ -117,9 +126,11 @@ class StudioProcesses:
                 except Exception:
                     if budget.remaining == 0:
                         raise TimeoutError('Studio readiness deadline expired')
+                    preserve_interruption()
                     raise
                 if budget.remaining == 0:
                     raise TimeoutError('Studio readiness deadline expired')
+                preserve_interruption()
                 return process
         except BaseException as primary:
             if process is not None:

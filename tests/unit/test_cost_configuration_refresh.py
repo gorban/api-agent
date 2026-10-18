@@ -88,3 +88,41 @@ def test_start_refreshes_clock_sensitive_predictions_with_unchanged_settings(con
 
     assert options['historical_estimator'] is snapshots[-1] and snapshots[-1] is not old
     assert snapshots[-1].value == 7 and old.value == 999
+
+
+def test_modal_configuration_resync_keeps_pending_redraw_with_original_picker(tmp_path, monkeypatch):
+    from api_agent.tui.app import SettingHelpDialog
+    snapshots = []
+    def build(context, tests, values):
+        snapshot = Snapshot(values['TEST_COST_HISTORY_DAYS'])
+        snapshots.append(snapshot)
+        return snapshot
+    monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history', SimpleNamespace(estimator_for=build))
+    async def scenario():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: identities(2), fields={
+            'TEST_COST_HISTORY_DAYS': {'type': 'int', 'default': 7, 'acknowledge_default': False}})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            picker, selected, previous = app.screen, app.selection, app.cost_estimator
+            app.push_screen(SettingHelpDialog('History settings', 'Picker remains covered.'))
+            await pilot.pause()
+            app.session.set_value('TEST_COST_HISTORY_DAYS', '30')
+            previous.synchronize = lambda: Snapshot(999)
+            await app.synchronize_cost_history(previous, selected)
+            await app.workers.wait_for_complete()
+            assert app.cost_estimator is snapshots[-1] and app.cost_estimator.value == 30
+            assert app._pending_cost_refresh == (picker, selected)
+            redraw = Mock()
+            monkeypatch.setattr(app, 'refresh_rows', redraw)
+            await app.show('tests', 'Replacement during settings refresh', rows=picker.rows)
+            await pilot.pause()
+            redraw.assert_not_called()
+            assert app._pending_cost_refresh == (picker, selected)
+            app.pop_screen()
+            await pilot.pause()
+            app.pop_screen()
+            await pilot.pause()
+            assert app.screen is picker and app._pending_cost_refresh is None
+            redraw.assert_called_once_with()
+    asyncio.run(scenario())
