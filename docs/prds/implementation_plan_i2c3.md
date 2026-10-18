@@ -69,7 +69,7 @@ contract. Provider transport and authentication values remain internal.
   callback waits to a fresh five-second cleanup budget; retain a hung task without
   cancelling or restarting it on retry. Shutdown signals all operations and
   attempts every response/context, retaining authentication until all settle.
-- [ ] Renew applicable exact coverage, independent adversarial review, installed
+- [x] Renew applicable exact coverage, independent adversarial review, installed
   package and public-boundary gates before accepting this delivery.
 - [ ] Human review of the joined included Studio and alternate adapter behavior.
 
