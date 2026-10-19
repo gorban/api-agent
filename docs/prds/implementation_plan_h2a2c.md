@@ -35,3 +35,9 @@ An independently committed manifest may appear after the preflight read and befo
 - [x] Clear a previous restore error when a new configured attempt starts. Display a bounded failure for the current attempt, and clear that failure on a successful explicit retry.
 - [x] Preserve generation checks, threaded cancellation acknowledgement and viewer disposal ordering when leaving through Close or Quit. Controlled native workbench tests cover these paths without real history or storage writes.
 - [ ] Human acceptance: inspect the orange history-page progress line and repeated-click behavior with disposable history.
+
+## Shared history action admission
+
+- [x] Reserve one shared Allure UI opener before worker startup across Restore, Refresh, menu history entry and selected-report shortcuts. Reject queued or active competing requests without creating a coroutine, replacing a worker or changing the admitted operation's error/status.
+- [x] Permit explicit retry after success, failure or cancellation before worker startup. Ignore stopped admission and leave the gate available after a scheduling failure. Cancellation of an active operation retains ownership until its threaded storage call settles.
+- [x] Prove both Restore/Refresh submission orders, repeated Refresh, safe failure followed by successful retry, all UI entry points, and cancellation boundaries with controlled native workbench tests.

@@ -512,7 +512,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         self.app.run_worker(self.app.back_to_selection(), group="collection", exclusive=True)
 
     async def action_view_allure(self):
-        self.app.run_worker(self.app.open_selected_allure(), group="allure-viewer", exclusive=False)
+        self.app.request_allure(self.app.open_selected_allure)
 
     async def action_start_selected(self):
         await self.app.choose("continue")
@@ -1442,7 +1442,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.review_destination = None
             self.startup_review = False
             self.auto_start_pending = False
-            self.run_worker(self.show_allure_history(), group="allure-viewer", exclusive=False)
+            self.request_allure(self.show_allure_history)
         else:
             self.review_destination = None
             self.startup_review = False
@@ -2222,13 +2222,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             elif key == "container-logs":
                 self.request_container_logs()
             elif key == "allure-restore-secondary":
-                if (not self._allure_opening and
-                        (self._allure_restore_worker is None or self._allure_restore_worker.is_finished)):
-                    self._allure_restore_worker = self.run_worker(
-                        self.restore_allure_secondary_history(), group="allure-restore", exclusive=False)
+                self.request_allure(self.restore_allure_secondary_history)
             elif key == "refresh-allure":
-                if not self._allure_opening:
-                    self.run_worker(self.show_allure_history(), group="allure-viewer", exclusive=False)
+                self.request_allure(self.show_allure_history)
             elif key == "switch-target":
                 self.switch_target()
             elif key == "skip":
