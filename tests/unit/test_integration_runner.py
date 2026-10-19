@@ -800,3 +800,172 @@ def test_skip():
     assert any('— skipped ' in line and 'test_skip' in line for line in lines)
     assert 'synthetic private' not in ''.join(lines)
     assert 'synthetic private diagnostic' in ''.join(raw_output)
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_parallel_completion_overtakes_raw_backlog_with_process_handshake(tmp_path, cancel):
+    """The sink releases a worker, then waits for its durable teardown report."""
+    import json
+
+    base = fixture_repo(tmp_path / 'base', '''
+from pathlib import Path
+import time
+
+def wait_for(name):
+    deadline = time.monotonic() + 15
+    while not Path(name).exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert Path(name).exists(), name
+
+def test_fast():
+    wait_for('sink-entered')
+
+def test_blocked():
+    wait_for('completion-seen')
+    Path('blocked-released').touch()
+''')
+    (base / 'conftest.py').write_text('''
+from pathlib import Path
+import os
+
+def pytest_configure(config):
+    if hasattr(config, 'workerinput') or 'API_AGENT_INTEGRATION_EVENTS' not in os.environ:
+        return
+    Path('event-path').write_text(os.environ['API_AGENT_INTEGRATION_EVENTS'])
+    os.write(1, b'FAIRNESS-NOISE\\n' * 512)
+''')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    chunks = []
+    observations = []
+    cancellation = threading.Event()
+
+    def output(chunk):
+        chunks.append(chunk)
+        if chunk.strip() != 'FAIRNESS-NOISE' or (base / 'sink-entered').exists():
+            return
+        (base / 'sink-entered').touch()
+        event_file = Path((base / 'event-path').read_text())
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            rows = [json.loads(line) for line in event_file.read_text().splitlines(keepends=True)
+                    if line.endswith('\n')]
+            if any(row.get('kind') == 'report' and row.get('phase') == 'teardown'
+                   and row.get('node', '').endswith('::test_fast') for row in rows):
+                if cancel:
+                    cancellation.set()
+                return
+            time.sleep(.01)
+        pytest.fail('fast worker did not persist its teardown report')
+
+    def event(row):
+        if row.kind == 'test_finished' and row.identity.node_id.endswith('::test_fast'):
+            observations.append((chunks.count('FAIRNESS-NOISE\n'),
+                                 (base / 'blocked-released').exists()))
+            (base / 'completion-seen').touch()
+
+    result = run_integration_tests(ctx, selected, accepted=True, parallel_jobs=2,
+                                  output=output, on_event=event, cancel_event=cancellation)
+
+    assert result.exit_code == (130 if cancel else 0)
+    assert result.cancelled is cancel
+    assert result.tests[0].status == 'passed'
+    assert result.tests[1].status == ('cancelled' if cancel else 'passed')
+    assert (base / 'blocked-released').exists() is (not cancel)
+    assert len(observations) == 1
+    assert observations[0][0] <= 32
+    assert observations[0][1] is False
+    assert chunks.count('FAIRNESS-NOISE\n') == 512
+    assert ''.join(chunks) == result.output
+
+
+def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_path, monkeypatch):
+    import json
+    import os
+    import queue
+    from api_agent.testing import integration
+
+    base = fixture_repo(tmp_path / 'base')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    put_started, release_put = threading.Event(), threading.Event()
+    sealing, sealed = threading.Event(), threading.Event()
+    controller = threading.get_ident()
+    readers, retained = [], []
+
+    class OutputLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.get_ident() == controller:
+                assert self.lock.locked(), 'accepted queue insertion must own the seal gate'
+                sealing.set()
+            self.lock.acquire()
+
+        def __exit__(self, *args):
+            self.lock.release()
+            if threading.get_ident() == controller:
+                sealed.set()
+
+    class OutputQueue(queue.Queue):
+        def put(self, line):
+            put_started.set()
+            assert release_put.wait(5), 'accepted output was never released'
+            super().put(line)
+
+    class Stdout:
+        def __iter__(self):
+            yield 'accepted before handoff\n'
+            assert sealed.wait(5), 'output was never sealed'
+            yield 'discarded after handoff\n'
+
+    class Process:
+        stdout = Stdout()
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def spawn(args, **kwargs):
+        rows = [dict(kind='report', node=selected[0].node_id, phase=phase,
+                     status='passed', duration=0, traceback='')
+                for phase in ('setup', 'call', 'teardown')]
+        rows += [dict(kind='run_complete', exit_code=0), dict(kind='inspection_open')]
+        Path(args[3]).write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        return Process()
+
+    def retain(process, directory, event_file, reader, **kwargs):
+        assert put_started.wait(5), 'reader did not enter accepted queue insertion'
+        directory.retained = True
+        event_file.unlink()
+        readers.append(reader)
+        retained.append((directory, kwargs['liveness_fd']))
+
+    def release_accepted_line():
+        if sealing.wait(5):
+            release_put.set()
+
+    releaser = threading.Thread(target=release_accepted_line)
+    monkeypatch.setattr(integration, 'threading', SimpleNamespace(
+        Thread=threading.Thread, Event=threading.Event, Lock=OutputLock))
+    monkeypatch.setattr(integration, 'queue', SimpleNamespace(Queue=OutputQueue))
+    monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: selected)
+    monkeypatch.setattr(integration.subprocess, 'Popen', spawn)
+    monkeypatch.setattr('api_agent.testing.inspection.IntegrationInspection', retain)
+    releaser.start()
+    try:
+        result = run_integration_tests(ctx, selected, accepted=True)
+        assert result.exit_code == 0, result.output
+        assert result.output == 'accepted before handoff\n'
+        assert sealing.is_set()
+    finally:
+        release_put.set()
+        sealed.set()
+        releaser.join(timeout=5)
+        for reader in readers:
+            reader.join(timeout=5)
+        for directory, liveness_fd in retained:
+            if liveness_fd is not None:
+                os.close(liveness_fd)
+            directory.temporary.cleanup()

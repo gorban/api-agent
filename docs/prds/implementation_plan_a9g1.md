@@ -10,3 +10,8 @@
 - [ ] Human review of NO_STD_IN multi-test progress and clean Ctrl+C inspection closure remains open. No live inference is needed for deterministic verification.
 
 This repairs the delivered integration CLI. E2E execution remains in its owning future task; do not claim a new E2E runner from shared event or confirmation support.
+
+## Completion display and scheduling
+
+- [ ] Limit each sanitized terminal completion line to 1,024 characters, including an explicit truncation marker. Scrub the complete formatted identity before applying the display limit; cutting a registered secret first must never expose fragments. Preserve exact identities for selection/counting and full original result evidence. Verify boundary lengths, huge identities and a registered secret spanning the display cutoff, with independent cap/order mutations.
+- [ ] Service structured completion events ahead of raw stdout backlogs. While the worker remains active, bound raw-output batches so forwarded controller/plugin output cannot indefinitely delay event processing or cancellation. Preserve complete final captured output and retained inspection handoff. Prove ordering with controlled process/IPC barriers and meaningful scheduling mutations rather than relying on worker print timing.
