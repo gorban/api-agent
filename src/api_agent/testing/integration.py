@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+from uuid import uuid4
 
 from .collection import CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
@@ -90,6 +91,10 @@ class Events:
 event_path = sys.argv[1]
 events = Events()
 code = pytest.main(sys.argv[2:], plugins=[events])
+sys.stdout.flush()
+if sys.__stdout__ is not sys.stdout:
+    sys.__stdout__.flush()
+os.write(1, os.environ['API_AGENT_STDOUT_BOUNDARY'].encode('utf-8'))
 events.send(kind='run_complete', exit_code=int(code))
 from api_agent.testing.provider_setup import serve_inspections
 serve_inspections(events.send)
@@ -312,6 +317,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
                     env['API_AGENT_COMPONENT_EVENTS'] = str(event_file)
+                    stdout_marker = f'[api-agent-stdout-{uuid4().hex}]\n'
+                    env['API_AGENT_STDOUT_BOUNDARY'] = stdout_marker
                     args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.ui_inspection', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
                     if config is not None and config.get('DEBUG'):
                         args.append('-s')
@@ -345,16 +352,25 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     discard_output = threading.Event()
                     output_lock = threading.Lock()
                     reader_errors = []
+                    stdout_boundary = threading.Event()
                     for identity in selected.values():
                         reader_diagnostics[identity.id] = reader_errors
                     def read_output(process=process, lines=lines, discard_output=discard_output, reader_errors=reader_errors,
-                                    output_lock=output_lock):
+                                    output_lock=output_lock, stdout_marker=stdout_marker,
+                                    stdout_boundary=stdout_boundary):
                         try:
                             for line in process.stdout:
+                                boundary = line.endswith(stdout_marker)
+                                if boundary:
+                                    line = line[:-len(stdout_marker)]
                                 with output_lock:
-                                    if not discard_output.is_set():
+                                    if line and not discard_output.is_set():
                                         lines.put(line)
-                        except OSError as error:
+                                    if boundary:
+                                        stdout_boundary.set()
+                            # Clean EOF also proves that no pipe backlog remains.
+                            stdout_boundary.set()
+                        except (OSError, UnicodeError) as error:
                             reader_errors.append(local_exception('Integration pytest output reader', error))
                     reader = threading.Thread(target=read_output, daemon=True)
                     try:
@@ -464,6 +480,27 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 break
                             drain()
                             if run_complete is not None and inspection_ready:
+                                from api_agent.providers.progress import report_timeout_sync
+                                stage = 'Integration retained stdout boundary'
+                                with report_timeout_sync(stage, 5) as budget:
+                                    while not stdout_boundary.is_set():
+                                        if cancel_event is not None and cancel_event.is_set():
+                                            cancelled = True
+                                            break
+                                        if process.poll() is not None:
+                                            break
+                                        if reader_errors:
+                                            raise OSError('Worker output boundary reader failed')
+                                        if budget.remaining == 0:
+                                            raise TimeoutError('Worker output boundary was not acknowledged')
+                                        drain()
+                                        time.sleep(min(.03, budget.remaining))
+                                    if not cancelled and budget.remaining == 0:
+                                        raise TimeoutError('Worker output boundary was not acknowledged before its deadline')
+                                if cancelled or not stdout_boundary.is_set():
+                                    break
+                                if reader_errors:
+                                    raise OSError('Worker output boundary reader failed')
                                 IntegrationInspection(process, directory, event_file, reader,
                                     on_event=on_event, repo=repo, liveness_fd=liveness_write, registry=inspections)
                                 break
@@ -480,13 +517,15 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 reader.join(timeout=5)
                                 if not reader.is_alive():
                                     process.stdout.close()
+                                else:
+                                    reader_errors.append('Integration pytest output reader did not finish during cleanup.')
                             if directory.retained:
                                 # Stop accepting new retained-worker output before
                                 # exhausting the finite evidence already queued.
                                 with output_lock:
                                     discard_output.set()
                             drain(final=True)
-                    failed |= (run_complete if directory.retained else process.returncode) != 0
+                    failed |= bool(reader_errors) or (run_complete if directory.retained else process.returncode) != 0
                     for identity in selected.values():
                         rows = reports.get(identity.id, [])
                         if not _complete_report(rows):
@@ -546,7 +585,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     # still owns work that can emit observations.
                     publication_error = error
                     failed = True
-            failed |= callback_failed or any(test.status not in {'passed', 'skipped'} for test in results.values())
+            failed |= callback_failed or any(reader_diagnostics.values()) or any(
+                test.status not in {'passed', 'skipped'} for test in results.values())
             result = IntegrationRunResult(130 if cancelled else int(failed),
                                           final_tests(), ''.join(chunks), cancelled, tuple(inspections))
             if publication_error is not None:

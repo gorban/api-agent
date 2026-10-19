@@ -291,23 +291,32 @@ def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_pat
         'test.py', 'test.py::test_ok', root=root) for root in roots)
     ctx = SimpleNamespace(base_root=roots[0], owner_root=roots[1])
     monkeypatch.setattr('api_agent.testing.integration.collect_tests', lambda *a, **k: tests)
-    readers = []
+    import threading
+    real_thread = threading.Thread
+    second_started = threading.Event()
+    readers, overlap = [], []
     class Stream:
-        def __init__(self, first): self.first = first
+        def __init__(self, first, marker):
+            self.first, self.marker = first, marker
         def __iter__(self):
             if self.first:
+                yield self.marker
+                assert second_started.wait(5), 'second owner never started'
+                overlap.append(len(readers))
                 raise OSError('synthetic late first-suite reader cause')
-            return iter(())
         def close(self): pass
     class Reader:
-        def __init__(self, target, **kwargs): self.target = target
+        def __init__(self, target, **kwargs):
+            self.thread = real_thread(target=target, **kwargs)
         def start(self):
             readers.append(self)
             if len(readers) == 2:
-                readers[0].target()
-                self.target()
-        def join(self, **kwargs): pass
-        def is_alive(self): return False
+                second_started.set()
+                readers[0].thread.join(timeout=5)
+                assert not readers[0].thread.is_alive()
+            self.thread.start()
+        def join(self, **kwargs): self.thread.join(**kwargs)
+        def is_alive(self): return self.thread.is_alive()
     def spawn(args, cwd, **kwargs):
         first = cwd == roots[0]
         rows = [dict(kind='report', node='test.py::test_ok', phase=phase,
@@ -317,7 +326,7 @@ def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_pat
             rows.append(dict(kind='inspection_open', endpoint='synthetic'))
         from pathlib import Path
         Path(args[3]).write_text(''.join(json.dumps(row) + '\n' for row in rows))
-        return SimpleNamespace(stdout=Stream(first), returncode=None if first else 0,
+        return SimpleNamespace(stdout=Stream(first, kwargs['env']['API_AGENT_STDOUT_BOUNDARY']), returncode=None if first else 0,
             poll=lambda: None if first else 0)
     def retain(process, directory, event_file, reader, registry, liveness_fd, **kwargs):
         directory.retained = True
@@ -332,6 +341,8 @@ def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_pat
     monkeypatch.setattr('api_agent.testing.inspection.IntegrationInspection', retain)
     run = run_integration_tests(ctx, tests, accepted=True)
     try:
+        assert run.exit_code == 1
+        assert overlap == [2]
         assert [row.status for row in run.tests] == ['passed', 'passed']
         assert 'synthetic late first-suite reader cause' in run.tests[0].local_diagnostic
         assert 'synthetic late first-suite reader cause' not in run.tests[1].local_diagnostic
