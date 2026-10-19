@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from api_agent.providers.inference import result_from_wire
 from api_agent.providers.progress import component_timeout
+from api_agent.testing.reasoning_heartbeat import post_chat, _drain, _retain_receipts, _select_error
 
 MODEL = 'gpt-6-luna'
 PUZZLE = (
@@ -71,7 +72,7 @@ def evaluate(records):
 
 async def run_pairs(client, endpoint, nonce, *, emit=lambda row: None):
     """Send at most six calls, with no retry, replacement or hidden provider."""
-    from api_agent.runtime.tasks import settle
+    failures = {}
 
     async def call(index, marker, effort):
         prompt = f'Run marker: {marker}\n{PUZZLE}'
@@ -82,10 +83,9 @@ async def run_pairs(client, endpoint, nonce, *, emit=lambda row: None):
         started = time.monotonic()
         try:
             async with component_timeout('Reasoning comparison application request', 150):
-                response = await client.post(endpoint+'/app/agent/chat',
-                    headers={'Origin':'http://127.0.0.1:8080', 'X-API-Agent-Session':nonce},
-                    json={'session_id':identifier, 'model':MODEL, 'reasoning_effort':effort,
-                          'messages':[{'role':'user', 'content':prompt}]})
+                response = await post_chat(client, endpoint, nonce,
+                    {'session_id':identifier, 'model':MODEL, 'reasoning_effort':effort,
+                     'messages':[{'role':'user', 'content':prompt}]})
                 response.raise_for_status()
                 data = response.json()
                 if data.pop('session_id') != identifier:
@@ -98,6 +98,9 @@ async def run_pairs(client, endpoint, nonce, *, emit=lambda row: None):
                     billing=result.billing, actual_cost_usd=None if result.billing is None else result.billing['usd'],
                     elapsed_seconds=time.monotonic()-started)
         except BaseException as error:
+            if isinstance(error, TimeoutError) and isinstance(error.__cause__, asyncio.CancelledError):
+                _retain_receipts(error, error.__cause__)
+            failures[index, effort] = error
             emit(dict(row, event='call', status='failed' if isinstance(error, Exception) else 'interrupted',
                       failure_type=type(error).__name__, elapsed_seconds=time.monotonic()-started))
             raise
@@ -120,14 +123,19 @@ async def run_pairs(client, endpoint, nonce, *, emit=lambda row: None):
                 tasks.append(task)
         pending = asyncio.gather(*tasks, return_exceptions=True)
         results = await asyncio.shield(pending)
-    except BaseException:
-        for task in tasks:
-            task.cancel()
-        await settle(asyncio.gather(*tasks, return_exceptions=True))
+    except BaseException as error:
+        interrupted = await _drain(tasks)
+        selected = _select_error(error, interrupted)
+        _retain_receipts(selected, error, interrupted, *failures.values())
+        if selected is not error:
+            raise selected
         raise
-    for result in results:
+    for offset, result in enumerate(results):
         if isinstance(result, BaseException):
-            raise result
+            key = offset//2+1, ('low', 'medium')[offset%2]
+            error = failures.get(key, result)
+            _retain_receipts(error, *failures.values())
+            raise error
     records = []
     for offset in range(0, 6, 2):
         calls = results[offset:offset+2]

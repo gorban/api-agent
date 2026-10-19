@@ -54,3 +54,7 @@ A later human run failed the unchanged scorer with gaps -22, -37 and +41. It rem
 
 - [x] Complete independent and external review of concurrent scheduling, per-call attribution, cleanup and installed-package behavior.
 - [ ] Human acceptance of concurrent scheduling remains open. Stochastic token separation remains deferred separately; a positive token-margin sample is not required to demonstrate concurrency.
+
+## Buffered request lease renewal
+
+Maintain long-running buffered requests under the existing chat heartbeat contract. See [lease-renewal requirements and verification](implementation_plan_f2f3b.md). The prompt and signed scorer remain unchanged.
