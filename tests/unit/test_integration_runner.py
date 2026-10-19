@@ -892,6 +892,7 @@ def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_pat
     sealing, sealed = threading.Event(), threading.Event()
     controller = threading.get_ident()
     readers, retained = [], []
+    markers = []
 
     class OutputLock:
         def __init__(self):
@@ -916,6 +917,7 @@ def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_pat
 
     class Stdout:
         def __iter__(self):
+            yield markers[0]
             yield 'accepted before handoff\n'
             assert sealed.wait(5), 'output was never sealed'
             yield 'discarded after handoff\n'
@@ -928,6 +930,7 @@ def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_pat
             return None
 
     def spawn(args, **kwargs):
+        markers.append(kwargs['env']['API_AGENT_STDOUT_BOUNDARY'])
         rows = [dict(kind='report', node=selected[0].node_id, phase=phase,
                      status='passed', duration=0, traceback='')
                 for phase in ('setup', 'call', 'teardown')]
@@ -966,6 +969,201 @@ def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_pat
         for reader in readers:
             reader.join(timeout=5)
         for directory, liveness_fd in retained:
+            if liveness_fd is not None:
+                os.close(liveness_fd)
+            directory.temporary.cleanup()
+
+
+def test_retained_handoff_reads_pipe_boundary_before_sealing_slow_reader(tmp_path, monkeypatch):
+    import queue
+    from api_agent.testing import integration
+
+    base = fixture_repo(tmp_path / 'base', '''
+from types import SimpleNamespace
+from api_agent.testing.provider_setup import IntegrationLLM
+
+def test_retained():
+    owner = IntegrationLLM({'DEBUG': True}, '.')
+    async def observe():
+        owner.inspection.observe(SimpleNamespace(inspection_endpoint=None,
+            browser=SimpleNamespace(is_connected=lambda: True), context=SimpleNamespace(pages=[object()])))
+    owner.loop.run_until_complete(observe())
+    owner.finish_run()
+''')
+    (base / 'conftest.py').write_text('''
+import os
+
+def pytest_configure(config):
+    if 'API_AGENT_INTEGRATION_EVENTS' in os.environ:
+        os.write(1, b'PIPE-BACKLOG\\n' * 500)
+''')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+
+    class SlowQueue(queue.Queue):
+        def put(self, item):
+            time.sleep(.003)
+            super().put(item)
+
+    monkeypatch.setattr(integration, 'queue', SimpleNamespace(Queue=SlowQueue))
+    monkeypatch.setattr(integration, '_PLUGIN', integration._PLUGIN.replace(
+        'sys.stdout.flush()',
+        "os.write(1, b'final prefix without newline')\nsys.stdout.flush()", 1))
+    result = run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True})
+    try:
+        assert result.exit_code == 0
+        assert result.output.count('PIPE-BACKLOG\n') == 500
+        assert 'final prefix without newline' in result.output
+        assert '[api-agent-stdout-' not in result.output
+        assert any(hasattr(handle, 'process') and handle.process.poll() is None
+                   for handle in result.inspections)
+    finally:
+        for handle in result.inspections:
+            handle.abort()
+
+
+@pytest.mark.parametrize('receipt', ['marker', 'false_marker', 'false_marker_live', 'marker_error', 'eof', 'read_error', 'exited_error',
+                                     'timeout', 'cancel', 'process_exit', 'decode_error', 'zero_parent', 'late_ack'])
+def test_retained_stdout_boundary_receipt_controls_transfer(tmp_path, monkeypatch, receipt):
+    from contextlib import contextmanager, nullcontext
+    from api_agent.providers import progress
+    import json
+    import os
+    from api_agent.testing import integration
+
+    base = fixture_repo(tmp_path / 'base')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    stopped = threading.Event()
+    cancel = threading.Event()
+    transferred = []
+    finalized = []
+    marker = []
+    wait_entered, release_ack, ack_consumed = (threading.Event() for _ in range(3))
+    late_budget = SimpleNamespace(remaining=5)
+
+    class Stdout:
+        def __iter__(self):
+            if receipt == 'late_ack':
+                assert wait_entered.wait(5), 'boundary wait was not entered'
+                yield 'late raw callback\n'
+                assert release_ack.wait(5), 'late marker was not released'
+                yield marker[0]
+                ack_consumed.set()
+                return
+            if receipt in {'read_error', 'exited_error'}:
+                raise OSError('synthetic reader failure')
+            if receipt == 'decode_error':
+                raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'synthetic reader failure')
+            if receipt == 'false_marker_live':
+                yield '[api-agent-stdout-wrong-nonce]\n'
+            if receipt in {'timeout', 'cancel', 'process_exit', 'false_marker_live'}:
+                assert stopped.wait(5), 'worker was not finalized'
+                return
+            if receipt == 'false_marker':
+                yield '[api-agent-stdout-wrong-nonce]\n'
+            yield 'raw prefix' + (marker[0] if receipt != 'eof' else '')
+            if receipt == 'marker_error':
+                raise OSError('synthetic reader failure')
+
+        def close(self):
+            pass
+
+    class Process:
+        stdout = Stdout()
+        returncode = None
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            if receipt in {'exited_error', 'decode_error'} or (receipt == 'process_exit' and self.polls > 1):
+                self.returncode = 0
+            return self.returncode
+
+    process = Process()
+
+    def spawn(args, **kwargs):
+        marker.append(kwargs['env']['API_AGENT_STDOUT_BOUNDARY'])
+        rows = [dict(kind='report', node=selected[0].node_id, phase=phase,
+                     status='passed', duration=0, traceback='')
+                for phase in ('setup', 'call', 'teardown')]
+        rows += [dict(kind='run_complete', exit_code=0), dict(kind='inspection_open')]
+        Path(args[3]).write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        return process
+
+    def finalize(worker):
+        finalized.append(worker)
+        worker.returncode = 0
+        stopped.set()
+
+    def retain(worker, directory, event_file, reader, **kwargs):
+        directory.retained = True
+        transferred.append((directory, kwargs['liveness_fd'], reader))
+
+    def event(row):
+        if receipt == 'cancel' and row.kind == 'inspection_open':
+            cancel.set()
+
+    @contextmanager
+    def expired_budget(name, timeout):
+        assert name == 'Integration retained stdout boundary' and timeout == 5
+        yield SimpleNamespace(remaining=0)
+
+    if receipt in {'marker_error', 'zero_parent'}:
+        class CompletedReader:
+            def __init__(self, target, **kwargs): self.target = target
+            def start(self): self.target()
+            def join(self, **kwargs): pass
+            def is_alive(self): return False
+        monkeypatch.setattr(integration, 'threading', SimpleNamespace(
+            Thread=CompletedReader, Event=threading.Event, Lock=threading.Lock))
+    @contextmanager
+    def late_ack_budget(name, timeout):
+        wait_entered.set()
+        yield late_budget
+
+    def output(chunk):
+        if receipt == 'late_ack' and chunk == 'late raw callback\n':
+            late_budget.remaining = 0
+            release_ack.set()
+            assert ack_consumed.wait(5), 'late marker was not acknowledged'
+
+    monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: selected)
+    monkeypatch.setattr(integration.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(integration, 'finalize', finalize)
+    monkeypatch.setattr('api_agent.testing.inspection.IntegrationInspection', retain)
+    if receipt in {'timeout', 'false_marker_live'}:
+        monkeypatch.setattr('api_agent.providers.progress.report_timeout_sync', expired_budget)
+
+    if receipt == 'late_ack':
+        monkeypatch.setattr(progress, 'report_timeout_sync', late_ack_budget)
+    clock = SimpleNamespace(now=0)
+    if receipt == 'zero_parent':
+        monkeypatch.setattr(progress, '_clock', lambda: clock.now)
+    parent = progress.report_timeout_sync('Parent budget', 5) if receipt == 'zero_parent' else nullcontext()
+    with parent:
+        if receipt == 'zero_parent':
+            clock.now = 5
+        result = run_integration_tests(ctx, selected, accepted=True, on_event=event,
+                                       cancel_event=cancel, output=output)
+    try:
+        assert bool(transferred) is (receipt in {'marker', 'false_marker', 'eof'})
+        assert bool(finalized) is (not transferred)
+        assert result.exit_code == (130 if receipt == 'cancel' else
+                                    1 if receipt in {'read_error', 'exited_error', 'decode_error', 'marker_error', 'timeout', 'false_marker_live', 'zero_parent', 'late_ack'} else 0)
+        if receipt in {'marker', 'false_marker', 'eof'}:
+            assert result.output.endswith('raw prefix')
+            assert marker[0] not in result.output
+        if receipt == 'false_marker':
+            assert result.output.startswith('[api-agent-stdout-wrong-nonce]\n')
+        if receipt in {'read_error', 'exited_error', 'decode_error', 'marker_error'}:
+            assert 'synthetic reader failure' in result.tests[0].local_diagnostic
+        if receipt in {'timeout', 'false_marker_live', 'zero_parent', 'late_ack'}:
+            assert 'Integration retained stdout boundary' in result.output
+    finally:
+        stopped.set()
+        for directory, liveness_fd, reader in transferred:
+            reader.join(timeout=5)
             if liveness_fd is not None:
                 os.close(liveness_fd)
             directory.temporary.cleanup()

@@ -389,16 +389,16 @@ def test_event_directory_disappearance_respects_transferred_ownership(worker_har
         assert 'Stack locations' in result.tests[0].traceback
 
 
-def test_postpublication_output_is_drained_without_growing_final_evidence(worker_harness, monkeypatch):
+def test_postpublication_output_is_drained_without_growing_final_evidence(worker_harness):
     state = worker_harness
     state.retained = True
-    class DeferredReader(DormantThread):
-        def start(self):
-            pass
-    monkeypatch.setattr(integration.threading, 'Thread', DeferredReader)
+    state.output = ''
     observed = []
     def publish(result):
-        reader = result.inspections[0].reader
+        handle = result.inspections[0]
+        handle.process.stdout.write('worker evidence\n')
+        handle.process.stdout.seek(0)
+        reader = handle.reader
         reader.target()
         queue = reader.target.__defaults__[1]
         observed.append((queue.qsize(), result.output))
