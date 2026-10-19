@@ -33,3 +33,5 @@ The original qualification and acceptance statements above describe their histor
 - [x] Append a separate provenance receipt chained to the prior reasoning carry-forward. Preserve the original 20 trial rows, recomputed statistics and cap 22 exactly; state that no new workflow pilot was run. Keep the existing validator unchanged so another factory edit or any unrelated settings, dependency or source drift still fails before setup or inference.
 
 The source diff is confined to visible-login selection outside the sampled workflow and a login diagnostic. The previous fixture digest and source binding remain in provenance; this is a new source-equivalence review, not a new measurement or a replacement for the earlier qualification.
+
+The later nested-declaration conversion uses a [fresh independently reviewed pilot and normal coverage run](implementation_plan_b2b1a2.md). Its version-3 fingerprint and measurements supersede the packaged entry for that profile; the observations and carry-forward decisions above remain historical.
