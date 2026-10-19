@@ -240,6 +240,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                                     continue
                                 if row['kind'] == 'test_started':
                                     watchdog.observe(identity.id, 'test_started', at=row.get('at'))
+                                    retain_transition_deadlines()
                                     emit(RunnerEvent('test_started', repo, identity))
                                 elif row['kind'] == 'component_progress':
                                     from api_agent.providers.progress import ComponentProgress
@@ -249,9 +250,26 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                                     reports.setdefault(identity.id, []).append(row)
                                     if identity.id not in timeout_details:
                                         watchdog.observe(identity.id, 'report', phase=row['phase'], at=row.get('at'))
+                                        retain_transition_deadlines()
                                         if row['phase'] == 'teardown':
                                             finish(identity)
                             offset = stream.tell()
+                    def retain_transition_deadlines():
+                        for deadline in watchdog.violations.values():
+                            timeout_details.setdefault(deadline.identity,
+                                deadline.diagnostic(ordinals.get(deadline.identity)))
+                    def record_deadlines(deadlines):
+                        nonlocal failed
+                        failed = True
+                        for deadline in deadlines:
+                            detail = deadline.diagnostic(ordinals.get(deadline.identity))
+                            raw(repo, detail + '\n')
+                            if deadline.identity is not None:
+                                timeout_details.setdefault(deadline.identity, detail)
+                        for identity in selected.values():
+                            if identity.id not in results:
+                                timeout_details.setdefault(identity.id,
+                                    'Unit pytest repository stopped after an execution deadline.')
                     def drain(*, final=False):
                         drain_events()
                         remaining = None if final else 32
@@ -289,27 +307,23 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                             # Teardown already durable on disk wins the race with
                             # the clock, even when raw output delivery was slow.
                             drain_events()
-                            expired = watchdog.expired() if process.poll() is None else ()
+                            expired = watchdog.expired()
                             if expired:
-                                failed = True
-                                for deadline in expired:
-                                    detail = deadline.diagnostic(ordinals.get(deadline.identity))
-                                    raw(repo, detail + '\n')
-                                    if deadline.identity is not None:
-                                        timeout_details[deadline.identity] = detail
-                                for identity in selected.values():
-                                    if identity.id not in results:
-                                        timeout_details.setdefault(identity.id,
-                                            'Unit pytest repository stopped after an execution deadline.')
+                                record_deadlines(expired)
                                 stop_owned()
                                 break
                         time.sleep(.03)
+                    exit_observed_at = watchdog.clock()
                     # Disposal is acknowledged once per exact process handle;
                     # later reader/drain errors cannot signal its reused PID.
                     stop_owned()
                     reader.join(timeout=1)
                     reader_joined = True
                     drain(final=True)
+                    if not cancelled and not expired:
+                        expired = watchdog.expired(at=exit_observed_at)
+                        if expired:
+                            record_deadlines(expired)
                     failed |= process.returncode != 0 or bool(expired)
                     for identity in selected.values():
                         if identity.id not in results:
