@@ -117,17 +117,24 @@ def test_application_name_reaches_attended_connection(config, expected, store, m
     run(scenario())
 
 
+@pytest.mark.parametrize('mode', ['run-local','integration','e2e'])
 @pytest.mark.parametrize('run_ui', [False, True])
-def test_failed_attended_setup_keeps_browser_until_cleanup_confirmed(store, monkeypatch, run_ui):
+def test_failed_attended_setup_keeps_browser_until_cleanup_confirmed(store, monkeypatch, run_ui, mode):
     browser = SimpleNamespace(aclose=AsyncMock())
     browser.aclose.side_effect = [CleanupPendingError((browser,), browser.aclose), None]
-    monkeypatch.setattr(module, 'subscription_browser', lambda: browser)
+    options = []
+    def create(**kwargs):
+        options.append(kwargs)
+        return browser
+    monkeypatch.setattr(module, 'subscription_browser', create)
     connect = AsyncMock(side_effect=RuntimeError('consent failed'))
     monkeypatch.setattr(module, 'connect_account', connect)
     async def scenario():
-        provider = module.factory({'RUN_UI': run_ui}, None)
+        provider = module.factory({'TUI_MODE':mode,'RUN_UI': run_ui}, None)
         with pytest.raises(RuntimeError, match='consent failed'):
             await setup(provider, interactive=True)
+        assert len(options) == 1
+        assert options[0].get('headless', False) is False
         assert provider.browsers == [browser] and not provider.sessions
         assert connect.await_args.kwargs['browser_owner'] is browser
         with pytest.raises(CleanupPendingError):
@@ -173,9 +180,10 @@ def test_optional_username_selects_only_unique_matching_cache(username, entries,
         assert connect.await_args.kwargs['login_username'] == username.strip()
 
 
+@pytest.mark.parametrize('mode', [None,'run-local','integration','e2e'])
 @pytest.mark.parametrize('run_ui', [False, True])
 @pytest.mark.parametrize('debug', [False, True])
-def test_uncached_selected_username_drives_browser_visibility(store, monkeypatch, run_ui, debug):
+def test_uncached_selected_username_drives_browser_visibility(store, monkeypatch, run_ui, debug, mode):
     inspection = object() if debug else None
     browser = SimpleNamespace(aclose=AsyncMock())
     options = []
@@ -186,14 +194,14 @@ def test_uncached_selected_username_drives_browser_visibility(store, monkeypatch
     connect = AsyncMock(return_value='new')
     monkeypatch.setattr(module, 'connect_account', connect)
     async def scenario():
-        provider = module.factory({'RUN_UI': run_ui}, {'browser_inspection': inspection})
+        provider = module.factory({'TUI_MODE':mode,'RUN_UI': run_ui}, {'browser_inspection': inspection})
         reader = AsyncMock(return_value=' person@example.test ')
         session = await provider.asetup(interactive=False, user_index=0, credentials=reader)
         assert session.profile_id == 'new'
         reader.assert_awaited_once_with(0, 'username')
         assert connect.await_args.kwargs['login_username'] == 'person@example.test'
-        assert options == [({'inspection': inspection} if debug else {}) | {'headless': not (run_ui or debug)}]
-        assert connect.await_args.kwargs['allow_interaction'] is (run_ui or debug)
+        assert options == [({'inspection': inspection} if debug else {}) | {'headless': not (mode == 'run-local' and run_ui or debug)}]
+        assert connect.await_args.kwargs['allow_interaction'] is (mode == 'run-local' and run_ui or debug)
         credential_reader = connect.await_args.kwargs['login_credentials']
         assert await credential_reader('password') == ' person@example.test '
         assert await credential_reader('totp') == ' person@example.test '
@@ -369,8 +377,10 @@ def test_factory_contributes_common_browser_inspector(store, monkeypatch):
     run(scenario())
 
 
+@pytest.mark.parametrize('mode', ['integration','e2e'])
+@pytest.mark.parametrize('run_ui', [False,True])
 @pytest.mark.parametrize('retry_failure', [False, True])
-def test_headless_blocker_hands_off_once_to_headed_with_same_expected_account(store, monkeypatch, capsys, retry_failure):
+def test_headless_blocker_hands_off_once_to_headed_with_same_expected_account(store, monkeypatch, capsys, retry_failure, mode, run_ui):
     from api_agent.llm_providers.gpt.contracts import AuthError
     created = []
     def create(**kwargs):
@@ -382,7 +392,7 @@ def test_headless_blocker_hands_off_once_to_headed_with_same_expected_account(st
                         AuthError('account_mismatch') if retry_failure else 'new'])
     monkeypatch.setattr(module, 'connect_account', connect)
     async def scenario():
-        provider = module.factory({'NO_STD_IN': False, 'RUN_UI': False}, None)
+        provider = module.factory({'TUI_MODE':mode,'NO_STD_IN': False, 'RUN_UI': run_ui}, None)
         reader = AsyncMock(return_value='person@example.test')
         try:
             if retry_failure:

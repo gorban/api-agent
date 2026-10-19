@@ -3,15 +3,18 @@
 import sys
 
 
-def debug_warning(mode, debug, tests):
+def debug_warning(mode, debug, tests, *, e2e_debug=False):
     """Describe the risk for distinct selected integration or E2E tests."""
-    if mode not in {'integration', 'e2e'} or debug is not True:
+    legacy = mode == 'e2e' and e2e_debug is True
+    if mode not in {'integration', 'e2e'} or debug is not True and not legacy:
         return None
     count = len({test.id for test in tests})
     if count <= 1:
         return None
-    return (f'DEBUG=True with {count} selected tests could open multiple browser windows '
-            f'(up to {count}). To avoid this confirmation, set DEBUG=False and do not pass --debug. '
+    setting = 'E2E_DEBUG=True' if legacy and debug is not True else 'DEBUG=True'
+    disabled = 'DEBUG=False and E2E_DEBUG=False' if legacy else 'DEBUG=False'
+    return (f'{setting} with {count} selected tests could open multiple browser windows '
+            f'(up to {count}). To avoid this confirmation, set {disabled} and do not pass --debug. '
             'Enter literal y to continue; every other response cancels.')
 
 

@@ -58,3 +58,5 @@ workflow execution retain their separate gates.
 Human acceptance of retained Studio is recorded; the new reasoning and visible composer-rejection follow-ups remain separate. Long-idle cache review is not accepted by this signoff.
 
 - [ ] Human review of the new reasoning choices and composer rejection presentation. Prior retained Studio acceptance remains recorded.
+
+[Operation-specific browser visibility](implementation_plan_i2a2.md) defines Run local frontend selection and debug-only test browser visibility.

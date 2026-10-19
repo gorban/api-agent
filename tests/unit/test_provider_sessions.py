@@ -92,7 +92,7 @@ def test_credentials():
 @pytest.mark.parametrize("ui", [False, True])
 @pytest.mark.parametrize("debug", [False, True])
 def test_policy(mode, ui, debug):
-    expected = not (ui or debug) if mode == "e2e" else False if mode == "run-local" and ui else None
+    expected = not debug if mode in {"integration", "e2e"} else False if mode == "run-local" and ui else None
     assert ui_session_policy(mode, run_ui=ui, debug=debug) is expected
 
 
@@ -988,3 +988,11 @@ def test_pending_assistance_wakes_on_callback_without_poll_timeout(monkeypatch):
         assert not [other for other in asyncio.all_tasks()
                     if other is not asyncio.current_task() and not other.done()]
     run(scenario())
+
+
+@pytest.mark.parametrize('mode,debug,legacy,expected', [
+    ('e2e',False,True,False), ('e2e',True,False,False), ('e2e',False,False,True),
+    ('integration',False,True,True), ('integration',True,True,False),
+    ('run-local',False,True,None), ('unit',True,True,None)])
+def test_legacy_e2e_debug_only_affects_e2e_browser_policy(mode,debug,legacy,expected):
+    assert ui_session_policy(mode, debug=debug, e2e_debug=legacy) is expected

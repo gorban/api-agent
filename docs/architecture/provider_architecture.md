@@ -82,15 +82,15 @@ The role reader accepts declared role, index and credential kind; the LLM reader
 | Mode | UI session | Visibility and preparation |
 | --- | --- | --- |
 | Unit, help, collection; ordinary LLM integration | None | No frontend; LLM integration may need a separate provider-owned login browser |
-| Explicit UI-provider integration | Original managed UI session | Opt-in test fixture invokes selected provider lifecycle/preparation; visible with RUN_UI or DEBUG; discovery never requests it |
+| Explicit UI-provider integration | Original managed UI session | Opt-in test fixture invokes selected provider lifecycle/preparation; headed with DEBUG, otherwise headless; RUN_UI is local-only and discovery never requests it |
 | Local-run, `RUN_UI=False`, `DEBUG=False` | No automatic startup browser or frontend | No eager UI/LLM login; home/flow remain available; later authenticated API calls stay lazy |
 | Local-run, `RUN_UI=False`, `DEBUG=True` | Headed home/status, optional tracing and final flow browser | No frontend/UI hook or eager LLM login; tracing login remains independent |
 | Local-run, `RUN_UI=True` | One headed startup browser until local-run ends | Open the verified frontend and other started-component tabs; await optional UI-provider preparation and selected-account LLM readiness before agent-ready handoff |
-| E2E | Fresh separate browser instance/context/session for every attempt, including confirmation retries | Always real UI; headless only when neither `RUN_UI` nor debug is enabled; UI-provider preparation before test body |
+| E2E | Fresh separate browser instance/context/session for every attempt, including confirmation retries | Always real UI; headless unless DEBUG or E2E-only E2E_DEBUG inspection is enabled; UI-provider preparation before test body |
 
 - [ ] Yield the exact same `BrowserSession`, context and updated active page from UI-provider preparation to test/user. Finish provider navigation tasks before handoff; do not open a different default-browser profile to continue an authenticated session. Attribute failed hook setup to that E2E attempt and do not run its test body.
 - [ ] Map `E2E_DEBUG` to the debug policy. Debug retains every created browser, including failed setup attempts, through an explicit inspection owner/supervisor. Keep worker/driver ownership alive until inspection cleanup; retention cannot rely on pytest workers surviving implicitly.
-- [ ] Apply mode-aware shared visibility to every LLM login consumer: Run local is always headed when any browser is required; unattended test login is headless unless RUN_UI or effective DEBUG makes it visible; attended login is always headed. DEBUG retains its original session after provider auth disposal. The unused `AUTH_BROWSER_DEBUG` declaration is removed. Extend the implemented integration debug retention to other non-E2E consumers through the shared owner; map `E2E_DEBUG` to that owner without creating a second visibility policy.
+- [ ] Apply mode-aware shared visibility to every LLM login consumer: the future Run local executor must keep every required browser headed, including lazy authentication with the UI disabled; automated test login is headless without DEBUG inspection; required attended authentication and the existing bounded visible human/hardware-security handoff remain exceptions. RUN_UI controls only optional Run local frontend selection. DEBUG retains its original session after provider auth disposal. The unused `AUTH_BROWSER_DEBUG` declaration is removed. Extend the implemented integration debug retention to other non-E2E consumers through the shared owner; map `E2E_DEBUG` to that owner without creating a second visibility policy.
 - [ ] Ordinary completion/cancellation closes all browser resources, including partial setup. Explicit inspection cleanup closes retained contexts, browsers and drivers. Retention never keeps provider refresh tasks or a disposed token getter active.
 
 ### Shared LLM session policy
@@ -145,3 +145,7 @@ secrets, credential-helper results and string session tokens. Explicit
 `LOG_CONTENT=True` enables per-call provider-neutral request/response Allure
 attachments; default False omits them without disabling usage accounting.
 Future tool, streaming and browser evidence must use the same gate and scrubber.
+
+E2E owner/selector compatibility is not a complete E2E executor. Before claiming that runtime, share effective DEBUG (including E2E_DEBUG compatibility) across UI, LLM and backend retention; preserve explicit execution acceptance and existing authentication handoff ownership.
+
+The Run local rows describe the required future consumer, not certification of an executable local runtime. Its executor must impose headed/inspection policy on later lazy login even with RUN_UI=False. The direct provider factory still follows its existing local RUN_UI/inspection settings for automated login; the library-level visibility matrix does not satisfy that future Run local acceptance gate.

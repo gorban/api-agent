@@ -15,14 +15,16 @@ The [retained interactive-session follow-up](implementation_plan_i2c2.md) owns p
 
 ## Activation and visibility
 
+[Shared browser visibility policy](implementation_plan_i2a2.md) limits RUN_UI to optional Run local frontend selection.
+
 | Operation | UI provider and browser | Authentication at startup |
 | --- | --- | --- |
 | Run local, RUN_UI=False, DEBUG=False | No automatic startup browser or frontend | No eager UI or LLM authentication; actual later authenticated requests remain lazy |
 | Run local, RUN_UI=False, DEBUG=True | Headed startup browser with home/status, enabled tracing and final flow; no frontend | No eager UI or LLM authentication; tracing login is separately configured |
 | Run local, RUN_UI=True | Launch selected frontend and one managed headed UI session | Finish optional UI preparation, then prepare the selected LLM session when needed for the interactive agent |
 | Ordinary integration/discovery | No frontend; only a provider-owned authentication browser if needed | Only capabilities requested by the test; catalog discovery never requires a UI session |
-| Explicit UI-provider integration | Launch selected UI through the same consumer as local/E2E; headed with RUN_UI or DEBUG, otherwise headless | Optional UI preparation; LLM authentication only when the test explicitly needs it |
-| E2E | Frontend always required; browser headed with RUN_UI or DEBUG or E2E_DEBUG, otherwise headless | Complete scenario-required UI/LLM setup before handing the prepared session to its test |
+| Explicit UI-provider integration | Launch selected UI through the same consumer as local/E2E; headed with DEBUG, otherwise headless; RUN_UI does not affect test visibility | Optional UI preparation; LLM authentication only when the test explicitly needs it |
+| E2E | Frontend always required; browser headed with DEBUG or E2E_DEBUG, otherwise headless; RUN_UI does not affect startup or visibility | Complete scenario-required UI/LLM setup before handing the prepared session to its test |
 
 For Run local, RUN_UI or DEBUG opens one headed startup browser; DEBUG alone
 does not enable the optional frontend or eager UI/LLM login. Run local never
