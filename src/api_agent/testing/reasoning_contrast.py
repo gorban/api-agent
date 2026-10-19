@@ -37,8 +37,8 @@ def scope(config, *, owner_root=None):
             or config.get('GPT_API_MODE', 'responses') != 'responses'
             or config.get('GPT_BASE_URL', base) != base):
         raise ValueError('Reasoning comparison requires official subscription Responses')
-    if not {'low', 'medium'} <= set(reasoning_efforts(MODEL, base_url=base) or ()):
-        raise ValueError('Low and medium effort support is unverified')
+    if not {'low', 'high'} <= set(reasoning_efforts(MODEL, base_url=base) or ()):
+        raise ValueError('Low and high effort support is unverified')
     location = config.get('LLM_PROVIDER')
     if type(location) is not str or not location:
         raise ValueError('Select the included GPT provider')
@@ -62,7 +62,7 @@ def evaluate(records):
         return dict(passed=False, differences=differences)
     for pair in records:
         calls = pair.get('calls', [])
-        if (len(calls) != 2 or [row.get('effort') for row in calls] != ['low', 'medium']
+        if (len(calls) != 2 or [row.get('effort') for row in calls] != ['low', 'high']
                 or not all(valid_call(row) for row in calls)):
             return dict(passed=False, differences=differences)
         differences.append(calls[1]['reasoning_tokens']-calls[0]['reasoning_tokens'])
@@ -113,7 +113,7 @@ async def run_pairs(client, endpoint, nonce, *, emit=lambda row: None):
     try:
         for index in range(1, 4):
             marker = str(uuid4())
-            for effort in ('low', 'medium'):
+            for effort in ('low', 'high'):
                 work = call(index, marker, effort)
                 try:
                     task = asyncio.create_task(work)
@@ -132,7 +132,7 @@ async def run_pairs(client, endpoint, nonce, *, emit=lambda row: None):
         raise
     for offset, result in enumerate(results):
         if isinstance(result, BaseException):
-            key = offset//2+1, ('low', 'medium')[offset%2]
+            key = offset//2+1, ('low', 'high')[offset%2]
             error = failures.get(key, result)
             _retain_receipts(error, *failures.values())
             raise error

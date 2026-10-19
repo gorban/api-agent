@@ -19,14 +19,14 @@ class BufferedProvider(RetainedStudio):
     def __init__(self):
         self.admitted=asyncio.Event();self.entered=asyncio.Event();self.release=asyncio.Event();self.calls=[];self.stopped=[];self.closed=False
     async def describe(self):
-        return (AvailableSelection(MODEL,features=('reasoning_effort',),reasoning_efforts=('low','medium')),)
+        return (AvailableSelection(MODEL,features=('reasoning_effort',),reasoning_efforts=('low','high')),)
     async def complete(self,request):
         self.calls.append(request)
         self.admitted.set()
         if len(self.calls)==6:self.entered.set()
         try:await self.release.wait()
         finally:self.stopped.append(request.request_id)
-        count=100 if request.payload.generation.reasoning_effort=='low' else 175
+        count={'low':100,'high':175}[request.payload.generation.reasoning_effort]
         return LLMResult(Message('assistant',(TextContent('arbitrary'),)),Usage(1,200,reasoning_tokens=count))
     async def aclose(self):self.closed=True
 
