@@ -8,7 +8,7 @@
 - [x] Accept finite numeric advertised heartbeat timings greater than zero and at most 2,147,483,647 milliseconds (the browser timer bound), including fractional milliseconds with interval strictly below timeout; schedule from the admitted interval. Send periodic admitted-session heartbeat requests and explicit Stop/pagehide cancellation with configured nonce admission. Abort the transport and clear owned timers. Tab visibility alone must not cancel. Page exit including BFCache uses cancellation; abrupt loss is bounded by backend expiry. Maintain an absolute 150-second browser safety deadline aligned with the backend request and cleanup limits; heartbeat cannot renew it.
 - [x] Verify controlled browser/HTTP Stop, pagehide, visibility, heartbeat, cancellation failure and fresh retry identity. Preserve existing rendering, keyboard, storage and metadata regressions; no real credentials, user history or paid inference.
 - [x] Complete independent review, applicable exact frontend coverage and public-boundary checks for the current selection and timing repair before delivery.
-- [ ] Interactive human acceptance remains deferred to a working retained Studio session.
+- [x] Interactive human acceptance is recorded for the retained DEBUG Studio with the actual agent, including model/version/reasoning settings.
 
 ## Controlled verification
 

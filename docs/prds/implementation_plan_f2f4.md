@@ -7,7 +7,7 @@
 - [x] Without an explicit version, enable reasoning only when every advertised version has verified feature support and the same reasoning set, comparing sets independently of order. Any discrepancy or unknown capability disables explicit reasoning until a version is chosen. Reject stale saved reasoning that bypasses this control. Omitted effort continues to use configured policy and is omitted on the wire.
 - [x] On version changes retain explicit reasoning when the target supports it, otherwise reset it to provider default. Returning to unversioned selection applies the same uniform-set rule. Changing family still resets both version and reasoning.
 - [x] Verify controlled real-browser selection and outgoing requests for a non-global-default family, numeric/prerelease ordering, shuffled rows, ambiguous or opaque versions, unknown and unequal capability sets, saved settings, version retention/reset, immutable retries and omitted/default effort. Require focused mutations, exact applicable backend/frontend coverage, installed-package/relocation, licenses and public-boundary checks plus independent and external review.
-- [ ] Human acceptance of this picker repair remains open.
+- [x] Human acceptance of this picker repair is recorded for the retained DEBUG Studio connected to the actual agent, including model/version/reasoning settings.
 
 This supersedes the earlier requirement to select an explicit version for every non-default family and the earlier intersection-only reasoning menu. It does not change provider capabilities, inference defaults, authentication or workflow qualification.
 

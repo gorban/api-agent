@@ -71,7 +71,8 @@ contract. Provider transport and authentication values remain internal.
   attempts every response/context, retaining authentication until all settle.
 - [x] Renew applicable exact coverage, independent adversarial review, installed
   package and public-boundary gates before accepting this delivery.
-- [ ] Human review of the joined included Studio and alternate adapter behavior.
+- [x] Human review of the delivered included Studio behavior is accepted through its retained DEBUG session with the actual agent.
+- [ ] Human review of alternate adapter behavior remains with its separate integration checkpoint.
 
 Continuation/approval execution and result-set storage are unavailable until
 implemented by an actual capability. Existing unavailable routes retain explicit

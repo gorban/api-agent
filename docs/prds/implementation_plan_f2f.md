@@ -27,11 +27,11 @@ Deliver this contract before integrating the reviewed frontend foundation. Reaso
 
 ## Base delivery checkpoint
 
-[Implemented core contracts, verification and remaining joins](implementation_plan_f2f1.md). Sample UI pickers, tags and application joins have completed internal independent review and controlled validation. External PR review and frontend human acceptance remain open.
+[Implemented core contracts, verification and remaining joins](implementation_plan_f2f1.md). Sample UI pickers, tags and application joins have completed internal independent review and controlled validation. External PR review and delivered retained-frontend human acceptance are complete.
 
-- [ ] Frontend human acceptance is deferred until working Run local or [retained interactive Studio](implementation_plan_i2c2.md) provides a usable backend. Technical review and the accepted automated request do not replace this interaction review.
+- [x] Frontend human acceptance is recorded after reviewing the delivered [retained interactive Studio](implementation_plan_i2c2.md) with the actual agent, including model/version/reasoning settings. Run local and long-idle cache acceptance remain separate.
 
-Delivered generic inference/model request contracts are human-accepted. Frontend controls remain under the existing deferred interactive-review checkpoint; this approval does not waive it.
+Delivered generic inference/model request contracts and retained Studio frontend controls are human-accepted. Future Run local, alternate adapters and long-idle cache acceptance remain separate.
 
 ## Grouped Studio family and version picker
 

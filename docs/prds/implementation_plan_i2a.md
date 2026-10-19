@@ -51,12 +51,12 @@ workflow execution retain their separate gates.
 - [x] Preserve selected model/version/effort across New chat. A typed draft sent with Ctrl+Enter uses that exact selection and only the fresh conversation's messages.
 - [x] Present unsupported or unknown selection capabilities beside the composer when sending is blocked, retain the typed draft, and make the reason accessible through the existing prompt description. Do not silently choose a capability or manufacture a request.
 - [x] Keep active stream exclusion, Stop, New chat and Undo coherent. A deliberate reset clears the draft; Undo restores it until the next accepted send. Corrected advertised capabilities allow the preserved selection to send.
-- [x] Independently review the controlled browser regressions and complete joined verification. Human review remains open.
+- [x] Independently review the controlled browser regressions and complete joined verification. Human acceptance is recorded below.
 
 - [x] When a chosen family has an unresolved Provider default version, offer only reasoning efforts supported by every advertised row with verified reasoning support. Unknown support yields no explicit choices. Preserve version rejection without choosing a fallback; empty reasoning inherits configured effort, while empty configuration remains omitted upstream.
 
-Human acceptance of retained Studio is recorded; the new reasoning and visible composer-rejection follow-ups remain separate. Long-idle cache review is not accepted by this signoff.
+Human acceptance of retained Studio and the delivered reasoning/composer follow-ups is recorded. Long-idle cache review remains separate.
 
-- [ ] Human review of the new reasoning choices and composer rejection presentation. Prior retained Studio acceptance remains recorded.
+- [x] Human acceptance of the delivered reasoning choices and composer follow-ups is recorded within the remaining retained DEBUG Studio UI approval. Prior acceptance remains valid.
 
 [Operation-specific browser visibility](implementation_plan_i2a2.md) defines Run local frontend selection and debug-only test browser visibility.
