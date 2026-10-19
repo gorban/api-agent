@@ -2,7 +2,7 @@
 
 [Unit execution and coverage](implementation_plan_a9.md)
 
-This is unchecked future work, scheduled last after all profiling and remaining authentication tasks. It records requirements for evaluation; it does not implement a test split, alter execution defaults or change repository instructions.
+This is unchecked future work, scheduled after all profiling and remaining authentication tasks. It records requirements for evaluation; it does not implement a test split, alter execution defaults or change repository instructions.
 
 ## Ownership and dependencies
 

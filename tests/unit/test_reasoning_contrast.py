@@ -23,7 +23,7 @@ def pair(gap=50):
     ([49,50,49],False),([50,49,0],False),([50,50,-50],False),
     ([100,100,-51],False),([-50,100,100],False),
     ([89,29,49],False),([-47,7,17],False),
-    ([112,-94,-214],False),([-123,92,101],False)])
+    ([112,-94,-214],False),([-123,92,101],False),([-22,-37,41],False)])
 def test_signed_three_pair_threshold(gaps,expected):
     assert c.evaluate([pair(value) for value in gaps])==dict(passed=expected,differences=gaps)
 
@@ -93,8 +93,11 @@ def test_pair_nonce_identity_usage_and_reported_spend_across_runs():
     assert all(c.evaluate(rows)['passed'] for rows in runs)
     assert len(requests)==12 and len({row['session_id'] for row in requests})==12
     markers=[]
-    for index in range(0,12,2):
-        low,medium=requests[index:index+2]
+    prompts={row['messages'][0]['content'] for row in requests}
+    assert len(prompts)==6
+    for prompt in prompts:
+        low,medium=sorted((row for row in requests if row['messages'][0]['content']==prompt),
+                          key=lambda row: row['reasoning_effort'])
         assert low['messages']==medium['messages']
         assert [low['reasoning_effort'],medium['reasoning_effort']]==['low','medium']
         text=low['messages'][0]['content'];prefix,puzzle=text.split('\n',1)
@@ -124,7 +127,9 @@ def test_invalid_or_failed_calls_stop_without_replacement(case):
         async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
             await c.run_pairs(client,'http://127.0.0.1:1','nonce',emit=events.append)
     with pytest.raises(asyncio.CancelledError if case=='cancel' else Exception):asyncio.run(run())
-    assert len(requests)==1 and [row['event'] for row in events]==['intent','call']
+    assert len(requests)==6
+    assert len([row for row in events if row['event']=='intent'])==6
+    assert len([row for row in events if row['event']=='call'])==6
     assert events[-1]['status']==('interrupted' if case=='cancel' else 'failed' if case in ('identity','usage','http') else 'length' if case=='length' else 'completed')
     if case=='unknown':assert events[-1]['reasoning_tokens'] is None
 
@@ -160,9 +165,12 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
     module.reasoning_ready.__wrapped__(SimpleNamespace(values=config,owner_root=Path.cwd()))
     module.test_reasoning_contrast(None,SimpleNamespace(getfixturevalue=lambda name:provider),lambda name,value:properties.append((name,value)))
     # The ordinary test's scoring assertion executes before any wire assertions.
-    assert len(native)==6 and [row['reasoning']['effort'] for row in native]==['low','medium']*3
-    for index in range(0, 6, 2):
-        low, medium = native[index:index+2]
+    assert len(native)==6
+    prompts = {row['input'][0]['content'] for row in native}
+    for prompt in prompts:
+        low, medium = sorted((row for row in native if row['input'][0]['content']==prompt),
+                             key=lambda row: row['reasoning']['effort'])
+        assert [low['reasoning']['effort'],medium['reasoning']['effort']]==['low','medium']
         assert low['input'] == medium['input']
         content = low['input'][0]['content']
         prefix, task = content.split('\n', 1)
@@ -201,29 +209,29 @@ def test_original_fixture_partial_error_usage_survives_http_failure(tmp_path,mon
         module.test_reasoning_contrast(None,SimpleNamespace(getfixturevalue=lambda name:Provider()),lambda name,value:properties.append((name,value)))
     rows=[json.loads(line) for line in sink.read_text().splitlines()]
     usage=[row['data'] for row in rows if row['kind']=='inference_usage']
-    assert len(requests)==1 and closed==[True]
+    assert len(requests)==6 and closed==[True]*6
     assert usage[-1]['usage']['reasoning_tokens']==43 and usage[-1]['outcome']=='failed'
-    assert usage[-1]['reasoning_effort']=='low'
-    events=json.loads(properties[0][1]);assert [row['event'] for row in events]==['intent','call']
+    assert sorted(row['reasoning_effort'] for row in usage if row['outcome']=='failed')==['low']*3+['medium']*3
+    events=json.loads(properties[0][1]);assert len([row for row in events if row['event']=='call'])==6
 
 
-def test_remote_fixture_prerequisite_cannot_silently_skip_http_comparison():
+def test_remote_fixture_prerequisite_cannot_silently_skip_http_comparison(monkeypatch):
     from api_agent.testing.provider_setup import RemoteIntegrationLLM
     from api_agent.providers.contracts import SetupPrerequisiteError
     properties=[];requests=[]
     def unavailable():
         requests.append('describe')
         raise SetupPrerequisiteError('Controlled prerequisite unavailable')
-    remote=RemoteIntegrationLLM.__new__(RemoteIntegrationLLM)
-    remote.loop=asyncio.new_event_loop();remote.timeout=30
-    remote.client=SimpleNamespace(describe=unavailable,close=lambda:None)
+    from api_agent.providers import setup_transport
+    monkeypatch.setattr(setup_transport, 'SetupClient', lambda *a,**kw: SimpleNamespace(describe=unavailable,close=lambda:None))
+    remote=RemoteIntegrationLLM({})
     module=integration_module()
     try:
         with pytest.raises(httpx.HTTPStatusError):
             module.test_reasoning_contrast(None,SimpleNamespace(getfixturevalue=lambda name:remote),lambda name,value:properties.append((name,value)))
     finally:remote.close()
-    assert requests==['describe'] and remote.loop.is_closed()
-    assert [row['event'] for row in json.loads(properties[0][1])]==['intent','call']
+    assert requests==['describe']*6 and remote.loop.is_closed()
+    assert len([row for row in json.loads(properties[0][1]) if row['event']=='call'])==6
 
 
 def test_response_text_does_not_gate_reasoning_measurement():

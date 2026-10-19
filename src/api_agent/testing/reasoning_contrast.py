@@ -1,4 +1,5 @@
 """Three matched application-HTTP pairs using the ordinary integration owner."""
+import asyncio
 import time
 from uuid import uuid4
 
@@ -70,43 +71,67 @@ def evaluate(records):
 
 async def run_pairs(client, endpoint, nonce, *, emit=lambda row: None):
     """Send at most six calls, with no retry, replacement or hidden provider."""
-    records = []
-    for index in range(1, 4):
-        marker = str(uuid4())
+    from api_agent.runtime.tasks import settle
+
+    async def call(index, marker, effort):
         prompt = f'Run marker: {marker}\n{PUZZLE}'
-        calls = []
-        for effort in ('low', 'medium'):
-            identifier = str(uuid4())
-            row = dict(pair=index, marker=marker, effort=effort,
-                       request_id=identifier, requested_model=MODEL)
-            emit(dict(event='intent', **row))
-            started = time.monotonic()
-            try:
-                async with component_timeout('Reasoning comparison application request', 150):
-                    response = await client.post(endpoint+'/app/agent/chat',
-                        headers={'Origin':'http://127.0.0.1:8080', 'X-API-Agent-Session':nonce},
-                        json={'session_id':identifier, 'model':MODEL, 'reasoning_effort':effort,
-                              'messages':[{'role':'user', 'content':prompt}]})
-                    response.raise_for_status()
-                    data = response.json()
-                    if data.pop('session_id') != identifier:
-                        raise ValueError('Application request identity mismatch')
-                    data['text'] = data.pop('response_text')
-                    result = result_from_wire(data)
-                    row.update(status=result.outcome,
-                        reasoning_tokens=result.usage.reasoning_tokens, usage=data['usage'],
-                        actual_model=result.actual_model, serving_revision=result.serving_revision,
-                        billing=result.billing, actual_cost_usd=None if result.billing is None else result.billing['usd'],
-                        elapsed_seconds=time.monotonic()-started)
-            except BaseException as error:
-                emit(dict(row, event='call', status='failed' if isinstance(error, Exception) else 'interrupted',
-                          failure_type=type(error).__name__, elapsed_seconds=time.monotonic()-started))
-                raise
-            emit(dict(event='call', **row))
-            if not valid_call(row):
-                raise ValueError('Reasoning comparison received an invalid measurement')
-            calls.append(row)
-        record = dict(pair=index, marker=marker, calls=calls)
+        identifier = str(uuid4())
+        row = dict(pair=index, marker=marker, effort=effort,
+                   request_id=identifier, requested_model=MODEL)
+        emit(dict(event='intent', **row))
+        started = time.monotonic()
+        try:
+            async with component_timeout('Reasoning comparison application request', 150):
+                response = await client.post(endpoint+'/app/agent/chat',
+                    headers={'Origin':'http://127.0.0.1:8080', 'X-API-Agent-Session':nonce},
+                    json={'session_id':identifier, 'model':MODEL, 'reasoning_effort':effort,
+                          'messages':[{'role':'user', 'content':prompt}]})
+                response.raise_for_status()
+                data = response.json()
+                if data.pop('session_id') != identifier:
+                    raise ValueError('Application request identity mismatch')
+                data['text'] = data.pop('response_text')
+                result = result_from_wire(data)
+                row.update(status=result.outcome,
+                    reasoning_tokens=result.usage.reasoning_tokens, usage=data['usage'],
+                    actual_model=result.actual_model, serving_revision=result.serving_revision,
+                    billing=result.billing, actual_cost_usd=None if result.billing is None else result.billing['usd'],
+                    elapsed_seconds=time.monotonic()-started)
+        except BaseException as error:
+            emit(dict(row, event='call', status='failed' if isinstance(error, Exception) else 'interrupted',
+                      failure_type=type(error).__name__, elapsed_seconds=time.monotonic()-started))
+            raise
+        emit(dict(event='call', **row))
+        if not valid_call(row):
+            raise ValueError('Reasoning comparison received an invalid measurement')
+        return row
+
+    tasks = []
+    try:
+        for index in range(1, 4):
+            marker = str(uuid4())
+            for effort in ('low', 'medium'):
+                work = call(index, marker, effort)
+                try:
+                    task = asyncio.create_task(work)
+                except BaseException:
+                    work.close()
+                    raise
+                tasks.append(task)
+        pending = asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.shield(pending)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await settle(asyncio.gather(*tasks, return_exceptions=True))
+        raise
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    records = []
+    for offset in range(0, 6, 2):
+        calls = results[offset:offset+2]
+        record = dict(pair=calls[0]['pair'], marker=calls[0]['marker'], calls=calls)
         records.append(record)
         emit(dict(event='pair', **record))
     return records
