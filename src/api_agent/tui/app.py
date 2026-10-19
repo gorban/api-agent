@@ -383,7 +383,13 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             status = Static(app._allure_loading, id='allure-loading', markup=False)
             status.display = bool(app._allure_loading)
             yield status
-        if self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
+        if self.kind == 'allure':
+            with Vertical(id='allure-bottom-bar'):
+                status = Static(app._allure_loading, id='allure-loading', markup=False)
+                status.display = bool(app._allure_loading)
+                yield status
+                yield ButtonFooter()
+        elif self.kind == "menu" and getattr(app.context, "show_pack_bootstrap", False):
             with Vertical(id="menu-bottom-bar"):
                 yield Static("Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.",
                              id="pack-bootstrap", markup=False)
@@ -888,6 +894,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     .compact-review #heading, .compact-review #body, .compact-review DataTable { margin-bottom: 0; }
     #error { color: $error; height: auto; }
     #allure-loading { color: darkorange; height: auto; }
+    #allure-bottom-bar { dock: bottom; height: auto; }
+    #allure-bottom-bar Footer { dock: none; }
     QuitDialog, DeleteDialog, StopContainersDialog { align: center middle; background: $background 80%; }
     QuitDialog > *, DeleteDialog > *, StopContainersDialog > * { width: 65%; }
     .confirmation-actions { height: auto; }
@@ -2214,8 +2222,10 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             elif key == "container-logs":
                 self.request_container_logs()
             elif key == "allure-restore-secondary":
-                if not self._allure_opening:
-                    self.run_worker(self.restore_allure_secondary_history(), group="allure-restore", exclusive=True)
+                if (not self._allure_opening and
+                        (self._allure_restore_worker is None or self._allure_restore_worker.is_finished)):
+                    self._allure_restore_worker = self.run_worker(
+                        self.restore_allure_secondary_history(), group="allure-restore", exclusive=False)
             elif key == "refresh-allure":
                 if not self._allure_opening:
                     self.run_worker(self.show_allure_history(), group="allure-viewer", exclusive=False)

@@ -27,3 +27,11 @@ Technical implementation and independent/external review are complete under the 
 ## Concurrent destination publication
 
 An independently committed manifest may appear after the preflight read and before the restore's final conditional manifest write. In that race, the restore must fail without overwriting the competitor's manifest or any immutable object. Artifact keys uploaded by the losing restore may remain unreferenced. Readers expose only artifacts referenced by the committed manifest, never an apparent merged run. No automatic orphan cleanup occurs; a later explicit restore checks exact bytes again. The publication lock coordinates this workbench's suites, not independent destination writers.
+
+## Restore action feedback and admission
+
+- [x] Keep restore preparation and finalized-run progress visible in an orange status line above the history page shortcut bar, through the full owned operation; clear the line after completion or interruption.
+- [x] Admit one restore worker across rapid repeated action submissions, including the interval before the worker starts. Repeated submissions must neither replace nor cancel the admitted restore. Permit a new explicit restore after the worker finishes.
+- [x] Clear a previous restore error when a new configured attempt starts. Display a bounded failure for the current attempt, and clear that failure on a successful explicit retry.
+- [x] Preserve generation checks, threaded cancellation acknowledgement and viewer disposal ordering when leaving through Close or Quit. Controlled native workbench tests cover these paths without real history or storage writes.
+- [ ] Human acceptance: inspect the orange history-page progress line and repeated-click behavior with disposable history.
