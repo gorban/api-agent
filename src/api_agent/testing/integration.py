@@ -59,48 +59,51 @@ class IntegrationRunResult:
 
 
 _PLUGIN = r'''
-import json, os, signal, sys, threading
-import pytest
-if os.name == 'posix' and 'API_AGENT_LAUNCHER_LIVENESS_FD' in os.environ:
-    fd = int(os.environ['API_AGENT_LAUNCHER_LIVENESS_FD'])
-    def parent_liveness():
-        try:
-            while os.read(fd, 1):
-                pass
-        finally:
-            # This still-running worker owns exactly its newly created group.
-            if os.getpgrp() == os.getpid():
-                os.killpg(os.getpid(), signal.SIGKILL)
-            os._exit(130)
-    threading.Thread(target=parent_liveness, daemon=True).start()
-class Events:
-    def pytest_configure(self, config):
-        config.addinivalue_line("markers", "feature(name): explicit functional feature for reporting")
+import os
+def run(stdout_boundary):
+    import json, signal, sys, threading
+    import pytest
+    if os.name == 'posix' and 'API_AGENT_LAUNCHER_LIVENESS_FD' in os.environ:
+        fd = int(os.environ['API_AGENT_LAUNCHER_LIVENESS_FD'])
+        def parent_liveness():
+            try:
+                while os.read(fd, 1):
+                    pass
+            finally:
+                # This still-running worker owns exactly its newly created group.
+                if os.getpgrp() == os.getpid():
+                    os.killpg(os.getpid(), signal.SIGKILL)
+                os._exit(130)
+        threading.Thread(target=parent_liveness, daemon=True).start()
+    class Events:
+        def pytest_configure(self, config):
+            config.addinivalue_line("markers", "feature(name): explicit functional feature for reporting")
 
-    def send(self, **row):
-        with open(event_path, 'a', encoding='utf-8') as stream:
-            stream.write(json.dumps(row) + '\n')
-    def pytest_runtest_logstart(self, nodeid, location):
-        self.send(kind='test_started', node=nodeid)
-    def pytest_runtest_logreport(self, report):
-        self.send(kind='report', node=report.nodeid, phase=report.when,
-                  status=report.outcome, duration=report.duration,
-                  traceback=(str(report.longrepr[2]).removeprefix('Skipped: ')
-                             if report.skipped and isinstance(report.longrepr, tuple)
-                             else str(report.longrepr) if report.failed or report.skipped else ''))
-event_path = sys.argv[1]
-events = Events()
-code = pytest.main(sys.argv[2:], plugins=[events])
-sys.stdout.flush()
-if sys.__stdout__ is not sys.stdout:
-    sys.__stdout__.flush()
-os.write(1, os.environ['API_AGENT_STDOUT_BOUNDARY'].encode('utf-8'))
-events.send(kind='run_complete', exit_code=int(code))
-from api_agent.testing.provider_setup import serve_inspections
-serve_inspections(events.send)
-from api_agent.testing.ui_inspection import finish_parallel_inspections
-finish_parallel_inspections(events.send)
-sys.exit(code)
+        def send(self, **row):
+            with open(event_path, 'a', encoding='utf-8') as stream:
+                stream.write(json.dumps(row) + '\n')
+        def pytest_runtest_logstart(self, nodeid, location):
+            self.send(kind='test_started', node=nodeid)
+        def pytest_runtest_logreport(self, report):
+            self.send(kind='report', node=report.nodeid, phase=report.when,
+                      status=report.outcome, duration=report.duration,
+                      traceback=(str(report.longrepr[2]).removeprefix('Skipped: ')
+                                 if report.skipped and isinstance(report.longrepr, tuple)
+                                 else str(report.longrepr) if report.failed or report.skipped else ''))
+    event_path = sys.argv[1]
+    events = Events()
+    code = pytest.main(sys.argv[2:], plugins=[events])
+    sys.stdout.flush()
+    if sys.__stdout__ is not sys.stdout:
+        sys.__stdout__.flush()
+    os.write(1, stdout_boundary.encode('utf-8'))
+    events.send(kind='run_complete', exit_code=int(code))
+    from api_agent.testing.provider_setup import serve_inspections
+    serve_inspections(events.send)
+    from api_agent.testing.ui_inspection import finish_parallel_inspections
+    finish_parallel_inspections(events.send)
+    sys.exit(code)
+run(__API_AGENT_STDOUT_BOUNDARY__)
 '''
 
 
@@ -318,8 +321,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
                     env['API_AGENT_COMPONENT_EVENTS'] = str(event_file)
                     stdout_marker = f'[api-agent-stdout-{uuid4().hex}]\n'
-                    env['API_AGENT_STDOUT_BOUNDARY'] = stdout_marker
-                    args = [sys.executable, '-c', _PLUGIN, str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.ui_inspection', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
+                    args = [sys.executable, '-c', _PLUGIN.replace('__API_AGENT_STDOUT_BOUNDARY__', repr(stdout_marker)), str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.ui_inspection', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
                     if config is not None and config.get('DEBUG'):
                         args.append('-s')
                     if parallel_jobs:

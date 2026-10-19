@@ -9,6 +9,13 @@ from api_agent.testing.collection import CollectionError, collect_tests
 from api_agent.testing.integration import run_integration_tests
 
 
+def stdout_boundary_from_launch(args):
+    """Decode the final bootstrap call argument for controlled process doubles."""
+    import ast
+    call = ast.parse(args[2]).body[-1].value
+    return ast.literal_eval(call.args[0])
+
+
 def fixture_repo(root, test='def test_ok():\n    assert True\n'):
     suite = root / 'tests/integration'
     suite.mkdir(parents=True)
@@ -930,7 +937,7 @@ def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_pat
             return None
 
     def spawn(args, **kwargs):
-        markers.append(kwargs['env']['API_AGENT_STDOUT_BOUNDARY'])
+        markers.append(stdout_boundary_from_launch(args))
         rows = [dict(kind='report', node=selected[0].node_id, phase=phase,
                      status='passed', duration=0, traceback='')
                 for phase in ('setup', 'call', 'teardown')]
@@ -975,6 +982,7 @@ def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_pat
 
 
 def test_retained_handoff_reads_pipe_boundary_before_sealing_slow_reader(tmp_path, monkeypatch):
+    import json
     import queue
     from api_agent.testing import integration
 
@@ -991,11 +999,38 @@ def test_retained():
     owner.finish_run()
 ''')
     (base / 'conftest.py').write_text('''
-import os
+import json, os, subprocess, sys
+from pathlib import Path
 
 def pytest_configure(config):
     if 'API_AGENT_INTEGRATION_EVENTS' in os.environ:
+        for key, value in os.environ.items():
+            if key.startswith('API_AGENT_'):
+                os.write(1, (key + '=' + value + '\\n').encode())
+        strings = {key: value for key, value in vars(sys.modules['__main__']).items()
+                   if isinstance(value, str)}
+        for key, value in strings.items():
+            os.write(1, (key + '=' + value + '\\n').encode())
+        child = subprocess.check_output([sys.executable, '-c',
+            "import os; print('API_AGENT_STDOUT_BOUNDARY' in os.environ)"], text=True).strip().splitlines()[-1]
+        Path('boundary-observations.json').write_text(json.dumps({
+            'controller_environment': 'API_AGENT_STDOUT_BOUNDARY' in os.environ,
+            'controller_globals': any('[api-agent-stdout-' in value for value in strings.values()),
+            'child_environment': child == 'True',
+        }))
         os.write(1, b'PIPE-BACKLOG\\n' * 500)
+''')
+    startup = base / 'src/sitecustomize.py'
+    startup.parent.mkdir()
+    startup.write_text('''
+import json, os
+from pathlib import Path
+if 'API_AGENT_INTEGRATION_EVENTS' in os.environ:
+    for key, value in os.environ.items():
+        if key.startswith('API_AGENT_'):
+            os.write(1, (key + '=' + value + '\\n').encode())
+    with Path('startup-observations.jsonl').open('a') as stream:
+        stream.write(json.dumps('API_AGENT_STDOUT_BOUNDARY' in os.environ) + '\\n')
 ''')
     ctx = context(base)
     selected = collect_tests(ctx, 'integration')
@@ -1007,14 +1042,21 @@ def pytest_configure(config):
 
     monkeypatch.setattr(integration, 'queue', SimpleNamespace(Queue=SlowQueue))
     monkeypatch.setattr(integration, '_PLUGIN', integration._PLUGIN.replace(
-        'sys.stdout.flush()',
-        "os.write(1, b'final prefix without newline')\nsys.stdout.flush()", 1))
+        '    sys.stdout.flush()',
+        "    os.write(1, b'final prefix without newline')\n    sys.stdout.flush()", 1))
     result = run_integration_tests(ctx, selected, accepted=True, config={'DEBUG': True})
     try:
         assert result.exit_code == 0
         assert result.output.count('PIPE-BACKLOG\n') == 500
         assert 'final prefix without newline' in result.output
         assert '[api-agent-stdout-' not in result.output
+        observations = json.loads((base / 'boundary-observations.json').read_text())
+        assert observations == dict(controller_environment=False, controller_globals=False,
+                                    child_environment=False)
+        assert 'API_AGENT_INTEGRATION_EVENTS=' in result.output
+        startup_views = (base / 'startup-observations.jsonl').read_text().splitlines()
+        assert len(startup_views) >= 2
+        assert all(json.loads(view) is False for view in startup_views)
         assert any(hasattr(handle, 'process') and handle.process.poll() is None
                    for handle in result.inspections)
     finally:
@@ -1083,7 +1125,7 @@ def test_retained_stdout_boundary_receipt_controls_transfer(tmp_path, monkeypatc
     process = Process()
 
     def spawn(args, **kwargs):
-        marker.append(kwargs['env']['API_AGENT_STDOUT_BOUNDARY'])
+        marker.append(stdout_boundary_from_launch(args))
         rows = [dict(kind='report', node=selected[0].node_id, phase=phase,
                      status='passed', duration=0, traceback='')
                 for phase in ('setup', 'call', 'teardown')]
