@@ -64,3 +64,15 @@ test('family default cannot contradict the configured exact default in its famil
   assert.equal(resolveSelection(normalizeCatalog({...input,family_defaults:{Chosen:'default'}}),family).selection.selected_llm,'default');
   assert.equal(resolveSelection(normalizeCatalog(input),family).selection.selected_llm,'default');
 });
+
+test('implicit configured family gates explicit reasoning but preserves exact and omitted intent',()=>{
+ const mixed=normalizeCatalog({models:[row('default','Chosen',['off','low']),row('other','Chosen',['off'])],default:'default',reasoning_default:'low'});
+ assert.deepEqual(reasoningEfforts(mixed,{model:'',version:'',reasoning:''}),[]);
+ assert.match(resolveSelection(mixed,{model:'',version:'',reasoning:'low'}).error,/before setting reasoning/);
+ assert.equal(resolveSelection(mixed,{model:'',version:'',reasoning:''}).valid,true);
+ assert.equal(resolveSelection(mixed,{model:'default',version:'',reasoning:'low'}).valid,true);
+ assert.deepEqual(reasoningEfforts(mixed,{model:'default',version:''}),['off','low']);
+ const uniform=normalizeCatalog({models:[row('default','Chosen',['off','low']),row('other','Chosen',['low','off'])],default:'default',reasoning_default:null});
+ assert.deepEqual(reasoningEfforts(uniform,{}),['off','low']);
+ assert.equal(resolveSelection(uniform,{reasoning:'low'}).valid,true);
+});

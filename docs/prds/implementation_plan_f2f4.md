@@ -10,3 +10,7 @@
 - [ ] Human acceptance of this picker repair remains open.
 
 This supersedes the earlier requirement to select an explicit version for every non-default family and the earlier intersection-only reasoning menu. It does not change provider capabilities, inference defaults, authentication or workflow qualification.
+
+## Initial and reset default state
+
+- [ ] Apply the identical-family reasoning rule to initial settings and Use backend default, where no family or exact model is explicitly saved. Resolve the effective family from the configured default row. Disable the menu for mixed or unknown sibling support and reject stale explicit efforts before sending. Explicit concrete IDs, pinned snapshots and family-less rows retain their own verified capabilities; omitted configured policy stays omitted on the wire.

@@ -1282,3 +1282,28 @@ test('family defaults pin requests and version changes retain only supported rea
   assert.equal(posts.length,2);assert.equal(posts[1].model,'new');assert.equal(posts[1].reasoning_effort,'low');
  }finally{await studio.close();}
 });
+
+test('implicit backend family gates initial reset and stale reasoning while exact versions remain usable',async()=>{
+ const family=JSON.stringify(['family','Chosen']);let uniform=false;const posts=[];
+ const row=(selected_llm,reasoning_efforts)=>({...model,selected_llm,version:selected_llm,family:'Chosen',reasoning_efforts});
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:[row('new',['off','low']),row('old',uniform?['low','off']:['off'])].map(wireModel),default:'new',reasoning_default:'low',family_defaults:{Chosen:'new'}}));return;}
+  const input=JSON.parse(body);posts.push(input);response.end(JSON.stringify(wireResult(result('Implicit selection '+posts.length),input.session_id)));
+ },family);
+ const {page}=studio;
+ try{
+  await page.locator('#settings-nav').click();assert.equal(await page.locator('#version').inputValue(),'');assert.equal(await page.locator('#reasoning').isDisabled(),true);
+  await page.locator('#close-settings').click();await page.locator('#prompt').fill('Inherit configured low');await page.locator('#send').click();await page.getByText('Implicit selection 1',{exact:true}).waitFor();
+  assert.equal(posts[0].model,'new');assert.equal(Object.hasOwn(posts[0],'reasoning_effort'),false);
+  await page.locator('#settings-nav').click();await page.locator('#version').selectOption('new');assert.equal(await page.locator('#reasoning').isDisabled(),false);await page.locator('#reasoning').selectOption('low');
+  await page.getByRole('button',{name:'Use backend default'}).click();assert.equal(await page.locator('#version').inputValue(),'');assert.equal(await page.locator('#reasoning').isDisabled(),true);
+  await page.locator('#close-settings').click();
+  await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('api-agent-studio-v2'));value.settings={model:'',version:'',reasoning:'low'};localStorage.setItem('api-agent-studio-v2',JSON.stringify(value));});
+  await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.locator('#prompt').fill('Stale implicit reasoning');await page.locator('#send').click();assert.match(await page.locator('#status').textContent(),/before setting reasoning/);assert.equal(posts.length,1);
+  uniform=true;await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.locator('#settings-nav').click();assert.equal(await page.locator('#reasoning').isDisabled(),false);assert.equal(await page.locator('#version').inputValue(),'');await page.locator('#close-settings').click();
+  await page.locator('#send').click();await page.getByText('Implicit selection 2',{exact:true}).waitFor();assert.equal(posts[1].model,'new');assert.equal(posts[1].reasoning_effort,'low');
+ }finally{await studio.close();}
+});

@@ -79,15 +79,20 @@ export function resolveSelection(catalog, {model, family = '', version = '', rea
     else if (!matches.length) error = version ? 'This model version is no longer available.' : 'Choose an advertised version for this family.';
     else selection = matches[0];
   } else selection = catalog.find(row => row.selected_llm === (model || catalog.defaultSelection));
+  const familyChoice = unresolvedFamily({model, family, version}, selection);
   const effort = reasoning || catalog.reasoningDefault;
   if (!error && !selection) error = 'Choose an available model.';
   else if (!error && version && selection.version !== version) error = 'This model version is no longer available.';
-  else if (!error && reasoning && family && !version && !uniformReasoningEfforts(catalog.filter(row => row.family === family)).includes(reasoning)) error = 'Choose an advertised version before setting reasoning for this family.';
+  else if (!error && reasoning && familyChoice && !uniformReasoningEfforts(catalog.filter(row => row.family === familyChoice)).includes(reasoning)) error = 'Choose an advertised version before setting reasoning for this family.';
   else if (!error && effort && (!selection.features.includes('reasoning_effort') || !selection.reasoning_efforts?.includes(effort))) {
     if (selection.reasoning_efforts === undefined || selection.reasoning_efforts === null) error = 'Reasoning support for this model is unknown; the selected or configured effort cannot be verified.';
     else error = reasoning ? 'This reasoning setting is unsupported.' : 'The configured reasoning default is unsupported for this model.';
   }
   return {valid: !error, error, selection};
+}
+
+function unresolvedFamily(settings, selection) {
+  return !settings.model && !settings.version ? settings.family || selection?.family : null;
 }
 
 // Family choices without a version require identical verified capabilities on every row.
@@ -99,7 +104,7 @@ function uniformReasoningEfforts(rows) {
 }
 export function reasoningEfforts(catalog, settings) {
   const {selection} = resolveSelection(catalog, settings);
-  const familyChoice = settings.family && !settings.model && !settings.version;
-  const rows = familyChoice ? catalog.filter(row => row.family === settings.family) : selection ? [selection] : [];
+  const familyChoice = unresolvedFamily(settings, selection);
+  const rows = familyChoice ? catalog.filter(row => row.family === familyChoice) : selection ? [selection] : [];
   return uniformReasoningEfforts(rows);
 }
