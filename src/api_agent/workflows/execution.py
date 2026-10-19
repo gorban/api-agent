@@ -97,9 +97,10 @@ class Workflow:
                 layout.error('unknown or invalid registered node function', row['line'])
             try:
                 source = inspect.getsourcefile(function.invoke)
-            except TypeError:
-                source = None
-            if source is None or Path(source).resolve() != steps[row['ID']].source:
+                matches_source = source is not None and Path(source).samefile(steps[row['ID']].source)
+            except (TypeError, OSError):
+                matches_source = False
+            if not matches_source:
                 layout.error('registered function does not match its declared source link', row['line'])
         for row in (*layout.tables['Edges'], *layout.tables['Prompts']):
             if row['When'] != 'always' and not callable(self.conditions.get(row['When'])):

@@ -18,11 +18,13 @@ Broader registry discovery across other stack scopes, lifecycle administration o
 - [x] Exercise mounted terminal navigation, row selection, refresh, scrolling, selected/all text copy, zero-running access, close/quit and delayed reader completion. Reject meaningful mutations at the intended ownership, selection, redaction and lifecycle checks.
 - [x] Complete exact applicable line/branch coverage, installed-package/license/boundary checks and independent review before delivery.
 
-- [ ] Human acceptance: inspect running/stopped rows, zero-running access, log selection/copy, refresh and Close/Quit with disposable services. Normal Stop retains volumes.
+- [x] Human acceptance: inspect running/stopped rows, zero-running access, log selection/copy, refresh and Close/Quit with disposable services. Normal Stop retains volumes.
 
 The installed log reader uses the shared bounded command collector and its
 self-retaining aggregate cleanup receipt. Alternate collectors must be qualified
 for independently transferred successor duties before reuse; this slice does
 not promise an unrestricted loader cleanup protocol.
 
-Technical implementation and independent/external review are complete. The final joined 32-worker gate passed 10,955 tests and 27 subtests at exact measured line and branch coverage. Independent guards and installed-package/license/public-boundary checks passed. Human acceptance remains open.
+Technical implementation and independent/external review are complete. The final joined 32-worker gate passed 10,955 tests and 27 subtests at exact measured line and branch coverage. Independent guards and installed-package/license/public-boundary checks passed. Human acceptance of this bounded management scope is recorded.
+
+The user accepts the delivered reporting-management scope. This records approval without inventing additional manual/native observations or accepting unfinished broader lifecycle, migration or destructive-volume features.

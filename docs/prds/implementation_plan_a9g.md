@@ -16,8 +16,6 @@ Focused tests cover the distinct-ID threshold, modes, warning text, and exact te
 
 - [x] [Prompt parallel completion reporting and quiet owned inspection shutdown](implementation_plan_a9g1.md). This repair does not reopen accepted interactive confirmation.
 
-## Deferred human review
+## Human acceptance
 
-Implementation and independent/external verification are complete. NO_STD_IN terminal acceptance remains unchecked in the child requirements; interactive confirmation stays accepted.
-
-- [Prompt parallel completion reporting and quiet inspection shutdown](implementation_plan_a9g1.md)
+Interactive confirmation and the repaired NO_STD_IN DEBUG completion/summary/Ctrl+C behavior are accepted. A non-DEBUG integration replay is separately pending; no observation of that path is inferred.

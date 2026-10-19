@@ -213,7 +213,7 @@ def report(phase='call', status='passed', node=None):
     ([report('setup','failed'),report('teardown')], 'failed'),
     ([report('setup','skipped'),report('teardown')], 'skipped'),
     ([report('setup'),report('teardown')], 'error'),
-    ([report()], 'passed'),
+    ([report()], 'error'),
     ([], 'error'),
 ])
 def test_runner_accounts_for_setup_skip_missing_call_and_missing_teardown(monkeypatch, tmp_path, reports, status):
@@ -226,7 +226,7 @@ def test_runner_accounts_for_setup_skip_missing_call_and_missing_teardown(monkey
 
 @pytest.mark.parametrize('coverage', ['empty','missing'])
 def test_runner_cannot_pass_without_valid_coverage(monkeypatch,tmp_path,coverage):
-    ctx=context(tmp_path); test,_=fake_execution(monkeypatch,ctx,reports=[report()],coverage=coverage)
+    ctx=context(tmp_path); test,_=fake_execution(monkeypatch,ctx,reports=[report('setup'), report(), report('teardown')],coverage=coverage)
     result=runner.run_unit_tests(ctx,[test])
     assert result.exit_code == 1
     assert not result.coverage
@@ -235,7 +235,7 @@ def test_runner_cannot_pass_without_valid_coverage(monkeypatch,tmp_path,coverage
 
 def test_runner_unknown_events_are_ignored_and_no_production_source_is_supported(monkeypatch,tmp_path):
     ctx=context(tmp_path,source=False)
-    test,_=fake_execution(monkeypatch,ctx,reports=[report(node='unselected'),report()])
+    test,_=fake_execution(monkeypatch,ctx,reports=[report(node='unselected'), report('setup'), report(), report('teardown')])
     result=runner.run_unit_tests(ctx,[test])
     assert result.exit_code == 0 and result.tests[0].status == 'passed'
     assert not result.coverage
@@ -258,7 +258,7 @@ def test_runner_cannot_start_pytest_returns_error_result(monkeypatch,tmp_path):
 
 
 def test_runner_branch_gap_is_fatal_only_for_full_coverage(monkeypatch,tmp_path):
-    ctx=context(tmp_path); test,_=fake_execution(monkeypatch,ctx,reports=[report()],coverage='branch-gap')
+    ctx=context(tmp_path); test,_=fake_execution(monkeypatch,ctx,reports=[report('setup'), report(), report('teardown')],coverage='branch-gap')
     result=runner.run_unit_tests(ctx,[test])
     assert result.exit_code == 1 and result.tests[0].status == 'passed'
     assert result.coverage[0].line_percent == 100 and result.coverage[0].branch_percent == 50
@@ -284,7 +284,7 @@ def test_cancellation_between_discovery_and_execution_starts_no_process(monkeypa
 def test_runner_identically_named_repositories_remain_distinct(monkeypatch,tmp_path):
     ctx=context(tmp_path); pack=tmp_path/'second/base';pack.mkdir(parents=True)
     ctx.owner_root=pack
-    base_test,stops=fake_execution(monkeypatch,ctx,reports=[report()])
+    base_test,stops=fake_execution(monkeypatch,ctx,reports=[report('setup'), report(), report('teardown')])
     pack_test=identity('pack')
     monkeypatch.setattr(runner,'collect_tests',lambda *args,**kwargs:[base_test,pack_test])
     result=runner.run_unit_tests(ctx,[base_test,pack_test])
@@ -297,11 +297,11 @@ def test_invalid_runner_event_reaps_process_before_propagating(monkeypatch,tmp_p
     ctx=context(tmp_path); test,stops=fake_execution(monkeypatch,ctx,reports=[{'unexpected':'invalid'}])
     with pytest.raises(KeyError):
         runner.run_unit_tests(ctx,[test])
-    assert len(stops)==2 and stops[0].stdout.closed
+    assert len(stops)==1 and stops[0].stdout.closed
 
 
 def test_still_active_output_reader_retains_stream_ownership(monkeypatch,tmp_path):
-    ctx=context(tmp_path); test,stops=fake_execution(monkeypatch,ctx,reports=[report()])
+    ctx=context(tmp_path); test,stops=fake_execution(monkeypatch,ctx,reports=[report('setup'), report(), report('teardown')])
     class Reader:
         def __init__(self,**kwargs):pass
         def start(self):pass
@@ -319,7 +319,7 @@ def test_unselected_production_owner_report_is_measured_or_fails_explicitly(monk
     import coverage
     ctx=context(tmp_path);pack=tmp_path/'pack';(pack/'src').mkdir(parents=True)
     (pack/'src/uncovered.py').write_text('VALUE = 1\n');ctx.owner_root=pack
-    test,_=fake_execution(monkeypatch,ctx,reports=[report()])
+    test,_=fake_execution(monkeypatch,ctx,reports=[report('setup'), report(), report('teardown')])
     calls=[]
     class Coverage:
         def __init__(self,**kwargs):

@@ -10,7 +10,7 @@
 
 
 - [x] Complete the joined unit coverage, installed-package, license and public-boundary gates before delivery.
-- [ ] Human acceptance: review the explicit action and progress against disposable history; verify equal reruns, conflicting destinations and cancellation preserve original evidence.
+- [x] Human acceptance: review the explicit action and progress against disposable history; verify equal reruns, conflicting destinations and cancellation preserve original evidence.
 
 Restoration holds the suite publication lock, freezes verified bytes per run,
 publishes the original manifest last, and reuses the managed reporting session.
@@ -18,7 +18,7 @@ A failed later run does not roll back earlier finalized runs. Cancellation waits
 for an already-started bounded storage call to settle before releasing ownership.
 Unexpected ordinary storage, progress, reporting setup, or viewer errors display only controlled messages; cancellation and other interruptions still propagate.
 
-Technical implementation and independent/external review are complete under the concurrent-publication contract below. The final joined 32-worker gate passed 10,955 tests and 27 subtests at exact measured line and branch coverage; installed-package, mutation, license and public-boundary checks passed. Human acceptance remains open.
+Technical implementation and independent/external review are complete under the concurrent-publication contract below. The final joined 32-worker gate passed 10,955 tests and 27 subtests at exact measured line and branch coverage; installed-package, mutation, license and public-boundary checks passed. Human acceptance of this bounded management scope is recorded.
 
 ## Controlled callback diagnostics
 
@@ -34,10 +34,12 @@ An independently committed manifest may appear after the preflight read and befo
 - [x] Admit one restore worker across rapid repeated action submissions, including the interval before the worker starts. Repeated submissions must neither replace nor cancel the admitted restore. Permit a new explicit restore after the worker finishes.
 - [x] Clear a previous restore error when a new configured attempt starts. Display a bounded failure for the current attempt, and clear that failure on a successful explicit retry.
 - [x] Preserve generation checks, threaded cancellation acknowledgement and viewer disposal ordering when leaving through Close or Quit. Controlled native workbench tests cover these paths without real history or storage writes.
-- [ ] Human acceptance: inspect the orange history-page progress line and repeated-click behavior with disposable history.
+- [x] Human acceptance: inspect the orange history-page progress line and repeated-click behavior with disposable history.
 
 ## Shared history action admission
 
 - [x] Reserve one shared Allure UI opener before worker startup across Restore, Refresh, menu history entry and selected-report shortcuts. Reject queued or active competing requests without creating a coroutine, replacing a worker or changing the admitted operation's error/status.
 - [x] Permit explicit retry after success, failure or cancellation before worker startup. Ignore stopped admission and leave the gate available after a scheduling failure. Cancellation of an active operation retains ownership until its threaded storage call settles.
 - [x] Prove both Restore/Refresh submission orders, repeated Refresh, safe failure followed by successful retry, all UI entry points, and cancellation boundaries with controlled native workbench tests.
+
+The user accepts the delivered reporting-management scope. This records approval without inventing additional manual/native observations or accepting unfinished broader lifecycle, migration or destructive-volume features.

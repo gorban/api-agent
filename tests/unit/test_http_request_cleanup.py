@@ -42,8 +42,11 @@ def test_callback_failures_do_not_skip_siblings_and_retry_is_typed():
     asyncio.run(run())
 
 
-def test_callback_scheduler_failure_closes_unsubmitted_coroutine(monkeypatch):
-    from api_agent.api import application
+@pytest.mark.parametrize('progress_active', [False, True])
+def test_callback_scheduler_failure_closes_unsubmitted_coroutine(monkeypatch, progress_active):
+    from types import SimpleNamespace
+    from api_agent.api import http_cleanup
+    from api_agent.providers.progress import progress_sink
     async def run():
         created = []
         async def dispose():
@@ -56,11 +59,16 @@ def test_callback_scheduler_failure_closes_unsubmitted_coroutine(monkeypatch):
         def reject(coroutine):
             submitted.append(coroutine)
             raise RuntimeError('scheduler unavailable')
-        monkeypatch.setattr(asyncio,'create_task',reject)
+        scheduler = SimpleNamespace(**vars(asyncio))
+        scheduler.create_task = reject
+        monkeypatch.setattr(http_cleanup, 'asyncio', scheduler)
         callbacks = [callback]
-        with pytest.raises(CleanupPendingError):
-            await close_http_callbacks(callbacks)
+        with progress_sink((lambda event: None) if progress_active else None):
+            with pytest.raises(CleanupPendingError):
+                await close_http_callbacks(callbacks)
         assert created == []
+        assert len(submitted) == 1
+        assert submitted[0].cr_code.co_qualname == 'CallbackState.start.<locals>.invoke'
         assert inspect.getcoroutinestate(submitted[0]) == inspect.CORO_CLOSED
         assert len(callbacks) == 1
     asyncio.run(run())
