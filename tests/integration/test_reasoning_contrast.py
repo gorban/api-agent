@@ -8,6 +8,7 @@ import pytest
 
 from api_agent.testing.reasoning_contrast import MODEL, evaluate, run_pairs, scope
 from api_agent.testing.studio_http import agent_endpoint
+from api_agent.testing.reasoning_provider import reasoning_provider
 
 pytestmark = [pytest.mark.feature('Reasoning contrast'), pytest.mark.requires_llm]
 
@@ -22,7 +23,7 @@ def test_reasoning_contrast(reasoning_ready, request, record_property):
     events = []
     async def scenario():
         nonce = secrets.token_urlsafe(32)
-        async with agent_endpoint(provider, MODEL, 'http://127.0.0.1:8080', nonce) as endpoint:
+        async with reasoning_provider(provider) as parallel, agent_endpoint(parallel, MODEL, 'http://127.0.0.1:8080', nonce) as endpoint:
             async with httpx.AsyncClient(timeout=155, trust_env=False, follow_redirects=False) as client:
                 return await run_pairs(client, endpoint, nonce, emit=events.append)
     try:

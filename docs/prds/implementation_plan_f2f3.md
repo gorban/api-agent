@@ -42,3 +42,12 @@ The earlier five-variable direct-answer prompt passed one live six-call comparis
 Later direct-answer observations (+89/+29/+49 and -47/+7/+17) failed the unchanged rule. A larger direct-answer permutation task (+112/-94/-214) and an algorithm-audit task (-123/+92/+101) also failed. The earlier successful smoke applies only to its original task/run. The code-generation revision is an empirical task change with no statistical reliability guarantee and no claimed provider-mapping defect.
 
 The first frozen code-generation smoke completed all six calls and passed the unchanged signed rule. Low reasoning-token counts were 0, 412 and 0; medium counts were 331, 415 and 404, giving signed gaps +331, +3 and +404. The near-zero second pair was retained. This single successful smoke supports this task/run only; it does not establish population reliability or repair a demonstrated provider-mapping defect. Generated code was neither executed nor answer-validated. Independent and external review are complete; human acceptance remains open.
+
+## Concurrent execution — October 19, 2026
+
+- [x] Issue the same three matched pairs as six concurrent application HTTP requests. Keep prompt, model, settings, marker rules and signed scorer unchanged. Preserve records in pair/effort order even when calls finish out of order.
+- [x] Under the ordinary shared backend, give each call an independent transport lease and loop while retaining the same authentication owner and selected identity. Serialize catalog access and standalone fixture fallbacks. Keep this adapter limited to the reasoning integration test.
+- [x] Retain receipts for every attempted call, await already-issued siblings after failure, and explicitly cancel/drain on interruption. Retain failed child cleanup and every prior receipt behind retryable owners until acknowledged, preserving interruption identity. If scheduling fails, cancel and drain created tasks and close unsubmitted work. Never replace failed or unfavorable pairs.
+- [x] Prove six-way overlap through real loopback application HTTP and shared setup IPC using a synthetic barrier; verify native effort, identity, per-call quote/content attribution and cleanup. No new live inference is required to establish scheduling behavior.
+
+A later human run failed the unchanged scorer with gaps -22, -37 and +41. It remains a failed observation; concurrent scheduling does not establish reliable stochastic effort separation. That separate issue is [deferred to the future reasoning follow-up](implementation_plan_f2f3a.md).
