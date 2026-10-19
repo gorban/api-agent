@@ -352,8 +352,9 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'COLLECT_ONLY': '--collect-only: list selected tests without running them.',
         'START': '--start: start the selected TUI operation after normal startup checks; --start=E2E explicitly accepts E2E execution without its human-review screen.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
+        'RUN_UI': '--run-ui: enable the optional Run local frontend; test browsers stay headless unless DEBUG (or E2E_DEBUG for E2E) is enabled.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
-        'DEBUG': '--debug: retain integration login browsers; allows --no-std-in integration debugging.',
+        'DEBUG': '--debug: retain headed browser inspection; does not enable the optional Run local frontend.',
         'UNIT_COVERAGE_FULL': '--unit-coverage-full: show every unit coverage row; JSON/HTML reports are retained either way.',
         'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select a zero-based account; --unattended-user-index= uses manual login for this run.',
     }

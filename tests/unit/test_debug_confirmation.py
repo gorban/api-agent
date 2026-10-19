@@ -165,12 +165,13 @@ def test_recollection_change_requires_fresh_consent_before_runner(tmp_path):
     asyncio.run(scenario())
 
 
-def test_e2e_debug_confirmation_precedes_existing_acceptance(tmp_path):
+@pytest.mark.parametrize('flag', ['DEBUG','E2E_DEBUG'])
+def test_e2e_debug_confirmation_precedes_existing_acceptance(tmp_path,flag):
     selected = [TestIdentity(f'base::t.py::{name}', 'base', 't.py', f't.py::{name}')
                 for name in ('one', 'two')]
     async def scenario():
         app = fixture(tmp_path, 'e2e', collector=lambda *args: selected,
-                      fields={'DEBUG': {'type': 'bool', 'default': True, 'acknowledge_default': False},
+                      fields={flag: {'type': 'bool', 'default': True, 'acknowledge_default': False},
                               'START': {'type': 'str', 'default': 'False', 'acknowledge_default': False}})
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause(.2)
@@ -266,4 +267,30 @@ def test_same_turn_cancel_and_confirmation_cannot_start_runner(tmp_path, respons
             assert not runner.called
             assert app.screen.kind == 'tests'
             assert not any(screen.__class__.__name__ == 'QuitDialog' for screen in app.screen_stack)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('debug', [False,True])
+def test_legacy_e2e_debug_requires_the_same_multi_selection_acknowledgement(debug):
+    tests = [SimpleNamespace(id='one'),SimpleNamespace(id='two')]
+    warning = debug_warning('e2e',debug,tests,e2e_debug=True)
+    assert '2 selected tests' in warning
+    assert 'DEBUG=False and E2E_DEBUG=False' in warning
+    assert debug_warning('integration',False,tests,e2e_debug=True) is None
+    assert debug_warning('e2e',False,tests[:1],e2e_debug=True) is None
+
+
+def test_legacy_e2e_recollection_confirmation_can_cancel_before_execution(tmp_path):
+    selected = [TestIdentity(f'base::t.py::{name}', 'base', 't.py', f't.py::{name}')
+                for name in ('one','two')]
+    async def scenario():
+        app = fixture(tmp_path, 'e2e', collector=lambda *args: selected,
+            fields={'E2E_DEBUG': {'type':'bool','default':True,'acknowledge_default':False}})
+        async with app.run_test(size=(110,40)) as pilot:
+            confirmation = asyncio.create_task(app.confirm_debug_selection('e2e',selected,asyncio.Event()))
+            await pilot.pause()
+            assert 'up to 2' in str(app.screen.query_one('#quit-message').content)
+            app.screen.query_one(Input).value = 'n'
+            await pilot.click('#quit-submit')
+            assert await confirmation is False
     asyncio.run(scenario())

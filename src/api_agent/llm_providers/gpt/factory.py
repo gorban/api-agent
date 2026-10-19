@@ -73,7 +73,7 @@ class GPTProvider:
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.base_url = config.get("GPT_BASE_URL", "https://api.openai.com/v1")
-        self.run_ui = config.get("RUN_UI", False)
+        self.run_ui = config.get("TUI_MODE") == "run-local" and config.get("RUN_UI", False)
         self.state_dir = Path(config.get("GPT_STATE_DIR") or Path.home() / ".config/api-agent/gpt")
         self.sessions = []
         self.payment_usd = config.get('LLM_PAY_PERIOD_LIMIT', 100.0)
@@ -95,7 +95,7 @@ class GPTProvider:
             'callback_timeout': 'GPT sign-in timed out before authentication completed.',
             'username_submission_failed': 'GPT could not submit the configured username on the login page.',
             'login_step_failed': 'GPT could not complete the current login page action; retry or complete login in the visible browser.',
-            'login_interaction_required': 'GPT login needs browser interaction; start attended or show the browser with RUN_UI=True or DEBUG.',
+            'login_interaction_required': 'GPT login needs browser interaction; use attended authentication, the bounded visible login handoff, or DEBUG inspection.',
             'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
             'authorization_denied': 'GPT authorization was declined in the browser.',
             'incomplete_registration': 'GPT authorization did not return an issued app registration. Retry sign-in through launch.py.',

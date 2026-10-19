@@ -9,7 +9,7 @@ from api_agent.providers.control import _cancel_once, CleanupPendingError
 from api_agent.providers.contracts import SessionClosedError
 from api_agent.providers.progress import component_timeout, report_timeout, independent_timeout_scope
 from api_agent.runtime.managed_browser import managed_browser
-from api_agent.providers.sessions import InspectionOwner
+from api_agent.providers.sessions import InspectionOwner, ui_session_policy
 from api_agent.runtime.https import prepare_local_https
 from api_agent.runtime.client_tls import verified_client_context
 from api_agent.ui.process import StudioProcesses
@@ -37,9 +37,11 @@ class UIIntegrationOwner:
         self.extra_services = dict(services or {})
         self.backend_factory, self.backend = backend, None
         self._backend_cleanup = None
-        self.inspection = InspectionOwner(on_session=self._show_browser) if self.config.get('DEBUG') else None
-        self.browser_owner = managed_browser(inspection=self.inspection,
-            headless=not (self.config.get('DEBUG') or self.config.get('RUN_UI')))
+        mode = 'e2e' if self.config.get('TUI_MODE') == 'e2e' else 'integration'
+        headless = ui_session_policy(mode, debug=self.config.get('DEBUG', False),
+            e2e_debug=self.config.get('E2E_DEBUG', False))
+        self.inspection = None if headless else InspectionOwner(on_session=self._show_browser)
+        self.browser_owner = managed_browser(inspection=self.inspection, headless=headless)
 
     @staticmethod
     def _show_browser(session):

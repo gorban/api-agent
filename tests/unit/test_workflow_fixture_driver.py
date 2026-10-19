@@ -1,6 +1,7 @@
 """Reviewed baseline validation and explicit pilot never require live inference."""
 import asyncio
 from copy import deepcopy
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -84,6 +85,39 @@ def test_provenance_receipt_cannot_admit_the_old_or_an_unrelated_source(monkeypa
     report['sources']['src/api_agent/llm_providers/gpt/inference.py'] = '0' * 64
     with pytest.raises(ValueError, match='stale'):
         driver.baseline_limit('gpt-6-luna', reviewed_config)
+
+
+def test_browser_visibility_binding_retains_prior_receipt_measurements_and_strict_preflight(monkeypatch):
+    from api_agent.workflows.sampling import measured_calibration
+    report = deepcopy(driver._baselines()[0])
+    config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
+    source = 'src/api_agent/llm_providers/gpt/factory.py'
+    receipt = report['carry_forward_browser_policy']
+    assert receipt == {
+        'kind': 'reviewed_non_sampling_visibility_binding', 'model': 'gpt-6-luna',
+        'route': 'official_subscription_responses', 'source': source,
+        'original_source_sha256': '0065b50eb67b0f4efe9fc18676a1bbf99b645dd31de627e9c2c30660de7aa376',
+        'current_source_sha256': '1a3228adad454cb28df7176c7f268d3df21064bf164b067ef59ed20331174665',
+        'previous_fixture_sha256': 'ebc2add07aee3d8b0d518854b8258c45caada33f3131933c20f1a86ac4b154b4',
+        'prior_receipt_kind': 'reviewed_request_equivalence',
+        'basis': ('The factory change narrows visible login presentation outside the sampled workflow '
+                  'and changes a login diagnostic; sampled request construction and execution remain unchanged.'),
+        'new_pilot': False}
+    assert report['carry_forward']['current_source_sha256'] == report['sources'][
+        'src/api_agent/llm_providers/gpt/reasoning.py']
+    assert receipt['current_source_sha256'] == report['sources'][source] == report['provider_identity']['source_sha256']
+    assert sha256(json.dumps(report['records'], sort_keys=True, separators=(',', ':')).encode()).hexdigest() == (
+        'a09434887a4366296bd5ea3c819a5519a9c12f255d35325c9654168021e0aa2d')
+    assert report['trials'] == 20 and report['routes'] == {'next_a': 5, 'next_b': 8, 'skip': 7}
+    assert report['minimum_runs'] == 18 and report['safety_margin'] == 4 and report['max_runs'] == 22
+    assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
+    assert driver.baseline_limit('gpt-6-luna', config) == 22
+
+    report['sources'][source] = receipt['original_source_sha256']
+    report['provider_identity']['source_sha256'] = receipt['original_source_sha256']
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', config)
 
 
 @pytest.mark.parametrize('setting,value', [('GPT_API_MODE', 'completions'),

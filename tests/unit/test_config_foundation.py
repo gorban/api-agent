@@ -283,8 +283,9 @@ def test_ui_applies_to_e2e_and_optional_local_only(tmp_path, mode, run_ui, activ
         result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode, 'RUN_UI': run_ui, 'PACK_TEST_TOKEN': 'test-only'},
                                 anchors={'owner_root': tmp_path})
         result.raise_for_errors()
-        assert 'RUN_UI' in result.values
-        assert result.values['RUN_UI'] is (run_ui == 'True')
+        assert ('RUN_UI' in result.values) is (mode == 'run-local')
+        if mode == 'run-local':
+            assert result.values['RUN_UI'] is (run_ui == 'True')
         assert ('UI_NX_APP' in result.values) == active
         assert ('UI_SOURCE_DIR' in result.values) == active
         if active:
@@ -385,19 +386,22 @@ def test_resource_pack_token_required_for_api_and_test_execution(tmp_path):
     ({'RUN_UI':'True'},{},[],True,'dotenv'),
     ({'RUN_UI':'False'},{'RUN_UI':'True'},[],True,'environment'),
     ({'RUN_UI':'True'},{'RUN_UI':'True'},['--run-ui=False'],False,'cli')])
-def test_e2e_retains_browser_visibility_config_and_provenance(tmp_path,dotenv,environ,argv,expected,source):
+def test_local_frontend_flag_retains_config_and_provenance(tmp_path,dotenv,environ,argv,expected,source):
     shared=load_shared_schema()
     pack_schema=resource_pack_schema()
     for schema,app in ((shared,'agent'),(pack_schema,'shell')):
-        result=resolve_config(schema,argv=['--tui-mode=e2e',*argv],dotenv=dotenv,
+        result=resolve_config(schema,argv=['--tui-mode=run-local',*argv],dotenv=dotenv,
                               environ={**AUTH, 'PACK_TEST_TOKEN':'synthetic','UI_SOURCE_DIR':str(tmp_path/'ui'),**environ},
                               anchors={'owner_root':tmp_path})
         result.raise_for_errors()
         assert result.values['RUN_UI'] is expected
         assert result.fields['RUN_UI'].source == source
         assert result.fields['RUN_UI'].explicit == (source != 'shared_default')
-        assert result.values['UI_NX_APP'] == app
-        assert result.values['UI_SOURCE_DIR'] == (tmp_path/'ui').resolve()
+        assert ('UI_NX_APP' in result.values) is expected
+        assert ('UI_SOURCE_DIR' in result.values) is expected
+        if expected:
+            assert result.values['UI_NX_APP'] == app
+            assert result.values['UI_SOURCE_DIR'] == (tmp_path/'ui').resolve()
 
 
 @pytest.mark.parametrize('option,values', [

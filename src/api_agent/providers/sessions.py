@@ -62,10 +62,10 @@ class ScopedLLMCredentials:
         return await self._reader.login_credentials(self._role, index, **kwargs)
 
 
-def ui_session_policy(mode: str, *, run_ui: bool = False, debug: bool = False) -> bool | None:
+def ui_session_policy(mode: str, *, run_ui: bool = False, debug: bool = False, e2e_debug: bool = False) -> bool | None:
     """Return headless policy, or None when no UI browser is allocated."""
-    if mode == "e2e":
-        return not (run_ui or debug)
+    if mode in {"integration", "e2e"}:
+        return not (debug or mode == "e2e" and e2e_debug)
     if mode == "run-local" and run_ui:
         return False
     return None

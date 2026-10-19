@@ -27,8 +27,9 @@ NO_STD_IN = true
 [fields.RUN_UI]
 type = "bool"
 default = false
+help = "Start the optional frontend in Run local. Integration and E2E test browser visibility is controlled by DEBUG, with E2E_DEBUG retained for E2E inspection; E2E always requires its frontend."
 [fields.RUN_UI.applies_when]
-TUI_MODE = ["run-local", "e2e"]
+TUI_MODE = "run-local"
 COLLECT_ONLY = false
 
 [fields.UI_SOURCE_DIR]

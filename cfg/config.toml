@@ -130,9 +130,9 @@ NO_STD_IN = true
 [fields.RUN_UI]
 type = "bool"
 default = false
-help = "Start the UI in local runs; in integration, show unattended provider-login browsers; in E2E, show the browser while tests run. False keeps unattended login headless; attended login is always visible. Integration DEBUG or E2E_DEBUG also shows and retains the relevant browser. E2E always starts its UI."
+help = "Start the optional frontend in Run local. Integration and E2E test browser visibility is controlled by DEBUG, with E2E_DEBUG retained for E2E inspection; E2E always requires its frontend."
 [fields.RUN_UI.applies_when]
-TUI_MODE = ["run-local", "integration", "e2e"]
+TUI_MODE = "run-local"
 COLLECT_ONLY = false
 
 [fields.UI_SOURCE_DIR]
@@ -218,9 +218,9 @@ COLLECT_ONLY = false
 type = "bool"
 default = false
 acknowledge_default = false
-help = "Integration authentication debug: run serially and retain provider login browsers until their windows are closed. With NO_STD_IN, DEBUG can start selected integration tests without START; browser login can still require human interaction. E2E requires its human-acceptance screen unless explicitly accepted with START=E2E."
+help = "Enable headed browser inspection for integration/E2E tests and local debugging; does not enable the optional Run local frontend. Integration DEBUG can start selected tests with NO_STD_IN; E2E retains its separate execution acceptance."
 [fields.DEBUG.applies_when]
-TUI_MODE = "integration"
+TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
 
 [fields.E2E_BROWSER_RESOLUTION]

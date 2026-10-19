@@ -57,11 +57,11 @@ def test_optional_int_empty_only_when_declared_and_keeps_other_type_checks():
 
 
 @pytest.mark.parametrize('setting,expected', [(None, False), ('False', False), ('True', True)])
-def test_integration_keeps_run_ui_for_login_visibility_without_frontend_requirements(tmp_path, setting, expected):
+def test_integration_ignores_run_ui_without_frontend_requirements(tmp_path, setting, expected):
     environ = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic-results'}
     if setting is not None:
         environ['RUN_UI'] = setting
     result = resolve_config(load_shared_schema(), environ=environ, anchors={'owner_root': tmp_path})
     result.raise_for_errors()
-    assert result.values['RUN_UI'] is expected
+    assert 'RUN_UI' not in result.values
     assert 'UI_SOURCE_DIR' not in result.values

@@ -26,3 +26,10 @@ The later source changes invalidated the earlier baseline. The renewed independe
 - [x] Keep the ordinary fingerprint validator and binomial recomputation unchanged. Any later settings, dependency or source drift, including another edit to the reasoning module, must still fail preflight before provider setup or inference.
 
 The original qualification and acceptance statements above describe their historical source binding. The carry-forward is a separate source-equivalence decision for the same model, route and effective settings; it does not change the observed 5/8/7 routes, minimum 18, four-run margin or cap 22.
+
+## Later browser-visibility binding
+
+- [x] The included GPT factory may narrow visible browser presentation for interactive local use without changing the sampled workflow's model, route, effective settings, request construction, graph execution or observed node hits. Before retaining the last workflow values, independently review the exact factory diff and bind both its sampling-source digest and provider-identity digest to the reviewed current bytes.
+- [x] Append a separate provenance receipt chained to the prior reasoning carry-forward. Preserve the original 20 trial rows, recomputed statistics and cap 22 exactly; state that no new workflow pilot was run. Keep the existing validator unchanged so another factory edit or any unrelated settings, dependency or source drift still fails before setup or inference.
+
+The source diff is confined to visible-login selection outside the sampled workflow and a login diagnostic. The previous fixture digest and source binding remain in provenance; this is a new source-equivalence review, not a new measurement or a replacement for the earlier qualification.

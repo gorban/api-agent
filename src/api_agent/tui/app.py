@@ -1009,7 +1009,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
 
     async def confirm_debug_selection(self, mode, selected_tests, cancel_event):
         from api_agent.testing.debug_confirmation import debug_warning
-        warning = debug_warning(mode, self.session.result().values.get('DEBUG'), selected_tests)
+        warning = debug_warning(mode, self.session.result().values.get('DEBUG'), selected_tests,
+                                e2e_debug=self.session.result().values.get('E2E_DEBUG'))
         if warning is None:
             return True
         confirmation = asyncio.get_running_loop().create_future()
@@ -2247,7 +2248,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     raise ValueError(NO_TEST_SELECTION_MESSAGE)
                 from api_agent.testing.debug_confirmation import debug_warning
                 warning = debug_warning(self.mode, self.session.result().values.get('DEBUG'),
-                                        self.selection.selected_tests)
+                                        self.selection.selected_tests,
+                                        e2e_debug=self.session.result().values.get('E2E_DEBUG'))
                 if warning:
                     selected = frozenset(test.id for test in self.selection.selected_tests)
                     def after_debug_confirmation(accepted):

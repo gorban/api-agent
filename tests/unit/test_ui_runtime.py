@@ -245,7 +245,7 @@ def test_repeated_close_preserves_startup_drain_and_cannot_handoff_closed_owner(
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize('config,headless', [({},True),({'RUN_UI':True},False),({'DEBUG':True},False)])
+@pytest.mark.parametrize('config,headless', [({},True),({'RUN_UI':True},True),({'DEBUG':True},False)])
 def test_browser_visibility_uses_shared_owner(operation,config,headless):
     owner=operation.create(**config)
     assert operation.browser_factory.call_args.kwargs == {'inspection':owner.inspection,'headless':headless}
@@ -340,3 +340,15 @@ def test_backend_closing_during_enter_cannot_launch_ui(operation):
         operation.prepared_factory.assert_not_called()
         await owner.aclose()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('mode', ['integration','e2e'])
+@pytest.mark.parametrize('run_ui', [False,True])
+@pytest.mark.parametrize('debug', [False,True])
+@pytest.mark.parametrize('legacy', [False,True])
+def test_ui_test_visibility_and_retention_matrix(operation,mode,run_ui,debug,legacy):
+    owner = operation.create(TUI_MODE=mode,RUN_UI=run_ui,DEBUG=debug,E2E_DEBUG=legacy)
+    headed = debug or mode == 'e2e' and legacy
+    assert operation.browser_factory.call_args.kwargs['headless'] is not headed
+    assert (owner.inspection is not None) is headed
+    assert operation.browser_factory.call_args.kwargs['inspection'] is owner.inspection

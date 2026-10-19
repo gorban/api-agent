@@ -4,9 +4,9 @@
 
 ## Requirements and acceptance
 
-- [x] For integration and E2E execution with `DEBUG=True` and more than one distinct selected test, warn that up to the selected test count of browser windows could open. Tell operators to set `DEBUG=False` and omit `--debug` to avoid this.
+- [x] For integration and E2E execution with effective debug (`DEBUG=True`, or E2E-only `E2E_DEBUG=True`) and more than one distinct selected test, warn that up to the selected test count of browser windows could open. Tell operators to disable DEBUG and any E2E_DEBUG compatibility flag and omit `--debug` to avoid this. RUN_UI alone never requests inspection or this consent.
 - [x] Require literal `y` to continue. In the TUI, use the existing confirmation modal. With `NO_STD_IN=True`, prompt on command-line stdin even for noninteractive runs and treat EOF, unavailable input, or any other answer as cancellation before authentication, resources, or the test runner.
-- [x] Count selected identities after selector resolution, so overlapping groups count once. Leave unit, collection-only, and single-test execution ungated. Apply the same selection rule to E2E when execution becomes available.
+- [x] Count selected identities after selector resolution, so overlapping groups count once. Leave unit, collection-only, and single-test execution ungated. The current E2E selector applies this consent before its existing acceptance screen; a complete E2E executor remains future work and must share effective debug across retention consumers.
 - [x] If an integration run is cancelled while its DEBUG modal is open, cancellation wins over a simultaneous or later `y`; remove only that modal, settle the run lifecycle, and do not start authentication or the runner.
 - [ ] Human acceptance: review the warning in an attended multi-test DEBUG selection and the terminal prompt in a noninteractive multi-test DEBUG selection.
 
