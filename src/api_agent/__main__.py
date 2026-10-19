@@ -1,5 +1,5 @@
 """Installed shared foundation command."""
-from api_agent.runtime.bootstrap import main
+from api_agent.runtime.bootstrap import cli_main
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(cli_main())

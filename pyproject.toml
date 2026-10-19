@@ -17,7 +17,7 @@ tracing = ["opentelemetry-sdk==1.45.0", "opentelemetry-exporter-otlp-proto-http=
 dev = ["Authlib>=1.7.2,<1.8", "pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist>=3,<4", "build>=1.2,<2", "hatchling>=1.26,<2", "playwright>=1.63,<1.64", "playwright-stealth==2.0.3", "opentelemetry-sdk==1.45.0", "opentelemetry-exporter-otlp-proto-http==1.45.0", "requests==2.34.2"]
 
 [project.scripts]
-api-agent = "api_agent.runtime.bootstrap:main"
+api-agent = "api_agent.runtime.bootstrap:cli_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/api_agent"]

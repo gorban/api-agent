@@ -8,4 +8,4 @@ sys.path.insert(0, str(BASE_ROOT / 'src'))
 
 if __name__ == '__main__':
     from api_agent.runtime.bootstrap import main
-    raise SystemExit(main(base_root=BASE_ROOT))
+    raise SystemExit(main(base_root=BASE_ROOT, _replace_process=True))

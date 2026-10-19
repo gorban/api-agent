@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -70,8 +71,7 @@ def test_terminal_without_inspection_reports_status(cancelled, persisted):
 def test_terminal_keyboard_interrupt_synchronously_closes_own_group():
     item = handle(pending=True)
     item.wait_closed = Mock(side_effect=KeyboardInterrupt)
-    with pytest.raises(KeyboardInterrupt):
-        finish_terminal_inspection(result((item,)), lambda line: None)
+    assert finish_terminal_inspection(result((item,)), lambda line: None)
     assert item.abort.call_count == 1 and item.closed
 
 
@@ -280,3 +280,78 @@ def test_inspection_interrupt_preserves_prior_diagnostics_and_deduplicates():
     assert len({id(error) for error in primary.diagnostic_errors}) == len(primary.diagnostic_errors)
     diagnostic = format_exception(primary)
     assert 'prior command cleanup cause' in diagnostic and 'new abort cause' in diagnostic
+
+
+@pytest.mark.parametrize('exit_code', [0, 1, 130])
+def test_completed_inspection_interrupt_preserves_finalized_exit_code(exit_code):
+    item = handle()
+    item.wait_closed.side_effect = KeyboardInterrupt
+    recorded = result((item,), cancelled=exit_code == 130)
+    recorded.execution = replace(recorded.execution, exit_code=exit_code)
+    lines = []
+    assert finish_terminal_inspection(recorded, lines.append)
+    assert recorded.execution.exit_code == exit_code
+    assert lines[1] == 'Allure publication: PASS'
+    assert not any('Inspection cleanup: FAIL' in line for line in lines)
+
+
+def test_completed_inspection_interrupt_keeps_unacknowledged_retry_handle():
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    item = handle(pending=True)
+    item.wait_closed.side_effect = KeyboardInterrupt
+    item.abort = Mock()
+    with pytest.raises(CleanupPendingError) as caught:
+        finish_terminal_inspection(result((item,)), lambda line: None)
+    assert caught.value.inspections == (item,)
+    assert caught.value.inspection_group.active
+    item.abort.side_effect = lambda: setattr(item, 'closed', True)
+    asyncio.run(caught.value.retry())
+    assert not caught.value.inspection_group.active
+
+
+def test_completed_inspection_interrupt_exposes_cleanup_error_even_after_fallback_closes():
+    item = handle(pending=True)
+    item.wait_closed.side_effect = KeyboardInterrupt
+    item.end_inspection.side_effect = OSError('synthetic cleanup failure')
+    with pytest.raises(KeyboardInterrupt) as caught:
+        finish_terminal_inspection(result((item,)), lambda line: None)
+    assert item.closed
+    assert str(caught.value.diagnostic_errors[0]) == 'synthetic cleanup failure'
+
+
+def test_active_noninteractive_execution_interrupt_keeps_cancellation_exit_status(capsys):
+    from pathlib import Path
+    from unittest.mock import patch
+    from api_agent.runtime.bootstrap import main
+    with patch.dict('os.environ', {}, clear=True), \
+         patch('api_agent.config.read_dotenv', return_value={}), \
+         patch('api_agent.runtime.worktrees.verify_worktrees'), \
+         patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+         patch('api_agent.testing.collection.collect_tests', return_value=[]), \
+         patch('api_agent.testing.launched.run_launched_integration', side_effect=KeyboardInterrupt):
+        status = main(['--tui-mode=integration', '--no-std-in', '--debug',
+                       '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
+    assert status == 130
+    assert 'KeyboardInterrupt' in capsys.readouterr().err
+
+
+def test_wait_interrupt_remains_primary_when_cleanup_is_interrupted():
+    import asyncio
+    item = handle(pending=True)
+    primary = KeyboardInterrupt('inspection wait')
+    end = KeyboardInterrupt('cleanup end')
+    abort = KeyboardInterrupt('cleanup abort')
+    item.wait_closed.side_effect = primary
+    item.end_inspection.side_effect = end
+    item.abort.side_effect = abort
+    with pytest.raises(KeyboardInterrupt) as caught:
+        finish_terminal_inspection(result((item,)), lambda line: None)
+    assert caught.value is primary
+    assert caught.value.diagnostic_errors == (end, abort)
+    assert caught.value.inspections == (item,)
+    assert caught.value.inspection_group.active
+    receipt = caught.value.inspection_group.cleanup_receipt()
+    item.end_inspection.side_effect = lambda: setattr(item, 'closed', True) or True
+    asyncio.run(receipt.retry())
+    assert not caught.value.inspection_group.active

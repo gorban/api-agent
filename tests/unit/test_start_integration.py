@@ -89,7 +89,7 @@ def test_terminal_ui_intent_uses_declared_sources_and_rejects_missing_fields(tmp
     args=['--tui-mode=integration','--no-std-in','--start','--allure-s3-bucket=synthetic',
         '--ui-provider='+str(provider)+':create']
     if provided:args.append('--ui-required=ready')
-    selected=[SimpleNamespace(tags=frozenset({'requires_ui_session'}))]
+    selected=[SimpleNamespace(id='base::test_ui.py::test_ready', tags=frozenset({'requires_ui_session'}))]
     output,error=StringIO(),StringIO()
     def execute(context,tests,config,**options):
         assert config['TUI_MODE']=='integration' and config['UI_REQUIRED']=='ready'
