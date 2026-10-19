@@ -1,0 +1,366 @@
+{
+  "reports": [
+    {
+      "assumption": "Independent graph trials; same model, effective settings and source hashes",
+      "backend": {
+        "auth_mode": "subscription",
+        "backend_identity": "d9617135d6fdd0a2cde722d637a1dfcc3da37515708b3ea5d66ae607c8ac785e"
+      },
+      "bounds": {
+        "first_draft": 0.7871199821209823,
+        "first_format": 0.7871199821209823,
+        "first_guard": 0.7871199821209823,
+        "second_draft": 0.36204651348821093,
+        "second_format": 0.36204651348821093,
+        "second_guard": 0.36204651348821093
+      },
+      "carry_forward": {
+        "basis": "Deterministic old/new request-admission and native-wire equivalence for the retained model and route; original pilot observations and bound are unchanged.",
+        "current_source_sha256": "03db69e5535cb82583f1acf2b0dedc1efc1cb843bacec2738ccb645c449dc7a2",
+        "kind": "reviewed_request_equivalence",
+        "model": "gpt-6-luna",
+        "new_pilot": false,
+        "original_fixture_sha256": "8c12b099e26e0e2c9955ba3e2fe5543ae00179d3814fea313db522de6bb0c3d9",
+        "original_source_sha256": "8ea914b93096b4a48af3023da129d172ae474575b002562317459666df97a43c",
+        "reasoning_effort": "low",
+        "route": "official_subscription_responses",
+        "source": "src/api_agent/llm_providers/gpt/reasoning.py"
+      },
+      "carry_forward_browser_policy": {
+        "basis": "The factory change narrows visible login presentation outside the sampled workflow and changes a login diagnostic; sampled request construction and execution remain unchanged.",
+        "current_source_sha256": "1a3228adad454cb28df7176c7f268d3df21064bf164b067ef59ed20331174665",
+        "kind": "reviewed_non_sampling_visibility_binding",
+        "model": "gpt-6-luna",
+        "new_pilot": false,
+        "original_source_sha256": "0065b50eb67b0f4efe9fc18676a1bbf99b645dd31de627e9c2c30660de7aa376",
+        "previous_fixture_sha256": "ebc2add07aee3d8b0d518854b8258c45caada33f3131933c20f1a86ac4b154b4",
+        "prior_receipt_kind": "reviewed_request_equivalence",
+        "route": "official_subscription_responses",
+        "source": "src/api_agent/llm_providers/gpt/factory.py"
+      },
+      "carry_forward_source_identity": {
+        "basis": "Independent old/new graph, request, output and structural-event equivalence for the retained profile; only source-file identity admission changes. Original observations and computed bound remain unchanged.",
+        "current_source_sha256": "d67f91945d289673768fa3f0e354365e812f0533e69746b5a0adf56fc7829cd4",
+        "kind": "reviewed_non_sampling_source_identity",
+        "model": "gpt-6-luna",
+        "new_pilot": false,
+        "original_source_sha256": "0c4471785859c74724a6ad6a5a3c55c86c5be73c05dacd73735d56d0940b369f",
+        "previous_fixture_sha256": "f0451ee275282141695b21d5c97273cf1d745115c8c3cba41f3f744e02f6320b",
+        "reasoning_effort": "low",
+        "route": "official_subscription_responses",
+        "source": "src/api_agent/workflows/execution.py"
+      },
+      "confidence": 0.95,
+      "dependency_versions": {
+        "httpx": "0.28.1",
+        "jsonschema": "4.26.0",
+        "langchain-core": "1.6.9",
+        "langgraph": "1.2.14",
+        "markdown-it-py": "4.2.0"
+      },
+      "effective_settings": {
+        "api_mode": "responses",
+        "cache_policy": "medium",
+        "component_timeout": null,
+        "graph_timeout": null,
+        "llm_timeout": 120.0,
+        "max_output_tokens": null,
+        "node_timeout": null,
+        "reasoning_effort": "low",
+        "retries": {
+          "first": 2,
+          "second": 2
+        },
+        "temperature": null
+      },
+      "fingerprint_version": 2,
+      "hits": {
+        "first_draft": 20,
+        "first_format": 20,
+        "first_guard": 20,
+        "second_draft": 13,
+        "second_format": 13,
+        "second_guard": 13
+      },
+      "max_runs": 22,
+      "minimum_missing_node_bound": 0.0009190169693321882,
+      "minimum_runs": 18,
+      "missing_node_bound": 0.00015222275946124523,
+      "model": "gpt-6-luna",
+      "provider_identity": {
+        "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
+        "kind": "bundled_gpt",
+        "source_sha256": "1a3228adad454cb28df7176c7f268d3df21064bf164b067ef59ed20331174665"
+      },
+      "python_version": "3.13.15",
+      "records": [
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 1
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 2
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
+          "trial": 3
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 4
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 5
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 6
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
+          "trial": 7
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 8
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 9
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 10
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 11
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
+          "trial": 12
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
+          "trial": 13
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 14
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
+          "trial": 15
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 16
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 17
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 18
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_b",
+          "trial": 19
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 20
+        }
+      ],
+      "routes": {
+        "next_a": 5,
+        "next_b": 8,
+        "skip": 7
+      },
+      "safety_margin": 4,
+      "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
+      "sources": {
+        "demo/contrived/functions.py": "d640084da754b1c43791cae1ee08144abd3d4509380f1eb8d43b7ebab3f54e7b",
+        "demo/contrived/layout.md": "3cdf694eaba7f39e2deb60ffd36db8b00e0efae8d23522c50c2e050ae61b5254",
+        "demo/contrived/prompts/produce.md": "06e6e7a6c82dd7f1d26aad8d8b63831acfae53101eec026102dd6a98455014a0",
+        "demo/contrived/schemas/draft.json": "d371c5daeb256f52ba6ecd8bc2bf4516bf753aceb239dd79a5c4710b1b5f4ad6",
+        "demo/contrived/schemas/format_input.json": "e04b3eb4f89ce9775fbb5f6b134de15e1c4ccf04e93ff0150fe6177d26ff40c1",
+        "demo/contrived/schemas/format_output.json": "d9139f0f4fb9c62bdfe0129e38f115f39b564053210f6452a0a400cc9393fb05",
+        "demo/contrived/schemas/guard_input.json": "7113b44a4e3dd62bb491f22525e5c6040acccd271abdc1da38a2dee068d08322",
+        "demo/contrived/schemas/guard_output.json": "57ee7a68c56b92ad1d9411bca0b26826bc09aaea53571a79c64293f843714017",
+        "demo/contrived/schemas/producer.json": "6d1569b887fce1f3d5b4783ee212d0c56c797c09d6bf7793d2bc006e81b8f4e0",
+        "src/api_agent/auth/bindings.py": "ef139637dc7341a7818f3e0f051dfb9879baeab1f36e0176115365b9d7943a56",
+        "src/api_agent/llm_providers/gpt/cache_policy.py": "458832c70e9b37b9523b8f74f06fc36ceeb84f73dd3cd71b44f223221082b84a",
+        "src/api_agent/llm_providers/gpt/discovery.py": "eafdb478d3050a0875a437fa349e97d43abeca8e80c74284a99d45b470cd6829",
+        "src/api_agent/llm_providers/gpt/endpoint.py": "45dc995946481c54bfb2312f61637329136e42321aa36ea3ee6e56559d9e0720",
+        "src/api_agent/llm_providers/gpt/factory.py": "1a3228adad454cb28df7176c7f268d3df21064bf164b067ef59ed20331174665",
+        "src/api_agent/llm_providers/gpt/inference.py": "7d3c4be245713b1e2f509eb678ad5d782f34e5ec25912c5fd0bd5e7ee0c79d5a",
+        "src/api_agent/llm_providers/gpt/reasoning.py": "03db69e5535cb82583f1acf2b0dedc1efc1cb843bacec2738ccb645c449dc7a2",
+        "src/api_agent/llm_providers/gpt/rich.py": "0222e258b3ec8ff3c5d5435e7fea50749efd2d30487e4640397f4c5b48f6bf77",
+        "src/api_agent/providers/cache_policy.py": "e05387ad862633fa738b82a6421053fa402c44ae87386674571ced006ff5faa5",
+        "src/api_agent/providers/contracts.py": "e61d6876cf1b281383c808b8ed4a0f5afed6615d051ed66cb013a89a4b9d97b3",
+        "src/api_agent/providers/control.py": "337262e4bd0a3d375ec99289ef206c96c6843236d481f1af9fbfd3ea8499b1e6",
+        "src/api_agent/providers/inference.py": "87238fa5e2c01c2ee75e5e06c909135bc4f6686760451f87b3efb685d5c404ff",
+        "src/api_agent/providers/llm.py": "b057f0bf754ec97de179e0e809430c3ebdd20aa63739887958a9b33eff15623a",
+        "src/api_agent/providers/loading.py": "f3ad09869b8ed215302edd8c04456ba14f756e09d7c452012c5d4319173e6f1d",
+        "src/api_agent/providers/progress.py": "2567b97456ae37b41b900d9fcb33c28f50be5c6fa2224f511adeef4293fb1dca",
+        "src/api_agent/providers/rich_inference.py": "b213b6a5ab71650e26bb8ed6185659b62df154e698d82d48cfadf3b05cec8704",
+        "src/api_agent/providers/setup_transport.py": "4098b7d3f03934fe2962ade14ae2450daf0e230aaa83270a82beb5468432daa1",
+        "src/api_agent/providers/shared_setup.py": "81b978108cb2d378012534c7aecb1095fef9ee98902ca0c846695183e178192d",
+        "src/api_agent/runtime/tasks.py": "9a2783e2eb15c302e98cacd84d16ebd96348627bc682b025ffc0042073cc4146",
+        "src/api_agent/testing/provider_setup.py": "7523115faf1bb79a326816c6ab9c6e2086aee7f3db7301bf7a75e9114e03d939",
+        "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
+        "src/api_agent/workflows/contrived.py": "90904a72abd75be553f936bfad1de11f5b8ab28fedb09a758885d39fcb9cb31e",
+        "src/api_agent/workflows/execution.py": "d67f91945d289673768fa3f0e354365e812f0533e69746b5a0adf56fc7829cd4",
+        "src/api_agent/workflows/fixture_driver.py": "3d0e5b893d91a3a97063420d9ab57029f5cd7a689abc6f42e6a07b592d7865a8",
+        "src/api_agent/workflows/layout.py": "e091afc08f56f1ecb12cc211cde74e5ba2cc222b58afc1b070cf6d3392c568b6"
+      },
+      "target": 0.999,
+      "trials": 20,
+      "user_input_hash": "b64e1af5254f6c6f12ba54833caf4c478fc4eccdcee90bbfad41a401e4340255"
+    }
+  ],
+  "schema": 1
+}

@@ -1,7 +1,11 @@
 # Markdown workflow proof of concept
 
-Phase one provides Layout v1 parsing, registered LangGraph execution and a
-permanent synthetic fixture under `demo/contrived/`. Each of two components owns
+The runtime loads versioned nested declarations from a selected `flow.md.html`,
+captures their resources, and compiles registered LangGraph execution. The
+[declaration grammar](prds/implementation_plan_b1b2.md) defines the inert source
+format and resource bounds. The bundled application is a single chat renderer;
+the permanent synthetic qualification fixture remains separate under
+`demo/contrived/`. Layout v1 remains for focused compatibility units. Each of two components owns
 its producer, format check, guard and two-pass budget. The model selects the
 first route and readiness; deterministic code never manufactures those choices.
 The useful GraphQL/API demo is phase two and remains pending.
@@ -81,11 +85,12 @@ tests/integration/test_workflow_preferences.py::test_final_pass_relaxes_only_pre
 tests/integration/test_workflow_preferences.py::test_truth_failure_stays_blocking_on_final_pass
 ```
 
-Its temporary synthetic pack compiles through the actual workflow runtime and
+Its checked-in `tests/integration/fixtures/workflow_preferences/flow.md.html`
+hierarchy compiles through the actual declaration loader and workflow runtime and
 matches registered function source files. Preference failure relaxes only on the
 final pass; persistent truth failure exhausts the component. These tests publish
 structural evidence. The permanent contrived model fixture retains strict guards
-on every pass. Unit replay is `tests/unit/test_workflow_preferences.py`.
+on every pass. Unit replay is `tests/unit/test_controlled_workflow_preferences.py`.
 
 ## Typed execution timeouts
 
@@ -111,6 +116,8 @@ unchanged. These are public package versions, without environment paths.
 
 ## Installed declaration check
 
+Validate the bundled application with `python -m api_agent.workflows validate`;
+`diagram` prints declaration-derived topology without importing native bindings.
 Build a wheel and install it into a separate environment. From an unrelated
 working directory, run `python -m api_agent.workflows validate --demo contrived`
 and `python -m api_agent.workflows diagram --demo contrived` with that

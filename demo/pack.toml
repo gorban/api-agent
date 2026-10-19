@@ -5,8 +5,9 @@ owner = ".."
 config = "cfg/config.toml"
 
 [workflow]
-version = 1
-layout = "contrived/layout.md"
+version = 2
+root = "base"
+entry = "flow.md.html"
 
 [tests]
 unit = ["tests/unit"]

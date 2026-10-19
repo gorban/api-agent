@@ -214,20 +214,36 @@ def test_conditional_prompt_and_compiled_topology(runtime_layout):
 @pytest.mark.parametrize('command', ['validate', 'diagram'])
 def test_inference_free_demo_cli(command, capsys):
     assert main([command, '--demo', 'contrived']) == 0
-    assert ('Valid layout:' if command == 'validate' else 'flowchart TD') in capsys.readouterr().out
+    assert ('Valid workflow:' if command == 'validate' else 'flowchart TD') in capsys.readouterr().out
+
+
+def test_explicit_demo_cli_identifies_the_compiled_qualification_graph(capsys):
+    from api_agent.workflows.contrived import build
+    compiled = build(ROOT, llm=None, selection='synthetic', trial='unit')
+
+    assert main(['validate', '--demo', 'contrived']) == 0
+
+    assert compiled.definition.definition_id in capsys.readouterr().out
+
+
+def test_default_cli_selects_application_graph(capsys):
+    assert main(['validate']) == 0
+    assert 'Valid workflow:' in capsys.readouterr().out
 
 
 def test_cli_explicit_roots_and_invalid_path(tmp_path, capsys):
-    path = ROOT / 'demo/contrived/layout.md'
-    assert main(['validate', '--layout', str(path), '--base-root', str(ROOT), '--pack-root', str(path.parent)]) == 0
+    path = ROOT / 'demo/contrived/flow.md.html'
+    assert main(['validate', '--entry', str(path), '--base-root', str(ROOT), '--pack-root', str(path.parent)]) == 0
     with pytest.raises(SystemExit) as caught:
-        main(['validate', '--layout', str(tmp_path / 'absent.md')])
+        main(['validate', '--entry', str(tmp_path / 'absent.md.html')])
     assert caught.value.code == 2
-    assert 'absent.md:1' in capsys.readouterr().err
+    assert 'absent.md.html:1' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize('args', [['validate'], ['validate', '--demo', 'contrived', '--layout', 'x']])
-def test_cli_requires_exactly_one_layout_choice(args):
+@pytest.mark.parametrize('args', [['validate', '--demo', 'contrived', '--entry', 'x'],
+                                  ['validate', '--layout', 'x'],
+                                  ['validate', '--entry-root', 'pack']])
+def test_cli_rejects_conflicting_or_legacy_selection(args):
     with pytest.raises(SystemExit) as caught:
         main(args)
     assert caught.value.code == 2
@@ -239,7 +255,7 @@ def test_module_cli_entrypoint(monkeypatch, capsys):
     with pytest.raises(SystemExit) as caught:
         runpy.run_module('api_agent.workflows', run_name='__main__')
     assert caught.value.code == 0
-    assert 'Valid layout:' in capsys.readouterr().out
+    assert 'Valid workflow:' in capsys.readouterr().out
 
 
 def test_scope_lifecycle_preserves_nested_identity_and_success(runtime_layout):

@@ -61,13 +61,44 @@ def test_build_bundled_workflow():
     assert len(workflow.layout.steps)==8
 
 
+def test_declarative_fixture_preserves_legacy_graph_contract():
+    from pathlib import Path
+    from api_agent.workflows.definition import load_definition
+    from api_agent.workflows.layout import load_layout
+
+    root = Path(__file__).resolve().parents[2]
+    fixture = root / 'demo/contrived'
+    previous = load_layout(fixture / 'layout.md', base_root=root, pack_root=root / 'demo')
+    current = load_definition(fixture / 'flow.md.html', base_root=root, pack_root=root / 'demo')
+
+    assert [(step.id, step.kind, step.parent) for step in current.layout.steps] == [
+        (step.id, step.kind, step.parent) for step in previous.steps]
+    assert [step.source for step in current.layout.steps if step.kind == 'node'] == [
+        step.source for step in previous.steps if step.kind == 'node']
+    for section in previous.tables:
+        def contract(rows):
+            return [{key: value for key, value in row.items()
+                     if key not in {'line', '_owner', 'Input schema', 'Output schema', 'Kind'}}
+                    for row in rows]
+        assert contract(current.layout.tables[section]) == contract(previous.tables[section])
+    assert {row['ID']: row['Kind'] for row in current.layout.tables['Functions']} == {
+        name: 'llm' if name.endswith('_draft') else 'deterministic'
+        for name in (step.id for step in previous.steps if step.kind == 'node')}
+    for resource in current.resources:
+        if resource.kind in {'schema', 'prompt', 'configuration', 'native_source'}:
+            scope, relative = resource.logical_path.split('/', 1)
+            source_root = root / 'demo' if scope == 'pack' else root
+            assert resource.content_bytes == (source_root / relative).read_bytes()
+
+
 def test_build_installed_resource_fallback(monkeypatch,tmp_path):
     from pathlib import Path
     from api_agent.workflows import contrived
-    monkeypatch.setattr(contrived,'load_layout',lambda path, **kwargs: 'layout')
-    monkeypatch.setattr(contrived,'Workflow',lambda layout,*args,**kwargs: layout)
-    monkeypatch.setattr('importlib.resources.files',lambda package: Path(__file__).resolve().parents[2])
-    assert contrived.build(tmp_path,llm=None,selection='synthetic',trial='id') == 'layout'
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setattr('importlib.resources.files', lambda package: root)
+    workflow = contrived.build(tmp_path,llm=None,selection='synthetic',trial='id')
+    assert workflow.definition.graph_id == 'contrived_qualification'
+    assert len(workflow.layout.steps) == 8
 
 
 @pytest.mark.parametrize('route,calls', [('skip',2),('next_a',4)])

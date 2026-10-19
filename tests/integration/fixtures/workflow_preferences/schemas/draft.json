@@ -1,0 +1,1 @@
+{"additionalProperties": false, "properties": {"preference": {"type": "boolean"}, "truth": {"type": "boolean"}}, "required": ["truth", "preference"], "type": "object"}

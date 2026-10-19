@@ -16,3 +16,7 @@ These generic contracts must be reviewed and versioned before dependent format c
 Independent contract review precedes implementation. Conversion completion still requires the parent equivalence, packaging, qualification, staged-check, independent review and human acceptance gates.
 
 - [ ] Freeze the [immutable production profile](implementation_plan_h4.md) alongside mutable development behavior: startup-validated definition identity, once-per-process plan reuse, fresh execution state and no implicit definition reload. Preserve the same compiled semantics in source, installed and image execution; build-time generation remains a later measured choice.
+
+- [ ] Apply the [first-release shared application graph and scenario coverage](implementation_plan_b1b3.md) contract, keeping the shipped Run local/E2E graph separate from qualification fixtures.
+
+- [ ] Apply the [versioned nested declaration grammar](implementation_plan_b1b2.md) and its immutable runtime adapter; unsupported richer executable semantics remain explicit dependent work.

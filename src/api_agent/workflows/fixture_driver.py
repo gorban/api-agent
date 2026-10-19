@@ -14,6 +14,7 @@ from api_agent.providers.loading import provider_location
 from api_agent.runtime.tasks import offload
 from api_agent.testing.inference_usage import user_turn
 from .contrived import build
+from .definition import load_definition
 from .evidence import publish
 from .sampling import DECLARED, cover, validate_calibration
 
@@ -23,7 +24,7 @@ DEPENDENCIES = ('langgraph', 'langchain-core', 'jsonschema', 'markdown-it-py', '
 # here. Reporting, TUI, pricing and test collection do not change sampling.
 SAMPLING_SOURCES = (
     'workflows/fixture_driver.py', 'workflows/contrived.py', 'workflows/execution.py',
-    'workflows/layout.py', 'llm_providers/gpt/inference.py', 'llm_providers/gpt/rich.py',
+    'workflows/layout.py', 'workflows/definition.py', 'llm_providers/gpt/inference.py', 'llm_providers/gpt/rich.py',
     'llm_providers/gpt/cache_policy.py', 'llm_providers/gpt/reasoning.py', 'llm_providers/gpt/discovery.py',
     'llm_providers/gpt/endpoint.py', 'providers/llm.py', 'providers/contracts.py',
     'providers/control.py', 'providers/progress.py', 'providers/cache_policy.py',
@@ -58,7 +59,7 @@ def sampling_digest(path):
 
 def fixture_root(root=None):
     root = Path(root) if root is not None else Path(__file__).resolve().parents[3]
-    return root if (root / 'demo/contrived/layout.md').is_file() else Path(str(files('api_agent')))
+    return root if (root / 'demo/contrived/flow.md.html').is_file() else Path(str(files('api_agent')))
 
 
 def provider_identity(config, *, owner_root=None):
@@ -83,14 +84,12 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
     package = Path(__file__).resolve().parent.parent
     sources = {'src/api_agent/' + name: sampling_digest(package / name)
                for name in SAMPLING_SOURCES}
-    assets = [base / 'demo/contrived/layout.md', base / 'demo/contrived/functions.py',
-              base / 'demo/contrived/prompts/produce.md',
-              *(base / 'demo/contrived/schemas').glob('*.json')]
-    sources.update({str(path.relative_to(base)): sha256(path.read_bytes()).hexdigest()
-                    for path in sorted(assets)})
+    definition = load_definition(base / 'demo/contrived/flow.md.html', base_root=base,
+                                 pack_root=base / 'demo')
+    sources.update({resource.logical_path: resource.sha256 for resource in definition.resources})
     backend = {'auth_mode': config.get('GPT_AUTH_MODE', 'subscription'),
                'backend_identity': sha256(str(config.get('GPT_BASE_URL', 'https://api.openai.com/v1')).encode()).hexdigest()}
-    return dict(fingerprint_version=2, sampling_method='simultaneous_exact_binomial_independent_uuid_v1', model=selection,
+    return dict(fingerprint_version=3, sampling_method='simultaneous_exact_binomial_independent_uuid_v1', model=selection,
         dependency_versions={name: version(name) for name in DEPENDENCIES},
         python_version=platform.python_version(), backend=backend,
         provider_identity=provider_identity(config, owner_root=owner_root),

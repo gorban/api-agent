@@ -2,14 +2,13 @@
 import json
 from pathlib import Path
 from uuid import uuid4
-import runpy
 from dataclasses import asdict
 import time
 import math
 from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent, StructuredOutput, Usage
 from api_agent.providers.progress import component_timeout
 from .execution import NodeFunction, Workflow, WorkflowError
-from .layout import load_layout
+from .definition import load_definition, load_native_catalog
 
 
 async def produce(inputs, context):
@@ -77,14 +76,17 @@ def guard(inputs, context):
 
 def build(base_root, *, llm, selection, trial, observe=None, config=None):
     root = Path(base_root).resolve()
-    path = root / 'demo/contrived/layout.md'
+    path = root / 'demo/contrived/flow.md.html'
     if not path.is_file():
         from importlib.resources import files
-        path = Path(str(files('api_agent').joinpath('demo/contrived/layout.md')))
-    layout = load_layout(path, base_root=root, pack_root=path.parent.parent)
-    schema = json.loads((path.parent / 'schemas/draft.json').read_text())
-    catalog = runpy.run_path(str(path.parent / 'functions.py'))
-    return Workflow(layout, {'produce': NodeFunction(catalog['produce'], 'llm'),
+        path = Path(str(files('api_agent').joinpath('demo/contrived/flow.md.html')))
+    definition = load_definition(path, base_root=root if path.is_relative_to(root) else path.parents[2],
+                                 pack_root=path.parent.parent)
+    schema_path = path.parent / 'schemas/draft.json'
+    schema = json.loads(definition.contents[schema_path])
+    source = next(step.source for step in definition.layout.steps if step.id == 'first_draft')
+    catalog = load_native_catalog(definition, source)
+    return Workflow(definition, {'produce': NodeFunction(catalog['produce'], 'llm'),
         'validate_format': NodeFunction(catalog['validate_format']), 'guard': NodeFunction(catalog['guard'])},
         {'skip_second': lambda values: values['first_draft']['route'] == 'skip'}, config=config,
         services=dict(llm=llm, selection=selection, trial=trial, output_schema=schema, observe=observe,
