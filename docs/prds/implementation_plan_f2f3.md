@@ -4,10 +4,10 @@
 
 ## Current accepted behavior
 
-- [x] Exercise the real application HTTP API using GPT-6 Luna through the included official subscription Responses route. One ordinary test uses three matched low/medium pairs, at most six inference requests. This supersedes the former exactly-two-request, 99.9%-reliability qualification requirement; preserve earlier failed evidence without presenting it as qualification of this design.
-- [x] Keep the puzzle and all request settings identical within each pair except reasoning effort. Prefix a unique non-secret run marker at the beginning of each pair's prompt, reusing that exact marker for low and medium. Use a new marker between pairs and test invocations. Preserve marker identity in private test evidence; do not vary the task between efforts.
+- [x] Exercise the real application HTTP API using GPT-6 Luna through the included official subscription Responses route. One ordinary test uses three matched low/high pairs, at most six inference requests. This supersedes the former exactly-two-request, 99.9%-reliability qualification requirement; preserve earlier failed evidence without presenting it as qualification of this design.
+- [x] Keep the puzzle and all request settings identical within each pair except reasoning effort. Prefix a unique non-secret run marker at the beginning of each pair's prompt, reusing that exact marker for low and high. Use a new marker between pairs and test invocations. Preserve marker identity in private test evidence; do not vary the task between efforts.
 - [x] Require all measured responses to complete. Response-text correctness is not an acceptance criterion: arbitrary or wrong answers do not gate the reasoning-token comparison. Validate reported reasoning counts as nonnegative integers; missing usage is unknown and fails measurement, never zero.
-- [x] Compute each signed difference as medium reasoning tokens minus low reasoning tokens. Pass only when at least two of the three differences are at least 50 tokens, and no difference is less than or equal to -50 tokens. A third near-zero or modestly negative difference is allowed. Do not use absolute differences, discard an unfavorable measured pair, or run replacement attempts until green.
+- [x] Compute each signed difference as high reasoning tokens minus low reasoning tokens. Pass only when at least two of the three differences are at least 50 tokens, and no difference is less than or equal to -50 tokens. A third near-zero or modestly negative difference is allowed. Do not use absolute differences, discard an unfavorable measured pair, or run replacement attempts until green.
 - [x] Use an independently authored constrained puzzle. Perform bounded development to observe useful effort separation; do not add an answer oracle to this token-only measurement. Select and freeze the prompt before ordinary delivery. This is an empirical smoke-test threshold, not a promised provider behavior or a 99.9% population-reliability claim. No 2,995-pair campaign is required.
 
 ## Attribution, lifecycle and failures
@@ -18,7 +18,7 @@
 
 ## Meaningful verification and delivery
 
-- [x] Controlled integration checks must derive reported reasoning usage from the native effort actually received, never expected labels or call order. Swap low/medium on the sending path while preserving labels and scoring assertions: the signed difference must become negative and reject the test. Force both requests to one effort and verify zero-difference rejection. Restore/remove mutations without requiring a second paid successful run.
+- [x] Controlled integration checks must derive reported reasoning usage from the native effort actually received, never expected labels or call order. Swap low/high on the sending path while preserving labels and scoring assertions: the signed difference must become negative and reject the test. Force both requests to one effort and verify zero-difference rejection. Restore/remove mutations without requiring a second paid successful run.
 - [x] Test two/three qualifying pairs, a near-zero third, exact positive/negative 50-token boundaries, a strongly negative third, response-text irrelevance, missing usage, nonce equality within pairs and inequality between pairs, ignored/swapped routing, and no hidden replacement calls. Verify partial/error accounting and disposal.
 - [x] Require applicable exact unit line/branch coverage, controlled HTTP/browser checks where relevant, installed-package behavior, licenses and public tree/index/metadata checks, internal independent review and a scoped commit. External PR review and human acceptance remain separate. No result from the old two-call predicate certifies the new three-pair acceptance rule.
 
@@ -39,9 +39,9 @@ The earlier five-variable direct-answer prompt passed one live six-call comparis
 - [x] Complete external PR review of this revision.
 - [ ] Human acceptance of this revision remains open.
 
-Later direct-answer observations (+89/+29/+49 and -47/+7/+17) failed the unchanged rule. A larger direct-answer permutation task (+112/-94/-214) and an algorithm-audit task (-123/+92/+101) also failed. The earlier successful smoke applies only to its original task/run. The code-generation revision is an empirical task change with no statistical reliability guarantee and no claimed provider-mapping defect.
+Later low/medium direct-answer observations (+89/+29/+49 and -47/+7/+17) failed the unchanged rule. A larger direct-answer permutation task (+112/-94/-214) and an algorithm-audit task (-123/+92/+101) also failed. The earlier successful smoke applies only to its original task/run. The code-generation revision is an empirical task change with no statistical reliability guarantee and no claimed provider-mapping defect.
 
-The first frozen code-generation smoke completed all six calls and passed the unchanged signed rule. Low reasoning-token counts were 0, 412 and 0; medium counts were 331, 415 and 404, giving signed gaps +331, +3 and +404. The near-zero second pair was retained. This single successful smoke supports this task/run only; it does not establish population reliability or repair a demonstrated provider-mapping defect. Generated code was neither executed nor answer-validated. Independent and external review are complete; human acceptance remains open.
+The first frozen low/medium code-generation smoke completed all six calls and passed the unchanged signed rule. Low reasoning-token counts were 0, 412 and 0; medium counts were 331, 415 and 404, giving signed gaps +331, +3 and +404. The near-zero second pair was retained. This single successful smoke supports this task/run only; it does not establish population reliability or repair a demonstrated provider-mapping defect. Generated code was neither executed nor answer-validated. Independent and external review are complete; human acceptance remains open.
 
 ## Concurrent execution — October 19, 2026
 
@@ -50,7 +50,7 @@ The first frozen code-generation smoke completed all six calls and passed the un
 - [x] Retain receipts for every attempted call, await already-issued siblings after failure, and explicitly cancel/drain on interruption. Retain failed child cleanup and every prior receipt behind retryable owners until acknowledged, preserving interruption identity. If scheduling fails, cancel and drain created tasks and close unsubmitted work. Never replace failed or unfavorable pairs.
 - [x] Prove six-way overlap through real loopback application HTTP and shared setup IPC using a synthetic barrier; verify native effort, identity, per-call quote/content attribution and cleanup. No new live inference is required to establish scheduling behavior.
 
-A later human run failed the unchanged scorer with gaps -22, -37 and +41. It remains a failed observation; concurrent scheduling does not establish reliable stochastic effort separation. That separate issue is [deferred to the future reasoning follow-up](implementation_plan_f2f3a.md).
+A later human low/medium run failed the unchanged scorer with gaps -22, -37 and +41. It remains a failed observation; concurrent scheduling does not establish reliable stochastic effort separation. That separate issue is [deferred to the future reasoning follow-up](implementation_plan_f2f3a.md).
 
 - [x] Complete independent and external review of concurrent scheduling, per-call attribution, cleanup and installed-package behavior.
 - [ ] Human acceptance of concurrent scheduling remains open. Stochastic token separation remains deferred separately; a positive token-margin sample is not required to demonstrate concurrency.
@@ -58,3 +58,7 @@ A later human run failed the unchanged scorer with gaps -22, -37 and +41. It rem
 ## Buffered request lease renewal
 
 Maintain long-running buffered requests under the existing chat heartbeat contract. See [lease-renewal requirements and verification](implementation_plan_f2f3b.md). The prompt and signed scorer remain unchanged.
+
+## High-versus-low comparison
+
+The active comparison now uses high minus low reasoning tokens with the same frozen prompt, three concurrent matched pairs and signed thresholds. See [the high-versus-low revision](implementation_plan_f2f3c.md); earlier medium measurements remain historical.

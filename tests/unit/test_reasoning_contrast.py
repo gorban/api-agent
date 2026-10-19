@@ -1,5 +1,6 @@
 """Threshold, real HTTP/native routing and ordinary integration-owner controls."""
 import asyncio
+from collections import Counter
 import importlib.util
 import json
 from pathlib import Path
@@ -15,7 +16,7 @@ from api_agent.testing import reasoning_contrast as c
 def pair(gap=50):
     return dict(calls=[dict(effort=effort,status='completed',
         reasoning_tokens=count,requested_model=c.MODEL,actual_model=None)
-        for effort,count in (('low',1000),('medium',1000+gap))])
+        for effort,count in (('low',1000),('high',1000+gap))])
 
 
 @pytest.mark.parametrize('gaps,expected',[
@@ -76,7 +77,7 @@ def test_scope_physical_provider_and_verified_efforts(config,tmp_path,monkeypatc
 def response(body,**overrides):
     row=dict(session_id=body['session_id'],response_text='arbitrary response text',outcome='completed',
         usage=dict(input_tokens=1,output_tokens=200,cached_input_tokens=0,
-                   reasoning_tokens=100 if body['reasoning_effort']=='low' else 175))
+                   reasoning_tokens={'low':100,'high':175}[body['reasoning_effort']]))
     row.update(overrides);return row
 
 
@@ -96,10 +97,10 @@ def test_pair_nonce_identity_usage_and_reported_spend_across_runs():
     prompts={row['messages'][0]['content'] for row in requests}
     assert len(prompts)==6
     for prompt in prompts:
-        low,medium=sorted((row for row in requests if row['messages'][0]['content']==prompt),
-                          key=lambda row: row['reasoning_effort'])
-        assert low['messages']==medium['messages']
-        assert [low['reasoning_effort'],medium['reasoning_effort']]==['low','medium']
+        low,high=sorted((row for row in requests if row['messages'][0]['content']==prompt),
+                          key=lambda row: {'low':0,'high':1}[row['reasoning_effort']])
+        assert low['messages']==high['messages']
+        assert [low['reasoning_effort'],high['reasoning_effort']]==['low','high']
         text=low['messages'][0]['content'];prefix,puzzle=text.split('\n',1)
         assert puzzle==c.PUZZLE and prefix.startswith('Run marker: ')
         UUID(prefix.removeprefix('Run marker: '));markers.append(prefix)
@@ -146,16 +147,16 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
     from api_agent.providers.cache_policy import configured_request
     native=[];closed=[];properties=[]
     class Provider:
-        def describe(self):return (AvailableSelection(c.MODEL,features=('reasoning_effort',),reasoning_efforts=('low','medium')),)
+        def describe(self):return (AvailableSelection(c.MODEL,features=('reasoning_effort',),reasoning_efforts=('low','high')),)
         def complete(self,request):
-            request = configured_request(request, None, reasoning_effort='high')
+            request = configured_request(request, None, reasoning_effort='medium')
             async def invoke():
                 def reply(sent):
                     body=json.loads(sent.content);native.append(body)
                     effort=body['reasoning']['effort']
                     data=dict(status='completed',model=c.MODEL,output=[dict(type='message',role='assistant',content=[dict(type='output_text',text='arbitrary response text')])],
                               usage=dict(input_tokens=1,output_tokens=200,input_tokens_details=dict(cached_tokens=0),
-                                         output_tokens_details=dict(reasoning_tokens=100 if effort=='low' else 175)))
+                                         output_tokens_details=dict(reasoning_tokens={'low':100,'high':175}[effort])))
                     return httpx.Response(200,text='data: '+json.dumps(dict(type='response.completed',response=data))+'\n\n',headers={'content-type':'text/event-stream'})
                 async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
                     return await complete_text(client=client,base_url='https://api.openai.com/v1',access_token='synthetic-token',subscription=True,api_mode='responses',request=request)
@@ -168,10 +169,10 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
     assert len(native)==6
     prompts = {row['input'][0]['content'] for row in native}
     for prompt in prompts:
-        low, medium = sorted((row for row in native if row['input'][0]['content']==prompt),
-                             key=lambda row: row['reasoning']['effort'])
-        assert [low['reasoning']['effort'],medium['reasoning']['effort']]==['low','medium']
-        assert low['input'] == medium['input']
+        low, high = sorted((row for row in native if row['input'][0]['content']==prompt),
+                             key=lambda row: {'low':0,'high':1}[row['reasoning']['effort']])
+        assert [low['reasoning']['effort'],high['reasoning']['effort']]==['low','high']
+        assert low['input'] == high['input']
         content = low['input'][0]['content']
         prefix, task = content.split('\n', 1)
         assert prefix.startswith('Run marker: ')
@@ -180,7 +181,7 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
         assert 'Define solve(edges, start, goal, red_count, min_blue, max_run)' in task
         assert 'Reply with only executable Python code' in task
         assert {key: value for key, value in low.items() if key != 'reasoning'} == {
-            key: value for key, value in medium.items() if key != 'reasoning'}
+            key: value for key, value in high.items() if key != 'reasoning'}
     assert len({row['input'][0]['content'].split('\n', 1)[0] for row in native}) == 3
     assert closed==[], 'HTTP consumer must not dispose the normal fixture owner'
     provider.close();assert closed==[True]
@@ -199,7 +200,7 @@ def test_original_fixture_partial_error_usage_survives_http_failure(tmp_path,mon
             requests.append(request)
             raise ProviderAccessError('unavailable','Controlled partial failure',usage=Usage(2,100,reasoning_tokens=43))
     class Provider:
-        def describe(self):return (AvailableSelection(c.MODEL,features=('reasoning_effort',),reasoning_efforts=('low','medium')),)
+        def describe(self):return (AvailableSelection(c.MODEL,features=('reasoning_effort',),reasoning_efforts=('low','high')),)
         def complete(self,request):
             owner=Owned({'LOG_CONTENT':False},tmp_path,password_manager_registry={},skip_unavailable=False)
             try:return owner.complete(request)
@@ -211,7 +212,7 @@ def test_original_fixture_partial_error_usage_survives_http_failure(tmp_path,mon
     usage=[row['data'] for row in rows if row['kind']=='inference_usage']
     assert len(requests)==6 and closed==[True]*6
     assert usage[-1]['usage']['reasoning_tokens']==43 and usage[-1]['outcome']=='failed'
-    assert sorted(row['reasoning_effort'] for row in usage if row['outcome']=='failed')==['low']*3+['medium']*3
+    assert Counter(row['reasoning_effort'] for row in usage if row['outcome']=='failed')=={'low':3,'high':3}
     events=json.loads(properties[0][1]);assert len([row for row in events if row['event']=='call'])==6
 
 
@@ -256,3 +257,16 @@ def test_valid_measurement_ignores_correctness_metadata():
     assert c.valid_call(row)
     del row['correct']
     assert c.valid_call(row)
+
+
+def test_medium_cannot_substitute_for_high_in_score():
+    records=[pair() for _ in range(3)]
+    records[1]['calls'][1]['effort']='medium'
+    assert not c.evaluate(records)['passed']
+
+
+def test_scope_requires_high_support_before_inference(config,monkeypatch):
+    from api_agent.llm_providers.gpt import reasoning
+    monkeypatch.setattr(reasoning,'reasoning_efforts',lambda *a,**kw:('low','medium'))
+    with pytest.raises(ValueError,match='Low and high'):
+        c.scope(config)

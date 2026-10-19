@@ -27,7 +27,7 @@ def test_six_application_requests_overlap_one_backend_owner(monkeypatch):
             def __init__(self):owners.append(self)
             async def ensure_ready(self):pass
             async def describe(self):
-                return (AvailableSelection(MODEL,features=('reasoning_effort',),reasoning_efforts=('low','medium')),)
+                return (AvailableSelection(MODEL,features=('reasoning_effort',),reasoning_efforts=('low','high')),)
             async def complete(self, request):
                 from api_agent.llm_providers.gpt.inference import validate_text_request
                 _,body=validate_text_request(base_url='https://api.openai.com/v1',access_token='synthetic-token',
@@ -37,7 +37,7 @@ def test_six_application_requests_overlap_one_backend_owner(monkeypatch):
                 async with asyncio.timeout(3):await entered.wait()
                 effort=body['reasoning']['effort']
                 return LLMResult(Message('assistant',(TextContent(body['input'][0]['content']),)),
-                    Usage(1,200,reasoning_tokens=100 if effort=='low' else 175))
+                    Usage(1,200,reasoning_tokens={'low':100,'high':175}[effort]))
             def quote_cost(self, request, result):
                 return {'list_cost_usd':result.usage.reasoning_tokens/10000,'payment':None}
             def export_content(self, request, result=None):
@@ -136,7 +136,7 @@ def test_endpoint_drains_remote_calls_after_sender_cancellation():
         started=[];finished=[]
         class Owner:
             async def ensure_ready(self):pass
-            async def describe(self):return (AvailableSelection(MODEL,features=('reasoning_effort',),reasoning_efforts=('low','medium')),)
+            async def describe(self):return (AvailableSelection(MODEL,features=('reasoning_effort',),reasoning_efforts=('low','high')),)
             async def complete(self,request):
                 started.append(request)
                 if len(started)==6:entered.set()
@@ -249,6 +249,6 @@ def test_records_stay_ordered_when_calls_complete_in_reverse():
         assert completed==[row['session_id'] for row in reversed(requests)]
         assert [record['pair'] for record in records]==[1,2,3]
         for record in records:
-            assert [call['effort'] for call in record['calls']]==['low','medium']
+            assert [call['effort'] for call in record['calls']]==['low','high']
             assert {call['marker'] for call in record['calls']}=={record['marker']}
     asyncio.run(scenario())
