@@ -94,13 +94,15 @@ def test_damaged_wheel_with_valid_parent_checkout_refuses_fallback(tmp_path, mon
         resources.bundled_root()
 
 
-@pytest.mark.parametrize('metadata,record,installed', [
-    ('Name: unrelated\n', 'api_agent/workflows/resources.py,,\n', False),
-    ('Name: api-agent\n', 'unrelated/module.py,,\n', False),
-    ('Name: api-agent\n', None, True),
-    (None, 'api_agent/workflows/resources.py,,\n', True),
+@pytest.mark.parametrize('metadata,record', [
+    ('Name: unrelated\n', 'api_agent/workflows/resources.py,,\n'),
+    ('Name: api-agent\n', 'unrelated/module.py,,\n'),
+    ('Name: api-agent\n', ''),
+    ('Name: api-agent\n', None),
+    ('Metadata-Version: 2.4\n', 'unrelated/module.py,,\n'),
+    (None, 'api_agent/workflows/resources.py,,\n'),
 ])
-def test_adjacent_metadata_must_identify_installed_module(tmp_path, monkeypatch, metadata, record, installed):
+def test_adjacent_distribution_marker_denies_source_fallback(tmp_path, monkeypatch, metadata, record):
     checkout, _ = candidate(tmp_path, monkeypatch)
     package = checkout / 'src/api_agent'
     marker = checkout / 'src/api_agent-0.1.0.dist-info'
@@ -111,11 +113,8 @@ def test_adjacent_metadata_must_identify_installed_module(tmp_path, monkeypatch,
         (marker / 'RECORD').write_text(record)
     monkeypatch.setattr(resources, 'files', lambda name: package)
 
-    if installed:
-        with pytest.raises(FileNotFoundError, match='Bundled application flow is missing'):
-            resources.bundled_root()
-    else:
-        assert resources.bundled_root() == checkout
+    with pytest.raises(FileNotFoundError, match='Bundled application flow is missing'):
+        resources.bundled_root()
 
 
 def test_missing_packaged_flow_fails_without_other_graph_fallback(tmp_path, monkeypatch):
