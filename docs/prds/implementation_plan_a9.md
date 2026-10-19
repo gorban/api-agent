@@ -27,6 +27,6 @@ parameterized identities exceed the operating system command argument budget.
 [Dependency-aware test domains](implementation_plan_a9f.md) are an unimplemented
 future proposal, scheduled after all profiling and authentication work.
 
-[Bounded unit execution and launcher parity](implementation_plan_a9h.md) is implemented and independently reviewed, covering source aliases, fixture coordination and fixed 60-second hang guards. Human acceptance of the repaired full launch remains pending in that detail; accepted coverage disclosure stays complete.
+[Bounded unit execution and launcher parity](implementation_plan_a9h.md) is implemented and independently reviewed, covering source aliases, fixture coordination and fixed 60-second hang guards. The user accepts the repaired full launch and integration with and without DEBUG and NO_STD_IN; accepted coverage disclosure stays complete.
 
 [Unit-suite performance investigation](implementation_plan_a9i.md) joins later profiling, preserving exact coverage and real boundary proofs.
