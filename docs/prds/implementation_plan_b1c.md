@@ -18,3 +18,7 @@ Extend the same managed viewer late in application delivery, before final profil
 Use bounded JSON reads plus one-way server-sent events for live updates; the browser and command-line diagnostics share projections. Completed records use the graph definition captured with that execution, not today's graph. Historical means disclose compatible cohort, sample count, missingness and window; scenario controls cannot invent the behavior of an unseen model or reasoning level. No separate trace backend or live persistent database is required for this inspector.
 
 Exact schema versions, public read routes, capture allowlists and numeric retention/download/render budgets must be frozen and adversarially reviewed before implementation. Their selection is still work, not an implemented public API. Existing content/privacy, historical compatibility, resource isolation, timing and owned cleanup contracts apply.
+
+## Final refinement backlog
+
+- [ ] After the currently scheduled work, refine [run differences and observed test-impact discovery](implementation_plan_b1c5.md), including definition overlays and copyable mode-specific test selections.

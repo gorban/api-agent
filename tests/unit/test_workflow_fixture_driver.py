@@ -389,3 +389,43 @@ def test_installed_canonical_factory_identity_is_path_independent(tmp_path, monk
     expected = driver.provider_identity(CONFIG)
     monkeypatch.setattr(driver, '__file__', str(package / 'workflows/fixture_driver.py'))
     assert driver.provider_identity({'LLM_PROVIDER': str(installed) + ':factory'}) == expected
+
+
+def test_source_identity_equivalence_retains_measurements_and_qualification():
+    from api_agent.workflows.sampling import measured_calibration
+    report = driver._baselines()[0]
+    source = 'src/api_agent/workflows/execution.py'
+    receipt = report['carry_forward_source_identity']
+    assert receipt == {
+        'kind': 'reviewed_non_sampling_source_identity', 'model': 'gpt-6-luna',
+        'route': 'official_subscription_responses', 'reasoning_effort': 'low',
+        'source': source,
+        'original_source_sha256': '0c4471785859c74724a6ad6a5a3c55c86c5be73c05dacd73735d56d0940b369f',
+        'current_source_sha256': 'd67f91945d289673768fa3f0e354365e812f0533e69746b5a0adf56fc7829cd4',
+        'previous_fixture_sha256': 'f0451ee275282141695b21d5c97273cf1d745115c8c3cba41f3f744e02f6320b',
+        'basis': ('Independent old/new graph, request, output and structural-event equivalence for '
+                  'the retained profile; only source-file identity admission changes. Original '
+                  'observations and computed bound remain unchanged.'),
+        'new_pilot': False}
+    assert sha256(json.dumps(report['records'], sort_keys=True, separators=(',', ':')).encode()).hexdigest() == (
+        'a09434887a4366296bd5ea3c819a5519a9c12f255d35325c9654168021e0aa2d')
+    assert report['trials'] == 20 and report['max_runs'] == 22
+    assert report['carry_forward_browser_policy']['prior_receipt_kind'] == report['carry_forward']['kind']
+    assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
+    config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
+    assert driver.fingerprint('gpt-6-luna', config)['sources'][source] == receipt['current_source_sha256']
+    assert driver.baseline_limit('gpt-6-luna', config) == 22
+
+
+@pytest.mark.parametrize('source,source_hash', [
+    ('src/api_agent/workflows/execution.py', '0c4471785859c74724a6ad6a5a3c55c86c5be73c05dacd73735d56d0940b369f'),
+    ('src/api_agent/workflows/execution.py', '0' * 64),
+    ('src/api_agent/workflows/layout.py', '0' * 64),
+])
+def test_source_identity_receipt_cannot_admit_old_or_unrelated_drift(monkeypatch, source, source_hash):
+    report = deepcopy(driver._baselines()[0])
+    report['sources'][source] = source_hash
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+    config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', config)

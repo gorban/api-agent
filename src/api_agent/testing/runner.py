@@ -13,8 +13,9 @@ import time
 import uuid
 
 from .collection import CollectionError, TestIdentity, collect_tests
-from .processes import finalize
+from .processes import disposal_complete, finalize
 from .suite_lock import suite_locked
+from .unit_watchdog import UnitWatchdog
 from .coverage_reports import CoverageReport, coverage_table, retain_report
 
 
@@ -62,11 +63,12 @@ class UnitRunResult:
 
 
 _PLUGIN = r'''
-import json, os, sys
+import json, os, sys, time
 import pytest
 event_path = sys.argv[1]
 class Events:
     def send(self, **row):
+        row['at'] = time.monotonic()
         with open(event_path, 'a', encoding='utf-8') as stream:
             stream.write(json.dumps(row) + '\n')
     def pytest_runtest_logstart(self, nodeid, location):
@@ -180,87 +182,150 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                 args += ['--cov-branch', '--cov-report=']
                 env['COVERAGE_FILE'] = str(Path(temporary) / '.coverage')
             if parallel_jobs:
-                args += ['-n', str(parallel_jobs)]
+                args += ['-n', str(parallel_jobs), '--max-worker-restart=0']
             selection_file = Path(temporary) / 'selection.json'
             selection_file.write_text(json.dumps(list(selected)), encoding='utf-8')
             env['API_AGENT_UNIT_SELECTION'] = str(selection_file)
-            try:
-                child_env = dict(env)
-                child_env['PYTHONPATH'] = temporary + os.pathsep + env['PYTHONPATH']
-                process = subprocess.Popen(args, cwd=root, env=child_env, stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, text=True, start_new_session=os.name == 'posix')
-            except OSError as exc:
-                raw(repo, f'Cannot start pytest: {exc}\n')
-                failed = True
-                continue
-            lines = queue.Queue()
-            def read_output():
-                for line in process.stdout:
-                    lines.put(line)
-            reader = threading.Thread(target=read_output, daemon=True)
-            reader.start()
-            offset = 0
-            reports = {}
-            def drain():
-                nonlocal offset
-                while not lines.empty():
-                    raw(repo, lines.get_nowait())
-                with events.open(encoding='utf-8') as stream:
-                    stream.seek(offset)
-                    while True:
-                        position = stream.tell()
-                        line = stream.readline()
-                        if not line or not line.endswith('\n'):
-                            stream.seek(position)
+            from api_agent.providers.progress import report_timeout_sync
+            with report_timeout_sync('Unit pytest execution', None) as budget:
+                process = reader = None
+                reader_started = reader_joined = False
+                disposed = False
+                def stop_owned():
+                    nonlocal disposed
+                    disposed = disposed or disposal_complete(process)
+                    if not disposed:
+                        try:
+                            _stop_execution(process)
+                        finally:
+                            disposed = disposal_complete(process)
+                        disposed = True
+                try:
+                    try:
+                        child_env = dict(env)
+                        child_env['PYTHONPATH'] = temporary + os.pathsep + env['PYTHONPATH']
+                        process = subprocess.Popen(args, cwd=root, env=child_env, stdout=subprocess.PIPE,
+                                                   stderr=subprocess.STDOUT, text=True, start_new_session=os.name == 'posix')
+                    except OSError as exc:
+                        raw(repo, f'Cannot start pytest: {exc}\n')
+                        failed = True
+                        continue
+                    watchdog = UnitWatchdog(deadline=budget.deadline)
+                    expired = ()
+                    timeout_details = {}
+                    ordinals = {test.id: index for index, test in enumerate(tests, 1)}
+                    lines = queue.Queue()
+                    def read_output(process=process, lines=lines):
+                        for line in process.stdout:
+                            lines.put(line)
+                    reader = threading.Thread(target=read_output, daemon=True)
+                    reader.start()
+                    reader_started = True
+                    offset = 0
+                    reports = {}
+                    def drain_events():
+                        nonlocal offset
+                        with events.open(encoding='utf-8') as stream:
+                            stream.seek(offset)
+                            boundary = os.fstat(stream.fileno()).st_size
+                            while stream.tell() < boundary:
+                                position = stream.tell()
+                                line = stream.readline()
+                                if not line or not line.endswith('\n'):
+                                    stream.seek(position)
+                                    break
+                                row = json.loads(line)
+                                identity = selected.get(row['node'])
+                                if identity is None:
+                                    continue
+                                if row['kind'] == 'test_started':
+                                    watchdog.observe(identity.id, 'test_started', at=row.get('at'))
+                                    emit(RunnerEvent('test_started', repo, identity))
+                                elif row['kind'] == 'component_progress':
+                                    from api_agent.providers.progress import ComponentProgress
+                                    emit(RunnerEvent('component_progress', repo, identity,
+                                                     component=ComponentProgress(**row['component'])))
+                                else:
+                                    reports.setdefault(identity.id, []).append(row)
+                                    if identity.id not in timeout_details:
+                                        watchdog.observe(identity.id, 'report', phase=row['phase'], at=row.get('at'))
+                                        if row['phase'] == 'teardown':
+                                            finish(identity)
+                            offset = stream.tell()
+                    def drain(*, final=False):
+                        drain_events()
+                        remaining = None if final else 32
+                        while not lines.empty() and (remaining is None or remaining > 0):
+                            if remaining is not None:
+                                remaining -= 1
+                            raw(repo, lines.get_nowait())
+                    def finish(identity):
+                        if identity.id in results:
+                            return
+                        rows = reports.get(identity.id, [])
+                        phases = {row['phase']: row for row in rows}
+                        complete = ('setup' in phases and 'teardown' in phases and
+                                    ('call' in phases or phases['setup']['status'] in {'failed', 'skipped'}))
+                        status = ('failed' if any(row['status'] == 'failed' for row in rows) else
+                                  'cancelled' if cancelled and not complete else
+                                  'error' if not complete or identity.id in timeout_details else
+                                  'skipped' if any(row['status'] == 'skipped' for row in rows) else
+                                  'passed' if any(row['phase'] == 'call' for row in rows) else 'error')
+                        details = [row['traceback'] for row in rows if row['traceback']]
+                        if identity.id in timeout_details:
+                            details.append(timeout_details[identity.id])
+                        elif not complete:
+                            details.append('Unit pytest report incomplete: no complete setup/call/teardown report was received.')
+                        result = TestResult(identity, status, sum(row['duration'] for row in rows), '\n'.join(details))
+                        results[identity.id] = result
+                        emit(RunnerEvent('test_finished', repo, identity, status, result.duration, result.traceback))
+                    while process.poll() is None:
+                        if cancel_event is not None and cancel_event.is_set():
+                            cancelled = True
+                            stop_owned()
                             break
-                        row = json.loads(line)
-                        identity = selected.get(row['node'])
-                        if identity is None:
-                            continue
-                        if row['kind'] == 'test_started':
-                            emit(RunnerEvent('test_started', repo, identity))
-                        elif row['kind'] == 'component_progress':
-                            from api_agent.providers.progress import ComponentProgress
-                            emit(RunnerEvent('component_progress', repo, identity,
-                                             component=ComponentProgress(**row['component'])))
-                        else:
-                            reports.setdefault(identity.id, []).append(row)
-                            if row['phase'] == 'teardown':
+                        drain()
+                        if watchdog.expired():
+                            # Teardown already durable on disk wins the race with
+                            # the clock, even when raw output delivery was slow.
+                            drain_events()
+                            expired = watchdog.expired() if process.poll() is None else ()
+                            if expired:
+                                failed = True
+                                for deadline in expired:
+                                    detail = deadline.diagnostic(ordinals.get(deadline.identity))
+                                    raw(repo, detail + '\n')
+                                    if deadline.identity is not None:
+                                        timeout_details[deadline.identity] = detail
+                                for identity in selected.values():
+                                    if identity.id not in results:
+                                        timeout_details.setdefault(identity.id,
+                                            'Unit pytest repository stopped after an execution deadline.')
+                                stop_owned()
+                                break
+                        time.sleep(.03)
+                    # Disposal is acknowledged once per exact process handle;
+                    # later reader/drain errors cannot signal its reused PID.
+                    stop_owned()
+                    reader.join(timeout=1)
+                    reader_joined = True
+                    drain(final=True)
+                    failed |= process.returncode != 0 or bool(expired)
+                    for identity in selected.values():
+                        if identity.id not in results:
+                            if identity.id in reports or identity.id in timeout_details:
                                 finish(identity)
-                    offset = stream.tell()
-            def finish(identity):
-                rows = reports.get(identity.id, [])
-                status = 'failed' if any(r['status'] == 'failed' for r in rows) else 'skipped' if any(r['status'] == 'skipped' for r in rows) else 'passed' if any(r['phase'] == 'call' for r in rows) else 'error'
-                result = TestResult(identity, status, sum(r['duration'] for r in rows), '\n'.join(r['traceback'] for r in rows if r['traceback']))
-                results[identity.id] = result
-                emit(RunnerEvent('test_finished', repo, identity, status, result.duration, result.traceback))
-            try:
-                while process.poll() is None:
-                    if cancel_event is not None and cancel_event.is_set():
-                        cancelled = True
-                        _stop_execution(process)
-                        break
-                    drain()
-                    time.sleep(.03)
-                # Successful pytest can leave children attached to capture files
-                # as well as stdout. Clean the entire owned group on every exit.
-                _stop_execution(process)
-                reader.join(timeout=1)
-                drain()
-            except BaseException:
-                _stop_execution(process)
-                reader.join(timeout=5)
-                raise
-            finally:
-                if not reader.is_alive():
-                    process.stdout.close()
-            failed |= process.returncode != 0
-            for identity in selected.values():
-                if identity.id not in results:
-                    if identity.id in reports:
-                        finish(identity)
-                    else:
-                        results[identity.id] = TestResult(identity, 'cancelled' if cancelled else 'error')
+                            else:
+                                results[identity.id] = TestResult(identity, 'cancelled' if cancelled else 'error')
+                finally:
+                    if process is not None:
+                        try:
+                            stop_owned()
+                        finally:
+                            if reader_started and not reader_joined:
+                                reader.join(timeout=5)
+                            if not reader_started or not reader.is_alive():
+                                process.stdout.close()
             if has_code:
                 try:
                     data = json.loads(coverage.read_text())

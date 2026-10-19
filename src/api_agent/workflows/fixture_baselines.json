@@ -38,6 +38,18 @@
         "route": "official_subscription_responses",
         "source": "src/api_agent/llm_providers/gpt/factory.py"
       },
+      "carry_forward_source_identity": {
+        "basis": "Independent old/new graph, request, output and structural-event equivalence for the retained profile; only source-file identity admission changes. Original observations and computed bound remain unchanged.",
+        "current_source_sha256": "d67f91945d289673768fa3f0e354365e812f0533e69746b5a0adf56fc7829cd4",
+        "kind": "reviewed_non_sampling_source_identity",
+        "model": "gpt-6-luna",
+        "new_pilot": false,
+        "original_source_sha256": "0c4471785859c74724a6ad6a5a3c55c86c5be73c05dacd73735d56d0940b369f",
+        "previous_fixture_sha256": "f0451ee275282141695b21d5c97273cf1d745115c8c3cba41f3f744e02f6320b",
+        "reasoning_effort": "low",
+        "route": "official_subscription_responses",
+        "source": "src/api_agent/workflows/execution.py"
+      },
       "confidence": 0.95,
       "dependency_versions": {
         "httpx": "0.28.1",
@@ -341,7 +353,7 @@
         "src/api_agent/testing/provider_setup.py": "7523115faf1bb79a326816c6ab9c6e2086aee7f3db7301bf7a75e9114e03d939",
         "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
         "src/api_agent/workflows/contrived.py": "90904a72abd75be553f936bfad1de11f5b8ab28fedb09a758885d39fcb9cb31e",
-        "src/api_agent/workflows/execution.py": "0c4471785859c74724a6ad6a5a3c55c86c5be73c05dacd73735d56d0940b369f",
+        "src/api_agent/workflows/execution.py": "d67f91945d289673768fa3f0e354365e812f0533e69746b5a0adf56fc7829cd4",
         "src/api_agent/workflows/fixture_driver.py": "3d0e5b893d91a3a97063420d9ab57029f5cd7a689abc6f42e6a07b592d7865a8",
         "src/api_agent/workflows/layout.py": "e091afc08f56f1ecb12cc211cde74e5ba2cc222b58afc1b070cf6d3392c568b6"
       },

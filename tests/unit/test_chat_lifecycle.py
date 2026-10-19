@@ -249,20 +249,35 @@ def test_wait_observes_cancelled_execution_task_without_cancelling_waiter(monkey
 
 
 @pytest.mark.parametrize('failure_at', [1, 2, 3])
-def test_scheduler_failure_keeps_allocated_work_recoverable(monkeypatch, failure_at):
+@pytest.mark.parametrize('progress_enabled', [False, True])
+def test_scheduler_failure_keeps_allocated_work_recoverable(monkeypatch, failure_at, progress_enabled):
+    import inspect
+    from types import SimpleNamespace
+    from api_agent.api import chat_lifecycle
+    from api_agent.providers.progress import progress_sink
+    progress = []
     async def exercise():
-        engine = registry()
+        engine = ChatLifecycle()
         native = asyncio.create_task
-        calls = 0
+        target = (engine._execute.__code__, engine._watch.__code__, engine._settle.__code__)[failure_at - 1]
+        rejected = []
+        callback_finished = asyncio.Event()
+        execution_done = engine._execution_done
+        def observe_done(turn):
+            try:
+                execution_done(turn)
+            finally:
+                callback_finished.set()
         def schedule(coroutine):
-            nonlocal calls
-            calls += 1
-            if calls == failure_at:
+            if not rejected and coroutine.cr_code is target:
+                rejected.append(coroutine)
                 raise RuntimeError('scheduler unavailable')
             return native(coroutine)
         async def invoke(context):
             return 'answer'
-        monkeypatch.setattr(asyncio, 'create_task', schedule)
+        monkeypatch.setattr(engine, '_execution_done', observe_done)
+        monkeypatch.setattr(chat_lifecycle, 'asyncio',
+            SimpleNamespace(**(vars(asyncio) | {'create_task': schedule})))
         if failure_at == 1:
             with pytest.raises(RuntimeError, match='scheduler'):
                 engine.start('owner', 'session', invoke, context=OperationContext('request'))
@@ -271,15 +286,26 @@ def test_scheduler_failure_keeps_allocated_work_recoverable(monkeypatch, failure
             with pytest.raises(CleanupPendingError) as receipt:
                 engine.start('owner', 'session', invoke, context=OperationContext('request'))
             assert len(engine._turns) == 1
+            turn = next(iter(engine._turns.values()))
+            assert turn.state == 'cleanup_pending' and not turn.done.is_set()
             await receipt.value.retry()
+            assert turn.state == 'cancelled' and turn.done.is_set()
+            assert not turn.context.retained_tasks
         else:
             turn = engine.start('owner', 'session', invoke, context=OperationContext('request'))
             await turn.task
-            await asyncio.sleep(0)
+            await asyncio.wait_for(callback_finished.wait(), 1)
             assert turn.state == 'cleanup_pending' and not turn.done.is_set()
-            await engine.wait('owner', 'session')
+            assert await engine.wait('owner', 'session') is turn
+            assert turn.state == 'completed' and turn.result == 'answer'
+            assert turn.done.is_set() and not turn.context.retained_tasks
+        assert len(rejected) == 1 and rejected[0].cr_code is target
+        assert inspect.getcoroutinestate(rejected[0]) == inspect.CORO_CLOSED
         await engine.aclose()
-    asyncio.run(exercise())
+        assert engine.closed
+    with progress_sink(progress.append if progress_enabled else None):
+        asyncio.run(exercise())
+    assert bool(progress) == (progress_enabled and failure_at != 1)
 
 
 def test_capacities_and_terminal_retention_are_bounded(monkeypatch):

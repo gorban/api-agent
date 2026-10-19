@@ -7,7 +7,7 @@
 - [x] After results and publication finish, Ctrl+C while waiting for retained inspection requests owned cleanup and preserves the finalized suite status when disposal succeeds. Print no expected-interruption traceback or stale dependency-bootstrap exception chain. Active-run cancellation, genuine cleanup failures, lost workers and retryable cleanup receipts remain visible; repeated interruption cannot erase duties or manufacture successful cleanup.
 - [x] Prove completion visibility while another controlled parallel worker remains blocked, plus setup-error/skipped/cancelled outcomes, unique counting, safe identity quoting, credential exclusion and actual terminal flush wiring. Verify meaningful event-filter, callback/flush and serialization mutations.
 - [x] Prove direct-PID and terminal-process-group SIGINT across real interpreter/parser handoffs with the original process identity, one acknowledged cleanup and finalized success/failure/cancelled codes. Preserve library semantics and interrupted/failing cleanup recovery. Require independent review, exact applicable line/branch coverage, installed-entrypoint/resource checks, licenses and public index/metadata boundaries before delivery.
-- [ ] Human review of NO_STD_IN multi-test progress and clean Ctrl+C inspection closure remains open. No live inference is needed for deterministic verification.
+- [x] Human review confirms per-test NO_STD_IN DEBUG completion output, final summaries and successful Ctrl+C inspection closure. The non-DEBUG integration variant remains a separate pending check.
 
 This repairs the delivered integration CLI. E2E execution remains in its owning future task; do not claim a new E2E runner from shared event or confirmation support.
 

@@ -281,9 +281,11 @@ def test_local_exception_cycle_is_finite_and_nontext_details_are_not_formatted(s
         assert 'Local command evidence' not in row.local_diagnostic
 
 
-def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_path, monkeypatch):
+@pytest.mark.parametrize('progress_enabled', [False, True])
+def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_path, monkeypatch, progress_enabled):
     import ast
     import os
+    from api_agent.providers.progress import progress_sink
     from api_agent.testing.collection import TestIdentity
     roots = [tmp_path / 'base', tmp_path / 'pack']
     for root in roots:
@@ -337,12 +339,16 @@ def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_pat
                 os.close(liveness_fd)
         registry.append(SimpleNamespace(abort=abort))
     monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', spawn)
-    monkeypatch.setattr('api_agent.testing.integration.threading.Thread', Reader)
+    monkeypatch.setattr('api_agent.testing.integration.threading',
+        SimpleNamespace(Thread=Reader, Event=threading.Event, Lock=threading.Lock))
     monkeypatch.setattr('api_agent.testing.integration.finalize', lambda process: None)
     monkeypatch.setattr('api_agent.testing.inspection.IntegrationInspection', retain)
-    run = run_integration_tests(ctx, tests, accepted=True)
+    progress = []
+    with progress_sink(progress.append if progress_enabled else None):
+        run = run_integration_tests(ctx, tests, accepted=True)
     try:
         assert run.exit_code == 1
+        assert bool(progress) == progress_enabled
         assert overlap == [2]
         assert [row.status for row in run.tests] == ['passed', 'passed']
         assert 'synthetic late first-suite reader cause' in run.tests[0].local_diagnostic

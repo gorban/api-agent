@@ -49,6 +49,46 @@ def test_registry_source_must_match_declaration(runtime_layout, function):
         workflow(runtime_layout, function)
 
 
+
+@pytest.mark.parametrize('alias_kind', ['hardlink', 'symlink'])
+def test_registry_accepts_distinct_paths_to_same_source(runtime_layout, tmp_path, alias_kind):
+    source = tmp_path / 'node.py'
+    alias = tmp_path / 'node-alias.py'
+    source.write_text('def node(inputs, context):\n    return {}\n')
+    if alias_kind == 'hardlink':
+        import os
+        os.link(source, alias)
+    else:
+        alias.symlink_to(source)
+    namespace = {}
+    exec(compile(source.read_text(), str(source), 'exec'), namespace)
+    layout = replace(runtime_layout, steps=tuple(replace(step, source=alias)
+        if step.kind == 'node' else step for step in runtime_layout.steps))
+    registry = {row['Registry']: NodeFunction(namespace['node']) for row in layout.tables['Functions']}
+
+    compiled = Workflow(layout, registry, {'skip_second': lambda values: True})
+
+    assert source != alias and source.samefile(alias)
+    assert compiled.registry == registry
+
+
+@pytest.mark.parametrize('unavailable', ['missing', 'inaccessible'])
+def test_registry_rejects_unavailable_declared_source(runtime_layout, tmp_path, monkeypatch, unavailable):
+    source = tmp_path / 'unavailable.py'
+    if unavailable == 'inaccessible':
+        source.write_text('')
+        samefile = Path.samefile
+        def denied(path, other):
+            if other == source:
+                raise PermissionError('synthetic inaccessible source')
+            return samefile(path, other)
+        monkeypatch.setattr(Path, 'samefile', denied)
+    layout = replace(runtime_layout, steps=tuple(replace(step, source=source)
+        if step.kind == 'node' else step for step in runtime_layout.steps))
+
+    with pytest.raises(LayoutError, match='source link'):
+        workflow(layout)
+
 def test_unknown_condition_rejected_before_execution(runtime_layout):
     with pytest.raises(LayoutError, match='registered condition'):
         workflow(runtime_layout, conditions={})
@@ -376,36 +416,65 @@ def test_scope_cannot_report_success_after_body_swallows_timeout(runtime_layout,
     assert events[-1]['event'] == 'scope_end' and events[-1]['outcome'] == 'failed'
 
 
-def test_sync_node_offload_preserves_context_and_drains_before_timeout(runtime_layout, tmp_path):
+def test_sync_node_offload_preserves_context_and_drains_before_timeout(runtime_layout, tmp_path, monkeypatch):
     from contextvars import ContextVar
     import threading
-    import time
+    from api_agent.runtime import tasks
+
     context_value = ContextVar('workflow_test_value', default='missing')
-    started, finished = threading.Event(), threading.Event()
-    captured, observations = [], []
+    started, finished, release = (threading.Event() for _ in range(3))
+    captured, observations, delivered, drained = [], [], [], []
     runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=0.02', owner='first_draft')]
+    original_settle = tasks.settle
+    loop = dispatched = draining = None
+
+    async def observe_drain(task):
+        draining.set()
+        result = await original_settle(task)
+        drained.append(task.done())
+        return result
+
+    monkeypatch.setattr(tasks, 'settle', observe_drain)
+
     def blocking(inputs, context):
         captured.append(context_value.get())
         started.set()
-        time.sleep(0.08)
+        loop.call_soon_threadsafe(dispatched.set)
+        assert release.wait(1), 'observer did not release the owned thread'
         finished.set()
         return produce(inputs, context)
+
     async def run():
+        nonlocal loop, dispatched, draining
+        loop = asyncio.get_running_loop()
+        dispatched, draining = asyncio.Event(), asyncio.Event()
         context_value.set('preserved')
+        # Construction failures must not leave an observer awaiting dispatch.
+        compiled = workflow(runtime_layout, blocking)
+
         async def observe_responsiveness():
-            while not started.is_set():
-                await asyncio.sleep(0)
-            await asyncio.sleep(0.005)
-            observations.append(finished.is_set())
+            try:
+                await asyncio.wait_for(dispatched.wait(), 1)
+                observations.append(finished.is_set())
+                await asyncio.wait_for(draining.wait(), 1)
+            finally:
+                release.set()
+
         observer = asyncio.create_task(observe_responsiveness())
         try:
-            await workflow(runtime_layout, blocking).arun({'user_input': 'x'})
+            await compiled.arun({'user_input': 'x'})
+        except TimeoutError:
+            delivered.append(finished.is_set())
+            raise
         finally:
             await observer
 
     with pytest.raises(TimeoutError):
         asyncio.run(run())
 
+    assert started.is_set() and draining.is_set()
     assert observations == [False]
     assert captured == ['preserved']
+    assert delivered == [True]
+    assert drained == [True]
     assert finished.is_set()
