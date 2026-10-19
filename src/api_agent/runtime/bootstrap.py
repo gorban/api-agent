@@ -286,7 +286,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         interaction=TerminalInteraction(),
                         usage_output=lambda line: print(scrubber(line), flush=True) if '\n' not in line else None,
                         unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
-                        on_event=TerminalTestProgress(tests, lambda line: print(scrubber(line), flush=True)),
+                        on_event=TerminalTestProgress(tests, lambda line: print(line, flush=True), scrub=scrubber),
                         output=runner_output)
                 finally:
                     if pending_output:

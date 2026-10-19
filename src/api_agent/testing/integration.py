@@ -343,14 +343,17 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     stage = 'Integration pytest execution and report collection'
                     lines = queue.Queue()
                     discard_output = threading.Event()
+                    output_lock = threading.Lock()
                     reader_errors = []
                     for identity in selected.values():
                         reader_diagnostics[identity.id] = reader_errors
-                    def read_output(process=process, lines=lines, discard_output=discard_output, reader_errors=reader_errors):
+                    def read_output(process=process, lines=lines, discard_output=discard_output, reader_errors=reader_errors,
+                                    output_lock=output_lock):
                         try:
                             for line in process.stdout:
-                                if not discard_output.is_set():
-                                    lines.put(line)
+                                with output_lock:
+                                    if not discard_output.is_set():
+                                        lines.put(line)
                         except OSError as error:
                             reader_errors.append(local_exception('Integration pytest output reader', error))
                     reader = threading.Thread(target=read_output, daemon=True)
@@ -368,16 +371,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     worker_output, dropped_output_chars = '', 0
                     run_complete = None
                     inspection_ready = False
-                    def drain():
-                        nonlocal offset, failed, run_complete, inspection_ready, worker_output, dropped_output_chars
-                        while not lines.empty():
-                            chunk = lines.get_nowait()
-                            worker_output += chunk
-                            excess = max(0, len(worker_output) - 16384)
-                            dropped_output_chars += excess
-                            if excess:
-                                worker_output = worker_output[excess:]
-                            raw(repo, chunk)
+                    def drain_events():
+                        nonlocal offset, failed, run_complete, inspection_ready
                         try:
                             stream = event_file.open(encoding='utf-8')
                         except FileNotFoundError:
@@ -447,6 +442,21 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         if detail not in diagnostics.setdefault(test.id, []):
                                             diagnostics[test.id].append(detail)
                                     failed = True
+                    def drain(*, final=False):
+                        nonlocal worker_output, dropped_output_chars
+                        # Structured completion must not wait behind a slow raw sink.
+                        drain_events()
+                        remaining = None if final else 32
+                        while not lines.empty() and (remaining is None or remaining > 0):
+                            if remaining is not None:
+                                remaining -= 1
+                            chunk = lines.get_nowait()
+                            worker_output += chunk
+                            excess = max(0, len(worker_output) - 16384)
+                            dropped_output_chars += excess
+                            if excess:
+                                worker_output = worker_output[excess:]
+                            raw(repo, chunk)
                     try:
                         while process.poll() is None:
                             if cancel_event is not None and cancel_event.is_set():
@@ -470,11 +480,12 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 reader.join(timeout=5)
                                 if not reader.is_alive():
                                     process.stdout.close()
-                            try:
-                                drain()
-                            finally:
-                                if directory.retained:
+                            if directory.retained:
+                                # Stop accepting new retained-worker output before
+                                # exhausting the finite evidence already queued.
+                                with output_lock:
                                     discard_output.set()
+                            drain(final=True)
                     failed |= (run_complete if directory.retained else process.returncode) != 0
                     for identity in selected.values():
                         rows = reports.get(identity.id, [])
