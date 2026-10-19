@@ -51,7 +51,8 @@ backend version-selection policy. Missing, unparseable or tied highest versions
 in a multi-row family leave it unresolved, requiring an explicit identifier.
 Clients must not infer a winner from catalog order, labels or identifier syntax.
 Older responses may omit this map; only the overall default's family is then
-implicitly resolvable. Without an explicit version Studio enables reasoning only
+implicitly resolvable. Initial settings and Use backend default follow the same
+family capability rule as explicit family intent. Without an explicit version Studio enables reasoning only
 when every family row has identical verified reasoning capabilities. A version
 change retains a supported explicit effort and clears an unsupported one; a
 family change resets both version and effort. At Send pin the exact resolved
