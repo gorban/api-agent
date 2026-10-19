@@ -64,7 +64,7 @@ def _bind_runtime_directory(context, argv, environ):
     return replace(context, bootstrap_source=source, bootstrap_explicit=provided)
 
 
-def resource_pack_main(argv=None, *, launcher_root):
+def resource_pack_main(argv=None, *, launcher_root, replace_process=False):
     """Resolve base checkout, then execute its source entry point with this Python."""
     from api_agent.config.dotenv import read_dotenv
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -94,8 +94,10 @@ def resource_pack_main(argv=None, *, launcher_root):
         if explicit is not None:
             boundary = remaining.index('--') if '--' in remaining else len(remaining)
             remaining.insert(boundary, f'--api-agent-dir={explicit}')
-        return subprocess.call([sys.executable, str(entry), '--resource-pack-dir', str(root), '--_launcher-root', str(Path(launcher_root).resolve()), *remaining],
-                               env=os.environ.copy())
+        command = [sys.executable, str(entry), '--resource-pack-dir', str(root), '--_launcher-root', str(Path(launcher_root).resolve()), *remaining]
+        if replace_process:
+            os.execve(command[0], command, os.environ.copy())
+        return subprocess.call(command, env=os.environ.copy())
     except (ValueError, OSError) as exc:
         print(f'Launch error: {exc}', file=sys.stderr)
         return 2
@@ -114,7 +116,7 @@ def _retains_cleanup(error):
     return recording is not None and recording.pending_cleanup is not None
 
 
-def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None, _worktrees_verified=False):
+def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None, _worktrees_verified=False, _replace_process=False):
     """Validate foundation contracts; later segments provide actual operations."""
     from api_agent.config import (compose_schema, load_declarations, load_shared_schema,
                                       read_dotenv, resolve_config)
@@ -122,6 +124,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     from api_agent.runtime.resource_pack import load_launch_context
     from api_agent.runtime.worktrees import verify_worktrees, WorktreeGateError
     argv = list(sys.argv[1:] if argv is None else argv)
+    handoff_options = {'replace_process': True} if _replace_process else {}
     try:
         argv, origin = _extract_option(argv, {'--_launcher-root'})
         if origin is not None:
@@ -211,7 +214,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         configured_collection = result.values.get('COLLECT_ONLY') and mode_field and mode_field.explicit
         if configured_collection:
             from api_agent.runtime.dependencies import ensure_environment
-            status = ensure_environment(context, argv, collect=True)
+            status = ensure_environment(context, argv, collect=True, **handoff_options)
             if status is not None:
                 return status
             from api_agent.testing.collection import collect_tests
@@ -220,7 +223,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return 0
         if result.values.get('NO_STD_IN') and mode == 'unit':
             from api_agent.runtime.dependencies import ensure_environment
-            status = ensure_environment(context, argv, collect=True, groups=('dev',))
+            status = ensure_environment(context, argv, collect=True, groups=('dev',), **handoff_options)
             if status is not None:
                 return status
             from api_agent.testing.collection import collect_tests
@@ -252,11 +255,12 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
 
             try:
                 from api_agent.runtime.dependencies import ensure_environment
-                status = ensure_environment(context, argv, collect=True, groups=('dev',))
+                status = ensure_environment(context, argv, collect=True, groups=('dev',), **handoff_options)
                 if status is not None:
                     return status
                 from api_agent.testing.collection import collect_tests
                 from api_agent.testing.launched import run_launched_integration
+                from api_agent.testing.terminal_progress import TerminalTestProgress
                 from api_agent.telemetry.privacy import ContentPolicy
                 tests = collect_tests(context, 'integration', result.positionals, config=result.values)
                 from api_agent.testing.debug_confirmation import debug_warning, confirm_terminal_debug
@@ -282,6 +286,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         interaction=TerminalInteraction(),
                         usage_output=lambda line: print(scrubber(line), flush=True) if '\n' not in line else None,
                         unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
+                        on_event=TerminalTestProgress(tests, lambda line: print(scrubber(line), flush=True)),
                         output=runner_output)
                 finally:
                     if pending_output:
@@ -316,7 +321,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise ValueError('Interactive modes require a terminal. Use --help or a configured test mode with --collect-only for noninteractive output.')
         from api_agent.runtime.dependencies import ensure_environment
-        status = ensure_environment(context, argv, collect=True, groups=('dev',))
+        status = ensure_environment(context, argv, collect=True, groups=('dev',), **handoff_options)
         if status is not None:
             return status
         from api_agent.tui.app import run_tui
@@ -331,6 +336,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             raise
         print(f'Launch error: {exc}', file=sys.stderr)
         return 2
+
+
+def cli_main(argv=None):
+    """Run the executable entry point with one interpreter/process owner."""
+    return main(argv, _replace_process=True)
 
 
 def _supports_color(stream):

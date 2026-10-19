@@ -739,3 +739,64 @@ def test_browser():
     assert result.exit_code == 0, result.output
     for handle in result.inspections:
         assert handle.wait_closed(timeout=5)
+
+
+def test_parallel_completion_reaches_terminal_before_blocked_test_exits(tmp_path):
+    from api_agent.testing.terminal_progress import TerminalTestProgress
+    base = fixture_repo(tmp_path / 'base', '''
+from pathlib import Path
+import time
+
+def test_fast():
+    print('raw synthetic evidence')
+
+def test_blocked():
+    deadline = time.monotonic() + 15
+    while not Path('completion-visible').exists():
+        assert time.monotonic() < deadline, 'terminal completion was withheld'
+        time.sleep(.02)
+''')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    lines = []
+
+    def write(line):
+        lines.append(line)
+        if 'test_fast' in line:
+            assert 'test_blocked' not in ''.join(lines)
+            (base / 'completion-visible').touch()
+
+    result = run_integration_tests(ctx, selected, accepted=True, parallel_jobs=2,
+                                  on_event=TerminalTestProgress(selected, write))
+    assert result.exit_code == 0
+    assert len(lines) == 2
+    assert '1/2 completed — passed' in lines[0] and 'test_fast' in lines[0]
+    assert '2/2 completed — passed' in lines[1] and 'test_blocked' in lines[1]
+    assert 'raw synthetic evidence' not in ''.join(lines)
+
+
+def test_parallel_terminal_counts_setup_error_and_skip_without_raw_evidence(tmp_path):
+    from api_agent.testing.terminal_progress import TerminalTestProgress
+    base = fixture_repo(tmp_path / 'base', '''
+import pytest
+@pytest.fixture
+def broken():
+    raise RuntimeError('synthetic private diagnostic')
+def test_setup(broken):
+    pass
+@pytest.mark.skip(reason='synthetic private skip reason')
+def test_skip():
+    pass
+''')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    lines, raw_output = [], []
+    result = run_integration_tests(ctx, selected, accepted=True, parallel_jobs=2,
+        on_event=TerminalTestProgress(selected, lines.append), output=raw_output.append)
+    assert result.exit_code == 1
+    assert len(lines) == 2
+    assert '1/2 completed' in lines[0] and '2/2 completed' in lines[1]
+    assert any('— error ' in line and 'test_setup' in line for line in lines)
+    assert any('— skipped ' in line and 'test_skip' in line for line in lines)
+    assert 'synthetic private' not in ''.join(lines)
+    assert 'synthetic private diagnostic' in ''.join(raw_output)

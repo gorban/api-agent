@@ -175,7 +175,7 @@ def test_unhandled_terminal_cleanup_traceback_never_reprints_original_credential
              patch('api_agent.config.dotenv.read_dotenv', return_value={{}}), \\
              patch('api_agent.runtime.worktrees.verify_worktrees'), \\
              patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \\
-             patch('api_agent.testing.collection.collect_tests', return_value=[SimpleNamespace(tags=frozenset())]), \\
+             patch('api_agent.testing.collection.collect_tests', return_value=[SimpleNamespace(id='base::test.py::test_failure', tags=frozenset())]), \\
              patch('api_agent.testing.launched.run_launched_integration', side_effect=run):
             main(arguments, base_root=root)
     '''))

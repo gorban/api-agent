@@ -1,4 +1,5 @@
 """Local tool setup tests; no package download or real venv is performed."""
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -275,3 +276,55 @@ def test_validator_probe_transport_error_is_a_launcher_error(tmp_path, failure):
     with patch('api_agent.runtime.dependencies.subprocess.run', side_effect=failure):
         with pytest.raises(OSError, match='Cannot verify the dependency validator'):
             _requirement_parser_status(tmp_path / 'python')
+
+
+def test_cli_handoff_replaces_process_with_preserved_command_and_environment(tmp_path):
+    from api_agent.runtime.dependencies import _relaunch
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False)
+    class Replaced(BaseException):
+        pass
+    with patch('api_agent.runtime.dependencies.os.execve', side_effect=Replaced) as replace, \
+         patch('api_agent.runtime.dependencies.subprocess.call') as launch:
+        with pytest.raises(Replaced):
+            _relaunch(context, tmp_path / 'python', ['--debug'], replace_process=True)
+    executable, command, environment = replace.call_args.args
+    assert executable == str(tmp_path / 'python')
+    assert command[0] == executable
+    assert '_replace_process=True' in command[2]
+    assert command[-1] == '--debug'
+    assert environment == os.environ
+    launch.assert_not_called()
+
+
+def test_library_handoff_retains_waiting_child_status_and_cancellation_contract(tmp_path):
+    from api_agent.runtime.dependencies import _relaunch
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False)
+    with patch('api_agent.runtime.dependencies.subprocess.call', side_effect=KeyboardInterrupt), \
+         patch('api_agent.runtime.dependencies.os.execve') as replace:
+        with pytest.raises(KeyboardInterrupt):
+            _relaunch(context, tmp_path / 'python', [])
+    replace.assert_not_called()
+
+
+@pytest.mark.parametrize('missing_parser', [False, True])
+def test_environment_forwards_process_replacement_only_when_requested(tmp_path, missing_parser):
+    from api_agent.runtime import dependencies
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False)
+    python = tmp_path / '.venv/bin/python'
+    python.parent.mkdir(parents=True)
+    python.touch()
+    with patch.object(dependencies, '_requirement_types', side_effect=OSError if missing_parser else None), \
+         patch.object(dependencies, '_prepare_requirement_parser'), \
+         patch.object(dependencies, '_relaunch', return_value=7) as relaunch:
+        assert dependencies.ensure_environment(context, [], replace_process=True) == 7
+    relaunch.assert_called_once_with(context, python, [], replace_process=True)
+
+
+def test_process_replacement_failure_is_visible_without_fallback_launch(tmp_path):
+    from api_agent.runtime.dependencies import _relaunch
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False)
+    with patch('api_agent.runtime.dependencies.os.execve', side_effect=OSError('synthetic exec failure')), \
+         patch('api_agent.runtime.dependencies.subprocess.call') as launch:
+        with pytest.raises(OSError, match='synthetic exec failure'):
+            _relaunch(context, tmp_path / 'python', [], replace_process=True)
+    launch.assert_not_called()

@@ -33,7 +33,7 @@ def test_installed_entrypoint_dispatches_only_when_executed():
             with pytest.raises(SystemExit) as stopped:
                 runpy.run_module('api_agent.__main__', run_name='__main__')
         assert stopped.value.code == 7
-        main.assert_called_once_with()
+        main.assert_called_once_with(None, _replace_process=True)
 
 
 @pytest.mark.parametrize('argv', [['--resource-pack-dir'], ['--resource-pack-dir', '--help'], ['--resource-pack-dir=--invalid']])

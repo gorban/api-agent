@@ -148,6 +148,7 @@ def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
     group = InspectionGroup(getattr(execution, 'inspections', ()))
     try:
         primary = None
+        inspection_interrupt = None
         try:
             if diagnostic_output is not None:
                 from .diagnostics import result_diagnostics
@@ -164,8 +165,13 @@ def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
                     output('Debug inspection remains open. Tests and publication have finished; close the browser windows or press Ctrl+C to end inspection.')
                 else:
                     output('Shared authentication cleanup remains pending. Tests and publication have finished; retrying owned cleanup.')
-                for handle in group.handles:
-                    handle.wait_closed()
+                try:
+                    for handle in group.handles:
+                        handle.wait_closed()
+                except KeyboardInterrupt as error:
+                    # Results and publication are finalized. Ctrl+C now requests
+                    # owned inspection cleanup, preserving the suite outcome.
+                    inspection_interrupt = error
         except BaseException as error:
             primary = error
             raise
@@ -175,7 +181,11 @@ def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
             except BaseException:
                 if primary is not None:
                     raise primary
+                if inspection_interrupt is not None:
+                    raise inspection_interrupt
                 raise
+        if inspection_interrupt is not None and group.diagnostic_errors:
+            raise inspection_interrupt
         if not cleaned or group.lost:
             output('Inspection cleanup: FAIL — worker exited unexpectedly or cleanup remains pending.')
             if not cleaned:

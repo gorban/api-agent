@@ -135,8 +135,8 @@ def active_environment(environment):
         return False
 
 
-def ensure_environment(context, argv, *, collect=False, groups=(), selected_provider_manifests=()):
-    """Return a relaunched command's status, or None in the ready local venv."""
+def ensure_environment(context, argv, *, collect=False, groups=(), selected_provider_manifests=(), replace_process=False):
+    """Prepare the venv; CLI owners may replace their process on handoff."""
     root = context.pack_root if context.external_pack else context.base_root
     environment = root / '.venv'
     python = environment / 'bin/python'
@@ -144,7 +144,7 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
         _requirement_types()
     except OSError:
         _prepare_requirement_parser(environment, python)
-        return _relaunch(context, python, argv)
+        return _relaunch(context, python, argv, replace_process=replace_process)
     wanted = requirements(context, collect=collect, groups=groups,
                           selected_provider_manifests=selected_provider_manifests)
     fingerprint = hashlib.sha256(json.dumps(wanted).encode()).hexdigest()
@@ -166,10 +166,11 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
         marker.write_text(fingerprint + '\n')
     if active_environment(environment):
         return None
-    return _relaunch(context, python, argv)
+    return _relaunch(context, python, argv, replace_process=replace_process)
 
 
-def _relaunch(context, python, argv):
+def _relaunch(context, python, argv, *, replace_process=False):
+    """Preserve the library subprocess contract unless the CLI owns this process."""
     pack_arguments = [] if getattr(context, 'show_pack_bootstrap', False) else [
         '--resource-pack-dir', str(context.pack_root)]
     # The parent already completed the gate; this is an internal interpreter handoff,
@@ -179,11 +180,15 @@ def _relaunch(context, python, argv):
         "base = Path(sys.argv[1]).resolve().parent; "
         "sys.path.insert(0, str(base / 'src')); "
         "from api_agent.runtime.bootstrap import main; "
-        "raise SystemExit(main(sys.argv[2:], base_root=base, _worktrees_verified=True))"
+        f"raise SystemExit(main(sys.argv[2:], base_root=base, _worktrees_verified=True, _replace_process={replace_process!r}))"
     )
-    return subprocess.call([str(python), '-c', handoff, str(context.base_root / 'launch.py'),
-                            *pack_arguments,
-                            '--_launcher-root', str(getattr(context, 'launcher_root', None) or context.base_root), *argv], env=os.environ.copy())
+    command = [str(python), '-c', handoff, str(context.base_root / 'launch.py'),
+               *pack_arguments,
+               '--_launcher-root', str(getattr(context, 'launcher_root', None) or context.base_root), *argv]
+    environment = os.environ.copy()
+    if replace_process:
+        os.execve(command[0], command, environment)
+    return subprocess.call(command, env=environment)
 
 
 _PARSER_PROBE = """
