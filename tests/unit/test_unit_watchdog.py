@@ -43,7 +43,7 @@ def test_parallel_units_own_independent_deadlines_clipped_to_caller():
     watchdog.observe('two', 'test_started')
     clock.now = 60
     assert [deadline.identity for deadline in watchdog.expired()] == ['one']
-    watchdog.observe('one', 'report', phase='teardown')
+    watchdog.observe('one', 'report', phase='teardown', at=59)
     clock.now = 79
     assert not watchdog.expired()
     clock.now = 80
@@ -63,6 +63,7 @@ def test_no_active_guard_ignores_output_and_progress_then_restarts_after_teardow
     assert deadline.identity is None
     assert deadline.diagnostic() == ('Unit pytest exceeded its startup/finalization gap deadline: '
                                      '60.00s elapsed; limit 60.00s.')
+    watchdog = UnitWatchdog(clock=clock)
     watchdog.observe('one', 'test_started')
     clock.now = 70
     watchdog.observe('one', 'report', phase='teardown')
@@ -118,12 +119,12 @@ def controlled_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, 'time', SimpleNamespace(monotonic=clock, sleep=lambda _: clock.sleep(1)))
     monkeypatch.setattr(unit_watchdog, 'UNIT_LIMIT', 3)
     monkeypatch.setattr(runner, 'UnitWatchdog', lambda **kw: UnitWatchdog(clock=clock, **kw))
-    state = SimpleNamespace(stops=0, events=None, rows=[], late=[], process=None, output='', stop_at=None, tail='', args=None)
+    state = SimpleNamespace(stops=0, events=None, rows=[], late=[], process=None, output='', stop_at=None, tail='', args=None, poll=None)
     def launch(args, **kwargs):
         state.args = args
         state.events = Path(args[3])
         state.events.write_text(''.join(json.dumps(row) + '\n' for row in state.rows) + state.tail)
-        state.process = SimpleNamespace(stdout=io.StringIO(state.output), returncode=None, poll=lambda: state.process.returncode)
+        state.process = SimpleNamespace(stdout=io.StringIO(state.output), returncode=None, poll=lambda: state.poll() if state.poll is not None else state.process.returncode)
         return state.process
     def stop(process):
         state.stops += 1
@@ -174,7 +175,7 @@ def test_durable_teardown_is_rechecked_before_timeout_decision(controlled_runner
         if line == 'release teardown\n':
             clock.now = 3
             with state.events.open('a') as stream:
-                stream.write(json.dumps(phase(first.node_id, 'teardown')) + '\n')
+                stream.write(json.dumps(dict(phase(first.node_id, 'teardown'), at=2)) + '\n')
     monkeypatch.setattr(runner, 'time', SimpleNamespace(monotonic=clock,
         sleep=lambda _: setattr(state.process, 'returncode', 0)))
     result = runner.run_unit_tests(context, (first,), output=release)
@@ -318,7 +319,7 @@ def test_real_owned_group_timeout_reaps_descendant_and_cannot_accept_late_pass(t
 
 
 
-def test_already_exited_owner_does_not_timeout_due_to_delayed_raw_delivery(controlled_runner):
+def test_successful_exit_still_reconciles_gap_after_delayed_raw_delivery(controlled_runner):
     context, tests, clock, state = controlled_runner
     first = tests[0]
     state.rows = [dict(kind='test_started', node=first.node_id),
@@ -332,8 +333,8 @@ def test_already_exited_owner_does_not_timeout_due_to_delayed_raw_delivery(contr
                 stream.write(json.dumps(teardown) + '\n')
             state.process.returncode = 0
     result = runner.run_unit_tests(context, (first,), output=release)
-    assert result.exit_code == 0 and result.tests[0].status == 'passed'
-    assert 'deadline' not in result.output
+    assert result.exit_code == 1 and result.tests[0].status == 'passed'
+    assert 'startup/finalization gap deadline' in result.output
 
 
 def test_partial_event_tail_cannot_hide_no_active_deadline(controlled_runner):
@@ -455,3 +456,191 @@ def test_post_start_interrupt_remains_inside_continuous_process_ownership(contro
         sys.settrace(previous)
     assert caught.value is primary
     assert state.stops == 1 and state.process.stdout.closed
+
+
+def test_late_start_cannot_replace_expired_idle_clock():
+    clock = Clock()
+    watchdog = UnitWatchdog(clock=clock)
+    clock.now = 61
+    watchdog.observe('one', 'test_started', at=61)
+    watchdog.observe('one', 'report', phase='teardown', at=61)
+    deadline, = watchdog.expired()
+    assert (deadline.identity, deadline.phase, deadline.elapsed, deadline.limit) == (
+        'one', 'startup/finalization gap', 61, 60)
+
+
+def test_late_teardown_cannot_clear_expired_active_clock():
+    clock = Clock()
+    watchdog = UnitWatchdog(clock=clock)
+    watchdog.observe('one', 'test_started', at=0)
+    clock.now = 61
+    watchdog.observe('one', 'report', phase='teardown', at=61)
+    deadline, = watchdog.expired()
+    assert (deadline.identity, deadline.phase, deadline.elapsed, deadline.limit) == (
+        'one', 'setup-through-teardown', 61, 60)
+
+
+def test_timely_durable_teardown_can_resolve_a_delayed_delivery_precheck():
+    clock = Clock()
+    watchdog = UnitWatchdog(clock=clock)
+    watchdog.observe('one', 'test_started', at=0)
+    clock.now = 61
+    assert watchdog.expired()[0].identity == 'one'
+    watchdog.observe('one', 'report', phase='teardown', at=59)
+    assert not watchdog.expired()
+
+
+def test_completion_must_precede_the_clipped_caller_deadline():
+    clock = Clock()
+    watchdog = UnitWatchdog(clock=clock, deadline=40)
+    watchdog.observe('one', 'test_started', at=0)
+    clock.now = 50
+    watchdog.observe('one', 'report', phase='teardown', at=50)
+    assert watchdog.violations['one'].elapsed == 50
+    assert watchdog.violations['one'].limit == 40
+
+
+def test_new_sibling_cannot_allocate_past_enclosing_caller_deadline():
+    clock = Clock()
+    watchdog = UnitWatchdog(clock=clock, deadline=40)
+    watchdog.observe('one', 'test_started', at=0)
+    clock.now = 50
+    watchdog.observe('two', 'test_started', at=50)
+    assert watchdog.violations['two'].limit == 0
+    assert watchdog.violations['two'].identity == 'two'
+
+
+def test_completion_at_exact_deadline_has_already_exhausted_budget():
+    clock = Clock()
+    watchdog = UnitWatchdog(clock=clock)
+    watchdog.observe('one', 'test_started', at=0)
+    clock.now = 60
+    watchdog.observe('one', 'report', phase='teardown', at=60)
+    assert watchdog.violations['one'].elapsed == 60
+
+
+def dated_phase(node, when, at):
+    return dict(phase(node, when), at=at)
+
+
+def observe_exit_at(state, clock, at):
+    def poll():
+        clock.now = at
+        state.process.returncode = 0
+        return 0
+    state.poll = poll
+
+
+def test_already_exited_worker_cannot_hide_late_start_after_idle_deadline(controlled_runner):
+    context, tests, clock, state = controlled_runner
+    first = tests[0]
+    state.rows = [dict(kind='test_started', node=first.node_id, at=4)]
+    state.rows += [dated_phase(first.node_id, part, 4) for part in ('setup', 'call', 'teardown')]
+    observe_exit_at(state, clock, 4)
+    result = runner.run_unit_tests(context, (first,))
+    assert result.exit_code == 1 and not result.cancelled
+    assert result.tests[0].status == 'error'
+    assert 'Selected unit #1 exceeded its startup/finalization gap deadline' in result.tests[0].traceback
+    assert state.process.returncode == 0 and state.stops == 1
+
+
+@pytest.mark.parametrize('already_exited', [False, True])
+def test_late_passing_teardown_is_error_before_finishing_even_for_exited_worker(
+        controlled_runner, already_exited):
+    context, tests, clock, state = controlled_runner
+    first = tests[0]
+    state.rows = [dict(kind='test_started', node=first.node_id, at=0)]
+    state.rows += [dated_phase(first.node_id, part, 0) for part in ('setup', 'call')]
+    state.rows += [dated_phase(first.node_id, 'teardown', 4)]
+    if already_exited:
+        observe_exit_at(state, clock, 4)
+    else:
+        def poll():
+            clock.now = 4
+            return state.process.returncode
+        state.poll = poll
+    result = runner.run_unit_tests(context, (first,))
+    assert result.exit_code == 1 and not result.cancelled
+    assert result.tests[0].status == 'error'
+    assert 'setup-through-teardown deadline: 4.00s elapsed; limit 3.00s' in result.tests[0].traceback
+    assert state.stops == 1
+
+
+def test_runner_rejects_completion_after_caller_clip_but_before_unit_limit(controlled_runner, monkeypatch):
+    from contextlib import contextmanager
+    context, tests, clock, state = controlled_runner
+    first = tests[0]
+    @contextmanager
+    def clipped_budget(name, timeout):
+        yield SimpleNamespace(deadline=2)
+    monkeypatch.setattr('api_agent.providers.progress.report_timeout_sync', clipped_budget)
+    state.rows = [dict(kind='test_started', node=first.node_id, at=0)]
+    state.rows += [dated_phase(first.node_id, part, 0) for part in ('setup', 'call')]
+    state.rows += [dated_phase(first.node_id, 'teardown', 2.5)]
+    observe_exit_at(state, clock, 2.5)
+    result = runner.run_unit_tests(context, (first,))
+    assert result.exit_code == 1 and result.tests[0].status == 'error'
+    assert '2.50s elapsed; limit 2.00s' in result.tests[0].traceback
+    assert state.stops == 1
+
+
+def test_successful_process_exit_reconciles_finalization_gap_with_no_new_events(controlled_runner, monkeypatch):
+    context, tests, clock, state = controlled_runner
+    first = tests[0]
+    state.rows = [dict(kind='test_started', node=first.node_id, at=0)]
+    state.rows += [dated_phase(first.node_id, part, 0) for part in ('setup', 'call', 'teardown')]
+    def finish_after_gap(_):
+        clock.now = 4
+        state.process.returncode = 0
+    monkeypatch.setattr(runner, 'time', SimpleNamespace(monotonic=clock, sleep=finish_after_gap))
+    result = runner.run_unit_tests(context, (first,))
+    assert result.exit_code == 1 and not result.cancelled
+    assert result.tests[0].status == 'passed'
+    assert 'startup/finalization gap deadline: 4.00s elapsed; limit 3.00s' in result.output
+    assert state.process.returncode == 0 and state.stops == 1
+
+
+def test_already_exited_worker_accepts_timely_durable_completion_delivered_late(controlled_runner):
+    context, tests, clock, state = controlled_runner
+    first = tests[0]
+    state.rows = [dict(kind='test_started', node=first.node_id, at=0)]
+    state.rows += [dated_phase(first.node_id, part, 0) for part in ('setup', 'call')]
+    state.rows += [dated_phase(first.node_id, 'teardown', 2)]
+    observe_exit_at(state, clock, 4)
+    result = runner.run_unit_tests(context, (first,))
+    assert result.exit_code == 0 and result.tests[0].status == 'passed'
+    assert 'deadline' not in result.output
+    assert state.stops == 1
+
+
+def test_same_batch_late_unit_does_not_relabel_timely_sibling(controlled_runner):
+    context, tests, clock, state = controlled_runner
+    first, second, third = tests
+    state.rows = [dict(kind='test_started', node=first.node_id, at=0)]
+    state.rows += [dated_phase(first.node_id, part, 0) for part in ('setup', 'call')]
+    state.rows += [dict(kind='test_started', node=second.node_id, at=1)]
+    state.rows += [dated_phase(second.node_id, part, 1) for part in ('setup', 'call')]
+    state.rows += [dated_phase(first.node_id, 'teardown', 4), dated_phase(second.node_id, 'teardown', 2)]
+    observe_exit_at(state, clock, 4)
+    result = runner.run_unit_tests(context, (first, second))
+    assert result.exit_code == 1
+    assert [row.status for row in result.tests] == ['error', 'passed']
+    assert 'setup-through-teardown deadline' in result.tests[0].traceback
+    assert result.tests[1].traceback == ''
+    assert state.stops == 1
+
+
+def test_cleanup_duration_does_not_move_recorded_successful_exit_time(controlled_runner, monkeypatch):
+    context, tests, clock, state = controlled_runner
+    first = tests[0]
+    state.rows = [dict(kind='test_started', node=first.node_id, at=0)]
+    state.rows += [dated_phase(first.node_id, part, 0) for part in ('setup', 'call')]
+    state.rows += [dated_phase(first.node_id, 'teardown', 2)]
+    observe_exit_at(state, clock, 4)
+    def dispose(process):
+        state.stops += 1
+        clock.now = 100
+    monkeypatch.setattr(runner, '_stop_execution', dispose)
+    result = runner.run_unit_tests(context, (first,))
+    assert result.exit_code == 0 and result.tests[0].status == 'passed'
+    assert 'deadline' not in result.output and state.stops == 1

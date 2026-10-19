@@ -49,8 +49,9 @@ def test_callback_scheduler_failure_closes_unsubmitted_coroutine(monkeypatch, pr
     from api_agent.providers.progress import progress_sink
     async def run():
         created = []
+        closed = []
         async def dispose():
-            pass
+            closed.append(True)
         def callback():
             coroutine = dispose()
             created.append(coroutine)
@@ -64,13 +65,19 @@ def test_callback_scheduler_failure_closes_unsubmitted_coroutine(monkeypatch, pr
         monkeypatch.setattr(http_cleanup, 'asyncio', scheduler)
         callbacks = [callback]
         with progress_sink((lambda event: None) if progress_active else None):
-            with pytest.raises(CleanupPendingError):
+            with pytest.raises(CleanupPendingError) as error:
                 await close_http_callbacks(callbacks)
         assert created == []
         assert len(submitted) == 1
         assert submitted[0].cr_code.co_qualname == 'CallbackState.start.<locals>.invoke'
         assert inspect.getcoroutinestate(submitted[0]) == inspect.CORO_CLOSED
         assert len(callbacks) == 1
+
+        monkeypatch.setattr(http_cleanup, 'asyncio', asyncio)
+        with progress_sink((lambda event: None) if progress_active else None):
+            await error.value.retry()
+        assert len(created) == 1 and closed == [True]
+        assert callbacks == []
     asyncio.run(run())
 
 
