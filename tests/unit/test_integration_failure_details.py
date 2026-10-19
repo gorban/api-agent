@@ -282,6 +282,7 @@ def test_local_exception_cycle_is_finite_and_nontext_details_are_not_formatted(s
 
 
 def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_path, monkeypatch):
+    import ast
     import os
     from api_agent.testing.collection import TestIdentity
     roots = [tmp_path / 'base', tmp_path / 'pack']
@@ -326,7 +327,7 @@ def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_pat
             rows.append(dict(kind='inspection_open', endpoint='synthetic'))
         from pathlib import Path
         Path(args[3]).write_text(''.join(json.dumps(row) + '\n' for row in rows))
-        return SimpleNamespace(stdout=Stream(first, kwargs['env']['API_AGENT_STDOUT_BOUNDARY']), returncode=None if first else 0,
+        return SimpleNamespace(stdout=Stream(first, ast.literal_eval(ast.parse(args[2]).body[-1].value.args[0])), returncode=None if first else 0,
             poll=lambda: None if first else 0)
     def retain(process, directory, event_file, reader, registry, liveness_fd, **kwargs):
         directory.retained = True
