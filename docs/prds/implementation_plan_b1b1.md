@@ -20,3 +20,5 @@ Independent contract review precedes implementation. Conversion completion still
 - [ ] Apply the [first-release shared application graph and scenario coverage](implementation_plan_b1b3.md) contract, keeping the shipped Run local/E2E graph separate from qualification fixtures.
 
 - [ ] Apply the [versioned nested declaration grammar](implementation_plan_b1b2.md) and its immutable runtime adapter; unsupported richer executable semantics remain explicit dependent work.
+
+- [ ] The inference-free workflow CLI must distinguish raw declaration checks from selected-pack checks. `--resource-pack-dir` uses the same explicit graph root, ordered replacements and immutable definition as pack loading for both validation and diagram projection; reject combinations with raw entry/demo/root selectors. `--base-root` selects the corresponding application or demo entry independently of working directory. Verify source and relocated-wheel behavior, including graph identity and a replacement that changes the selected definition.

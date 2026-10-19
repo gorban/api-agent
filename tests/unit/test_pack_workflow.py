@@ -182,6 +182,47 @@ def test_cli_explicit_entry_root_preserves_pack_owner(tmp_path, capsys):
     assert selected.definition_id in capsys.readouterr().out
 
 
+def test_cli_selected_pack_applies_ordered_manifest_replacement(tmp_path, capsys, monkeypatch):
+    base = tmp_path / 'base'
+    base.mkdir()
+    make_graph(base)
+    pack_root = tmp_path / 'pack'
+    shutil.copytree(base, pack_root)
+    (pack_root / 'workflows/alternate.md.html').write_text(
+        (pack_root / 'workflows/inspect.md.html').read_text().replace(
+            'Hello.', 'Selected pack prompt.'))
+    (pack_root / 'cfg.toml').write_text('version=1\n')
+    (pack_root / 'pack.toml').write_text(
+        'version=1\nid="selected"\nconfig="cfg.toml"\n'
+        '[workflow]\nversion=2\nroot="base"\nentry="flow.md.html"\n'
+        'replacements=[{target_id="inspect",entry="workflows/alternate.md.html",root_id="pack"}]\n')
+    context = load_launch_context(base, pack_root)
+    selected = load_selected_definition(context)
+    from api_agent.workflows.definition import load_definition
+    original = load_definition(base / 'flow.md.html', base_root=base, pack_root=pack_root)
+    assert b'Selected pack prompt.\n' in [resource.content_bytes for resource in selected.resources
+                                          if resource.kind == 'prompt']
+    assert b'Hello.\n' in [resource.content_bytes for resource in original.resources
+                           if resource.kind == 'prompt']
+    from api_agent.workflows.__main__ import main
+    from api_agent.runtime import resource_pack
+    observed = []
+    original = resource_pack.load_selected_definition
+
+    def record(actual_context):
+        observed.append(actual_context.workflow_replacements)
+        return original(actual_context)
+
+    monkeypatch.setattr(resource_pack, 'load_selected_definition', record)
+    monkeypatch.chdir(tmp_path)
+
+    assert main(['validate', '--base-root', str(base), '--resource-pack-dir', str(pack_root)]) == 0
+    assert selected.definition_id in capsys.readouterr().out
+    assert main(['diagram', '--base-root', str(base), '--resource-pack-dir', str(pack_root)]) == 0
+    assert 'flowchart TD' in capsys.readouterr().out
+    assert observed == [context.workflow_replacements, context.workflow_replacements]
+
+
 def test_selected_workflow_uses_bundled_application_definition():
     root = Path(__file__).resolve().parents[2]
     context = load_launch_context(root)

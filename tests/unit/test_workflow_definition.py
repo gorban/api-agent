@@ -133,14 +133,69 @@ def test_known_replacement_changes_definition_identity(tmp_path):
     assert replaced.definition_id != base.definition_id
 
 
-def test_native_loader_uses_admitted_bytes_when_path_changes(tmp_path):
-    definition = load_definition(make_graph(tmp_path), base_root=tmp_path, pack_root=tmp_path)
-    source = definition.layout.steps[0].source
+def test_replacement_captures_only_selected_declaration_closure(tmp_path):
+    entry = make_graph(tmp_path)
+    original = tmp_path / 'workflows' / 'inspect.md.html'
+    alternate = tmp_path / 'workflows' / 'alternate.md.html'
+    alternate.write_bytes(original.read_bytes())
+    selected = (Replacement('inspect', Path('workflows/alternate.md.html'), 'pack'),)
+    admitted = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                               replacements=selected)
+    original.write_text('edited unselected declaration')
+    after_edit = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                                 replacements=selected)
+    original.unlink()
+    after_delete = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                                   replacements=selected)
+    outside = tmp_path.parent / 'unselected-target.txt'
+    outside.write_text('unselected external data')
+    original.symlink_to(outside)
+    after_symlink = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                                    replacements=selected)
+
+    assert admitted.definition_id == after_edit.definition_id == after_delete.definition_id == after_symlink.definition_id
+    assert all(resource.logical_path != 'base/workflows/inspect.md.html'
+               for resource in after_delete.resources)
+    assert after_delete.layout.steps[0].source == tmp_path / 'native.py'
+
+
+def test_replacement_still_checks_original_link_syntax_and_kind(tmp_path):
+    entry = make_graph(tmp_path)
+    alternate = tmp_path / 'workflows' / 'alternate.md.html'
+    alternate.write_bytes((tmp_path / 'workflows' / 'inspect.md.html').read_bytes())
+    selected = (Replacement('inspect', Path('workflows/alternate.md.html'), 'pack'),)
+    entry.write_text(entry.read_text().replace('(workflows/inspect.md.html)',
+                                               '(https://example.invalid/inspect.md.html)'))
+    with pytest.raises(LayoutError, match='invalid resource link'):
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                        replacements=selected)
+    entry.write_text(entry.read_text().replace('[node inspect]', '[component inspect]').replace(
+        '(https://example.invalid/inspect.md.html)', '(workflows/inspect.md.html)'))
+    with pytest.raises(LayoutError, match='declaration identity mismatch'):
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                        replacements=selected)
+    entry.write_text(entry.read_text().replace('[component inspect]', '[node inspect]').replace(
+        '(workflows/inspect.md.html)', '(../../outside.md.html)'))
+    with pytest.raises(LayoutError, match='outside declared roots'):
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                        replacements=selected)
+
+
+def test_native_loader_rejects_stale_source_before_top_level_code(tmp_path, monkeypatch):
+    entry = make_graph(tmp_path)
+    source = tmp_path / 'native.py'
+    source.write_text('raise RuntimeError("top-level code ran")\n'
+                      'def inspect(inputs, context):\n    return {"seen": True}\n')
+    definition = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
     source.write_text('def inspect(inputs, context):\n    return {"seen": False}\n')
 
-    catalog = load_native_catalog(definition, source)
-
-    assert catalog['inspect']({}, None) == {'seen': True}
+    with pytest.raises(LayoutError, match='changed after definition admission'):
+        load_native_catalog(definition, source)
+    # Focused mutation control: removing only freshness admission reaches top-level code.
+    with monkeypatch.context() as mutation:
+        mutation.setattr(type(definition), 'verify_native_sources', lambda self: None)
+        with pytest.raises(RuntimeError, match='top-level code ran'):
+            load_native_catalog(definition, source)
 
 
 def test_definition_rejects_resource_change_during_admission(tmp_path, monkeypatch):
@@ -379,6 +434,31 @@ def test_replacement_cannot_escape_declared_root(tmp_path):
     with pytest.raises(LayoutError, match='root-relative'):
         load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                         replacements=(Replacement('inspect', Path('../outside.md.html'), 'pack'),))
+
+
+def test_replacement_declaration_requires_md_html_suffix(tmp_path):
+    entry = make_graph(tmp_path)
+    original = tmp_path / 'workflows' / 'inspect.md.html'
+    alternate = tmp_path / 'workflows' / 'alternate.txt'
+    alternate.write_bytes(original.read_bytes())
+    with pytest.raises(LayoutError, match='replacement declaration must end .md.html'):
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                        replacements=(Replacement('inspect', Path('workflows/alternate.txt'), 'pack'),))
+    alternate.rename(tmp_path / 'workflows' / 'alternate.md.html')
+    selected = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                               replacements=(Replacement('inspect', Path('workflows/alternate.md.html'), 'pack'),))
+    assert selected.layout.tables['Functions'][0]['ID'] == 'inspect'
+
+
+def test_replacement_symlink_target_must_be_md_html(tmp_path):
+    entry = make_graph(tmp_path)
+    original = tmp_path / 'workflows' / 'inspect.md.html'
+    alternate = tmp_path / 'workflows' / 'alternate.txt'
+    alternate.write_bytes(original.read_bytes())
+    (tmp_path / 'workflows' / 'selected.md.html').symlink_to(alternate)
+    with pytest.raises(LayoutError, match='replacement declaration must end .md.html'):
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                        replacements=(Replacement('inspect', Path('workflows/selected.md.html'), 'pack'),))
 
 
 def test_encoded_separator_and_invalid_utf8_link_rejected(tmp_path):

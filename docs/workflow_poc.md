@@ -18,6 +18,16 @@ Requirements and acceptance gates are in
 Use a Python environment installed with the project's development dependencies.
 Run focused deterministic tests before any live authentication or inference:
 
+`python -m api_agent.workflows validate` checks the bundled application graph.
+`python -m api_agent.workflows validate --demo contrived` checks the separate
+qualification fixture. Add `--base-root PATH` to select either from another
+checkout. For an external pack, use `validate --base-root PATH
+--resource-pack-dir PACK` (or `diagram` in place of `validate`) to apply that
+pack's declared graph and ordered replacements. `--entry PATH` is a raw
+declaration check; it does not read a pack manifest or apply replacements.
+The CLI validates and projects declarations without provider setup or graph
+execution.
+
 ```sh
 python -m pytest tests/unit/test_workflow_contrived.py tests/unit/test_workflow_sampling.py tests/unit/test_workflow_evidence.py --cov=api_agent.workflows.contrived --cov=api_agent.workflows.sampling --cov=api_agent.workflows.evidence --cov-branch --cov-fail-under=100
 ```
