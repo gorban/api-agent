@@ -51,3 +51,6 @@ The first frozen code-generation smoke completed all six calls and passed the un
 - [x] Prove six-way overlap through real loopback application HTTP and shared setup IPC using a synthetic barrier; verify native effort, identity, per-call quote/content attribution and cleanup. No new live inference is required to establish scheduling behavior.
 
 A later human run failed the unchanged scorer with gaps -22, -37 and +41. It remains a failed observation; concurrent scheduling does not establish reliable stochastic effort separation. That separate issue is [deferred to the future reasoning follow-up](implementation_plan_f2f3a.md).
+
+- [x] Complete independent and external review of concurrent scheduling, per-call attribution, cleanup and installed-package behavior.
+- [ ] Human acceptance of concurrent scheduling remains open. Stochastic token separation remains deferred separately; a positive token-margin sample is not required to demonstrate concurrency.
