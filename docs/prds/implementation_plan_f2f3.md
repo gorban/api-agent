@@ -36,9 +36,9 @@ The earlier five-variable direct-answer prompt passed one live six-call comparis
 - [x] Controlled checks exercise the actual application sender and native effort body with a conflicting provider default, identical native input/settings within pairs, marker identity, and code-generation task delivery. Historical failing gap vectors remain rejected. These controls establish routing and scoring, not deterministic prompt separation.
 - [x] Observe one frozen six-call code-generation smoke and retain every result. A failed run remains failed; no replacement pairs or repeated tuning until green.
 - [x] Complete independent review of this revision.
-- [ ] Complete external PR review of this revision.
+- [x] Complete external PR review of this revision.
 - [ ] Human acceptance of this revision remains open.
 
 Later direct-answer observations (+89/+29/+49 and -47/+7/+17) failed the unchanged rule. A larger direct-answer permutation task (+112/-94/-214) and an algorithm-audit task (-123/+92/+101) also failed. The earlier successful smoke applies only to its original task/run. The code-generation revision is an empirical task change with no statistical reliability guarantee and no claimed provider-mapping defect.
 
-The first frozen code-generation smoke completed all six calls and passed the unchanged signed rule. Low reasoning-token counts were 0, 412 and 0; medium counts were 331, 415 and 404, giving signed gaps +331, +3 and +404. The near-zero second pair was retained. This single successful smoke supports this task/run only; it does not establish population reliability or repair a demonstrated provider-mapping defect. Generated code was neither executed nor answer-validated. Independent review is complete; human acceptance remains open.
+The first frozen code-generation smoke completed all six calls and passed the unchanged signed rule. Low reasoning-token counts were 0, 412 and 0; medium counts were 331, 415 and 404, giving signed gaps +331, +3 and +404. The near-zero second pair was retained. This single successful smoke supports this task/run only; it does not establish population reliability or repair a demonstrated provider-mapping defect. Generated code was neither executed nor answer-validated. Independent and external review are complete; human acceptance remains open.
