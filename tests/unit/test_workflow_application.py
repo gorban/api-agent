@@ -78,7 +78,7 @@ def test_renderer_rejects_incomplete_or_empty_result(outcome, text):
 def test_builder_uses_executing_source_checkout_when_root_is_omitted(monkeypatch):
     from api_agent.workflows import application
 
-    monkeypatch.setattr(application, 'files', lambda package: ROOT / 'missing_package')
+    monkeypatch.setattr(application, 'bundled_root', lambda: ROOT)
     workflow = application.build(llm=None, selection='gpt-test')
     assert workflow.definition.entry.samefile(ROOT / 'flow.md.html')
 
@@ -86,7 +86,7 @@ def test_builder_uses_executing_source_checkout_when_root_is_omitted(monkeypatch
         application.build(ROOT / 'missing', llm=None, selection='gpt-test')
 
 
-def test_builder_uses_relocated_package_when_module_is_installed(tmp_path, monkeypatch):
+def test_builder_uses_selected_relocated_package_root(tmp_path, monkeypatch):
     from shutil import copytree
     from api_agent.workflows import application
 
@@ -95,8 +95,7 @@ def test_builder_uses_relocated_package_when_module_is_installed(tmp_path, monke
     (package / 'flow.md.html').write_bytes((ROOT / 'flow.md.html').read_bytes())
     copytree(ROOT / 'workflows', package / 'workflows')
     copytree(ROOT / 'demo/simple', package / 'demo/simple')
-    monkeypatch.setattr(application, '__file__', str(package / 'workflows/application.py'))
-    monkeypatch.setattr(application, 'files', lambda name: package)
+    monkeypatch.setattr(application, 'bundled_root', lambda: package)
 
     workflow = application.build(llm=None, selection='gpt-test')
 

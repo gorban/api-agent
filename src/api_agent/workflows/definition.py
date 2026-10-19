@@ -137,6 +137,7 @@ def load_native_catalog(definition: WorkflowDefinition, source: Path):
     if not isinstance(definition, WorkflowDefinition) or source not in {
             step.source for step in definition.layout.steps if step.kind == 'node'}:
         raise LayoutError(f'{source}:1: source is not a selected native binding')
+    definition.verify_native_sources()
     namespace = {'__name__': '<workflow_catalog>', '__file__': str(source), '__package__': None}
     code = compile(definition.contents[source], str(source), 'exec')
     exec(code, namespace)
@@ -244,7 +245,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             captured[path] = (kind, data)
             origins[path] = root_id
         return path
-    def link(owner, value, kind):
+    def link(owner, value, kind, *, selected=True):
         match = _LINK.fullmatch(value)
         if match is None:
             raise LayoutError(f'{owner}:1: expected one inline file link')
@@ -264,6 +265,11 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
         else:
             path = owner.parent / name
             root_id = origins[owner]
+        if not selected:
+            path = Path(os.path.normpath(path))
+            if not any(path.is_relative_to(root) for root in roots.values()):
+                raise LayoutError(f'{owner}:1: resource link outside declared roots')
+            return path
         return capture(path, kind, root_id)
     capture(entry, 'declaration', entry_root)
     title, root_sections = _sections(entry, captured[entry][1])
@@ -306,15 +312,20 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                 raise LayoutError(f'{owner}:{number}: workflow exceeds {_MAX_STEPS} steps')
             if any(item.id == identifier for item in resolved):
                 raise LayoutError(f'{owner}:{number}: duplicate step ID')
-            declaration = link(owner, f'[{label}]({target})', 'declaration')
+            replacement = next((item for item in replacements if item.target_id == identifier), None)
+            declaration = link(owner, f'[{label}]({target})', 'declaration',
+                               selected=replacement is None)
             if declaration.suffixes[-2:] != ['.md', '.html']:
                 raise LayoutError(f'{owner}:{number}: child declaration must end .md.html')
-            replacement = next((item for item in replacements if item.target_id == identifier), None)
             if replacement:
                 proposed = Path(replacement.entry)
                 if proposed.is_absolute() or '..' in proposed.parts:
                     raise LayoutError(f'{entry}:1: replacement must be root-relative')
+                if proposed.suffixes[-2:] != ['.md', '.html']:
+                    raise LayoutError(f'{entry}:1: replacement declaration must end .md.html')
                 declaration = capture(roots[replacement.root_id] / proposed, 'declaration', replacement.root_id)
+                if declaration.suffixes[-2:] != ['.md', '.html']:
+                    raise LayoutError(f'{entry}:1: replacement declaration must end .md.html')
             step = Step(identifier, kind, parent, declaration, number)
             resolved.append(step)
             title, child_sections = _sections(declaration, captured[declaration][1])

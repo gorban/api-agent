@@ -1,10 +1,10 @@
 """Bundled one-node chat flow, compiled from its selected root declaration."""
-from importlib.resources import files
 from pathlib import Path
 
 from api_agent.providers.llm import GenerationOptions
 from .definition import load_definition, load_native_catalog
 from .execution import NodeFunction, Workflow
+from .resources import bundled_root
 
 
 def build(base_root=None, *, llm, selection, generation=None, request_id=None, config=None, observe=None):
@@ -12,10 +12,7 @@ def build(base_root=None, *, llm, selection, generation=None, request_id=None, c
     if base_root is not None:
         root = Path(base_root).resolve()
     else:
-        source_root = Path(__file__).resolve().parents[3]
-        source_module = source_root / 'src/api_agent/workflows/application.py'
-        root = (source_root if source_module.resolve() == Path(__file__).resolve()
-                else Path(str(files('api_agent'))).resolve())
+        root = bundled_root()
     entry = root / 'flow.md.html'
     if not entry.is_file():
         raise FileNotFoundError(f'Selected application flow is missing: {entry}')

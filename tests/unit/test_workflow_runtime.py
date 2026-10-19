@@ -226,9 +226,34 @@ def test_explicit_demo_cli_identifies_the_compiled_qualification_graph(capsys):
     assert compiled.definition.definition_id in capsys.readouterr().out
 
 
+def test_demo_cli_uses_alternate_explicit_base_root(tmp_path, capsys):
+    from test_workflow_definition import make_graph
+
+    alternate = tmp_path / 'demo/contrived'
+    alternate.mkdir(parents=True)
+    make_graph(alternate)
+
+    assert main(['validate', '--demo', 'contrived', '--base-root', str(tmp_path)]) == 0
+    output = capsys.readouterr().out
+    assert 'Valid workflow: sample_graph ' in output
+    assert 'contrived_qualification' not in output
+
+
 def test_default_cli_selects_application_graph(capsys):
     assert main(['validate']) == 0
     assert 'Valid workflow:' in capsys.readouterr().out
+
+
+def test_default_cli_uses_explicit_base_root_for_entry(tmp_path, capsys):
+    from test_workflow_definition import make_graph
+    from api_agent.workflows.definition import load_definition
+    entry = make_graph(tmp_path)
+    expected = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+                               entry_root='base')
+
+    assert main(['validate', '--base-root', str(tmp_path)]) == 0
+
+    assert expected.definition_id in capsys.readouterr().out
 
 
 def test_cli_explicit_roots_and_invalid_path(tmp_path, capsys):
@@ -247,6 +272,17 @@ def test_cli_rejects_conflicting_or_legacy_selection(args):
     with pytest.raises(SystemExit) as caught:
         main(args)
     assert caught.value.code == 2
+
+
+@pytest.mark.parametrize('selector', [
+    ['--entry', 'flow.md.html'], ['--demo', 'contrived'],
+    ['--entry-root', 'pack'], ['--pack-root', 'pack'],
+])
+def test_pack_selection_rejects_raw_workflow_selectors_before_loading(selector, capsys):
+    with pytest.raises(SystemExit) as caught:
+        main(['validate', '--resource-pack-dir', 'pack', *selector])
+    assert caught.value.code == 2
+    assert 'cannot be combined with raw workflow selectors' in capsys.readouterr().err
 
 
 def test_module_cli_entrypoint(monkeypatch, capsys):
