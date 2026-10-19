@@ -111,12 +111,20 @@ class AllureNavigation:
         self._allure_generation = object()
         self._allure_opening = False
         self._allure_loading = ''
-        self._allure_restore_worker = None
+        self._allure_worker = None
         self._allure_tasks = set()
         self._allure_cancel_requested = set()
         self._allure_cleanup = None
         self._allure_accepting = True
         self._allure_shutdown = False
+
+    def request_allure(self, operation):
+        """Reserve the shared UI opener before its worker can start."""
+        if (not self._allure_accepting or self._allure_opening or
+                (self._allure_worker is not None and not self._allure_worker.is_finished
+                 and not self._allure_worker.is_cancelled)):
+            return
+        self._allure_worker = self.run_worker(operation, group='allure-viewer', exclusive=False)
 
     def refresh_allure_loading(self):
         for screen in self.screen_stack:
