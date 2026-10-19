@@ -783,6 +783,14 @@ def test_cancel_rpc_has_own_deadline_after_presenter_failure(client, monkeypatch
     assert process.written[-1]['method'] == 'account/login/cancel'
 
 
+def _verify_install_child(root, package, ready, connection):
+    try:
+        ready.set()
+        connection.send(setup._verify_install(root, package))
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize('relative', ['package-lock.json', 'validation.json'])
 def test_fifo_metadata_is_rejected_and_the_owned_verifier_exits(tmp_path, relative):
     import multiprocessing
@@ -795,21 +803,29 @@ def test_fifo_metadata_is_rejected_and_the_owned_verifier_exits(tmp_path, relati
     metadata = root / relative
     metadata.unlink()
     os.mkfifo(metadata, 0o600)
-    context = multiprocessing.get_context('fork')
+    context = multiprocessing.get_context('spawn')
     parent, child = context.Pipe(duplex=False)
-    process = context.Process(target=lambda: child.send(setup._verify_install(root, package)))
+    ready = context.Event()
+    process = context.Process(target=_verify_install_child, args=(root, package, ready, child))
 
-    process.start()
-    process.join(1)
-    stopped = not process.is_alive()
-    if not stopped:
-        process.terminate()
+    try:
+        process.start()
+        child.close()
+        assert ready.wait(10), 'Quota verifier child did not finish interpreter startup'
         process.join(1)
-
-    assert stopped, 'Quota metadata verifier blocked on a FIFO'
-    assert process.exitcode == 0 and parent.poll() and parent.recv() is None
-    parent.close()
-    child.close()
+        assert not process.is_alive(), 'Quota metadata verifier blocked on a FIFO'
+        assert process.exitcode == 0 and parent.poll(1) and parent.recv() is None
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(2)
+        if process.is_alive():
+            process.kill()
+            process.join(2)
+        assert not process.is_alive()
+        process.close()
+        parent.close()
+        child.close()
 
 
 @pytest.mark.parametrize('replacement', ['fifo', 'regular', 'symlink'])

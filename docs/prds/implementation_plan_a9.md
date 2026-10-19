@@ -28,3 +28,5 @@ parameterized identities exceed the operating system command argument budget.
 future proposal, scheduled after all profiling and authentication work.
 
 [Bounded unit execution and launcher parity](implementation_plan_a9h.md) is implemented and independently reviewed, covering source aliases, fixture coordination and fixed 60-second hang guards. Human acceptance of the repaired full launch remains pending in that detail; accepted coverage disclosure stays complete.
+
+[Unit-suite performance investigation](implementation_plan_a9i.md) joins later profiling, preserving exact coverage and real boundary proofs.

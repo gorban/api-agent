@@ -7,7 +7,7 @@
 - [x] E2E still requires its frontend independent of RUN_UI; integration acquires frontend services only through explicitly selected UI tests. Collection starts no browser/services. Run local keeps its headed UI policy and optional frontend allocation.
 - [x] Keep the multiple-selected-tests warning specific to effective debug inspection, including E2E_DEBUG for E2E. RUN_UI alone does not request inspection or that warning. Use the existing selector confirmation; no new E2E runner is implied.
 - [x] Prove the delivered owner/selector visibility and retention combinations and configuration applicability with meaningful controls and focused mutations; complete applicable coverage and independent review.
-- [ ] Human acceptance of the revised test visibility policy; required human authentication remains a visible exception.
+- [x] Human acceptance of the revised test visibility policy: integration behavior with and without DEBUG and NO_STD_IN is accepted; required human authentication remains a visible exception.
 
 Required human authentication is an explicit exception: attended login and the existing bounded visible hardware/security handoff may open visibly. Automated test login remains headless absent debug inspection regardless of RUN_UI; preserve account binding, bounded retries and owned cleanup. Local RUN_UI retains its local browser meaning.
 
