@@ -69,4 +69,4 @@ Delivered generic inference/model request contracts are human-accepted. Frontend
 
 ## Family-default reasoning repair
 
-- [*] [Resolve family defaults and preserve supported reasoning across version changes](implementation_plan_f2f4.md). This supersedes the earlier non-default-family explicit-version requirement and intersection menu; prior delivered behavior remains historical evidence.
+- [x] [Resolve family defaults and preserve supported reasoning across version changes](implementation_plan_f2f4.md). This supersedes the earlier non-default-family explicit-version requirement and intersection menu; prior delivered behavior remains historical evidence.
