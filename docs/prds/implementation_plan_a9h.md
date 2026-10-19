@@ -24,7 +24,7 @@ Slow-test analysis must distinguish cumulative test time, parallel wall time and
 
 ## Human acceptance
 
-- [ ] Confirm a normal full unit launch finishes with coverage and the bounded-failure diagnostic is understandable. Keep noninteractive integration without DEBUG as a separate pending replay.
+- [x] Confirm a normal full unit launch finishes with coverage and the bounded-failure diagnostic is understandable. The user also accepts integration with and without DEBUG and NO_STD_IN.
 
 ## Scheduler-failure fixture parity
 
@@ -41,6 +41,6 @@ Slow-test analysis must distinguish cumulative test time, parallel wall time and
 
 The joined source passes 11,393 unit tests at 32 workers through the production runner with active progress, with exact 100% line and branch coverage across 194 measured files (27,030 statements and 10,162 branches). Collection, execution and JSON/HTML coverage took 322.93 seconds; the slowest test took 30.69 seconds. Actual launcher replay, installed-package loading, licenses and public-boundary checks pass. Independent adversarial and external reviews close the deadline and fixture repairs, including real owned-process, interruption, delayed-event and successful-exit controls. Earlier failed attempts remain diagnosed; the source-identity receipt preserves existing qualification observations without claiming a new pilot.
 
-## Deferred human review
+## Recorded human acceptance
 
-Substantive work and independent/external review are complete. The human acceptance item above and separate noninteractive integration replay without DEBUG remain pending; this does not grant acceptance or reopen previously accepted coverage presentation.
+The user confirms another full unit launch passed at exact 100% coverage and accepts integration behavior with and without DEBUG and NO_STD_IN. The separately reported multithreaded-fork warnings are tracked in [process fixture startup](implementation_plan_a9h1.md); the accepted hang repair remains complete.

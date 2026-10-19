@@ -309,7 +309,9 @@ def test_boolean_host_version(store):
         store.host_id()
 
 
-def _lock_child(root, key, ready, acquired):
+def _lock_child(root, key, gate, ready, acquired):
+    if not gate.wait(5):
+        raise TimeoutError("Parent did not release the lock-test start gate")
     ready.set()
     with ConnectionStore(Path(root)).lock(key):
         acquired.set()
@@ -317,28 +319,30 @@ def _lock_child(root, key, ready, acquired):
 
 def test_process_lock(store, record):
     import multiprocessing
-    context = multiprocessing.get_context('fork')
+    context = multiprocessing.get_context('spawn')
     ready, acquired = context.Event(), context.Event()
     key = store.save(record)
-    # Fork before holding the lock so the child cannot inherit its descriptor.
     gate = context.Event()
-    def child():
-        gate.wait()
-        _lock_child(store.root, key, ready, acquired)
-    process = context.Process(target=child)
-    process.start()
+    process = context.Process(target=_lock_child,
+                              args=(store.root, key, gate, ready, acquired))
     try:
+        process.start()
         with store.lock(key):
             gate.set()
-            assert ready.wait(2)
+            assert ready.wait(5)
             assert not acquired.wait(0.05)
-        assert acquired.wait(2)
+        assert acquired.wait(5)
         process.join(2)
         assert process.exitcode == 0
     finally:
         if process.is_alive():
             process.terminate()
-            process.join()
+            process.join(2)
+        if process.is_alive():
+            process.kill()
+            process.join(2)
+        assert not process.is_alive()
+        process.close()
 
 
 def test_duplicate_fields(store, record):

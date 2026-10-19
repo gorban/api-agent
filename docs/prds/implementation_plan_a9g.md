@@ -18,4 +18,4 @@ Focused tests cover the distinct-ID threshold, modes, warning text, and exact te
 
 ## Human acceptance
 
-Interactive confirmation and the repaired NO_STD_IN DEBUG completion/summary/Ctrl+C behavior are accepted. A non-DEBUG integration replay is separately pending; no observation of that path is inferred.
+Interactive confirmation and the repaired NO_STD_IN DEBUG completion/summary/Ctrl+C behavior are accepted. The user subsequently accepts integration behavior with and without DEBUG and NO_STD_IN; the non-DEBUG replay is complete.
