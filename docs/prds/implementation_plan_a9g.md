@@ -9,7 +9,6 @@
 - [x] Count selected identities after selector resolution, so overlapping groups count once. Leave unit, collection-only, and single-test execution ungated. The current E2E selector applies this consent before its existing acceptance screen; a complete E2E executor remains future work and must share effective debug across retention consumers.
 - [x] If an integration run is cancelled while its DEBUG modal is open, cancellation wins over a simultaneous or later `y`; remove only that modal, settle the run lifecycle, and do not start authentication or the runner.
 - [x] Human acceptance of interactive multi-test DEBUG confirmation is recorded.
-- [ ] Human acceptance of the NO_STD_IN terminal path remains open pending the [terminal progress and inspection shutdown repair](implementation_plan_a9g1.md).
 
 Focused tests cover the distinct-ID threshold, modes, warning text, and exact terminal response. An isolated threshold mutation makes the warning tests fail.
 
