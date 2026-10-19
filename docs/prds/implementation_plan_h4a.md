@@ -1,0 +1,11 @@
+# Immutable workflow build optimization
+
+[Agent-only production artifact](implementation_plan_h4.md) · [Graph profiling](implementation_plan_b1d.md)
+
+Defer until the ordinary agent-only image and workflow behavior are accepted. Source immutability enables reuse; it does not by itself justify a second execution path.
+
+- [ ] Use startup validation plus once-per-process compilation/reuse as the production baseline. Compare that with build-time validation and a versioned immutable compiled plan, then optional generated Python through a multi-stage build. Keep build tools out of the final image independently of whether graph precompilation is beneficial.
+- [ ] Measure cold build/startup, per-worker compilation, first request, steady-state CPU/memory and complete-turn latency in context of LLM/tool waiting. Include image size, pull time, concurrency, maintenance and source-mapped diagnostics. Set a materiality criterion before the experiment; reuse representative graph benchmarks and controlled no-spend endpoints.
+- [ ] Compile only definitions and native binding references. Never bake credentials, runtime connections, event loops, provider instances, conversation state or external observations into the artifact; compilation performs no authentication/inference/tool effects. Bind the output to all declared inputs and compiler/runtime versions, reject incompatible/stale artifacts and avoid executable-object deserialization.
+- [ ] Prove generated-versus-declarative parity for routing/state, prompts, replacements, retries/deadlines, streaming, cancellation, errors and evidence identity. Preserve original definition hashes and source mappings for historical flow viewing; removing executable declarations must not remove provenance or break inspection.
+- [ ] Present measured benefit and complexity for user choice. Retain startup compilation if gains are immaterial. Any adopted optimization requires differential/mutation tests, exact applicable coverage, installed/image relocation, licenses, boundary checks, independent review and human acceptance.
