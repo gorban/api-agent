@@ -19,12 +19,18 @@ dev = ["Authlib>=1.7.2,<1.8", "pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist
 [project.scripts]
 api-agent = "api_agent.runtime.bootstrap:cli_main"
 
+[tool.hatch.build.targets.sdist]
+only-include = ["LICENSE", "README.md", "pyproject.toml", "launch.py", "package.json", "src", "demo", "cfg", "infra/compose", "apps/api-agent-ui", "workflows", "flow.md.html", "tests", "docs"]
+exclude = [".*", "**/.*", "**/__pycache__/**", "**/node_modules/**", "**/*.pyc"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/api_agent"]
 exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "demo" = "api_agent/demo"
+"flow.md.html" = "api_agent/flow.md.html"
+"workflows" = "api_agent/workflows"
 "cfg" = "api_agent/cfg"
 "infra/compose" = "api_agent/infra/compose"
 "apps/api-agent-ui" = "api_agent/ui/app"

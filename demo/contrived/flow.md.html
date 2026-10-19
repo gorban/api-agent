@@ -1,0 +1,63 @@
+# Workflow v2
+
+## Graph ID
+
+| ID |
+| --- |
+| contrived_qualification |
+
+## Flow
+
+1.  [component first](workflows/components/first.md.html)
+2.  [component second](workflows/components/second.md.html)
+
+## Bindings
+
+| Node | Input | From | Field | Default |
+| --- | --- | --- | --- | --- |
+| first_draft | user_input | START | user_input | - |
+| first_draft | upstream | START | unavailable | null |
+| first_draft | previous | PREVIOUS | * | null |
+| first_draft | feedback | FEEDBACK | * | null |
+| first_draft | attempt | ATTEMPT | value | - |
+| first_draft | max_passes | MAX_PASSES | value | - |
+| first_format | draft | first_draft | * | - |
+| first_format | user_input | START | user_input | - |
+| first_guard | draft | first_draft | * | - |
+| second_draft | user_input | START | user_input | - |
+| second_draft | upstream | first_draft | * | - |
+| second_draft | previous | PREVIOUS | * | null |
+| second_draft | feedback | FEEDBACK | * | null |
+| second_draft | attempt | ATTEMPT | value | - |
+| second_draft | max_passes | MAX_PASSES | value | - |
+| second_format | draft | second_draft | * | - |
+| second_format | user_input | START | user_input | - |
+| second_guard | draft | second_draft | * | - |
+
+## Edges
+
+| From | To | When |
+| --- | --- | --- |
+| first | END | skip_second |
+| first | second | always |
+
+## Prompts
+
+| Node | File | When |
+| --- | --- | --- |
+| first_draft | [Producer](prompts/produce.md) | always |
+| second_draft | [Producer](prompts/produce.md) | always |
+
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| GRAPH | [configuration](../cfg/config.toml) | WORKFLOW_GRAPH_TIMEOUT_SECONDS |
+| first | [configuration](../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+| second | [configuration](../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+| first_draft | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
+| first_format | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
+| first_guard | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
+| second_draft | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
+| second_format | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
+| second_guard | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |

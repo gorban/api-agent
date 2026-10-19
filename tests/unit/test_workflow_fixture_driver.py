@@ -10,12 +10,36 @@ from unittest.mock import Mock
 import pytest
 
 from api_agent.workflows import fixture_driver as driver
-from api_agent.workflows.sampling import DECLARED, FIRST
+from api_agent.workflows.sampling import DECLARED, FIRST, measured_calibration, validate_calibration
 
 FACTORY = str(Path(driver.__file__).parent.parent / 'llm_providers/gpt/factory.py') + ':factory'
 CONFIG = {'LLM_PROVIDER': FACTORY, 'GPT_AUTH_MODE': 'subscription', 'GPT_API_MODE': 'responses',
           'LLM_CACHE_POLICY': None, 'WORKFLOW_LLM_TIMEOUT_SECONDS': 120.0,
           'LLM_DEFAULT_MODEL': '^gpt-6-luna$'}
+
+
+@pytest.fixture
+def legacy_report():
+    path = Path(__file__).parent / 'fixtures/workflow_baseline_legacy.json'
+    body = path.read_bytes()
+    assert sha256(body).hexdigest() == '7c281b11b45fecfb01e153db8913d8477e33259e4fbb94692a5d852d7b06e752'
+    return json.loads(body)['reports'][0]
+
+
+def synthetic_current_report(config=CONFIG):
+    records = []
+    for trial in range(1, 21):
+        route = 'next_a' if trial <= 5 else 'next_b' if trial <= 13 else 'skip'
+        nodes = DECLARED if route != 'skip' else FIRST
+        records.append({'trial': trial, 'route': route, 'nodes': sorted(nodes)})
+    return measured_calibration(records, DECLARED) | driver.fingerprint('gpt-6-luna', config)
+
+
+def historical_fingerprint(report):
+    keys = ('fingerprint_version', 'sampling_method', 'model', 'dependency_versions',
+            'python_version', 'backend', 'provider_identity', 'user_input_hash',
+            'effective_settings', 'sources')
+    return {key: deepcopy(report[key]) for key in keys}
 
 
 def test_reviewed_baseline_is_recomputed_without_local_calibration_file(monkeypatch):
@@ -30,19 +54,19 @@ def test_reviewed_baseline_is_recomputed_without_local_calibration_file(monkeypa
     assert 'receipt' not in report
 
 
-def test_packaged_original_measurements_remain_readable():
+def test_packaged_reviewed_measurements_recompute_for_current_report():
     from api_agent.workflows.sampling import validate_calibration
     report = driver._baselines()[0]
     assert validate_calibration(report, DECLARED, {}) == report['max_runs']
-    assert report['trials'] == 20
-    assert sum(report['routes'].values()) == 20
+    assert report['trials'] == len(report['records'])
+    assert sum(report['routes'].values()) == report['trials']
     assert 'receipt' not in report
     assert report['hits']['second_draft'] == report['routes']['next_a'] + report['routes']['next_b']
 
 
-def test_reviewed_reasoning_equivalence_keeps_original_observations_and_exact_guard(monkeypatch):
+def test_reviewed_reasoning_equivalence_keeps_original_observations_and_exact_guard(legacy_report):
     from api_agent.workflows.sampling import measured_calibration
-    report = driver._baselines()[0]
+    report = legacy_report
     source = 'src/api_agent/llm_providers/gpt/reasoning.py'
     receipt = report['carry_forward']
     assert receipt == {
@@ -59,38 +83,31 @@ def test_reviewed_reasoning_equivalence_keeps_original_observations_and_exact_gu
     assert report['trials'] == 20 and report['max_runs'] == 22
     assert report['records'][0]['trial'] == 1 and report['records'][-1]['trial'] == 20
     assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
-    reviewed_config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
-    assert driver.fingerprint('gpt-6-luna', reviewed_config)['sources'][source] == receipt['current_source_sha256']
-    assert driver.baseline_limit('gpt-6-luna', reviewed_config) == 22
-
-    original = Path.read_bytes
-    def changed(path):
-        body = original(path)
-        return body + b'\n# different behavior\n' if path.name == 'reasoning.py' else body
-    monkeypatch.setattr(Path, 'read_bytes', changed)
+    assert validate_calibration(report, DECLARED, historical_fingerprint(report)) == 22
+    changed = deepcopy(report)
+    changed['sources'][source] = receipt['original_source_sha256']
     with pytest.raises(ValueError, match='stale'):
-        driver.baseline_limit('gpt-6-luna', reviewed_config)
+        validate_calibration(changed, DECLARED, historical_fingerprint(report))
 
 
-def test_provenance_receipt_cannot_admit_the_old_or_an_unrelated_source(monkeypatch):
-    reviewed_config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
+def test_provenance_receipt_cannot_admit_the_old_or_an_unrelated_source(legacy_report):
     source = 'src/api_agent/llm_providers/gpt/reasoning.py'
-    report = deepcopy(driver._baselines()[0])
+    report = deepcopy(legacy_report)
+    fingerprint = historical_fingerprint(report)
+    assert validate_calibration(report, DECLARED, fingerprint) == 22
     report['sources'][source] = report['carry_forward']['original_source_sha256']
-    monkeypatch.setattr(driver, '_baselines', lambda: [report])
     with pytest.raises(ValueError, match='stale'):
-        driver.baseline_limit('gpt-6-luna', reviewed_config)
+        validate_calibration(report, DECLARED, fingerprint)
 
     report['sources'][source] = report['carry_forward']['current_source_sha256']
     report['sources']['src/api_agent/llm_providers/gpt/inference.py'] = '0' * 64
     with pytest.raises(ValueError, match='stale'):
-        driver.baseline_limit('gpt-6-luna', reviewed_config)
+        validate_calibration(report, DECLARED, fingerprint)
 
 
-def test_browser_visibility_binding_retains_prior_receipt_measurements_and_strict_preflight(monkeypatch):
+def test_browser_visibility_binding_retains_prior_receipt_measurements_and_strict_preflight(legacy_report):
     from api_agent.workflows.sampling import measured_calibration
-    report = deepcopy(driver._baselines()[0])
-    config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
+    report = deepcopy(legacy_report)
     source = 'src/api_agent/llm_providers/gpt/factory.py'
     receipt = report['carry_forward_browser_policy']
     assert receipt == {
@@ -111,21 +128,20 @@ def test_browser_visibility_binding_retains_prior_receipt_measurements_and_stric
     assert report['trials'] == 20 and report['routes'] == {'next_a': 5, 'next_b': 8, 'skip': 7}
     assert report['minimum_runs'] == 18 and report['safety_margin'] == 4 and report['max_runs'] == 22
     assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
-    assert driver.baseline_limit('gpt-6-luna', config) == 22
+    fingerprint = historical_fingerprint(report)
+    assert validate_calibration(report, DECLARED, fingerprint) == 22
 
     report['sources'][source] = receipt['original_source_sha256']
     report['provider_identity']['source_sha256'] = receipt['original_source_sha256']
-    monkeypatch.setattr(driver, '_baselines', lambda: [report])
     with pytest.raises(ValueError, match='stale'):
-        driver.baseline_limit('gpt-6-luna', config)
+        validate_calibration(report, DECLARED, fingerprint)
 
 
 @pytest.mark.parametrize('setting,value', [('GPT_API_MODE', 'completions'),
     ('LLM_CACHE_POLICY', 'off'), ('GPT_AUTH_MODE', 'api_key'),
     ('WORKFLOW_LLM_TIMEOUT_SECONDS', 30), ('WORKFLOW_GRAPH_TIMEOUT_SECONDS', 5)])
 def test_stale_settings_reject_before_graph_execution(monkeypatch, setting, value):
-    report = deepcopy(driver._baselines()[0])
-    report.update(driver.fingerprint('gpt-6-luna', CONFIG))
+    report = synthetic_current_report()
     monkeypatch.setattr(driver, '_baselines', lambda: [report])
     graph = Mock(side_effect=AssertionError('Stale sampling must not execute'))
     monkeypatch.setattr(driver, 'run_graph', graph)
@@ -160,13 +176,30 @@ def test_installed_fixture_root_uses_packaged_assets(tmp_path, monkeypatch):
     package = tmp_path / 'package'
     monkeypatch.setattr(driver, 'files', lambda name: package)
     assert driver.fixture_root(tmp_path / 'missing') == package
-    assert (driver.fixture_root() / 'demo/contrived/layout.md').samefile(
-        Path(__file__).resolve().parents[2] / 'demo/contrived/layout.md')
+    assert (driver.fixture_root() / 'demo/contrived/flow.md.html').samefile(
+        Path(__file__).resolve().parents[2] / 'demo/contrived/flow.md.html')
+
+
+def test_nested_declaration_change_invalidates_fixture_fingerprint(tmp_path, monkeypatch):
+    from shutil import copytree
+
+    source_root = Path(__file__).resolve().parents[2]
+    copytree(source_root / 'demo', tmp_path / 'demo')
+    before = driver.fingerprint('gpt-6-luna', CONFIG, root=tmp_path)
+    node = tmp_path / 'demo/contrived/workflows/components/first/first_draft.md.html'
+    node.write_text(node.read_text() + '\n## Notes\n\nChanged declaration.\n')
+
+    after = driver.fingerprint('gpt-6-luna', CONFIG, root=tmp_path)
+
+    assert before['sources'] != after['sources']
+    report = synthetic_current_report()
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', CONFIG, root=tmp_path)
 
 
 def test_reporting_code_is_excluded_but_sampling_changes_invalidate(monkeypatch):
-    report = deepcopy(driver._baselines()[0])
-    report.update(driver.fingerprint('gpt-6-luna', CONFIG))
+    report = synthetic_current_report()
     monkeypatch.setattr(driver, '_baselines', lambda: [report])
     before = driver.fingerprint('gpt-6-luna', CONFIG)
     assert not any('/tui/' in name or name.endswith(('testing/integration.py',
@@ -237,8 +270,7 @@ def test_graph_observer_is_optional(monkeypatch):
 
 def test_node_coverage_stops_when_all_nodes_hit(monkeypatch):
     calls, published = [], []
-    synthetic_report = deepcopy(driver._baselines()[0])
-    synthetic_report.update(driver.fingerprint('gpt-6-luna', CONFIG))
+    synthetic_report = synthetic_current_report()
     monkeypatch.setattr(driver, '_baselines', lambda: [synthetic_report])
 
     def graph(provider, selection, trial, config, **options):
@@ -264,8 +296,7 @@ def test_integration_collection_has_only_mandatory_coverage():
 
 
 def test_configured_reviewed_synthetic_baseline_preflights_before_provider_lookup(monkeypatch):
-    report = deepcopy(driver._baselines()[0])
-    report.update(driver.fingerprint('gpt-6-luna', CONFIG))
+    report = synthetic_current_report()
     monkeypatch.setattr(driver, '_baselines', lambda: [report])
     assert driver.preflight_baselines(CONFIG) == {'gpt-6-luna': report['max_runs']}
 
@@ -273,8 +304,7 @@ def test_configured_reviewed_synthetic_baseline_preflights_before_provider_looku
 @pytest.mark.parametrize('source', ['providers/loading.py', 'providers/inference.py', 'providers/setup_transport.py',
                                    'testing/setup_backend.py', 'llm_providers/gpt/factory.py'])
 def test_sampling_wire_or_factory_change_invalidates_baseline(monkeypatch, source):
-    report = deepcopy(driver._baselines()[0])
-    report.update(driver.fingerprint('gpt-6-luna', CONFIG))
+    report = synthetic_current_report()
     monkeypatch.setattr(driver, '_baselines', lambda: [report])
     original = Path.read_bytes
 
@@ -343,8 +373,7 @@ def test_sampling_import_redirection_changes_fingerprint(tmp_path):
 
 
 def test_wrong_factory_same_model_rejects_before_provider_lookup(tmp_path, monkeypatch):
-    report = deepcopy(driver._baselines()[0])
-    report.update(driver.fingerprint('gpt-6-luna', CONFIG))
+    report = synthetic_current_report()
     monkeypatch.setattr(driver, '_baselines', lambda: [report])
     import runpy
     other = tmp_path / 'other.py'
@@ -391,9 +420,9 @@ def test_installed_canonical_factory_identity_is_path_independent(tmp_path, monk
     assert driver.provider_identity({'LLM_PROVIDER': str(installed) + ':factory'}) == expected
 
 
-def test_source_identity_equivalence_retains_measurements_and_qualification():
+def test_source_identity_equivalence_retains_historical_measurements(legacy_report, monkeypatch):
     from api_agent.workflows.sampling import measured_calibration
-    report = driver._baselines()[0]
+    report = legacy_report
     source = 'src/api_agent/workflows/execution.py'
     receipt = report['carry_forward_source_identity']
     assert receipt == {
@@ -413,8 +442,12 @@ def test_source_identity_equivalence_retains_measurements_and_qualification():
     assert report['carry_forward_browser_policy']['prior_receipt_kind'] == report['carry_forward']['kind']
     assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
     config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
-    assert driver.fingerprint('gpt-6-luna', config)['sources'][source] == receipt['current_source_sha256']
-    assert driver.baseline_limit('gpt-6-luna', config) == 22
+    assert report['sources'][source] == receipt['current_source_sha256']
+    assert driver.fingerprint('gpt-6-luna', config)['sources'] != report['sources']
+    # The former receipt cannot qualify the converted graph's source closure.
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', config)
 
 
 @pytest.mark.parametrize('source,source_hash', [
@@ -422,10 +455,10 @@ def test_source_identity_equivalence_retains_measurements_and_qualification():
     ('src/api_agent/workflows/execution.py', '0' * 64),
     ('src/api_agent/workflows/layout.py', '0' * 64),
 ])
-def test_source_identity_receipt_cannot_admit_old_or_unrelated_drift(monkeypatch, source, source_hash):
-    report = deepcopy(driver._baselines()[0])
+def test_source_identity_receipt_cannot_admit_old_or_unrelated_drift(source, source_hash, legacy_report):
+    report = deepcopy(legacy_report)
+    fingerprint = historical_fingerprint(report)
+    assert validate_calibration(report, DECLARED, fingerprint) == 22
     report['sources'][source] = source_hash
-    monkeypatch.setattr(driver, '_baselines', lambda: [report])
-    config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
     with pytest.raises(ValueError, match='stale'):
-        driver.baseline_limit('gpt-6-luna', config)
+        validate_calibration(report, DECLARED, fingerprint)

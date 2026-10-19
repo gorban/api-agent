@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
+import re
 from types import MappingProxyType
 from typing import Mapping
 import tomllib
@@ -34,7 +35,9 @@ class LaunchContext:
     service_name: str = "api-agent"
     provider_config_paths: tuple[Path, ...] = ()
     shared_dotenv_paths: tuple[Path, ...] = ()
-    layout_path: Path | None = None
+    workflow_root: str = 'base'
+    workflow_entry: Path | None = None
+    workflow_replacements: tuple[tuple[str, Path, str], ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -110,15 +113,40 @@ def load_launch_context(
     if not config.is_file():
         raise ResourcePackError(f"Resource-pack configuration does not exist: {config}")
     workflow = data.get('workflow')
-    layout_path = None
+    workflow_root = 'base'
+    workflow_entry = None
+    workflow_replacements = ()
     if workflow is not None:
-        if (type(workflow) is not dict or set(workflow) != {'version', 'layout'}
-                or type(workflow['version']) is not int or workflow['version'] != 1):
-            raise ResourcePackError('workflow must declare version=1 and a relative layout file')
-        layout_path = _relative_path(workflow['layout'], pack, 'workflow.layout')
-        if (layout_path.suffix != '.md' or not layout_path.is_file()
-                or not any(layout_path.is_relative_to(root) for root in (base, pack))):
-            raise ResourcePackError('workflow.layout must exist inside the selected pack or base artifact')
+        if (type(workflow) is not dict or set(workflow) - {'version', 'root', 'entry', 'replacements'}
+                or not {'version', 'root', 'entry'} <= set(workflow)
+                or type(workflow.get('version')) is not int or workflow['version'] != 2):
+            raise ResourcePackError('workflow must declare version=2, root and entry')
+        roots = {'base': base, 'pack': pack}
+        root_id = workflow.get('root')
+        if type(root_id) is not str or root_id not in roots:
+            raise ResourcePackError('workflow.root must be base or pack')
+        workflow_root = root_id
+        workflow_entry = _workflow_path(workflow.get('entry'), roots[root_id], 'workflow.entry')
+        raw_replacements = workflow.get('replacements', [])
+        if type(raw_replacements) is not list:
+            raise ResourcePackError('workflow.replacements must be an array of tables')
+        selected = []
+        seen = set()
+        for replacement in raw_replacements:
+            if type(replacement) is not dict or set(replacement) != {'target_id', 'entry', 'root_id'}:
+                raise ResourcePackError('workflow.replacements entries require target_id, entry and root_id')
+            target = replacement['target_id']
+            replacement_root = replacement['root_id']
+            if (type(target) is not str or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', target)
+                    or target in seen):
+                raise ResourcePackError('workflow.replacements target_id must be a unique identifier')
+            if type(replacement_root) is not str or replacement_root not in roots:
+                raise ResourcePackError('workflow.replacements root_id must be base or pack')
+            seen.add(target)
+            checked = _workflow_path(replacement['entry'], roots[replacement_root],
+                                     'workflow.replacements entry')
+            selected.append((target, checked.relative_to(roots[replacement_root]), replacement_root))
+        workflow_replacements = tuple(selected)
     defaults = data.get("defaults", {})
     providers = data.get('providers', {})
     if not isinstance(providers, dict) or set(providers) - {'configs'}:
@@ -199,15 +227,47 @@ def load_launch_context(
         service_name=service_name,
         provider_config_paths=tuple(dict.fromkeys(provider_configs)),
         shared_dotenv_paths=shared_dotenv_paths,
-        layout_path=layout_path,
+        workflow_root=workflow_root,
+        workflow_entry=workflow_entry,
+        workflow_replacements=workflow_replacements,
     )
 
 
-def load_workflow(context, registry, conditions=None, *, config=None, services=None):
-    """Join an explicitly selected pack layout to an independently owned catalog."""
-    if context.layout_path is None:
-        raise ResourcePackError('The selected resource pack has no workflow declaration')
-    from api_agent.workflows import load_layout, Workflow
-    definition = load_layout(context.layout_path, base_root=context.base_root,
-                             pack_root=context.pack_root)
-    return Workflow(definition, registry, conditions, config=config, services=services)
+def _workflow_path(value: object, root: Path, field: str) -> Path:
+    if (type(value) is not str or not value or Path(value).is_absolute()
+            or '..' in Path(value).parts or Path(value).suffixes != ['.md', '.html']):
+        raise ResourcePackError(f'{field} must be a relative .md.html declaration')
+    path = (root / value).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ResourcePackError(f'{field} must exist inside its declared root')
+    return path
+
+
+def load_selected_definition(context):
+    """Load the selected complete graph without initializing providers or executing nodes."""
+    from api_agent.workflows.definition import Replacement, load_definition
+    entry = context.workflow_entry or context.base_root / 'flow.md.html'
+    if not entry.is_file():
+        raise ResourcePackError('The bundled application workflow entry is unavailable')
+    replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
+    return load_definition(entry, base_root=context.base_root,
+                           pack_root=context.pack_root, replacements=replacements,
+                           entry_root=context.workflow_root)
+
+
+def load_workflow(context, registry, conditions=None, *, definition=None, config=None, services=None):
+    """Join the selected immutable definition to an independently owned catalog."""
+    from api_agent.workflows import Workflow
+    from api_agent.workflows.definition import Replacement, WorkflowDefinition
+    if definition is None:
+        definition = load_selected_definition(context)
+    expected_entry = context.workflow_entry or context.base_root / 'flow.md.html'
+    expected_replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
+    if (not isinstance(definition, WorkflowDefinition) or definition.entry != expected_entry
+            or definition.entry_root != context.workflow_root
+            or definition.roots != {'base': context.base_root, 'pack': context.pack_root}
+            or definition.replacements != expected_replacements):
+        raise ResourcePackError('Workflow definition does not match selected pack graph')
+    definition.verify_native_sources()
+    return Workflow(definition, registry, conditions,
+                    config=config, services=services)

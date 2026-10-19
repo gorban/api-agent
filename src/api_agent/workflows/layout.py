@@ -224,7 +224,7 @@ def load_layout(path, *, base_root, pack_root):
     return layout
 
 
-def _validate(layout):
+def _validate(layout, resource_bytes=None):
     steps = {item.id: item for item in layout.steps}
     for section, kind in (('Components', 'component'), ('Functions', 'node')):
         entries = layout.tables[section]
@@ -237,7 +237,8 @@ def _validate(layout):
             if _ID.fullmatch(row['Registry']) is None:
                 raise ValueError('invalid function registry ID')
             for column in ('Input', 'Output'):
-                schema = _json(row[column])
+                schema = (_decode_json(resource_bytes[row[column]].decode('utf-8'))
+                          if resource_bytes is not None else _json(row[column]))
                 if _has_unsupported_dialect(schema):
                     raise ValueError('Layout v1 supports only JSON Schema draft 2020-12')
                 Draft202012Validator.check_schema(schema)

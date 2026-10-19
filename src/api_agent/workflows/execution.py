@@ -68,6 +68,9 @@ class _State(TypedDict):
 
 class Workflow:
     def __init__(self, layout, registry, conditions=None, *, config=None, services=None):
+        self.definition = layout if hasattr(layout, 'definition_id') else None
+        if self.definition is not None:
+            layout = self.definition.layout
         self.layout, self.registry = layout, registry
         self.conditions = conditions or {}
         self.config, self.services = config or {}, services or {}
@@ -79,7 +82,9 @@ class Workflow:
             from api_agent.config.declarations import schema_from_dict, UNSET
             import tomllib
             try:
-                schema = schema_from_dict(tomllib.loads(row['Source'].read_text(encoding='utf-8')))
+                source_bytes = (self.definition.contents[row['Source']] if self.definition is not None
+                                else row['Source'].read_bytes())
+                schema = schema_from_dict(tomllib.loads(source_bytes.decode('utf-8')))
             except (OSError, UnicodeError, ValueError) as error:
                 layout.error(str(error), row['line'])
             field = schema.fields.get(row['Key'])
@@ -91,9 +96,13 @@ class Workflow:
             self.timeouts[row['Owner']] = value
             self.timeout_keys[row['Owner']] = row['Key']
         steps = {step.id: step for step in layout.steps}
+        if self.definition is not None:
+            self.definition.verify_native_sources()
         for row in self.functions.values():
             function = registry.get(row['Registry'])
-            if not isinstance(function, NodeFunction) or function.kind not in ('llm', 'deterministic') or not callable(function.invoke):
+            if (not isinstance(function, NodeFunction) or function.kind not in ('llm', 'deterministic')
+                    or not callable(function.invoke)
+                    or (self.definition is not None and function.kind != row['Kind'])):
                 layout.error('unknown or invalid registered node function', row['line'])
             try:
                 source = inspect.getsourcefile(function.invoke)
@@ -102,6 +111,11 @@ class Workflow:
                 matches_source = False
             if not matches_source:
                 layout.error('registered function does not match its declared source link', row['line'])
+            if self.definition is not None:
+                from .definition import native_origin
+                path = steps[row['ID']].source
+                if native_origin(function.invoke) != (self.definition.definition_id, path):
+                    layout.error('native callable does not belong to the admitted definition', row['line'])
         for row in (*layout.tables['Edges'], *layout.tables['Prompts']):
             if row['When'] != 'always' and not callable(self.conditions.get(row['When'])):
                 layout.error('unknown registered condition', row['line'])
@@ -268,7 +282,9 @@ class Workflow:
     async def arun(self, inputs):
         async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1):
             self._validate({'type': 'object'}, inputs, 'START', 'input')
-            prompts = {path: path.read_text(encoding='utf-8') for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
+            prompts = {path: (self.definition.contents[path].decode('utf-8') if self.definition is not None
+                              else path.read_text(encoding='utf-8'))
+                       for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(inputs)}, ancestry=(), feedback={}, previous={}, prompts=prompts),
                                              {'recursion_limit': len(self.layout.steps) + 1})
         return result['values']

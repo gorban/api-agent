@@ -1,0 +1,15 @@
+# First-release application workflow and shared scenario coverage
+
+[Workflow conversion contracts](implementation_plan_b1b1.md) · [Initial application](implementation_plan_e.md)
+
+- [ ] Use a small independently authored bundled application graph, `START -> renderer -> END`, based on the accepted Studio request path, as the first release's selected root `flow.md.html`. Preserve selected model/version/reasoning and result/usage contracts; add no verifier, guard or test-only response shortcut. Freeze its concrete native bindings, prompts, typed inputs/outputs and source identity with the format conversion. Keep the permanent contrived qualification graph explicitly selectable and separate from the application.
+- [ ] When Run local is implemented, execute that same selected application definition through the real application lifecycle and API/provider interfaces. Its displayed flow must identify the compiled graph actually used; no alternate test-only application graph or direct-provider shortcut may masquerade as that traversal.
+- [ ] Once that runtime is available, promote applicable application-behavior integration scenarios into E2E coverage using the shipped root definition and real launcher/application entrypoints. Preserve assertions, result/usage metadata, cancellation/streaming, model settings and evidence. Tests may vary request/configuration data without replacing the graph or monkeypatching the public loader.
+- [ ] Keep focused parser/provider/transport integration tests and specialized framework/qualification graphs where their distinct purpose requires them. Each distinct graph has a declared fixture root and uses the real loader. Reclassifying an application scenario does not remove reusable contract checks, weaken failed observations or claim that synthetic fixtures cover deployed application behavior.
+- [ ] Require deterministic equivalence, meaningful graph-bypass/stale-selection mutations, installed resources, applicable exact coverage, independent review and human acceptance before claiming the new application/E2E scope. Native authentication/inference retains its explicit authorization and accounting gates.
+
+Approval of preparation or a source-format conversion alone does not claim Run local, managed viewing or E2E execution delivered.
+
+## Renderer contract
+
+The renderer accepts ordered public role/content messages and preserves the selected model, generation options and request identity. It uses the ordinary completion contract and emits a schema-validated graph/API object with `response_text`, outcome, usage and every supplied optional provider metadata field. This does not require upstream structured-output mode. Incomplete, refused, invalid or empty text results retain explicit failure behavior. An explicitly selected missing root fails rather than falling back to a different graph.
