@@ -226,7 +226,9 @@ function syncSettings() {
   const versions = grouped ? entries.map(row => ({id: row.selected_llm, name: (row.version || 'Unknown version') + (entries.filter(other => other.version === row.version).length > 1 || !row.version ? ' — ' + row.selected_llm : '')})) : entries.filter(row => row.version).map(row => ({id: row.version}));
   const unresolvedVersion = grouped && state.settings.version && (!selection.selection || selection.selection.version !== state.settings.version);
   fillSelect('version', versions, unresolvedVersion ? '' : grouped ? (state.settings.model ? state.settings.model : state.settings.version && selection.selection.selected_llm) || '' : state.settings.version, unresolvedVersion ? 'Unresolved version: ' + state.settings.version : 'Provider default');
-  fillSelect('reasoning', reasoningEfforts(catalog, state.settings).map(id => ({id})), state.settings.reasoning);
+  const availableEfforts = reasoningEfforts(catalog, state.settings);
+  fillSelect('reasoning', availableEfforts.map(id => ({id})), state.settings.reasoning);
+  $('reasoning').disabled = availableEfforts.length === 0;
   const label = selection.selection?.display_name || group?.name || state.settings.family || state.settings.model || 'Provider default';
   $('backend-default').textContent = state.settings.model || state.settings.family ? 'Use backend default' : 'Keep selected model';
   $('backend-default').disabled = !$('model').value;
@@ -279,7 +281,9 @@ for (const id of ['model', 'version', 'reasoning']) $(id).addEventListener('chan
     state.settings = current.family === null ? {model: current.rows[0].selected_llm, version: '', reasoning: ''} : {model: '', family: current.family, version: '', reasoning: ''};
   } else if (id === 'version' && current.family !== null) {
     const row = current.rows.find(item => item.selected_llm === $('version').value);
-    state.settings = row ? {model: row.selected_llm, version: row.version || '', reasoning: ''} : {model: '', family: current.family, version: '', reasoning: ''};
+    const reasoning = state.settings.reasoning;
+    state.settings = row ? {model: row.selected_llm, version: row.version || '', reasoning} : {model: '', family: current.family, version: '', reasoning};
+    if (!reasoningEfforts(catalog, state.settings).includes(reasoning)) state.settings.reasoning = '';
   } else {
     state.settings[id] = $(id).value;
     if (id !== 'reasoning') state.settings.reasoning = '';

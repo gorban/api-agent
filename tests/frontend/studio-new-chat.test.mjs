@@ -116,7 +116,7 @@ test('unknown configured effort explains the blocked draft and corrected catalog
 });
 for (const [name, efforts, expected] of [
   ['common', [['off','low'],['off','low']], ['Provider default','off','low']],
-  ['intersection', [['off','low','high'],['off','medium']], ['Provider default','off']],
+  ['mixed', [['off','low','high'],['off','medium']], ['Provider default']],
   ['unknown', [['off','low'],null], ['Provider default']]
 ]) test(`unresolved family renders ${name} reasoning capabilities without selecting a version`,async t=>{
   const studio=await openStudio(t,{familyEfforts:efforts}), {page}=studio;
@@ -124,6 +124,7 @@ for (const [name, efforts, expected] of [
   await page.locator('#model').selectOption(JSON.stringify(['family','Synthetic']));
   assert.deepEqual(await page.locator('#reasoning option').allTextContents(),expected);
   assert.equal(await page.locator('#version').inputValue(),'');
+  assert.equal(await page.locator('#reasoning').isDisabled(),expected.length === 1);
   await page.locator('#close-settings').click();
   await page.locator('#prompt').fill('Unresolved family draft');
   await page.locator('#prompt').press('Control+Enter');

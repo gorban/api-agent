@@ -168,6 +168,7 @@ def test_http_catalog_and_send_keep_exact_known_family_default_selection():
                 assert response.status_code == 200
                 catalog = response.json()
                 assert catalog['default'] == 'gpt-5.6-terra'
+                assert catalog['family_defaults'] == {'gpt-terra': 'gpt-5.6-terra', 'gpt-sol': 'gpt-5.6-sol'}
                 assert [(row['value'], row['reasoning_efforts']) for row in catalog['models']] == [
                     ('gpt-5.6-terra', ['off', 'low', 'medium', 'high']),
                     ('gpt-5.6-sol', ['off', 'low', 'medium', 'high'])]

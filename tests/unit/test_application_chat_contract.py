@@ -987,3 +987,57 @@ def test_every_advertised_selection_accepts_omitted_reasoning(configured):
         assert calls == [('example',configured),('other',configured)]
         await bridge.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('versions,expected', [
+    (('1.9', '1.10'), 'choice-1'),
+    (('2.0rc1', '2.0'), 'choice-1'),
+    (('2.0', '1.0'), 'choice-0'),
+    (('opaque',), 'choice-0'),
+    ((None,), 'choice-0'),
+    ((None, '2.0'), None),
+    (('opaque', '2.0'), None),
+    (('1.0', '1.0.0'), None),
+])
+def test_catalog_family_defaults_use_existing_comparable_version_policy(versions, expected):
+    choices = tuple(AvailableSelection(f'choice-{index}', family='secondary', version=version)
+                    for index, version in enumerate(versions))
+    selections = (AvailableSelection('configured', family='primary', version='1.0'),
+                  AvailableSelection('newer', family='primary', version='2.0'),
+                  AvailableSelection('unknown'), *choices)
+
+    result = catalog(selections, 'configured', None)
+
+    assert result['family_defaults'] == ({'primary': 'configured'} |
+        ({} if expected is None else {'secondary': expected}))
+    assert {row['value'] for row in result['models']} == {value.selected_llm for value in selections}
+
+
+def test_catalog_family_default_preserves_configured_exact_choice_with_opaque_versions():
+    selections = (AvailableSelection('chosen', family='primary', version='opaque'),
+                  AvailableSelection('other', family='primary'))
+
+    result = catalog(selections, 'chosen', None)
+
+    assert result['family_defaults'] == {'primary': 'chosen'}
+
+
+def test_models_http_catalog_resolves_only_advertised_family_defaults():
+    async def run():
+        async def describe(**kwargs):
+            return (AvailableSelection('configured', family='primary', version='1.0'),
+                    AvailableSelection('newer', family='primary', version='2.0'),
+                    AvailableSelection('secondary-old', family='secondary', version='1.9'),
+                    AvailableSelection('secondary-latest', family='secondary', version='1.10'),
+                    AvailableSelection('excluded', family='secondary', version='3.0'))
+        bridge = backend(describe=describe, policy=ModelSelectionPolicy({
+            'LLM_DEFAULT_MODEL': 'configured', 'LLM_ALLOWED_MODELS': '(?!excluded).*'}))
+        try:
+            response = await bridge.handle(request(method='GET'), 'models')
+            assert response.status_code == 200
+            value = json.loads(response.content)
+            assert value['family_defaults'] == {'primary': 'configured', 'secondary': 'secondary-latest'}
+            assert 'excluded' not in {row['value'] for row in value['models']}
+        finally:
+            await bridge.aclose()
+    asyncio.run(run())

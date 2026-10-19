@@ -5,9 +5,9 @@ const row = (value, family, reasoning_efforts, features=['reasoning_effort']) =>
 function catalog(rows) { return normalizeCatalog({models:rows,default:'default',reasoning_default:null}); }
 const base = row('default','Other',['off']);
 const family = {model:'',family:'Chosen',version:'',reasoning:''};
-test('unresolved family efforts are the verified intersection without resolving a version',()=>{
+test('differing family effort sets disable reasoning without an explicit version',()=>{
   const rows=catalog([base,row('one','Chosen',['off','low','high']),row('two','Chosen',['off','low','medium'])]);
-  assert.deepEqual(reasoningEfforts(rows,family),['off','low']);
+  assert.deepEqual(reasoningEfforts(rows,family),[]);
   assert.equal(resolveSelection(rows,family).valid,false);
   assert.equal(resolveSelection(rows,{...family,reasoning:'off'}).selection,undefined);
 });
@@ -32,4 +32,35 @@ test('exact selections use their own verified capabilities and stale intent gets
   assert.deepEqual(reasoningEfforts(rows,{...family,model:'missing'}),[]);
   assert.deepEqual(reasoningEfforts(rows,{...family,version:'stale'}),[]);
   assert.deepEqual(reasoningEfforts(rows,{model:''}),['off']);
+});
+
+test('family equality ignores effort ordering and includes every version even the global default',()=>{
+  const rows=catalog([row('default','Chosen',['high','off']),row('two','Chosen',['off','high'])]);
+  assert.deepEqual(reasoningEfforts(rows,family),['off','high']);
+  const mixed=catalog([row('default','Chosen',['off']),row('two','Chosen',['off','high'])]);
+  assert.deepEqual(reasoningEfforts(mixed,family),[]);
+  assert.deepEqual(reasoningEfforts(mixed,{model:'two',version:'two'}),['off','high']);
+});
+
+test('advertised family default resolves independently of global default and row order',()=>{
+  const rows=normalizeCatalog({models:[base,row('new','Chosen',['off','low']),row('old','Chosen',['low','off'])],default:'default',reasoning_default:null,family_defaults:{Chosen:'new'}});
+  assert.equal(resolveSelection(rows,family).selection.selected_llm,'new');
+  assert.equal(resolveSelection(rows,{...family,reasoning:'low'}).valid,true);
+  assert.equal(resolveSelection(rows,{...family,version:'old'}).selection.selected_llm,'old');
+});
+test('saved reasoning cannot bypass a mixed family gate when its default supports the effort',()=>{
+  const rows=normalizeCatalog({models:[base,row('new','Chosen',['off','low']),row('old','Chosen',['off'])],default:'default',reasoning_default:null,family_defaults:{Chosen:'new'}});
+  assert.deepEqual(reasoningEfforts(rows,family),[]);
+  assert.equal(resolveSelection(rows,{...family,reasoning:'low'}).valid,false);
+  assert.match(resolveSelection(rows,{...family,reasoning:'low'}).error,/before setting reasoning/);
+});
+for (const family_defaults of [null,[],{Chosen:'default'},{Missing:'default'},{Chosen:42}]) test('reject malformed or cross-family default '+JSON.stringify(family_defaults),()=>{
+  assert.throws(()=>normalizeCatalog({models:[base,row('one','Chosen',['off'])],default:'default',reasoning_default:null,family_defaults}),/Invalid provider catalog/);
+});
+
+test('family default cannot contradict the configured exact default in its family',()=>{
+  const input={models:[row('default','Chosen',['off']),row('other','Chosen',['off'])],default:'default',reasoning_default:null};
+  assert.throws(()=>normalizeCatalog({...input,family_defaults:{Chosen:'other'}}),/Invalid provider catalog/);
+  assert.equal(resolveSelection(normalizeCatalog({...input,family_defaults:{Chosen:'default'}}),family).selection.selected_llm,'default');
+  assert.equal(resolveSelection(normalizeCatalog(input),family).selection.selected_llm,'default');
 });

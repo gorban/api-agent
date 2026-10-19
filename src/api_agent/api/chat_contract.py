@@ -4,8 +4,9 @@ import math
 from uuid import UUID, uuid4
 
 from ..providers.catalog import catalog_to_wire
-from ..providers.contracts import ContractError
+from ..providers.contracts import ContractError, ProviderAccessError
 from ..providers.inference import request_from_wire, result_to_wire
+from ..providers.selection import ModelSelectionPolicy
 
 
 STREAM_BYTES = 1048576
@@ -38,7 +39,28 @@ def catalog(selections, default, reasoning_default):
         row['value'] = row.pop('selected_llm')
         row['label'] = row.pop('display_name') or row['value']
         models.append(row)
-    return {'models': models, 'default': default, 'reasoning_default': reasoning_default}
+    return {'models': models, 'default': default, 'reasoning_default': reasoning_default,
+            'family_defaults': _family_defaults(selections, default)}
+
+
+def _family_defaults(selections, default):
+    """Resolve advertised families using the ordinary model-default policy."""
+    families = {}
+    for selection in selections:
+        if selection.family is not None:
+            families.setdefault(selection.family, []).append(selection)
+    policy = ModelSelectionPolicy({'LLM_DEFAULT_MODEL': '.*'})
+    defaults = {}
+    for family, values in families.items():
+        if any(value.selected_llm == default for value in values):
+            defaults[family] = default
+            continue
+        try:
+            defaults[family] = policy.select_default(tuple(values))
+        except ProviderAccessError:
+            # Incomplete or ambiguous metadata cannot identify a family default.
+            continue
+    return defaults
 
 
 def completion(row, default, reasoning_default):

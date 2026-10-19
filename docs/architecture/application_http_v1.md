@@ -25,7 +25,8 @@ The shared request deadline includes body acquisition and dispatch.
 These controls do not implement production identity or cookie authentication;
 other deployments supply their own authorized composition.
 
-`GET /app/agent/models` returns `models`, `default` and `reasoning_default`.
+`GET /app/agent/models` returns `models`, `default`, `reasoning_default` and
+optional `family_defaults`.
 Each model has `value` (the exact selectable identifier), `label`, `description`,
 `features`, `version`, `family`, `max_output_tokens` and `context_length`.
 Unknown version/family/limits are null. Optional `reasoning_efforts` preserves
@@ -42,6 +43,19 @@ invokes inference. Reject inconsistent composition rather than silently dropping
 the configured setting for an alternate model. Catalog discovery performs
 no inference. Unset UI model settings follow later backend policy changes without
 becoming saved explicit choices; users can reset an explicit choice to policy.
+
+`family_defaults` maps explicit family names to exact offered identifiers. Within
+the overall default's family it preserves that configured identifier. Other
+families use their sole row or unique newest comparable version according to the
+backend version-selection policy. Missing, unparseable or tied highest versions
+in a multi-row family leave it unresolved, requiring an explicit identifier.
+Clients must not infer a winner from catalog order, labels or identifier syntax.
+Older responses may omit this map; only the overall default's family is then
+implicitly resolvable. Without an explicit version Studio enables reasoning only
+when every family row has identical verified reasoning capabilities. A version
+change retains a supported explicit effort and clears an unsupported one; a
+family change resets both version and effort. At Send pin the exact resolved
+identifier so later policy changes do not alter retries or historical messages.
 
 ## Chat values
 
