@@ -111,6 +111,7 @@ class AllureNavigation:
         self._allure_generation = object()
         self._allure_opening = False
         self._allure_loading = ''
+        self._allure_restore_worker = None
         self._allure_tasks = set()
         self._allure_cancel_requested = set()
         self._allure_cleanup = None
@@ -366,6 +367,9 @@ class AllureNavigation:
         cancellation = Event()
         self._allure_opening = True
         self._allure_loading = 'Checking finalized secondary history…'
+        page = self.allure_page()
+        if page is not None:
+            page.query_one('#error', Static).update('')
         self.refresh_allure_loading()
 
         def progress(done, total):

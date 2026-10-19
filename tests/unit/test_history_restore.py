@@ -234,6 +234,8 @@ def test_explicit_tui_action_reuses_reporting_session_and_refreshes_primary(hist
             values = {'ALLURE_SECONDARY_DIR': str(local), 'ALLURE_S3_BUCKET': 'selected-bucket'}
             self.session = SimpleNamespace(result=lambda: SimpleNamespace(values=values))
             self.operation_status = None
+        def allure_page(self):
+            return None
         def refresh_allure_loading(self):
             events.append(('progress', self._allure_loading))
         async def prepare_allure_reporting(self, *, for_restore=False):
@@ -618,12 +620,12 @@ def test_restore_tui_safe_error_targets_current_page_or_notice(history, monkeypa
     asyncio.run(app.restore_allure_secondary_history())
 
     if stale:
-        assert app.operation_status is None and displayed == []
+        assert app.operation_status is None and displayed == ([''] if page_visible else [])
         assert not any(kind == 'notice' for kind, *_ in app.events)
     else:
         assert app.operation_status == 3
         if page_visible:
-            assert displayed == ['Allure history restore timed out.']
+            assert displayed == ['', 'Allure history restore timed out.']
         else:
             assert ('notice', 'Allure history restore timed out.',
                     {'severity': 'error', 'timeout': 10}) in app.events
