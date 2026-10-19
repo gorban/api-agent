@@ -66,3 +66,7 @@ Delivered generic inference/model request contracts are human-accepted. Frontend
 - [x] Verify the catalog, request wire, HTTP selection and frontend family flow with controlled transports and boundary mutations. The changed reasoning module must be reconciled with the sampling fingerprint; this task does not authorize paid inference.
 - [x] Keep model-specific Chat tool-route restrictions independent from effort availability. Adding a verified effort alias must not silently reject omitted, empty, off or high requests with functions on a route that already admitted those requests. Preserve existing documented GPT-6 and prior 5.6 Luna restrictions until separately reviewed.
 - [x] Carry forward the last GPT-6 Luna workflow measurements and operating bound only after independent old/new request-admission and native-wire equivalence review. Retain the original measurement rows, computed statistics and source fingerprint in provenance; bind the reviewed current source digest without calling it a new pilot. The unchanged validator must still reject future changes to settings, dependencies or any other sampling source before setup or inference.
+
+## Family-default reasoning repair
+
+- [*] [Resolve family defaults and preserve supported reasoning across version changes](implementation_plan_f2f4.md). This supersedes the earlier non-default-family explicit-version requirement and intersection menu; prior delivered behavior remains historical evidence.

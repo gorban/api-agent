@@ -3,10 +3,12 @@ const features = ['tools', 'structured', 'temperature', 'max_output_tokens', 'ca
 const efforts = ['off', 'low', 'medium', 'high'];
 const bytes = x => JSON.stringify(x).replace(/[\u007f-\uffff]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4,'0')).length;
 export function normalizeCatalog(input) {
-  let rows, defaultSelection = null, reasoningDefault = null;
+  let rows, defaultSelection = null, reasoningDefault = null, familyDefaults = {};
   if (!Array.isArray(input) && input && typeof input === 'object') {
-    if (Object.keys(input).sort().join(',') !== 'default,models,reasoning_default' || (input.default !== null && typeof input.default !== 'string')) throw Error('Invalid provider catalog');
+    if (!['default,models,reasoning_default', 'default,family_defaults,models,reasoning_default'].includes(Object.keys(input).sort().join(',')) || (input.default !== null && typeof input.default !== 'string')) throw Error('Invalid provider catalog');
     rows = input.models; defaultSelection = input.default; reasoningDefault = input.reasoning_default;
+    familyDefaults = Object.hasOwn(input, 'family_defaults') ? input.family_defaults : {};
+    if (!familyDefaults || typeof familyDefaults !== 'object' || Array.isArray(familyDefaults)) throw Error('Invalid provider catalog');
     if (reasoningDefault !== null && !efforts.includes(reasoningDefault)) throw Error('Invalid provider catalog');
   }
   const fail = () => { throw Error('Invalid provider catalog'); };
@@ -30,6 +32,10 @@ export function normalizeCatalog(input) {
   });
   if (defaultSelection !== null && !catalog.some(row => row.selected_llm === defaultSelection)) fail();
   if (catalog.length && defaultSelection === null) fail();
+  for (const [family, model] of Object.entries(familyDefaults)) if (!catalog.some(row => row.family === family && row.selected_llm === model)) fail();
+  const configured = catalog.find(row => row.selected_llm === defaultSelection);
+  if (configured?.family !== null && configured !== undefined && Object.hasOwn(familyDefaults, configured.family) && familyDefaults[configured.family] !== defaultSelection) fail();
+  Object.defineProperty(catalog, 'familyDefaults', {value: structuredClone(familyDefaults)});
   Object.defineProperty(catalog, 'defaultSelection', {value: defaultSelection});
   Object.defineProperty(catalog, 'reasoningDefault', {value: reasoningDefault});
   return catalog;
@@ -67,7 +73,7 @@ export function resolveSelection(catalog, {model, family = '', version = '', rea
   if (family && model) error = 'Choose a family or a concrete model, not both.';
   else if (family) {
     const rows = catalog.filter(row => row.family === family);
-    const matches = version ? rows.filter(row => row.version === version) : rows.filter(row => row.selected_llm === catalog.defaultSelection);
+    const matches = version ? rows.filter(row => row.version === version) : rows.filter(row => row.selected_llm === (Object.hasOwn(catalog.familyDefaults, family) ? catalog.familyDefaults[family] : catalog.defaultSelection));
     if (!rows.length) error = 'This model family is no longer available.';
     else if (matches.length > 1) error = 'This family version is ambiguous; choose a concrete model ID.';
     else if (!matches.length) error = version ? 'This model version is no longer available.' : 'Choose an advertised version for this family.';
@@ -76,6 +82,7 @@ export function resolveSelection(catalog, {model, family = '', version = '', rea
   const effort = reasoning || catalog.reasoningDefault;
   if (!error && !selection) error = 'Choose an available model.';
   else if (!error && version && selection.version !== version) error = 'This model version is no longer available.';
+  else if (!error && reasoning && family && !version && !uniformReasoningEfforts(catalog.filter(row => row.family === family)).includes(reasoning)) error = 'Choose an advertised version before setting reasoning for this family.';
   else if (!error && effort && (!selection.features.includes('reasoning_effort') || !selection.reasoning_efforts?.includes(effort))) {
     if (selection.reasoning_efforts === undefined || selection.reasoning_efforts === null) error = 'Reasoning support for this model is unknown; the selected or configured effort cannot be verified.';
     else error = reasoning ? 'This reasoning setting is unsupported.' : 'The configured reasoning default is unsupported for this model.';
@@ -83,10 +90,16 @@ export function resolveSelection(catalog, {model, family = '', version = '', rea
   return {valid: !error, error, selection};
 }
 
-// Unresolved family choices advertise only capabilities verified for every row.
+// Family choices without a version require identical verified capabilities on every row.
+function uniformReasoningEfforts(rows) {
+  if (!rows.length || rows.some(row => !row.features.includes('reasoning_effort') || !Array.isArray(row.reasoning_efforts))) return [];
+  const supported = efforts.filter(effort => rows[0].reasoning_efforts.includes(effort));
+  if (rows.some(row => row.reasoning_efforts.length !== supported.length || supported.some(effort => !row.reasoning_efforts.includes(effort)))) return [];
+  return supported;
+}
 export function reasoningEfforts(catalog, settings) {
   const {selection} = resolveSelection(catalog, settings);
-  const rows = selection ? [selection] : settings.family && !settings.model && !settings.version ? catalog.filter(row => row.family === settings.family) : [];
-  if (!rows.length || rows.some(row => !row.features.includes('reasoning_effort') || !Array.isArray(row.reasoning_efforts))) return [];
-  return efforts.filter(effort => rows.every(row => row.reasoning_efforts.includes(effort)));
+  const familyChoice = settings.family && !settings.model && !settings.version;
+  const rows = familyChoice ? catalog.filter(row => row.family === settings.family) : selection ? [selection] : [];
+  return uniformReasoningEfforts(rows);
 }

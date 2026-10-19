@@ -1248,3 +1248,37 @@ test('missing saved family uses display-only intent despite opaque ID and handle
   assert.equal(posts.length,1);assert.equal(posts[0].model,family);
  }finally{await studio.close();}
 });
+
+test('family defaults pin requests and version changes retain only supported reasoning',async()=>{
+ const family=JSON.stringify(['family','Chosen']);
+ const row=(selected_llm,reasoning_efforts)=>({...model,selected_llm,version:selected_llm,family:'Chosen',reasoning_efforts});
+ const rows=[model,row('new',['off','low']),row('old',['low','off']),row('limited',['off'])];
+ const posts=[];let uniform=false;
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:(uniform ? rows.filter(row=>row.selected_llm!=='limited') : rows).map(wireModel),default:'sample',reasoning_default:null,family_defaults:{Chosen:'new'}}));return;}
+  const input=JSON.parse(body);posts.push(input);response.end(JSON.stringify(wireResult(result('Family default request'),input.session_id)));
+ },family);
+ const {page}=studio;
+ try{
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption(family);
+  assert.equal(await page.locator('#version').inputValue(),'');
+  assert.equal(await page.locator('#reasoning').isDisabled(),true);
+  assert.equal(await page.locator('#model-status').textContent(),'');
+  await page.locator('#close-settings').click();await page.locator('#prompt').fill('Use family latest');await page.locator('#send').click();await page.getByText('Family default request',{exact:true}).waitFor();
+  assert.equal(posts.length,1);assert.equal(posts[0].model,'new');assert.equal('reasoning_effort' in posts[0],false);
+  await page.locator('#settings-nav').click();await page.locator('#version').selectOption('new');await page.locator('#reasoning').selectOption('low');
+  await page.locator('#version').selectOption('old');assert.equal(await page.locator('#reasoning').inputValue(),'low');
+  await page.locator('#version').selectOption('limited');assert.equal(await page.locator('#reasoning').inputValue(),'');
+  await page.locator('#reasoning').selectOption('off');await page.locator('#version').selectOption('');assert.equal(await page.locator('#reasoning').inputValue(),'');assert.equal(await page.locator('#reasoning').isDisabled(),true);
+  await page.locator('#version').selectOption('new');await page.locator('#reasoning').selectOption('low');await page.locator('#model').selectOption('sample');
+  assert.equal(await page.locator('#version').inputValue(),'');assert.equal(await page.locator('#reasoning').inputValue(),'');
+  uniform=true;await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+  await page.locator('#settings-nav').click();await page.locator('#model').selectOption(family);
+  assert.equal(await page.locator('#version').inputValue(),'');assert.equal(await page.locator('#reasoning').isDisabled(),false);
+  assert.deepEqual(await page.locator('#reasoning option').allTextContents(),['Provider default','off','low']);
+  await page.locator('#reasoning').selectOption('low');await page.locator('#close-settings').click();await page.locator('#prompt').fill('Uniform family latest');await page.locator('#send').click();
+  await page.waitForFunction(()=>document.querySelectorAll('.message.assistant').length===2);
+  assert.equal(posts.length,2);assert.equal(posts[1].model,'new');assert.equal(posts[1].reasoning_effort,'low');
+ }finally{await studio.close();}
+});

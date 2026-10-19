@@ -8,6 +8,6 @@
 - [x] Controlled usage derives from actual native effort. Verify high/low transmission, nonce and request identity, conflicting provider defaults, and explicit effort ordering independently of transport arrival. Swapped native efforts and ignored effort must fail; medium substitution must fail preflight or scoring rather than silently retaining the earlier comparison.
 - [x] Observe one frozen six-call high/low suite. Preserve all results without retries, replacement pairs or prompt tuning.
 - [x] Complete independent and external review and joined validation.
-- [ ] Human acceptance remains open.
+- [x] Human acceptance of the high-versus-low comparison is recorded after a successful user-run test. Deferred statistical stability remains separate.
 
 The earlier successful and failed low/medium observations remain evidence for those original requests only. This wider effort contrast is an empirical smoke test, not a guarantee of token separation or population reliability. The independent [stability follow-up](implementation_plan_f2f3a.md) remains deferred.
