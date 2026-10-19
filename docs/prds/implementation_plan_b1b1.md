@@ -14,3 +14,5 @@ These generic contracts must be reviewed and versioned before dependent format c
 - [ ] Reserve versioned origin-side definition/turn/invocation/visit/attempt/call identity, parent/cause/branch identity and every actual transition, including implicit/error/nested edges. Preserve privacy before queues and artifacts and explicit missing/partial evidence. This reserves later inspection seams without implementing its UI.
 
 Independent contract review precedes implementation. Conversion completion still requires the parent equivalence, packaging, qualification, staged-check, independent review and human acceptance gates.
+
+- [ ] Freeze the [immutable production profile](implementation_plan_h4.md) alongside mutable development behavior: startup-validated definition identity, once-per-process plan reuse, fresh execution state and no implicit definition reload. Preserve the same compiled semantics in source, installed and image execution; build-time generation remains a later measured choice.

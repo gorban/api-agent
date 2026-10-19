@@ -11,3 +11,5 @@ Local API means the selected pack's upstream API; the api-agent chat API remains
 - [ ] Implement [shared resource ownership, fixed ports and persistent coordination](implementation_plan_h2.md): durable reporting service, one cache per computer, safe cleanup and future resource coordination.
 
 Existing foundation delivery remains recorded in the children. These grouping checkboxes stay open while implementation or independent review remains; they do not grant acceptance for live services, parallel suites or destructive lifecycle changes.
+
+- [ ] Deliver the [agent-only production artifact](implementation_plan_h4.md), with immutable workflow admission and externally managed dependencies; evaluate [build-time graph optimization](implementation_plan_h4a.md) later.
