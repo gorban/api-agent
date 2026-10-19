@@ -10,45 +10,9 @@
         "first_draft": 0.7871199821209823,
         "first_format": 0.7871199821209823,
         "first_guard": 0.7871199821209823,
-        "second_draft": 0.36204651348821093,
-        "second_format": 0.36204651348821093,
-        "second_guard": 0.36204651348821093
-      },
-      "carry_forward": {
-        "basis": "Deterministic old/new request-admission and native-wire equivalence for the retained model and route; original pilot observations and bound are unchanged.",
-        "current_source_sha256": "03db69e5535cb82583f1acf2b0dedc1efc1cb843bacec2738ccb645c449dc7a2",
-        "kind": "reviewed_request_equivalence",
-        "model": "gpt-6-luna",
-        "new_pilot": false,
-        "original_fixture_sha256": "8c12b099e26e0e2c9955ba3e2fe5543ae00179d3814fea313db522de6bb0c3d9",
-        "original_source_sha256": "8ea914b93096b4a48af3023da129d172ae474575b002562317459666df97a43c",
-        "reasoning_effort": "low",
-        "route": "official_subscription_responses",
-        "source": "src/api_agent/llm_providers/gpt/reasoning.py"
-      },
-      "carry_forward_browser_policy": {
-        "basis": "The factory change narrows visible login presentation outside the sampled workflow and changes a login diagnostic; sampled request construction and execution remain unchanged.",
-        "current_source_sha256": "1a3228adad454cb28df7176c7f268d3df21064bf164b067ef59ed20331174665",
-        "kind": "reviewed_non_sampling_visibility_binding",
-        "model": "gpt-6-luna",
-        "new_pilot": false,
-        "original_source_sha256": "0065b50eb67b0f4efe9fc18676a1bbf99b645dd31de627e9c2c30660de7aa376",
-        "previous_fixture_sha256": "ebc2add07aee3d8b0d518854b8258c45caada33f3131933c20f1a86ac4b154b4",
-        "prior_receipt_kind": "reviewed_request_equivalence",
-        "route": "official_subscription_responses",
-        "source": "src/api_agent/llm_providers/gpt/factory.py"
-      },
-      "carry_forward_source_identity": {
-        "basis": "Independent old/new graph, request, output and structural-event equivalence for the retained profile; only source-file identity admission changes. Original observations and computed bound remain unchanged.",
-        "current_source_sha256": "d67f91945d289673768fa3f0e354365e812f0533e69746b5a0adf56fc7829cd4",
-        "kind": "reviewed_non_sampling_source_identity",
-        "model": "gpt-6-luna",
-        "new_pilot": false,
-        "original_source_sha256": "0c4471785859c74724a6ad6a5a3c55c86c5be73c05dacd73735d56d0940b369f",
-        "previous_fixture_sha256": "f0451ee275282141695b21d5c97273cf1d745115c8c3cba41f3f744e02f6320b",
-        "reasoning_effort": "low",
-        "route": "official_subscription_responses",
-        "source": "src/api_agent/workflows/execution.py"
+        "second_draft": 0.46036511831056104,
+        "second_format": 0.46036511831056104,
+        "second_guard": 0.46036511831056104
       },
       "confidence": 0.95,
       "dependency_versions": {
@@ -73,19 +37,19 @@
         },
         "temperature": null
       },
-      "fingerprint_version": 2,
+      "fingerprint_version": 3,
       "hits": {
         "first_draft": 20,
         "first_format": 20,
         "first_guard": 20,
-        "second_draft": 13,
-        "second_format": 13,
-        "second_guard": 13
+        "second_draft": 15,
+        "second_format": 15,
+        "second_guard": 15
       },
-      "max_runs": 22,
-      "minimum_missing_node_bound": 0.0009190169693321882,
-      "minimum_runs": 18,
-      "missing_node_bound": 0.00015222275946124523,
+      "max_runs": 17,
+      "minimum_missing_node_bound": 0.00098724257507006,
+      "minimum_runs": 13,
+      "missing_node_bound": 8.371852331830926e-05,
       "model": "gpt-6-luna",
       "provider_identity": {
         "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
@@ -110,12 +74,9 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 2
         },
         {
@@ -134,9 +95,12 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 4
         },
         {
@@ -172,19 +136,16 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 7
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 8
         },
         {
@@ -209,9 +170,12 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 11
         },
         {
@@ -247,7 +211,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 14
         },
         {
@@ -259,7 +223,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 15
         },
         {
@@ -271,17 +235,32 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 16
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 17
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
+          "trial": 18
         },
         {
           "nodes": [
@@ -290,7 +269,7 @@
             "first_guard"
           ],
           "route": "skip",
-          "trial": 18
+          "trial": 19
         },
         {
           "nodes": [
@@ -302,35 +281,35 @@
             "second_guard"
           ],
           "route": "next_b",
-          "trial": 19
-        },
-        {
-          "nodes": [
-            "first_draft",
-            "first_format",
-            "first_guard"
-          ],
-          "route": "skip",
           "trial": 20
         }
       ],
       "routes": {
-        "next_a": 5,
-        "next_b": 8,
-        "skip": 7
+        "next_a": 8,
+        "next_b": 7,
+        "skip": 5
       },
       "safety_margin": 4,
       "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
       "sources": {
-        "demo/contrived/functions.py": "d640084da754b1c43791cae1ee08144abd3d4509380f1eb8d43b7ebab3f54e7b",
-        "demo/contrived/layout.md": "3cdf694eaba7f39e2deb60ffd36db8b00e0efae8d23522c50c2e050ae61b5254",
-        "demo/contrived/prompts/produce.md": "06e6e7a6c82dd7f1d26aad8d8b63831acfae53101eec026102dd6a98455014a0",
-        "demo/contrived/schemas/draft.json": "d371c5daeb256f52ba6ecd8bc2bf4516bf753aceb239dd79a5c4710b1b5f4ad6",
-        "demo/contrived/schemas/format_input.json": "e04b3eb4f89ce9775fbb5f6b134de15e1c4ccf04e93ff0150fe6177d26ff40c1",
-        "demo/contrived/schemas/format_output.json": "d9139f0f4fb9c62bdfe0129e38f115f39b564053210f6452a0a400cc9393fb05",
-        "demo/contrived/schemas/guard_input.json": "7113b44a4e3dd62bb491f22525e5c6040acccd271abdc1da38a2dee068d08322",
-        "demo/contrived/schemas/guard_output.json": "57ee7a68c56b92ad1d9411bca0b26826bc09aaea53571a79c64293f843714017",
-        "demo/contrived/schemas/producer.json": "6d1569b887fce1f3d5b4783ee212d0c56c797c09d6bf7793d2bc006e81b8f4e0",
+        "pack/cfg/config.toml": "62f2a19a2ef6cdaa4e6aaa41081c708a76ab0b6746327ebcd079f6cd9ceb8347",
+        "pack/contrived/flow.md.html": "6b3e878bf56e296a620df2657f0df60a12c7e231c46c7ec4f12011423f155ebe",
+        "pack/contrived/functions.py": "d640084da754b1c43791cae1ee08144abd3d4509380f1eb8d43b7ebab3f54e7b",
+        "pack/contrived/prompts/produce.md": "06e6e7a6c82dd7f1d26aad8d8b63831acfae53101eec026102dd6a98455014a0",
+        "pack/contrived/schemas/draft.json": "d371c5daeb256f52ba6ecd8bc2bf4516bf753aceb239dd79a5c4710b1b5f4ad6",
+        "pack/contrived/schemas/format_input.json": "e04b3eb4f89ce9775fbb5f6b134de15e1c4ccf04e93ff0150fe6177d26ff40c1",
+        "pack/contrived/schemas/format_output.json": "d9139f0f4fb9c62bdfe0129e38f115f39b564053210f6452a0a400cc9393fb05",
+        "pack/contrived/schemas/guard_input.json": "7113b44a4e3dd62bb491f22525e5c6040acccd271abdc1da38a2dee068d08322",
+        "pack/contrived/schemas/guard_output.json": "57ee7a68c56b92ad1d9411bca0b26826bc09aaea53571a79c64293f843714017",
+        "pack/contrived/schemas/producer.json": "6d1569b887fce1f3d5b4783ee212d0c56c797c09d6bf7793d2bc006e81b8f4e0",
+        "pack/contrived/workflows/components/first.md.html": "47ba4b7b824f6073bff7e67e5cc4b1afd9c15b324697e2887de89279f90c95d0",
+        "pack/contrived/workflows/components/first/first_draft.md.html": "36ebe098010be03d97f5fde7a1a448fdfb1286711006f5a1da4ee94582d45a59",
+        "pack/contrived/workflows/components/first/first_format.md.html": "a50d029dfb7c635b322ea4f8a30d00ee2151e01ae6be4fde1a79a73cd6869eda",
+        "pack/contrived/workflows/components/first/first_guard.md.html": "0cad8fc6a70c08b365b9a66cbfed24d3e47f911cf4521f6b150fda1967611dc5",
+        "pack/contrived/workflows/components/second.md.html": "83e2698be4e3f09b9ec47e91ef4e184350365cbeb9277f68b39d0bedb4a1f3e1",
+        "pack/contrived/workflows/components/second/second_draft.md.html": "e05c6ac315e07449a5831eed480c090a94c6df1d8980e5b761954abb5f2b1d39",
+        "pack/contrived/workflows/components/second/second_format.md.html": "bccf50d148e0358be9df4c60ba2b193e8152554c430525e1c0000fa7800bca9f",
+        "pack/contrived/workflows/components/second/second_guard.md.html": "c9c86da94d9e726983be0ed6960f6219ba003398ed6fd47902120147e7657f75",
         "src/api_agent/auth/bindings.py": "ef139637dc7341a7818f3e0f051dfb9879baeab1f36e0176115365b9d7943a56",
         "src/api_agent/llm_providers/gpt/cache_policy.py": "458832c70e9b37b9523b8f74f06fc36ceeb84f73dd3cd71b44f223221082b84a",
         "src/api_agent/llm_providers/gpt/discovery.py": "eafdb478d3050a0875a437fa349e97d43abeca8e80c74284a99d45b470cd6829",
@@ -352,10 +331,11 @@
         "src/api_agent/runtime/tasks.py": "9a2783e2eb15c302e98cacd84d16ebd96348627bc682b025ffc0042073cc4146",
         "src/api_agent/testing/provider_setup.py": "7523115faf1bb79a326816c6ab9c6e2086aee7f3db7301bf7a75e9114e03d939",
         "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
-        "src/api_agent/workflows/contrived.py": "90904a72abd75be553f936bfad1de11f5b8ab28fedb09a758885d39fcb9cb31e",
-        "src/api_agent/workflows/execution.py": "d67f91945d289673768fa3f0e354365e812f0533e69746b5a0adf56fc7829cd4",
-        "src/api_agent/workflows/fixture_driver.py": "3d0e5b893d91a3a97063420d9ab57029f5cd7a689abc6f42e6a07b592d7865a8",
-        "src/api_agent/workflows/layout.py": "e091afc08f56f1ecb12cc211cde74e5ba2cc222b58afc1b070cf6d3392c568b6"
+        "src/api_agent/workflows/contrived.py": "459d7b62b0c8c9de9fa863e1f9a635a481b29bd04ad91409fcf7a1d7a0051758",
+        "src/api_agent/workflows/definition.py": "eef15ad7c3e5dcda69b8aaa2df51ee42b342a0b662b40881dd684ac709c4eecf",
+        "src/api_agent/workflows/execution.py": "97e1f0d9b1120a1b7a57a5dca500536031da4c3be9909df2064ff61c75f90973",
+        "src/api_agent/workflows/fixture_driver.py": "dba2357da44f1ed29c8c8c0c1a3c06c75796e475c71772ef21e3ef986107e87a",
+        "src/api_agent/workflows/layout.py": "1f9cd0c614eb9dba3f3c5c932f2c0b78ad328893515f0fa7aa89d176861e9869"
       },
       "target": 0.999,
       "trials": 20,
