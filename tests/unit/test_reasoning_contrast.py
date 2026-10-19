@@ -15,13 +15,15 @@ from api_agent.testing import reasoning_contrast as c
 def pair(gap=50):
     return dict(calls=[dict(effort=effort,status='completed',
         reasoning_tokens=count,requested_model=c.MODEL,actual_model=None)
-        for effort,count in (('low',200),('medium',200+gap))])
+        for effort,count in (('low',1000),('medium',1000+gap))])
 
 
 @pytest.mark.parametrize('gaps,expected',[
     ([50,50,-49],True),([50,50,0],True),([50,50,50],True),
     ([49,50,49],False),([50,49,0],False),([50,50,-50],False),
-    ([100,100,-51],False),([-50,100,100],False)])
+    ([100,100,-51],False),([-50,100,100],False),
+    ([89,29,49],False),([-47,7,17],False),
+    ([112,-94,-214],False),([-123,92,101],False)])
 def test_signed_three_pair_threshold(gaps,expected):
     assert c.evaluate([pair(value) for value in gaps])==dict(passed=expected,differences=gaps)
 
@@ -136,10 +138,12 @@ def integration_module():
 def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config):
     from api_agent.providers.llm import AvailableSelection
     from api_agent.llm_providers.gpt.inference import complete_text
+    from api_agent.providers.cache_policy import configured_request
     native=[];closed=[];properties=[]
     class Provider:
         def describe(self):return (AvailableSelection(c.MODEL,features=('reasoning_effort',),reasoning_efforts=('low','medium')),)
         def complete(self,request):
+            request = configured_request(request, None, reasoning_effort='high')
             async def invoke():
                 def reply(sent):
                     body=json.loads(sent.content);native.append(body)
@@ -157,6 +161,19 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
     module.test_reasoning_contrast(None,SimpleNamespace(getfixturevalue=lambda name:provider),lambda name,value:properties.append((name,value)))
     # The ordinary test's scoring assertion executes before any wire assertions.
     assert len(native)==6 and [row['reasoning']['effort'] for row in native]==['low','medium']*3
+    for index in range(0, 6, 2):
+        low, medium = native[index:index+2]
+        assert low['input'] == medium['input']
+        content = low['input'][0]['content']
+        prefix, task = content.split('\n', 1)
+        assert prefix.startswith('Run marker: ')
+        UUID(prefix.removeprefix('Run marker: '))
+        assert task == c.PUZZLE
+        assert 'Define solve(edges, start, goal, red_count, min_blue, max_run)' in task
+        assert 'Reply with only executable Python code' in task
+        assert {key: value for key, value in low.items() if key != 'reasoning'} == {
+            key: value for key, value in medium.items() if key != 'reasoning'}
+    assert len({row['input'][0]['content'].split('\n', 1)[0] for row in native}) == 3
     assert closed==[], 'HTTP consumer must not dispose the normal fixture owner'
     provider.close();assert closed==[True]
     events=json.loads(properties[0][1]);assert len([row for row in events if row['event']=='call'])==6
@@ -210,7 +227,8 @@ def test_remote_fixture_prerequisite_cannot_silently_skip_http_comparison():
 
 
 def test_response_text_does_not_gate_reasoning_measurement():
-    responses=iter(['wrong answer','42153','', 'different words','0','unrelated'])
+    responses=iter(['raise RuntimeError("must never execute")', 'not Python', '',
+                    'import os; os._exit(99)', 'while True: pass', 'unrelated'])
     events=[]
     def reply(sent):
         body=json.loads(sent.content)

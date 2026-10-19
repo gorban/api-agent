@@ -6,9 +6,21 @@ from api_agent.providers.inference import result_from_wire
 from api_agent.providers.progress import component_timeout
 
 MODEL = 'gpt-6-luna'
-PUZZLE = ('The variables a, b, c, d, e are the integers 1, 2, 3, 4, 5 in some order, '
-          'each used once. They satisfy a+b=6, d=e+2, b=2c, and e>b. '
-          'What is 10000a+1000b+100c+10d+e? Reply with only the integer.')
+PUZZLE = (
+    'Write Python 3 code that solves this colored-path puzzle for any finite directed acyclic graph, not just the example. '
+    'Define solve(edges, start, goal, red_count, min_blue, max_run). '
+    'Each edge is a tuple (source, target, cost, color), where vertex labels are nonempty strings, cost is a nonnegative integer, and color is "R" or "B". '
+    'There are no duplicate directed edges. start and goal are distinct vertices. red_count and min_blue are nonnegative integers; max_run is a positive integer. '
+    'A valid path from start to goal uses exactly red_count red edges, at least min_blue blue edges, and no run of consecutive edges of one color longer than max_run. '
+    'Return None if no valid path exists. '
+    'Otherwise return (minimum_total_cost, number_of_paths_with_that_cost, lexicographically_smallest_optimal_path), where the last element is a tuple of vertex labels and the count is an exact integer. '
+    'Distinct vertex sequences are distinct paths. '
+    'Use a state-based dynamic programming algorithm rather than enumerating all complete paths. '
+    'Include all needed standard-library imports. '
+    'Under if __name__ == "__main__": construct these example edges and print solve(edges, "S", "T", 3, 2, 2): S>A:4:R, S>B:2:B, S>C:5:R, A>B:1:B, A>D:5:R, A>E:3:B, B>C:2:R, B>D:4:B, B>E:6:R, C>D:1:B, C>E:3:R, C>F:7:B, D>E:2:B, D>F:4:R, D>T:9:B, E>F:1:R, E>T:5:B, F>T:3:R. '
+    'Here source>target:cost:color denotes an edge. '
+    'Reply with only executable Python code, without Markdown fences or explanation.'
+)
 
 
 def scope(config, *, owner_root=None):
