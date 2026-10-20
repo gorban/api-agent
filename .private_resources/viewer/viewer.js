@@ -8,7 +8,7 @@
     }
     return;
   }
-  const source = carrier.textContent;
+  const source = carrier.textContent.startsWith("\n") ? carrier.textContent.slice(1) : carrier.textContent;
   const root = source.startsWith("# Workflow v2\n") || source.startsWith("# Workflow v3\n");
   const html = window.marked.parse(source, { gfm: true, breaks: false });
   const clean = window.DOMPurify.sanitize(html, {
@@ -18,14 +18,33 @@
   });
   const main = document.createElement("main");
   main.className = "workflow-document";
-  main.innerHTML = clean;
-  for (const image of main.querySelectorAll("img")) {
-    const source = image.getAttribute("src") || "";
-    if (!/^(?:\.\.\/)*\.private_resources\/diagrams\/[a-zA-Z0-9_./-]+\.svg$/.test(source)
-        || source.split("/").includes("..") && !source.startsWith("../")) {
+  const template = document.createElement("template");
+  template.innerHTML = clean;
+  const scriptPath = document.currentScript?.getAttribute("src") || "";
+  const scriptMatch = /^((?:\.\.\/)*)\.private_resources\/viewer\/viewer\.js$/.exec(scriptPath);
+  const diagramPrefix = scriptMatch ? scriptMatch[1] + ".private_resources/diagrams/" : null;
+  const diagramRoot = diagramPrefix ? new URL("../diagrams/", document.currentScript.src).href : null;
+  for (const image of template.content.querySelectorAll("img")) {
+    const target = image.getAttribute("src") || "";
+    const path = diagramPrefix && target.startsWith(diagramPrefix) ? target.slice(diagramPrefix.length) : "";
+    const segments = path.split("/");
+    let safe = Boolean(path && path.length <= 2048 && path.endsWith(".svg") &&
+        segments.every((segment) => /^(?:[a-zA-Z0-9_.~-]|%[0-9a-fA-F]{2})+$/.test(segment)));
+    if (safe) {
+      try {
+        safe = segments.every((segment) => {
+          const decoded = decodeURIComponent(segment);
+          return decoded !== "." && decoded !== ".." && !/[\\/%?#\x00-\x1f\x7f]/.test(decoded);
+        }) && new URL(target, document.baseURI).href.startsWith(diagramRoot);
+      } catch {
+        safe = false;
+      }
+    }
+    if (!safe) {
       image.remove();
     }
   }
+  main.append(template.content);
   if (root && !main.querySelector("h2[data-viewer-help]")) {
     const help = document.createElement("aside");
     help.className = "viewer-help";

@@ -3,10 +3,13 @@ from pathlib import Path
 import shutil
 from types import SimpleNamespace
 
+import pytest
+
 from api_agent.runtime.view_flow import _canonical_selection, _prepare_view
 from api_agent.runtime.resource_pack import load_launch_context, load_selected_definition
 from api_agent.workflows.viewer_projection import project_view
 from api_agent.workflows import viewer_render
+from api_agent.workflows.viewer_render import RenderError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +21,7 @@ def context(root):
 def test_unmodified_owner_root_uses_static_freshness(tmp_path):
     definition = SimpleNamespace(entry_root='base', entry=tmp_path / 'flow.md.html',
                                  roots={'base': tmp_path}, replacements=())
-    projection = SimpleNamespace(documents=(SimpleNamespace(logical_path='base/flow.md.html'),))
+    projection = SimpleNamespace(documents=(SimpleNamespace(logical_path='base/flow.md.html'),), resources=())
     assert _canonical_selection(context(tmp_path), definition, projection)
 
 
@@ -35,6 +38,80 @@ def test_cross_owner_document_uses_temporary_projection(tmp_path):
     projection = SimpleNamespace(documents=(SimpleNamespace(logical_path='base/flow.md.html'),
                                             SimpleNamespace(logical_path='pack/overlay.md.html')))
     assert not _canonical_selection(context(tmp_path), definition, projection)
+
+
+def test_pack_owned_resource_generates_temporary_selected_diagram(tmp_path, monkeypatch):
+    base = tmp_path / 'base'
+    pack = tmp_path / 'pack'
+    (base / 'children').mkdir(parents=True)
+    pack.mkdir()
+    (base / 'flow.md.html').write_text(
+        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+        '## Flow\n\n1.  [node work](children/work.md.html)\n')
+    (base / 'children/work.md.html').write_text(
+        '# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        '| work | deterministic | [Python](../native.py) |\n\n'
+        '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
+        '| work | work | [input](../schema.json) | [output](../schema.json) |\n\n'
+        '## Prompts\n\n| Node | File | When |\n| --- | --- | --- |\n'
+        r'| work | [Pack prompt](\<resource_pack\>/prompt.md) | always |' + '\n')
+    (base / 'native.py').write_text('def work(inputs, context):\n    return {}\n')
+    (base / 'schema.json').write_text('{"type":"object"}')
+    (pack / 'prompt.md').write_text('Synthetic selected prompt.\n')
+    (pack / 'config.toml').write_text('version=1\n')
+    (pack / 'pack.toml').write_text('version=1\nid="synthetic-pack"\nconfig="config.toml"\n')
+    source_before = {path: path.read_bytes() for path in base.rglob('*') if path.is_file()}
+
+    class StubRenderer:
+        def render(self, source, *, allowed_links=frozenset()):
+            return (b'<?xml version="1.0"?>\n'
+                    b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"/>')
+
+    monkeypatch.setattr(viewer_render, 'default_renderer', StubRenderer)
+
+    definition, projection, canonical, bundle = _prepare_view(load_launch_context(base, pack))
+
+    assert definition.entry_root == 'base'
+    assert {document.logical_path for document in projection.documents} == {
+        'base/flow.md.html', 'base/children/work.md.html'}
+    assert any(resource.logical_path == 'pack/prompt.md' for resource in projection.resources)
+    assert canonical is False
+    assert any(item.path == 'r/base/.private_resources/diagrams/flow.svg'
+               and b'<svg' in item.body for item in bundle.files)
+    assert {path: path.read_bytes() for path in base.rglob('*') if path.is_file()} == source_before
+    assert not (base / '.private_resources').exists()
+
+
+def test_owner_inline_prompt_requires_saved_static_diagram(tmp_path):
+    base = tmp_path / 'base'
+    pack = tmp_path / 'pack'
+    (base / 'children').mkdir(parents=True)
+    pack.mkdir()
+    (base / 'flow.md.html').write_text(
+        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+        '## Flow\n\n1.  [node work](children/work.md.html)\n')
+    (base / 'children/work.md.html').write_text(
+        '# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        '| work | deterministic | [Python](../native.py) |\n\n'
+        '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
+        '| work | work | [input](../schema.json) | [output](../schema.json) |\n\n'
+        '## Prompt: greeting\n\n```text\nHello.\n```\n\n'
+        '## Prompts\n\n| Node | File | When |\n| --- | --- | --- |\n'
+        '| work | @greeting | always |\n')
+    (base / 'native.py').write_text('def work(inputs, context):\n    return {}\n')
+    (base / 'schema.json').write_text('{"type":"object"}')
+    (pack / 'config.toml').write_text('version=1\n')
+    (pack / 'pack.toml').write_text('version=1\nid="synthetic-pack"\nconfig="config.toml"\n')
+    launch = load_launch_context(base, pack)
+    definition = load_selected_definition(launch)
+    projection = project_view(definition)
+
+    assert {document.logical_path for document in projection.documents} == {
+        'base/flow.md.html', 'base/children/work.md.html'}
+    assert any(resource.logical_path == 'inline/base/greeting' for resource in projection.resources)
+    assert _canonical_selection(launch, definition, projection)
+    with pytest.raises(RenderError, match='missing or stale workflow diagram'):
+        _prepare_view(launch)
 
 
 def test_sibling_workflow_library_is_temporary_selected_view(tmp_path, monkeypatch):

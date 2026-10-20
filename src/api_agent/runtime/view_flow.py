@@ -17,7 +17,9 @@ def _canonical_selection(context, definition, projection):
     return (not definition.replacements
             and definition.entry == definition.roots[owner] / 'flow.md.html'
             and all(document.logical_path.startswith(owner + '/')
-                    for document in projection.documents))
+                    for document in projection.documents)
+            and all(resource.logical_path.startswith((owner + '/', 'inline/' + owner + '/'))
+                    for resource in projection.resources))
 
 
 def _prepare_view(context):
