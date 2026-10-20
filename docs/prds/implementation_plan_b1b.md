@@ -29,3 +29,12 @@ This converts the existing generic runtime and independently authored example, p
 ## Forward-compatible execution evidence
 
 - [ ] Reserve the [inspector execution identities and transition seams](implementation_plan_b1c1.md) alongside runtime conversion: stable resolved graph/node/edge IDs, explicit turns/visits/attempts/call attribution and all actual traversals. This does not add the late overlay UI or weaken equivalence, fingerprints or qualification gates. Historical route detail cannot be reconstructed when it was never recorded.
+
+## Stateful native execution
+
+- [ ] Deliver [declared stateful execution and selected libraries](implementation_plan_b1b4.md) through bounded native admission, typed state, owned routing and verified source/installed resources. Keep format conversion, viewer and application acceptance separate.
+
+## Minimum execution checkpoint status
+
+- [x] Deliver the independently reviewed [stateful runtime](implementation_plan_b1b4.md) and [recorded evidence seam](implementation_plan_b1c1a.md), including committed-source and relocated installed reporting checks.
+- [ ] Complete the delivery's final external review and human acceptance. Broader conversion/equivalence, retry/resume, viewer, refresh and application requirements above retain their own unchecked gates.

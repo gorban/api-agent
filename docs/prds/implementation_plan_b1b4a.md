@@ -17,6 +17,12 @@ Source identity requirements:
 - [x] Satisfy references to the admitted source project's normalized name locally only when its static version satisfies the parsed requirement. Reject incompatible or unavailable versions before installer execution.
 - [x] Evaluate local reference markers; expand requested declared extras, including their applicable marked children, without silently discarding extra dependencies. Reject unknown extras and direct URLs; prevent recursive extra cycles.
 - [x] Retain installed-library requirements for normal package installation. Never infer local satisfaction from installed resource inventories or search other roots.
-- [ ] Independent implementation review of source identity satisfaction and installed delivery.
+- [x] Independent implementation review of source identity satisfaction and installed delivery.
 
 - [x] Normalize requested extras for declaration lookup, child marker evaluation and cycle tracking. Reject colliding normalized extra declarations, including identical duplicate values, rather than choosing one declaration.
+
+## Delivery verification
+
+- [x] Independent source-dependency and installed-delivery review, including normalized extras, ownership and installed resource rejection controls.
+
+The complete applicable runtime suite and relocated installed artifact checks pass. Human acceptance above remains open.

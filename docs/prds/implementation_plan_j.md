@@ -28,3 +28,9 @@
 - [x] Bound optional shared-transport evidence after credential redaction and omit malformed/oversized frames. Duplicate or failed optional exports cannot replace an already completed result or token usage. Keep mandatory result validation and owned cancellation/disposal intact, and prove identical execution with content enabled/disabled using actual loopback transport.
 
 - [x] Limit each optional encoded evidence frame to 128 KiB after redaction, including envelope fields and its newline. This budget is independent of the 4 MiB mandatory IPC frame capacity. Omit well-shaped oversized optional evidence on export and receipt while retaining the original completed result and usage; preserve malformed-protocol errors and the content opt-in gate.
+
+## Recorded workflow seam
+
+- [x] Apply bounded capture and credential scrubbing before workflow journal storage, IPC and manifest-hashed Allure artifacts. Non-explicit content opt-in records withholding; explicit True admits only bounded allowed values. Mask before truncation and retain redacted/truncated/missing states.
+- [x] Independently verify default-off content, nested recording/call joins, cancellation and privacy rejection controls through controlled source/installed execution and complete applicable unit coverage.
+- [ ] Complete final external delivery review and human evidence acceptance. Broader diagnostic handlers, Langfuse/OTEL, application/pack consumers and screenshot coverage above remain pending; the recording seam does not certify every emission path.

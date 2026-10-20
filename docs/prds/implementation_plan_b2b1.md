@@ -31,3 +31,11 @@ Implementation, qualification and delivery verification are complete; human acce
 - [x] [Sampling policy tests](../../tests/unit/test_workflow_sampling.py) prove minimal arithmetic, buffered bounds, exact saved-claim recomputation and rejection at custom/maximum ceilings.
 
 Earlier finalized pilot records, signed receipts and source/dependency identities remain immutable historical measurements. A reviewed unsigned buffered report may be derived from the same successful records without a new paid pilot when graph-request/execution fingerprint inputs are unchanged. A changed fingerprint requires its own fresh qualification. The reporting policy is separate from graph sampling inputs.
+
+## Fresh bounded-inference qualification
+
+- [x] Renew qualification after binding both schema-validation helpers: 20 contiguous successful graph trials and 46 observed completions independently reconcile. The recomputed minimum is 16 runs plus the fixed four-run margin, yielding cap 20 under the existing confidence and target.
+- [x] Execute the separately approved ordinary mandatory coverage check: one test passes, publication succeeds, and coverage completes in three turns. Historical prior reports remain unchanged evidence for their original fingerprints.
+- [ ] Complete final public artifact/index/metadata renewal and external review of this delivery. Existing human acceptance above remains valid; new shared/product human acceptance is separate.
+
+The live coverage join retains three unverified definition-binding entries despite complete routes and no missing, unowned, duplicate or mismatched calls. Coverage success does not establish fully verified attribution for that live fixture; that attribution limitation remains explicit.
