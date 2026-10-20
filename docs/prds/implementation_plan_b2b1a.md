@@ -35,3 +35,16 @@ The original qualification and acceptance statements above describe their histor
 The source diff is confined to visible-login selection outside the sampled workflow and a login diagnostic. The previous fixture digest and source binding remain in provenance; this is a new source-equivalence review, not a new measurement or a replacement for the earlier qualification.
 
 The later nested-declaration conversion uses a [fresh independently reviewed pilot and normal coverage run](implementation_plan_b2b1a2.md). Its version-3 fingerprint and measurements supersede the packaged entry for that profile; the observations and carry-forward decisions above remain historical.
+
+## Fresh qualification after runtime and provenance repairs
+
+The fresh authorized subscription Responses pilot at public runtime commit `3d9fdce42a6828b08d4395d4ebcb89a06ce01fd0` used `gpt-6-luna`, medium cache, low reasoning and a 120-second LLM timeout. All 20 independent graphs succeeded with 44 completed LLM calls. Routes were 8 skip, 5 next_a and 7 next_b; every first-stage node had 20 hits and every second-stage node had 12 hits. All 46 declared source/resource bindings and the complete settings/dependency fingerprint match that committed runtime.
+
+Independent receipt, profile, source and exact statistical review approved the credential-free unsigned replacement data. The statistical minimum is 22 runs plus the required four-run safety margin: cap 26. The missing-node bound is 0.0006885055271108673 at 22 runs and 0.00015004868382870193 at 26, under simultaneous confidence 0.95 and target 0.999. Immediate all-node early stopping remains unchanged. These are fresh observations; earlier pilots, bounds and acceptance statements above remain immutable historical evidence.
+
+The reviewed replacement is promoted, current strict preflight and 163 focused sampling/fixture/calibration tests pass. The separately authorized normal workflow coverage check passed once with Allure publication. Independent review verified one graph reaching all six nodes, three completed LLM calls in one user turn, and a complete recorded route through next_a. Observed usage was 2,029 input tokens, 149 non-reasoning output tokens and 53 reasoning tokens, totaling 2,231. Its accounting join remains partial because one definition binding is unverified; no duplicate, mismatched, missing or unowned call IDs were observed. Final qualified-data/delivery review, including renewed committed installed artifacts, remains unchecked. No subscription quota decrement or monetary spend is established by the pilot or coverage evidence.
+
+- [x] Complete fresh authorized qualification and independent review of the replacement data for the repaired runtime.
+- [x] Complete independent review of the authorized normal coverage result and its accounting limitations.
+- [ ] Complete final qualified-data/delivery review, including renewed committed installed artifacts.
+- [ ] Human acceptance of the renewed delivery; earlier observed acceptance remains historical.
