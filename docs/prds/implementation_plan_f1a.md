@@ -10,4 +10,10 @@ Generic inference preserves declared schemas and selected generation options acr
 - [x] Advertise `cache_boundaries` only where supported. Optional unavailable metadata leaves hints unapplied; authentication errors, cancellation and malformed catalogs retain their failures. Actual applied claims require the admitted selection’s feature and lifetime support. Report actual applied message indexes through `LLMResult.applied_cache_boundaries`, independently from measured cache-read/write tokens. Never infer cache hits from an applied boundary.
 - [x] Verify legacy request compatibility, bounded Unicode serialization, schema-preserving replay, returned-output validation and real local IPC using independently authored synthetic fixtures, focused rejection mutations and exact changed-code coverage.
 
-- [ ] Complete independent review and joined runtime acceptance.
+- [x] Complete independent implementation review.
+- [ ] Complete human joined runtime acceptance.
+
+## Joined verification
+
+- [x] Independent review, full applicable runtime units (12,100 tests; exact production line/branch coverage), controlled HTTP/IPC and source/relocated installed artifact checks pass for the bounded inference delivery.
+- [ ] Complete final external PR review and human runtime acceptance. Broader application/provider acceptance stays separate.
