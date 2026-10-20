@@ -18,7 +18,8 @@ from .progress import (ComponentProgress, component_timeout, independent_timeout
 from .sessions import _Owner, _spawn, _drain, _consume
 from .control import CleanupPendingError, OperationalError, KINDS
 
-MAX_FRAME = 262144
+MAX_FRAME = 4194304
+MAX_CONTENT_FRAME = 131072
 _BINDING = {'version', 'operation_id', 'selected_identity', 'worker_id', 'attempt'}
 _COMPONENT = {'id', 'name', 'timeout', 'elapsed', 'active', 'parent_id'}
 _NAME = 'Shared provider setup'
@@ -105,7 +106,8 @@ def _content_frame(evidence):
             or evidence['phase'] not in ('request', 'response') or type(evidence['content']) is not dict):
         return None
     try:
-        return _encode(dict(version=1, status='evidence', **evidence))
+        frame = _encode(dict(version=1, status='evidence', **evidence))
+        return frame if len(frame) <= MAX_CONTENT_FRAME else None
     except ContractError:
         return None
 
@@ -291,7 +293,7 @@ class SetupServer(_Owner):
             _binding(frame['binding'])
         if action == 'complete':
             from .inference import request_from_wire
-            request_from_wire(frame['request'])
+            request_from_wire(frame['request'], _validate_instances=False)
         return action
 
     def _progress(self, event):
@@ -351,8 +353,8 @@ class SetupServer(_Owner):
             await self._registry.revoke(peer.binding)
             return dict(version=1, status='revoked')
         if action == 'complete':
-            from .inference import request_from_wire
-            request = request_from_wire(frame['request'])
+            from .inference import async_request_from_wire
+            request = await async_request_from_wire(frame['request'])
             ready = _spawn(self._ready(peer, action, request))
         else:
             ready = _spawn(self._ready(peer, action))
@@ -586,8 +588,11 @@ class SetupClient:
             if status == 'evidence' and action == 'complete':
                 if (set(response) != {'version', 'status', 'phase', 'content'}
                         or response['phase'] not in ('request', 'response')
-                        or type(response['content']) is not dict
-                        or any(row['phase'] == response['phase'] for row in self.evidence)):
+                        or type(response['content']) is not dict):
+                    raise ContractError('Invalid inference evidence response')
+                if _content_frame({'phase': response['phase'], 'content': response['content']}) is None:
+                    continue
+                if any(row['phase'] == response['phase'] for row in self.evidence):
                     raise ContractError('Invalid inference evidence response')
                 self.evidence.append({'phase': response['phase'], 'content': response['content']})
                 continue

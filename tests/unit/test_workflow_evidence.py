@@ -42,6 +42,23 @@ def test_attachment_rejects_nonobject():
         attachment(SimpleNamespace(text='[]'),None)
 
 
+def test_runner_registered_credential_rejects_journal_before_attachment():
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.journal import WorkflowJournal
+    step = SimpleNamespace(id='Make', kind='node', parent=None)
+    selected = SimpleNamespace(graph_id='Example', definition_id='a' * 64,
+        entry_root='base', layout=SimpleNamespace(steps=[step], tables={'Edges': []}),
+        resources=[], replacements=[])
+    journal = WorkflowJournal(selected, log_content=True)
+    journal.capture(visit_id='visit', direction='input', values={'question': 'needle'},
+        schema={'type': 'object', 'properties': {'question': {'type': 'string'}}},
+        plain_fields=('question',))
+    event = SimpleNamespace(text=json.dumps(journal.finalize()))
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=('needle',))
+    with pytest.raises(ValueError, match='runner credential boundary'):
+        attachment(event, boundary)
+
+
 def test_sanitize_drops_content_and_nonfinite():
     from api_agent.workflows.evidence import sanitize
     assert sanitize({'events':[{'event':'node','original_input':'secret','elapsed':float('nan')}], 'trial':1}) == {'events':[{'event':'node','elapsed':None}],'trial':1}

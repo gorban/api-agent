@@ -13,11 +13,27 @@ from api_agent.providers.loading import ProviderError, LoadedProvider
 from api_agent.providers.contracts import ProviderCapabilities
 
 
-def test_unconfigured_provider_is_explicit_and_configured_provider_is_returned():
+def test_unconfigured_provider_is_explicit_and_configured_provider_is_usable():
+    from unittest.mock import AsyncMock
+    from api_agent.providers.llm import LLMRequest,CompletionRequest,Message,TextContent,LLMResult
     with pytest.raises(ProviderError, match='provider_location_required'):
         Runtime('demo').require_llm_provider()
-    implementation = SimpleNamespace(capabilities=ProviderCapabilities("llm", ("complete",)))
-    assert Runtime("demo", llm_provider=LoadedProvider(implementation, "synthetic")).require_llm_provider() is implementation
+    request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('Question'),)),)))
+    result = LLMResult(Message('assistant',(TextContent('Answer'),)))
+    implementation = SimpleNamespace(capabilities=ProviderCapabilities('llm', ('complete',)),
+                                     acomplete=AsyncMock(return_value=result),aclose=AsyncMock())
+    runtime = Runtime('demo',llm_provider=LoadedProvider(implementation,'synthetic'))
+    selected = runtime.require_llm_provider()
+    assert selected is not implementation
+    assert selected.capabilities is implementation.capabilities
+    async def scenario():
+        try:
+            assert await selected.acomplete(request) == result
+            implementation.acomplete.assert_awaited_once_with(request,auth=None)
+        finally:
+            await runtime.aclose()
+        implementation.aclose.assert_awaited_once()
+    asyncio.run(scenario())
 
 
 def test_closed_runtime_cannot_restart_synchronously_or_asynchronously():

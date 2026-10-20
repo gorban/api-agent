@@ -62,14 +62,90 @@ class _ReturnedAwaitable:
         await self._result_owner.aclose()
 
 
+async def _validate_model(implementation, request, auth):
+    maximum = request.payload.generation.max_output_tokens
+    if maximum is None and not any(message.cache_boundary is not None for message in request.payload.messages):
+        return None
+    describe = getattr(implementation, 'adescribe', None)
+    if not callable(describe):
+        if maximum is None:
+            return None
+        raise OperationalError('unsupported')
+    from .rich_inference import resolve_catalog_selection
+    return await resolve_catalog_selection(lambda: describe(auth=auth), request)
+
+
+class _DeferredStream:
+    def __init__(self, view, request, auth):
+        self.view, self.request, self.auth = view, request, auth
+        self.iterator = None
+        self.closed = False
+        if view._owner is not None:
+            view._owner._generation_streams.add(self)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.view._owner is not None:
+            return await self.view._owner._run_generation(self._read_next)
+        return await self._read_next()
+
+    async def _read_next(self):
+        if self.closed:
+            raise StopAsyncIteration
+        if self.iterator is None:
+            from .inference import async_request_to_wire
+            await async_request_to_wire(self.request)
+            selection = await _validate_model(self.view._implementation, self.request, self.auth)
+            self.iterator = self.view._open_stream(self.request, auth=self.auth, selection=selection)
+        return await self.iterator.__anext__()
+
+    async def aclose(self):
+        self.closed = True
+        if self.iterator is not None:
+            await self.iterator.aclose()
+        if self.view._owner is not None:
+            self.view._owner._generation_streams.discard(self)
+
+
+class _ValidatedStream:
+    def __init__(self, iterator, request, selection=None):
+        self.iterator, self.request, self.selection = iterator, request, selection
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        from .llm import StreamEvent
+        from .rich_inference import async_validate_result
+        event = await self.iterator.__anext__()
+        if isinstance(event, StreamEvent) and event.final:
+            await async_validate_result(self.request, event.payload, selection=self.selection)
+        return event
+
+    async def aclose(self):
+        await self.iterator.aclose()
+
+
 class _StreamView:
-    def __init__(self, implementation):
+    def __init__(self, implementation, owner=None):
         self._implementation = implementation
+        self._owner = owner
 
     def __getattr__(self, name):
         return getattr(self._implementation, name)
 
     def astream(self, request, *, auth=None):
+        if self._owner is not None:
+            self._owner._generation_check()
+        from .inference import request_to_wire
+        request_to_wire(request, _validate_instances=False)
+        from .cache_policy import validate_provider_request
+        validate_provider_request(self._implementation, request)
+        return _DeferredStream(self, request, auth)
+
+    def _open_stream(self, request, *, auth=None, selection=None):
         try:
             result = self._implementation.astream(request, auth=auth)
         except OperationalError:
@@ -80,7 +156,21 @@ class _StreamView:
             if inspect.iscoroutine(result):
                 result.close()
             raise ProviderError('provider_stream_invalid')
-        return result
+        return _ValidatedStream(result, request, selection)
+
+    async def acomplete(self, request, *, auth=None):
+        if self._owner is not None:
+            return await self._owner._run_generation(lambda: self._complete(request, auth=auth))
+        return await self._complete(request, auth=auth)
+
+    async def _complete(self, request, *, auth=None):
+        from .inference import async_request_to_wire
+        await async_request_to_wire(request)
+        from .cache_policy import validate_provider_request
+        validate_provider_request(self._implementation, request)
+        selection = await _validate_model(self._implementation, request, auth)
+        from .rich_inference import async_validate_result
+        return await async_validate_result(request, await self._implementation.acomplete(request, auth=auth), selection=selection)
 
 
 @dataclass
@@ -94,6 +184,9 @@ class LoadedProvider:
     disposed: bool = field(default=False, init=False)
     _pid: int = field(default_factory=os.getpid, init=False, repr=False)
     _loop: object = field(default=None, init=False, repr=False)
+    _generation_tasks: set = field(default_factory=set, init=False, repr=False)
+    _generation_cancelled: set = field(default_factory=set, init=False, repr=False)
+    _generation_streams: set = field(default_factory=set, init=False, repr=False)
 
     def _context(self):
         if self._pid != os.getpid():
@@ -113,7 +206,30 @@ class LoadedProvider:
         capabilities = getattr(self.implementation, 'capabilities', None)
         if not isinstance(capabilities, ProviderCapabilities) or capabilities.kind != kind or operation not in capabilities.operations:
             raise ProviderError('provider_operation_unavailable')
-        return _StreamView(self.implementation) if operation == 'stream' else self.implementation
+        return _StreamView(self.implementation, self) if kind == 'llm' and operation in ('complete', 'stream') else self.implementation
+
+    def _generation_check(self):
+        self._context()
+        if self.closed:
+            raise ProviderError('provider_closed')
+
+    async def _run_generation(self, operation):
+        self._generation_check()
+        from .sessions import _drain
+        from .control import finish_cleanup
+        task = _task(operation())
+        self._generation_tasks.add(task)
+        try:
+            result = await asyncio.shield(task)
+            self._generation_check()
+            return result
+        finally:
+            try:
+                await finish_cleanup(_drain([task], self.timeout, self._generation_cancelled))
+            finally:
+                if task.done():
+                    self._generation_tasks.discard(task)
+                    self._generation_cancelled.discard(task)
 
     async def astart(self):
         self._context()
@@ -134,6 +250,15 @@ class LoadedProvider:
                 await result
 
     async def _dispose(self):
+        from .sessions import _drain
+        try:
+            await _drain(self._generation_tasks, self.timeout, self._generation_cancelled)
+            for stream in tuple(self._generation_streams):
+                await stream.aclose()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise ProviderError('provider_cleanup_pending', retained_owners=(self,)) from None
         hook = getattr(self.implementation, 'aclose', None)
         if hook is not None:
             try:

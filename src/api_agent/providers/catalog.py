@@ -17,6 +17,9 @@ def catalog_to_wire(values):
             raise ContractError('Invalid provider catalog')
         row = asdict(value)
         row['features'] = list(row['features'])
+        lifetimes = row.pop('cache_boundary_lifetimes')
+        if lifetimes:
+            row['cache_boundary_lifetimes'] = list(lifetimes)
         efforts = row.pop('reasoning_efforts')
         if efforts is not None:
             row['reasoning_efforts'] = list(efforts)
@@ -34,7 +37,7 @@ def catalog_from_wire(rows):
         raise ContractError('Invalid provider catalog')
     values, seen = [], set()
     for row in rows:
-        if type(row) is not dict or set(row) - {'reasoning_efforts'} != _FIELDS:
+        if type(row) is not dict or set(row) - {'reasoning_efforts', 'cache_boundary_lifetimes'} != _FIELDS:
             raise ContractError('Invalid provider catalog')
         for name, limit in (('selected_llm', 200), ('description', 512), ('display_name', 200), ('version', 100), ('family', 200)):
             text = row[name]
@@ -44,11 +47,14 @@ def catalog_from_wire(rows):
                 raise ContractError('Invalid provider catalog')
         if type(row['features']) is not list:
             raise ContractError('Invalid provider catalog')
+        lifetimes = row.get('cache_boundary_lifetimes', [])
+        if type(lifetimes) is not list:
+            raise ContractError('Invalid provider catalog')
         efforts = row.get('reasoning_efforts')
         if efforts is not None and type(efforts) is not list:
             raise ContractError('Invalid provider catalog')
         try:
-            value = AvailableSelection(**(row | {'features': tuple(row['features']), 'reasoning_efforts': None if efforts is None else tuple(efforts)}))
+            value = AvailableSelection(**(row | {'features': tuple(row['features']), 'cache_boundary_lifetimes': tuple(lifetimes), 'reasoning_efforts': None if efforts is None else tuple(efforts)}))
         except (ValueError, TypeError):
             raise ContractError('Invalid provider catalog') from None
         if value.selected_llm in seen:

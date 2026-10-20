@@ -72,6 +72,16 @@ def test_cli_test_cannot_redirect_integration_outcomes_by_changing_argv(tmp_path
     assert not (base / 'unexpected-events.jsonl').exists()
 
 
+def test_skip_reporting_marker_reaches_selected_pytest_worker(tmp_path):
+    base = fixture_repo(tmp_path / 'base',
+        'import os\ndef test_marker():\n'
+        '    assert os.environ.get("API_AGENT_ALLURE_REPORTING") == "0"\n')
+    ctx = context(base)
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'),
+        accepted=True, config={'SKIP_ALLURE_REPORTING': True}, parallel_jobs=0)
+    assert result.exit_code == 0 and [row.status for row in result.tests] == ['passed']
+
+
 def test_refusal_happens_before_collection_and_callbacks(tmp_path, monkeypatch):
     base = fixture_repo(tmp_path / 'base')
     selected = collect_tests(context(base), 'integration')

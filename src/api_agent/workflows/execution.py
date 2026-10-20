@@ -1,13 +1,17 @@
 """LangGraph compilation, owned nested pass budgets and strict node contracts."""
 import asyncio
 from contextlib import asynccontextmanager
+from contextlib import nullcontext
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 import inspect
 import json
+import os
 from pathlib import Path
 import time
 from typing import TypedDict
+from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 from langgraph.graph import END, START, StateGraph
@@ -18,6 +22,9 @@ from api_agent.runtime.tasks import offload
 
 class WorkflowError(RuntimeError):
     pass
+
+
+_CURRENT_JOURNAL = ContextVar('workflow_journal', default=None)
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,17 @@ class NodeContext:
     ancestry: tuple
     prompts: tuple[str, ...]
     services: dict
+    visit_id: str | None = None
+    attempt_id: str | None = None
+
+    def record_call(self, *, usage=None, selection=None, elapsed=None, outcome='completed', call_id=None):
+        """Attribute one completed provider/tool leaf call to this node visit."""
+        journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
+        if journal is None:
+            return None
+        return journal.record_call(visit_id=self.visit_id, attempt_id=self.attempt_id,
+                                   usage=usage, selection=selection, elapsed=elapsed,
+                                   outcome=outcome, call_id=call_id)
 
     @property
     def attempt(self):
@@ -64,6 +82,8 @@ class _State(TypedDict):
     feedback: dict
     previous: dict
     prompts: dict
+    visit_id: str | None
+    attempt_id: str | None
 
 
 class Workflow:
@@ -122,6 +142,9 @@ class Workflow:
         self.graph = self._compile(None)
 
     def _event(self, event, **values):
+        journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
+        if journal is not None:
+            journal.observe(dict(event=event, **values))
         observer = self.services.get('observe')
         if observer is not None:
             observer(dict(event=event, **values))
@@ -167,20 +190,35 @@ class Workflow:
         graph = StateGraph(_State)
         for step in children:
             graph.add_node(step.id, self._component(step) if step.kind == 'component' else self._node(step))
-        graph.add_edge(START, children[0].id)
+        def enter(state):
+            self._event('edge', source='START', target=children[0].id,
+                        owner=parent or 'GRAPH', implicit=True,
+                        attempt_id=state.get('attempt_id'))
+            return children[0].id
+        graph.add_conditional_edges(START, enter, {children[0].id: children[0].id})
         for index, step in enumerate(children):
             edges = [row for row in self.layout.tables['Edges'] if row['From'] == step.id]
             if not edges:
-                graph.add_edge(step.id, children[index + 1].id if index + 1 < len(children) else END)
+                target = children[index + 1].id if index + 1 < len(children) else 'END'
+                def implicit_route(state, source=step.id, target=target):
+                    self._event('edge', source=source, target=target,
+                                owner=parent or 'GRAPH', condition='always', implicit=True,
+                                visit_id=state.get('visit_id'), attempt_id=state.get('attempt_id'))
+                    return target
+                graph.add_conditional_edges(step.id, implicit_route,
+                                            {target: END if target == 'END' else target})
             else:
                 def route(state, edges=edges, step=step):
-                    matches = [row['To'] for row in edges if row['When'] != 'always' and self._condition(row['When'], state['values'])]
-                    fallback = [row['To'] for row in edges if row['When'] == 'always']
-                    targets = matches or fallback
-                    if len(targets) != 1:
+                    matches = [row for row in edges if row['When'] != 'always' and self._condition(row['When'], state['values'])]
+                    fallback = [row for row in edges if row['When'] == 'always']
+                    choices = matches or fallback
+                    if len(choices) != 1:
                         raise WorkflowError('Routing requires exactly one matching condition or fallback')
-                    self._event('edge', source=step.id, target=targets[0])
-                    return targets[0]
+                    chosen = choices[0]
+                    self._event('edge', source=step.id, target=chosen['To'],
+                                owner=parent or 'GRAPH', condition=chosen['When'], implicit=False,
+                                visit_id=state.get('visit_id'), attempt_id=state.get('attempt_id'))
+                    return chosen['To']
                 graph.add_conditional_edges(step.id, route, {row['To']: END if row['To'] == 'END' else row['To'] for row in edges})
         return graph.compile()
 
@@ -191,22 +229,29 @@ class Workflow:
         async def execute(state):
             original_ancestry, original_feedback = state['ancestry'], state['feedback']
             original_previous = state['previous']
+            original_attempt_id = state['attempt_id']
             descendants = {item.id for item in self.layout.steps if self._owned_by(item, step.id)}
             current = dict(state)
             feedback = {}
-            async with self._scope(step.id, kind='component', component=step.id, attempt=1, max_passes=maximum) as budget:
+            async with self._scope(step.id, kind='component', component=step.id, attempt=1,
+                                   attempt_id=state.get('attempt_id'), max_passes=maximum) as budget:
                 for attempt in range(1, maximum + 1):
+                    attempt_id = str(uuid4())
                     previous = {key: value for key, value in current['values'].items() if key in descendants} if attempt > 1 else {}
                     current = dict(current, values={key: value for key, value in current['values'].items() if key not in descendants},
-                                   previous=previous, ancestry=(*original_ancestry, (step.id, attempt, maximum)), feedback=feedback)
-                    self._event('attempt', scope_id=budget.id, component=step.id, attempt=attempt, max_passes=maximum)
+                                   previous=previous, ancestry=(*original_ancestry, (step.id, attempt, maximum)), feedback=feedback,
+                                   attempt_id=attempt_id)
+                    self._event('attempt', scope_id=budget.id, component=step.id, attempt=attempt,
+                                attempt_id=attempt_id, max_passes=maximum)
                     current = await graph.ainvoke(current, {'recursion_limit': len(self.layout.steps) + 1})
                     if row['Guard'] not in current['values']:
                         raise WorkflowError(f'Component {step.id} did not execute its guard in the current pass')
                     guard = GuardResult.from_output(current['values'][row['Guard']])
                     self._event('guard', scope_id=budget.id, component=step.id, attempt=attempt, accepted=guard.accepted)
                     if guard.accepted:
-                        return dict(current, ancestry=original_ancestry, feedback=original_feedback, previous=original_previous)
+                        return dict(current, ancestry=original_ancestry, feedback=original_feedback,
+                                    previous=original_previous, attempt_id=original_attempt_id,
+                                    visit_id=budget.id)
                     feedback = guard.feedback
                 raise WorkflowError(f'Component {step.id} exhausted {maximum} passes')
         return execute
@@ -229,7 +274,8 @@ class Workflow:
             inputs = {}
             values = state['values']
             context = NodeContext(step.id, state['ancestry'], tuple(state['prompts'][item['File']] for item in prompts
-                if item['When'] == 'always' or self._condition(item['When'], values)), self.services)
+                if item['When'] == 'always' or self._condition(item['When'], values)), self.services,
+                budget.id, state.get('attempt_id'))
             for binding in bindings:
                 source = binding['From']
                 sources = {'START': values['START'], 'PREVIOUS': state['previous'].get(step.id, {}),
@@ -249,19 +295,30 @@ class Workflow:
                 else:
                     raise WorkflowError(f'Missing required binding for {step.id}.{binding["Input"]}')
             self._validate(row['Input schema'], inputs, step.id, 'input')
+            journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
+            plain_fields = (self.services.get('plain_io_fields') or {}).get(step.id, {})
+            if journal is not None:
+                journal.capture(visit_id=budget.id, direction='input', values=inputs,
+                                schema=row['Input schema'], plain_fields=plain_fields.get('input'))
             started = time.monotonic()
-            result = (function.invoke(inputs, context) if inspect.iscoroutinefunction(function.invoke)
-                      else await offload(function.invoke, inputs, context))
-            if inspect.isawaitable(result):
-                result = await result
+            from .attribution import bind_workflow_visit
+            with bind_workflow_visit(journal, budget.id, state.get('attempt_id')):
+                result = (function.invoke(inputs, context) if inspect.iscoroutinefunction(function.invoke)
+                          else await offload(function.invoke, inputs, context))
+                if inspect.isawaitable(result):
+                    result = await result
             self._check_deadline(budget)
             self._validate(row['Output schema'], result, step.id, 'output')
+            if journal is not None:
+                journal.capture(visit_id=budget.id, direction='output', values=result,
+                                schema=row['Output schema'], plain_fields=plain_fields.get('output'))
             self._event('node', scope_id=budget.id, node=step.id, component=step.parent, attempt=context.attempt,
                         elapsed=time.monotonic() - started, kind=function.kind)
-            return dict(state, values={**values, step.id: deepcopy(result)})
+            return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)
         async def timed(state):
             async with self._scope(step.id, kind='node', node=step.id, component=step.parent,
                                    attempt=state['ancestry'][-1][1] if state['ancestry'] else 1,
+                                   attempt_id=state.get('attempt_id'),
                                    max_passes=state['ancestry'][-1][2] if state['ancestry'] else 1) as budget:
                 return await execute(state, budget)
         return timed
@@ -279,15 +336,41 @@ class Workflow:
         except (ValueError, TypeError):
             raise WorkflowError(f'Node {node} returned non-JSON {direction}') from None
 
-    async def arun(self, inputs):
-        async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1):
-            self._validate({'type': 'object'}, inputs, 'START', 'input')
-            prompts = {path: (self.definition.contents[path].decode('utf-8') if self.definition is not None
-                              else path.read_text(encoding='utf-8'))
-                       for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
-            result = await self.graph.ainvoke(dict(values={'START': deepcopy(inputs)}, ancestry=(), feedback={}, previous={}, prompts=prompts),
-                                             {'recursion_limit': len(self.layout.steps) + 1})
-        return result['values']
+    async def arun(self, inputs, *, turn_id=None, turn_kind='initial'):
+        journal = self.services.get('journal')
+        if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1':
+            if self.definition is None:
+                raise WorkflowError('Reporting requires an admitted workflow definition')
+            from .provenance import verified_documents
+            proof = self.services.get('packaged_proof')
+            source_manifest = verified_documents(self.definition, packaged_proof=proof)
+            from .journal import WorkflowJournal
+            journal = WorkflowJournal(self.definition,
+                log_content=self.config.get('LOG_CONTENT') is True,
+                source_manifest=source_manifest,
+                boundary=self.services.get('emissions'),
+                turn_id=turn_id,
+                test_id=os.environ.get('PYTEST_CURRENT_TEST', '').rsplit(' ', 1)[0] or None)
+        token = _CURRENT_JOURNAL.set(journal)
+        try:
+            active_turn = turn_id or (journal.turn_id if journal is not None else None)
+            if active_turn is not None:
+                from api_agent.testing.inference_usage import user_turn
+            with user_turn(active_turn, kind=turn_kind) if active_turn is not None else nullcontext():
+                async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1):
+                    self._validate({'type': 'object'}, inputs, 'START', 'input')
+                    prompts = {path: (self.definition.contents[path].decode('utf-8') if self.definition is not None
+                                      else path.read_text(encoding='utf-8'))
+                               for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
+                    result = await self.graph.ainvoke(dict(values={'START': deepcopy(inputs)}, ancestry=(), feedback={}, previous={}, prompts=prompts,
+                                                         visit_id=None, attempt_id=None),
+                                                     {'recursion_limit': len(self.layout.steps) + 1})
+            return result['values']
+        finally:
+            _CURRENT_JOURNAL.reset(token)
+            if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1' and journal is not None:
+                from .evidence import publish
+                publish(journal.finalize())
 
     def diagram(self):
         return diagram_layout(self.layout)

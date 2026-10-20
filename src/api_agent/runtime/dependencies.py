@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,13 +38,57 @@ def _parsed_requirement(raw):
 
 def requirements(context, *, collect=False, groups=(), selected_provider_manifests=()):
     dependencies = []
-    found_groups = set()
-    for root in dict.fromkeys((context.base_root, context.pack_root)):
+    library_root = getattr(context, 'workflow_base_root', None)
+    projects = {}
+    roots = (context.base_root, context.pack_root, library_root)
+    for root in dict.fromkeys(Path(root).resolve() for root in roots if root is not None):
         manifest = root / 'pyproject.toml'
-        if not manifest.is_file():
-            continue
-        with manifest.open('rb') as handle:
-            project = tomllib.load(handle).get('project', {})
+        if manifest.is_file():
+            with manifest.open('rb') as handle:
+                projects[root] = tomllib.load(handle).get('project', {})
+    library_project = (projects.get(Path(library_root).resolve(), {})
+                       if library_root is not None and getattr(context, 'workflow_library_files', None) is None
+                       else {})
+    normalize = lambda value: re.sub(r'[-_.]+', '-', value).lower()
+    local_name = normalize(library_project.get('name', ''))
+    expanded_extras = set()
+
+    def add_requirement(raw):
+        parsed = _parsed_requirement(raw)
+        name = normalize(parsed.name)
+        if name == 'api-agent':
+            return
+        if not local_name or name != local_name:
+            dependencies.append(raw)
+            return
+        if parsed.marker and not parsed.marker.evaluate({'extra': ''}):
+            return
+        version = library_project.get('version')
+        if not version or version not in parsed.specifier:
+            raise ValueError('Selected source workflow library has an incompatible or missing version')
+        optional = {}
+        for key, value in library_project.get('optional-dependencies', {}).items():
+            normalized = normalize(key)
+            if normalized in optional:
+                raise ValueError('Selected source workflow library has colliding extras')
+            optional[normalized] = value
+        for extra in sorted({normalize(extra) for extra in parsed.extras}):
+            if extra not in optional:
+                raise ValueError('Selected source workflow library has an unknown extra')
+            if extra in expanded_extras:
+                continue
+            expanded_extras.add(extra)
+            for child in optional[extra]:
+                requirement = _parsed_requirement(child)
+                if requirement.marker:
+                    if not requirement.marker.evaluate({'extra': extra}):
+                        continue
+                    requirement.marker = None
+                add_requirement(str(requirement))
+
+    found_groups = set()
+    # Admission already selected these roots; never search siblings or parents.
+    for project in projects.values():
         selected = list(project.get('dependencies', []))
         optional = project.get('optional-dependencies', {})
         for group in groups:
@@ -52,9 +97,7 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
                 selected.extend(optional[group])
         for requirement in selected:
             # Source loading supplies the base itself; install only external tools.
-            name = _parsed_requirement(requirement).name.lower().replace('_', '-')
-            if name != 'api-agent':
-                dependencies.append(requirement)
+            add_requirement(requirement)
     if missing_groups := set(groups) - found_groups:
         raise ValueError(f'Unknown optional dependency group(s): {", ".join(sorted(missing_groups))}')
     # Callers pass only manifests for operation-active providers. Discovery and

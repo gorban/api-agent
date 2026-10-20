@@ -37,6 +37,18 @@ def workflow(layout, producer=produce, **kwargs):
                     kwargs.pop('conditions', {'skip_second': lambda values: True}), **kwargs)
 
 
+def test_reporting_requires_definition_before_native_node_runs(runtime_layout, monkeypatch):
+    reached = []
+    def forbidden(inputs, context):
+        reached.append(True)
+        return produce(inputs, context)
+    graph = workflow(runtime_layout, forbidden)
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
+    with pytest.raises(WorkflowError, match='admitted workflow definition'):
+        asyncio.run(graph.arun({'user_input': 'plain'}))
+    assert reached == []
+
+
 @pytest.mark.parametrize('entry', [None, NodeFunction(None), NodeFunction(produce, 'unknown')])
 def test_registry_contract_rejects_invalid_entry(runtime_layout, entry):
     with pytest.raises(LayoutError, match='registered node function'):

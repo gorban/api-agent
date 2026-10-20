@@ -8,7 +8,7 @@ import sys
 from threading import Event
 
 from api_agent.runtime.tasks import settle as _settle
-from .recorded import run_recorded_integration, validate_recorded_integration
+from .recorded import run_recorded_integration, validate_recorded_integration, validate_integration_start
 from .suite_lock import suite_locked, suite_worker
 
 
@@ -26,7 +26,8 @@ async def run_owned_integration(context, tests, config, *, operation, accepted=F
     Factories and all async clients live on this event loop; pytest runs in an
     owned worker thread. Client/session cleanup finishes before this returns.
     """
-    tests = validate_recorded_integration(tests, config, accepted=accepted)
+    validate = validate_integration_start if config.get('SKIP_ALLURE_REPORTING') is True else validate_recorded_integration
+    tests = validate(tests, config, accepted=accepted)
     if (session_factory is None) != (gateway_factory is None):
         raise ValueError('Unattended session and quota client must be supplied together')
     cancel_event = cancel_event if cancel_event is not None else Event()
@@ -68,13 +69,16 @@ async def run_owned_integration(context, tests, config, *, operation, accepted=F
             raise failure
 
     def validate(active):
-        validate_recorded_integration(tests, active.values, accepted=accepted)
+        validator = (validate_integration_start if active.values.get('SKIP_ALLURE_REPORTING') is True
+                     else validate_recorded_integration)
+        validator(tests, active.values, accepted=accepted)
 
     async with operation.open(retain=True, validate=validate) as owned:
         # The coordinator resolves again after any TUI edits; never reuse the
         # initial configuration snapshot for the actual workload or storage.
         active = owned.config.values
-        tests = validate_recorded_integration(tests, active, accepted=accepted)
+        validator = validate_integration_start if active.get('SKIP_ALLURE_REPORTING') is True else validate_recorded_integration
+        tests = validator(tests, active, accepted=accepted)
 
         async def prepare(usage):
             nonlocal session, gateway
@@ -103,8 +107,32 @@ async def run_owned_integration(context, tests, config, *, operation, accepted=F
             content_policy=getattr(owned.runtime.emissions, 'policy', None))
         if runner is not None:
             options['runner'] = runner
-        worker = asyncio.create_task(asyncio.to_thread(suite_worker(
-            run_recorded_integration, context, tests, active, **options)))
+        if active.get('SKIP_ALLURE_REPORTING') is True:
+            from time import monotonic
+            from uuid import uuid4
+            from api_agent.telemetry.usage import SuiteUsage
+            from .integration import run_integration_tests
+            from .recorded import RecordedIntegrationResult
+            from .recording import RunIdentity
+            from .collection import repository_label
+            started_at = monotonic()
+            identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
+            usage = SuiteUsage(str(uuid4()))
+
+            def unrecorded():
+                execute = runner or run_integration_tests
+                execution = execute(context, tests, accepted=True, no_std_in=False,
+                    config=active, parallel_jobs=active.get('TEST_PARALLEL_JOBS', 8),
+                    before_run=lambda: submit(prepare(usage)),
+                    on_event=on_event, output=output, cancel_event=cancel_event)
+                return RecordedIntegrationResult(execution, identity, None, {}, None,
+                                                 False, monotonic() - started_at,
+                                                 reporting_skipped=True)
+
+            worker = asyncio.create_task(asyncio.to_thread(suite_worker(unrecorded)))
+        else:
+            worker = asyncio.create_task(asyncio.to_thread(suite_worker(
+                run_recorded_integration, context, tests, active, **options)))
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:

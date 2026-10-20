@@ -57,6 +57,14 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
     with open(path, 'a', encoding='utf-8') as stream:
         stream.write(json.dumps({'kind': 'inference_usage', 'node': node.rsplit(' ', 1)[0],
                                  'data': row}, allow_nan=False) + '\n')
+    if result is not None or failed:
+        from api_agent.workflows.attribution import current_workflow_visit
+        owner = current_workflow_visit()
+        if owner is not None:
+            journal, visit_id, attempt_id = owner
+            journal.record_call(call_id=call_id, visit_id=visit_id,
+                                attempt_id=attempt_id, usage=row['usage'],
+                                selection=selection, outcome=row['outcome'])
     return call_id
 
 

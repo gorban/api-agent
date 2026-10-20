@@ -288,6 +288,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         on_event=TerminalTestProgress(tests, lambda line: print(line, flush=True), scrub=scrubber),
                         output=runner_output)
+                    if getattr(execution, 'reporting_skipped', False):
+                        print('Allure reporting: SKIPPED by configuration', flush=True)
                 finally:
                     if pending_output:
                         print(scrubber(pending_output), end='', flush=True)
@@ -365,6 +367,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'RUN_UI': '--run-ui: enable the optional Run local frontend; test browsers stay headless unless DEBUG (or E2E_DEBUG for E2E) is enabled.',
         'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
         'DEBUG': '--debug: retain headed browser inspection; does not enable the optional Run local frontend.',
+        'SKIP_ALLURE_REPORTING': '--skip-allure-reporting: disable Allure for this test run and permit uncommitted workflow inputs.',
         'UNIT_COVERAGE_FULL': '--unit-coverage-full: show every unit coverage row; JSON/HTML reports are retained either way.',
         'UNATTENDED_USER_INDEX': '--unattended-user-index INDEX: select a zero-based account; --unattended-user-index= uses manual login for this run.',
     }

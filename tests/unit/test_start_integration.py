@@ -40,6 +40,25 @@ def test_terminal_start_or_debug_dispatches_recorded_integration(activation, val
     assert ('Integration debug:' in stdout.getvalue()) is (activation == 'DEBUG')
 
 
+def test_terminal_skip_reports_disabled_allure_after_selected_run():
+    stdout, stderr = StringIO(), StringIO()
+    selected = [SimpleNamespace(id='base::selected.py::test_case', tags=frozenset())]
+    def execute(context, tests, config, **options):
+        assert config['SKIP_ALLURE_REPORTING'] is True and tests is selected
+        return SimpleNamespace(exit_code=0, reporting_skipped=True)
+    with patch.dict('os.environ', {}, clear=True), patch('sys.stdout', stdout), \
+         patch('sys.stderr', stderr), patch('api_agent.config.read_dotenv', return_value={}), \
+         patch('api_agent.config.dotenv.read_dotenv', return_value={}), \
+         patch('api_agent.runtime.worktrees.verify_worktrees'), \
+         patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+         patch('api_agent.testing.collection.collect_tests', return_value=selected), \
+         patch('api_agent.testing.launched.run_launched_integration', side_effect=execute):
+        assert main(['--tui-mode=integration', '--no-std-in', '--start',
+                     '--skip-allure-reporting', 'selected.py'], base_root=ROOT) == 0
+    assert 'Allure reporting: SKIPPED by configuration' in stdout.getvalue()
+    assert not stderr.getvalue()
+
+
 @pytest.mark.parametrize('start', ['True', 'E2E'])
 def test_recording_start_override_still_requires_accepted_execution(start):
     config = {'TUI_MODE': 'integration', 'NO_STD_IN': True, 'START': start, 'ALLURE_S3_BUCKET': 'synthetic'}

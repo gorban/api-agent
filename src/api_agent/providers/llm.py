@@ -6,7 +6,7 @@ from typing import Literal
 from .control import OperationalError
 
 
-LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy", "reasoning_effort"})
+LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy", "reasoning_effort", "cache_boundaries"})
 
 
 def _require(condition: bool) -> None:
@@ -62,6 +62,15 @@ class ToolResult:
 
 
 @dataclass(frozen=True)
+class CacheBoundary:
+    """Optional explicit prompt boundary; unsupported providers may ignore it."""
+    lifetime_seconds: Literal[300, 3600] = 300
+
+    def __post_init__(self):
+        _require(type(self.lifetime_seconds) is int and self.lifetime_seconds in (300, 3600))
+
+
+@dataclass(frozen=True)
 class Message:
     role: Literal["system", "user", "assistant", "tool"]
     content: tuple[TextContent, ...] = field(default=(), repr=False)
@@ -69,7 +78,10 @@ class Message:
     results: tuple[ToolResult, ...] = field(default=(), repr=False)
     continuation: str | None = field(default=None, repr=False)
 
+    cache_boundary: CacheBoundary | None = None
+
     def __post_init__(self):
+        _require(self.cache_boundary is None or (isinstance(self.cache_boundary, CacheBoundary) and bool(self.content) and any(part.text for part in self.content)))
         _require(type(self.role) is str and self.role in {"system", "user", "assistant", "tool"} and _items(self.content, TextContent) and _items(self.calls, ToolCall) and _items(self.results, ToolResult))
         _require(not self.calls or self.role == "assistant")
         _require(not self.results or self.role == "tool")
@@ -81,9 +93,11 @@ class Tool:
     name: str
     description: str = field(repr=False)
     input_schema: str = field(repr=False)
+    strict: bool = True
 
     def __post_init__(self):
         _require(isinstance(self.name, str) and bool(self.name) and isinstance(self.description, str) and isinstance(self.input_schema, str))
+        _require(type(self.strict) is bool)
         _schema(self.input_schema)
 
 
@@ -108,9 +122,11 @@ class GenerationOptions:
 class StructuredOutput:
     name: str
     schema: str = field(repr=False)
+    strict: bool = True
 
     def __post_init__(self):
         _require(isinstance(self.name, str) and bool(self.name) and isinstance(self.schema, str))
+        _require(type(self.strict) is bool)
         _schema(self.schema)
 
 
@@ -123,6 +139,7 @@ class CompletionRequest:
 
     def __post_init__(self):
         _require(_items(self.messages, Message) and bool(self.messages) and _items(self.tools, Tool) and isinstance(self.generation, GenerationOptions) and (self.structured is None or isinstance(self.structured, StructuredOutput)))
+        _require(sum(message.cache_boundary is not None for message in self.messages) <= 4)
         _require(len({tool.name for tool in self.tools}) == len(self.tools))
 
 
@@ -138,7 +155,11 @@ class AvailableSelection:
     family: str | None = None
     reasoning_efforts: tuple[str, ...] | None = None
 
+    cache_boundary_lifetimes: tuple[int, ...] = ()
+
     def __post_init__(self):
+        _require(type(self.cache_boundary_lifetimes) is tuple and len(set(self.cache_boundary_lifetimes)) == len(self.cache_boundary_lifetimes) and all(type(value) is int and value in (300, 3600) for value in self.cache_boundary_lifetimes))
+        _require(not self.cache_boundary_lifetimes or "cache_boundaries" in self.features)
         _require(isinstance(self.selected_llm, str) and bool(self.selected_llm) and isinstance(self.description, str) and isinstance(self.features, tuple) and all(type(feature) is str and feature in LLM_FEATURES for feature in self.features))
         _require(len(set(self.features)) == len(self.features))
         _require(self.reasoning_efforts is None or (type(self.reasoning_efforts) is tuple and all(type(value) is str and value in ("off", "low", "medium", "high") for value in self.reasoning_efforts) and len(set(self.reasoning_efforts)) == len(self.reasoning_efforts)))
@@ -150,6 +171,9 @@ class AvailableSelection:
 
     def validate(self, request: "LLMRequest") -> None:
         required = {name for name, enabled in (("tools", bool(request.payload.tools) or any(message.calls or message.results for message in request.payload.messages)), ("structured", request.payload.structured is not None), ("temperature", request.payload.generation.temperature is not None), ("max_output_tokens", request.payload.generation.max_output_tokens is not None), ("cache_policy", request.payload.generation.cache_policy is not None)) if enabled}
+        maximum = request.payload.generation.max_output_tokens
+        if maximum is not None and self.max_output_tokens is not None and maximum > self.max_output_tokens:
+            raise OperationalError("unsupported")
         effort = request.payload.generation.reasoning_effort
         if effort and ("reasoning_effort" not in self.features or self.reasoning_efforts is None or effort not in self.reasoning_efforts):
             raise OperationalError("unsupported")
@@ -195,7 +219,10 @@ class LLMResult:
     serving_revision: str | None = None
     billing: dict | None = field(default=None, repr=False)
 
+    applied_cache_boundaries: tuple[int, ...] = ()
+
     def __post_init__(self):
+        _require(type(self.applied_cache_boundaries) is tuple and len(self.applied_cache_boundaries) <= 4 and len(set(self.applied_cache_boundaries)) == len(self.applied_cache_boundaries) and all(type(value) is int and 0 <= value < 64 for value in self.applied_cache_boundaries))
         if self.billing is not None:
             from .costs import validate_billing
             validate_billing(self.billing)
@@ -216,3 +243,12 @@ class StreamEvent:
     @property
     def final(self) -> bool:
         return self.kind == "completed"
+
+
+def cache_boundary_indexes(request: LLMRequest, selection: AvailableSelection) -> tuple[int, ...]:
+    """Return only requested boundaries supported by this advertised selection."""
+    if request.selected_llm != selection.selected_llm or "cache_boundaries" not in selection.features:
+        return ()
+    return tuple(index for index, message in enumerate(request.payload.messages)
+                 if message.cache_boundary is not None
+                 and message.cache_boundary.lifetime_seconds in selection.cache_boundary_lifetimes)

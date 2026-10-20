@@ -30,16 +30,28 @@ def publish(data):
     path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
     node = os.environ.get('PYTEST_CURRENT_TEST')
     if path and node:
-        safe = EmissionBoundary(ContentPolicy(True)).export(sanitize(data))
+        if type(data) is dict and data.get('version') == 1 and 'projection' in data:
+            from .journal import validate_journal
+            safe = validate_journal(data)
+        else:
+            safe = EmissionBoundary(ContentPolicy(True)).export(sanitize(data))
         with open(path, 'a', encoding='utf-8') as stream:
             stream.write(json.dumps(dict(kind='workflow_evidence', node=node.rsplit(' ',1)[0], data=safe), allow_nan=False)+'\n')
 
 
 def attachment(event, boundary):
+    boundary = boundary or EmissionBoundary(ContentPolicy(True))
     row = strict_json(event.text)
     if type(row) is not dict:
         raise ValueError('Workflow evidence must be an object')
-    return ('Workflow execution evidence', json.dumps(boundary.content_export(sanitize(row)), indent=2, allow_nan=False).encode(), 'application/json')
+    if row.get('version') == 1 and 'projection' in row:
+        from .journal import validate_journal
+        clean = validate_journal(row)
+        if boundary.content_export(clean) != clean:
+            raise ValueError('Workflow journal violates the runner credential boundary')
+    else:
+        clean = boundary.content_export(sanitize(row))
+    return ('Workflow execution evidence', json.dumps(clean, indent=2, allow_nan=False).encode(), 'application/json')
 
 
 # The receipt protects against accidental edits and detached/copied JSON, not an

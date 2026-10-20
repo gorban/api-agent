@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
 from api_agent.providers.contracts import ContractError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError
-from api_agent.providers.llm import CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, TextContent, Usage
+from api_agent.providers.llm import CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, TextContent, Usage, AvailableSelection
 from api_agent.providers.shared_setup import SharedSetupOwner
 from api_agent.providers.setup_registry import SetupRegistry
 from api_agent.providers.setup_transport import SetupClient, SetupServer
@@ -13,15 +13,16 @@ from api_agent.testing.provider_setup import IntegrationLLM, RemoteIntegrationLL
 
 CAP = 'synthetic-inference-capability-value-000'
 REQUEST = LLMRequest('gpt-example', CompletionRequest((Message('user', (TextContent('Ok'),)),), generation=GenerationOptions(max_output_tokens=128)))
+CATALOG = (AvailableSelection('gpt-example',features=('max_output_tokens',),max_output_tokens=128),)
 RESULT = LLMResult(Message('assistant', (TextContent('Ok'),)), Usage(input_tokens=2, output_tokens=1))
 
 
-def test_shared_completion_uses_one_auth_and_never_caches_or_lists():
+def test_shared_completion_uses_one_auth_and_reuses_declared_catalog():
     async def scenario():
         session = AsyncMock(return_value='synthetic-secret')
         adapter = SimpleNamespace(asetup=AsyncMock(return_value=session))
         complete = AsyncMock(return_value=RESULT)
-        subject = SharedSetupOwner('op','selected',lambda c: LLMSessionOwner(adapter), complete=complete)
+        subject = SharedSetupOwner('op','selected',lambda c: LLMSessionOwner(adapter), complete=complete,describe=AsyncMock(return_value=CATALOG))
         try:
             results = await asyncio.gather(*(subject.complete(REQUEST,selected_identity='selected') for _ in range(3)))
             assert results == [RESULT]*3 and not subject._calls
@@ -40,7 +41,7 @@ def test_shared_completion_uses_one_auth_and_never_caches_or_lists():
 def test_missing_capability_or_invalid_reply(method, expected):
     async def scenario():
         adapter = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')))
-        owner = SharedSetupOwner('op','selected',lambda c: LLMSessionOwner(adapter),complete=method)
+        owner = SharedSetupOwner('op','selected',lambda c: LLMSessionOwner(adapter),complete=method,describe=AsyncMock(return_value=CATALOG))
         try:
             with pytest.raises(expected):
                 await owner.complete(REQUEST)
@@ -103,7 +104,7 @@ def test_cancellation_stops_only_its_inference_keeps_auth_for_next_call():
             finally:
                 stopped.set()
         adapter = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')))
-        owner = SharedSetupOwner('op','selected',lambda c:LLMSessionOwner(adapter),complete=complete)
+        owner = SharedSetupOwner('op','selected',lambda c:LLMSessionOwner(adapter),complete=complete,describe=AsyncMock(return_value=CATALOG))
         task = asyncio.create_task(owner.complete(REQUEST))
         await entered.wait()
         task.cancel()
@@ -119,7 +120,7 @@ def test_cancellation_stops_only_its_inference_keeps_auth_for_next_call():
 
 def test_worker_local_complete_closed_and_prerequisite(tmp_path, monkeypatch):
     from api_agent.testing import provider_setup
-    implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')), acomplete=AsyncMock(return_value=RESULT))
+    implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')), acomplete=AsyncMock(return_value=RESULT),adescribe=AsyncMock(return_value=CATALOG))
     monkeypatch.setattr(provider_setup,'aload_provider',AsyncMock(return_value=SimpleNamespace(implementation=implementation,aclose=AsyncMock())))
     local = IntegrationLLM({'LLM_PROVIDER':'synthetic'},tmp_path)
     assert local.complete(REQUEST) == RESULT
@@ -212,7 +213,7 @@ def test_repeated_cancellation_waits_for_cleanup_and_releases_result_tracking(ki
                 return RESULT
         if kind == 'shared':
             adapter = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')))
-            subject = SharedSetupOwner('op','selected',lambda c:LLMSessionOwner(adapter),complete=complete)
+            subject = SharedSetupOwner('op','selected',lambda c:LLMSessionOwner(adapter),complete=complete,describe=AsyncMock(return_value=CATALOG))
             operation=lambda:subject.complete(REQUEST)
         else:
             owner=SimpleNamespace(ensure_ready=AsyncMock(),complete=complete,aclose=AsyncMock())
@@ -306,7 +307,7 @@ def test_local_snapshot_brackets_requests_once_and_failures_are_optional(tmp_pat
     now=datetime.now(timezone.utc);rows=[]
     snapshots=[QuotaSnapshot(1,'w',now+timedelta(days=1),now),QuotaSnapshot(2,'w',now+timedelta(days=1),now+timedelta(seconds=1))]
     snap=AsyncMock(side_effect=snapshots if observed!='error' else RuntimeError('secret diagnostic'))
-    impl=SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),acomplete=AsyncMock(return_value=RESULT),asnapshot=snap)
+    impl=SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),acomplete=AsyncMock(return_value=RESULT),asnapshot=snap,adescribe=AsyncMock(return_value=CATALOG))
     monkeypatch.setattr(provider_setup,'aload_provider',AsyncMock(return_value=SimpleNamespace(implementation=impl,aclose=AsyncMock())))
     monkeypatch.setattr(quota_events,'publish',lambda *a:rows.append(a))
     subject=IntegrationLLM({'LLM_PROVIDER':'synthetic'},tmp_path,quota_observer=(lambda *a:rows.append(a)) if observed is True else None)
@@ -347,7 +348,7 @@ def test_post_inference_accounting_failure_retains_result_usage(tmp_path, monkey
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
     monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test_request (call)')
     implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),
-                                     acomplete=AsyncMock(return_value=RESULT))
+                                     acomplete=AsyncMock(return_value=RESULT),adescribe=AsyncMock(return_value=CATALOG))
     monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(
         implementation=implementation, aclose=AsyncMock())))
     def broken(*args):

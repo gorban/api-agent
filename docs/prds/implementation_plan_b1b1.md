@@ -2,6 +2,8 @@
 
 [Resource format](implementation_plan_b1a.md) · [Conversion and equivalence](implementation_plan_b1b.md)
 
+[Stateful Workflow v3 extension](implementation_plan_b1b4.md) records the minimum typed state, routing and checkpoint contract.
+
 These generic contracts must be reviewed and versioned before dependent format conversion. They preserve existing accepted behavior; they do not authorize inference, qualification spending or application acceptance.
 
 - [ ] Select one complete graph or one explicitly composed graph through an immutable selection record containing graph identity, declared owner/root, entry and ordered stable-ID replacements. Reject ambiguity, conflicting replacements, unknown IDs and incompatible types before effects. Omitted replacements retain base behavior; setting overrides and directory collisions never merge graphs.

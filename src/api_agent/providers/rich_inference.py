@@ -5,9 +5,9 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from referencing import Registry
 from referencing.exceptions import NoSuchResource, Unresolvable
-from .contracts import ContractError
+from .contracts import ContractError, ProviderAccessError
 from .llm import (CompletionRequest, GenerationOptions, LLMRequest, LLMResult,
-                  Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, Usage)
+                  Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, Usage, CacheBoundary, cache_boundary_indexes)
 
 
 def _pairs(items):
@@ -31,23 +31,61 @@ def object_json(value):
         if type(decoded) is not dict:
             raise ValueError()
         _bounded(decoded)
+        _instance_bound(decoded)
         return decoded
     except (ValueError, TypeError, RecursionError):
         raise ContractError('Invalid rich inference JSON object') from None
 
 
-def _references(value):
-    """Inspect only executable positions admitted by the strict schema subset."""
-    if type(value) is not dict:
-        return
-    if any(key in value for key in ('$ref', '$dynamicRef', '$recursiveRef')):
+def _instance_bound(value):
+    pending, count = [(value, 0)], 0
+    while pending:
+        node, depth = pending.pop()
+        count += 1
+        if count > 8192 or depth > 32 or (type(node) is list and len(node) > 1024):
+            raise ValueError()
+        children = node.values() if type(node) is dict else node if type(node) is list else ()
+        pending.extend((child, depth + 1) for child in children)
+
+
+def _references(value, root=None, depth=0, active=(), budget=None):
+    """Bound schema complexity and permit only resolvable local JSON pointers."""
+    root = value if root is None else root
+    budget = [4096] if budget is None else budget
+    budget[0] -= 1
+    if depth > 32 or budget[0] < 0:
         raise ValueError()
-    properties = value.get('properties')
-    if type(properties) is dict:
-        for child in properties.values():
-            _references(child)
-    if 'items' in value:
-        _references(value['items'])
+    if type(value) is dict:
+        if any(key in value for key in ('$dynamicRef', '$recursiveRef', '$id')):
+            raise ValueError()
+        if '$ref' in value:
+            child = value['$ref']
+            if type(child) is not str or not child.startswith('#/') or child in active:
+                raise ValueError()
+            target = root
+            for part in child[2:].split('/'):
+                token = part.replace('~1', '/').replace('~0', '~')
+                if type(target) is list:
+                    if not token.isascii() or not token.isdecimal() or (len(token) > 1 and token.startswith('0')):
+                        raise ValueError()
+                    target = target[int(token)]
+                else:
+                    target = target[token]
+            if type(target) not in (dict, bool):
+                raise ValueError()
+            _references(target, root, depth + 1, (*active, child), budget)
+        for key in ('$defs', 'definitions', 'properties', 'patternProperties', 'dependentSchemas'):
+            children = value.get(key, {})
+            if type(children) is dict:
+                for child in children.values():
+                    _references(child, root, depth + 1, active, budget)
+        for key in ('items', 'additionalProperties', 'contains', 'not', 'if', 'then', 'else', 'propertyNames', 'unevaluatedProperties', 'unevaluatedItems'):
+            if key in value:
+                _references(value[key], root, depth + 1, active, budget)
+        for key in ('allOf', 'anyOf', 'oneOf', 'prefixItems'):
+            if type(value.get(key)) is list:
+                for child in value[key]:
+                    _references(child, root, depth + 1, active, budget)
 
 
 def _no_remote(uri):
@@ -57,8 +95,26 @@ def _no_remote(uri):
 def valid_schema(definition, value):
     """Never permit validation to retrieve remote schema resources."""
     try:
+        _references(definition)
+        _instance_bound(value)
+        if not _fast_schema(definition):
+            from .bounded_schema import isolated_valid_schema
+            return isolated_valid_schema(definition, value)
         return Draft202012Validator(definition, registry=Registry(retrieve=_no_remote)).is_valid(value)
-    except Unresolvable:
+    except (ValueError, TypeError, KeyError, IndexError, Unresolvable, RecursionError):
+        return False
+
+
+
+async def async_valid_schema(definition, value):
+    try:
+        _references(definition)
+        _instance_bound(value)
+        if not _fast_schema(definition):
+            from .bounded_schema import async_isolated_valid_schema
+            return await async_isolated_valid_schema(definition, value)
+        return Draft202012Validator(definition, registry=Registry(retrieve=_no_remote)).is_valid(value)
+    except (ValueError, TypeError, KeyError, IndexError, Unresolvable, RecursionError):
         return False
 
 
@@ -86,16 +142,36 @@ def _strict(node, depth=0):
         raise ValueError()
 
 
-def schema(value):
+def _fast_schema(definition):
     try:
+        _strict(definition)
+    except (ValueError, TypeError):
+        return False
+    pending = [definition]
+    while pending:
+        node = pending.pop()
+        if 'enum' in node:
+            return False
+        pending.extend(node.get('properties', {}).values())
+        if 'items' in node:
+            pending.append(node['items'])
+    return True
+
+
+def schema(value, strict=True):
+    try:
+        _text(value, 32768)
         decoded = object_json(value)
         _references(decoded)
         Draft202012Validator.check_schema(decoded)
-        _strict(decoded)
-        if decoded.get('type') != 'object':
+        if type(strict) is not bool:
+            raise ValueError()
+        if strict:
+            _strict(decoded)
+        if decoded.get('type') != 'object' and (strict or 'type' in decoded or not any(key in decoded for key in ('allOf', 'anyOf', 'oneOf', '$ref'))):
             raise ValueError()
         return decoded
-    except (ValueError, TypeError, SchemaError, RecursionError):
+    except (ValueError, TypeError, KeyError, IndexError, SchemaError, RecursionError):
         raise ContractError('Rich inference requires a strict object schema') from None
 
 
@@ -112,7 +188,7 @@ def _exact(row, keys):
         raise ContractError('Invalid rich inference fields')
 
 
-def _text(value, maximum=32768):
+def _text(value, maximum=524288):
     if type(value) is not str or len(value) > maximum:
         raise ContractError('Invalid rich inference text')
     return value
@@ -131,6 +207,8 @@ def message_to_wire(message):
     row = dict(role=message.role, content=[part.text for part in message.content],
                 calls=[dict(id=call.call_id, name=call.name, arguments=call.arguments) for call in message.calls],
                 results=[dict(id=result.call_id, content=[part.text for part in result.content]) for result in message.results])
+    if message.cache_boundary is not None:
+        row['cache_boundary'] = dict(lifetime_seconds=message.cache_boundary.lifetime_seconds)
     if message.continuation is not None:
         continuation(message.continuation)
         row['continuation'] = message.continuation
@@ -139,7 +217,12 @@ def message_to_wire(message):
 
 def message_from_wire(row):
     keys = ('role', 'content', 'calls', 'results')
-    _exact(row, (*keys, 'continuation') if type(row) is dict and 'continuation' in row else keys)
+    extras = tuple(key for key in ('continuation', 'cache_boundary') if type(row) is dict and key in row)
+    _exact(row, (*keys, *extras))
+    boundary = row.get('cache_boundary')
+    if boundary is not None:
+        _exact(boundary, ('lifetime_seconds',))
+        boundary = CacheBoundary(boundary['lifetime_seconds'])
     state = row.get('continuation')
     if 'continuation' in row:
         continuation(state)
@@ -162,58 +245,58 @@ def message_from_wire(row):
             or (row['role'] == 'tool' and (row['content'] or not results))
             or not (row['content'] or calls or results)):
         raise ContractError('Invalid rich inference message role or content')
-    return Message(row['role'], tuple(TextContent(_text(item)) for item in row['content']), tuple(calls), tuple(results), state)
+    return Message(row['role'], tuple(TextContent(_text(item)) for item in row['content']), tuple(calls), tuple(results), state, boundary)
 
 
 def _bounded(row):
     try:
-        if len(json.dumps(row, allow_nan=False, ensure_ascii=False).encode()) <= 131072:
+        json.dumps(row, allow_nan=False, ensure_ascii=False).encode()
+        if len(json.dumps(row, allow_nan=False, ensure_ascii=True).encode()) <= 2097152:
             return
     except (ValueError, TypeError, UnicodeError, RecursionError):
         pass
     raise ContractError('Rich inference exceeds its JSON byte limit')
 
 
-def request_to_wire(request):
+def request_to_wire(request, *, _validate_instances=True):
     payload = request.payload
-    if payload.generation.temperature is not None:
-        raise ContractError('Temperature is outside this inference subset')
     row = dict(version=2, selected_llm=request.selected_llm, request_id=request.request_id,
                messages=[message_to_wire(item) for item in payload.messages],
-               tools=[dict(name=tool.name, description=tool.description, schema=tool.input_schema) for tool in payload.tools],
-               structured=None if payload.structured is None else dict(name=payload.structured.name, schema=payload.structured.schema),
+               tools=[dict(name=tool.name, description=tool.description, schema=tool.input_schema, **({} if tool.strict else {"strict": False})) for tool in payload.tools],
+               structured=None if payload.structured is None else dict(name=payload.structured.name, schema=payload.structured.schema, **({} if payload.structured.strict else {"strict": False})),
                max_output_tokens=payload.generation.max_output_tokens, cache_policy=payload.generation.cache_policy)
+    if payload.generation.temperature is not None:
+        row['temperature'] = payload.generation.temperature
     if payload.generation.reasoning_effort is not None:
         row['reasoning_effort'] = payload.generation.reasoning_effort
-    request_from_wire(row)
+    request_from_wire(row, _validate_instances=_validate_instances)
     return row
 
 
-def request_from_wire(row):
+def request_from_wire(row, *, _validate_instances=True):
     keys = ('version','selected_llm','request_id','messages','tools','structured','max_output_tokens','cache_policy')
-    _exact(row, (*keys, 'reasoning_effort') if type(row) is dict and 'reasoning_effort' in row else keys)
+    extras = tuple(key for key in ('reasoning_effort', 'temperature') if type(row) is dict and key in row)
+    _exact(row, (*keys, *extras))
     _bounded(row)
     try:
         if (type(row['version']) is not int or row['version'] != 2
                 or type(row['messages']) is not list or not 1 <= len(row['messages']) <= 64
                 or type(row['tools']) is not list or len(row['tools']) > 64):
             raise ValueError()
-        if row['max_output_tokens'] is not None and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 4096):
+        if row['max_output_tokens'] is not None and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 1048576):
             raise ValueError()
         tools = []
         for item in row['tools']:
-            _exact(item, ('name','description','schema'))
-            schema(item['schema'])
-            tools.append(Tool(_identifier(item['name'], name=True), _text(item['description']), _text(item['schema'])))
+            _exact(item, ('name','description','schema', *(() if 'strict' not in item else ('strict',))))
+            schema(item['schema'], item.get('strict', True))
+            tools.append(Tool(_identifier(item['name'], name=True), _text(item['description']), _text(item['schema']), item.get('strict', True)))
         structured = row['structured']
         if structured is not None:
-            _exact(structured, ('name','schema'))
-            schema(structured['schema'])
-            structured = StructuredOutput(_identifier(structured['name'], name=True), _text(structured['schema']))
-        if not tools and structured is None:
-            raise ValueError()
+            _exact(structured, ('name','schema', *(() if 'strict' not in structured else ('strict',))))
+            schema(structured['schema'], structured.get('strict', True))
+            structured = StructuredOutput(_identifier(structured['name'], name=True), _text(structured['schema']), structured.get('strict', True))
         messages = tuple(message_from_wire(item) for item in row['messages'])
-        declared = {tool.name: schema(tool.input_schema) for tool in tools}
+        declared = {tool.name: schema(tool.input_schema, tool.strict) for tool in tools}
         pending, seen = {}, set()
         for message in messages:
             if pending and message.role != 'tool':
@@ -221,7 +304,7 @@ def request_from_wire(row):
             for call in message.calls:
                 if call.call_id in seen or call.name not in declared:
                     raise ValueError()
-                if not valid_schema(declared[call.name], object_json(call.arguments)):
+                if _validate_instances and not valid_schema(declared[call.name], object_json(call.arguments)):
                     raise ValueError()
                 seen.add(call.call_id)
                 pending[call.call_id] = call.name
@@ -232,7 +315,7 @@ def request_from_wire(row):
         if pending:
             raise ValueError()
         return LLMRequest(_identifier(row['selected_llm']), CompletionRequest(messages, tuple(tools),
-            GenerationOptions(row['max_output_tokens'], cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort')), structured), _identifier(row['request_id'], empty=True))
+            GenerationOptions(row['max_output_tokens'], temperature=row.get('temperature'), cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort')), structured), _identifier(row['request_id'], empty=True))
     except (ValueError, TypeError):
         raise ContractError('Invalid rich inference request') from None
 
@@ -244,12 +327,14 @@ def result_to_wire(result):
     row = dict(version=2, message=message_to_wire(result.payload), outcome=result.outcome,
                usage=usage_to_wire(result.usage), actual_model=result.actual_model,
                service_tier=result.service_tier, serving_revision=result.serving_revision, billing=result.billing)
+    if result.applied_cache_boundaries:
+        row['applied_cache_boundaries'] = list(result.applied_cache_boundaries)
     result_from_wire(row)
     return row
 
 
 def result_from_wire(row):
-    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing'))
+    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing', *(() if 'applied_cache_boundaries' not in row else ('applied_cache_boundaries',))))
     _bounded(row)
     try:
         if type(row['version']) is not int or row['version'] != 2 or row['outcome'] != 'tool_calls':
@@ -257,9 +342,96 @@ def result_from_wire(row):
         message = message_from_wire(row['message'])
         if not message.calls or message.results or len({call.call_id for call in message.calls}) != len(message.calls):
             raise ValueError()
-        from .inference import result_from_wire as text_result
+        from .inference import result_from_wire as text_result, _cache_boundaries
         checked = text_result(dict(text='', outcome='completed', usage=row['usage'], actual_model=row['actual_model'],
                                    service_tier=row['service_tier'], serving_revision=row['serving_revision'],billing=row['billing']))
-        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing)
+        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing, _cache_boundaries(row))
     except (TypeError, ValueError):
         raise ContractError('Invalid rich inference result') from None
+
+
+def _output_checks(request, result, selection=None):
+    if not isinstance(result, LLMResult):
+        raise ContractError("Invalid inference result")
+    eligible = () if selection is None else cache_boundary_indexes(request, selection)
+    if not set(result.applied_cache_boundaries).issubset(eligible):
+        raise ProviderAccessError('unknown', 'Invalid applied cache boundary', usage=result.usage)
+    tools = {tool.name: tool for tool in request.payload.tools}
+    for call in result.payload.calls:
+        tool = tools.get(call.name)
+        if tool is None:
+            raise ProviderAccessError('unknown', 'Tool output does not match its schema', usage=result.usage)
+        yield tool.input_schema, tool.strict, call.arguments, 'Tool output does not match its schema'
+    if request.payload.structured is not None and result.outcome == 'completed':
+        definition = request.payload.structured
+        yield definition.schema, definition.strict, ''.join(part.text for part in result.payload.content), 'Structured output does not match its schema'
+
+
+def _bounded_result(result):
+    from .inference import result_to_wire
+    try:
+        result_to_wire(result)
+    except (ValueError, TypeError, RecursionError):
+        raise ProviderAccessError('unknown', 'Invalid bounded inference result', usage=result.usage) from None
+    return result
+
+
+def validate_result(request, result, *, selection=None):
+    """Validate actual output against the originating unmodified schemas."""
+    for definition, strict, text, message in _output_checks(request, result, selection):
+        if not _valid_output(definition, strict, text):
+            raise ProviderAccessError('unknown', message, usage=result.usage)
+    return _bounded_result(result)
+
+
+async def async_validate_result(request, result, *, selection=None):
+    for definition, strict, text, message in _output_checks(request, result, selection):
+        try:
+            valid = await async_valid_schema(schema(definition, strict), object_json(text))
+        except ContractError:
+            valid = False
+        if not valid:
+            raise ProviderAccessError('unknown', message, usage=result.usage)
+    return _bounded_result(result)
+
+
+def _valid_output(definition, strict, text):
+    try:
+        return valid_schema(schema(definition, strict), object_json(text))
+    except ContractError:
+        return False
+
+
+def validate_catalog_selection(values, request):
+    from .catalog import catalog_to_wire
+    from .control import OperationalError
+    catalog_to_wire(values)
+    selected = next((value for value in values if value.selected_llm == request.selected_llm), None)
+    if selected is None:
+        raise OperationalError('unsupported')
+    selected.validate(request)
+    return selected
+
+
+async def validate_request_instances(request):
+    definitions = {tool.name: schema(tool.input_schema, tool.strict) for tool in request.payload.tools}
+    for message in request.payload.messages:
+        for call in message.calls:
+            if not await async_valid_schema(definitions[call.name], object_json(call.arguments)):
+                raise ContractError('Invalid replayed tool arguments')
+
+
+async def resolve_catalog_selection(operation, request):
+    from .contracts import SetupPrerequisiteError
+    from .control import OperationalError
+    try:
+        values = await operation()
+    except SetupPrerequisiteError:
+        if request.payload.generation.max_output_tokens is None:
+            return None
+        raise
+    except OperationalError as error:
+        if request.payload.generation.max_output_tokens is None and error.kind in ('unsupported', 'unavailable'):
+            return None
+        raise
+    return validate_catalog_selection(values, request)

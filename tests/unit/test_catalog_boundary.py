@@ -10,7 +10,7 @@ from api_agent.providers.setup_transport import _error, _raise_error
 
 
 def row():
-    return asdict(AvailableSelection('gpt-example', display_name='Example', version='v1', max_output_tokens=2048, context_length=8192)) | {'features': []}
+    return asdict(AvailableSelection('gpt-example', display_name='Example', version='v1', max_output_tokens=2048, context_length=8192)) | {'features': [], 'cache_boundary_lifetimes': []}
 
 
 def test_full_and_unknown_metadata_round_trip():
@@ -78,7 +78,7 @@ def test_malformed_provider_error_frame_is_not_trusted(update):
 @pytest.mark.parametrize('character,count', [('x', 256), ('界', 90)])
 def test_catalog_byte_limit_is_same_for_local_and_wire(character, count):
     values = tuple(AvailableSelection(f'gpt-{index}', character*512, (), character*200, character*100) for index in range(count))
-    rows = [asdict(value) | {'features': []} for value in values]
+    rows = [asdict(value) | {'features': [], 'cache_boundary_lifetimes': []} for value in values]
     for operation, data in [(catalog_to_wire, values), (catalog_from_wire, rows)]:
         with pytest.raises(ContractError, match='byte limit'):
             operation(data)

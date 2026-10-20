@@ -51,6 +51,15 @@ def fake_runner(status='passed', *, deliver=True):
     return run
 
 
+def test_recorded_entry_rejects_skip_before_creating_artifacts(tmp_path):
+    context, test, config = fixture(tmp_path)
+    config['SKIP_ALLURE_REPORTING'] = True
+    with pytest.raises(ValueError, match='explicitly disabled'):
+        recorded.run_recorded_integration(context, [test], config, accepted=True,
+            runner=lambda *args, **kwargs: pytest.fail('worker launched'))
+    assert not config['ALLURE_RESULTS_DIR'].exists()
+
+
 @pytest.mark.parametrize('status,expected', [('passed', 'completed'), ('failed', 'failed'), ('cancelled', 'interrupted')])
 @pytest.mark.parametrize('delta', [0, 1.5])
 def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, status, expected, delta):

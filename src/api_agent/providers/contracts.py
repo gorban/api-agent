@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol
 from .control import CleanupPendingError, OperationalError, OperationContext
-from .llm import (LLM_FEATURES, AvailableSelection, CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, StreamEvent, StructuredOutput, TextContent, Tool, ToolCall, ToolResult, Usage)
+from .llm import (LLM_FEATURES, CacheBoundary, cache_boundary_indexes, AvailableSelection, CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, StreamEvent, StructuredOutput, TextContent, Tool, ToolCall, ToolResult, Usage)
 
 
 class ContractError(ValueError):

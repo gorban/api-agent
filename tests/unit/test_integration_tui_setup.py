@@ -282,6 +282,22 @@ def test_empty_summary_is_explicit_failure(tmp_path):
     asyncio.run(scenario())
 
 
+def test_integration_summary_identifies_skipped_allure_reporting(tmp_path):
+    test = TestIdentity('base::t.py::test_ok', 'base', 't.py', 't.py::test_ok')
+    async def scenario():
+        app = fixture(tmp_path, 'integration', collector=lambda *args: [test])
+        async with app.run_test() as pilot:
+            await pilot.pause(.1)
+            app.mode = 'integration'
+            app.unit_result = IntegrationRunResult(0, (TestResult(test, 'passed'),), '')
+            app.integration_reporting_skipped = True
+            app.show_unit_results()
+            await pilot.pause(.1)
+            body = app.screen.query_one('#body', Static).content
+            assert 'Allure reporting: SKIPPED by configuration' in body.plain
+    asyncio.run(scenario())
+
+
 def test_selected_ui_intent_reports_missing_configuration_before_execution(tmp_path):
     test=TestIdentity('base::t.py::test_ui','base','t.py','t.py::test_ui',frozenset({'requires_ui_session'}))
     async def scenario():

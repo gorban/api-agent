@@ -32,14 +32,15 @@ class RecordedIntegrationResult:
     manifest: dict | None
     persisted: bool
     elapsed: float | None = None
+    reporting_skipped: bool = False
 
     @property
     def exit_code(self):
-        return self.execution.exit_code or (0 if self.persisted else 1)
+        return self.execution.exit_code or (0 if self.persisted or self.reporting_skipped else 1)
 
 
-def validate_recorded_integration(tests, config, *, accepted=False, no_std_in=False):
-    """Validate acceptance before listeners, authentication or artifacts exist."""
+def validate_integration_start(tests, config, *, accepted=False, no_std_in=False):
+    """Validate accepted execution independently of reporting selection."""
     from api_agent.runtime.starting import start_requested
     if (accepted is not True or ((no_std_in or config.get('NO_STD_IN'))
             and not config.get('DEBUG') and not start_requested(config))
@@ -47,7 +48,15 @@ def validate_recorded_integration(tests, config, *, accepted=False, no_std_in=Fa
         raise PermissionError('Recorded integrations require explicit Start acceptance')
     tests = tuple(tests)
     if not tests:
-        raise ValueError('Cannot record an empty integration selection')
+        raise ValueError('Cannot run an empty integration selection')
+    return tests
+
+
+def validate_recorded_integration(tests, config, *, accepted=False, no_std_in=False):
+    """Validate acceptance before listeners, authentication or artifacts exist."""
+    if config.get('SKIP_ALLURE_REPORTING') is True:
+        raise ValueError('Allure reporting is explicitly disabled for this invocation')
+    tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
     if not config.get('ALLURE_S3_BUCKET'):
         raise ValueError('ALLURE_S3_BUCKET is required')
     return tests
@@ -59,7 +68,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                              usage_output=None, on_snapshot=None,
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
-                             unattended_index_source=None, interaction=None, content_policy=None, historical_estimator=None):
+                             unattended_index_source=None, interaction=None, content_policy=None, historical_estimator=None,
+                             workflow_admissions=None):
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
@@ -70,6 +80,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     accounting remain independent. Register credentials before emitting evidence.
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
+    from .workflow_admission import capture_workflow_admissions
+    workflow_admissions = capture_workflow_admissions(context, workflow_admissions)
     started_at = monotonic()
     from api_agent.providers.rates import freeze_pricing
     from .cost_history import estimator_for
@@ -107,6 +119,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         content = {}
         ui_test_ids = {test.id for test in tests if 'requires_ui_session' in test.tags}
         workflow_steps = {}
+        workflow_journals = {}
         persisted = False
         manifest = None
         usage_summary = None
@@ -214,6 +227,18 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             from api_agent.telemetry.accounting import validate_accounting
             artifact = validate_accounting(evidence_boundary.content_export(artifact))
             recorder.record_artifact('accounting.json', json.dumps(artifact, allow_nan=False).encode())
+            if workflow_journals:
+                from .workflow_accounting import join_workflow_accounting, apply_frozen_steps
+                joined, facts = join_workflow_accounting(workflow_journals, artifact,
+                                                         admissions=workflow_admissions)
+                recorder.record_artifact('workflow-accounting-join.json',
+                    json.dumps(evidence_boundary.content_export(joined), sort_keys=True, allow_nan=False).encode())
+                updates = {}
+                for test_id in workflow_journals:
+                    filename = recording_ids[test_id]
+                    row = json.loads((recorder.directory / filename).read_bytes())
+                    updates[filename] = apply_frozen_steps(row.get('steps', []), test_id, facts)
+                recorder.update_workflow_steps(updates)
             recorder.attach_test_artifacts({recording_ids[key]: value for key, value in usage_summary.get('test_costs', {}).items()
                                             if key in recording_ids})
             usage_summary = evidence_boundary.content_export(usage_summary)
@@ -228,9 +253,12 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                                            '__suite__', '__suite__::usage_output')
                     recorder.record_test(TestResult(failure, 'error'))
             status = 'interrupted' if result.cancelled else 'failed' if result.exit_code or external_failed or cleanup_failed or output_failed else 'completed'
-            manifest = recorder.finalize(status=status, shared_artifacts=(
+            shared = [
                 ('Suite usage', 'usage-summary.json', 'application/json'),
-                ('Immutable accounting', 'accounting.json', 'application/json')))
+                ('Immutable accounting', 'accounting.json', 'application/json')]
+            if workflow_journals:
+                shared.append(('Workflow accounting join', 'workflow-accounting-join.json', 'application/json'))
+            manifest = recorder.finalize(status=status, shared_artifacts=tuple(shared))
             from .allure_preview import emit_snapshot
             emit_snapshot(recorder, recording_ids, on_snapshot, manifest=manifest)
             estimator.ingest(directory, manifest)
@@ -255,8 +283,12 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 frozen = attachment(row, evidence_boundary)
                 content.setdefault(row.identity.id, []).append(frozen)
                 from .workflow_steps import scope_steps
-                lifecycle = json.loads(frozen[1]).get('events', [])
+                packet = json.loads(frozen[1])
+                row = replace(row, text=json.dumps(packet, ensure_ascii=False, allow_nan=False))
+                lifecycle = packet.get('events', [])
                 workflow_steps.setdefault(row.identity.id, []).extend(scope_steps(lifecycle))
+                if packet.get('version') == 1 and 'projection' in packet:
+                    workflow_journals.setdefault(row.identity.id, []).append(packet)
             if row.kind == 'quota_snapshot':
                 from .quota_events import capture
                 capture(row, observe_quota)
@@ -277,7 +309,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if on_event is not None:
                 on_event(row)
 
-        execution = runner(context, tests, accepted=True, no_std_in=False, config=config,
+        execution = runner(context, tests, accepted=True, no_std_in=False,
+                           config=dict(config, _ALLURE_REPORTING_ACTIVE=True),
                            parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
                            before_run=before, on_result=record, after_run=after,
                            on_event=event, output=output, cancel_event=cancel_event,

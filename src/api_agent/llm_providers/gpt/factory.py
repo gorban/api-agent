@@ -256,18 +256,18 @@ class GPTProvider:
         request = configured_request(request, self.cache_policy, reasoning_effort=self.reasoning_effort)
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
         validate_text_request(base_url=base, access_token='preflight-validation',
-                              subscription=self.auth_mode == 'subscription', api_mode=self.api_mode, request=request)
+                              subscription=self.auth_mode == 'subscription', api_mode=self.api_mode, request=request, _validate_instances=False)
 
     async def acomplete(self, request, *, auth=None):
         if self.closed:
             raise ContractError("GPT provider is closed.")
-        from .inference import complete_text, validate_text_request
+        from .inference import complete_text, async_validate_text_request
         from api_agent.providers.cache_policy import configured_request
         request = configured_request(request, self.cache_policy, reasoning_effort=self.reasoning_effort)
         if not isinstance(self.auth_mode, str) or self.auth_mode not in {'subscription', 'api_key'}:
             raise ContractError('GPT_AUTH_MODE must be subscription or api_key.')
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
-        validate_text_request(base_url=base, access_token=auth, subscription=self.auth_mode == 'subscription',
+        await async_validate_text_request(base_url=base, access_token=auth, subscription=self.auth_mode == 'subscription',
                               api_mode=self.api_mode, request=request)
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             return await complete_text(client=client, base_url=base, access_token=auth,

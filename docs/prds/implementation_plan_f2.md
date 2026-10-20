@@ -222,3 +222,5 @@ Pricing sources, verified 2026-10-10: [Luna](https://developers.openai.com/api/d
 
 - [x] The delivered generic inference/model contracts are human-accepted. This does not close future runtime/platform conformance or frontend/application acceptance.
 - [ ] Cache-policy human testing is deferred to [interactive cache acceptance](implementation_plan_f2g.md), after working Run local or retained Studio interaction. Earlier cache replay instructions remain historical; no immediate paid run is requested.
+
+- [ ] Complete [optional schemas and message cache boundaries](implementation_plan_f2h.md), including local validation and independent review.

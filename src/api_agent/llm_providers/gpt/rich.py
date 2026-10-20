@@ -88,11 +88,13 @@ def _native_state(items, message=None):
     return items
 
 
-def payload(request, mode, subscription):
+def payload(request, mode, subscription, *, _validate_instances=True):
     try:
-        request_to_wire(request)
+        request_to_wire(request, _validate_instances=_validate_instances)
     except ContractError:
         raise ProviderAccessError('invalid_request', 'Invalid structured/tool inference request.') from None
+    if request.payload.generation.temperature is not None:
+        raise ProviderAccessError('unsupported', 'GPT inference does not support temperature.')
     identifier = request.selected_llm
     if not identifier.startswith(('gpt-', 'openai/gpt-')) or not identifier.isprintable() or identifier.strip() != identifier:
         raise ProviderAccessError('unsupported', 'GPT inference requires an explicit GPT selection.')
@@ -130,13 +132,13 @@ def payload(request, mode, subscription):
             body['max_output_tokens'] = maximum or 1024
     else:
         body.update(messages=rows, max_completion_tokens=maximum or 1024)
-    tools = [dict(name=tool.name, description=tool.description, parameters=schema(tool.input_schema), strict=True) for tool in request.payload.tools]
+    tools = [dict(name=tool.name, description=tool.description, parameters=schema(tool.input_schema, strict=tool.strict), strict=tool.strict) for tool in request.payload.tools]
     if tools:
         body['tools'] = [dict(type='function', **tool) if mode == 'responses' else dict(type='function', function=tool) for tool in tools]
         body['parallel_tool_calls'] = False
     structured = request.payload.structured
     if structured is not None:
-        definition = dict(name=structured.name, schema=schema(structured.schema), strict=True)
+        definition = dict(name=structured.name, schema=schema(structured.schema, strict=structured.strict), strict=structured.strict)
         if mode == 'responses':
             body['text'] = dict(format=dict(type='json_schema', **definition))
         else:
@@ -214,7 +216,7 @@ def validate_result(request, result, token=None):
     from .inference import _invalid
     try:
         if result.payload.calls:
-            tools = {tool.name: schema(tool.input_schema) for tool in request.payload.tools}
+            tools = {tool.name: schema(tool.input_schema, strict=tool.strict) for tool in request.payload.tools}
             for call in result.payload.calls:
                 if call.name not in tools or not valid_schema(tools[call.name], object_json(call.arguments)):
                     raise ValueError()
@@ -222,10 +224,25 @@ def validate_result(request, result, token=None):
             value = object_json(''.join(part.text for part in result.payload.content))
             if token is not None and _protected(value, token):
                 raise ValueError()
-            if not valid_schema(schema(request.payload.structured.schema), value):
+            if not valid_schema(schema(request.payload.structured.schema, strict=request.payload.structured.strict), value):
                 raise ValueError()
         return result
     except (ValueError, ContractError):
+        error = _invalid('GPT inference returned output outside its declared contract.')
+        error.usage = result.usage
+        raise error from None
+
+
+async def async_validate_result(request, result, token=None):
+    from api_agent.providers.rich_inference import async_validate_result as validate
+    from .inference import _invalid
+    try:
+        if request.payload.structured is not None and result.outcome == 'completed':
+            value = object_json(''.join(part.text for part in result.payload.content))
+            if token is not None and _protected(value, token):
+                raise ValueError()
+        return await validate(request, result)
+    except (ValueError, ContractError, ProviderAccessError):
         error = _invalid('GPT inference returned output outside its declared contract.')
         error.usage = result.usage
         raise error from None

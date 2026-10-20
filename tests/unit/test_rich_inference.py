@@ -122,7 +122,7 @@ def test_native_calls_reject_invalid_output_and_authentication_content(data):
         rich.tool_result(data,True,TOKEN)
 
 
-@pytest.mark.parametrize('selected,maximum,temperature', [('other-model',None,None),('gpt-synthetic',1,None),('gpt-synthetic',None,1)])
+@pytest.mark.parametrize('selected,maximum,temperature', [('other-model',None,None),('gpt-synthetic',1,None)])
 def test_rich_payload_rejects_unsupported_selection_options(selected,maximum,temperature):
     original=request()
     req=LLMRequest(selected,CompletionRequest(original.payload.messages,original.payload.tools,GenerationOptions(maximum,temperature)))
@@ -137,7 +137,7 @@ def test_request_requires_tool_result_before_next_user_message():
         request_from_wire(row)
 
 
-@pytest.mark.parametrize('value',[{'x':'a'*131073}, {'x':object()}, {'x':'\ud800'}])
+@pytest.mark.parametrize('value',[{'x':'a'*2097153}, {'x':object()}, {'x':'\ud800'}])
 def test_bounded_json_rejects_size_encoding_and_non_json_objects(value):
     with pytest.raises(ContractError):
         wire._bounded(value)

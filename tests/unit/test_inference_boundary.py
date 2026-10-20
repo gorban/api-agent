@@ -31,16 +31,16 @@ def test_exact_round_trips_preserve_text_usage_and_outcomes():
     request_row() | {'selected_llm': 1}, request_row() | {'selected_llm': 'x'*201}, request_row() | {'selected_llm': '\n'},
     request_row() | {'request_id': '\n'}, request_row() | {'request_id': True}, request_row() | {'request_id': 'x'*201},
      request_row() | {'max_output_tokens': True}, request_row() | {'max_output_tokens': 0},
-    request_row() | {'max_output_tokens': 4097}, request_row() | {'messages': ()}, request_row() | {'messages': []},
+    request_row() | {'max_output_tokens': 1048577}, request_row() | {'messages': ()}, request_row() | {'messages': []},
     request_row() | {'messages': [None]}, request_row() | {'messages': [{}]}, request_row() | {'messages': [{'role': 'tool', 'text': 'x'}]},
     request_row() | {'messages': [{'role': 1, 'text': 'x'}]}, request_row() | {'messages': [{'role': 'user', 'text': 1}]},
-    request_row() | {'messages': [{'role': 'user', 'text': 'x'*32769}]}, request_row() | {'messages': [{'role': 'user', 'text':'x'}]*65}])
+    request_row() | {'messages': [{'role': 'user', 'text': 'x'*524289}]}, request_row() | {'messages': [{'role': 'user', 'text':'x'}]*65}])
 def test_invalid_wire_requests_rejected(patch):
     with pytest.raises(ContractError):
         request_from_wire(patch)
 
 
-@pytest.mark.parametrize('value', [None, 'payload', LLMRequest('gpt-example', CompletionRequest((Message('user',(TextContent('x'),)),), generation=GenerationOptions(1, .5))),
+@pytest.mark.parametrize('value', [None, 'payload',
     LLMRequest('gpt-example', CompletionRequest((Message('user',(TextContent('x'),)),), structured=StructuredOutput('x','{}'))),
     LLMRequest('gpt-example', CompletionRequest((Message('user',(TextContent('x'),)),), tools=(Tool('x','x','{}'),))),
     LLMRequest('gpt-example', CompletionRequest((Message('assistant',(TextContent('x'),),calls=(ToolCall('id','x','{}'),)),))),
@@ -52,7 +52,7 @@ def test_unsupported_request_objects_fail(value):
         request_to_wire(value)
 
 
-@pytest.mark.parametrize('row', [None, [], {}, result_row() | {'extra': 1}, result_row() | {'text': 1}, result_row() | {'text': 'x'*65537},
+@pytest.mark.parametrize('row', [None, [], {}, result_row() | {'extra': 1}, result_row() | {'text': 1}, result_row() | {'text': 'x'*524289},
     result_row() | {'outcome': 'tool_calls'}, result_row() | {'outcome': True}, result_row() | {'usage': None}, result_row() | {'usage': {}},
     result_row() | {'usage': result_row()['usage'] | {'output_tokens': True}}, result_row() | {'usage': result_row()['usage'] | {'output_tokens': -1}},
     result_row() | {'usage': result_row()['usage'] | {'output_tokens': 2147483648}},
@@ -71,11 +71,11 @@ def test_invalid_provider_results_rejected(value):
 
 
 def test_total_wire_size_checked_before_encoding_cross_process_frame():
-    row = request_row() | {'messages': [{'role': 'user', 'text': '\u20ac'*32768}]}
+    row = request_row() | {'messages': [{'role': 'user', 'text': '\u20ac'*524288}]}
     with pytest.raises(ContractError, match='byte limit'):
         request_from_wire(row)
     with pytest.raises(ContractError, match='byte limit'):
-        result_from_wire(result_row() | {'text': '\u20ac'*65536})
+        result_from_wire(result_row() | {'text': '\u20ac'*524288})
     assert request_to_wire(request_from_wire(request_row() | {'max_output_tokens': None}))['max_output_tokens'] is None
     assert request_to_wire(request_from_wire(request_row() | {'request_id': ''}))['request_id'] == ''
     assert result_from_wire(result_row() | {'usage': {key: None for key in result_row()['usage']}}).usage == Usage()

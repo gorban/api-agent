@@ -12,6 +12,7 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
     staged = tmp_path / 'source'
     staged.mkdir()
     shutil.copyfile(root / 'pyproject.toml', staged / 'pyproject.toml')
+    shutil.copyfile(root / 'hatch_build.py', staged / 'hatch_build.py')
     (staged / 'LICENSE').write_text('Synthetic license for archive selection test.\n')
     (staged / 'README.md').write_text('Synthetic package.\n')
     (staged / 'flow.md.html').write_text('# Workflow v2\n')
