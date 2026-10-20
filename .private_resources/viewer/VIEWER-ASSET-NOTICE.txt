@@ -10,3 +10,9 @@ are removed. Their original copyright/license headers are retained.
 PlantUML is an optional development renderer and is not bundled in the
 application wheel. PlantUML-NOTICE.txt records the pinned MIT JAR's own
 `-license` output and its bundled component acknowledgements.
+
+Heading identifiers use the original marked-gfm-heading-id 4.1.4 UMD build,
+which includes github-slugger 2.0.0. Their MIT and ISC notices are preserved
+in heading-id-LICENSE.txt and github-slugger-LICENSE.txt respectively.
+Upstream: https://github.com/markedjs/marked-gfm-heading-id
+Upstream: https://github.com/Flet/github-slugger

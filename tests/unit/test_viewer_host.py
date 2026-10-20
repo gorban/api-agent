@@ -20,9 +20,10 @@ def host_policy_fixture(monkeypatch, request):
     # HTTP policy cases use a one-route synthetic bundle. The two proof tests
     # below exercise the real admission verifier at the host boundary.
     if request.node.name not in {'test_host_rejects_changed_route_bytes_before_binding',
-                                 'test_host_rejects_different_admitted_identity_before_binding'}:
+                                 'test_host_rejects_different_admitted_identity_before_binding',
+                                 'test_host_binds_recorded_repository_snapshot_before_listening'}:
         from api_agent.workflows import viewer_render
-        monkeypatch.setattr(viewer_render, 'verify_bundle_proof', lambda bundle, projection: None)
+        monkeypatch.setattr(viewer_render, 'verify_bundle_proof', lambda bundle, projection, **kwargs: None)
 
 
 def admitted(file):
@@ -63,6 +64,12 @@ def test_serves_only_captured_routes_and_ordinary_query():
             response = await request(host.port, wire('GET', '/r/base/flow.md.html?view=help', host.port))
             assert response.startswith(b'HTTP/1.1 200 OK')
             assert response.endswith(file.body)
+            from api_agent.workflows.document_format import _HEAD
+            for style in (b"'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis='",
+                          b"'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='"):
+                assert style in response.partition(b'\r\n\r\n')[0]
+                assert style in _HEAD
+            assert b"'unsafe-inline'" not in response.partition(b'\r\n\r\n')[0]
             head = await request(host.port, wire('HEAD', '/r/base/flow.md.html', host.port))
             assert b'Content-Length: 9' in head
             assert not head.endswith(file.body)
@@ -269,6 +276,41 @@ def test_host_uses_exact_encoded_declared_route():
             assert good.startswith(b'HTTP/1.1 200') and good.endswith(b'view')
             bad = await request(host.port, wire('GET', '/r/base/caf%c3%a9.md.html', host.port))
             assert bad.startswith(b'HTTP/1.1 400')
+        finally:
+            await host.aclose()
+    asyncio.run(exercise())
+
+
+def test_host_binds_recorded_repository_snapshot_before_listening(tmp_path):
+    from api_agent.workflows import viewer_render
+    from api_agent.workflows.viewer_repository import RepositoryIdentity, repository_config_bytes
+    root = tmp_path / 'owner'
+    (root / 'cfg').mkdir(parents=True)
+    config = root / 'cfg/workflow-view.toml'
+    config.write_bytes(repository_config_bytes(RepositoryIdentity('//github.com/example/workflow')))
+    raw = b'# Workflow v2\n'
+    document = SimpleNamespace(logical_path='base/flow.md.html', raw_bytes=raw,
+                               executable_bytes=raw, sha256=sha256(raw).hexdigest(), stable_id='example')
+    projection = SimpleNamespace(version=1, graph_id='example', definition_id='definition',
+                                 projection_sha256='projection', entry_path=document.logical_path,
+                                 documents=(document,), steps=(), edges=(), references=(), resources=())
+    class Renderer:
+        def render(self, source, *, allowed_links):
+            return (b'<?xml version="1.0"?>\n'
+                    b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"/>')
+    repositories, sources = viewer_render.capture_repository_sources({'base': root})
+    bundle = viewer_render.build_view_bundle(projection, roots={'base': root}, verify=False,
+                                             renderer=Renderer(), repositories=repositories,
+                                             repository_sources=sources)
+    config.unlink()  # Serving must not reread files after the captured admission.
+    async def exercise():
+        forged = replace(bundle, sources=bundle.sources[:-1] + (replace(sources[0], sha256='0' * 64),))
+        with pytest.raises(RenderError, match='source inventory'):
+            await start_viewer_host(forged, projection=projection, repository_sources=sources)
+        host = await start_viewer_host(bundle, projection=projection, repository_sources=sources)
+        try:
+            response = await request(host.port, wire('GET', '/r/base/flow.md.html', host.port))
+            assert response.startswith(b'HTTP/1.1 200 OK')
         finally:
             await host.aclose()
     asyncio.run(exercise())

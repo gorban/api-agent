@@ -86,10 +86,10 @@ class OwnedViewerHost:
             self._closed = True
 
 
-async def start_viewer_host(bundle, *, projection):
+async def start_viewer_host(bundle, *, projection, repository_sources=()):
     """Bind an ephemeral loopback listener and serve immutable captured bytes only."""
     from api_agent.workflows.viewer_render import verify_bundle_proof
-    verify_bundle_proof(bundle, projection)
+    verify_bundle_proof(bundle, projection, repository_sources=repository_sources)
     routes = _files(bundle)
     async with component_timeout('Workflow viewer host startup', 10):
         host = None
@@ -132,7 +132,9 @@ async def start_viewer_host(bundle, *, projection):
                         content_type, body = routes[path]
                     payload = (f'HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\n'
                                "X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\n"
-                               "Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'\r\n"
+                               "Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; "
+                               "style-src 'self' 'unsafe-hashes' 'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=' "
+                               "'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='\r\n"
                                'Connection: close\r\n\r\n').encode('ascii')
                     writer.write(payload + (body if method == 'GET' else b''))
             except (ViewerRequestError, UnicodeError, ValueError):

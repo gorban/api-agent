@@ -69,7 +69,7 @@ def test_pack_owned_resource_generates_temporary_selected_diagram(tmp_path, monk
 
     monkeypatch.setattr(viewer_render, 'default_renderer', StubRenderer)
 
-    definition, projection, canonical, bundle = _prepare_view(load_launch_context(base, pack))
+    definition, projection, canonical, bundle, repository_sources = _prepare_view(load_launch_context(base, pack))
 
     assert definition.entry_root == 'base'
     assert {document.logical_path for document in projection.documents} == {
@@ -145,6 +145,6 @@ resource="synthetic_workflows"
     assert not _canonical_selection(launch, definition, projection)
     observed = []
     monkeypatch.setattr(viewer_render, 'build_view_bundle',
-                        lambda selected, *, roots, verify: observed.append((selected, roots, verify)))
+                        lambda selected, *, roots, verify, **kwargs: observed.append((selected, roots, verify)))
     _prepare_view(launch)
     assert observed == [(projection, definition.roots, False)]

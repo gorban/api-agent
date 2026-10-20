@@ -10,7 +10,8 @@ import tarfile
 _VIEWER_FILES = (
     'viewer.js', 'viewer.css', 'marked.js', 'dompurify.js',
     'marked-LICENSE.txt', 'dompurify-LICENSE.txt', 'PlantUML-NOTICE.txt',
-    'VIEWER-ASSET-NOTICE.txt',
+    'VIEWER-ASSET-NOTICE.txt', 'heading-id.js', 'heading-id-LICENSE.txt',
+    'github-slugger-LICENSE.txt', 'svg-links.js',
 )
 _DIAGRAM_FILES = ('flow.svg', 'flow.md', 'workflows/components/renderer.svg',
                   'workflows/components/renderer.md')
