@@ -74,9 +74,13 @@ def test_presented_documents_keep_semantics_and_original_line_locations(tmp_path
 
 
 @pytest.mark.parametrize('corruption', [
-    lambda raw: raw.replace(b'content="v1"', b'content="v2"'),
+    lambda raw: raw.replace(b'content="v2"', b'content="v9"'),
     lambda raw: raw.replace(b'viewer.js', b'https://elsewhere.invalid/viewer.js'),
-    lambda raw: raw.replace(b'<plaintext>', b'<div>'),
+    lambda raw: raw.replace(b'font-size:0', b'font-size:1px'),
+    lambda raw: raw.replace(b'font:16px/1.6', b'font:18px/1.6'),
+    lambda raw: raw.replace(b'sha256-oh7Gx0', b'sha256-zz7Gx0'),
+    lambda raw: raw.replace(b'<meta charset=', b'<other charset='),
+    lambda raw: raw.replace(b'<plaintext id="workflow-source" hidden>', b'<div>'),
     lambda raw: raw + b'<script>bad</script>',
 ])
 def test_envelope_rejects_alteration_or_executable_markup(tmp_path, corruption):
@@ -93,8 +97,8 @@ def test_generated_marker_must_be_terminal_and_exact(tmp_path):
     wrapped = wrap_document(entry.read_bytes(), root=True, asset_prefix='.private_resources/viewer/',
                             generated=(b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
                                        b'[Open standalone diagram](.private_resources/diagrams/flow.svg)'))
-    entry.write_bytes(wrapped.replace(b'workflow-generated-diagram-v1:end',
-                                      b'workflow-generated-diagram-v1:changed'))
+    entry.write_bytes(wrapped.replace(b'workflow-generated-diagram-v2:end',
+                                      b'workflow-generated-diagram-v2:changed'))
 
     with pytest.raises(LayoutError):
         admit(entry)
@@ -156,7 +160,7 @@ def test_generated_heading_needs_exact_blank_line_and_multiple_safe_links(tmp_pa
     assert extract_document(presented, path=entry).executable_bytes == raw
     entry.write_bytes(presented)
     assert admit(entry).graph_id == 'example'
-    malformed = presented.replace(b'\n\n## Generated Diagram v1', b'## Generated Diagram v1')
+    malformed = presented.replace(b'\n\n<!-- workflow-generated-diagram-v2:start', b'\n<!-- workflow-generated-diagram-v2:start')
     with pytest.raises(LayoutError, match='generated diagram'):
         extract_document(malformed, path=entry)
 
@@ -171,8 +175,8 @@ def test_root_fallback_is_exact_and_nested_document_has_bootstrap_only(tmp_path)
 
     assert b'<h2>Viewing this file</h2>' in root
     assert b'Python 3.13 or newer' in root
-    assert b'\n\n\n\n\n\n<!--\n  Open this workflow' in root
-    assert b'./launch.py --view-flow\n-->\n\n\n\n\n\n<section' in root
+    assert b'<!--\n\n\n\n\n\n  Open this file' in root
+    assert b'./launch.py --view-flow\n\n\n\n\n\n-->\n\n[workflow-help]:' in root
     assert b'<h2>Viewing this file</h2>' not in nested
     assert extract_document(root, path=entry).executable_bytes == entry.read_bytes()
     assert extract_document(nested, path=child).executable_bytes == child.read_bytes()
@@ -316,7 +320,9 @@ def test_v3_presented_graph_has_selected_routes_and_frozen_state_reference(tmp_p
     bare_view = project_view(bare)
     bare_diagram = diagram_stateful(bare)
     entry.write_bytes(wrap_document(entry.read_bytes(), root=True,
-                                    asset_prefix='.private_resources/viewer/'))
+                                    asset_prefix='.private_resources/viewer/',
+                                    generated=(b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
+                                               b'[Open standalone diagram](.private_resources/diagrams/flow.svg)')))
     selected = load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path)
     view = project_view(selected)
 
@@ -511,7 +517,9 @@ def test_crlf_root_can_wrap_without_executable_byte_change(tmp_path, version):
     raw = entry.read_bytes().replace(b'\n', b'\r\n')
     entry.write_bytes(raw)
     before = project_view(loader(entry, base_root=tmp_path, pack_root=tmp_path))
-    wrapped = wrap_document(raw, root=True, asset_prefix='.private_resources/viewer/')
+    wrapped = wrap_document(raw, root=True, asset_prefix='.private_resources/viewer/',
+                            generated=(b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
+                                       b'[Open standalone diagram](.private_resources/diagrams/flow.svg)'))
     entry.write_bytes(wrapped)
 
     after = project_view(loader(entry, base_root=tmp_path, pack_root=tmp_path))
@@ -580,3 +588,126 @@ def test_projection_rejects_missing_selection_and_maps_explicit_edge_and_binding
     assert projection.edges[-1].target == 'END'
     assert any(ref.kind == 'binding' and ('Input', 'value') in ref.attributes
                for ref in projection.references)
+
+
+def test_saved_generated_block_maps_noncontiguous_physical_lines(tmp_path):
+    raw = b'# Node v2: work\n\n## Native\n'
+    body = (b'![Workflow diagram](.private_resources/diagrams/work.svg)\n\n'
+            b'[Open standalone diagram](.private_resources/diagrams/work.svg)')
+    saved = wrap_document(raw, root=False, asset_prefix='.private_resources/viewer/', generated=body)
+    extracted = extract_document(saved, path=tmp_path / 'work.md.html')
+
+    assert extracted.executable_bytes == raw
+    assert extracted.generated == body
+    assert b'# Node v2: work\n\n<!-- workflow-generated-diagram-v2:start -->\n[![' in saved
+    assert b'<details open>\n<summary>Diagram links</summary>' in saved
+    assert extracted.line_map[1] > extracted.line_map[0] + 1
+    for logical, physical in enumerate(extracted.line_map):
+        assert raw.splitlines()[logical] == saved.splitlines()[physical - 1]
+
+
+def test_legacy_exact_v1_envelope_and_generated_suffix_still_admitted(tmp_path):
+    from api_agent.workflows import document_format as fmt
+    raw = b'# Workflow v2\n'
+    body = (b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
+            b'[Open standalone diagram](.private_resources/diagrams/flow.svg)')
+    saved = (fmt._HEAD_V1.replace(b'{assets}', b'.private_resources/viewer/')
+             + fmt._ROOT_FALLBACK_V1 + fmt._CARRIER_V1 + raw
+             + fmt._GENERATED_START + body + fmt._GENERATED_END)
+
+    extracted = extract_document(saved, path=tmp_path / 'flow.md.html')
+    validate_presentation_location(saved, path=tmp_path / 'flow.md.html', root=tmp_path)
+    assert extracted.executable_bytes == raw
+    assert extracted.generated == body
+
+
+@pytest.mark.parametrize('change', [
+    lambda raw: raw.replace(b'<details open>', b'<details>'),
+    lambda raw: raw.replace(b'Diagram links', b'Other links'),
+    lambda raw: raw.replace(b'](.private_resources/diagrams/work.svg)\n\n<details', b'](other.svg)\n\n<details'),
+    lambda raw: raw.replace(b'<!-- workflow-generated-diagram-v2:start -->', b'<!-- workflow-generated-diagram-v2:other -->'),
+])
+def test_new_generated_envelope_is_exact(tmp_path, change):
+    body = (b'![Workflow diagram](.private_resources/diagrams/work.svg)\n\n'
+            b'[Open standalone diagram](.private_resources/diagrams/work.svg)')
+    saved = wrap_document(b'# Node v2: work\n', root=False,
+                          asset_prefix='.private_resources/viewer/', generated=body)
+    with pytest.raises(LayoutError, match='generated diagram'):
+        extract_document(change(saved), path=tmp_path / 'work.md.html')
+
+
+def test_generated_format_rejects_incomplete_heading_and_duplicate_legacy(tmp_path):
+    from api_agent.workflows import document_format as fmt
+    body = (b'![Workflow diagram](.private_resources/diagrams/work.svg)\n\n'
+            b'[Open standalone diagram](.private_resources/diagrams/work.svg)')
+    with pytest.raises(LayoutError, match='complete heading'):
+        wrap_document(b'# Node v2: work', root=False,
+                      asset_prefix='.private_resources/viewer/', generated=body)
+    valid = wrap_document(b'# Node v2: work\n', root=False,
+                          asset_prefix='.private_resources/viewer/', generated=body)
+    with pytest.raises(LayoutError, match='duplicate'):
+        extract_document(valid + fmt._GENERATED_START + body + fmt._GENERATED_END,
+                         path=tmp_path / 'work.md.html')
+    with pytest.raises(LayoutError, match='generated diagram'):
+        extract_document(b'# Node v2: work\n## Generated Diagram v1\n' + body
+                         + fmt._GENERATED_END, path=tmp_path / 'work.md.html')
+
+
+@pytest.mark.parametrize('prefix', [b'<!doctype html>',
+    b'<!doctype html><link rel="stylesheet" href="other/viewer.css">'])
+def test_missing_or_unowned_stylesheet_rejects_envelope(tmp_path, prefix):
+    with pytest.raises(LayoutError, match='envelope'):
+        extract_document(prefix, path=tmp_path / 'work.md.html')
+
+
+def test_fenced_new_generated_markers_remain_executable(tmp_path):
+    raw = (b'# Node v2: work\n\n```text\n<!-- workflow-generated-diagram-v2:start -->\n'
+           b'<details open>\n<!-- workflow-generated-diagram-v2:end -->\n```\n')
+    saved = wrap_document(raw, root=False, asset_prefix='.private_resources/viewer/')
+    assert extract_document(saved, path=tmp_path / 'work.md.html').executable_bytes == raw
+
+
+def test_markdown_bootstrap_has_exact_safe_style_hashes_and_hidden_carrier(tmp_path):
+    import base64
+    import hashlib
+    import re
+    saved = wrap_document(b'# Workflow v3\n', root=True,
+                          asset_prefix='.private_resources/viewer/')
+    prefix = saved.split(b'# Workflow v3')[0]
+    styles = re.findall(rb'style="([^"]+)"', prefix)
+
+    assert saved.startswith(b'<!-- -*- mode: markdown -*- -->\n\n<meta charset=')
+    assert b"'unsafe-inline'" not in prefix
+    assert len(styles) == 2
+    for style in styles:
+        digest = base64.b64encode(hashlib.sha256(style).digest())
+        assert b"'sha256-" + digest + b"'" in prefix
+    assert prefix.endswith(b'[workflow-source]: <plaintext id="workflow-source" hidden>\n\n')
+    assert b'<script defer src=".private_resources/viewer/heading-id.js">' in prefix
+
+
+@pytest.mark.parametrize('envelope', [False, True])
+@pytest.mark.parametrize('generated', [
+    b'![Workflow diagram](foreign.svg)\n\n[Open standalone diagram](foreign.svg)',
+    (b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
+     b'[Open standalone diagram](.private_resources/diagrams/flow.svg)\n\n'
+     b'- [work](../../outside.md.html)'),
+])
+def test_generated_links_bind_owner_with_or_without_browser_envelope(tmp_path, envelope, generated):
+    from api_agent.workflows import document_format as fmt
+    saved = wrap_document(b'# Workflow v2\n', root=True,
+                          asset_prefix='.private_resources/viewer/', generated=generated)
+    if not envelope:
+        saved = saved.split(fmt._CARRIER, 1)[1]
+    with pytest.raises(LayoutError, match='declaration owner'):
+        validate_presentation_location(saved, path=tmp_path / 'flow.md.html', root=tmp_path)
+
+
+def test_bare_generated_links_allow_owned_destination(tmp_path):
+    from api_agent.workflows import document_format as fmt
+    generated = (b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
+                 b'[Open standalone diagram](.private_resources/diagrams/flow.svg)\n\n'
+                 b'- [work](nodes/work.md.html)')
+    saved = wrap_document(b'# Workflow v2\n', root=True,
+                          asset_prefix='.private_resources/viewer/', generated=generated).split(fmt._CARRIER, 1)[1]
+    validate_presentation_location(saved, path=tmp_path / 'flow.md.html', root=tmp_path)

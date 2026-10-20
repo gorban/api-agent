@@ -22,7 +22,8 @@ def static_view(tmp_path):
     for relative in ("flow.svg", "workflows/components/renderer.svg"):
         shutil.copy2(ROOT / ".private_resources/diagrams" / relative,
                      owner / ".private_resources/diagrams" / relative)
-    root_html = (ROOT / "flow.md.html").read_text()
+    from api_agent.workflows.document_format import wrap_document
+
     notes = ("\n\n## Notes\n\n"
              "![Outside](../.private_resources/diagrams/../../outside.svg)\n\n"
              "![Sibling](../sibling/.private_resources/diagrams/other.svg)\n\n"
@@ -32,10 +33,18 @@ def static_view(tmp_path):
              "![Extra prefix](../../.private_resources/diagrams/flow.svg)\n\n"
              "![Absolute](/outside.svg)\n\n"
              "![Scheme](file:///outside.svg)\n\n")
-    root_html = root_html.replace("\n\n## Generated Diagram v1", notes + "## Generated Diagram v1", 1)
-    (owner / "flow.md.html").write_text(root_html)
-    shutil.copy2(ROOT / "workflows/components/renderer.md.html",
-                 owner / "workflows/components/renderer.md.html")
+    root_source = ("# Workflow v2\n" + notes + "## Héllo *world*!\n\n## Héllo *world*!\n\n"
+                   "## 中文\n\n```text\n## Not a heading\n```\n").encode()
+    root_generated = (b"![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n"
+                      b"[Open standalone diagram](.private_resources/diagrams/flow.svg)\n\n"
+                      b"- [renderer](workflows/components/renderer.md.html)")
+    root_html = wrap_document(root_source, root=True, asset_prefix=".private_resources/viewer/", generated=root_generated)
+    (owner / "flow.md.html").write_bytes(root_html)
+    nested_generated = (b"![Workflow diagram](../../.private_resources/diagrams/workflows/components/renderer.svg)\n\n"
+                        b"[Open standalone diagram](../../.private_resources/diagrams/workflows/components/renderer.svg)")
+    nested = wrap_document(b"# Node v2: renderer\n\n## Notes\n", root=False,
+                           asset_prefix="../../.private_resources/viewer/", generated=nested_generated)
+    (owner / "workflows/components/renderer.md.html").write_bytes(nested)
     (tmp_path / "outside.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" width="23" height="10" viewBox="0 0 23 10"/>')
     return owner
@@ -62,7 +71,13 @@ def view_url(static_view, request):
     if request.param == "file":
         yield lambda path: (static_view / path).as_uri()
         return
-    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=static_view))
+    class StrictHandler(SimpleHTTPRequestHandler):
+        def end_headers(self):
+            self.send_header("Content-Security-Policy", "default-src 'self'; object-src 'none'; base-uri 'none'; "
+                             "style-src 'self' 'unsafe-hashes' 'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=' "
+                             "'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='")
+            super().end_headers()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(StrictHandler, directory=static_view))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -80,7 +95,9 @@ def _assert_layout(page, target):
     assert page.locator("main > h1 + p > a").get_attribute("href") == target
     assert page.get_by_role("heading", name="Generated Diagram v1").count() == 0
     assert page.get_by_role("link", name="Open standalone diagram").count() == 0
-    assert page.locator("main > h1 + p + details > summary").inner_text() == "Diagram links"
+    assert page.locator("main details").count() == 0
+    assert page.locator("plaintext").count() == 1
+    assert not page.locator("plaintext").is_visible()
 
 
 @pytest.mark.parametrize("path,target", [
@@ -94,10 +111,15 @@ def test_static_diagram_follows_title_and_opens_svg(view_url, path, target):
         browser = playwright.chromium.launch(headless=True, args=["--allow-file-access-from-files"])
         try:
             page = browser.new_page()
+            policy_errors = []
+            page.on("console", lambda message: policy_errors.append(message.text)
+                    if "Content Security Policy" in message.text else None)
             page.goto(view_url(path))
             page.locator("main.workflow-document").wait_for()
             page.wait_for_function("() => [...document.querySelectorAll('main img')].every(img => img.complete)")
             _assert_layout(page, target)
+            assert policy_errors == []
+            assert page.locator('meta[http-equiv="Content-Security-Policy"]').evaluate("item => item.parentElement.tagName") == "HEAD"
             assert len(_image_state(page)) == 1
             assert _image_state(page)[0]["width"] > 0
             page.locator("main > h1 + p > a").click()
@@ -120,17 +142,13 @@ def test_notes_image_stays_in_place_and_diagram_navigation_works(static_view, vi
             page.locator("main").wait_for()
             assert page.locator('h2 + p > img[alt="Notes image"]').count() == 1
             assert page.locator('h1 + p img[alt="Workflow diagram"]').count() == 1
-            page.get_by_text("Diagram links", exact=True).click()
-            navigation = page.locator("details a")
-            assert navigation.get_attribute("href") == "workflows/components/renderer.md.html"
-            navigation.click()
-            page.locator("h1", has_text="Node v2: renderer").wait_for()
-            _assert_layout(page, "../../.private_resources/diagrams/workflows/components/renderer.svg")
+            assert page.locator("details").count() == 0
+            assert "<details open>" in page.locator("plaintext").text_content()
         finally:
             browser.close()
 
 
-@pytest.mark.parametrize("failure", ["disabled", "viewer.js", "marked.js", "dompurify.js"])
+@pytest.mark.parametrize("failure", ["disabled", "viewer.js", "marked.js", "dompurify.js", "heading-id.js"])
 def test_fallback_survives_unavailable_scripts(static_view, view_url, failure):
     from playwright.sync_api import sync_playwright
 
@@ -144,13 +162,12 @@ def test_fallback_survives_unavailable_scripts(static_view, view_url, failure):
             assert page.locator("#workflow-fallback").is_visible()
             assert "./launch.py --view-flow" in page.locator("#workflow-fallback").inner_text()
             assert page.locator("main").count() == 0
+            assert not page.locator("plaintext").is_visible()
         finally:
             browser.close()
 
 
 @pytest.mark.parametrize("old,new", [
-    ('title.after(picture);', 'main.append(picture);'),
-    ('picture.replaceChildren(clickable);', 'picture.replaceChildren(image);'),
     ('document.getElementById("workflow-fallback")?.remove();', ''),
 ])
 def test_layout_assertions_causally_reject_regressions(static_view, old, new):
@@ -178,7 +195,7 @@ def test_missing_optional_structure_is_safe(static_view, change):
 
     document = static_view / "flow.md.html"
     source = document.read_text()
-    source = source.replace("# Workflow v2", "Workflow v2", 1) if change == "no-title" else source.split("\n\n## Generated Diagram v1")[0]
+    source = source.replace("# Workflow v2", "Workflow v2", 1) if change == "no-title" else source.replace("<!-- workflow-generated-diagram-v2:start -->", "<!-- ordinary -->", 1)
     document.write_text(source)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -245,5 +262,215 @@ def test_inert_parsing_prevents_outside_request_before_image_removal(static_view
             while "response" not in events and time.monotonic() < deadline:
                 page.wait_for_timeout(10)
             assert "request" in events and "response" in events
+        finally:
+            browser.close()
+
+
+def test_heading_ids_title_and_initial_fragment(view_url):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url("flow.md.html") + "#héllo-world-1")
+            page.locator("main").wait_for()
+            assert page.title() == "Workflow v2"
+            assert page.locator("main h2").evaluate_all("items => items.map(item => item.id)") == [
+                "notes", "héllo-world", "héllo-world-1", "中文"]
+            assert page.locator("main pre").inner_text() == "## Not a heading\n"
+            assert page.locator('h2[id="héllo-world-1"]').evaluate("item => item.matches(':target')")
+        finally:
+            browser.close()
+
+
+def test_svg_adapter_rebases_only_admitted_targets(static_view, view_url):
+    import html
+    import json
+    from playwright.sync_api import sync_playwright
+
+    svg = static_view / ".private_resources/diagrams/adapter.svg"
+    prefix = "//github.com/example/workflow/blob/_____switch_branch_____/"
+    other_prefix = "//github.com/example/other/blob/_____switch_branch_____/"
+    roots = html.escape(json.dumps({prefix: "../../", other_prefix: "../../other%20owner/"}), quote=True)
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+                   f'<a id="safe" href="{prefix}flow.md.html#notes"><text y="20">Go</text></a>'
+                   f'<a id="other" href="{other_prefix}flow.md.html#notes"><text y="80">Other owner</text></a>'
+                   f'<a id="escape" href="{prefix}%2e%2e/outside.md.html"><text y="40">Escape</text></a>'
+                   '<a id="remote" href="https://example.org/flow.md.html"><text y="60">Other</text></a>'
+                   f'<script data-workflow-links="v1" data-workflow-roots="{roots}" '
+                   'href="../viewer/svg-links.js" xlink:href="../viewer/svg-links.js"></script></svg>')
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, args=["--allow-file-access-from-files"])
+        try:
+            page = browser.new_page()
+            page.goto(view_url(".private_resources/diagrams/adapter.svg"))
+            assert page.locator("#safe").get_attribute("href") == view_url("flow.md.html") + "#notes"
+            assert page.locator("#other").get_attribute("href") == view_url("flow.md.html").removesuffix("flow.md.html") + "other%20owner/flow.md.html#notes"
+            assert page.locator("#escape").get_attribute("href") == prefix + "%2e%2e/outside.md.html"
+            assert page.locator("#remote").get_attribute("href") == "https://example.org/flow.md.html"
+            page.locator("#safe").click()
+            page.locator("main #notes").wait_for()
+            assert page.url.endswith("flow.md.html#notes")
+        finally:
+            browser.close()
+
+
+def test_blocked_viewer_keeps_fallback_and_source_inert(view_url):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route("**/viewer.js", lambda route: route.abort())
+            page.goto(view_url("flow.md.html"))
+            assert page.locator("#workflow-fallback").is_visible()
+            assert not page.locator("plaintext").is_visible()
+            assert page.locator("main").count() == 0
+        finally:
+            browser.close()
+
+
+def test_rendering_retains_exact_carrier_and_sanitizes_html(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+
+    document = static_view / "flow.md.html"
+    document.write_text(document.read_text() + '\n<script>window.injected=true</script>\n'
+                        '<img src="https://example.org/outside.svg" onerror="window.injected=true">\n'
+                        '<a href="javascript:window.injected=true">Unsafe</a>\n')
+    original = document.read_text().split('<plaintext id="workflow-source" hidden>', 1)[1]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            outside = []
+            page.on("request", lambda request: outside.append(request.url)
+                    if request.url.startswith("https://example.org/") else None)
+            page.goto(view_url("flow.md.html"))
+            page.locator("main").wait_for()
+            assert page.locator("plaintext").text_content() == original
+            assert page.locator("main script, main img[onerror], main a[href^='javascript:']").count() == 0
+            assert page.evaluate("window.injected") is None
+            assert outside == []
+        finally:
+            browser.close()
+
+
+def test_legacy_v1_carrier_stays_hidden_and_safe(static_view, view_url):
+    from api_agent.workflows.document_format import _CARRIER_V1, _HEAD_V1, _ROOT_FALLBACK_V1
+    from playwright.sync_api import sync_playwright
+
+    document = static_view / "flow.md.html"
+    document.write_bytes(_HEAD_V1.replace(b"{assets}", b".private_resources/viewer/") +
+                         _ROOT_FALLBACK_V1 + _CARRIER_V1 + b"# Legacy workflow\n\n## Notes\n")
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url("flow.md.html"))
+            page.locator("main").wait_for()
+            assert page.title() == "Legacy workflow"
+            assert not page.locator("plaintext").is_visible()
+            assert page.locator("#workflow-fallback").count() == 0
+        finally:
+            browser.close()
+
+
+def test_nested_missing_dependency_shows_readable_diagnostic(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+
+    (static_view / ".private_resources/viewer/marked.js").unlink()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url("workflows/components/renderer.md.html"))
+            assert "assets are unavailable" in page.locator("body").inner_text()
+            assert page.locator(".workflow-viewer-error").evaluate("item => getComputedStyle(item).fontSize") == "16px"
+            assert page.locator("main").count() == 0
+        finally:
+            browser.close()
+
+
+def test_nonlocal_host_simulation_keeps_repository_alternatives(static_view):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            def serve(route):
+                from urllib.parse import urlsplit
+                target = static_view / urlsplit(route.request.url).path.lstrip("/")
+                route.fulfill(path=target) if target.is_file() else route.fulfill(status=404)
+            page.route("https://workflow.example/**", serve)
+            page.goto("https://workflow.example/flow.md.html")
+            page.locator("main").wait_for()
+            assert page.locator("main details[open]").count() == 1
+            assert page.get_by_role("link", name="Open standalone diagram").count() == 1
+        finally:
+            browser.close()
+
+
+def test_reserved_heading_fragments_survive_sanitization_without_spoofing(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+    document = static_view / 'flow.md.html'
+    document.write_text(document.read_text() + '''
+<h2 data-workflow-heading="0" id="location" onclick="window.injected=true">Raw before</h2>
+
+## Location
+
+## Constructor
+
+## Location
+
+## Name
+
+## Cookie
+
+<h2 id="constructor">Raw after</h2>
+
+```html
+<h2 id="location">Code only</h2>
+```
+''')
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('flow.md.html') + '#location')
+            page.locator('main #location').wait_for()
+            assert page.locator('main #location').inner_text() == 'Location'
+            assert page.locator('main #constructor').inner_text() == 'Constructor'
+            assert page.locator('main #location-1').inner_text() == 'Location'
+            assert page.locator('main #name').inner_text() == 'Name'
+            assert page.locator('main #cookie').inner_text() == 'Cookie'
+            assert page.get_by_role('heading', name='Raw before').get_attribute('id') is None
+            assert page.get_by_role('heading', name='Raw after').get_attribute('id') is None
+            assert page.locator('main [onclick], main [data-workflow-headingx]').count() == 0
+            assert page.evaluate('window.injected') is None
+        finally:
+            browser.close()
+
+
+def test_duplicate_svg_navigation_scripts_do_not_rewrite_while_parsing(static_view, view_url):
+    import html
+    import json
+    from playwright.sync_api import sync_playwright
+    prefix = '//github.com/example/workflow/blob/_____switch_branch_____/'
+    roots = html.escape(json.dumps({prefix: '../../'}), quote=True)
+    script = (f'<script data-workflow-links="v1" data-workflow-roots="{roots}" '
+              'href="../viewer/svg-links.js" xlink:href="../viewer/svg-links.js"></script>')
+    svg = static_view / '.private_resources/diagrams/duplicates.svg'
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+                   f'<a id="target" href="{prefix}flow.md.html"><text y="20">Go</text></a>'
+                   + script + script + '</svg>')
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('.private_resources/diagrams/duplicates.svg'))
+            assert page.locator('#target').get_attribute('href') == prefix + 'flow.md.html'
         finally:
             browser.close()

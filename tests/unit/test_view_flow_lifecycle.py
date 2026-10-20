@@ -31,14 +31,14 @@ def test_selected_view_uses_original_page_and_retries_browser_cleanup(tmp_path, 
     monkeypatch.setattr(viewer, 'load_selected_definition', lambda context: definition)
     monkeypatch.setattr(viewer_projection, 'project_view', lambda selected: projection)
 
-    def bundle(selected, *, roots, verify):
+    def bundle(selected, *, roots, verify, **kwargs):
         captured.append((selected, roots, verify))
         file = ViewFile('r/base/flow.md.html', 'text/html; charset=utf-8', b'<p>view</p>')
         return ViewBundle(file.path, (file,), 'graph', 'selected-id', 'projection',
                           (ViewSource('base/flow.md.html', 'declaration', sha256(raw).hexdigest(), len(raw), True),),
                           (ViewRoute(file.path, file.content_type, sha256(file.body).hexdigest(), len(file.body)),))
     monkeypatch.setattr(viewer_render, 'build_view_bundle', bundle)
-    monkeypatch.setattr(viewer_render, 'verify_bundle_proof', lambda bundle, projection: None)
+    monkeypatch.setattr(viewer_render, 'verify_bundle_proof', lambda bundle, projection, **kwargs: None)
 
     class Page:
         async def goto(self, url, *, wait_until):
@@ -119,7 +119,7 @@ def test_pending_disposal_retains_original_loop_and_host_until_confirmed(tmp_pat
 
     host = Host()
     browser = Browser()
-    async def start_host(bundle, *, projection):
+    async def start_host(bundle, *, projection, **kwargs):
         return host
     monkeypatch.setattr(viewer, 'start_viewer_host', start_host)
     monkeypatch.setattr(viewer, 'managed_browser', lambda **_: browser)
@@ -212,7 +212,7 @@ def test_navigation_failure_disposes_browser_and_host(tmp_path, monkeypatch):
         async def aclose(self):
             closed.append('inspection')
 
-    async def start_host(bundle, *, projection):
+    async def start_host(bundle, *, projection, **kwargs):
         return Host()
 
     monkeypatch.setattr(viewer, 'start_viewer_host', start_host)

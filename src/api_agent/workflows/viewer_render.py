@@ -8,6 +8,9 @@ from bisect import bisect_right
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Mapping
+from types import MappingProxyType
+
+from .viewer_repository import RepositoryIdentity, CONFIG_PATH, read_repository_identity
 from urllib.parse import quote, unquote, urlsplit
 import html
 import json
@@ -81,7 +84,7 @@ class RenderError(ValueError):
     """A view could not be rendered or verified."""
 
 
-def verify_bundle_proof(bundle: ViewBundle, projection: object) -> None:
+def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_sources: tuple[ViewSource, ...] = ()) -> None:
     """Bind host routes to one admitted identity and captured source inventory."""
     if (bundle.graph_id, bundle.definition_id, bundle.projection_sha256) != (
             projection.graph_id, projection.definition_id, projection.projection_sha256):
@@ -103,7 +106,11 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object) -> None:
                    "marked-LICENSE.txt": "text/plain; charset=utf-8",
                    "dompurify-LICENSE.txt": "text/plain; charset=utf-8",
                    "PlantUML-NOTICE.txt": "text/plain; charset=utf-8",
-                   "VIEWER-ASSET-NOTICE.txt": "text/plain; charset=utf-8"}
+                   "VIEWER-ASSET-NOTICE.txt": "text/plain; charset=utf-8",
+                   "heading-id.js": "text/javascript; charset=utf-8",
+                   "svg-links.js": "text/javascript; charset=utf-8",
+                   "heading-id-LICENSE.txt": "text/plain; charset=utf-8",
+                   "github-slugger-LICENSE.txt": "text/plain; charset=utf-8"}
     allowed = {(f"r/{owner}/.private_resources/viewer/{name}", kind)
                for owner in owners for name, kind in asset_types.items()}
     for document in projection.documents:
@@ -119,7 +126,7 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object) -> None:
         if resource.logical_path not in selected_paths:
             expected_sources.append(ViewSource(resource.logical_path, resource.kind, resource.sha256,
                                                len(resource.content_bytes), False))
-    if bundle.sources != tuple(expected_sources):
+    if bundle.sources != tuple(expected_sources) + repository_sources:
         raise RenderError("workflow view source inventory mismatch")
 
 
@@ -152,7 +159,7 @@ def _label(value: object) -> str:
     return html.escape(text.replace("\\", "\\\\").replace('"', "'"), quote=False)
 
 
-def _projection_source(projection: object, document: object) -> tuple[bytes, frozenset[str]]:
+def _projection_source(projection: object, document: object, *, repositories: Mapping[str, RepositoryIdentity] | None = None) -> tuple[bytes, frozenset[str]]:
     if document.logical_path == projection.entry_path:
         steps = list(projection.steps)
         edges = list(projection.edges)
@@ -180,6 +187,11 @@ def _projection_source(projection: object, document: object) -> tuple[bytes, fro
         if target not in admitted:
             raise RenderError("unadmitted diagram link")
         href = posixpath.relpath(target, posixpath.dirname(_svg_route(document.logical_path)))
+        if repositories:
+            owner, relative = step.declaration_path.split("/", 1)
+            if owner not in repositories:
+                raise RenderError("missing workflow repository identity")
+            href = repositories[owner].link(relative)
         links.add(href)
         if step.kind == "component":
             lines.append(f'package "{name}" {{')
@@ -705,7 +717,7 @@ def _read_view_file(path: Path) -> bytes | None:
 
 
 def _saved_graphic(path: Path, *, metadata: dict[str, object],
-                   allowed_links: frozenset[str]) -> bytes:
+                   allowed_links: frozenset[str], script: bytes = b"") -> bytes:
     data = _read_view_file(path)
     if data is None or len(data) > _MAX_OUTPUT + (4 * _MAX_INPUT // 3) + 4096:
         raise RenderError("missing or stale workflow diagram; regenerate workflow views")
@@ -720,14 +732,18 @@ def _saved_graphic(path: Path, *, metadata: dict[str, object],
     if (actual.get("graphic_sha256") != sha256(graphic).hexdigest() or
             actual != {**metadata, "graphic_sha256": sha256(graphic).hexdigest()}):
         raise RenderError("stale workflow diagram provenance; regenerate workflow views")
-    if validate_svg(graphic, allowed_links=allowed_links) != graphic:
+    raw_graphic = _strip_navigation(graphic, script)
+    canonical_raw = validate_svg(raw_graphic, allowed_links=allowed_links)
+    if canonical_raw != raw_graphic and not (script and canonical_raw.endswith(b" />") and raw_graphic == canonical_raw[:-3] + b"></svg>"):
         raise RenderError("noncanonical workflow diagram graphic")
     return data
 
 
 def build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                       renderer: PlantUMLRenderer | None = None, verify: bool = True,
-                      hosted_selected: bool | None = None) -> ViewBundle:
+                      hosted_selected: bool | None = None,
+                      repositories: Mapping[str, RepositoryIdentity] | None = None,
+                      repository_sources: tuple[ViewSource, ...] = ()) -> ViewBundle:
     from api_agent.providers.progress import report_timeout_sync
 
     with report_timeout_sync("Workflow view bundle", 120) as budget:
@@ -735,12 +751,15 @@ def build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         if selected and verify:
             raise RenderError("hosted selected views cannot use source-owned static verification")
         return _build_view_bundle(projection, roots=roots, renderer=renderer,
-                                  verify=verify, hosted_selected=selected, budget=budget)
+                                  verify=verify, hosted_selected=selected, budget=budget,
+                                  repositories=repositories, repository_sources=repository_sources)
 
 
 def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                        renderer: PlantUMLRenderer | None, verify: bool,
-                       hosted_selected: bool, budget: object) -> ViewBundle:
+                       hosted_selected: bool, budget: object,
+                       repositories: Mapping[str, RepositoryIdentity] | None = None,
+                       repository_sources: tuple[ViewSource, ...] = ()) -> ViewBundle:
     """Generate a finite immutable bundle from one admitted projection."""
     if projection.version != 1 or len(projection.documents) > _MAX_RECORDS:
         raise RenderError("unsupported projection")
@@ -752,9 +771,12 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
     semantic = projection.projection_sha256
     asset_root = _asset_root()
     owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
+    if repositories:
+        repositories = {owner: identity for owner, identity in repositories.items() if owner in owners}
     asset_names = ("viewer.js", "viewer.css", "marked.js", "dompurify.js",
                    "marked-LICENSE.txt", "dompurify-LICENSE.txt", "PlantUML-NOTICE.txt",
-                   "VIEWER-ASSET-NOTICE.txt")
+                   "VIEWER-ASSET-NOTICE.txt", "heading-id.js", "svg-links.js",
+                   "heading-id-LICENSE.txt", "github-slugger-LICENSE.txt")
     asset_digest = sha256(b"".join((asset_root / name).read_bytes() for name in asset_names)).hexdigest()
     for owner in sorted(owners):
         for name in asset_names:
@@ -766,7 +788,9 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
     for document in projection.documents:
         if budget.remaining is not None and budget.remaining <= 0:
             raise RenderError("workflow view generation timed out")
-        source, links = _projection_source(projection, document)
+        source, links = _projection_source(projection, document, repositories=repositories)
+        script_roots = ({owner: Path("/r") / owner for owner in roots} if hosted_selected else roots)
+        script = _navigation_script(document.logical_path, script_roots, repositories)
         svg_path = _svg_route(document.logical_path)
         metadata = {"version": 1, "semantic": semantic, "document": document.sha256,
                     "puml": sha256(source).hexdigest(),
@@ -774,16 +798,24 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                     "plantuml": PLANTUML_VERSION,
                     "jar_sha256": PLANTUML_SHA256, "options": list(RENDER_OPTIONS),
                     "assets_sha256": asset_digest}
+        if repositories:
+            metadata["repositories"] = {owner: {"repository_url": identity.repository_url, "path_prefix": identity.path_prefix}
+                                         for owner, identity in sorted(repositories.items())}
         if verify:
-            svg = _saved_graphic(_physical_file(svg_path, roots), metadata=metadata, allowed_links=links)
+            svg = _saved_graphic(_physical_file(svg_path, roots), metadata=metadata, allowed_links=links, script=script)
         else:
             assert renderer is not None
             graphic = renderer.render(source, allowed_links=links)
+            if not graphic.startswith(b"<?xml ") or b"?>\n" not in graphic:
+                raise RenderError("renderer SVG has no XML declaration")
+            graphic = validate_svg(graphic, allowed_links=links)
+            if script:
+                if graphic.endswith(b" />"):
+                    graphic = graphic[:-3] + b"></svg>"
+                graphic = graphic.removesuffix(b"</svg>") + script + b"</svg>"
             generated_metadata = {**metadata, "graphic_sha256": sha256(graphic).hexdigest()}
             marker = b"<!-- api-agent-view-v1 " + json.dumps(generated_metadata, sort_keys=True, separators=(",", ":")).encode() + b" -->\n"
             declaration, separator, body = graphic.partition(b"?>\n")
-            if not separator or not declaration.startswith(b"<?xml "):
-                raise RenderError("renderer SVG has no XML declaration")
             svg = declaration + separator + marker + body
         files.append(ViewFile(svg_path, "image/svg+xml", svg))
         files.append(ViewFile(_companion_route(document.logical_path), "text/markdown; charset=utf-8",
@@ -806,8 +838,62 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
     routes = tuple(ViewRoute(f.path, f.content_type, sha256(f.body).hexdigest(), len(f.body))
                    for f in files)
     bundle = ViewBundle(entry, tuple(files), projection.graph_id, projection.definition_id,
-                        projection.projection_sha256, tuple(sources), routes)
-    verify_bundle_proof(bundle, projection)
+                        projection.projection_sha256, tuple(sources) + repository_sources, routes)
+    verify_bundle_proof(bundle, projection, repository_sources=repository_sources)
     if verify:
         check_view_bundle(bundle, roots=roots)
     return bundle
+
+
+def _navigation_script(logical_path: str, roots: Mapping[str, Path],
+                       repositories: Mapping[str, RepositoryIdentity] | None) -> bytes:
+    if not repositories:
+        return b""
+    svg = _physical_file(_svg_route(logical_path), roots)
+    mapping = {}
+    identities = {}
+    for owner, identity in sorted(repositories.items()):
+        if owner not in roots:
+            raise RenderError("unadmitted workflow repository owner")
+        root = Path(roots[owner]).resolve()
+        prefix = identity.link_prefix
+        if prefix in identities and identities[prefix] != root:
+            raise RenderError("ambiguous workflow repository mapping")
+        if any(prefix != other and (prefix.startswith(other) or other.startswith(prefix)) for other in identities):
+            raise RenderError("overlapping workflow repository mapping")
+        identities[prefix] = root
+        mapping[prefix] = quote(Path(os.path.relpath(root, svg.parent)).as_posix().rstrip("/"), safe="/-._~") + "/"
+    asset = posixpath.relpath(f"r/{logical_path.split('/')[0]}/.private_resources/viewer/svg-links.js", posixpath.dirname(_svg_route(logical_path)))
+    encoded = html.escape(json.dumps(mapping, sort_keys=True, separators=(",", ":")), quote=True)
+    return f'<script xmlns:xlink="http://www.w3.org/1999/xlink" data-workflow-links="v1" data-workflow-roots="{encoded}" href="{asset}" xlink:href="{asset}"></script>'.encode()
+
+
+def _strip_navigation(graphic: bytes, script: bytes) -> bytes:
+    if not script:
+        return graphic
+    suffix = script + b"</svg>"
+    if not graphic.endswith(suffix) or graphic.count(script) != 1:
+        raise RenderError("invalid workflow SVG navigation envelope")
+    return graphic[:-len(suffix)] + b"</svg>"
+
+
+def capture_repository_sources(roots: Mapping[str, Path]) -> tuple[Mapping[str, RepositoryIdentity], tuple[ViewSource, ...]]:
+    """Capture recorded owner identities and trusted, unserved source evidence."""
+    identities = {}
+    sources = []
+    seen = set()
+    captured = {}
+    for owner, root in sorted(roots.items()):
+        physical = Path(root).resolve() / CONFIG_PATH
+        if physical not in captured:
+            captured[physical] = read_repository_identity(root)
+        recorded = captured[physical]
+        if recorded is None:
+            continue
+        identity, data = recorded
+        identities[owner] = identity
+        physical = Path(root).resolve() / CONFIG_PATH
+        if physical not in seen:
+            sources.append(ViewSource(owner + "/" + CONFIG_PATH, "repository", sha256(data).hexdigest(), len(data), False))
+            seen.add(physical)
+    return MappingProxyType(identities), tuple(sources)

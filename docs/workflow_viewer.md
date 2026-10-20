@@ -5,8 +5,12 @@ and its saved SVG diagram. Nested declarations use relative navigation. Bundled
 Markdown and sanitization scripts work without a server or network connection;
 no Java, container or additional font installation is needed. Diagram text uses
 common platform/free font fallbacks, so its appearance may vary by system.
-Companion Markdown under `.private_resources/diagrams/` supports navigation when
-a repository host displays SVGs as images.
+The linked SVG sits directly under each document heading. Expanded **Diagram links**
+remain visible in repository Markdown, where an SVG image cannot expose its own
+node links; successful local file or loopback rendering omits that extra list.
+Companion Markdown under `.private_resources/diagrams/` provides another repository
+navigation path. When scripts are unavailable, only the root shows launcher guidance;
+the inert declaration carrier remains hidden.
 
 Direct file opening shows the last generated diagram. It does not check whether
 declarations have changed since generation. The commands below check freshness.
@@ -58,6 +62,26 @@ PATH. Prepare the pinned optional MIT PlantUML JAR, then generate:
 .venv/bin/python tools/workflow_views.py generate --root .
 .venv/bin/python tools/workflow_views.py check --root .
 ```
+
+Repository navigation is recorded in `cfg/workflow-view.toml`:
+
+```toml
+version = 1
+repository_url = "//github.com/example/agent"
+```
+
+An optional `path_prefix` selects a directory within that repository. Explicit first
+generation can initialize this file from a safe GitHub `origin`; without one, supply
+`generate --root . --repository-url //github.com/example/agent`. Review the generated
+configuration with the diagrams. Read-only and staged checks use this recorded
+identity and never query or modify a remote.
+
+Saved SVG links use `//github.com/OWNER/REPOSITORY/blob/_____switch_branch_____/PATH`.
+The placeholder deliberately does not guess a branch. File and loopback viewing
+rewrite that exact prefix to admitted local documents, including heading fragments;
+repository-hosted SVG links retain the placeholder. The SVG image path itself stays
+relative. Repository identity, the adapter and its allowed mappings are bound into
+the saved diagram provenance.
 
 Preparation uses an owned development cache; `API_AGENT_PLANTUML_JAR` can point
 to an already downloaded JAR with the required digest. The JAR and Java runtime

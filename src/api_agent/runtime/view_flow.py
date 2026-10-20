@@ -24,17 +24,19 @@ def _canonical_selection(context, definition, projection):
 
 def _prepare_view(context):
     from api_agent.workflows.viewer_projection import project_view
-    from api_agent.workflows.viewer_render import build_view_bundle
+    from api_agent.workflows.viewer_render import build_view_bundle, capture_repository_sources
     definition = load_selected_definition(context)
     projection = project_view(definition)
     canonical = _canonical_selection(context, definition, projection)
-    bundle = build_view_bundle(projection, roots=definition.roots, verify=canonical)
-    return definition, projection, canonical, bundle
+    repositories, repository_sources = capture_repository_sources(definition.roots)
+    bundle = build_view_bundle(projection, roots=definition.roots, verify=canonical,
+                               repositories=repositories, repository_sources=repository_sources)
+    return definition, projection, canonical, bundle, repository_sources
 
 
 async def _serve_view(prepared):
-    definition, projection, canonical, bundle = prepared
-    host = await start_viewer_host(bundle, projection=projection)
+    definition, projection, canonical, bundle, repository_sources = prepared
+    host = await start_viewer_host(bundle, projection=projection, repository_sources=repository_sources)
     inspection = InspectionOwner()
     browser = managed_browser(inspection=inspection, headless=False)
     try:

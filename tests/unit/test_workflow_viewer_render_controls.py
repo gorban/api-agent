@@ -473,7 +473,7 @@ def test_bundle_verify_true_invokes_static_byte_check_without_renderer(monkeypat
     monkeypatch.setattr(viewer_render, "default_renderer",
                         lambda: pytest.fail("static check must not load Java renderer"))
     monkeypatch.setattr(viewer_render, "_saved_graphic",
-                        lambda path, *, metadata, allowed_links: path.read_bytes())
+                        lambda path, *, metadata, allowed_links, script=b"": path.read_bytes())
     bundle = build_view_bundle(projection, roots={"base": root, "pack": root}, verify=True)
     assert seen == [(bundle, {"base": root, "pack": root})]
 
@@ -566,6 +566,7 @@ def test_saved_diagram_reader_rejects_file_changed_during_read(tmp_path, monkeyp
         viewer_render._read_view_file(path)
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_orphan_requires_explicit_path_even_with_matching_self_hash(tmp_path, monkeypatch):
     diagrams = tmp_path / ".private_resources/diagrams"
     diagrams.mkdir(parents=True)
@@ -586,6 +587,7 @@ def test_orphan_requires_explicit_path_even_with_matching_self_hash(tmp_path, mo
     assert not orphan.exists()
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_orphan_swap_to_symlink_does_not_copy_external_bytes(tmp_path, monkeypatch):
     diagrams = tmp_path / ".private_resources/diagrams"
     diagrams.mkdir(parents=True)
@@ -597,15 +599,15 @@ def test_orphan_swap_to_symlink_does_not_copy_external_bytes(tmp_path, monkeypat
     orphan.write_bytes(marker + body)
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
-    replace = viewer_build.os.replace
+    replace = viewer_build.os.rename
 
-    def swap_before_move(source, target):
-        if source == orphan:
+    def swap_before_move(source, target, **kwargs):
+        if source == orphan.name:
             orphan.unlink()
             orphan.symlink_to(external)
-        return replace(source, target)
+        return replace(source, target, **kwargs)
 
-    monkeypatch.setattr(viewer_build.os, "replace", swap_before_move)
+    monkeypatch.setattr(viewer_build.os, "rename", swap_before_move)
 
     with pytest.raises(RenderError, match="orphaned diagram changed"):
         viewer_build.generate_views(tmp_path, renderer=TinyRenderer(), fix_orphans=True,
@@ -616,6 +618,7 @@ def test_orphan_swap_to_symlink_does_not_copy_external_bytes(tmp_path, monkeypat
     assert not list(tmp_path.glob(".workflow-view-recovery-*"))
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_orphan_swap_to_directory_keeps_unknown_content_for_recovery(tmp_path, monkeypatch):
     diagrams = tmp_path / ".private_resources/diagrams"
     diagrams.mkdir(parents=True)
@@ -625,24 +628,24 @@ def test_orphan_swap_to_directory_keeps_unknown_content_for_recovery(tmp_path, m
                        + b" -->\n" + body)
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
-    replace = viewer_build.os.replace
+    replace = viewer_build.os.rename
     recovery_before = set(tmp_path.parent.glob(".workflow-view-recovery-*"))
 
-    def swap_before_move(source, target):
-        if source == orphan:
+    def swap_before_move(source, target, **kwargs):
+        if source == orphan.name:
             orphan.unlink()
             orphan.mkdir()
             (orphan / "human.txt").write_bytes(b"human directory content")
-        return replace(source, target)
+        return replace(source, target, **kwargs)
 
-    monkeypatch.setattr(viewer_build.os, "replace", swap_before_move)
-    with pytest.raises(RenderError, match="recover from"):
+    monkeypatch.setattr(viewer_build.os, "rename", swap_before_move)
+    with pytest.raises(RenderError, match="recover"):
         viewer_build.generate_views(tmp_path, renderer=TinyRenderer(), fix_orphans=True,
                                     confirmed_orphans=(orphan,))
     recovery = set(tmp_path.parent.glob(".workflow-view-recovery-*")) - recovery_before
     assert len(recovery) == 1
     saved = next(iter(recovery))
-    assert (saved / "0/human.txt").read_bytes() == b"human directory content"
+    assert next(saved.rglob("human.txt")).read_bytes() == b"human directory content"
     assert not list(tmp_path.glob(".workflow-view-recovery-*"))
     shutil.rmtree(saved)
 
@@ -678,6 +681,7 @@ def test_moved_output_match_closes_descriptor_if_fstat_fails(tmp_path, monkeypat
         actual_fstat(seen[0])  # The failing descriptor was closed before propagation.
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_orphan_confirmation_must_name_exact_owned_path(tmp_path, monkeypatch):
     diagrams = tmp_path / ".private_resources/diagrams"
     diagrams.mkdir(parents=True)
@@ -693,6 +697,7 @@ def test_orphan_confirmation_must_name_exact_owned_path(tmp_path, monkeypatch):
     assert orphan.exists()
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_rechecks_orphan_ownership_at_move(tmp_path, monkeypatch):
     diagrams = tmp_path / ".private_resources/diagrams"
     diagrams.mkdir(parents=True)
@@ -907,7 +912,10 @@ def _assert_child_stopped(pid):
     deadline = time.monotonic() + 1.0
     while True:
         stat_path = Path(f"/proc/{pid}/stat")
-        state = stat_path.read_text().split()[2] if stat_path.exists() else "gone"
+        try:
+            state = stat_path.read_text().split()[2]
+        except FileNotFoundError:
+            state = "gone"
         if state in {"Z", "X", "gone"}:
             return
         if time.monotonic() >= deadline:
@@ -1301,7 +1309,7 @@ def test_source_cli_dispatches_explicit_view_operation(tmp_path, monkeypatch, ca
     monkeypatch.setattr(viewer_build, "prepare_renderer",
                         lambda: called.append("prepare") or tmp_path / "renderer.jar")
     monkeypatch.setattr(viewer_build, "generate_views",
-                        lambda root, *, fix_orphans, confirmed_orphans:
+                        lambda root, *, fix_orphans, confirmed_orphans, repository_url=None:
                         called.append(("generate", root, fix_orphans, confirmed_orphans)) or (tmp_path / "flow.svg",))
     monkeypatch.setattr(viewer_build, "check_views", lambda root: called.append(("check", root)))
 
@@ -1358,6 +1366,7 @@ def controlled_generation(tmp_path, monkeypatch):
     return tmp_path, flow, first, second
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_refuses_changed_admitted_declaration(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     original_projection = viewer_build._projection
@@ -1376,10 +1385,11 @@ def test_generation_refuses_changed_admitted_declaration(controlled_generation, 
     assert second.read_bytes() == b"old second"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_rolls_back_first_output_when_second_replace_fails(controlled_generation,
                                                                        monkeypatch):
     root, flow, first, second = controlled_generation
-    replace = viewer_build.os.replace
+    replace = viewer_build._publish_link
     calls = 0
 
     def fail_second(source, target):
@@ -1389,7 +1399,7 @@ def test_generation_rolls_back_first_output_when_second_replace_fails(controlled
             raise OSError("second publication failed")
         return replace(source, target)
 
-    monkeypatch.setattr(viewer_build.os, "replace", fail_second)
+    monkeypatch.setattr(viewer_build, "_publish_link", fail_second)
 
     with pytest.raises(OSError, match="second publication failed"):
         viewer_build.generate_views(root, renderer=TinyRenderer())
@@ -1398,6 +1408,7 @@ def test_generation_rolls_back_first_output_when_second_replace_fails(controlled
     assert second.read_bytes() == b"old second"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_refuses_output_edit_after_projection(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     original_build = viewer_build.build_view_bundle
@@ -1415,10 +1426,11 @@ def test_generation_refuses_output_edit_after_projection(controlled_generation, 
     assert second.read_bytes() == b"old second"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_preserves_concurrent_edit_during_rollback(controlled_generation,
                                                                monkeypatch):
     root, flow, first, second = controlled_generation
-    replace = viewer_build.os.replace
+    replace = viewer_build._publish_link
     calls = 0
 
     def edit_first_then_fail(source, target):
@@ -1429,7 +1441,7 @@ def test_generation_preserves_concurrent_edit_during_rollback(controlled_generat
             raise OSError("second publication failed")
         return replace(source, target)
 
-    monkeypatch.setattr(viewer_build.os, "replace", edit_first_then_fail)
+    monkeypatch.setattr(viewer_build, "_publish_link", edit_first_then_fail)
 
     with pytest.raises(RenderError, match="rollback conflict; recover original bytes"):
         viewer_build.generate_views(root, renderer=TinyRenderer())
@@ -1437,10 +1449,11 @@ def test_generation_preserves_concurrent_edit_during_rollback(controlled_generat
     assert second.read_bytes() == b"old second"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_detects_edit_between_output_replacements(controlled_generation,
                                                               monkeypatch):
     root, flow, first, second = controlled_generation
-    replace = viewer_build.os.replace
+    replace = viewer_build._publish_link
     calls = 0
 
     def edit_second_after_first(source, target):
@@ -1451,7 +1464,7 @@ def test_generation_detects_edit_between_output_replacements(controlled_generati
             second.write_bytes(b"concurrent second edit")
         return result
 
-    monkeypatch.setattr(viewer_build.os, "replace", edit_second_after_first)
+    monkeypatch.setattr(viewer_build, "_publish_link", edit_second_after_first)
 
     with pytest.raises(RenderError, match="output changed during generation"):
         viewer_build.generate_views(root, renderer=TinyRenderer())
@@ -1465,7 +1478,7 @@ def test_view_check_is_read_only_and_requires_fresh_bundle(tmp_path, monkeypatch
     called = []
     monkeypatch.setattr(viewer_build, "_projection", lambda root: projection)
 
-    def verify(admitted, *, roots, verify):
+    def verify(admitted, *, roots, verify, repositories, repository_sources):
         called.append((admitted, roots, verify))
         raise RenderError("stale graphic")
 
@@ -1483,7 +1496,7 @@ def test_check_does_not_request_renderer(tmp_path, monkeypatch):
     received = []
     monkeypatch.setattr(viewer_build, "_projection", lambda root: projection)
     monkeypatch.setattr(viewer_build, "build_view_bundle",
-                        lambda admitted, *, roots, verify: received.append((admitted, roots, verify)))
+                        lambda admitted, *, roots, verify, repositories, repository_sources: received.append((admitted, roots, verify)))
 
     viewer_build.check_views(tmp_path)
 
@@ -1517,6 +1530,7 @@ def test_regular_view_reader_rejects_missing_special_oversized_and_changed(tmp_p
         viewer_build._read_regular_view(file)
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_rejects_source_removed_after_admission(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     original_build = viewer_build.build_view_bundle
@@ -1533,6 +1547,7 @@ def test_generation_rejects_source_removed_after_admission(controlled_generation
     assert first.read_bytes() == b"old first"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_detects_output_edit_after_last_snapshot(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     original_read = viewer_build._read_regular_view
@@ -1553,11 +1568,12 @@ def test_generation_detects_output_edit_after_last_snapshot(controlled_generatio
     assert first.read_bytes() == b"late human edit"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_rollback_preserves_symlink_swapped_output(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     external = root.parent / "external-human-file"
     external.write_bytes(b"human bytes")
-    replace = viewer_build.os.replace
+    replace = viewer_build._publish_link
     calls = 0
 
     def swap_first_then_fail(source, target):
@@ -1569,7 +1585,7 @@ def test_generation_rollback_preserves_symlink_swapped_output(controlled_generat
             raise OSError("second publication failed")
         return replace(source, target)
 
-    monkeypatch.setattr(viewer_build.os, "replace", swap_first_then_fail)
+    monkeypatch.setattr(viewer_build, "_publish_link", swap_first_then_fail)
     with pytest.raises(RenderError, match="rollback conflict"):
         viewer_build.generate_views(root, renderer=TinyRenderer())
     assert first.is_symlink()
@@ -1577,10 +1593,11 @@ def test_generation_rollback_preserves_symlink_swapped_output(controlled_generat
     assert second.read_bytes() == b"old second"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_removes_new_output_on_rollback(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     first.unlink()
-    replace = viewer_build.os.replace
+    replace = viewer_build._publish_link
     calls = 0
 
     def fail_second(source, target):
@@ -1590,13 +1607,14 @@ def test_generation_removes_new_output_on_rollback(controlled_generation, monkey
             raise OSError("second publication failed")
         return replace(source, target)
 
-    monkeypatch.setattr(viewer_build.os, "replace", fail_second)
+    monkeypatch.setattr(viewer_build, "_publish_link", fail_second)
     with pytest.raises(OSError, match="second publication failed"):
         viewer_build.generate_views(root, renderer=TinyRenderer())
     assert not first.exists()
     assert second.read_bytes() == b"old second"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_rejects_mismatched_admitted_output_before_staging(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     projection = viewer_build._projection(root)
@@ -1610,6 +1628,7 @@ def test_generation_rejects_mismatched_admitted_output_before_staging(controlled
     assert first.read_bytes() == b"old first"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_detects_admitted_edit_between_snapshot_and_planning(controlled_generation,
                                                                          monkeypatch):
     root, flow, first, second = controlled_generation
@@ -1634,6 +1653,7 @@ def test_generation_detects_admitted_edit_between_snapshot_and_planning(controll
     assert flow.read_bytes() == b"late human source edit"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_updates_admitted_snapshot_when_publishing_selected_source(tmp_path, monkeypatch):
     flow = tmp_path / "flow.md.html"
     flow.write_bytes(b"admitted source")
@@ -1669,6 +1689,7 @@ def test_output_snapshot_ignores_nested_directories(tmp_path):
     assert viewer_build._output_snapshot(tmp_path) == {artifact: b"svg"}
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_does_not_replace_already_current_outputs(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     bundle = ViewBundle("r/base/flow.md.html", (
@@ -1679,6 +1700,7 @@ def test_generation_does_not_replace_already_current_outputs(controlled_generati
     assert first.read_bytes() == b"old first" and second.read_bytes() == b"old second"
 
 
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_detects_edit_after_final_output_snapshot(controlled_generation, monkeypatch):
     root, flow, first, second = controlled_generation
     original_assert = viewer_build._assert_output_unchanged
@@ -1702,6 +1724,7 @@ def test_generation_detects_edit_after_final_output_snapshot(controlled_generati
     (".svg", b'<!-- api-agent-view-v1 {bad json} -->\n<svg/>'),
     (".txt", b"unowned"),
 ])
+@pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_orphan_ownership_requires_valid_format(tmp_path, suffix, data):
     artifact = tmp_path / ("stray" + suffix)
     artifact.write_bytes(data)
@@ -1734,3 +1757,11 @@ def test_renderer_owns_and_kills_dedicated_process_group(tmp_path):
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=3)
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture
+def recorded_repository_for_generation_controls(tmp_path):
+    """Keep race/publication tests focused on existing configured owners."""
+    directory = tmp_path / "cfg"
+    directory.mkdir(exist_ok=True)
+    (directory / "workflow-view.toml").write_text('version = 1\nrepository_url = "//github.com/example/agent"\n')
