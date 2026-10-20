@@ -215,6 +215,40 @@ def test_reporting_code_is_excluded_but_sampling_changes_invalidate(monkeypatch)
         driver.baseline_limit('gpt-6-luna', CONFIG)
 
 
+@pytest.mark.parametrize(('helper', 'before_text', 'after_text'), [
+    ('bounded_schema.py', '_VALIDATION_SECONDS = 1.0', '_VALIDATION_SECONDS = 2.0'),
+    ('schema_validation_worker.py', 'if len(raw) <= 2097152:', 'if len(raw) <= 1048576:'),
+])
+def test_schema_acceptance_helper_change_rejects_calibration_before_graph(
+        tmp_path, monkeypatch, helper, before_text, after_text):
+    package = Path(driver.__file__).parent.parent
+    config = CONFIG
+    report = synthetic_current_report(config)
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+    assert driver.baseline_limit('gpt-6-luna', config) == report['max_runs']
+    source = package / 'providers' / helper
+    original = source.read_text()
+    assert before_text in original
+    changed_source = tmp_path / helper
+    changed_source.write_text(original.replace(before_text, after_text))
+    read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, 'read_bytes', lambda path: read_bytes(
+        changed_source if path == source else path))
+    graph = Mock()
+    monkeypatch.setattr(driver, 'run_graph', graph)
+    provider = SimpleNamespace(complete=Mock())
+
+    current = driver.fingerprint('gpt-6-luna', config)
+
+    key = 'src/api_agent/providers/' + helper
+    assert current['sources'][key] != report['sources'][key]
+    assert current['fingerprint_version'] == report['fingerprint_version'] == 3
+    with pytest.raises(ValueError, match='stale'):
+        driver.node_coverage(provider, 'gpt-6-luna', config)
+    graph.assert_not_called()
+    provider.complete.assert_not_called()
+
+
 def test_maintenance_only_addition_does_not_change_sampling_digest(tmp_path):
     source = Path(driver.__file__)
     path = tmp_path / 'fixture_driver.py'
