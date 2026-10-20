@@ -33,7 +33,8 @@ The generic schema and graph concepts follow the public [LangGraph Graph API](ht
 
 ## Minimum runtime verification
 
-The stateful runtime, source/dependency admission and selected-library delivery passed independent runtime review, controlled transport and source/relocated-wheel checks. The complete applicable public suite passes 12,100 tests with exact line and branch coverage. Actual source delivery is `f5181ab`; sampling fingerprint binding follows in `230d15d`. No viewer or application acceptance is implied.
+The stateful runtime, source/dependency admission and selected-library delivery passed independent runtime review, controlled transport and source/relocated-wheel checks. The complete applicable public suite passes 12,131 tests with exact 100% line and branch coverage: 29,909 statements and 11,478 branches across 206 files. Public runtime repairs are committed at `3d9fdce42a6828b08d4395d4ebcb89a06ce01fd0`. External review of the runtime and provenance repairs is closed. No viewer or application acceptance is implied.
 
-- [ ] Complete the final external PR review for this delivery.
+- [x] Complete external code review of the runtime and provenance repairs.
+- [ ] Complete final qualified-data and delivery review, including renewed installed artifacts.
 - [ ] Human acceptance of stateful execution and selected-library behavior.

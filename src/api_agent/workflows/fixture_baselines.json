@@ -10,9 +10,9 @@
         "first_draft": 0.7871199821209823,
         "first_format": 0.7871199821209823,
         "first_guard": 0.7871199821209823,
-        "second_draft": 0.40983615196553774,
-        "second_format": 0.40983615196553774,
-        "second_guard": 0.40983615196553774
+        "second_draft": 0.316747562312412,
+        "second_format": 0.316747562312412,
+        "second_guard": 0.316747562312412
       },
       "confidence": 0.95,
       "dependency_versions": {
@@ -42,14 +42,14 @@
         "first_draft": 20,
         "first_format": 20,
         "first_guard": 20,
-        "second_draft": 14,
-        "second_format": 14,
-        "second_guard": 14
+        "second_draft": 12,
+        "second_format": 12,
+        "second_guard": 12
       },
-      "max_runs": 20,
-      "minimum_missing_node_bound": 0.0006496552094339115,
-      "minimum_runs": 16,
-      "missing_node_bound": 7.880854309967745e-05,
+      "max_runs": 26,
+      "minimum_missing_node_bound": 0.0006885055271108673,
+      "minimum_runs": 22,
+      "missing_node_bound": 0.00015004868382870193,
       "model": "gpt-6-luna",
       "provider_identity": {
         "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
@@ -62,12 +62,9 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 1
         },
         {
@@ -91,7 +88,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 3
         },
         {
@@ -112,7 +109,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 5
         },
         {
@@ -124,19 +121,16 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 6
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_a",
+          "route": "skip",
           "trial": 7
         },
         {
@@ -160,7 +154,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 9
         },
         {
@@ -185,22 +179,10 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
-          ],
-          "route": "next_b",
-          "trial": 12
-        },
-        {
-          "nodes": [
-            "first_draft",
-            "first_format",
             "first_guard"
           ],
           "route": "skip",
-          "trial": 13
+          "trial": 12
         },
         {
           "nodes": [
@@ -212,7 +194,7 @@
             "second_guard"
           ],
           "route": "next_a",
-          "trial": 14
+          "trial": 13
         },
         {
           "nodes": [
@@ -221,7 +203,7 @@
             "first_guard"
           ],
           "route": "skip",
-          "trial": 15
+          "trial": 14
         },
         {
           "nodes": [
@@ -233,6 +215,18 @@
             "second_guard"
           ],
           "route": "next_b",
+          "trial": 15
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
           "trial": 16
         },
         {
@@ -251,12 +245,9 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 18
         },
         {
@@ -268,23 +259,26 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 19
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 20
         }
       ],
       "routes": {
-        "next_a": 8,
-        "next_b": 6,
-        "skip": 6
+        "next_a": 5,
+        "next_b": 7,
+        "skip": 8
       },
       "safety_margin": 4,
       "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
@@ -321,7 +315,7 @@
         "src/api_agent/providers/control.py": "337262e4bd0a3d375ec99289ef206c96c6843236d481f1af9fbfd3ea8499b1e6",
         "src/api_agent/providers/inference.py": "132c97656d4df9ea3b4ca62a36df72031033cdede008fbfc3e2e355d4643765b",
         "src/api_agent/providers/llm.py": "a042829aa837934a09ef57d7bb507cd034c6408a90c8e92b98da5d6fd63367cf",
-        "src/api_agent/providers/loading.py": "5b646d6c06fc73cd5a1909cc322207700b9e30f390467ba9c81239d1864ab3d0",
+        "src/api_agent/providers/loading.py": "e3cb3ea90135d622251bfc9161225ff71984da8f6c61ffc5c6f315d6a97480d5",
         "src/api_agent/providers/progress.py": "4df268326944fbad2cef18a00b3b1aac29de64dd6096a0d3e1be0e4dc8ff33eb",
         "src/api_agent/providers/rich_inference.py": "7150f51c2ed9a155493978adcea31e28cc2224f0439483bc60508ac7443be49e",
         "src/api_agent/providers/schema_validation_worker.py": "22283bd59167e6b06a33b499db93c7b5ccc3db62cff663ef4b14b802c6138ab0",
