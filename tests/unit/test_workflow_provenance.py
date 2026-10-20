@@ -59,11 +59,16 @@ def test_dirty_consumed_document_rejected(tmp_path, change):
 
 
 def test_reporting_marker_rejects_unverifiable_source_before_native_exec(monkeypatch, tmp_path):
+    import shutil
     from api_agent.workflows import definition as module
     from api_agent.workflows.contrived import build
     from api_agent.providers.llm import LLMResult, Message, TextContent
     from pathlib import Path
-    root = Path(__file__).resolve().parents[2]
+    source_root = Path(__file__).resolve().parents[2]
+    root = tmp_path / 'uncommitted-owner'
+    shutil.copytree(source_root / 'demo/contrived', root / 'demo/contrived')
+    shutil.copytree(source_root / 'demo/cfg', root / 'demo/cfg')
+    git(root, 'init', '-q')
     async def complete(request):
         return LLMResult(Message('assistant', (TextContent('{}'),)))
     workflow = build(root, llm=complete, selection='example', trial='synthetic')
@@ -670,6 +675,17 @@ def test_source_archive_and_wheel_preserve_same_proof(tmp_path, monkeypatch, amb
     for folder in ('demo', 'cfg', 'infra/compose', 'apps/api-agent-ui'):
         (project / folder).mkdir(parents=True)
         (project / folder / 'placeholder.txt').write_text('Synthetic package fixture.\n')
+    # Supply the declared package inputs without making this provenance test
+    # depend on an incomplete synthetic checkout. The archive boundary test
+    # separately enforces the exact allowed input set.
+    import tomllib
+    configuration = tomllib.loads((source / 'pyproject.toml').read_text())
+    assets = configuration['tool']['hatch']['build']['targets']['sdist']['force-include']
+    for relative in (*assets, 'tools/checks.py', 'tools/pre_commit_dispatcher.py',
+                     'tools/workflow_views.py'):
+        target = project / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / relative, target)
     git(project, 'init', '-q')
     git(project, 'config', 'user.name', 'Example')
     git(project, 'config', 'user.email', 'example@example.invalid')

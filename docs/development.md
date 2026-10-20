@@ -158,6 +158,11 @@ an implemented-mode pass.
 
 ## Browser debugging
 
+For declaration-only inspection, `./launch.py --view-flow` opens the selected
+workflow in its own managed headed browser without provider setup or graph
+execution. See [workflow diagrams](workflow_viewer.md) for static file opening,
+markup freshness, generator prerequisites and staged checks.
+
 To inspect provider login, use DEBUG with selected integration tests:
 ```bash
 ./launch.py --tui-mode integration --no-std-in --debug \

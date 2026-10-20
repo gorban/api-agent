@@ -1,0 +1,12 @@
+html { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; }
+body { margin: 0; }
+.workflow-document { max-width: 72rem; margin: 2rem auto; padding: 0 1.5rem 5rem; }
+.workflow-document h1 { border-bottom: 1px solid #8886; padding-bottom: .4rem; }
+.workflow-document a { color: #2764bd; }
+.workflow-document table { border-collapse: collapse; display: block; overflow-x: auto; }
+.workflow-document th, .workflow-document td { border: 1px solid #8888; padding: .3rem .6rem; text-align: left; }
+.workflow-document pre { padding: 1rem; overflow-x: auto; background: #8882; }
+.workflow-document img { max-width: 100%; height: auto; }
+.viewer-help { border: 1px solid #8888; border-radius: .5rem; padding: 1rem; margin-bottom: 2rem; }
+.viewer-help h2 { margin-top: 0; }
+@media (prefers-color-scheme: dark) { .workflow-document a { color: #8db9ff; } }

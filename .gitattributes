@@ -1,0 +1,3 @@
+# Preserve the pinned upstream notice and browser bundle's terminal whitespace.
+.private_resources/viewer/PlantUML-NOTICE.txt whitespace=-blank-at-eol,-blank-at-eof
+.private_resources/viewer/dompurify.js whitespace=-blank-at-eof

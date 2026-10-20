@@ -7,6 +7,15 @@ import sys
 import tarfile
 
 
+_VIEWER_FILES = (
+    'viewer.js', 'viewer.css', 'marked.js', 'dompurify.js',
+    'marked-LICENSE.txt', 'dompurify-LICENSE.txt', 'PlantUML-NOTICE.txt',
+    'VIEWER-ASSET-NOTICE.txt',
+)
+_DIAGRAM_FILES = ('flow.svg', 'flow.md', 'workflows/components/renderer.svg',
+                  'workflows/components/renderer.md')
+
+
 def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
     root = Path(__file__).resolve().parents[2]
     staged = tmp_path / 'source'
@@ -24,10 +33,29 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
     (staged / 'workflows/component.md.html').write_text('# Component v2\n')
     (staged / 'tests').mkdir()
     (staged / 'tests/test_public.py').write_text('def test_public(): pass\n')
+    admitted_hidden = {
+        *('.private_resources/viewer/' + name for name in _VIEWER_FILES),
+        *('.private_resources/diagrams/' + name for name in _DIAGRAM_FILES),
+    }
+    for relative in admitted_hidden:
+        path = staged / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, path)
+    admitted_tools = {'tools/checks.py', 'tools/pre_commit_dispatcher.py',
+                      'tools/workflow_views.py'}
+    for relative in admitted_tools:
+        path = staged / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, path)
     sentinels = (
         '.synthetic-private/secret.txt',
         'src/api_agent/.synthetic-cache/secret.txt',
         'tests/.synthetic-private/secret.txt',
+        '.private_resources/viewer/secret.txt',
+        '.private_resources/diagrams/secret.txt',
+        '.private_resources/runtime/secret.txt',
+        'tools/synthetic-review.txt',
+        'tools/runtime/debug.log',
         'unlisted.txt',
         'uv.lock',
     )
@@ -45,5 +73,7 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
         members = {name.split('/', 1)[1] for name in source.getnames() if '/' in name}
     assert {'src/api_agent/__init__.py', 'demo/pack.toml', 'flow.md.html',
             'workflows/component.md.html', 'tests/test_public.py'} <= members
-    assert not any(any(part.startswith('.') for part in name.split('/')) for name in members)
+    hidden = {name for name in members if any(part.startswith('.') for part in name.split('/'))}
+    assert hidden == admitted_hidden
+    assert {name for name in members if name.startswith('tools/')} == admitted_tools
     assert not any(name.endswith('secret.txt') or name in {'unlisted.txt', 'uv.lock'} for name in members)

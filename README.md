@@ -32,6 +32,7 @@ See [setup and configuration](docs/workbench.md#getting-started).
 - [Credentials and LLM connections](docs/connections.md)
 - [Resource packs and providers](docs/resource-packs.md)
 - [Running, debugging and testing](docs/development.md)
+- [Workflow diagrams and browser inspection](docs/workflow_viewer.md)
 
 **Developing with a coding agent?** Start with Python 3.13+ and an agent with
 terminal access. For browser inspection, configure Chrome DevTools MCP (preferred)
@@ -125,5 +126,10 @@ Model-specific bounds are packaged with the fixture; [calibration refresh](docs/
 is explicit maintenance outside normal test collection. Normal coverage needs no
 local pilot file and rejects unsupported provider/model/settings without substitution. The useful GraphQL demonstration remains
 the next phase.
+
+Open [flow.md.html](flow.md.html) directly to view the saved declaration and SVG,
+or run `./launch.py --view-flow` for checked, managed browser inspection.
+[Diagram maintenance](docs/workflow_viewer.md) explains markup freshness checks,
+optional generation prerequisites and staged pre-commit checks.
 
 *YubiKey® is a registered trademark of Yubico AB.*

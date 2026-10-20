@@ -1,0 +1,813 @@
+"""Bounded, deterministic rendering of admitted workflow projections."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import base64
+from bisect import bisect_right
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
+from typing import Mapping
+from urllib.parse import quote, unquote, urlsplit
+import html
+import json
+import math
+import os
+import posixpath
+import re
+import selectors
+import signal
+import stat
+import subprocess
+import tempfile
+import time
+from xml.etree import ElementTree as ET
+
+
+PLANTUML_VERSION = "1.2026.9"
+PLANTUML_SHA256 = "835b2f2eb1d756da3f03bffdbd0baf252b4b858547a741ac8e972958a09c7f91"
+RENDER_OPTIONS = ("-Playout=smetana", "-tsvg")
+_SVG_FONT_STACK = "DejaVu Sans, Liberation Sans, Arial, sans-serif"
+_SVG_NS = "http://www.w3.org/2000/svg"
+_XLINK_NS = "http://www.w3.org/1999/xlink"
+_MAX_INPUT = 250_000
+_MAX_OUTPUT = 4_000_000
+_MAX_JAR = 30_000_000
+_MAX_RECORDS = 1_000
+_MAX_LABEL = 240
+_ALLOWED_TAGS = frozenset("svg g a rect ellipse circle path line polygon polyline text tspan defs linearGradient stop title desc clipPath".split())
+_ALLOWED_ATTRS = frozenset("width height viewBox version xmlns xmlns:xlink id class style fill fill-opacity stroke stroke-width stroke-dasharray stroke-linecap stroke-linejoin x y x1 x2 y1 y2 cx cy rx ry r d points transform font-family font-size font-weight text-anchor dominant-baseline opacity offset gradientUnits target href preserveAspectRatio role aria-label contentStyleType data-diagram-type data-entity-1 data-entity-2 data-link-type data-qualified-name data-source-line lengthAdjust textLength zoomAndPan type actuate show title".split())
+_STYLE_COLORS = frozenset({"none", "transparent", "currentcolor"})
+_SVG_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+_SVG_SCALARS = frozenset("x y x1 x2 y1 y2 cx cy rx ry width height stroke-width font-size textLength".split())
+
+
+@dataclass(frozen=True)
+class ViewFile:
+    path: str
+    content_type: str
+    body: bytes
+
+
+@dataclass(frozen=True)
+class ViewSource:
+    logical_path: str
+    content_kind: str
+    sha256: str
+    length: int
+    served: bool
+
+
+@dataclass(frozen=True)
+class ViewRoute:
+    path: str
+    content_type: str
+    sha256: str
+    length: int
+
+
+@dataclass(frozen=True)
+class ViewBundle:
+    entry_path: str
+    files: tuple[ViewFile, ...]
+    graph_id: str = ""
+    definition_id: str = ""
+    projection_sha256: str = ""
+    sources: tuple[ViewSource, ...] = ()
+    routes: tuple[ViewRoute, ...] = ()
+
+
+class RenderError(ValueError):
+    """A view could not be rendered or verified."""
+
+
+def verify_bundle_proof(bundle: ViewBundle, projection: object) -> None:
+    """Bind host routes to one admitted identity and captured source inventory."""
+    if (bundle.graph_id, bundle.definition_id, bundle.projection_sha256) != (
+            projection.graph_id, projection.definition_id, projection.projection_sha256):
+        raise RenderError("workflow view identity differs from admitted projection")
+    if bundle.entry_path != _route(projection.entry_path):
+        raise RenderError("workflow view entry differs from admitted projection")
+    paths = [file.path for file in bundle.files]
+    if len(paths) != len(set(paths)) or bundle.entry_path not in paths:
+        raise RenderError("duplicate or absent workflow view route")
+    expected_routes = tuple(ViewRoute(f.path, f.content_type, sha256(f.body).hexdigest(), len(f.body))
+                            for f in bundle.files)
+    if bundle.routes != expected_routes:
+        raise RenderError("workflow view route digest mismatch")
+    owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
+    asset_types = {"viewer.js": "text/javascript; charset=utf-8",
+                   "viewer.css": "text/css; charset=utf-8",
+                   "marked.js": "text/javascript; charset=utf-8",
+                   "dompurify.js": "text/javascript; charset=utf-8",
+                   "marked-LICENSE.txt": "text/plain; charset=utf-8",
+                   "dompurify-LICENSE.txt": "text/plain; charset=utf-8",
+                   "PlantUML-NOTICE.txt": "text/plain; charset=utf-8",
+                   "VIEWER-ASSET-NOTICE.txt": "text/plain; charset=utf-8"}
+    allowed = {(f"r/{owner}/.private_resources/viewer/{name}", kind)
+               for owner in owners for name, kind in asset_types.items()}
+    for document in projection.documents:
+        allowed.update(((_route(document.logical_path), "text/html; charset=utf-8"),
+                        (_svg_route(document.logical_path), "image/svg+xml"),
+                        (_companion_route(document.logical_path), "text/markdown; charset=utf-8")))
+    if {(file.path, file.content_type) for file in bundle.files} != allowed or len(bundle.files) != len(allowed):
+        raise RenderError("workflow view route inventory mismatch")
+    selected_paths = {d.logical_path for d in projection.documents}
+    expected_sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),
+                                   len(d.raw_bytes), True) for d in projection.documents]
+    for resource in projection.resources:
+        if resource.logical_path not in selected_paths:
+            expected_sources.append(ViewSource(resource.logical_path, resource.kind, resource.sha256,
+                                               len(resource.content_bytes), False))
+    if bundle.sources != tuple(expected_sources):
+        raise RenderError("workflow view source inventory mismatch")
+
+
+def _route(logical_path: str) -> str:
+    parts = PurePosixPath(logical_path).parts
+    if len(parts) < 2 or parts[0] not in {"base", "pack"} or any(p in {".", ".."} for p in parts):
+        raise RenderError("invalid projection path")
+    if any(any(ord(c) < 32 or c in "\\?#" for c in part) for part in parts):
+        raise RenderError("invalid projection path")
+    return "r/" + quote(logical_path, safe="/-._~")
+
+
+def _svg_route(logical_path: str) -> str:
+    parts = PurePosixPath(logical_path).parts
+    if not logical_path.endswith(".md.html"):
+        raise RenderError("invalid declaration path")
+    raw = parts[0] + "/.private_resources/diagrams/" + "/".join(parts[1:])[:-8] + ".svg"
+    return "r/" + quote(raw, safe="/-._~")
+
+
+def _companion_route(logical_path: str) -> str:
+    return _svg_route(logical_path)[:-4] + ".md"
+
+
+def _label(value: object) -> str:
+    text = str(value)
+    if len(text) > _MAX_LABEL or any(ord(c) < 32 or ord(c) == 127 for c in text):
+        raise RenderError("invalid diagram label")
+    # Quoted PlantUML text is constructed from data only; directives cannot reach line starts.
+    return html.escape(text.replace("\\", "\\\\").replace('"', "'"), quote=False)
+
+
+def _projection_source(projection: object, document: object) -> tuple[bytes, frozenset[str]]:
+    if document.logical_path == projection.entry_path:
+        steps = list(projection.steps)
+        edges = list(projection.edges)
+    else:
+        local = {s.id for s in projection.steps if s.declaration_path == document.logical_path}
+        edges = [e for e in projection.edges if e.source in local or e.target in local]
+        relevant = local | {e.source for e in edges} | {e.target for e in edges}
+        steps = [s for s in projection.steps if s.id in relevant]
+    if len(steps) + len(edges) > _MAX_RECORDS:
+        raise RenderError("diagram exceeds record limit")
+    aliases = {s.id: "n" + str(i) for i, s in enumerate(steps)}
+    for special in ("START", "END"):
+        if any(special in (e.source, e.target) for e in edges):
+            aliases[special] = special.lower()
+    admitted = {_route(d.logical_path) for d in projection.documents}
+    links: set[str] = set()
+    lines = ["@startuml", "left to right direction", "skinparam shadowing false",
+             "skinparam defaultFontName sans-serif", "skinparam svgLinkTarget _top"]
+    for special in ("START", "END"):
+        if special in aliases:
+            lines.append(f'circle "{special}" as {aliases[special]}')
+    def emit_step(step):
+        name = _label(step.id)
+        target = _route(step.declaration_path)
+        if target not in admitted:
+            raise RenderError("unadmitted diagram link")
+        href = posixpath.relpath(target, posixpath.dirname(_svg_route(document.logical_path)))
+        links.add(href)
+        if step.kind == "component":
+            lines.append(f'package "{name}" {{')
+        lines.append(f'rectangle "{name}" as {aliases[step.id]} [[{href}]]')
+        details = []
+        for reference in projection.references:
+            if reference.owner_id != step.id or reference.kind != "functions":
+                continue
+            field = dict(reference.attributes).get("field", "")
+            resource = next((r for r in projection.resources if r.logical_path == reference.target_path), None)
+            if resource is None or len(resource.content_bytes) > 65536:
+                continue
+            try:
+                schema = json.loads(resource.content_bytes)
+            except (TypeError, ValueError):
+                continue
+            properties = schema.get("properties") if isinstance(schema, dict) else None
+            if isinstance(properties, dict):
+                names = [key for key in properties if isinstance(key, str)][:12]
+                if names:
+                    details.append(_label(field + ": " + ", ".join(names)))
+        if details:
+            lines.append(f'note right of {aliases[step.id]} : {"; ".join(details)[:_MAX_LABEL]}')
+        for child in steps:
+            if child.parent == step.id:
+                emit_step(child)
+        if step.kind == "component":
+            lines.append("}")
+
+    visible = {s.id for s in steps}
+    for step in steps:
+        if step.parent not in visible:
+            emit_step(step)
+    for edge in edges:
+        if edge.source in aliases and edge.target in aliases:
+            label = _label(edge.condition or "route")
+            lines.append(f'{aliases[edge.source]} --> {aliases[edge.target]} : {label}')
+    lines.append("@enduml")
+    data = ("\n".join(lines) + "\n").encode()
+    if len(data) > _MAX_INPUT:
+        raise RenderError("diagram exceeds input limit")
+    return data, frozenset(links)
+
+
+def _navigation(projection: object, document: object) -> bytes:
+    source = _route(document.logical_path)
+    svg = _svg_route(document.logical_path)
+    relative_svg = posixpath.relpath(svg, posixpath.dirname(source))
+    rows = [f"![Workflow diagram]({relative_svg})", f"[Open standalone diagram]({relative_svg})"]
+    owner = PurePosixPath(document.logical_path).parts[0]
+    for target in projection.documents:
+        if target.logical_path == document.logical_path:
+            continue
+        if PurePosixPath(target.logical_path).parts[0] != owner:
+            continue
+        relative = posixpath.relpath(_route(target.logical_path), posixpath.dirname(source))
+        rows.append(f"- [{_label(target.stable_id)}]({relative})")
+    body = "\n\n".join(rows[:2])
+    if len(rows) > 2:
+        body += "\n\n" + "\n".join(rows[2:])
+    return body.encode()
+
+
+def _hosted_declaration(projection: object, document: object) -> bytes:
+    """Rewrite only selected Flow links identified by admitted ID, owner and line."""
+    from .document_format import extract_document
+
+    extracted = extract_document(document.raw_bytes, path=Path(document.logical_path))
+    lines = document.executable_bytes.splitlines(keepends=True)
+    for step in projection.steps:
+        if step.owner_path != document.logical_path:
+            continue
+        try:
+            offset = extracted.line_map.index(step.flow_line)
+        except ValueError as exc:
+            raise RenderError("selected Flow line absent from admitted declaration") from exc
+        original = lines[offset]
+        match = re.fullmatch(rb'(\s*\d{1,2}\.\s+\[([^\]]+)\]\()([^\r\n)]*)(\)\s*\r?\n?)', original)
+        if match is None or step.id.encode() not in match[2].split():
+            raise RenderError("selected Flow link differs from admitted stable ID")
+        target = _route(step.declaration_path)
+        href = posixpath.relpath(target, posixpath.dirname(_route(document.logical_path)))
+        lines[offset] = match[1] + href.encode() + match[4]
+    return _annotate_hosted_resources(projection, document, lines)
+
+
+def _annotate_hosted_resources(projection: object, document: object,
+                               lines: list[bytes]) -> bytes:
+    """Describe captured, unserved resources without creating broken host links."""
+    selected = {item.logical_path for item in projection.documents}
+    resources = {item.logical_path: item for item in projection.resources
+                 if item.logical_path not in selected}
+    folder = posixpath.dirname(document.logical_path)
+    data = b"".join(lines)
+    fence: tuple[bytes, int] | None = None
+    protected: list[tuple[int, int]] = []
+    offset = 0
+    for line in lines:
+        marker = re.match(rb"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            run = marker[1]
+            if fence is None:
+                fence = (run[:1], len(run))
+            elif run[:1] == fence[0] and len(run) >= fence[1]:
+                fence = None
+        if marker or fence is not None or line.startswith((b"    ", b"\t")):
+            protected.append((offset, offset + len(line)))
+        offset += len(line)
+    for comment in re.finditer(rb"<!--[\s\S]*?-->", data):
+        protected.append(comment.span())
+    mask = bytearray(len(data))
+    for start, end in protected:
+        mask[start:end] = b"\1" * (end - start)
+    def is_protected(position: int) -> bool:
+        return bool(mask[position])
+    ticks = list(re.finditer(rb"`+", data))
+    by_length: dict[int, list[int]] = {}
+    for position, run in enumerate(ticks):
+        by_length.setdefault(len(run[0]), []).append(position)
+    index = 0
+    while index < len(ticks):
+        opening = ticks[index]
+        if is_protected(opening.start()):
+            index += 1
+            continue
+        candidates = by_length[len(opening[0])]
+        next_position = bisect_right(candidates, index)
+        while next_position < len(candidates) and is_protected(ticks[candidates[next_position]].start()):
+            next_position += 1
+        if next_position == len(candidates):
+            index += 1  # An unmatched delimiter is literal Markdown.
+            continue
+        closing_index = candidates[next_position]
+        end = ticks[closing_index].end()
+        mask[opening.start():end] = b"\1" * (end - opening.start())
+        index = closing_index + 1
+    def replace_link(match: re.Match[bytes]) -> bytes:
+        if is_protected(match.start()) or (match.start() and data[match.start() - 1:match.start()] == b"\\"):
+            return match[0]
+        href = match[2]
+        try:
+            uri = href.decode("utf-8")
+            parsed = urlsplit(uri)
+            if parsed.scheme or parsed.netloc or parsed.query or not parsed.path:
+                return match[0]
+            path = unquote(parsed.path, errors="strict")
+            if "\\" in path or any(ord(char) < 32 for char in path):
+                return match[0]
+            logical = posixpath.normpath(posixpath.join(folder, path))
+            if not logical.startswith(document.logical_path.split("/", 1)[0] + "/"):
+                return match[0]
+            resource = resources.get(logical)
+        except (UnicodeDecodeError, ValueError):
+            return match[0]
+        if resource is None:
+            return match[0]
+        label = match[1]
+        detail = (f" (captured {resource.kind}: {logical}; SHA-256 "
+                  f"{resource.sha256}; unavailable in hosted view)").encode()
+        return label + detail
+    return re.sub(rb"(?<!!)\[([^\]\r\n]+)\]\(([^)\r\n]+)\)", replace_link, data)
+
+
+def _companion(projection: object, document: object, *, hosted_selected: bool = False) -> bytes:
+    route = _companion_route(document.logical_path)
+    folder = posixpath.dirname(route)
+    svg = posixpath.relpath(_svg_route(document.logical_path), folder)
+    declaration = posixpath.relpath(_route(document.logical_path), folder)
+    lines = [f"# Workflow diagram: {_label(document.stable_id)}", "",
+             f"![Workflow diagram]({svg})", "",
+             f"[Open standalone diagram]({svg})", "",
+             f"[Source declaration]({declaration})"]
+    owner = PurePosixPath(document.logical_path).parts[0]
+    peers = [item for item in projection.documents
+             if item.logical_path != document.logical_path and
+             (hosted_selected or PurePosixPath(item.logical_path).parts[0] == owner)]
+    if peers:
+        lines.extend(("", "## Navigation", ""))
+        for item in peers:
+            target = posixpath.relpath(_companion_route(item.logical_path), folder)
+            lines.append(f"- [{_label(item.stable_id)}]({target})")
+    body = ("\n".join(lines) + "\n").encode()
+    marker = b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode() + b" -->\n"
+    return marker + body
+
+
+def _asset_root() -> Path:
+    module = Path(__file__).resolve()
+    package = module.parents[1]
+    installed = package / ".private_resources/viewer"
+    if (installed / "viewer.js").is_file():
+        return installed
+    source_root = module.parents[3]
+    source = source_root / ".private_resources/viewer"
+    dist_markers = tuple(package.parent.glob("api_agent-*.dist-info"))
+    if (package.parent.name == "src" and not dist_markers and
+            (source_root / "pyproject.toml").is_file() and
+            module == source_root / "src/api_agent/workflows/viewer_render.py" and
+            (source / "viewer.js").is_file()):
+        return source
+    raise RenderError("workflow viewer assets missing")
+
+
+def default_renderer() -> "PlantUMLRenderer":
+    path = os.environ.get("API_AGENT_PLANTUML_JAR")
+    if path:
+        jar = Path(path)
+    else:
+        jar = Path.home() / ".cache/api-agent/plantuml/plantuml-mit-1.2026.9.jar"
+    if not jar.is_file():
+        raise RenderError("PlantUML renderer missing; run the workflow viewer preparation command")
+    return PlantUMLRenderer(jar)
+
+
+def _read_regular_jar(path: Path) -> bytes:
+    """Read bounded bytes from the opened regular inode, never a FIFO or link."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RenderError("renderer artifact is not an accessible regular file") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_JAR:
+            raise RenderError("renderer artifact must be a bounded regular file")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with os.fdopen(descriptor, "rb") as source:
+        data = source.read(_MAX_JAR + 1)
+        if len(data) > _MAX_JAR or len(data) != info.st_size:
+            raise RenderError("renderer artifact changed or exceeds size limit")
+        return data
+
+
+def _drain(process: subprocess.Popen[bytes], *, timeout: float) -> tuple[bytes, bytes]:
+    """Drain both pipes with one wall deadline and a finite combined byte cap."""
+    deadline = time.monotonic() + timeout
+    buffers: dict[object, bytearray] = {}
+    selector = selectors.DefaultSelector()
+    for pipe in (process.stdout, process.stderr):
+        assert pipe is not None
+        os.set_blocking(pipe.fileno(), False)
+        selector.register(pipe, selectors.EVENT_READ)
+        buffers[pipe] = bytearray()
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            for key, _ in selector.select(min(remaining, 0.2)):
+                chunk = os.read(key.fileobj.fileno(), 8192)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                buffers[key.fileobj].extend(chunk)
+                if sum(map(len, buffers.values())) > 65536:
+                    raise RenderError("renderer diagnostics exceeded limit")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                break
+            time.sleep(min(0.01, remaining))
+        # Keep the exited leader unreaped until its entire process group has
+        # been stopped, including descendants that closed our pipes early.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+    except BaseException:
+        if process.returncode is None:
+            try:
+                # WNOWAIT keeps an exited leader's PID reserved while its
+                # descendants may still hold the renderer pipes open.
+                os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                pass
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        process.wait()
+        raise
+    finally:
+        selector.close()
+        for pipe in buffers:
+            pipe.close()
+    if process.returncode:
+        raise RenderError("renderer failed")
+    return bytes(buffers[process.stdout]), bytes(buffers[process.stderr])
+
+
+def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) -> bytes:
+    if len(data) > _MAX_OUTPUT or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+        raise RenderError("unsafe SVG")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise RenderError("invalid SVG") from exc
+    if root.tag != "{" + _SVG_NS + "}svg":
+        raise RenderError("invalid SVG root")
+    def finite_dimension(value: str) -> float:
+        if not re.fullmatch(r"(?:0|[1-9]\d*)(?:\.\d+)?(?:px)?", value):
+            raise RenderError("invalid SVG dimension")
+        number = float(value.removesuffix("px"))
+        if not math.isfinite(number) or number <= 0 or number > 16384:
+            raise RenderError("SVG dimension exceeds limit")
+        return number
+
+    def safe_style(value: str) -> bool:
+        for declaration in value.split(";"):
+            if not declaration.strip():
+                continue
+            key, separator, raw = declaration.partition(":")
+            if not separator:
+                return False
+            key, raw = key.strip().lower(), raw.strip()
+            if key in {"width", "height", "stroke-width", "stroke-miterlimit", "font-size"}:
+                try:
+                    finite_dimension(raw)
+                except RenderError:
+                    return False
+            elif key in {"fill", "stroke", "background"}:
+                if not (re.fullmatch(r"#[0-9a-fA-F]{3,8}", raw) or raw.lower() in _STYLE_COLORS):
+                    return False
+            elif key in {"fill-opacity", "stroke-opacity", "opacity"}:
+                if not re.fullmatch(r"(?:0(?:\.\d+)?|1(?:\.0+)?)", raw):
+                    return False
+            elif key == "stroke-linejoin":
+                if raw not in {"miter", "round", "bevel"}:
+                    return False
+            elif key == "stroke-linecap":
+                if raw not in {"butt", "round", "square"}:
+                    return False
+            elif key == "font-weight":
+                if raw not in {"normal", "bold"}:
+                    return False
+            elif key == "text-anchor":
+                if raw not in {"start", "middle", "end"}:
+                    return False
+            else:
+                return False
+        return True
+
+    def bounded_numbers(value: str, allowed: str = "") -> list[float]:
+        numbers = _SVG_NUMBER.findall(value)
+        residue = _SVG_NUMBER.sub("", value)
+        if (not numbers or any(char not in allowed for char in residue) or
+                any(not math.isfinite(float(number)) or abs(float(number)) > 16384
+                    for number in numbers)):
+            raise RenderError("invalid SVG geometry")
+        return [float(number) for number in numbers]
+
+    def safe_transform(value: str) -> None:
+        parts = re.findall(r"(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^()]*)\)", value)
+        residue = re.sub(r"(?:matrix|translate|scale|rotate|skewX|skewY)\s*\([^()]*\)", "", value)
+        if not parts or residue.strip(" ,\t\r\n"):
+            raise RenderError("invalid SVG transform")
+        for operation, arguments in parts:
+            numbers = bounded_numbers(arguments, " ,\t\r\n")
+            if operation in {"scale", "matrix"} and any(abs(number) > 100 for number in numbers):
+                raise RenderError("SVG transform exceeds limit")
+
+    width = finite_dimension(root.attrib.get("width", ""))
+    height = finite_dimension(root.attrib.get("height", ""))
+    if width * height > 50_000_000:
+        raise RenderError("SVG area exceeds limit")
+    viewbox = root.attrib.get("viewBox", "").split()
+    if len(viewbox) != 4 or any(not re.fullmatch(r"-?(?:0|[1-9]\d*)(?:\.\d+)?", part)
+                                for part in viewbox):
+        raise RenderError("invalid SVG viewBox")
+    box = [float(part) for part in viewbox]
+    if not all(math.isfinite(value) for value in box) or any(abs(value) > 16384 for value in box) or box[2] <= 0 or box[3] <= 0 or box[2] * box[3] > 50_000_000:
+        raise RenderError("SVG viewBox exceeds limit")
+    root_style = root.attrib.get("style", "")
+    for key, value in re.findall(r"(?:^|;)\s*(width|height)\s*:\s*([^;]+)", root_style, flags=re.I):
+        key = key.lower()
+        if finite_dimension(value.strip()) != (width if key == "width" else height):
+            raise RenderError("SVG CSS dimensions disagree")
+    ids: set[str] = set()
+    refs: list[str] = []
+    for element in root.iter():
+        tag = element.tag.removeprefix("{" + _SVG_NS + "}")
+        if tag not in _ALLOWED_TAGS:
+            raise RenderError("unsafe SVG element")
+        for key, value in element.attrib.items():
+            attr = key.removeprefix("{" + _XLINK_NS + "}").removeprefix("{" + _SVG_NS + "}")
+            if attr not in _ALLOWED_ATTRS or attr.startswith("on"):
+                raise RenderError("unsafe SVG attribute")
+            if attr == "id":
+                ids.add(value)
+            elif attr in {"width", "height"} and value.endswith("px"):
+                bounded_numbers(value[:-2])
+            elif attr in _SVG_SCALARS:
+                bounded_numbers(value)
+            elif attr in {"d", "points", "stroke-dasharray"}:
+                bounded_numbers(value, " ,\t\r\nMmLlHhVvCcSsQqTtAaZz" if attr == "d" else " ,\t\r\n")
+            elif attr == "transform":
+                safe_transform(value)
+            elif attr == "href":
+                if value.startswith("#"):
+                    refs.append(value[1:])
+                elif value not in allowed_links:
+                    raise RenderError("unadmitted SVG link")
+            elif attr == "style" and not safe_style(value):
+                raise RenderError("unsafe SVG style")
+            elif "url(" in value.lower() or "javascript:" in value.lower() or "data:" in value.lower():
+                raise RenderError("unsafe SVG resource")
+    if any(ref not in ids for ref in refs):
+        raise RenderError("broken SVG fragment")
+    ET.register_namespace("", _SVG_NS)
+    ET.register_namespace("xlink", _XLINK_NS)
+    # ElementTree drops PlantUML's encoded source PI and non-graphic comments.
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _with_font_fallbacks(graphic: bytes) -> bytes:
+    """Keep generated labels readable with installed platform fonts."""
+    root = ET.fromstring(graphic)
+    for element in root.iter():
+        if element.get("font-family") == "sans-serif":
+            element.set("font-family", _SVG_FONT_STACK)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+@dataclass(frozen=True)
+class PlantUMLRenderer:
+    jar: Path
+    java: str = "java"
+    timeout: float = 20.0
+
+    def render(self, source: bytes, *, allowed_links: frozenset[str] = frozenset()) -> bytes:
+        from api_agent.providers.progress import report_timeout_sync
+
+        if len(source) > _MAX_INPUT or self.timeout <= 0 or self.timeout > 120:
+            raise RenderError("invalid renderer limits")
+        with report_timeout_sync("Workflow diagram rendering", self.timeout) as budget:
+            jar_bytes = _read_regular_jar(self.jar)
+            if sha256(jar_bytes).hexdigest() != PLANTUML_SHA256:
+                raise RenderError("PlantUML artifact digest mismatch")
+            with tempfile.TemporaryDirectory(prefix="api-agent-diagram-") as directory:
+                puml = Path(directory) / "diagram.puml"
+                puml.write_bytes(source)
+                jar = Path(directory) / "renderer.jar"
+                jar.write_bytes(jar_bytes)
+                args = [self.java, "-Xmx256m", "-DPLANTUML_SECURITY_PROFILE=SANDBOX", "-jar", str(jar), *RENDER_OPTIONS, str(puml)]
+                try:
+                    process = subprocess.Popen(args, cwd=directory, env={"PATH": os.environ.get("PATH", ""), "HOME": directory, "LANG": "C.UTF-8"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                except FileNotFoundError as exc:
+                    raise RenderError("Java 17 or newer is required for workflow view generation") from exc
+                try:
+                    _drain(process, timeout=budget.remaining or 0.001)
+                except subprocess.TimeoutExpired as exc:
+                    raise RenderError("renderer timed out") from exc
+                output = Path(directory) / "diagram.svg"
+                if not output.is_file() or output.stat().st_size > _MAX_OUTPUT:
+                    raise RenderError("renderer output missing or oversized")
+                safe_graphic = validate_svg(output.read_bytes(), allowed_links=allowed_links)
+                return _with_font_fallbacks(safe_graphic)
+
+
+def _physical_file(route: str, roots: Mapping[str, Path]) -> Path:
+    if re.search(r"%(?:2f|5c)", route, re.I):
+        raise RenderError("encoded separator in viewer route")
+    decoded = unquote(route, errors="strict")
+    if quote(decoded, safe="/-._~") != route:
+        raise RenderError("noncanonical viewer route")
+    parts = PurePosixPath(decoded).parts
+    if len(parts) < 3 or parts[0] != "r" or parts[1] not in roots or any(p in {".", ".."} for p in parts):
+        raise RenderError("invalid viewer route")
+    base = Path(roots[parts[1]]).resolve()
+    result = base.joinpath(*parts[2:])
+    if any(parent.is_symlink() for parent in (result, *result.parents) if parent != base and parent.is_relative_to(base)):
+        raise RenderError("viewer asset symlink rejected")
+    if not result.resolve().is_relative_to(base):
+        raise RenderError("viewer route escapes owner")
+    return result
+
+
+def check_view_bundle(bundle: ViewBundle, *, roots: Mapping[str, Path]) -> None:
+    """Compare owned presentation bytes with the admitted markup projection."""
+    expected: dict[str, set[Path]] = {}
+    for file in bundle.files:
+        path = _physical_file(file.path, roots)
+        expected.setdefault(PurePosixPath(file.path).parts[1], set()).add(path)
+        if _read_view_file(path) != file.body:
+            raise RenderError(f"missing or stale workflow view: {file.path}; regenerate workflow views")
+    for owner, paths in expected.items():
+        diagram_dir = Path(roots[owner]).resolve() / ".private_resources/diagrams"
+        if diagram_dir.exists():
+            for pattern in ("*.svg", "*.md"):
+                for artifact in diagram_dir.rglob(pattern):
+                    if artifact not in paths:
+                        raise RenderError("orphaned workflow diagram; regenerate workflow views")
+
+
+def _read_view_file(path: Path) -> bytes | None:
+    """Read a bounded regular view inode without following a final symlink."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RenderError("workflow view file is not accessible") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024 * 1024:
+            raise RenderError("workflow view file must be a bounded regular file")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            data = source.read(info.st_size + 1)
+        if len(data) != info.st_size:
+            raise RenderError("workflow view file changed during read")
+        return data
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _saved_graphic(path: Path, *, metadata: dict[str, object],
+                   allowed_links: frozenset[str]) -> bytes:
+    data = _read_view_file(path)
+    if data is None or len(data) > _MAX_OUTPUT + (4 * _MAX_INPUT // 3) + 4096:
+        raise RenderError("missing or stale workflow diagram; regenerate workflow views")
+    match = re.fullmatch(rb"(<\?xml [^\n]+\?>\n)<!-- api-agent-view-v1 (\{[^\n]+\}) -->\n([\s\S]+)", data)
+    if match is None:
+        raise RenderError("invalid workflow diagram provenance")
+    try:
+        actual = json.loads(match[2])
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RenderError("invalid workflow diagram provenance") from exc
+    graphic = match[1] + match[3]
+    if (actual.get("graphic_sha256") != sha256(graphic).hexdigest() or
+            actual != {**metadata, "graphic_sha256": sha256(graphic).hexdigest()}):
+        raise RenderError("stale workflow diagram provenance; regenerate workflow views")
+    if validate_svg(graphic, allowed_links=allowed_links) != graphic:
+        raise RenderError("noncanonical workflow diagram graphic")
+    return data
+
+
+def build_view_bundle(projection: object, *, roots: Mapping[str, Path],
+                      renderer: PlantUMLRenderer | None = None, verify: bool = True,
+                      hosted_selected: bool | None = None) -> ViewBundle:
+    from api_agent.providers.progress import report_timeout_sync
+
+    with report_timeout_sync("Workflow view bundle", 120) as budget:
+        selected = not verify if hosted_selected is None else hosted_selected
+        if selected and verify:
+            raise RenderError("hosted selected views cannot use source-owned static verification")
+        return _build_view_bundle(projection, roots=roots, renderer=renderer,
+                                  verify=verify, hosted_selected=selected, budget=budget)
+
+
+def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
+                       renderer: PlantUMLRenderer | None, verify: bool,
+                       hosted_selected: bool, budget: object) -> ViewBundle:
+    """Generate a finite immutable bundle from one admitted projection."""
+    if projection.version != 1 or len(projection.documents) > _MAX_RECORDS:
+        raise RenderError("unsupported projection")
+    from .document_format import wrap_document
+
+    if not verify:
+        renderer = renderer or default_renderer()
+    files: list[ViewFile] = []
+    semantic = projection.projection_sha256
+    asset_root = _asset_root()
+    owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
+    asset_names = ("viewer.js", "viewer.css", "marked.js", "dompurify.js",
+                   "marked-LICENSE.txt", "dompurify-LICENSE.txt", "PlantUML-NOTICE.txt",
+                   "VIEWER-ASSET-NOTICE.txt")
+    asset_digest = sha256(b"".join((asset_root / name).read_bytes() for name in asset_names)).hexdigest()
+    for owner in sorted(owners):
+        for name in asset_names:
+            body = (asset_root / name).read_bytes()
+            suffix = name.rsplit(".", 1)[-1]
+            content_type = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
+                            "txt": "text/plain; charset=utf-8"}[suffix]
+            files.append(ViewFile(f"r/{owner}/.private_resources/viewer/{name}", content_type, body))
+    for document in projection.documents:
+        if budget.remaining is not None and budget.remaining <= 0:
+            raise RenderError("workflow view generation timed out")
+        source, links = _projection_source(projection, document)
+        svg_path = _svg_route(document.logical_path)
+        metadata = {"version": 1, "semantic": semantic, "document": document.sha256,
+                    "puml": sha256(source).hexdigest(),
+                    "puml_b64": base64.b64encode(source).decode("ascii"),
+                    "plantuml": PLANTUML_VERSION,
+                    "jar_sha256": PLANTUML_SHA256, "options": list(RENDER_OPTIONS),
+                    "assets_sha256": asset_digest}
+        if verify:
+            svg = _saved_graphic(_physical_file(svg_path, roots), metadata=metadata, allowed_links=links)
+        else:
+            assert renderer is not None
+            graphic = renderer.render(source, allowed_links=links)
+            generated_metadata = {**metadata, "graphic_sha256": sha256(graphic).hexdigest()}
+            marker = b"<!-- api-agent-view-v1 " + json.dumps(generated_metadata, sort_keys=True, separators=(",", ":")).encode() + b" -->\n"
+            declaration, separator, body = graphic.partition(b"?>\n")
+            if not separator or not declaration.startswith(b"<?xml "):
+                raise RenderError("renderer SVG has no XML declaration")
+            svg = declaration + separator + marker + body
+        files.append(ViewFile(svg_path, "image/svg+xml", svg))
+        files.append(ViewFile(_companion_route(document.logical_path), "text/markdown; charset=utf-8",
+                              _companion(projection, document, hosted_selected=hosted_selected)))
+        depth = len(PurePosixPath(document.logical_path).parts) - 2
+        prefix = "../" * depth + ".private_resources/viewer/"
+        executable = (_hosted_declaration(projection, document) if hosted_selected
+                      else document.executable_bytes)
+        presented = wrap_document(executable, root=document.logical_path == projection.entry_path,
+                                  asset_prefix=prefix, generated=_navigation(projection, document))
+        files.append(ViewFile(_route(document.logical_path), "text/html; charset=utf-8", presented))
+    entry = _route(projection.entry_path)
+    sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),
+                          len(d.raw_bytes), True) for d in projection.documents]
+    selected_paths = {d.logical_path for d in projection.documents}
+    for resource in projection.resources:
+        if resource.logical_path not in selected_paths:
+            sources.append(ViewSource(resource.logical_path, resource.kind, resource.sha256,
+                                      len(resource.content_bytes), False))
+    routes = tuple(ViewRoute(f.path, f.content_type, sha256(f.body).hexdigest(), len(f.body))
+                   for f in files)
+    bundle = ViewBundle(entry, tuple(files), projection.graph_id, projection.definition_id,
+                        projection.projection_sha256, tuple(sources), routes)
+    verify_bundle_proof(bundle, projection)
+    if verify:
+        check_view_bundle(bundle, roots=roots)
+    return bundle

@@ -20,20 +20,46 @@ dev = ["Authlib>=1.7.2,<1.8", "pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist
 api-agent = "api_agent.runtime.bootstrap:cli_main"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["LICENSE", "README.md", "pyproject.toml", "hatch_build.py", "launch.py", "package.json", "src", "demo", "cfg", "infra/compose", "apps/api-agent-ui", "workflows", "flow.md.html", "tests", "docs"]
+only-include = ["LICENSE", "README.md", "pyproject.toml", "hatch_build.py", "launch.py", "package.json", "src", "demo", "cfg", "infra/compose", "apps/api-agent-ui", "workflows", "flow.md.html", "tests", "docs", "tools/checks.py", "tools/pre_commit_dispatcher.py", "tools/workflow_views.py"]
 exclude = [".*", "**/.*", "**/__pycache__/**", "**/node_modules/**", "**/*.pyc"]
+
+[tool.hatch.build.targets.sdist.force-include]
+".private_resources/diagrams/flow.svg" = ".private_resources/diagrams/flow.svg"
+".private_resources/diagrams/flow.md" = ".private_resources/diagrams/flow.md"
+".private_resources/diagrams/workflows/components/renderer.svg" = ".private_resources/diagrams/workflows/components/renderer.svg"
+".private_resources/diagrams/workflows/components/renderer.md" = ".private_resources/diagrams/workflows/components/renderer.md"
+".private_resources/viewer/viewer.js" = ".private_resources/viewer/viewer.js"
+".private_resources/viewer/viewer.css" = ".private_resources/viewer/viewer.css"
+".private_resources/viewer/marked.js" = ".private_resources/viewer/marked.js"
+".private_resources/viewer/dompurify.js" = ".private_resources/viewer/dompurify.js"
+".private_resources/viewer/marked-LICENSE.txt" = ".private_resources/viewer/marked-LICENSE.txt"
+".private_resources/viewer/dompurify-LICENSE.txt" = ".private_resources/viewer/dompurify-LICENSE.txt"
+".private_resources/viewer/PlantUML-NOTICE.txt" = ".private_resources/viewer/PlantUML-NOTICE.txt"
+".private_resources/viewer/VIEWER-ASSET-NOTICE.txt" = ".private_resources/viewer/VIEWER-ASSET-NOTICE.txt"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/api_agent"]
 exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 
 [tool.hatch.build.targets.wheel.force-include]
+".private_resources/diagrams/flow.svg" = "api_agent/.private_resources/diagrams/flow.svg"
+".private_resources/diagrams/flow.md" = "api_agent/.private_resources/diagrams/flow.md"
+".private_resources/diagrams/workflows/components/renderer.svg" = "api_agent/.private_resources/diagrams/workflows/components/renderer.svg"
+".private_resources/diagrams/workflows/components/renderer.md" = "api_agent/.private_resources/diagrams/workflows/components/renderer.md"
 "demo" = "api_agent/demo"
 "flow.md.html" = "api_agent/flow.md.html"
 "workflows" = "api_agent/workflows"
 "cfg" = "api_agent/cfg"
 "infra/compose" = "api_agent/infra/compose"
 "apps/api-agent-ui" = "api_agent/ui/app"
+".private_resources/viewer/viewer.js" = "api_agent/.private_resources/viewer/viewer.js"
+".private_resources/viewer/viewer.css" = "api_agent/.private_resources/viewer/viewer.css"
+".private_resources/viewer/marked.js" = "api_agent/.private_resources/viewer/marked.js"
+".private_resources/viewer/dompurify.js" = "api_agent/.private_resources/viewer/dompurify.js"
+".private_resources/viewer/marked-LICENSE.txt" = "api_agent/.private_resources/viewer/marked-LICENSE.txt"
+".private_resources/viewer/dompurify-LICENSE.txt" = "api_agent/.private_resources/viewer/dompurify-LICENSE.txt"
+".private_resources/viewer/PlantUML-NOTICE.txt" = "api_agent/.private_resources/viewer/PlantUML-NOTICE.txt"
+".private_resources/viewer/VIEWER-ASSET-NOTICE.txt" = "api_agent/.private_resources/viewer/VIEWER-ASSET-NOTICE.txt"
 
 [tool.hatch.build.hooks.custom]
 

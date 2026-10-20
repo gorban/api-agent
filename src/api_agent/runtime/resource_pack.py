@@ -393,7 +393,8 @@ def load_selected_definition(context):
         raise ResourcePackError('The bundled application workflow entry is unavailable')
     replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
     owner = context.pack_root if context.workflow_root == 'pack' else base
-    heading = _read_bounded(entry, owner).split(b'\n', 1)[0]
+    from api_agent.workflows.document_format import canonical_executable_bytes
+    heading = canonical_executable_bytes(_read_bounded(entry, owner), path=entry).split(b'\n', 1)[0]
     if heading == b'# Workflow v3':
         from api_agent.workflows.stateful import load_stateful_definition
         definition = load_stateful_definition(entry, base_root=base,

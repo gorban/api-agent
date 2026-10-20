@@ -13,6 +13,11 @@ The useful GraphQL/API demo is phase two and remains pending.
 Requirements and acceptance gates are in
 [the B2 hierarchy](prds/implementation_plan_b2.md).
 
+Open root `flow.md.html` directly for its saved static declaration/diagram, or
+use `./launch.py --view-flow` for checked managed viewing. See
+[diagram maintenance and inspection](workflow_viewer.md) for markup-based
+freshness, explicit generation and pre-commit checks.
+
 ## Local verification
 
 Use a Python environment installed with the project's development dependencies.
