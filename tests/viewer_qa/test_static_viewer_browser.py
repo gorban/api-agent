@@ -1,4 +1,4 @@
-"""Real Chromium checks for owner-local static diagram links and root help."""
+"""Real Chromium checks for static presentation and owner-local diagram links."""
 
 from pathlib import Path
 import shutil
@@ -53,52 +53,142 @@ def _watch_outside_file(page, outside):
     return events
 
 
-def test_static_root_and_nested_images_stay_in_owner_and_root_help_survives(static_view):
+@pytest.fixture(params=["file", "http"])
+def view_url(static_view, request):
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    if request.param == "file":
+        yield lambda path: (static_view / path).as_uri()
+        return
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=static_view))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield lambda path: f"http://127.0.0.1:{server.server_port}/{path}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def _assert_layout(page, target):
+    assert page.locator("aside.viewer-help, #workflow-fallback").count() == 0
+    assert page.get_by_role("heading", name="Viewing this file").count() == 0
+    assert page.locator("main > h1 + p > a > img").count() == 1
+    assert page.locator("main > h1 + p > a").get_attribute("href") == target
+    assert page.get_by_role("heading", name="Generated Diagram v1").count() == 0
+    assert page.get_by_role("link", name="Open standalone diagram").count() == 0
+    assert page.locator("main > h1 + p + details > summary").inner_text() == "Diagram links"
+
+
+@pytest.mark.parametrize("path,target", [
+    ("flow.md.html", ".private_resources/diagrams/flow.svg"),
+    ("workflows/components/renderer.md.html", "../../.private_resources/diagrams/workflows/components/renderer.svg"),
+])
+def test_static_diagram_follows_title_and_opens_svg(view_url, path, target):
     from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, args=["--allow-file-access-from-files"])
-        try:
-            root_page = browser.new_page()
-            outside_events = _watch_outside_file(root_page, (static_view.parent / "outside.svg").as_uri())
-            root_page.goto((static_view / "flow.md.html").as_uri())
-            root_page.locator("main.workflow-document img").first.wait_for()
-            root_page.wait_for_function("() => [...document.querySelectorAll('main img')].every(img => img.complete)")
-            assert root_page.locator("aside.viewer-help").count() == 1
-            assert root_page.locator("#workflow-fallback").count() == 0
-            assert root_page.locator("h2", has_text="Notes").count() == 1
-            assert len(_image_state(root_page)) == 1
-            assert _image_state(root_page)[0]["alt"] == "Workflow diagram"
-            assert _image_state(root_page)[0]["width"] > 0
-            assert outside_events == []
-
-            nested_page = browser.new_page()
-            nested_page.goto((static_view / "workflows/components/renderer.md.html").as_uri())
-            nested_page.locator("main.workflow-document img").first.wait_for()
-            assert nested_page.locator("aside.viewer-help").count() == 0
-            assert len(_image_state(nested_page)) == 1
-            assert _image_state(nested_page)[0]["width"] > 0
-        finally:
-            browser.close()
-
-
-def test_root_help_depends_on_exact_carrier_newline(static_view):
-    from playwright.sync_api import sync_playwright
-
-    script = static_view / ".private_resources/viewer/viewer.js"
-    original = script.read_text()
-    assert 'const source = carrier.textContent.startsWith("\\n") ? carrier.textContent.slice(1) : carrier.textContent;' in original
-    script.write_text(original.replace(
-        'const source = carrier.textContent.startsWith("\\n") ? carrier.textContent.slice(1) : carrier.textContent;',
-        'const source = carrier.textContent;', 1))
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=["--allow-file-access-from-files"])
         try:
             page = browser.new_page()
-            page.goto((static_view / "flow.md.html").as_uri())
+            page.goto(view_url(path))
             page.locator("main.workflow-document").wait_for()
-            assert page.locator("aside.viewer-help").count() == 0
+            page.wait_for_function("() => [...document.querySelectorAll('main img')].every(img => img.complete)")
+            _assert_layout(page, target)
+            assert len(_image_state(page)) == 1
+            assert _image_state(page)[0]["width"] > 0
+            page.locator("main > h1 + p > a").click()
+            assert page.url.endswith(target.replace("../../", ""))
+            assert page.locator("svg").count() == 1
+        finally:
+            browser.close()
+
+
+def test_notes_image_stays_in_place_and_diagram_navigation_works(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+
+    document = static_view / "flow.md.html"
+    document.write_text(document.read_text().replace("## Notes\n", "## Notes\n\n![Notes image](.private_resources/diagrams/flow.svg)\n", 1))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url("flow.md.html"))
+            page.locator("main").wait_for()
+            assert page.locator('h2 + p > img[alt="Notes image"]').count() == 1
+            assert page.locator('h1 + p img[alt="Workflow diagram"]').count() == 1
+            page.get_by_text("Diagram links", exact=True).click()
+            navigation = page.locator("details a")
+            assert navigation.get_attribute("href") == "workflows/components/renderer.md.html"
+            navigation.click()
+            page.locator("h1", has_text="Node v2: renderer").wait_for()
+            _assert_layout(page, "../../.private_resources/diagrams/workflows/components/renderer.svg")
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize("failure", ["disabled", "viewer.js", "marked.js", "dompurify.js"])
+def test_fallback_survives_unavailable_scripts(static_view, view_url, failure):
+    from playwright.sync_api import sync_playwright
+
+    if failure != "disabled":
+        (static_view / ".private_resources/viewer" / failure).unlink()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(java_script_enabled=failure != "disabled")
+            page.goto(view_url("flow.md.html"))
+            assert page.locator("#workflow-fallback").is_visible()
+            assert "./launch.py --view-flow" in page.locator("#workflow-fallback").inner_text()
+            assert page.locator("main").count() == 0
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize("old,new", [
+    ('title.after(picture);', 'main.append(picture);'),
+    ('picture.replaceChildren(clickable);', 'picture.replaceChildren(image);'),
+    ('document.getElementById("workflow-fallback")?.remove();', ''),
+])
+def test_layout_assertions_causally_reject_regressions(static_view, old, new):
+    from playwright.sync_api import sync_playwright
+
+    script = static_view / ".private_resources/viewer/viewer.js"
+    original = script.read_text()
+    assert old in original
+    script.write_text(original.replace(old, new, 1))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto((static_view / "flow.md.html").as_uri())
+            page.locator("main").wait_for()
+            with pytest.raises(AssertionError):
+                _assert_layout(page, ".private_resources/diagrams/flow.svg")
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize("change", ["no-title", "no-generated"])
+def test_missing_optional_structure_is_safe(static_view, change):
+    from playwright.sync_api import sync_playwright
+
+    document = static_view / "flow.md.html"
+    source = document.read_text()
+    source = source.replace("# Workflow v2", "Workflow v2", 1) if change == "no-title" else source.split("\n\n## Generated Diagram v1")[0]
+    document.write_text(source)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda error: errors.append(error))
+            page.goto(document.as_uri())
+            page.locator("main").wait_for()
+            assert errors == []
             assert page.locator("#workflow-fallback").count() == 0
         finally:
             browser.close()

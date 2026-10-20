@@ -9,7 +9,6 @@
     return;
   }
   const source = carrier.textContent.startsWith("\n") ? carrier.textContent.slice(1) : carrier.textContent;
-  const root = source.startsWith("# Workflow v2\n") || source.startsWith("# Workflow v3\n");
   const html = window.marked.parse(source, { gfm: true, breaks: false });
   const clean = window.DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
@@ -45,17 +44,42 @@
     }
   }
   main.append(template.content);
-  if (root && !main.querySelector("h2[data-viewer-help]")) {
-    const help = document.createElement("aside");
-    help.className = "viewer-help";
-    const heading = document.createElement("h2");
-    heading.textContent = "Viewing this file";
-    const note = document.createElement("p");
-    note.textContent = "Python 3.13 or newer is required for the managed workflow viewer.";
-    const command = document.createElement("code");
-    command.textContent = "./launch.py --view-flow";
-    help.append(heading, note, command);
-    main.prepend(help);
+  // Only the terminal generator-owned section participates in presentation.
+  // Its image must already have passed the owner-local image guard above.
+  const segment = "(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+";
+  const relative = `(?:${segment}/)*${segment}`;
+  const nodeLink = `- \\[([a-z][a-z0-9_]{0,63})\\]\\(${relative}\\.md\\.html\\)`;
+  const generated = new RegExp(
+    `\\n\\n## Generated Diagram v1\\n!\\[Workflow diagram\\]\\((${relative}\\.svg)\\)\\n\\n` +
+    `\\[Open standalone diagram\\]\\(\\1\\)(?:\\n\\n${nodeLink}(?:\\n${nodeLink})*)?` +
+    "\\n<!-- workflow-generated-diagram-v1:end -->\\n$").exec(source);
+  const title = main.querySelector("h1");
+  const headings = [...main.querySelectorAll("h2")];
+  const heading = headings.at(-1);
+  if (generated && title && heading?.textContent === "Generated Diagram v1") {
+    const picture = heading.nextElementSibling;
+    const standalone = picture?.nextElementSibling;
+    const image = picture?.querySelector(":scope > img:only-child");
+    const link = standalone?.querySelector(":scope > a:only-child");
+    const navigation = standalone?.nextElementSibling;
+    if (image && link && image.getAttribute("src") === generated[1] &&
+        link.getAttribute("href") === generated[1] &&
+        (!navigation || (navigation.tagName === "UL" && !navigation.nextElementSibling))) {
+      const clickable = document.createElement("a");
+      clickable.href = link.getAttribute("href");
+      clickable.append(image);
+      picture.replaceChildren(clickable);
+      title.after(picture);
+      if (navigation) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Diagram links";
+        details.append(summary, navigation);
+        picture.after(details);
+      }
+      heading.remove();
+      standalone.remove();
+    }
   }
   document.getElementById("workflow-fallback")?.remove();
   carrier.replaceWith(main);
