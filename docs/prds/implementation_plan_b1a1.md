@@ -17,3 +17,10 @@
 The source implementation and repairs passed independent code review, the complete applicable unit gate at exact line/branch coverage, actual renderer/browser checks and relocated installed-package verification. Ordinary freshness checks require no renderer. Broader application startup, execution overlays and full CI wiring retain their own requirements.
 
 - [ ] Human acceptance alongside the combined declaration/diagram and managed-viewer checkpoint.
+
+
+## Static presentation order and fallback visibility
+
+- [x] Show root viewing guidance only when scripts are disabled, blocked or unavailable. A successful static or hosted render removes the fallback and does not prepend a replacement help panel.
+- [x] Place the saved diagram directly after the document's top heading, with the image itself linking to its standalone SVG. Preserve nested navigation and useful diagram links without exposing generated-section bookkeeping as an extra bottom diagram. Apply this presentation consistently to root and nested documents.
+- [x] Keep executable Markdown, source locations, selected graph identity, sanitization and owner-local image checks unchanged. Verify actual file and hosted browser behavior, script-disabled/missing-asset fallback, SVG navigation and causal layout controls before renewed combined human acceptance.
