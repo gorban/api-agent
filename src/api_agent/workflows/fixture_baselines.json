@@ -10,9 +10,9 @@
         "first_draft": 0.7871199821209823,
         "first_format": 0.7871199821209823,
         "first_guard": 0.7871199821209823,
-        "second_draft": 0.316747562312412,
-        "second_format": 0.316747562312412,
-        "second_guard": 0.316747562312412
+        "second_draft": 0.36204651348821093,
+        "second_format": 0.36204651348821093,
+        "second_guard": 0.36204651348821093
       },
       "confidence": 0.95,
       "dependency_versions": {
@@ -42,14 +42,14 @@
         "first_draft": 20,
         "first_format": 20,
         "first_guard": 20,
-        "second_draft": 12,
-        "second_format": 12,
-        "second_guard": 12
+        "second_draft": 13,
+        "second_format": 13,
+        "second_guard": 13
       },
-      "max_runs": 26,
-      "minimum_missing_node_bound": 0.0006885055271108673,
-      "minimum_runs": 22,
-      "missing_node_bound": 0.00015004868382870193,
+      "max_runs": 22,
+      "minimum_missing_node_bound": 0.0009190169693321882,
+      "minimum_runs": 18,
+      "missing_node_bound": 0.00015222275946124523,
       "model": "gpt-6-luna",
       "provider_identity": {
         "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
@@ -62,9 +62,12 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 1
         },
         {
@@ -76,20 +79,8 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
-          "trial": 2
-        },
-        {
-          "nodes": [
-            "first_draft",
-            "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
-          ],
           "route": "next_b",
-          "trial": 3
+          "trial": 2
         },
         {
           "nodes": [
@@ -98,7 +89,7 @@
             "first_guard"
           ],
           "route": "skip",
-          "trial": 4
+          "trial": 3
         },
         {
           "nodes": [
@@ -110,6 +101,15 @@
             "second_guard"
           ],
           "route": "next_a",
+          "trial": 4
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
           "trial": 5
         },
         {
@@ -121,7 +121,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 6
         },
         {
@@ -161,9 +161,12 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 10
         },
         {
@@ -193,16 +196,19 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 13
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 14
         },
         {
@@ -226,20 +232,8 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
-          "trial": 16
-        },
-        {
-          "nodes": [
-            "first_draft",
-            "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
-          ],
           "route": "next_b",
-          "trial": 17
+          "trial": 16
         },
         {
           "nodes": [
@@ -248,7 +242,7 @@
             "first_guard"
           ],
           "route": "skip",
-          "trial": 18
+          "trial": 17
         },
         {
           "nodes": [
@@ -259,7 +253,16 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
+          "trial": 18
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
           "trial": 19
         },
         {
@@ -277,8 +280,8 @@
       ],
       "routes": {
         "next_a": 5,
-        "next_b": 7,
-        "skip": 8
+        "next_b": 8,
+        "skip": 7
       },
       "safety_margin": 4,
       "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
@@ -325,7 +328,8 @@
         "src/api_agent/testing/provider_setup.py": "7523115faf1bb79a326816c6ab9c6e2086aee7f3db7301bf7a75e9114e03d939",
         "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
         "src/api_agent/workflows/contrived.py": "459d7b62b0c8c9de9fa863e1f9a635a481b29bd04ad91409fcf7a1d7a0051758",
-        "src/api_agent/workflows/definition.py": "1f61e5d7fab5b7999efae6785a42bf516c6e49d71ba1889c16e80dba78fec2dd",
+        "src/api_agent/workflows/definition.py": "08ca042b2e35257b5f0eab75518710335c29ac54f50c53b4ed978e655a05ebab",
+        "src/api_agent/workflows/document_format.py": "fccb6536e4816bd30040eb8118ccc5d41076f7198fd9a3547309e01985b8e1fa",
         "src/api_agent/workflows/execution.py": "14fee0e8ec5371223986390a806b1facad3ca44b1049f2e670e21eb3d3dfd86e",
         "src/api_agent/workflows/fixture_driver.py": "dba2357da44f1ed29c8c8c0c1a3c06c75796e475c71772ef21e3ef986107e87a",
         "src/api_agent/workflows/layout.py": "1f9cd0c614eb9dba3f3c5c932f2c0b78ad328893515f0fa7aa89d176861e9869"
