@@ -48,3 +48,6 @@ The reviewed replacement is promoted, current strict preflight and 163 focused s
 - [x] Complete independent review of the authorized normal coverage result and its accounting limitations.
 - [x] Complete final qualified-data/delivery review, including renewed committed installed artifacts.
 - [ ] Human acceptance of the renewed delivery; earlier observed acceptance remains historical.
+
+
+The presentation-parser change has a [fresh qualification and normal coverage record](implementation_plan_b2b1a3.md). Earlier observations remain historical for their original source bindings.

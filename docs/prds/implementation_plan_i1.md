@@ -61,4 +61,4 @@ The selected future format is [B1a](implementation_plan_b1a.md). Earlier rendere
 
 ## First-launch dispatcher decision
 
-- [ ] Deliver the [stable first-launch dispatcher and staged diagram checks](implementation_plan_i1a.md) with the viewer. Its newer launch-installation decision supersedes the earlier interactive-only restriction; broader quick-check choices and CI wiring remain pending.
+- [x] Deliver the [stable first-launch dispatcher and staged diagram checks](implementation_plan_i1a.md) with the viewer. Its newer launch-installation decision supersedes the earlier interactive-only restriction; broader quick-check choices and CI wiring remain pending.
