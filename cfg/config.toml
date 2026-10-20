@@ -112,6 +112,15 @@ default = false
 acknowledge_default = false
 help = "Collect test identities without executing tests or prerequisites."
 
+[fields.SKIP_ALLURE_REPORTING]
+type = "bool"
+default = false
+acknowledge_default = false
+help = "Disable Allure for this test run and permit uncommitted workflow inputs."
+[fields.SKIP_ALLURE_REPORTING.applies_when]
+TUI_MODE = ["integration", "e2e"]
+COLLECT_ONLY = false
+
 [fields.START]
 type = "str"
 enum = ["", "False", "True", "E2E"]
@@ -298,6 +307,7 @@ conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "allu
 help = "Required S3 bucket for integration/E2E result history. LocalStack may provide local S3."
 [fields.ALLURE_S3_BUCKET.required_when]
 TUI_MODE = ["integration", "e2e"]
+SKIP_ALLURE_REPORTING = false
 [fields.ALLURE_S3_BUCKET.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false

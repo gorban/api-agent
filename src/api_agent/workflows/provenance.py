@@ -1,0 +1,159 @@
+"""Verify admitted workflow documents against their owning committed Git trees."""
+from hashlib import sha256
+import json
+from pathlib import Path
+import subprocess
+
+from .definition import InlinePromptRef, LayoutError, _read_bounded, _sections
+
+
+def _git(root, *arguments):
+    result = subprocess.run(('git', '-C', str(root), *arguments),
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            check=False, timeout=10)
+    if result.returncode:
+        raise LayoutError('Workflow document has no verifiable committed provenance')
+    return result.stdout
+
+
+def verify_inline_prompts(definition):
+    """Re-derive each virtual prompt from its admitted physical declaration."""
+    for ref, frozen in definition.contents.items():
+        if not isinstance(ref, InlinePromptRef):
+            continue
+        parent = definition.contents.get(ref.owner)
+        if type(parent) is not bytes:
+            raise LayoutError('Inline prompt has no admitted parent document')
+        _, sections = _sections(ref.owner, parent)
+        body = sections.get('Prompt: ' + ref.id)
+        if body is None:
+            raise LayoutError('Inline prompt is absent from its admitted parent')
+        raw = [value for _, value in body]
+        while raw and not raw[0].strip():
+            raw.pop(0)
+        while raw and not raw[-1].strip():
+            raw.pop()
+        if (len(raw) < 2 or raw[0] != '```text' or raw[-1] != '```'
+                or ('\n'.join(raw[1:-1]) + '\n').encode() != frozen):
+            raise LayoutError('Inline prompt differs from its admitted parent')
+
+
+def physical_documents(definition):
+    """Select the document hash pathway; native Python has separate identity."""
+    native = set()
+    for resource in definition.resources:
+        if resource.kind not in ('native_source', 'native_dependency'):
+            continue
+        owner, _, relative = resource.logical_path.partition('/')
+        root = definition.roots.get(owner)
+        if root is not None and relative:
+            native.add(root / relative)
+    return {path: frozen for path, frozen in definition.contents.items()
+            if isinstance(path, Path) and path not in native}
+
+
+def committed_documents(definition, *, selected_owners=None):
+    """Check the exact frozen bytes before native import or graph effects.
+
+    A caller must invoke this for every reporting-enabled selected definition.
+    Installed resources require a separately verified package receipt and are
+    intentionally rejected by this Git-only verifier.
+    """
+    if not all(hasattr(definition, name) for name in ('roots', 'contents', 'definition_id')):
+        raise TypeError('An admitted workflow definition is required')
+    manifest = []
+    owners = {}
+    verify_inline_prompts(definition)
+    for path, frozen in physical_documents(definition).items():
+        path = Path(path)
+        matching = [(name, root) for name, root in definition.roots.items()
+                    if path.is_relative_to(root)]
+        if not matching:
+            raise LayoutError('Workflow document has no owning root')
+        name, root = max(matching, key=lambda item: len(item[1].parts))
+        if selected_owners is not None and name not in selected_owners:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in ('', '.'):
+            raise LayoutError('Workflow document has an invalid owner path')
+        top = Path(_git(root, 'rev-parse', '--show-toplevel').decode().strip())
+        if not root.is_relative_to(top):
+            raise LayoutError('Workflow owner is outside its Git root')
+        prefix = root.relative_to(top).as_posix()
+        prefix = '' if prefix == '.' else prefix
+        repo_path = (prefix + '/' if prefix else '') + relative
+        commit = _git(root, 'rev-parse', 'HEAD').decode().strip()
+        format_name = _git(root, 'rev-parse', '--show-object-format').decode().strip()
+        if format_name not in ('sha1', 'sha256'):
+            raise LayoutError('Unsupported Git object format')
+        previous = owners.setdefault(name, dict(owner=name, commit=commit, object_format=format_name,
+                                                source_prefix=prefix))
+        if previous['commit'] != commit or previous['source_prefix'] != prefix:
+            raise LayoutError('Workflow owner changed during capture')
+        # `ls-files` catches untracked and ignored inputs. Comparing the index
+        # blob with HEAD catches staged edits even when working bytes match HEAD.
+        indexed = _git(top, 'ls-files', '--stage', '--', repo_path)
+        rows = indexed.decode().splitlines()
+        if len(rows) != 1 or not rows[0].endswith('\t' + repo_path):
+            raise LayoutError('Workflow document is untracked or ignored')
+        head_blob = _git(top, 'rev-parse', f'HEAD:{repo_path}').decode().strip()
+        index_blob = rows[0].split()[1]
+        if index_blob != head_blob:
+            raise LayoutError('Workflow document has staged changes')
+        committed = _git(top, 'show', f'HEAD:{repo_path}')
+        if committed != frozen or _read_bounded(path, root) != frozen:
+            raise LayoutError('Workflow document changed after admission or differs from HEAD')
+        manifest.append(dict(owner=name, path=relative, length=len(frozen), sha256=sha256(frozen).hexdigest()))
+    if not manifest:
+        raise LayoutError('Workflow definition contains no documents')
+    manifest.sort(key=lambda item: (item['owner'], item['path']))
+    if len({(item['owner'], item['path']) for item in manifest}) != len(manifest):
+        raise LayoutError('Duplicate workflow document identity')
+    # A changed HEAD during verification invalidates the coherent snapshot.
+    for name, owner in owners.items():
+        if _git(definition.roots[name], 'rev-parse', 'HEAD').decode().strip() != owner['commit']:
+            raise LayoutError('Workflow owner changed during capture')
+    payload = dict(version=1, owners=sorted(owners.values(), key=lambda item: item['owner']),
+                   documents=manifest)
+    payload['sha256'] = sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return payload
+
+
+def verified_documents(definition, *, packaged_proof=None):
+    """Verify each selected logical owner at its own checkout or package root."""
+    verify_inline_prompts(definition)
+    selected = set()
+    for path in physical_documents(definition):
+        matching = [(name, root) for name, root in definition.roots.items()
+                    if path.is_relative_to(root)]
+        if not matching:
+            raise LayoutError('Workflow document has no owning root')
+        selected.add(max(matching, key=lambda item: len(item[1].parts))[0])
+    source, installed = set(), set()
+    for owner in selected:
+        root = definition.roots[owner]
+        try:
+            top = Path(_git(root, 'rev-parse', '--show-toplevel').decode().strip())
+            if root.is_relative_to(top):
+                source.add(owner)
+            else:
+                installed.add(owner)
+        except LayoutError:
+            installed.add(owner)
+    manifests = []
+    if source:
+        manifests.append(committed_documents(definition, selected_owners=source))
+    if installed:
+        from .packaged_provenance import installed_proof
+        manifests.append(installed_proof(definition, selected_owners=installed,
+                                         packaged_proof=packaged_proof))
+    if not manifests:
+        raise LayoutError('Workflow definition contains no selected documents')
+    result = dict(version=1, owners=sorted(
+        (row for manifest in manifests for row in manifest['owners']),
+        key=lambda row: row['owner']), documents=sorted(
+        (row for manifest in manifests for row in manifest['documents']),
+        key=lambda row: (row['owner'], row['path'])))
+    result['sha256'] = sha256(json.dumps(result, sort_keys=True,
+        separators=(',', ':')).encode()).hexdigest()
+    return result

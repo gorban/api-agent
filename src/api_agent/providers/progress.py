@@ -83,6 +83,18 @@ def independent_timeout_scope():
         _scope.reset(token)
 
 
+@contextmanager
+def bind_timeout_budget(budget):
+    """Carry an admitted parent budget into a graph-managed child task."""
+    if not isinstance(budget, TimeoutBudget):
+        raise TypeError('Expected TimeoutBudget')
+    token = _scope.set(budget)
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+
+
 def _budget(name, timeout):
     if timeout is not None and (type(timeout) not in (int, float)
             or not math.isfinite(timeout) or timeout <= 0):

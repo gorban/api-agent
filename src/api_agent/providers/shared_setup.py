@@ -144,21 +144,8 @@ class SharedSetupOwner(_Owner):
         return result
 
     async def complete(self, request, *, selected_identity=None):
-        from .inference import request_to_wire, result_to_wire
-        request_to_wire(request)
         self._check()
-        if self._validate_request is not None:
-            self._validate_request(request)
-        await self.ensure_ready(selected_identity=selected_identity)
-        if not callable(self._complete):
-            from .contracts import SetupPrerequisiteError
-            raise SetupPrerequisiteError('The selected LLM provider has no completion capability.')
-        async def invoke(*, auth):
-            result = await self._complete(request, auth=auth)
-            self._check()
-            result_to_wire(result)
-            return result
-        task = _spawn(self._owner.call(invoke))
+        task = _spawn(self._complete_request(request, selected_identity=selected_identity))
         self._calls.add(task)
         try:
             result = await asyncio.shield(task)
@@ -171,6 +158,33 @@ class SharedSetupOwner(_Owner):
                 if task.done():
                     self._calls.discard(task)
                     self._cancel_requested.discard(task)
+
+    async def _complete_request(self, request, *, selected_identity=None):
+        from .inference import async_request_to_wire, result_to_wire
+        await async_request_to_wire(request)
+        self._check()
+        if self._validate_request is not None:
+            self._validate_request(request)
+        await self.ensure_ready(selected_identity=selected_identity)
+        if not callable(self._complete):
+            from .contracts import SetupPrerequisiteError
+            raise SetupPrerequisiteError('The selected LLM provider has no completion capability.')
+        selection = None
+        maximum = request.payload.generation.max_output_tokens
+        if maximum is not None or any(message.cache_boundary is not None for message in request.payload.messages):
+            if not callable(self._describe) and maximum is not None:
+                raise OperationalError('unsupported')
+            if callable(self._describe):
+                from .rich_inference import resolve_catalog_selection
+                selection = await resolve_catalog_selection(lambda: self.describe(selected_identity=selected_identity), request)
+        async def invoke(*, auth):
+            result = await self._complete(request, auth=auth)
+            self._check()
+            from .rich_inference import async_validate_result
+            await async_validate_result(request, result, selection=selection)
+            result_to_wire(result)
+            return result
+        return await self._owner.call(invoke)
 
     async def aclose(self):
         self._context()

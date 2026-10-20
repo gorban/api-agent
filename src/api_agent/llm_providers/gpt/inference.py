@@ -41,13 +41,13 @@ def _size(text):
         raise ProviderAccessError('invalid_request', 'GPT text contains invalid Unicode.') from None
 
 
-def _payload(request, api_mode, subscription):
+def _payload(request, api_mode, subscription, *, _validate_instances=True):
     if not isinstance(request, LLMRequest):
         raise ProviderAccessError('invalid_request', 'GPT inference requires an LLM request.')
     payload = request.payload
     if payload.tools or payload.structured is not None:
         from .rich import payload as rich_payload
-        return rich_payload(request, api_mode, subscription)
+        return rich_payload(request, api_mode, subscription, _validate_instances=_validate_instances)
     if (payload.tools or payload.structured is not None or payload.generation.temperature is not None
             or any(row.calls or row.results or row.role == 'tool' for row in payload.messages)):
         raise ProviderAccessError('unsupported', 'GPT text inference does not support the requested feature.')
@@ -58,11 +58,16 @@ def _payload(request, api_mode, subscription):
     maximum = payload.generation.max_output_tokens
     if subscription and maximum is not None:
         raise ProviderAccessError('unsupported', 'GPT subscription inference does not support max_output_tokens.')
-    if maximum is not None and maximum > 4096:
-        raise ProviderAccessError('invalid_request', 'GPT text inference requires max_output_tokens between 1 and 4096.')
+    for message in payload.messages:
+        for part in message.content:
+            _size(part.text)
+    from api_agent.providers.rich_inference import request_to_wire
+    from api_agent.providers.contracts import ContractError
+    try:
+        request_to_wire(request, _validate_instances=_validate_instances)
+    except ContractError:
+        raise ProviderAccessError('invalid_request', 'Invalid GPT text inference request.') from None
     rows = [{'role': 'developer' if subscription and row.role == 'system' else row.role, 'content': ''.join(part.text for part in row.content)} for row in payload.messages]
-    if len(rows) > 64 or sum(_size(row['content']) for row in rows) > 65536:
-        raise ProviderAccessError('invalid_request', 'GPT text inference request exceeded its limit.')
     body = {'model': identifier}
     if api_mode == 'responses':
         body.update(input=rows, store=False, stream=subscription)
@@ -345,12 +350,12 @@ def _sse(body, token, request_id):
     return final
 
 
-def validate_text_request(*, base_url, access_token, subscription, api_mode, request):
+def validate_text_request(*, base_url, access_token, subscription, api_mode, request, _validate_instances=True):
     """Pure validation before the factory allocates its HTTP client."""
     if api_mode not in ('responses', 'completions') or (subscription and api_mode != 'responses'):
         raise ProviderAccessError('invalid_request', 'GPT subscription inference requires responses mode.')
     base_url = _endpoint(base_url, access_token, subscription)
-    body = _payload(request, api_mode, subscription)
+    body = _payload(request, api_mode, subscription, _validate_instances=_validate_instances)
     from .reasoning import reasoning_fields
     body.update(reasoning_fields(request, base_url=base_url, api_mode=api_mode))
     from .rich import _protected
@@ -368,9 +373,21 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     return base_url, body
 
 
+async def async_validate_text_request(*, base_url, access_token, subscription, api_mode, request):
+    from api_agent.providers.inference import async_request_to_wire
+    from api_agent.providers.contracts import ContractError
+    admitted = validate_text_request(base_url=base_url, access_token=access_token,
+        subscription=subscription, api_mode=api_mode, request=request, _validate_instances=False)
+    try:
+        await async_request_to_wire(request)
+    except ContractError:
+        raise ProviderAccessError('invalid_request', 'Invalid GPT inference request.') from None
+    return admitted
+
+
 async def complete_text(*, client, base_url, access_token, subscription, api_mode, request, cache_session_id=None):
     """Bounded inference with retries only for known pre-inference admission failures."""
-    base_url, body = validate_text_request(base_url=base_url, access_token=access_token,
+    base_url, body = await async_validate_text_request(base_url=base_url, access_token=access_token,
         subscription=subscription, api_mode=api_mode, request=request)
     headers = {'Authorization': 'Bearer ' + access_token, 'Accept-Encoding': 'identity'}
     if subscription and cache_session_id is not None:
@@ -453,8 +470,8 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
         if subscription:
             if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
                 raise _invalid('GPT subscription inference requires an event stream.')
-            from .rich import validate_result
-            return validate_result(request, _sse(raw, access_token, request_id), access_token)
+            from .rich import async_validate_result
+            return await async_validate_result(request, _sse(raw, access_token, request_id), access_token)
         data = _json(raw)
         result = _result(data, api_mode == 'responses', access_token)
         if base_url == 'https://openrouter.ai/api/v1':
@@ -466,5 +483,5 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                 error.usage = usage
                 raise
             result = replace(result, usage=usage, billing=billing)
-        from .rich import validate_result
-        return validate_result(request, result, access_token)
+        from .rich import async_validate_result
+        return await async_validate_result(request, result, access_token)

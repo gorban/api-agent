@@ -120,14 +120,14 @@ def test_redaction_expansion_cannot_replace_a_completed_loopback_result(allow):
     expected=LLMResult(Message('assistant',(TextContent('al\\'*21845),)),Usage(100,50,20,30,40))
     boundary=EmissionBoundary(ContentPolicy(allow),secrets=('al',))
     from api_agent.providers.inference import result_to_wire
-    from api_agent.providers.setup_transport import MAX_FRAME, _content_frame
+    from api_agent.providers.setup_transport import MAX_CONTENT_FRAME, _content_frame
     wire=result_to_wire(expected)
     assert len(expected.payload.content[0].text) <= 65536
     assert len(json.dumps(wire,ensure_ascii=False).encode()) <= 131072
     rows=export_content(boundary,request,expected)
     if allow:
         response=next(row for row in rows if row['phase']=='response')
-        assert len(json.dumps(response, separators=(',', ':')).encode()) > MAX_FRAME
+        assert len(json.dumps(response, separators=(',', ':')).encode()) > MAX_CONTENT_FRAME
         assert _content_frame(response) is None
     else:
         assert rows == ()

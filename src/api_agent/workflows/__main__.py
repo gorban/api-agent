@@ -4,7 +4,8 @@ from pathlib import Path
 
 from .execution import diagram_layout
 from .layout import LayoutError
-from .definition import load_definition
+from .definition import _read_bounded, load_definition
+from .stateful import StatefulDefinition, diagram_stateful, load_stateful_definition
 from .resources import bundled_root
 
 
@@ -47,12 +48,17 @@ def main(argv=None):
                 path = base / 'flow.md.html'
                 selected_pack_root = path.parent
                 selected_entry_root = 'base'
-            definition = load_definition(path, base_root=base,
-                                         pack_root=args.pack_root or selected_pack_root,
-                                         entry_root=selected_entry_root)
+            selected_roots = dict(base_root=base, pack_root=args.pack_root or selected_pack_root,
+                                  entry_root=selected_entry_root)
+            owner = selected_roots[selected_entry_root + '_root']
+            if _read_bounded(path, owner).split(b'\n', 1)[0] == b'# Workflow v3':
+                definition = load_stateful_definition(path, **selected_roots)
+            else:
+                definition = load_definition(path, **selected_roots)
     except (LayoutError, ValueError, FileNotFoundError) as error:
         parser.exit(2, f'{error}\n')
-    print(diagram_layout(definition.layout) if args.command == 'diagram'
+    print((diagram_stateful(definition) if isinstance(definition, StatefulDefinition)
+           else diagram_layout(definition.layout)) if args.command == 'diagram'
           else f'Valid workflow: {definition.graph_id} ({definition.definition_id})',
           end='\n' if args.command == 'validate' else '')
     return 0

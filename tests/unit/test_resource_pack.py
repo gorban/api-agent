@@ -223,3 +223,36 @@ def test_shared_paths_resolve_against_pack_and_deduplicate_missing_files(tmp_pat
     monkeypatch.chdir(base)
     context = load_launch_context(base, pack)
     assert context.shared_dotenv_paths == (tmp_path / 'common/.env', pack / 'optional.env')
+
+
+def test_library_source_resolved_outside_sibling_roots_rejects(tmp_path, monkeypatch):
+    from api_agent.runtime import resource_pack
+    pack = tmp_path / 'pack'
+    pack.mkdir()
+    sibling = tmp_path / 'sibling'
+    original = Path.resolve
+    monkeypatch.setattr(Path, 'resolve', lambda path, *args, **kwargs:
+                        tmp_path.parent if path == sibling else original(path, *args, **kwargs))
+    with pytest.raises(ResourcePackError, match='escapes sibling roots'):
+        resource_pack._workflow_library(pack, {'source': '../sibling',
+            'distribution': 'synthetic-workflow', 'resource': 'synthetic_workflows'})
+
+
+def test_symlink_component_rejects_path_outside_declared_root(tmp_path):
+    from api_agent.runtime.resource_pack import _has_symlink_component
+    assert _has_symlink_component(tmp_path.parent / 'outside', tmp_path) is True
+
+
+@pytest.mark.parametrize('error', [OSError, AttributeError, ValueError])
+def test_distribution_identity_unreadable_provider_fails_closed(tmp_path, monkeypatch, error):
+    from api_agent.runtime import resource_pack
+    distribution = resource_pack.metadata.PathDistribution(tmp_path)
+    original_stat = Path.stat
+    def unavailable(path, *args, **kwargs):
+        if path == tmp_path:
+            raise error('unavailable synthetic provider')
+        return original_stat(path, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'stat', unavailable)
+        identity = resource_pack._distribution_identity(distribution)
+    assert identity is None

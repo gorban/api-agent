@@ -82,8 +82,8 @@ def test_invalid_modes_auth_endpoint_before_transport(kwargs):
     LLMRequest('gpt-example', CompletionRequest((Message('user',(TextContent('x'),)),), generation=GenerationOptions(64,1))),
     LLMRequest('gpt-example', CompletionRequest((Message('assistant',calls=(ToolCall('id','tool','{}'),)),), generation=GenerationOptions(64))),
     LLMRequest('other-selection', request().payload), LLMRequest('gpt- x\n',request().payload),
-    LLMRequest('gpt-example',CompletionRequest((Message('user'),),generation=GenerationOptions(4097))),
-    LLMRequest('gpt-example',CompletionRequest((Message('user',(TextContent('x'*65537),)),),generation=GenerationOptions(64))),
+    LLMRequest('gpt-example',CompletionRequest((Message('user'),),generation=GenerationOptions(1048577))),
+    LLMRequest('gpt-example',CompletionRequest((Message('user',(TextContent('x'*524289),)),),generation=GenerationOptions(64))),
     LLMRequest('gpt-example',CompletionRequest((Message('user'),)*65,generation=GenerationOptions(64))), object()])
 def test_unsupported_or_unbounded_request_before_transport(req):
     with pytest.raises(ProviderAccessError):

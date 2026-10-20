@@ -56,7 +56,7 @@ def scope_steps(events):
         end = scope['end']
         if end is None:
             raise ValueError('Workflow scope has no explicit completion')
-        parameters = []
+        parameters = [dict(name='scope_id', value=identifier)]
         for name in ('attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key'):
             if scope.get(name) is not None:
                 parameters.append(dict(name=name, value=str(scope[name])))
@@ -82,6 +82,52 @@ def scope_steps(events):
             if row['start'] < owner['start'] or row['stop'] > owner['stop']:
                 raise ValueError('Workflow child interval is outside its owner')
             owner['steps'].append(row)
-        else:
+        elif parent is None:
             roots.append(rows[identifier])
+        else:
+            raise ValueError('Workflow scope parent is absent')
+    if roots and (len(roots) != 1 or roots[0]['name'] != 'graph GRAPH'):
+        raise ValueError('Workflow scopes require exactly one graph root')
+    calls = set()
+    inclusive = {identifier: [] for identifier in scopes}
+    for event in events:
+        if event.get('event') != 'call':
+            continue
+        call_id, visit_id = event.get('call_id'), event.get('visit_id')
+        if (not _identifier(call_id) or call_id in calls or visit_id not in rows
+                or scopes[visit_id].get('kind') != 'node'):
+            raise ValueError('Workflow leaf call lacks a unique node visit')
+        calls.add(call_id)
+        usage = event.get('usage') or {}
+        if type(usage) is not dict:
+            raise ValueError('Invalid workflow leaf usage')
+        cursor = visit_id
+        while cursor in scopes:
+            inclusive[cursor].append(usage)
+            cursor = scopes[cursor]['parent_id']
+        parameters = [dict(name=name, value=str(value)) for name, value in usage.items()
+                      if name in ('input_tokens', 'output_tokens', 'cached_input_tokens', 'cache_write_tokens',
+                                  'reasoning_tokens', 'total_tokens', 'estimated_cost_usd',
+                                  'charged_cost_usd', 'basis') and value is not None]
+        if event.get('selection') is not None:
+            parameters.append(dict(name='selection', value=str(event['selection'])))
+        parent = rows[visit_id]
+        start, stop = event.get('started_ms'), event.get('stopped_ms')
+        if _time(start) and _time(stop) and parent['start'] <= start <= stop <= parent['stop']:
+            parent['steps'].append(dict(name='call ' + call_id, status='passed' if event.get('outcome') == 'completed' else 'broken',
+                                        start=int(start), stop=int(stop), steps=[], parameters=parameters))
+        else:
+            parent['parameters'].extend(dict(name='call ' + call_id + ' ' + item['name'], value=item['value'])
+                                        for item in parameters)
+    for identifier, usages in inclusive.items():
+        if not usages:
+            continue
+        for name in ('input_tokens', 'output_tokens', 'cached_input_tokens', 'cache_write_tokens',
+                     'reasoning_tokens', 'total_tokens', 'estimated_cost_usd',
+                     'charged_cost_usd'):
+            values = [usage.get(name) for usage in usages]
+            amount = math.fsum(values) if all(type(value) in (int, float) and math.isfinite(value)
+                                             and value >= 0 for value in values) else None
+            rows[identifier]['parameters'].append(dict(name='inclusive_' + name,
+                                                       value=str(amount) if amount is not None else 'unknown'))
     return roots

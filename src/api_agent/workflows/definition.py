@@ -131,12 +131,16 @@ def native_origin(function):
     return origin[:2]
 
 
-def load_native_catalog(definition: WorkflowDefinition, source: Path):
+def load_native_catalog(definition: WorkflowDefinition, source: Path, *, reporting_enabled=False,
+                        packaged_proof=None):
     """Explicitly execute a trusted selected catalog from its admitted bytes."""
     source = Path(source).resolve()
     if not isinstance(definition, WorkflowDefinition) or source not in {
             step.source for step in definition.layout.steps if step.kind == 'node'}:
         raise LayoutError(f'{source}:1: source is not a selected native binding')
+    if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1' or reporting_enabled:
+        from .provenance import verified_documents
+        verified_documents(definition, packaged_proof=packaged_proof)
     definition.verify_native_sources()
     namespace = {'__name__': '<workflow_catalog>', '__file__': str(source), '__package__': None}
     code = compile(definition.contents[source], str(source), 'exec')

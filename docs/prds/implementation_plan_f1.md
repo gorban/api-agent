@@ -17,3 +17,5 @@ The included [personal GPT provider](implementation_plan_f2.md) and replaceable 
 - [ ] Supply optional cost estimation from usage rows and before/after snapshots. Own prices, allocation and quota arithmetic; return finite nonnegative amount/currency or unavailable. Distinguish reset-spanning/unavailable snapshots from measured zero; core must not assume quota points equal currency.
 - [ ] Verify provider-owned protocols with controlled pages/transports/cache fixtures and correct-authentication validation mutation checks. Walk real login branches with the user in the provider workspace when needed; core browser utilities own evidence/cancellation, not upstream selectors.
 - [ ] Join deterministic contract tests before live authentication-only integration, then authenticated discovery with a zero-inference transport guard. Record Allure/usage/privacy evidence from the first real integration; only after configuration and authentication review proceed to the initial renderer test. Keep every live integration/E2E behind its interactive acceptance rules.
+
+See [bounded inference and schema requirements](implementation_plan_f1a.md).

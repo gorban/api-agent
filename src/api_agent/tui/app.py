@@ -1576,6 +1576,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.discard_finished_inspection()
         generation = self._inspection_generation
         self.integration_persisted = None
+        self.integration_reporting_skipped = False
         self.integration_exit_status = None
         outcome = {}
         try:
@@ -1616,9 +1617,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
                         active, accepted=True, interaction=interaction,
                         content_policy=content_policy,
-                        **self.reporting_runner_options(runner),
-                        **self.historical_runner_options(runner),
-                        **self.allure_runner_options(runner, generation),
+                        **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.reporting_runner_options(runner)),
+                        **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.historical_runner_options(runner)),
+                        **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.allure_runner_options(runner, generation)),
                         usage_output=lambda text: self.call_from_thread(self.receive_usage, text, generation),
                         unattended_index_source=getattr(resolved.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         on_event=lambda event: self.call_from_thread(self.integration_event, event, generation),
@@ -1637,6 +1638,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.suite_usage = getattr(recorded, 'usage', {})
             self.test_costs = self.suite_usage.get('test_costs', {})
             self.integration_persisted = getattr(recorded, 'persisted', True)
+            self.integration_reporting_skipped = getattr(recorded, 'reporting_skipped', False)
             for test in self.unit_result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
             self.integration_exit_status = recorded.exit_code
@@ -1912,7 +1914,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 from api_agent.testing.contracts import format_test_summary
                 summary = format_test_summary(self.mode, self.unit_result.tests,
                                               state='CANCELLED' if self.unit_result.cancelled else None)
-                if self.integration_persisted is False:
+                if getattr(self, 'integration_reporting_skipped', False):
+                    summary += '\nAllure reporting: SKIPPED by configuration'
+                elif self.integration_persisted is False:
                     summary += '\nAllure publication: FAIL — could not save the run to all configured history destinations. Check reporting dependencies and storage availability.'
                 elif self.integration_persisted is True:
                     summary += '\nAllure publication: PASS'

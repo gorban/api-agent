@@ -323,44 +323,56 @@ def test_optional_hooks_are_validated_without_calling_them(tmp_path, hook):
 
 
 def test_stream_factory_boundary_is_checked_only_at_invocation(tmp_path):
-    location = source(tmp_path, '''from api_agent.providers.contracts import ProviderCapabilities
+    async def scenario():
+        location = source(tmp_path, '''from api_agent.providers.contracts import ProviderCapabilities
 class Adapter:
     version=1
     capabilities=ProviderCapabilities('llm', ('stream',))
     def __init__(self): self.calls=[]
     def astream(self, request, *, auth=None):
         self.calls.append(request)
-        return request
+        return self.response
 def create(config, services): return Adapter()
 ''')
-    owner = load_provider(location, {}, {})
-    assert owner.implementation.calls == []
-    view = owner.require('llm', 'stream')
-    assert view is not owner.implementation and view.calls is owner.implementation.calls
-    async def values():
-        yield 'neutral'
-    iterator = values()
-    assert view.astream(iterator) is iterator
-    asyncio.run(iterator.aclose())
-    for value in [None, 'neutral']:
-        with pytest.raises(ProviderError, match='stream_invalid'):
-            view.astream(value)
-    async def invalid():
-        return None
-    coroutine = invalid()
-    with pytest.raises(ProviderError):
-        view.astream(coroutine)
-    assert coroutine.cr_frame is None
-    owner.implementation.astream = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('private'))
-    with pytest.raises(ProviderError):
-        view.astream(None)
-    asyncio.run(owner.aclose())
-    class Generator:
-        capabilities = ProviderCapabilities('llm', ('stream',))
-        def astream(self, request, *, auth=None):
-            yield request
-    with pytest.raises(ProviderError):
-        validate_capabilities(Generator())
+        from api_agent.providers.loading import aload_provider
+        owner = await aload_provider(location, {}, {})
+        assert owner.implementation.calls == []
+        view = owner.require('llm', 'stream')
+        assert view is not owner.implementation and view.calls is owner.implementation.calls
+        async def values():
+            yield 'neutral'
+        from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent
+        request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('Question'),)),)))
+        iterator = values()
+        owner.implementation.response = iterator
+        stream = view.astream(request)
+        async def read():
+            assert await anext(stream) == 'neutral'
+            assert stream.iterator.iterator is iterator
+            await stream.aclose()
+        await read()
+        for value in [None, 'neutral']:
+            owner.implementation.response = value
+            with pytest.raises(ProviderError, match='stream_invalid'):
+                await anext(view.astream(request))
+        async def invalid():
+            return None
+        coroutine = invalid()
+        owner.implementation.response = coroutine
+        with pytest.raises(ProviderError):
+            await anext(view.astream(request))
+        assert coroutine.cr_frame is None
+        owner.implementation.astream = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('private'))
+        with pytest.raises(ProviderError):
+            await anext(view.astream(request))
+        await owner.aclose()
+        class Generator:
+            capabilities = ProviderCapabilities('llm', ('stream',))
+            def astream(self, request, *, auth=None):
+                yield request
+        with pytest.raises(ProviderError):
+            validate_capabilities(Generator())
+    asyncio.run(scenario())
 
 
 def test_loader_disposal_is_shared_retained_and_retryable(tmp_path):
@@ -557,19 +569,25 @@ def test_foreign_loop_factory_future_cannot_migrate(tmp_path):
 
 
 def test_stream_carrier_requires_callable_iterator_protocol(tmp_path):
-    location = source(tmp_path, '''from api_agent.providers.contracts import ProviderCapabilities
+    async def scenario():
+        location = source(tmp_path, '''from api_agent.providers.contracts import ProviderCapabilities
 class Adapter:
     version=1
     capabilities=ProviderCapabilities('llm', ('stream',))
-    def astream(self, request, *, auth=None): return request
+    def astream(self, request, *, auth=None): return self.response
 def create(config, services): return Adapter()
 ''')
-    owner = load_provider(location, {}, {})
-    for returned in [SimpleNamespace(__aiter__=None, __anext__=None),
-                     SimpleNamespace(__aiter__=lambda: None, __anext__=None)]:
-        with pytest.raises(ProviderError, match='stream_invalid'):
-            owner.require('llm', 'stream').astream(returned)
-    asyncio.run(owner.aclose())
+        from api_agent.providers.loading import aload_provider
+        owner = await aload_provider(location, {}, {})
+        from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent
+        request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('Question'),)),)))
+        for returned in [SimpleNamespace(__aiter__=None, __anext__=None),
+                         SimpleNamespace(__aiter__=lambda: None, __anext__=None)]:
+            owner.implementation.response = returned
+            with pytest.raises(ProviderError, match='stream_invalid'):
+                await anext(owner.require('llm', 'stream').astream(request))
+        await owner.aclose()
+    asyncio.run(scenario())
 
 
 def test_returned_awaitable_disposes_failed_late_result_and_preserves_cancellation(tmp_path):

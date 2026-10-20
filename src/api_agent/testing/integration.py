@@ -266,6 +266,12 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             if base != owner and base.name == owner.name:
                 roots = {'base': base, 'pack': owner}
             env = os.environ.copy()
+            if config is not None and config.get('SKIP_ALLURE_REPORTING') is True:
+                env['API_AGENT_ALLURE_REPORTING'] = '0'
+            elif config is not None and config.get('_ALLURE_REPORTING_ACTIVE') is True:
+                env['API_AGENT_ALLURE_REPORTING'] = '1'
+            else:
+                env.pop('API_AGENT_ALLURE_REPORTING', None)
             env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
             env['PYTHONUNBUFFERED'] = '1'
             backend_descriptor = None

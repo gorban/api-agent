@@ -110,6 +110,28 @@ def test_attended_without_quota_owner(tmp_path):
     assert rig.events == ['services-start', 'pytest-drained', 'services-release']
 
 
+def test_owned_skip_runs_workload_and_closes_owner_without_reporting(tmp_path):
+    context, test, config = fixture(tmp_path)
+    config = {**config, 'SKIP_ALLURE_REPORTING': True}
+    rig = Rig(config)
+
+    def unrecorded_runner(context, tests, **hooks):
+        assert 'after_run' not in hooks
+        hooks['before_run']()
+        rig.events.append('pytest-drained')
+        return IntegrationRunResult(0, tuple(TestResult(item, 'passed') for item in tests), '')
+
+    async def scenario():
+        result = await run_owned_integration(context, [test], config, operation=rig,
+            accepted=True, runner=unrecorded_runner)
+        assert result.reporting_skipped is True
+        assert result.manifest is None and result.persisted is False
+        assert result.exit_code == 0
+
+    asyncio.run(scenario())
+    assert rig.events == ['services-start', 'pytest-drained', 'services-release']
+
+
 def test_rejects_before_starting_any_owner(tmp_path):
     context, test, config = fixture(tmp_path)
     rig = Rig(config)

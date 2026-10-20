@@ -6,7 +6,7 @@ from threading import Event
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS
 from api_agent.runtime.ownership import StackScope
 from .prerequisites import local_recording_prerequisites
-from .recorded import validate_recorded_integration
+from .recorded import validate_recorded_integration, validate_integration_start
 from .suite_lock import suite_locked
 from .requirements import plan_integration_requirements
 
@@ -21,6 +21,28 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     their listeners are independent operations. Injectable hooks remain owned
     by their caller. Inspection handles transfer with the execution result.
     """
+    if config.get('SKIP_ALLURE_REPORTING') is True:
+        from time import monotonic
+        from .integration import run_integration_tests
+        from .recorded import RecordedIntegrationResult
+        from .recording import RunIdentity
+        from .collection import repository_label
+        tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
+        plan = plan_integration_requirements(tests)
+        plan.validate(context, config)
+        started = monotonic()
+        # No report installer, storage lease, recorder, attachment, manifest or
+        # publication exists on this explicitly unrecorded path.
+        execution = run_integration_tests(context, tests, accepted=accepted,
+            no_std_in=False, config=config,
+            parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
+            on_event=options.get('on_event'), output=options.get('output'),
+            cancel_event=options.get('cancel_event'),
+            unattended_index_source=options.get('unattended_index_source'),
+            interaction=options.get('interaction'))
+        return RecordedIntegrationResult(execution,
+            RunIdentity.create(repository_label(context, context.owner_root), 'integration'),
+            None, {}, None, False, monotonic() - started, reporting_skipped=True)
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
     plan = plan_integration_requirements(tests)
     plan.validate(context, config)

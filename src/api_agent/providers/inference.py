@@ -18,21 +18,26 @@ def _text(value, limit, *, identifier=False):
 
 
 def _size(value):
-    if len(json.dumps(value, separators=(',', ':')).encode()) > 131072:
+    try:
+        json.dumps(value, allow_nan=False, ensure_ascii=False).encode()
+        size = len(json.dumps(value, allow_nan=False, separators=(',', ':')).encode())
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        _fail()
+    if size > 2097152:
         raise ContractError('Text inference exceeds its byte limit')
 
 
-def request_from_wire(row):
+def request_from_wire(row, *, _validate_instances=True):
     if type(row) is dict and 'version' in row:
         from .rich_inference import request_from_wire as rich
-        return rich(row)
+        return rich(row, _validate_instances=_validate_instances)
     if type(row) is not dict or set(row) - {'reasoning_effort'} != {'selected_llm', 'messages', 'max_output_tokens', 'cache_policy', 'request_id'}:
         _fail()
     _text(row['selected_llm'], 200, identifier=True)
     _text(row['request_id'], 200)
     if row['request_id'] and not row['request_id'].isprintable():
         _fail()
-    if row['max_output_tokens'] is not None and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 4096):
+    if row['max_output_tokens'] is not None and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 1048576):
         _fail()
     if row['cache_policy'] is not None and (type(row['cache_policy']) is not str or row['cache_policy'] not in ('off', 'medium', 'high')):
         _fail()
@@ -46,16 +51,16 @@ def request_from_wire(row):
         if (type(item) is not dict or set(item) != {'role', 'text'}
                 or type(item['role']) is not str or item['role'] not in ('system', 'user', 'assistant')):
             _fail()
-        messages.append(Message(item['role'], (TextContent(_text(item['text'], 32768)),)))
+        messages.append(Message(item['role'], (TextContent(_text(item['text'], 524288)),)))
     _size(row)
     return LLMRequest(row['selected_llm'], CompletionRequest(tuple(messages),
         generation=GenerationOptions(max_output_tokens=row['max_output_tokens'], cache_policy=row['cache_policy'], reasoning_effort=effort)), row['request_id'])
 
 
-def request_to_wire(request):
-    if isinstance(request, LLMRequest) and (request.payload.tools or request.payload.structured is not None):
+def request_to_wire(request, *, _validate_instances=True):
+    if isinstance(request, LLMRequest) and (request.payload.tools or request.payload.structured is not None or request.payload.generation.temperature is not None or any(message.cache_boundary is not None for message in request.payload.messages)):
         from .rich_inference import request_to_wire as rich
-        return rich(request)
+        return rich(request, _validate_instances=_validate_instances)
     if (not isinstance(request, LLMRequest) or request.payload.tools or request.payload.structured is not None
             or request.payload.generation.temperature is not None):
         _fail()
@@ -73,13 +78,20 @@ def request_to_wire(request):
     return row
 
 
+def _cache_boundaries(row):
+    values = row.get("applied_cache_boundaries", [])
+    if type(values) is not list:
+        _fail()
+    return tuple(values)
+
+
 def result_from_wire(row):
     if type(row) is dict and 'version' in row:
         from .rich_inference import result_from_wire as rich
         return rich(row)
-    if type(row) is not dict or not {'text', 'outcome', 'usage'} <= set(row) or set(row) - {'text', 'outcome', 'usage', 'actual_model', 'service_tier', 'serving_revision', 'billing'}:
+    if type(row) is not dict or not {'text', 'outcome', 'usage'} <= set(row) or set(row) - {'text', 'outcome', 'usage', 'actual_model', 'service_tier', 'serving_revision', 'billing', 'applied_cache_boundaries'}:
         _fail()
-    text = _text(row['text'], 65536)
+    text = _text(row['text'], 524288)
     if type(row['outcome']) is not str or row['outcome'] not in ('completed', 'length', 'refused'):
         _fail()
     usage = row['usage']
@@ -90,8 +102,8 @@ def result_from_wire(row):
     if any(value is not None and (type(value) is not int or not 0 <= value <= 2147483647) for value in usage.values()):
         _fail()
     try:
-        result = LLMResult(Message('assistant', (TextContent(text),)), Usage(**usage), row['outcome'], row.get('actual_model'), row.get('service_tier'), row.get('serving_revision'), row.get('billing'))
-    except ValueError:
+        result = LLMResult(Message('assistant', (TextContent(text),)), Usage(**usage), row['outcome'], row.get('actual_model'), row.get('service_tier'), row.get('serving_revision'), row.get('billing'), _cache_boundaries(row))
+    except (ValueError, TypeError):
         _fail()
     _size(row)
     return result
@@ -118,5 +130,21 @@ def result_to_wire(result):
     for name in ('actual_model', 'service_tier', 'serving_revision', 'billing'):
         if getattr(result, name) is not None:
             row[name] = getattr(result, name)
+    if result.applied_cache_boundaries:
+        row["applied_cache_boundaries"] = list(result.applied_cache_boundaries)
     result_from_wire(row)
     return row
+
+
+async def async_request_to_wire(request):
+    from .rich_inference import validate_request_instances
+    row = request_to_wire(request, _validate_instances=False)
+    await validate_request_instances(request)
+    return row
+
+
+async def async_request_from_wire(row):
+    from .rich_inference import validate_request_instances
+    request = request_from_wire(row, _validate_instances=False)
+    await validate_request_instances(request)
+    return request

@@ -65,10 +65,11 @@ def test_nonworkflow_heartbeats_never_claim_steps():
     assert not _time(float('inf'))
 
 
-def test_unknown_external_test_parent_keeps_workflow_as_root():
+def test_unknown_external_test_parent_rejected():
     events=trace();parent=str(uuid4())
     events[0]['parent_id']=parent;events[-1]['parent_id']=parent
-    assert len(scope_steps(events))==1
+    with pytest.raises(ValueError, match='parent is absent'):
+        scope_steps(events)
 
 
 def test_accepted_guard_is_not_a_rejection():
@@ -111,3 +112,66 @@ def test_recorded_integration_publishes_workflow_steps_with_content_disabled(tmp
     contents=''.join(p.read_text() for p in recorded.directory.iterdir())
     assert 'secret prompt' not in contents
     assert any('scope_start' in p.read_text() for p in recorded.directory.glob('*-attachment'))
+
+
+def test_leaf_call_cost_rolls_up_once_and_unknown_stays_unknown():
+    events = trace()
+    node = str(uuid4())
+    parent = events[1]['scope_id']
+    start = events[1]['started_ms'] + 1
+    events.insert(2, dict(event='scope_start', scope_id=node, parent_id=parent,
+                          owner='Make', kind='node', started_ms=start))
+    events.insert(3, dict(event='call', call_id=str(uuid4()), visit_id=node,
+                          usage={'input_tokens': 3, 'estimated_cost_usd': 0.01},
+                          outcome='completed'))
+    events.insert(4, dict(event='scope_end', scope_id=node, parent_id=parent,
+                          owner='Make', kind='node', started_ms=start,
+                          stopped_ms=start + 1, outcome='passed'))
+    graph = scope_steps(events)[0]
+    totals = {item['name']: item['value'] for item in graph['parameters']}
+    assert totals['inclusive_input_tokens'] == '3.0'
+    assert totals['inclusive_estimated_cost_usd'] == '0.01'
+    assert totals['inclusive_output_tokens'] == 'unknown'
+
+
+def test_scope_steps_rejects_multiple_graph_roots():
+    events = trace()
+    second = str(uuid4())
+    events.extend((dict(event='scope_start', scope_id=second, parent_id=None,
+                        owner='GRAPH', kind='graph', started_ms=1791800000000),
+                   dict(event='scope_end', scope_id=second, parent_id=None,
+                        owner='GRAPH', kind='graph', started_ms=1791800000000,
+                        stopped_ms=1791800000001, outcome='passed')))
+    with pytest.raises(ValueError, match='one graph root'):
+        scope_steps(events)
+
+
+def test_leaf_call_owner_usage_and_timing_are_checked_independently():
+    events = trace()
+    node = str(uuid4())
+    parent = events[1]['scope_id']
+    start = events[1]['started_ms'] + 1
+    events.insert(2, dict(event='scope_start', scope_id=node, parent_id=parent,
+                          owner='Make', kind='node', started_ms=start))
+    call = dict(event='call', call_id=str(uuid4()), visit_id=node,
+                usage={'input_tokens': 3}, selection='synthetic', outcome='completed',
+                started_ms=start, stopped_ms=start + 1)
+    events.insert(3, call)
+    events.insert(4, dict(event='scope_end', scope_id=node, parent_id=parent,
+                          owner='Make', kind='node', started_ms=start,
+                          stopped_ms=start + 1, outcome='passed'))
+    node_step = scope_steps(events)[0]['steps'][0]['steps'][0]
+    assert node_step['steps'][0]['name'] == 'call ' + call['call_id']
+    assert {'name': 'selection', 'value': 'synthetic'} in node_step['steps'][0]['parameters']
+    broken_usage = deepcopy(events)
+    broken_usage[3]['usage'] = [1]
+    with pytest.raises(ValueError, match='leaf usage'):
+        scope_steps(broken_usage)
+    wrong_owner = deepcopy(events)
+    wrong_owner[3]['visit_id'] = parent
+    with pytest.raises(ValueError, match='unique node visit'):
+        scope_steps(wrong_owner)
+    duplicate = deepcopy(events)
+    duplicate.insert(4, deepcopy(call))
+    with pytest.raises(ValueError, match='unique node visit'):
+        scope_steps(duplicate)

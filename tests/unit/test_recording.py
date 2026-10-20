@@ -118,6 +118,35 @@ def test_generated_identity_and_noncanonical_uuid():
         RunIdentity(made.run_id.upper(), 'example', 'integration', made.started_at)
 
 
+def test_workflow_step_settlement_rejects_unknown_or_finalized_result(tmp_path):
+    recorder = RunRecorder(tmp_path, identity())
+    filename = recorder.record_test(result())
+    with pytest.raises(ValueError, match='Unknown workflow result'):
+        recorder.update_workflow_steps({'missing-result.json': []})
+    recorder.update_workflow_steps({filename: [{'name': 'graph GRAPH', 'steps': []}]})
+    assert json.loads((tmp_path / filename).read_text())['steps'][0]['name'] == 'graph GRAPH'
+    recorder.finalize()
+    with pytest.raises(RuntimeError, match='already finalized'):
+        recorder.update_workflow_steps({filename: []})
+
+
+def test_workflow_step_write_failure_marks_run_incomplete(tmp_path, monkeypatch):
+    from pathlib import Path
+    recorder = RunRecorder(tmp_path, identity())
+    filename = recorder.record_test(result())
+    original = Path.replace
+    def fail_replace(self, target):
+        if self.name.startswith('.') and self.suffix == '.tmp':
+            raise OSError('synthetic write failure')
+        return original(self, target)
+    monkeypatch.setattr(Path, 'replace', fail_replace)
+    with pytest.raises(OSError, match='synthetic write failure'):
+        recorder.update_workflow_steps({filename: []})
+    assert not list(tmp_path.glob('.*.tmp'))
+    with pytest.raises(RuntimeError, match='incomplete artifact write'):
+        recorder.finalize()
+
+
 def test_suite_artifact_and_setup_failure_without_tests(tmp_path):
     run = RunRecorder(tmp_path, identity())
     run.record_artifact('usage.csv', b'tokens\n12\n')

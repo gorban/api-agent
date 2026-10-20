@@ -57,12 +57,20 @@ def test_access_adapter_cannot_declare_generation(operation):
 
 def test_stream_factory_preserves_approved_safe_failure():
     from api_agent.providers.loading import _StreamView
+    from api_agent.providers.llm import LLMRequest,CompletionRequest,Message,TextContent
+    request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('Question'),)),)))
     expected = OperationalError('rate_limited', retry_after=2)
     def stream(*args, **kwargs): raise expected
-    with pytest.raises(OperationalError) as caught:
-        _StreamView(SimpleNamespace(astream=stream)).astream(None)
-    assert caught.value is expected
-    assert caught.value.retry_after == 2
+    async def scenario():
+        iterator = _StreamView(SimpleNamespace(astream=stream)).astream(request)
+        try:
+            with pytest.raises(OperationalError) as caught:
+                await anext(iterator)
+            assert caught.value is expected
+            assert caught.value.retry_after == 2
+        finally:
+            await iterator.aclose()
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('field', ['kind', 'operations', 'credential_roles', 'llm_role', 'features'])

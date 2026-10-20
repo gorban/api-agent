@@ -17,6 +17,16 @@ type = "bool"
 default = false
 help = "Collect test identities without executing tests or prerequisites."
 
+[fields.SKIP_ALLURE_REPORTING]
+type = "bool"
+default = false
+acknowledge_default = false
+persist_default = false
+help = "Run selected tests without Allure reporting."
+[fields.SKIP_ALLURE_REPORTING.applies_when]
+TUI_MODE = ["integration", "e2e"]
+COLLECT_ONLY = false
+
 [fields.TUI_MODE]
 type = "str"
 enum = ["run-local", "unit", "integration", "e2e", "allure", "deployment-logs", "config-cleanup", "unattended-auth"]

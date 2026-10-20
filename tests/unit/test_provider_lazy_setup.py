@@ -144,13 +144,23 @@ def test_loader_capability_validation(changes):
 def test_stream_view_preserves_operational_error():
     from api_agent.providers.contracts import ProviderCapabilities, OperationalError
     from api_agent.providers.loading import LoadedProvider
+    from api_agent.providers.llm import LLMRequest,CompletionRequest,Message,TextContent
+    request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('Question'),)),)))
     error = OperationalError('unavailable')
+    method = Mock(side_effect=error)
     provider = LoadedProvider(SimpleNamespace(capabilities=ProviderCapabilities('llm', ('stream',)),
-                                             astream=Mock(side_effect=error)), 'test_module')
-    with pytest.raises(OperationalError) as caught:
-        provider.require('llm', 'stream').astream(None)
-    assert caught.value is error
-    asyncio.run(provider.aclose())
+                                             astream=method), 'test_module')
+    async def scenario():
+        iterator = provider.require('llm', 'stream').astream(request)
+        try:
+            with pytest.raises(OperationalError) as caught:
+                await anext(iterator)
+            assert caught.value is error
+            method.assert_called_once_with(request,auth=None)
+        finally:
+            await iterator.aclose()
+            await provider.aclose()
+    asyncio.run(scenario())
 
 
 def test_setup_deadline_leaves_owner_available_for_cleanup():

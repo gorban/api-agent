@@ -158,6 +158,27 @@ class RunRecorder:
                 finally:
                     temporary.unlink(missing_ok=True)
 
+    def update_workflow_steps(self, updates):
+        """Settle draft Allure steps from frozen accounting before manifest hashing."""
+        if self._finalized:
+            raise RuntimeError('Run already finalized')
+        for filename, steps in updates.items():
+            if filename not in {row['file'] for row in self._results}:
+                raise ValueError('Unknown workflow result')
+            path = self.directory / filename
+            row = json.loads(path.read_bytes())
+            row['steps'] = self._evidence.content_export({'steps': steps}).get('steps', [])
+            temporary = self.directory / f'.{uuid4()}.tmp'
+            try:
+                with temporary.open('xb') as stream:
+                    stream.write(json.dumps(row, sort_keys=True).encode())
+                temporary.replace(path)
+            except (OSError, ValueError):
+                self._write_failed = True
+                raise
+            finally:
+                temporary.unlink(missing_ok=True)
+
     def finalize(self, metadata=None, *, status=None, shared_artifacts=()):
         if self._finalized:
             raise RuntimeError('Run already finalized')
