@@ -40,7 +40,7 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 Target wording, to publish with the implemented behavior:
 
 ```markdown
-Select **Run local** to start the app and open a managed browser with the Agent app, the configured UI provider (when enabled) for interacting with the agent's API, and any configured tracing viewer after it is ready. A final tab shows the [actual LangGraph flow](flow.md.html) used by this run.
+Select **Run local** to start the app and open a managed browser with the Agent app, the configured UI provider (when enabled) for interacting with the agent's API, and any configured tracing viewer after it is ready. A final tab shows the [actual LangGraph flow](../../flow.md.html) used by this run.
 ```
 
 ## Later dynamic inspection
