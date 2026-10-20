@@ -99,12 +99,18 @@ class _DeferredStream:
             await async_request_to_wire(self.request)
             selection = await _validate_model(self.view._implementation, self.request, self.auth)
             self.iterator = self.view._open_stream(self.request, auth=self.auth, selection=selection)
-        return await self.iterator.__anext__()
+        try:
+            return await self.iterator.__anext__()
+        except StopAsyncIteration:
+            await self.aclose()
+            raise
 
     async def aclose(self):
         self.closed = True
         if self.iterator is not None:
             await self.iterator.aclose()
+        self.iterator = None
+        self.request = self.auth = None
         if self.view._owner is not None:
             self.view._owner._generation_streams.discard(self)
 

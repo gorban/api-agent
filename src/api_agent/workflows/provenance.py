@@ -1,5 +1,6 @@
 """Verify admitted workflow documents against their owning committed Git trees."""
 from hashlib import sha256
+from importlib import metadata
 import json
 from pathlib import Path
 import subprocess
@@ -119,6 +120,65 @@ def committed_documents(definition, *, selected_owners=None):
     return payload
 
 
+
+def _owner_documents(definition, owner):
+    root = definition.roots[owner]
+    return {path for path in physical_documents(definition)
+            if path.is_relative_to(root) and owner == max(
+                ((name, candidate) for name, candidate in definition.roots.items()
+                 if path.is_relative_to(candidate)),
+                key=lambda item: len(item[1].parts))[0]}
+
+
+def _git_owns_documents(definition, owner, top):
+    """Positive source ownership takes precedence over ambient package metadata."""
+    root = definition.roots[owner]
+    paths = _owner_documents(definition, owner) | {
+        root / name for name in ('pyproject.toml', 'setup.py', 'setup.cfg')}
+    relative = sorted(path.relative_to(top).as_posix() for path in paths)
+    return bool(_git(top, 'ls-files', '--stage', '--', *relative)
+                or _git(top, 'ls-tree', '-z', 'HEAD', '--', *relative))
+
+
+def _distribution_owns_documents(definition, owner):
+    """Identify installed bytes by physical inventory, independently of Git ancestors."""
+    root = definition.roots[owner]
+    documents = _owner_documents(definition, owner)
+    receipts = {candidate / 'workflow-source-proof.json'
+                for candidate in definition.roots.values()
+                if root.is_relative_to(candidate)}
+    claimants = set()
+    for distribution in metadata.distributions():
+        if not isinstance(distribution, metadata.PathDistribution):
+            continue
+        # Admit the physical metadata before asking importlib to read RECORD.
+        # Editable/source inventories and filesystem aliases do not establish
+        # installed ownership of documents outside their metadata directory.
+        provider = Path(distribution._path).absolute()
+        metadata_files = {provider / 'METADATA', provider / 'RECORD'}
+        if (not provider.name.endswith('.dist-info') or provider.resolve() != provider
+                or not all(path.is_file() and path.resolve() == path for path in metadata_files)):
+            continue
+        inventory = distribution.files
+        if inventory is None:
+            continue
+        location = Path(distribution.locate_file('')).resolve()
+        owned = set()
+        required = documents | receipts | metadata_files
+        for item in inventory:
+            relative = Path(str(item))
+            if relative.is_absolute() or '..' in relative.parts:
+                continue
+            physical = Path(distribution.locate_file(item)).absolute()
+            if (physical in required and physical.is_relative_to(location) and physical.resolve() == physical
+                    and physical.is_file()):
+                owned.add(physical)
+        if metadata_files <= owned and documents <= owned and receipts & owned:
+            identity = provider.stat()
+            claimants.add((identity.st_dev, identity.st_ino))
+    return len(claimants) == 1
+
+
 def verified_documents(definition, *, packaged_proof=None):
     """Verify each selected logical owner at its own checkout or package root."""
     verify_inline_prompts(definition)
@@ -134,11 +194,14 @@ def verified_documents(definition, *, packaged_proof=None):
         root = definition.roots[owner]
         try:
             top = Path(_git(root, 'rev-parse', '--show-toplevel').decode().strip())
-            if root.is_relative_to(top):
-                source.add(owner)
-            else:
-                installed.add(owner)
         except LayoutError:
+            installed.add(owner)
+            continue
+        if (root.is_relative_to(top) and (root == top
+                or _git_owns_documents(definition, owner, top)
+                or not _distribution_owns_documents(definition, owner))):
+            source.add(owner)
+        else:
             installed.add(owner)
     manifests = []
     if source:
