@@ -22,7 +22,7 @@ This child records the supported generic workflow runtime. It does not claim app
 
 - [x] Synthetic producer-to-sanitizer-to-IPC-to-Allure tests cover supported nested attempts, repeated visits, calls, errors, cancellation, dropped events and bounded privacy. Exact applicable coverage, source/relocated installed artifacts and independent runtime/artifact review pass.
 - [x] Complete external code review of the supported recording runtime and provenance repairs.
-- [ ] Complete final qualified-data and delivery review, including renewed installed artifacts.
+- [x] Complete final qualified-data and delivery review, including renewed installed artifacts.
 - [ ] Human acceptance of supported recorded execution; transport retries and richer suspension/resume retain their separate future scope.
 
 ## Installed reporting verification
