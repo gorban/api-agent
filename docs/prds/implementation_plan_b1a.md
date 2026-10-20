@@ -37,10 +37,10 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 
 - [ ] Once the browser tabs and workflow entry are implemented, update `README.md` under **Get started**, immediately after the launcher command. Describe Run local starting the app and opening a managed browser with the Agent app, the enabled UI provider for interacting with the agent's API, configured tracing viewers, and the selected workflow as the final tab. Link the exact words `actual LangGraph flow` to root `flow.md.html`. Verify this sequence with UI/tracing enabled and disabled and with explicit pack selection before README acceptance.
 
-Target wording, to publish with the implemented behavior:
+Target wording for the repository-root `README.md`, to publish with the implemented behavior:
 
 ```markdown
-Select **Run local** to start the app and open a managed browser with the Agent app, the configured UI provider (when enabled) for interacting with the agent's API, and any configured tracing viewer after it is ready. A final tab shows the [actual LangGraph flow](../../flow.md.html) used by this run.
+Select **Run local** to start the app and open a managed browser with the Agent app, the configured UI provider (when enabled) for interacting with the agent's API, and any configured tracing viewer after it is ready. A final tab shows the [actual LangGraph flow](flow.md.html) used by this run.
 ```
 
 ## Later dynamic inspection
