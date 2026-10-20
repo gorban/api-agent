@@ -35,5 +35,5 @@ Bind historical execution overlays to the declaration documents actually consume
 - [x] Verify real source archive extraction, wheel builds and wheel installation beneath unrelated Git repositories. Untracked installed files retain their packaged commit identity; files positively owned by an enclosing checkout retain its committed identity and dirty-input rejection. Verify index deletion does not erase ownership established by HEAD, and that source/editable metadata cannot bypass these checks.
 - [x] Independently verify committed consumed-document admission and installed receipt/Git-object proof before reporting-enabled native effects, including dirty-input and tamper mutations and explicit reporting opt-out. Exact applicable unit and relocated-artifact checks pass.
 - [x] Complete external code review of the consumed-document admission and installed provenance repairs.
-- [ ] Complete final qualified-data and delivery review, including renewed installed artifacts.
+- [x] Complete final qualified-data and delivery review, including renewed installed artifacts.
 - [ ] Human acceptance of minimum source recording. Historical lookup/rendering and its combined acceptance above remain future work.
