@@ -648,7 +648,8 @@ def test_nested_logical_roots_share_one_distribution_without_duplicate_documents
     assert next(row for row in manifest['owners'] if row['owner'] == 'pack')['source_prefix'] == 'demo'
 
 
-def test_source_archive_and_wheel_preserve_same_proof(tmp_path):
+@pytest.mark.parametrize('ambient', ['none', 'untracked', 'tracked'])
+def test_source_archive_and_wheel_preserve_same_proof(tmp_path, monkeypatch, ambient):
     import json
     import shutil
     import sys
@@ -678,13 +679,271 @@ def test_source_archive_and_wheel_preserve_same_proof(tmp_path):
     subprocess.run((sys.executable, '-I', '-m', 'build', '--no-isolation', '--sdist',
                     '--outdir', str(dist), str(project)), check=True, capture_output=True)
     archive = next(dist.glob('*.tar.gz'))
+    consumer = tmp_path / 'extract'
+    consumer.mkdir()
+    if ambient != 'none':
+        git(consumer, 'init', '-q')
+        git(consumer, 'config', 'user.name', 'Example')
+        git(consumer, 'config', 'user.email', 'example@example.invalid')
+        (consumer / 'README').write_text('Synthetic consumer.\n')
+        git(consumer, 'add', 'README')
+        git(consumer, 'commit', '-qm', 'synthetic consumer')
     with tarfile.open(archive) as package:
         member = next(item for item in package if item.name.endswith('/workflow-source-proof.json'))
         from_source = package.extractfile(member).read()
-        package.extractall(tmp_path / 'extract', filter='data')
-    extracted = next((tmp_path / 'extract').iterdir())
+        package.extractall(consumer, filter='data')
+    extracted = next(path for path in consumer.iterdir() if path.is_dir() and path.name != '.git')
+    if ambient == 'tracked':
+        git(consumer, 'add', extracted.name)
+        git(consumer, 'commit', '-qm', 'vendor synthetic source archive')
     subprocess.run((sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
                     '--outdir', str(dist), str(extracted)), check=True, capture_output=True)
     with zipfile.ZipFile(next(dist.glob('*.whl'))) as package:
         from_wheel = package.read('api_agent/workflow-source-proof.json')
     assert json.loads(from_source) == json.loads(from_wheel)
+    site = consumer / 'environment/site-packages'
+    installer = tmp_path / 'installer'
+    subprocess.run((sys.executable, '-I', '-m', 'venv', str(installer)),
+                   check=True, capture_output=True)
+    import os
+    python = installer / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    subprocess.run((str(python), '-I', '-m', 'pip', 'install', '--no-index', '--no-deps',
+                    '--target', str(site), str(next(dist.glob('*.whl')))),
+                   check=True, capture_output=True)
+    if ambient == 'tracked':
+        git(consumer, 'add', 'environment')
+        git(consumer, 'commit', '-qm', 'vendor synthetic installed wheel')
+    monkeypatch.syspath_prepend(str(site))
+    from types import SimpleNamespace
+    from api_agent.workflows.provenance import verified_documents
+    package = site / 'api_agent'
+    entry = package / 'flow.md.html'
+    selected = SimpleNamespace(roots={'base': package},
+                               contents={entry: entry.read_bytes()}, resources=(), definition_id='a' * 64)
+    expected = (git(consumer, 'rev-parse', 'HEAD').stdout.decode().strip()
+                if ambient == 'tracked' else json.loads(from_source)['manifest']['owners'][0]['commit'])
+    assert verified_documents(selected)['owners'][0]['commit'] == expected
+
+
+@pytest.fixture
+def installed_distribution(tmp_path, monkeypatch):
+    import json
+    from dataclasses import replace
+    from hatch_build import _proof
+    definition, file = admitted(tmp_path)
+    proof = _proof(file.parent)
+    checkout = tmp_path / 'consumer'
+    checkout.mkdir()
+    git(checkout, 'init', '-q')
+    git(checkout, 'config', 'user.name', 'Example')
+    git(checkout, 'config', 'user.email', 'example@example.invalid')
+    (checkout / 'README').write_text('Synthetic consumer.\n')
+    git(checkout, 'add', 'README')
+    git(checkout, 'commit', '-qm', 'synthetic consumer')
+    site = checkout / 'environment/site-packages'
+    package = site / 'synthetic_workflow'
+    package.mkdir(parents=True)
+    moved = package / file.name
+    moved.write_bytes(file.read_bytes())
+    receipt = package / 'workflow-source-proof.json'
+    receipt.write_text(json.dumps(proof))
+    info = site / 'synthetic_workflow-1.0.dist-info'
+    info.mkdir()
+    (info / 'METADATA').write_text('Metadata-Version: 2.1\nName: synthetic-workflow\nVersion: 1.0\n')
+    (info / 'RECORD').write_text(''.join(str(path.relative_to(site)) + ',,\n'
+        for path in (moved, receipt, info / 'METADATA', info / 'RECORD')))
+    monkeypatch.syspath_prepend(str(site))
+    selected = replace(definition, entry=moved,
+        roots=MappingProxyType({'base': package, 'pack': package}),
+        contents=MappingProxyType({moved: moved.read_bytes()}))
+    return selected, checkout, site, info, proof
+
+
+@pytest.mark.parametrize('tracked', [False, True])
+def test_installed_distribution_under_unrelated_git_uses_its_proof(installed_distribution, tracked):
+    from dataclasses import replace
+    from api_agent.workflows.provenance import verified_documents
+    selected, checkout, site, info, proof = installed_distribution
+    moved = selected.entry
+    if tracked:
+        git(checkout, 'add', 'environment')
+        git(checkout, 'commit', '-qm', 'vendor synthetic distribution')
+    manifest = verified_documents(selected)
+    expected = (git(checkout, 'rev-parse', 'HEAD').stdout.decode().strip()
+                if tracked else proof['manifest']['owners'][0]['commit'])
+    assert {row['commit'] for row in manifest['owners']} == {expected}
+    moved.write_bytes(b'# Changed installed workflow\n')
+    with pytest.raises(LayoutError, match='differs from|match receipt'):
+        verified_documents(replace(selected, contents=MappingProxyType({moved: moved.read_bytes()})))
+
+
+@pytest.mark.parametrize('state', ['clean', 'staged', 'unstaged', 'index-deleted', 'untracked', 'ignored'])
+def test_nested_source_with_receipt_keeps_committed_source_gate(tmp_path, monkeypatch, state):
+    import json
+    from dataclasses import replace
+    from api_agent.workflows.packaged_provenance import build_packaged_proof
+    from api_agent.workflows.provenance import verified_documents
+    definition, file = admitted(tmp_path)
+    nested = file.parent / 'nested'
+    nested.mkdir()
+    moved = nested / file.name
+    moved.write_bytes(file.read_bytes())
+    git(file.parent, 'add', 'nested')
+    git(file.parent, 'commit', '-qm', 'synthetic nested source')
+    selected = replace(definition, entry=moved,
+        roots=MappingProxyType({'base': nested, 'pack': nested}),
+        contents=MappingProxyType({moved: moved.read_bytes()}))
+    (nested / 'workflow-source-proof.json').write_text(json.dumps(build_packaged_proof(selected)))
+    site = tmp_path / 'site-packages'
+    info = site / 'synthetic_editable-1.0.dist-info'
+    info.mkdir(parents=True)
+    (site / 'synthetic_editable.pth').write_text(str(nested) + '\n')
+    (info / 'METADATA').write_text('Metadata-Version: 2.1\nName: synthetic-editable\nVersion: 1.0\n')
+    (info / 'RECORD').write_text('synthetic_editable.pth,,\nsynthetic_editable-1.0.dist-info/METADATA,,\nsynthetic_editable-1.0.dist-info/RECORD,,\n')
+    monkeypatch.syspath_prepend(str(site))
+    if state in ('untracked', 'ignored', 'index-deleted'):
+        git(file.parent, 'rm', '--cached', 'nested/flow.md.html')
+        if state != 'index-deleted':
+            git(file.parent, 'commit', '-qm', 'remove synthetic document')
+        if state == 'ignored':
+            (file.parent / '.gitignore').write_text('nested/flow.md.html\n')
+    elif state in ('staged', 'unstaged'):
+        moved.write_bytes(b'# Changed source workflow\n')
+        if state == 'staged':
+            git(file.parent, 'add', 'nested/flow.md.html')
+            moved.write_bytes(file.read_bytes())
+    selected = replace(definition, entry=moved,
+        roots=MappingProxyType({'base': nested, 'pack': nested}),
+        contents=MappingProxyType({moved: moved.read_bytes()}))
+    if state == 'clean':
+        assert verified_documents(selected)['owners'][0]['source_prefix'] == 'nested'
+    else:
+        with pytest.raises(LayoutError, match='staged|differs from HEAD|untracked or ignored'):
+            verified_documents(selected)
+
+
+def test_distribution_ownership_requires_filesystem_inventory(tmp_path, monkeypatch):
+    from importlib import metadata
+    import api_agent.workflows.provenance as module
+    definition, _ = admitted(tmp_path)
+    provider = tmp_path / 'empty.dist-info'
+    provider.mkdir()
+    (provider / 'METADATA').write_text('Name: empty\n')
+    (provider / 'RECORD').write_text('')
+    missing = metadata.PathDistribution(provider)
+    monkeypatch.setattr(metadata, 'distributions', lambda: [object(), missing])
+    assert not module._distribution_owns_documents(definition, 'base')
+
+
+@pytest.mark.parametrize('alias', ['RECORD', 'METADATA', 'directory'])
+def test_distribution_metadata_alias_cannot_establish_ownership(installed_distribution, tmp_path, monkeypatch, alias):
+    from importlib import metadata
+    from api_agent.workflows.provenance import _distribution_owns_documents, verified_documents
+    selected, _, _, info, _ = installed_distribution
+    target = info if alias == 'directory' else info / alias
+    outside = tmp_path / ('external-' + target.name)
+    target.rename(outside)
+    target.symlink_to(outside, target_is_directory=alias == 'directory')
+    reads = []
+    original = metadata.PathDistribution.read_text
+    def read_text(distribution, name):
+        reads.append(name)
+        return original(distribution, name)
+    monkeypatch.setattr(metadata, 'distributions', lambda: [metadata.PathDistribution(info)])
+    monkeypatch.setattr(metadata.PathDistribution, 'read_text', read_text)
+    assert not _distribution_owns_documents(selected, 'base')
+    assert reads == []
+    with pytest.raises(LayoutError):
+        verified_documents(selected)
+
+
+def test_distinct_distribution_claimants_are_ambiguous(installed_distribution):
+    from api_agent.workflows.provenance import _distribution_owns_documents, verified_documents
+    selected, _, site, info, _ = installed_distribution
+    other = site / 'second_workflow-1.0.dist-info'
+    other.mkdir()
+    (other / 'METADATA').write_text('Name: second-workflow\nVersion: 1.0\n')
+    (other / 'RECORD').write_text((info / 'RECORD').read_text().replace(info.name, other.name))
+    assert not _distribution_owns_documents(selected, 'base')
+    with pytest.raises(LayoutError):
+        verified_documents(selected)
+
+
+def test_repeated_physical_distribution_discovery_is_one_owner(installed_distribution, monkeypatch):
+    from importlib import metadata
+    from api_agent.workflows.provenance import _distribution_owns_documents
+    selected, _, _, info, _ = installed_distribution
+    monkeypatch.setattr(metadata, 'distributions', lambda: [metadata.PathDistribution(info), metadata.PathDistribution(info)])
+    assert _distribution_owns_documents(selected, 'base')
+
+
+def test_distribution_inventory_must_own_its_metadata(installed_distribution):
+    from api_agent.workflows.provenance import _distribution_owns_documents
+    selected, _, _, info, _ = installed_distribution
+    rows = (info / 'RECORD').read_text().splitlines()
+    (info / 'RECORD').write_text('\n'.join(row for row in rows if '.dist-info/' not in row))
+    assert not _distribution_owns_documents(selected, 'base')
+
+
+@pytest.mark.parametrize('marker', ['pyproject.toml', 'setup.py', 'setup.cfg'])
+@pytest.mark.parametrize('index_deleted', [False, True])
+def test_git_owned_project_marker_preserves_source_gate(installed_distribution, marker, index_deleted):
+    from api_agent.workflows.provenance import verified_documents
+    selected, checkout, _, _, _ = installed_distribution
+    project = selected.roots['base'] / marker
+    project.write_text('Synthetic source project marker.\n')
+    relative = project.relative_to(checkout).as_posix()
+    git(checkout, 'add', relative)
+    git(checkout, 'commit', '-qm', 'track synthetic project marker')
+    if index_deleted:
+        git(checkout, 'rm', '--cached', relative)
+    with pytest.raises(LayoutError, match='untracked or ignored'):
+        verified_documents(selected)
+
+
+def test_head_owned_document_keeps_source_gate_after_index_deletion(installed_distribution):
+    from api_agent.workflows.provenance import verified_documents
+    selected, checkout, _, _, _ = installed_distribution
+    relative = selected.entry.relative_to(checkout).as_posix()
+    git(checkout, 'add', relative)
+    git(checkout, 'commit', '-qm', 'track synthetic workflow')
+    git(checkout, 'rm', '--cached', relative)
+    with pytest.raises(LayoutError, match='untracked or ignored'):
+        verified_documents(selected)
+
+
+@pytest.mark.parametrize('record_kind', ['regular', 'alias'])
+def test_record_cannot_launder_staged_nested_source(tmp_path, monkeypatch, record_kind):
+    import json
+    from dataclasses import replace
+    from api_agent.workflows.packaged_provenance import build_packaged_proof
+    from api_agent.workflows.provenance import verified_documents
+    definition, file = admitted(tmp_path)
+    nested = file.parent / 'nested'
+    nested.mkdir()
+    moved = nested / file.name
+    moved.write_bytes(file.read_bytes())
+    git(file.parent, 'add', 'nested')
+    git(file.parent, 'commit', '-qm', 'synthetic nested source')
+    selected = replace(definition, entry=moved, roots={'base': nested},
+                       contents={moved: moved.read_bytes()})
+    receipt = nested / 'workflow-source-proof.json'
+    receipt.write_text(json.dumps(build_packaged_proof(selected)))
+    moved.write_bytes(b'# Different staged workflow\n')
+    git(file.parent, 'add', 'nested/flow.md.html')
+    moved.write_bytes(file.read_bytes())
+    with pytest.raises(LayoutError, match='staged changes'):
+        verified_documents(selected)
+    info = file.parent / 'claimed_source-1.0.dist-info'
+    info.mkdir()
+    (info / 'METADATA').write_text('Name: claimed-source\nVersion: 1.0\n')
+    external = tmp_path / 'external-record'
+    external.write_text(''.join(str(path.relative_to(file.parent)) + ',,\n'
+        for path in (moved, receipt, info / 'METADATA', info / 'RECORD')))
+    if record_kind == 'alias':
+        (info / 'RECORD').symlink_to(external)
+    else:
+        (info / 'RECORD').write_bytes(external.read_bytes())
+    monkeypatch.syspath_prepend(str(file.parent))
+    with pytest.raises(LayoutError, match='staged changes'):
+        verified_documents(selected)
