@@ -51,7 +51,9 @@ def main(argv=None):
             selected_roots = dict(base_root=base, pack_root=args.pack_root or selected_pack_root,
                                   entry_root=selected_entry_root)
             owner = selected_roots[selected_entry_root + '_root']
-            if _read_bounded(path, owner).split(b'\n', 1)[0] == b'# Workflow v3':
+            from .document_format import canonical_executable_bytes
+            heading = canonical_executable_bytes(_read_bounded(path, owner), path=path).split(b'\n', 1)[0]
+            if heading == b'# Workflow v3':
                 definition = load_stateful_definition(path, **selected_roots)
             else:
                 definition = load_definition(path, **selected_roots)

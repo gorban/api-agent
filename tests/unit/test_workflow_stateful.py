@@ -2183,3 +2183,43 @@ def test_stateful_pack_rejects_external_conditions(fixture_graph):
     with pytest.raises(ResourcePackError, match='not external conditions'):
         load_workflow(context, catalog, conditions={}, definition=definition,
                       reducers={'messages': add_messages})
+
+
+def test_presented_stateful_selection_keeps_the_real_loader(fixture_graph):
+    from api_agent.workflows.document_format import wrap_document
+    from api_agent.workflows.stateful import StatefulDefinition
+    root, entry = fixture_graph
+    bare = load_stateful_definition(entry, base_root=root, pack_root=root)
+    expected_edge_line = entry.read_text().splitlines()[bare.edges[0]['line'] - 1]
+    entry.write_bytes(wrap_document(entry.read_bytes(), root=True,
+                                    asset_prefix='.private_resources/viewer/'))
+    context = SimpleNamespace(base_root=root, pack_root=root, workflow_entry=entry,
+        workflow_root='base', workflow_replacements=())
+
+    selected = load_selected_definition(context)
+
+    assert isinstance(selected, StatefulDefinition)
+    assert selected.graph_id == bare.graph_id
+    assert tuple({key: value for key, value in edge.items() if key != 'line'}
+                 for edge in selected.edges) == tuple(
+                     {key: value for key, value in edge.items() if key != 'line'}
+                     for edge in bare.edges)
+    assert selected.nodes == bare.nodes
+    assert entry.read_text().splitlines()[selected.edges[0]['line'] - 1] == expected_edge_line
+    assert selected.contents[entry] == entry.read_bytes()
+    assert selected.definition_id != bare.definition_id
+
+
+def test_presented_stateful_cli_keeps_validation_and_topology(fixture_graph, capsys):
+    from api_agent.workflows.document_format import wrap_document
+    root, entry = fixture_graph
+    assert workflow_cli(['diagram', '--entry', str(entry)]) == 0
+    expected = capsys.readouterr().out
+    entry.write_bytes(wrap_document(entry.read_bytes(), root=True,
+                                    asset_prefix='.private_resources/viewer/'))
+
+    assert workflow_cli(['diagram', '--entry', str(entry)]) == 0
+
+    assert capsys.readouterr().out == expected
+    assert workflow_cli(['validate', '--entry', str(entry)]) == 0
+    assert 'Valid workflow: synthetic_flow' in capsys.readouterr().out

@@ -24,7 +24,8 @@ DEPENDENCIES = ('langgraph', 'langchain-core', 'jsonschema', 'markdown-it-py', '
 # here. Reporting, TUI, pricing and test collection do not change sampling.
 SAMPLING_SOURCES = (
     'workflows/fixture_driver.py', 'workflows/contrived.py', 'workflows/execution.py',
-    'workflows/layout.py', 'workflows/definition.py', 'llm_providers/gpt/inference.py', 'llm_providers/gpt/rich.py',
+    'workflows/layout.py', 'workflows/definition.py', 'workflows/document_format.py',
+    'llm_providers/gpt/inference.py', 'llm_providers/gpt/rich.py',
     'llm_providers/gpt/cache_policy.py', 'llm_providers/gpt/reasoning.py', 'llm_providers/gpt/discovery.py',
     'llm_providers/gpt/endpoint.py', 'providers/llm.py', 'providers/contracts.py',
     'providers/control.py', 'providers/progress.py', 'providers/cache_policy.py',

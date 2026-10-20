@@ -29,6 +29,7 @@ from langgraph.graph.message import add_messages
 from api_agent.providers.progress import bind_timeout_budget, component_timeout
 from api_agent.runtime.tasks import offload, settle
 from .definition import Replacement, Resource, _freeze, _read_bounded, _sections, _table as _shared_table
+from .document_format import canonical_executable_bytes, validate_presentation_location
 from .layout import Layout, LayoutError, Step, _ID
 
 
@@ -97,6 +98,7 @@ class StatefulDefinition:
     contents: object
     definition_id: str
     layout: Layout
+    selected_declarations: object = None
 
     def verify_sources(self):
         for path, admitted in self.contents.items():
@@ -119,12 +121,13 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
         roots_for_path = [root for root in roots.values() if path.is_relative_to(root)]
         if not roots_for_path:
             raise LayoutError(f'{entry}:1: source outside roots')
-        return _read_bounded(path, max(roots_for_path, key=lambda p: len(p.parts)))
+        owner = max(roots_for_path, key=lambda p: len(p.parts))
+        data = _read_bounded(path, owner)
+        if path.suffixes[-2:] == ['.md', '.html']:
+            validate_presentation_location(data, path=path, root=owner)
+        return data
     contents = {entry: read(entry)}
-    try:
-        lines = contents[entry].decode('utf-8').splitlines()
-    except UnicodeError as error:
-        raise LayoutError(f'{entry}:1: invalid UTF-8') from error
+    lines = canonical_executable_bytes(contents[entry], path=entry).decode('utf-8').splitlines()
     if not lines or lines[0] != '# Workflow v3':
         raise LayoutError(f'{entry}:1: expected Workflow v3 heading')
     _, sections = _sections(entry, contents[entry])
@@ -209,6 +212,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             dependencies[module] = path
     nodes = []
     steps = []
+    selected_declarations = {}
     def visit(owner, body, parent=None, depth=0):
         if depth > 64:
             raise LayoutError(f'{owner}:1: component nesting exceeds 64 levels')
@@ -225,6 +229,30 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                 raise LayoutError(f'{owner}:{number}: duplicate step ID')
             replacement = next((item for item in replacements if item.target_id == identifier), None)
             if replacement is not None:
+                if (re.search(r'%(?![0-9A-Fa-f]{2})', target)
+                        or any(ord(char) < 32 or ord(char) == 127 for char in target)):
+                    raise LayoutError(f'{owner}:{number}: invalid declaration link')
+                try:
+                    parsed = urlsplit(target)
+                except ValueError as error:
+                    raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
+                if (parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
+                        or re.search(r'%(?:2f|5c)', target, re.I)):
+                    raise LayoutError(f'{owner}:{number}: invalid declaration link')
+                try:
+                    decoded = unquote(parsed.path, errors='strict')
+                except UnicodeError as error:
+                    raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
+                if (not decoded or decoded.startswith('/') or '\\' in decoded or '?' in decoded
+                        or '#' in decoded or any(ord(char) < 32 or ord(char) == 127 for char in decoded)):
+                    raise LayoutError(f'{owner}:{number}: invalid declaration link')
+                try:
+                    original = (owner.parent / decoded).resolve(strict=False)
+                except (OSError, RuntimeError, ValueError) as error:
+                    raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
+                if (not any(original.is_relative_to(root) for root in roots.values())
+                        or original.suffixes[-2:] != ['.md', '.html']):
+                    raise LayoutError(f'{owner}:{number}: declaration link outside roots or wrong format')
                 if replacement.root_id not in roots or Path(replacement.entry).is_absolute() or '..' in Path(replacement.entry).parts:
                     raise LayoutError(f'{owner}:{number}: invalid replacement')
                 declaration = (roots[replacement.root_id] / replacement.entry).resolve()
@@ -241,6 +269,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             if title != f'# {kind.title()} v3: {identifier}':
                 raise LayoutError(f'{declaration}:1: declaration identity mismatch')
             steps.append((identifier, kind, parent, declaration))
+            selected_declarations[identifier] = (owner, number, declaration)
             if kind == 'component':
                 if set(child) != {'Flow'}:
                     raise LayoutError(f'{declaration}:1: component requires only Flow')
@@ -296,7 +325,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
         raise LayoutError(f'{entry}:1: workflow snapshot exceeds 64 MiB')
     for path, data in contents.items():
         root_id = max((key for key, root in roots.items() if path.is_relative_to(root)),
-                      key=lambda key: len(roots[key].parts))
+                      key=lambda key: (len(roots[key].parts), key == entry_root))
         kind = kinds[path]
         resources.append(Resource(kind, root_id + '/' + path.relative_to(roots[root_id]).as_posix(),
                                   data, sha256(data).hexdigest()))
@@ -315,14 +344,15 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
     selected_resources = {}
     for identifier, path in declared_resources.items():
         root_id = max((key for key, root in roots.items() if path.is_relative_to(root)),
-                      key=lambda key: len(roots[key].parts))
+                      key=lambda key: (len(roots[key].parts), key == entry_root))
         selected_resources[identifier] = resources_by_path[root_id + '/' + path.relative_to(roots[root_id]).as_posix()]
     definition = StatefulDefinition(identity[0]['ID'], entry, entry_root, MappingProxyType(roots), replacements,
                                     tuple(resources), MappingProxyType(selected_resources), tuple(helpers),
                                     MappingProxyType(dependencies), tuple(_freeze(row) for row in timeouts),
                                     state[0]['Registry'], state_source,
                                     tuple(_freeze(row) for row in nodes), tuple(_freeze(row) for row in edges),
-                                    MappingProxyType(contents), definition_id, layout)
+                                    MappingProxyType(contents), definition_id, layout,
+                                    MappingProxyType(selected_declarations))
     _validated_timeouts(definition)
     return definition
 

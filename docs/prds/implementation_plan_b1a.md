@@ -17,7 +17,7 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 ## Viewer and generated views
 
 - [ ] Derive registered nodes, forward routes, inbound backlinks, type fields and navigation links from the Markdown declaration body. Build SVG links and companion Markdown links from the same inventory. A standalone SVG may expose its links while GitHub's embedded SVG image requires companion Markdown navigation.
-- [ ] Generate temporary `.puml` only inside an owned temporary directory; render with pinned PlantUML, dispose of temporary files on success, failure and cancellation, and atomically publish SVGs. Track no `.puml` source. Verify deterministic bytes or a documented normalization/provenance digest with the pinned renderer.
+- [ ] Generate temporary `.puml` only inside an owned temporary directory; render with pinned PlantUML, dispose of temporary files on success, failure and cancellation, and atomically publish SVGs. Track no `.puml` source. Verify deterministic markup projection and source provenance; font-dependent geometry does not determine freshness.
 - [ ] Keep a root-only help panel with the heading **Viewing this file**, the Python 3.13 or newer prerequisite and the exact root command `./launch.py --view-flow`. Nested declarations contain only rendering bootstrap. Remove `?view=help` special handling; ordinary URLs bearing that query render normally. IDE comments stay invisible in rendered views and use exactly five empty lines before and after, two leading spaces on every prose line, and the command at column one.
 - [ ] Restrict local preview access to declared resources and an explicit `.private_resources` asset subtree allowlist. Reject traversal, symlink escapes and source access beyond the optional declared source viewer. Rewritten Markdown, SVG, script and stylesheet links must work from root and nested declarations.
 
@@ -26,7 +26,7 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 - [ ] Convert the parser/compiler and selected application declarations to the versioned `.md.html` format together. Prove equivalent graph transitions, prompt composition, routing, state/bindings, timeouts, streaming and explicit pack selection/overrides before treating the new format as executable.
 - [ ] Implement `./launch.py --view-flow` through the shared managed Playwright lifecycle. Prepare the browser dependency, start an owned loopback preview on an available port and open root `flow.md.html` automatically in a headed browser regardless of caller working directory. Cleanup closes owned browser/server resources. Viewing performs no graph execution, provider login or application startup.
 - [ ] In Run local, host the same workflow resources and open the selected flow as the final tab in its existing managed Playwright browser after readiness, regardless of UI or tracing settings. This is a static declaration/diagram view of the graph compiled for this invocation, including resolved pack overrides. Preserve the other Run local tabs and ownership rules; [K2](implementation_plan_k2.md) owns their readiness and ordering.
-- [ ] Verify root-only fallback, ordinary query rendering, exact comment whitespace, reproducible diagrams, temporary cleanup, local configuration/source views, GitHub Markdown links, packaged-resource navigation, launcher/browser cleanup and staged-check rejection cases. See [I1](implementation_plan_i1.md) for the index and CI contract.
+- [ ] Verify root-only fallback, ordinary query rendering, exact comment whitespace, markup freshness, temporary cleanup, local configuration/source views, GitHub Markdown links, packaged-resource navigation, launcher/browser cleanup and staged-check rejection cases. See [I1](implementation_plan_i1.md) for the index and CI contract.
 
 ## Base runtime and resource conversion
 
@@ -46,3 +46,13 @@ Select **Run local** to start the app and open a managed browser with the Agent 
 ## Later dynamic inspection
 
 - [ ] After this static viewer and application/E2E evidence are delivered, extend this same host with [historical, recorded and live execution overlays](implementation_plan_b1c.md). Freeze attribution seams during runtime work; full inspection remains late before profiling. Static viewing retains its no-execution/no-auth behavior.
+
+## Declaration and diagram compatibility checkpoint
+
+- [ ] Prove that diagram generation and browser presentation preserve the admitted executable graph: selected nodes, effective routes, ordered prompts, schemas, bindings, timeouts and overrides. Exercise root and nested documents, source and relocated installed packages, and declared replacements. Reject unsupported presentation markup explicitly; never silently reinterpret it as executable declarations.
+- [ ] Use causal controls for altered executable content, stale or substituted diagrams and changed unselected originals. Demonstrate that viewing performs no native graph execution or authentication and leaves source and installed files unchanged.
+- [ ] Revisit human acceptance of the concrete declaration format and execution evidence together with the completed diagram viewer. Existing preparation approval and absence of a reported blocking issue do not constitute this acceptance. Application lifecycle acceptance remains separate.
+
+## Static document and freshness decision
+
+- [ ] Deliver [portable static documents and markup-based diagram freshness](implementation_plan_b1a1.md). Freshness compares canonical declaration/resource inputs and projected PlantUML, independently of platform font geometry. SVG safety and graphic integrity remain separate checks. Static browser opening requires no generator, server, container or bundled font.

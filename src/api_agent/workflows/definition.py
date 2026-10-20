@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 from weakref import WeakKeyDictionary
 
 from .layout import Layout, LayoutError, Step, _COLUMNS, _ID, _MD, _validate
+from .document_format import extract_document, validate_presentation_location
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class WorkflowDefinition:
     definition_id: str
     layout: Layout
     contents: object
+    selected_declarations: object = None
 
     def verify_native_sources(self):
         """Reject a source change before importing its admitted native binding."""
@@ -156,17 +158,16 @@ def load_native_catalog(definition: WorkflowDefinition, source: Path, *, reporti
 
 
 def _sections(path, data):
-    try:
-        text = data.decode('utf-8')
-    except UnicodeError as error:
-        raise LayoutError(f'{path}:1: invalid UTF-8') from error
+    extracted = extract_document(data, path=path)
+    text = extracted.executable_bytes.decode('utf-8')
     lines = text.splitlines()
+    line_map = extracted.line_map
     if not lines:
         raise LayoutError(f'{path}:1: empty declaration')
     tokens = _MD.parse(text)
     if any(item.type in ('html_block', 'html_inline')
            for token in tokens for item in (token, *(token.children or ()))):
-        raise LayoutError(f'{path}:1: HTML is unsupported in workflow declarations')
+        raise LayoutError(f'{path}:{line_map[0]}: HTML is unsupported in workflow declarations')
     headings = []
     for index, token in enumerate(tokens):
         if token.type != 'heading_open':
@@ -174,21 +175,21 @@ def _sections(path, data):
         start = token.map[0]
         content = tokens[index + 1]
         if content.type != 'inline' or any(child.type != 'text' for child in content.children or ()):
-            raise LayoutError(f'{path}:{start + 1}: heading must be plain text')
+            raise LayoutError(f'{path}:{line_map[start]}: heading must be plain text')
         headings.append((start, token.tag, content.content))
     if not headings or headings[0][0] != 0 or headings[0][1] != 'h1':
-        raise LayoutError(f'{path}:1: expected version heading')
+        raise LayoutError(f'{path}:{line_map[0]}: expected version heading')
     title = lines[0]
     sections = {}
     if any(line.strip() for line in lines[1:headings[1][0] if len(headings) > 1 else len(lines)]):
-        raise LayoutError(f'{path}:1: content before section')
+        raise LayoutError(f'{path}:{line_map[0]}: content before section')
     for index, (start, tag, heading) in enumerate(headings[1:], 1):
         if tag != 'h2' or not _SECTION.fullmatch(lines[start]):
-            raise LayoutError(f'{path}:{start + 1}: unknown heading')
+            raise LayoutError(f'{path}:{line_map[start]}: unknown heading')
         if heading in sections:
-            raise LayoutError(f'{path}:{start + 1}: duplicate section {heading}')
+            raise LayoutError(f'{path}:{line_map[start]}: duplicate section {heading}')
         stop = headings[index + 1][0] if index + 1 < len(headings) else len(lines)
-        sections[heading] = [(line + 1, lines[line]) for line in range(start + 1, stop)]
+        sections[heading] = [(line_map[line], lines[line]) for line in range(start + 1, stop)]
     return title, sections
 
 
@@ -244,6 +245,8 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             root_id = 'base' if path.is_relative_to(roots['base']) else 'pack'
         if path not in captured:
             data = _read_bounded(path, roots[root_id])
+            if kind == 'declaration':
+                validate_presentation_location(data, path=path, root=roots[root_id])
             if sum(len(item[1]) for item in captured.values()) + len(data) > _MAX_SNAPSHOT_BYTES:
                 raise LayoutError(f'{path}:1: workflow snapshot exceeds 64 MiB')
             captured[path] = (kind, data)
@@ -294,6 +297,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
         seen.add(replacement.target_id)
     resolved = []
     declarations = {}
+    selected_declarations = {}
     def visit_flow(owner, section, parent=None, depth=0):
         if depth > 64:
             raise LayoutError(f'{owner}:1: component nesting exceeds 64 levels')
@@ -332,6 +336,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                     raise LayoutError(f'{entry}:1: replacement declaration must end .md.html')
             step = Step(identifier, kind, parent, declaration, number)
             resolved.append(step)
+            selected_declarations[identifier] = (owner, number, declaration)
             title, child_sections = _sections(declaration, captured[declaration][1])
             if title != f'# {kind.title()} v2: {identifier}':
                 raise LayoutError(f'{declaration}:1: declaration identity mismatch')
@@ -441,4 +446,5 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                 'replacements': [(item.target_id, item.root_id, Path(item.entry).as_posix()) for item in replacements]}
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
-                              layout, MappingProxyType({path: data for path, (_, data) in captured.items()}))
+                              layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
+                              MappingProxyType(selected_declarations))

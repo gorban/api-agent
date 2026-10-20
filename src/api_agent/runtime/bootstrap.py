@@ -32,6 +32,32 @@ def _extract_option(argv, names):
     return remaining, selected
 
 
+def _extract_view_flow(argv):
+    """Select the standalone viewer before unrelated execution configuration."""
+    remaining = []
+    selected = False
+    for token in argv:
+        if token == '--view-flow':
+            if selected:
+                raise ValueError('Duplicate --view-flow')
+            selected = True
+        elif token.startswith('--view-flow='):
+            raise ValueError('--view-flow does not accept a value')
+        else:
+            remaining.append(token)
+    return remaining, selected
+
+
+def _validate_view_flow_arguments(argv):
+    allowed = {'--debug', '--no-std-in', '--help', '-h'}
+    for token in argv:
+        if token in allowed or token in {'--debug=True', '--debug=False', '--no-std-in=True', '--no-std-in=False'}:
+            continue
+        if token == '--' or not token.startswith('-'):
+            raise ValueError('--view-flow does not accept test selectors')
+        raise ValueError(f'--view-flow conflicts with {token.partition("=")[0]}')
+
+
 def _bind_runtime_directory(context, argv, environ):
     """Only a pack launcher selects code through API_AGENT_DIR."""
     from dataclasses import replace
@@ -126,6 +152,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     argv = list(sys.argv[1:] if argv is None else argv)
     handoff_options = {'replace_process': True} if _replace_process else {}
     try:
+        argv, view_flow_requested = _extract_view_flow(argv)
         argv, origin = _extract_option(argv, {'--_launcher-root'})
         if origin is not None:
             launcher_root = Path(origin).expanduser().resolve()
@@ -145,9 +172,25 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             base_root = candidate
         context = load_launch_context(Path(base_root).resolve(), resource_pack_dir, launcher_root)
         context = _bind_runtime_directory(context, argv, os.environ)
+        from api_agent.runtime.hook_assurance import assure_hook
+        assure_hook(context.base_root)
         if not _worktrees_verified:
             verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout,
                              resource_pack_name=context.pack_id if context.external_pack else None)
+        if view_flow_requested:
+            view_arguments, _ = _extract_option(argv, {'--api-agent-dir', '--api_agent_dir'})
+            _validate_view_flow_arguments(view_arguments)
+            if '--help' in view_arguments or '-h' in view_arguments:
+                print('Usage: ./launch.py --view-flow [--resource-pack-dir PATH] [--debug] [--no-std-in]\n'
+                      'Open the selected workflow in a managed headed browser without app or provider startup.\n'
+                      'Requires Python 3.13 or newer; browser prerequisites are prepared only when viewing.')
+                return 0
+            from api_agent.runtime.dependencies import ensure_environment
+            status = ensure_environment(context, ['--view-flow', *argv], groups=('browser',), **handoff_options)
+            if status is not None:
+                return status
+            from api_agent.runtime.view_flow import run_view_flow
+            return run_view_flow(context)
         shared = load_shared_schema(context.base_root)
         schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
                                 overrides=context.defaults)
@@ -358,6 +401,7 @@ def _colored(text, code, enabled):
 def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color=False):
     """Show CLI behavior and deliberate callouts; declarations own full config docs."""
     lines = ['Usage: ./launch.py [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
+    lines.append('  --view-flow: open the selected workflow in a managed headed browser without starting the app or providers.')
     callouts = {
         'HELP': '-h, --help: print help without execution configuration validation.',
         'NO_STD_IN': '--no-std-in: disable interactive input except explicit worktree and multi-test DEBUG safety confirmations.',

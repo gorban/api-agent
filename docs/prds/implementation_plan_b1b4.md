@@ -37,4 +37,4 @@ The stateful runtime, source/dependency admission and selected-library delivery 
 
 - [x] Complete external code review of the runtime and provenance repairs.
 - [x] Complete final qualified-data and delivery review, including renewed installed artifacts.
-- [ ] Human acceptance of stateful execution and selected-library behavior.
+- [ ] Human acceptance of stateful execution and selected-library behavior, deferred until the declaration/diagram compatibility and viewer checkpoint in [B1a](implementation_plan_b1a.md).

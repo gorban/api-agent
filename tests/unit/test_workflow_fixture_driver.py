@@ -496,3 +496,23 @@ def test_source_identity_receipt_cannot_admit_old_or_unrelated_drift(source, sou
     report['sources'][source] = source_hash
     with pytest.raises(ValueError, match='stale'):
         validate_calibration(report, DECLARED, fingerprint)
+
+
+def test_presentation_parser_change_invalidates_saved_sampling(monkeypatch):
+    source = 'src/api_agent/workflows/document_format.py'
+    report = synthetic_current_report()
+    parser_path = Path(driver.__file__).with_name('document_format.py')
+    assert report['sources'][source] == sha256(parser_path.read_bytes()).hexdigest()
+    original_digest = driver.sampling_digest
+
+    def changed_parser_digest(path):
+        if Path(path).name == 'document_format.py':
+            return '0' * 64
+        return original_digest(path)
+
+    monkeypatch.setattr(driver, 'sampling_digest', changed_parser_digest)
+    changed = driver.fingerprint('gpt-6-luna', CONFIG)
+
+    assert changed['sources'][source] != report['sources'][source]
+    with pytest.raises(ValueError, match='stale'):
+        validate_calibration(report, DECLARED, changed)
