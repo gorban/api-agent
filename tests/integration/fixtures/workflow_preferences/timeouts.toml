@@ -7,6 +7,12 @@ default = 20.0
 validation = "positive"
 help = "Whole fixture deadline in seconds."
 
+[fields.WORKFLOW_MAX_PASSES]
+type = "int"
+default = 2
+validation = "positive"
+help = "Maximum passes through the answer component before rejection exhausts it."
+
 [fields.WORKFLOW_COMPONENT_TIMEOUT_SECONDS]
 type = "float"
 default = 10.0

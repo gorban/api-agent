@@ -42,13 +42,24 @@
 
 | ID | Max passes | Guard |
 | --- | --- | --- |
-| first | 2 | first_guard |
+| first | [WORKFLOW_MAX_PASSES](../../../cfg/config.toml) | first_guard |
 
 ## Timeouts
 
 | Owner | Source | Key |
 | --- | --- | --- |
 | first | [configuration](../../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+
+## Notes
+
+Node functions receive `context.attempt` (1-based) and
+`context.max_passes`. These reset for each invocation of this component.
+The linked Components setting defaults to 2 passes; the effective limit is
+resolved from configuration for each run.
+
+The guard route `.accepted` reads the Boolean output of its source node.
+Acceptance exits the component; rejection retries while another pass is
+available and otherwise terminates with exhaustion.
 
 ## Node: first_draft
 

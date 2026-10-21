@@ -15,6 +15,14 @@ validation = "positive"
 acknowledge_default = false
 help = "Contrived producer inference timeout in seconds, clipped to enclosing deadlines."
 
+[fields.WORKFLOW_MAX_PASSES]
+type = "int"
+override = true
+default = 2
+validation = "positive"
+acknowledge_default = false
+help = "Maximum passes through a guarded demo component before rejection exhausts it."
+
 [fields.WORKFLOW_COMPONENT_TIMEOUT_SECONDS]
 type = "float"
 override = true

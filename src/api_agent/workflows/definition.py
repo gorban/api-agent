@@ -466,6 +466,14 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                 return True
             identifier = parents.get(identifier)
         return False
+    for row in tables['Components']:
+        value = row['Max passes']
+        if value.startswith('['):
+            match = _LINK.fullmatch(value)
+            if match is None:
+                raise LayoutError(f'{row.get("_owner", entry)}:{row["line"]}: invalid Max passes link')
+            row['max_passes_key'] = match.group(1)
+            row['max_passes_link'] = link(row.get('_owner', entry), value, 'configuration')
     for name in ('Functions', 'Prompts', 'Timeouts'):
         for row in tables[name]:
             owner = row.get('_owner', entry)

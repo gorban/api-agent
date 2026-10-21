@@ -15,7 +15,7 @@ from .clipboard import ClipboardError, copy_text
 class LogScreen(ModalScreen):
     BINDINGS = [Binding('escape,c', 'close', 'Close', priority=True),
                 Binding('q,ctrl+q', 'quit_request', 'Quit', priority=True),
-                Binding('ctrl+c,super+c', 'copy_selected', 'Copy selection', priority=True)]
+                Binding('ctrl+c', 'copy_selected', 'Copy selection', priority=True)]
     DEFAULT_CSS = '''
     LogScreen { align: center middle; }
     #log-page { width: 95%; height: 95%; border: round $accent; background: $surface; }

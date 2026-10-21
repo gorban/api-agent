@@ -12,7 +12,7 @@ from test_auth_setup import WizardApp
 
 
 @pytest.mark.parametrize('view', ['review-help', 'cleanup-help', 'setting-edit', 'manager-edit'])
-@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('win32', 'ctrl+c', '^c'), ('darwin', 'super+c', '⌘c')])
+@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('win32', 'ctrl+c', '^c'), ('darwin', 'ctrl+c', '^c')])
 def test_readonly_selection_copies_exact_text_and_keeps_editor_state(tmp_path, monkeypatch, view, platform, key, label):
     async def scenario():
         description = 'Use https://openrouter.ai/api/v1 for a matching personal key.'
@@ -46,7 +46,7 @@ def test_readonly_selection_copies_exact_text_and_keeps_editor_state(tmp_path, m
             screen.refresh_bindings()
             before_values = app.session.result(_review=True).values.copy()
             input_value = screen.query_one(editable, Input).value if editable else None
-            assert not screen.check_action('copy_selected_text' if platform == 'darwin' else 'copy_value', ())
+            assert not screen.check_action('copy_value', ())
             # Actual mouse selection, not a mocked selection getter.
             expected = (str(screen.query_one(selector, Static).content) if view == 'manager-edit'
                         else 'https://openrouter.ai/api/v1')
@@ -61,12 +61,6 @@ def test_readonly_selection_copies_exact_text_and_keeps_editor_state(tmp_path, m
             await pilot.pause()
             selected = screen.get_selected_text()
             assert selected == expected
-            if platform == 'darwin':
-                await pilot.press('ctrl+c')
-                copied.assert_not_awaited()
-                if view == 'setting-edit':
-                    assert any(call.kwargs.get('title') == 'Do you want to quit?' for call in notify.call_args_list)
-                assert screen.get_selected_text() == selected
             hints = [hint for hint in screen.query(FooterKey) if hint.description == 'Copy value']
             assert len(hints) == 1 and hints[0].key_display == label
             await pilot.press(key)
@@ -77,7 +71,7 @@ def test_readonly_selection_copies_exact_text_and_keeps_editor_state(tmp_path, m
                 assert screen.query_one(editable, Input).value == input_value
             else:
                 assert screen.query_one('#setting-help-close').has_focus
-            assert not screen.check_action('copy_selected_text' if platform == 'darwin' else 'copy_value', ())
+            assert not screen.check_action('copy_value', ())
             assert not (tmp_path / '.env').exists()
     asyncio.run(scenario())
 

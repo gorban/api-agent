@@ -1,6 +1,7 @@
 """A restricted structural Markdown grammar with source-located diagnostics."""
 from dataclasses import dataclass
 import json
+import tomllib
 from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit
@@ -171,7 +172,13 @@ def load_layout(path, *, base_root, pack_root):
                 values = {}
                 line = cells[0].map[0] + 1
                 for column, cell in zip(columns, cells):
-                    if column in ('File', 'Source', 'Input', 'Output') and name != 'Bindings':
+                    if column == 'Max passes' and name == 'Components' and cell.children and cell.children[0].type == 'link_open':
+                        label, source = _link(cell, path, pack_root, roots)
+                        files.add(source)
+                        values[column] = label
+                        values['max_passes_key'] = label
+                        values['max_passes_link'] = source
+                    elif column in ('File', 'Source', 'Input', 'Output') and name != 'Bindings':
                         _, source = _link(cell, path, pack_root, roots, prompt=column == 'File')
                         files.add(source)
                         values[column] = source
@@ -251,14 +258,36 @@ def _validate(layout, resource_bytes=None):
                 row[column + ' schema'] = schema
         except (OSError, ValueError, AttributeError, SchemaError) as error:
             layout.error(str(error), row['line'])
+    pass_sources = {}
     for row in layout.tables['Components']:
-        if not re.fullmatch(r'[1-9][0-9]*', row['Max passes']):
-            layout.error('Max passes must be a positive integer', row['line'])
-        if (len(row['Max passes']) > len(str(MAX_COMPONENT_PASSES))
-                or int(row['Max passes']) > MAX_COMPONENT_PASSES):
-            layout.error(f'Max passes must be at most {MAX_COMPONENT_PASSES}', row['line'])
+        if 'max_passes_link' in row:
+            key, source = row['max_passes_key'], row['max_passes_link']
+            if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', key):
+                layout.error('Max passes link requires an uppercase configuration key', row['line'])
+            if key in pass_sources and pass_sources[key] != source:
+                layout.error('Max passes key has conflicting configuration sources', row['line'])
+            pass_sources[key] = source
+            try:
+                from api_agent.config.declarations import schema_from_dict, UNSET
+                data = (resource_bytes[source] if resource_bytes is not None else source.read_bytes())
+                schema = schema_from_dict(tomllib.loads(data.decode('utf-8')))
+                field = schema.fields.get(key)
+                if field is None or field.type != 'int' or type(field.default) is not int:
+                    raise ValueError('Max passes requires a declared integer default')
+                maximum = field.default
+            except (OSError, UnicodeError, ValueError, KeyError) as error:
+                layout.error(f'Max passes declaration: {error}', row['line'])
+        else:
+            if not re.fullmatch(r'[1-9][0-9]*', row['Max passes']):
+                layout.error('Max passes must be a positive integer', row['line'])
+            if len(row['Max passes']) > len(str(MAX_COMPONENT_PASSES)):
+                layout.error(f'Max passes must be at most {MAX_COMPONENT_PASSES}', row['line'])
+            maximum = int(row['Max passes'])
+        if not 1 <= maximum <= MAX_COMPONENT_PASSES:
+            layout.error(f'Max passes must be at most {MAX_COMPONENT_PASSES} and positive', row['line'])
+        row['max_passes_default'] = maximum
         if row['Guard'] == '-':
-            if row['Max passes'] != '1':
+            if maximum != 1:
                 layout.error('Unguarded components require exactly one pass', row['line'])
             continue
         guard = steps.get(row['Guard'])
@@ -294,6 +323,9 @@ def _validate(layout, resource_bytes=None):
     edge_groups = {}
     for row in layout.tables['Edges']:
         source, target = row['From'], row['To']
+        guard_ids = {component['Guard'] for component in layout.tables['Components'] if component['Guard'] != '-'}
+        if source in guard_ids and (row['When'] != 'always' or target != 'END'):
+            layout.error('guard node may only declare always to END', row['line'])
         if source not in steps or (target != 'END' and (target not in steps or steps[target].parent != steps[source].parent)):
             layout.error('edges must connect siblings or their END', row['line'])
         if target != 'END' and ordered.index(target) <= ordered.index(source):

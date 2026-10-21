@@ -141,7 +141,7 @@ def test_mouse_selected_summary_is_copied_and_visibly_deselected(tmp_path, monke
 
 @pytest.mark.parametrize('kind', ['test-results', 'test-failure'])
 @pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
-@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('darwin', 'super+c', '⌘c')])
+@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('darwin', 'ctrl+c', '^c')])
 def test_result_copy_footer_and_test_name_fallback(tmp_path, monkeypatch, kind, mode, platform, key, label):
     async def scenario():
         app = fixture(tmp_path)
@@ -278,7 +278,7 @@ def test_empty_results_copy_only_highlighted_summary(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
-@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'super+c')])
+@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'ctrl+c')])
 def test_initial_picker_copy_only_while_table_focused(tmp_path, monkeypatch, mode, platform, key):
     async def scenario():
         tests = tuple(test.identity for test in outcomes(('passed', 'passed')))
@@ -318,7 +318,7 @@ def test_initial_picker_copy_only_while_table_focused(tmp_path, monkeypatch, mod
 
 
 @pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
-@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'super+c')])
+@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'ctrl+c')])
 @pytest.mark.parametrize('partial', [False, True])
 def test_copy_result_selection_then_deselects(tmp_path, monkeypatch, mode, platform, key, partial):
     async def scenario():
@@ -351,7 +351,7 @@ def test_copy_result_selection_then_deselects(tmp_path, monkeypatch, mode, platf
     asyncio.run(scenario())
 
 
-def test_mac_control_c_keeps_quit_hint_and_copy_failure_keeps_selection(tmp_path, monkeypatch):
+def test_mac_control_c_copy_failure_keeps_selection_without_quit_hint(tmp_path, monkeypatch):
     async def scenario():
         app = fixture(tmp_path)
         copy = AsyncMock(side_effect=ClipboardError('synthetic-private'))
@@ -366,16 +366,14 @@ def test_mac_control_c_keeps_quit_hint_and_copy_failure_keeps_selection(tmp_path
             notify = Mock()
             monkeypatch.setattr(app, 'notify', notify)
             await pilot.press('ctrl+c')
-            copy.assert_not_awaited()
-            assert any(call.kwargs.get('title') == 'Do you want to quit?' for call in notify.call_args_list)
-            await pilot.press('super+c')
             copy.assert_awaited_once_with(app, 'Selected details')
+            assert not any(call.kwargs.get('title') == 'Do you want to quit?' for call in notify.call_args_list)
             assert screen.get_selected_text() == 'Selected details'
             notify.assert_called_with('Could not copy the value.', severity='error', timeout=2)
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('darwin', 'super+c', '⌘c')])
+@pytest.mark.parametrize('platform,key,label', [('linux', 'ctrl+c', '^c'), ('darwin', 'ctrl+c', '^c')])
 def test_execution_error_screen_shares_copy_and_mouse_selection(tmp_path, monkeypatch, platform, key, label):
     async def scenario():
         app = fixture(tmp_path)

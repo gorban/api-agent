@@ -1,5 +1,6 @@
 """Declared routing and controller decisions remain data only."""
 import asyncio
+from copy import deepcopy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from api_agent.workflows.execution import NodeFunction, Workflow, diagram_layout
 from api_agent.workflows.layout import Layout, Step
 from api_agent.workflows.predicates import predicate_fields
 from api_agent.workflows.predicates import edge_label
+from api_agent.workflows.journal import _condition_label
 
 
 FIELDS = {'first_draft': {'route': {'type': 'string'}, 'ready': {'type': 'boolean'}}}
@@ -24,6 +26,101 @@ def test_bounded_predicate_evaluates_declared_route():
 
     assert predicate.evaluate({'first_draft': {'route': 'skip'}}) is True
     assert predicate.evaluate({'first_draft': {'route': 'next'}}) is False
+
+
+def test_dotted_and_source_relative_routes_use_declared_output():
+    source = Path(__file__).resolve()
+    layout = Layout(source, (Step('first_draft', 'node', None, source, 1),),
+                    {'Functions': [{'ID': 'first_draft', 'Output schema': {
+                        'type': 'object', 'properties': {
+                            'route': {'type': 'string'}, 'accepted': {'type': 'boolean'},
+                            'detail': {'type': 'object', 'properties': {'ready': {'type': 'boolean'}}}}}}],
+                     'Bindings': []}, ())
+    fields = predicate_fields(layout, 'first_draft')
+
+    assert parse_predicate('first_draft.route == "skip"', fields).evaluate(
+        {'first_draft': {'route': 'skip'}}) is True
+    assert parse_predicate('not .accepted', fields).evaluate(
+        {'first_draft': {'accepted': False}}) is True
+    assert parse_predicate('.detail.ready', fields).evaluate(
+        {'first_draft': {'detail': {'ready': True}}}) is True
+
+
+def test_source_relative_field_requires_unique_declared_component_output():
+    source = Path(__file__).resolve()
+    output = {'type': 'object', 'properties': {'accepted': {'type': 'boolean'}}}
+    layout = Layout(source, (Step('review', 'component', None, source, 1),
+                             Step('check_a', 'node', 'review', source, 1),
+                             Step('check_b', 'node', 'review', source, 1)),
+                    {'Functions': [{'ID': key, 'Output schema': output} for key in ('check_a', 'check_b')],
+                     'Bindings': []}, ())
+
+    with pytest.raises(PredicateError, match='one declared output'):
+        parse_predicate('.accepted', predicate_fields(layout, 'review'))
+
+
+def test_component_cannot_implicitly_read_its_only_child_output():
+    source = Path(__file__).resolve()
+    layout = Layout(source, (Step('review', 'component', None, source, 1),
+                             Step('check', 'node', 'review', source, 1)),
+                    {'Functions': [{'ID': 'check', 'Output schema': {
+                        'type': 'object', 'properties': {'accepted': {'type': 'boolean'}}}}],
+                     'Bindings': []}, ())
+
+    with pytest.raises(PredicateError, match='one declared output'):
+        parse_predicate('not .accepted', predicate_fields(layout, 'review'))
+    assert parse_predicate('not check.accepted', predicate_fields(layout, 'review')).evaluate(
+        {'check': {'accepted': False}}) is True
+
+
+def test_bare_context_fields_are_boolean_only_when_compared():
+    assert parse_predicate('attempt < max_passes', FIELDS).evaluate({}, attempt=1, max_passes=2) is True
+    with pytest.raises(PredicateError, match='Boolean'):
+        parse_predicate('attempt', FIELDS)
+
+
+def test_declared_pass_constant_is_bounded_and_scoped():
+    source = Path(__file__).resolve()
+    layout = Layout(source, (Step('review', 'component', None, source, 1),
+                             Step('check', 'node', 'review', source, 1),
+                             Step('outside', 'node', None, source, 1)),
+                    {'Components': [{'ID': 'review', 'max_passes_key': 'WORKFLOW_MAX_PASSES'}],
+                     'Functions': [{'ID': 'check', 'Output schema': {'type': 'object', 'properties': {}}},
+                                   {'ID': 'outside', 'Output schema': {'type': 'object', 'properties': {}}}],
+                     'Bindings': []}, ())
+    predicate = parse_predicate('attempt < WORKFLOW_MAX_PASSES', predicate_fields(layout, 'check'))
+
+    assert predicate.evaluate({}, attempt=1, constants={'WORKFLOW_MAX_PASSES': 2}) is True
+    assert predicate.evaluate({}, attempt=2, constants={'WORKFLOW_MAX_PASSES': 2}) is False
+    with pytest.raises(PredicateError, match='invalid value'):
+        predicate.evaluate({}, constants={'WORKFLOW_MAX_PASSES': True})
+    with pytest.raises(PredicateError):
+        parse_predicate('attempt < WORKFLOW_MAX_PASSES', predicate_fields(layout, 'outside'))
+
+
+@pytest.mark.parametrize('alias', ['__route_source__', '__route_constants__',
+                                  '__ｒｏｕｔｅ_ｓｏｕｒｃｅ__', '__ｒｏｕｔｅ_ｃｏｎｓｔａｎｔｓ__'])
+def test_internal_alias_cannot_be_authored(alias):
+    with pytest.raises(PredicateError, match='reserved'):
+        parse_predicate(alias + '.route == "skip"', FIELDS)
+
+
+@pytest.mark.parametrize('condition', ['.accepted', 'not .accepted',
+                                       'first_draft.route == "skip"', 'attempt < max_passes'])
+def test_journal_accepts_bounded_new_condition_labels(condition):
+    assert _condition_label(condition) is True
+
+
+@pytest.mark.parametrize('expression', [
+    'first_draft.route.upper() == "SKIP"',
+    'first_draft.__class__ == "x"',
+    'first_draft["route"][0] == "s"',
+    '.route == "skip"',
+    'first_draft.route',
+])
+def test_dotted_access_rejects_undeclared_or_non_boolean_reads(expression):
+    with pytest.raises(PredicateError):
+        parse_predicate(expression, FIELDS)
 
 
 def test_missing_producer_cannot_satisfy_inequality():
@@ -99,6 +196,24 @@ def test_compiled_branch_fails_if_predicate_producer_was_skipped():
         asyncio.run(workflow.arun({'route': 'skip'}))
     values = asyncio.run(workflow.arun({'route': 'include'}))
     assert values['route_optional'] == {'flag': 'other'}
+
+
+def test_same_relative_condition_is_compiled_for_each_routing_source():
+    baseline = _branch_workflow()
+    tables = deepcopy(baseline.layout.tables)
+    tables['Edges'] = [
+        {'From': 'route_start', 'To': 'route_optional', 'When': '.flag == "skip"', 'line': 1},
+        {'From': 'route_start', 'To': 'route_final', 'When': 'otherwise', 'line': 1},
+        {'From': 'route_optional', 'To': 'route_final', 'When': '.flag == "skip"', 'line': 1},
+        {'From': 'route_optional', 'To': 'END', 'When': 'otherwise', 'line': 1},
+    ]
+    layout = Layout(baseline.layout.path, baseline.layout.steps, tables, ())
+    workflow = Workflow(layout, baseline.registry)
+
+    assert set(workflow._predicates) == {
+        ('route_start', '.flag == "skip"'), ('route_optional', '.flag == "skip"')}
+    assert asyncio.run(workflow.arun({'route': 'skip'}))['route_optional'] == {'flag': 'other'}
+    assert 'route_optional' not in asyncio.run(workflow.arun({'route': 'include'}))
 
 
 def test_registered_callable_cannot_override_declared_expression():
@@ -224,8 +339,11 @@ def test_admitted_comparison_and_boolean_decisions(expression, values, expected)
 
 
 @pytest.mark.parametrize('expression', [
-    'first_draft.route == "skip"',
     '__import__("os") == "x"',
+    '(first_draft.route == "skip"',
+    '(first_draft or other).ready',
+    'unknown == 1',
+    'first_draft.route.ready == True',
     'first_draft["missing"] == "skip"',
     'first_draft["route"] = "skip"',
     'first_draft["route"] == "skip" or True',
@@ -233,6 +351,35 @@ def test_admitted_comparison_and_boolean_decisions(expression, values, expected)
 def test_predicate_rejects_unadmitted_expression(expression):
     with pytest.raises(PredicateError):
         parse_predicate(expression, FIELDS)
+
+
+def test_declared_boolean_route_rejects_non_boolean_runtime_value():
+    predicate = parse_predicate('not first_draft.ready', FIELDS)
+
+    with pytest.raises(PredicateError, match='Boolean field has invalid value'):
+        predicate.evaluate({'first_draft': {'ready': 'false'}})
+
+
+def test_declared_scalar_route_rejects_container_runtime_value():
+    predicate = parse_predicate('first_draft.route == "skip"', FIELDS)
+
+    with pytest.raises(PredicateError, match='invalid scalar value'):
+        predicate.evaluate({'first_draft': {'route': {'value': 'skip'}}})
+
+
+def test_retained_condition_accepts_config_name_without_runtime_values():
+    assert _condition_label('attempt < WORKFLOW_MAX_PASSES') is True
+
+
+def test_source_relative_runtime_read_requires_its_bound_producer():
+    source = Path(__file__).resolve()
+    output = {'type': 'object', 'properties': {'accepted': {'type': 'boolean'}}}
+    layout = Layout(source, (Step('check', 'node', None, source, 1),),
+                    {'Functions': [{'ID': 'check', 'Output schema': output}], 'Bindings': []}, ())
+    predicate = parse_predicate('.accepted', predicate_fields(layout, 'check'))
+
+    with pytest.raises(PredicateError, match='was not produced'):
+        predicate.evaluate({})
 
 
 def test_controller_has_bounded_retry_and_terminal_exhaustion():
@@ -297,8 +444,8 @@ def test_compiled_format_rejection_retries_with_feedback_then_accepts():
     assert 'final_output' in requests[1]['feedback']['reason']
     assert requests[1]['previous']['route'] == 'skip'
     assert [event['condition'] for event in events if event['event'] == 'edge' and event['source'] == 'first'] == [
-        'first_draft["route"] == "skip"']
-    assert 'first -->|first_draft["route"] == "skip"| GRAPH_END' in workflow.diagram()
+        'first_draft.route == "skip"']
+    assert 'first -->|first_draft.route == "skip"| GRAPH_END' in workflow.diagram()
     starts = [event for event in events if event['event'] == 'scope_start']
     graph_scope = next(event for event in starts if event['owner'] == 'GRAPH')
     component_scope = next(event for event in starts if event['owner'] == 'first')

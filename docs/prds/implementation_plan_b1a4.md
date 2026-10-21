@@ -39,3 +39,7 @@ This revision follows renewed presentation review. Preserve earlier accepted exe
 - [x] Apply one shared guarded-component pass limit of 99 at both declaration admission and journal validation. Reject 100 before execution; prove a successful recorded run at 99 remains valid through retained-evidence validation.
 
 Technical source, qualification and delivery checks are complete. Direct-file, repository-platform and combined declaration/diagram acceptance remain unchecked above. The separately planned [native Allure scope projection repair](implementation_plan_b1c1a1.md) retains its own open presentation gate; correct journals/accounting do not establish a duplicate-free native step view.
+
+## Diagram readability follow-through
+
+The subsequent [readability and route-context requirements](implementation_plan_b1a5.md) supersede this slice's SVG-only attempt/budget annotations. Earlier source closure remains valid for its delivered scope. The new layout/notation technical follow-through is reviewed; its final human presentation gate remains open.

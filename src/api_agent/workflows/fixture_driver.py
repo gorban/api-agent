@@ -16,7 +16,7 @@ from api_agent.testing.inference_usage import user_turn
 from .contrived import build
 from .definition import load_definition
 from .evidence import publish
-from .execution import resolve_timeouts
+from .execution import resolve_component_passes, resolve_timeouts
 from .sampling import DECLARED, cover, validate_calibration
 
 USER_INPUT = 'Repeat this demo request verbatim: hello Markdown graph.'
@@ -91,6 +91,7 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
     definition = load_definition(base / 'demo/contrived/flow.md.html', base_root=base,
                                  pack_root=base / 'demo')
     timeouts, _ = resolve_timeouts(definition.layout, config, definition)
+    component_passes, _ = resolve_component_passes(definition.layout, config)
     sources.update({resource.logical_path: resource.sha256 for resource in definition.resources})
     backend = {'auth_mode': config.get('GPT_AUTH_MODE', 'subscription'),
                'backend_identity': sha256(str(config.get('GPT_BASE_URL', 'https://api.openai.com/v1')).encode()).hexdigest()}
@@ -102,7 +103,7 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
         effective_settings={'temperature': None, 'max_output_tokens': None,
             'cache_policy': config.get('LLM_CACHE_POLICY') or None,
             'reasoning_effort': config.get('LLM_REASONING_EFFORT') or None,
-            'api_mode': config.get('GPT_API_MODE'), 'retries': {'first': 2, 'second': 2},
+            'api_mode': config.get('GPT_API_MODE'), 'retries': component_passes,
             'llm_timeout': config.get('WORKFLOW_LLM_TIMEOUT_SECONDS', 120),
             'node_timeout': None,
             'component_timeout': {name: timeouts.get(name) for name in ('first', 'second')},

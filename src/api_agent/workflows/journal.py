@@ -95,7 +95,7 @@ def _capture_contract(value, depth=0):
             or type(value) is str and len(value) <= 512)
 
 
-def projection(definition):
+def projection(definition, *, component_passes=None):
     """Describe the admitted selection without exposing machine paths or source text."""
     if definition is None:
         raise ValueError('An admitted workflow definition is required')
@@ -117,9 +117,22 @@ def projection(definition):
                 edges.append(dict(owner=owner, source=step.id,
                                   target=children[index + 1].id if index + 1 < len(children) else 'END',
                                   condition='always', implicit=True))
+    declared = {row['ID']: row for row in definition.layout.tables.get('Components', ())}
+    if component_passes is not None and set(component_passes) != set(declared):
+        raise ValueError('Effective component pass limits differ from admitted components')
+    effective = (component_passes if component_passes is not None else
+                 {name: (row['max_passes_default'] if 'max_passes_default' in row
+                         else int(row['Max passes'])) for name, row in declared.items()})
+    if any(type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES
+           or (declared[name]['Guard'] == '-' and value != 1)
+           or ('max_passes_key' not in declared[name]
+               and value != (declared[name]['max_passes_default'] if 'max_passes_default' in declared[name]
+                             else int(declared[name]['Max passes'])))
+           for name, value in effective.items()):
+        raise ValueError('Invalid effective component pass limit')
     result = dict(version=1, graph_id=definition.graph_id, definition_id=definition.definition_id,
                   entry_root=definition.entry_root, steps=steps, edges=edges,
-                  component_passes=[dict(id=row['ID'], max_passes=int(row['Max passes']),
+                  component_passes=[dict(id=row['ID'], max_passes=effective[row['ID']],
                                          guard=row['Guard'])
                                     for row in definition.layout.tables.get('Components', ())],
                   resources=[dict(kind=item.kind, logical_path=item.logical_path,
@@ -298,8 +311,8 @@ class WorkflowJournal:
     """Accept only structural events, scrub before retention, and disclose gaps."""
 
     def __init__(self, definition, *, log_content=False, secrets=(), test_id=None,
-                 source_manifest=None, boundary=None, turn_id=None):
-        self.projection = projection(definition)
+                 source_manifest=None, boundary=None, turn_id=None, component_passes=None):
+        self.projection = projection(definition, component_passes=component_passes)
         self._admitted_edges = {tuple(row[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                                 for row in self.projection['edges']}
         self.invocation_id = str(uuid4())
@@ -462,7 +475,7 @@ class WorkflowJournal:
             return payload
 
 
-def validate_journal(payload, *, expected_definition=None):
+def validate_journal(payload, *, expected_definition=None, expected_component_passes=None):
     """Admit only the already-scrubbed, bounded structural envelope."""
     if type(payload) is not dict or payload.get('version') != 1:
         raise ValueError('Invalid workflow journal version')
@@ -476,7 +489,8 @@ def validate_journal(payload, *, expected_definition=None):
                         'events', 'completeness', 'gap', 'content', 'sha256'}:
         raise ValueError('Unexpected workflow journal field')
     projection_data = payload['projection']
-    if expected_definition is not None and projection_data != projection(expected_definition):
+    if expected_definition is not None and projection_data != projection(
+            expected_definition, component_passes=expected_component_passes):
         raise ValueError('Workflow projection differs from independently admitted definition')
     if (type(projection_data) is not dict or set(projection_data) != {
             'version', 'graph_id', 'definition_id', 'entry_root', 'steps', 'edges', 'component_passes',

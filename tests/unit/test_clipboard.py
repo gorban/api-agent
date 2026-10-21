@@ -74,7 +74,7 @@ def test_terminal_only_without_native_tools(monkeypatch, error):
 @pytest.mark.parametrize('mode', [None, 'config-cleanup'])
 @pytest.mark.parametrize('platform,key,action,label', [
     ('linux', 'ctrl+c', 'copy_value', '^c'),
-    ('darwin', 'super+c', 'copy_selected_text', '⌘c'),
+    ('darwin', 'ctrl+c', 'copy_value', '^c'),
 ])
 def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch, mode, platform, key, action, label):
     async def scenario():
@@ -160,7 +160,7 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize('mode', [None, 'config-cleanup'])
-def test_mac_config_control_c_warns_instead_of_copying(tmp_path, monkeypatch, mode):
+def test_mac_config_control_c_copies_without_quit_warning(tmp_path, monkeypatch, mode):
     async def scenario():
         app = fixture(tmp_path, mode, fields={'VALUE': {'type': 'str', 'default': 'synthetic'}})
         copy = AsyncMock()
@@ -170,13 +170,11 @@ def test_mac_config_control_c_warns_instead_of_copying(tmp_path, monkeypatch, mo
             monkeypatch.setattr('api_agent.tui.app.sys.platform', 'darwin')
             notify = Mock()
             monkeypatch.setattr(app, 'notify', notify)
-            assert not app.screen.check_action('copy_value', ())
-            assert app.screen.check_action('copy_selected_text', ())
+            assert app.screen.check_action('copy_value', ())
+            assert all(binding.key == 'ctrl+c' for binding in app.screen.COPY_BINDINGS)
             await pilot.press('ctrl+c')
-            copy.assert_not_awaited()
-            assert any(call.kwargs.get('title') == 'Do you want to quit?' for call in notify.call_args_list)
-            await pilot.press('super+c')
             copy.assert_awaited_once_with(app, 'synthetic')
+            assert not any(call.kwargs.get('title') == 'Do you want to quit?' for call in notify.call_args_list)
     asyncio.run(scenario())
 
 

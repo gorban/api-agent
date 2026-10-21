@@ -182,7 +182,7 @@ def test_empty_search_shows_selection_error_and_one_letter_match_clears_it(tmp_p
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'super+c')])
+@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'ctrl+c')])
 def test_search_text_copy_precedes_names_and_replacement_restores_names(tmp_path, monkeypatch, platform, key):
     async def scenario():
         tests = identities(4)

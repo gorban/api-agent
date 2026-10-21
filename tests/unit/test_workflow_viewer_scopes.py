@@ -218,13 +218,19 @@ def test_guarded_components_keep_only_their_pass_nodes_and_declared_conditions()
     projection = project_view(definition)
 
     root_source, _ = source_for(projection, 'contrived_qualification')
-    first_source, _ = source_for(projection, 'first')
+    first_source, first_links = source_for(projection, 'first')
 
     assert all(label in {'first · 3 registered nodes', 'second · 3 registered nodes'} for label, _ in rectangles(root_source))
     assert {label for label, _ in rectangles(first_source)} == {'first_draft', 'first_format', 'first_guard'}
     assert len(execution_routes(first_source)) == 4
     assert 'second_draft' not in first_source
-    assert 'first_draft["route"] == "skip"' in root_source
+    assert 'first_draft.route == "skip"' in root_source
+    assert 'not .accepted and attempt < WORKFLOW_MAX_PASSES' in first_source
+    assert 'not .accepted and attempt == WORKFLOW_MAX_PASSES' in first_source
+    assert 'Configuration: WORKFLOW_MAX_PASSES' in first_source
+    assert any('/contracts/' in link and link.endswith('.md.html') for link in first_links)
+    assert next(controller for controller in projection.controllers
+                if controller.component_id == 'first').max_passes_key == 'WORKFLOW_MAX_PASSES'
 
 
 def test_real_v3_router_is_scoped_without_leaking_child_start_end_to_root(tmp_path):
