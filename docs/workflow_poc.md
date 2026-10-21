@@ -3,7 +3,7 @@
 The runtime loads versioned nested declarations from a selected `flow.md.html`,
 captures their resources, and compiles registered LangGraph execution. The
 [declaration grammar](prds/implementation_plan_b1b2.md) defines the inert source
-format and resource bounds. The bundled application is a single chat renderer;
+format and resource bounds. The bundled application is a single chat component with one LLM call;
 the permanent synthetic qualification fixture remains separate under
 `demo/contrived/`. Layout v1 remains for focused compatibility units. Each of two components owns
 its producer, format check, guard and two-pass budget. The model selects the

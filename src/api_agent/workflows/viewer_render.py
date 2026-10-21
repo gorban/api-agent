@@ -194,7 +194,14 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
             href = repositories[owner].link(relative)
         links.add(href)
         if step.kind == "component":
-            lines.append(f'package "{name}" {{')
+            descendants = {step.id}
+            for candidate in projection.steps:
+                if candidate.parent in descendants:
+                    descendants.add(candidate.id)
+            count = sum(candidate.kind == 'node' and candidate.id in descendants
+                        for candidate in projection.steps)
+            label = name + (f' ({count} nodes)' if count >= 2 else '')
+            lines.append(f'package "{label}" {{')
         lines.append(f'rectangle "{name}" as {aliases[step.id]} [[{href}]]')
         details = []
         for reference in projection.references:
@@ -777,10 +784,20 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                    "marked-LICENSE.txt", "dompurify-LICENSE.txt", "PlantUML-NOTICE.txt",
                    "VIEWER-ASSET-NOTICE.txt", "heading-id.js", "svg-links.js",
                    "heading-id-LICENSE.txt", "github-slugger-LICENSE.txt")
-    asset_digest = sha256(b"".join((asset_root / name).read_bytes() for name in asset_names)).hexdigest()
+    asset_bodies = {}
+    for name in asset_names:
+        body = _read_view_file(asset_root / name)
+        if body is None:
+            source = Path(__file__).resolve().parents[3] / ".private_resources/viewer"
+            guidance = ("run npm ci from the repository root to prepare offline frontend assets"
+                        if asset_root == source else
+                        "reinstall api-agent from a complete distribution; installed viewing requires no npm")
+            raise RenderError("workflow viewer dependencies missing; " + guidance)
+        asset_bodies[name] = body
+    asset_digest = sha256(b"".join(asset_bodies.values())).hexdigest()
     for owner in sorted(owners):
         for name in asset_names:
-            body = (asset_root / name).read_bytes()
+            body = asset_bodies[name]
             suffix = name.rsplit(".", 1)[-1]
             content_type = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
                             "txt": "text/plain; charset=utf-8"}[suffix]

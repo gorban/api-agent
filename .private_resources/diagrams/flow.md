@@ -1,4 +1,4 @@
-<!-- api-agent-companion-v1 sha256:1f11eede10700a5f4f016495a064ee29870512d188373493475ca1ac073d01c7 -->
+<!-- api-agent-companion-v1 sha256:20c8a99da2eac6a28c05db31756b95a46e907279ad80bfe06a2b5a68dbb14de3 -->
 # Workflow diagram: simple_chat
 
 ![Workflow diagram](flow.svg)
@@ -9,4 +9,5 @@
 
 ## Navigation
 
-- [renderer](workflows/components/renderer.md)
+- [agent](workflows/components/agent.md)
+- [llm_call](workflows/components/agent/llm_call.md)

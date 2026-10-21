@@ -216,7 +216,7 @@ def test_hosted_annotation_requires_matching_fence_length():
 def test_hosted_bundle_annotates_captured_resources_without_source_write():
     root = Path(__file__).resolve().parents[2]
     flow = root / "flow.md.html"
-    nested = root / "workflows/components/renderer.md.html"
+    nested = root / "workflows/components/agent/llm_call.md.html"
     before = (flow.read_bytes(), nested.read_bytes())
     projection = viewer_build._projection(root)
 
@@ -224,10 +224,10 @@ def test_hosted_bundle_annotates_captured_resources_without_source_write():
                                renderer=TinyRenderer(), verify=False)
 
     pages = {file.path: file.body for file in bundle.files}
-    hosted = pages["r/base/workflows/components/renderer.md.html"]
+    hosted = pages["r/base/workflows/components/agent/llm_call.md.html"]
     assert b"captured native_source:" in hosted
     assert b"captured functions:" in hosted or b"captured schema:" in hosted
-    assert b"../../flow.md.html" in hosted
+    assert b"../../../flow.md.html" in hosted
     assert (flow.read_bytes(), nested.read_bytes()) == before
 
 

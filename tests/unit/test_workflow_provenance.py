@@ -663,7 +663,7 @@ def test_source_archive_and_wheel_preserve_same_proof(tmp_path, monkeypatch, amb
     source = Path(__file__).resolve().parents[2]
     project = tmp_path / 'project'
     project.mkdir()
-    for name in ('pyproject.toml', 'hatch_build.py'):
+    for name in ('pyproject.toml', 'hatch_build.py', 'package.json', 'package-lock.json'):
         shutil.copyfile(source / name, project / name)
     (project / 'LICENSE').write_text('Synthetic test license.\n')
     (project / 'README.md').write_text('Synthetic package.\n')
@@ -681,8 +681,11 @@ def test_source_archive_and_wheel_preserve_same_proof(tmp_path, monkeypatch, amb
     import tomllib
     configuration = tomllib.loads((source / 'pyproject.toml').read_text())
     assets = configuration['tool']['hatch']['build']['targets']['sdist']['force-include']
-    for relative in (*assets, 'tools/checks.py', 'tools/pre_commit_dispatcher.py',
-                     'tools/workflow_views.py'):
+    frontend_targets = [entry['target'] for entry in json.loads(
+        (source / 'tools/frontend-assets.json').read_text())['assets']]
+    for relative in (*assets, *frontend_targets, 'tools/checks.py', 'tools/pre_commit_dispatcher.py',
+                     'tools/workflow_views.py', 'tools/frontend-assets.json',
+                     'tools/frontend_assets.py', 'tools/prepare_frontend_assets.mjs'):
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source / relative, target)

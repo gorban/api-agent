@@ -18,7 +18,12 @@
     if (!/^(?:[A-Za-z0-9_.~-]|%[0-9a-fA-F]{2})+$/.test(part)) return false;
     try {
       const decoded = decodeURIComponent(part);
-      return decoded !== "." && decoded !== ".." && !/[\\/%?#\x00-\x1f\x7f]/.test(decoded);
+      // Decode exactly once. A literal percent remains encoded in the URL;
+      // it must never become another decoding pass or a path separator.
+      const canonical = encodeURIComponent(decoded).replace(/[!'()*]/g,
+        character => "%" + character.charCodeAt(0).toString(16).toUpperCase());
+      return decoded !== "." && decoded !== ".." &&
+        !/[\\/?#\x00-\x1f\x7f]/.test(decoded) && canonical === part;
     } catch { return false; }
   };
   const roots = [];

@@ -2,7 +2,7 @@
 
 Open [flow.md.html](../flow.md.html) directly in a browser to read the workflow
 and its saved SVG diagram. Nested declarations use relative navigation. Bundled
-Markdown and sanitization scripts work without a server or network connection;
+Markdown and sanitization scripts work offline after explicit source preparation;
 no Java, container or additional font installation is needed. Diagram text uses
 common platform/free font fallbacks, so its appearance may vary by system.
 The linked SVG sits directly under each document heading. Expanded **Diagram links**
@@ -14,6 +14,27 @@ the inert declaration carrier remains hidden.
 
 Direct file opening shows the last generated diagram. It does not check whether
 declarations have changed since generation. The commands below check freshness.
+
+## Source dependency preparation
+
+For a source checkout, use Node.js 24 or newer and run `npm ci` once from the
+repository root. The committed npm lockfile verifies exact packages; postinstall
+copies unchanged official browser builds and notices into ignored runtime files.
+No frontend asset CDN or network request occurs during later static or managed viewing. Python
+graph execution does not require Node, npm or these optional viewing assets.
+
+Fresh root and nested pages show `npm ci` guidance if those dependencies are
+missing. The source `--view-flow` preflight fails before browser startup and never
+installs them silently. Explicitly disabled browser scripts instead retain the
+generic no-script fallback; that alone does not prove dependencies are missing.
+Installed Python distributions already include the prepared files: do not run
+npm in an installed package. Reinstall a complete distribution if its assets are
+missing or damaged.
+
+Building a wheel or source archive requires prepared, hash-verified assets.
+Builds fail clearly rather than invoking npm or downloading. A prepared source
+archive also contains the assets and notices, so rebuilding its wheel needs no
+Node or network. The locked npm install and asset-copy helper are source-only.
 
 ## Managed viewing
 
@@ -102,6 +123,16 @@ tracked `tools/checks.py`, allowing future checks to change that omnibus runner
 without replacing the hook. Existing user hooks, custom hook locations and shared
 worktree hooks are preserved; the launcher explains manual integration when
 needed. Without Git or checkout metadata, launch continues without installation.
+
+A managed copy installed before locked npm asset delivery needs a one-time
+manual refresh: that older copy does not pass the original dependency root to
+the snapshot checker. First verify that the existing hook is the exact older
+managed copy you own, and back it up outside the hook directory. Remove only
+that confirmed owned copy, then run `./launch.py --view-flow` to install the new
+reviewed dispatcher in the vacant slot. Preserve unfamiliar, custom and shared
+hooks and integrate the dispatcher manually instead. The launcher does not
+automatically replace an older copy. The refreshed hook verifies original npm
+assets against the staged lock and manifest; it never runs npm or fetches.
 
 The hook checks an isolated index snapshot. Stage regenerated diagrams with
 their declarations: an unstaged correction cannot repair a stale proposed commit.

@@ -209,7 +209,11 @@ def _routes_complete(projection_data, events):
                     return False
             routes[key] = target
             if owner in pass_components and target == 'END':
-                passes[open_scopes[-1]]['route_finished'] = True
+                state = passes[open_scopes[-1]]
+                state['route_finished'] = True
+                if pass_components[owner]['guard'] == '-':
+                    state['accepted'] = True
+                    state['active'] = None
             if target != 'END':
                 pending[key] = target
         elif kind == 'attempt':
@@ -474,7 +478,9 @@ def validate_journal(payload, *, expected_definition=None):
     for component in projection_data['component_passes']:
         if (type(component) is not dict or set(component) != {'id', 'max_passes', 'guard'}
                 or type(component['id']) is not str or _SAFE_LABEL.fullmatch(component['id']) is None
-                or type(component['guard']) is not str or _SAFE_LABEL.fullmatch(component['guard']) is None
+                or type(component['guard']) is not str
+                or (component['guard'] != '-' and _SAFE_LABEL.fullmatch(component['guard']) is None)
+                or (component['guard'] == '-' and component['max_passes'] != 1)
                 or type(component['max_passes']) is not int
                 or not 1 <= component['max_passes'] <= 99):
             raise ValueError('Invalid workflow component pass contract')

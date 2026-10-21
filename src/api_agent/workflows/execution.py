@@ -244,6 +244,10 @@ class Workflow:
                     self._event('attempt', scope_id=budget.id, component=step.id, attempt=attempt,
                                 attempt_id=attempt_id, max_passes=maximum)
                     current = await graph.ainvoke(current, {'recursion_limit': len(self.layout.steps) + 1})
+                    if row['Guard'] == '-':
+                        return dict(current, ancestry=original_ancestry, feedback=original_feedback,
+                                    previous=original_previous, attempt_id=original_attempt_id,
+                                    visit_id=budget.id)
                     if row['Guard'] not in current['values']:
                         raise WorkflowError(f'Component {step.id} did not execute its guard in the current pass')
                     guard = GuardResult.from_output(current['values'][row['Guard']])
@@ -401,7 +405,8 @@ def diagram_layout(layout):
                 lines.append(f'    {step.id} --> {target}')
         if parent is not None:
             component = next(row for row in layout.tables['Components'] if row['ID'] == parent)
-            lines.append(f'    {scope}_END -. reject, at most {component["Max passes"]} passes .-> {scope}_START')
+            if component['Guard'] != '-':
+                lines.append(f'    {scope}_END -. reject, at most {component["Max passes"]} passes .-> {scope}_START')
             lines.append('    end')
     lines.extend(['```', '', 'Source links:', ''])
     lines.extend(f'- [{step.id}]({step.source.as_uri()})' for step in layout.steps)

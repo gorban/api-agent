@@ -13,7 +13,12 @@ Build and run API-connected agents from one guided terminal interface.
 
 ## Get started
 
-Use Python 3.13 or newer, then run from this repository directory:
+Use Python 3.13 or newer. Source-checkout browser viewing and the included Studio
+also need one explicit preparation with Node.js 24 or newer: run `npm ci` from
+the repository root. They work offline afterward; installed Python distributions
+include those assets, and graph execution alone does not require npm.
+
+Then run from this repository directory:
 ```bash
 ./launch.py
 ```

@@ -117,7 +117,9 @@ test('relocated installed host reads its own resources and handles absent assets
  t.after(()=>rmSync(dir,{recursive:true,force:true}));
  copyFileSync(new URL('../../apps/api-agent-ui/server.mjs',import.meta.url),join(dir,'server.mjs'));
  mkdirSync(join(dir,'public'));
- copyFileSync(new URL('../../apps/api-agent-ui/public/index.html',import.meta.url),join(dir,'public/index.html'));
+ for(const name of ['index.html','marked.js','dompurify.js']) {
+  copyFileSync(new URL('../../apps/api-agent-ui/public/'+name,import.meta.url),join(dir,'public',name));
+ }
  const module=await import('file://'+join(dir,'server.mjs'));
  const {server}=module.createStudioServer(env);server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(()=>{server.close();server.closeAllConnections();});

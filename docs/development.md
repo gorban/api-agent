@@ -237,7 +237,7 @@ when editing settings through the TUI.
 The Studio host uses Node's standard library. For browser development checks,
 install the pinned development tools and their Chromium once:
 ```bash
-npm install
+npm ci
 npx playwright install chromium
 npm run test:frontend
 npm run test:frontend:coverage

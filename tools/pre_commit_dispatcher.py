@@ -154,7 +154,8 @@ def run(argv=None):
                                         seconds=5, output_limit=128)
             if code or tuple(map(int, version.split())) < (3, 13):
                 raise ValueError('Workflow checks require Python 3.13 or newer')
-            code, out, err = _capture([str(interpreter), '-I', str(checker), '--no-git', '--root', str(snapshot)],
+            code, out, err = _capture([str(interpreter), '-I', str(checker), '--no-git', '--root', str(snapshot),
+                                       '--frontend-source', str(root)],
                                       cwd=snapshot, env=environment, deadline=deadline,
                                       seconds=OPERATION_SECONDS, output_limit=CHECKER_OUTPUT_BYTES)
             sys.stdout.write(out.decode(errors='replace'))

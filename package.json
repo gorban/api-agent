@@ -2,14 +2,25 @@
   "name": "api-agent-frontend-verification",
   "private": true,
   "type": "module",
-  "engines": {"node": ">=24"},
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test:frontend": "node --test tests/frontend/*.test.mjs",
-    "test:frontend:coverage": "node tests/frontend/coverage.mjs"
+    "test:frontend:coverage": "node tests/frontend/coverage.mjs",
+    "postinstall": "node tools/prepare_frontend_assets.mjs",
+    "assets:check": "node tools/prepare_frontend_assets.mjs --check"
   },
   "devDependencies": {
     "istanbul-lib-coverage": "3.2.2",
     "istanbul-lib-instrument": "6.0.3",
     "playwright": "1.62.1"
+  },
+  "packageManager": "npm@11.16.0",
+  "dependencies": {
+    "marked": "18.1.1",
+    "dompurify": "3.4.17",
+    "marked-gfm-heading-id": "4.1.4",
+    "github-slugger": "2.0.0"
   }
 }

@@ -63,7 +63,8 @@ def test_dispatcher_starts_isolated_checker(tmp_path, monkeypatch):
     monkeypatch.setattr(dispatcher, '_capture', capture)
     assert dispatcher.run() == 0
     assert observed[-1][1] == '-I'
-    assert observed[-1][-3:] == ('--no-git', '--root', observed[-1][-1])
+    assert observed[-1][-5:-3] == ('--no-git', '--root')
+    assert observed[-1][-2:] == ('--frontend-source', str(root))
 
 
 def test_dispatcher_honors_verified_relative_temporary_index(tmp_path, monkeypatch):
@@ -330,13 +331,13 @@ def test_checker_requires_complete_snapshot_and_calls_packaged_check(tmp_path, m
 
 
 def test_checker_cli_modes(monkeypatch, tmp_path):
-    monkeypatch.setattr(checks, 'check', lambda root: None)
+    monkeypatch.setattr(checks, 'check', lambda root, frontend_source=None: None)
     assert checks.main(['--no-git', '--root', str(tmp_path)]) == 0
     with pytest.raises(SystemExit) as error:
         checks.main(['--no-git'])
     assert error.value.code == 2
 
-    def fail(root):
+    def fail(root, frontend_source=None):
         raise ValueError('stale view')
 
     monkeypatch.setattr(checks, 'check', fail)
