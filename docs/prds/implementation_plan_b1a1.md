@@ -46,4 +46,4 @@ The joined source and retained-journal repair passed independent and external so
 
 ## Scope and discovery correction
 
-The [scope-correct diagram and recursive discovery repair](implementation_plan_b1a3.md) reopens presentation delivery. Earlier source/qualification evidence remains historical; opaque scope views and the permanent fixture require renewed technical and human review.
+The [scope-correct diagram and recursive discovery repair](implementation_plan_b1a3.md) has independent/external technical closure at `1992ca2`. Earlier source/qualification evidence remains historical; combined human presentation acceptance remains unchecked.
