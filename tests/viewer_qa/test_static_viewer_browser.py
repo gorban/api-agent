@@ -19,7 +19,7 @@ def static_view(tmp_path):
     (owner / "workflows/components").mkdir(parents=True)
     for asset in (ROOT / ".private_resources/viewer").iterdir():
         shutil.copy2(asset, owner / ".private_resources/viewer" / asset.name)
-    for relative in ("flow.svg", "workflows/components/renderer.svg"):
+    for relative in ("flow.svg", "workflows/components/agent.svg"):
         shutil.copy2(ROOT / ".private_resources/diagrams" / relative,
                      owner / ".private_resources/diagrams" / relative)
     from api_agent.workflows.document_format import wrap_document
@@ -37,14 +37,14 @@ def static_view(tmp_path):
                    "## 中文\n\n```text\n## Not a heading\n```\n").encode()
     root_generated = (b"![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n"
                       b"[Open standalone diagram](.private_resources/diagrams/flow.svg)\n\n"
-                      b"- [renderer](workflows/components/renderer.md.html)")
+                      b"- [agent](workflows/components/agent.md.html)")
     root_html = wrap_document(root_source, root=True, asset_prefix=".private_resources/viewer/", generated=root_generated)
     (owner / "flow.md.html").write_bytes(root_html)
-    nested_generated = (b"![Workflow diagram](../../.private_resources/diagrams/workflows/components/renderer.svg)\n\n"
-                        b"[Open standalone diagram](../../.private_resources/diagrams/workflows/components/renderer.svg)")
-    nested = wrap_document(b"# Node v2: renderer\n\n## Notes\n", root=False,
+    nested_generated = (b"![Workflow diagram](../../.private_resources/diagrams/workflows/components/agent.svg)\n\n"
+                        b"[Open standalone diagram](../../.private_resources/diagrams/workflows/components/agent.svg)")
+    nested = wrap_document(b"# Component v2: agent\n\n## Notes\n", root=False,
                            asset_prefix="../../.private_resources/viewer/", generated=nested_generated)
-    (owner / "workflows/components/renderer.md.html").write_bytes(nested)
+    (owner / "workflows/components/agent.md.html").write_bytes(nested)
     (tmp_path / "outside.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" width="23" height="10" viewBox="0 0 23 10"/>')
     return owner
@@ -102,7 +102,7 @@ def _assert_layout(page, target):
 
 @pytest.mark.parametrize("path,target", [
     ("flow.md.html", ".private_resources/diagrams/flow.svg"),
-    ("workflows/components/renderer.md.html", "../../.private_resources/diagrams/workflows/components/renderer.svg"),
+    ("workflows/components/agent.md.html", "../../.private_resources/diagrams/workflows/components/agent.svg"),
 ])
 def test_static_diagram_follows_title_and_opens_svg(view_url, path, target):
     from playwright.sync_api import sync_playwright
@@ -385,7 +385,7 @@ def test_nested_missing_dependency_shows_readable_diagnostic(static_view, view_u
         browser = playwright.chromium.launch(headless=True)
         try:
             page = browser.new_page()
-            page.goto(view_url("workflows/components/renderer.md.html"))
+            page.goto(view_url("workflows/components/agent.md.html"))
             assert "assets are unavailable" in page.locator("body").inner_text()
             assert page.locator(".workflow-viewer-error").evaluate("item => getComputedStyle(item).fontSize") == "16px"
             assert page.locator("main").count() == 0

@@ -13,29 +13,28 @@
 
 [workflow-source]: <plaintext id="workflow-source" hidden>
 
-# Node v2: renderer
+# Component v2: agent
 
 <!-- workflow-generated-diagram-v2:start -->
-[![Workflow diagram](../../.private_resources/diagrams/workflows/components/renderer.svg)](../../.private_resources/diagrams/workflows/components/renderer.svg)
+[![Workflow diagram](../../.private_resources/diagrams/workflows/components/agent.svg)](../../.private_resources/diagrams/workflows/components/agent.svg)
 
 <details open>
 <summary>Diagram links</summary>
 
-[Open standalone diagram](../../.private_resources/diagrams/workflows/components/renderer.svg)
+[Open standalone diagram](../../.private_resources/diagrams/workflows/components/agent.svg)
 
 - [simple_chat](../../flow.md.html)
+- [llm_call](agent/llm_call.md.html)
 
 </details>
 <!-- workflow-generated-diagram-v2:end -->
 
-## Native
+## Flow
 
-| Registry | Kind | Source |
+1.  [node llm_call](agent/llm_call.md.html)
+
+## Components
+
+| ID | Max passes | Guard |
 | --- | --- | --- |
-| render | llm | [Python](../../demo/simple/functions.py) |
-
-## Functions
-
-| ID | Registry | Input | Output |
-| --- | --- | --- | --- |
-| renderer | render | [input](../contracts/renderer_input.json) | [output](../contracts/renderer_output.json) |
+| agent | 1 | - |

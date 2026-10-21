@@ -5,12 +5,16 @@
   if (carrier) carrier.hidden = true;
   if (!carrier || !window.marked || !window.DOMPurify ||
       (document.querySelector('meta[name="workflow-view"]')?.content === "v2" && !window.markedGfmHeadingId)) {
-    if (!document.getElementById("workflow-fallback")) {
-      const diagnostic = document.createElement("p");
-      diagnostic.className = "workflow-viewer-error";
-      diagnostic.textContent = "Workflow viewer assets are unavailable. Run ./launch.py --view-flow from the repository root.";
-      document.body.append(diagnostic);
-    }
+    const fallback = document.getElementById("workflow-fallback");
+    const diagnostic = fallback || document.createElement("section");
+    diagnostic.className = "workflow-viewer-error";
+    diagnostic.setAttribute("data-workflow-dependencies", "missing");
+    const heading = document.createElement("h2");
+    heading.textContent = "Workflow viewer dependencies are unavailable";
+    const guidance = document.createElement("p");
+    guidance.textContent = "For a source checkout, run npm ci from the repository root, then reopen this file or run ./launch.py --view-flow. For an installed Python package, reinstall a complete api-agent distribution; do not run npm inside the installed package.";
+    diagnostic.replaceChildren(heading, guidance);
+    if (!fallback) document.body.append(diagnostic);
     return;
   }
   const local = location.protocol === "file:" ||
@@ -74,7 +78,12 @@
       try {
         safe = segments.every((segment) => {
           const decoded = decodeURIComponent(segment);
-          return decoded !== "." && decoded !== ".." && !/[\\/%?#\x00-\x1f\x7f]/.test(decoded);
+          // Decode exactly once. A literal percent remains encoded in the URL;
+          // it must never become another decoding pass or a path separator.
+          const canonical = encodeURIComponent(decoded).replace(/[!'()*]/g,
+            character => "%" + character.charCodeAt(0).toString(16).toUpperCase());
+          return decoded !== "." && decoded !== ".." &&
+            !/[\\/?#\x00-\x1f\x7f]/.test(decoded) && canonical === segment;
         }) && new URL(target, document.baseURI).href.startsWith(diagramRoot);
       } catch {
         safe = false;

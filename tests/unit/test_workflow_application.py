@@ -18,7 +18,7 @@ MESSAGES = [
 ]
 
 
-def test_single_renderer_preserves_history_selection_options_identity_and_metadata():
+def test_single_llm_call_preserves_history_selection_options_identity_and_metadata():
     requests = []
 
     async def complete(request):
@@ -31,10 +31,10 @@ def test_single_renderer_preserves_history_selection_options_identity_and_metada
     workflow = build(ROOT, llm=complete, selection='gpt-test', request_id='session-1',
                      generation=GenerationOptions(reasoning_effort='low', cache_policy='medium',
                                                   max_output_tokens=128))
-    result = asyncio.run(workflow.arun({'messages': MESSAGES}))['renderer']
+    result = asyncio.run(workflow.arun({'messages': MESSAGES}))['llm_call']
 
     assert workflow.definition.graph_id == 'simple_chat'
-    assert [step.id for step in workflow.layout.steps] == ['renderer']
+    assert [step.id for step in workflow.layout.steps] == ['agent', 'llm_call']
     assert len(requests) == 1
     assert request_to_wire(requests[0]) == {
         'selected_llm': 'gpt-test', 'request_id': 'session-1',
@@ -50,7 +50,7 @@ def test_single_renderer_preserves_history_selection_options_identity_and_metada
     }
 
 
-def test_renderer_preserves_optional_billing_metadata():
+def test_llm_call_preserves_optional_billing_metadata():
     requests = []
     billing = {'usd': 0.0025, 'request_id': 'request-1', 'generation_id': 'generation-1'}
 
@@ -59,14 +59,14 @@ def test_renderer_preserves_optional_billing_metadata():
         return LLMResult(Message('assistant', (TextContent('Ok'),)), Usage(), billing=billing)
 
     result = asyncio.run(build(ROOT, llm=complete, selection='gpt-test').arun(
-        {'messages': [{'role': 'user', 'content': 'Hello'}]}))['renderer']
+        {'messages': [{'role': 'user', 'content': 'Hello'}]}))['llm_call']
     assert result['response_text'] == 'Ok'
     assert result['billing'] == billing
     assert requests[0].request_id
 
 
 @pytest.mark.parametrize('outcome,text', [('refused', 'No'), ('completed', '')])
-def test_renderer_rejects_incomplete_or_empty_result(outcome, text):
+def test_llm_call_rejects_incomplete_or_empty_result(outcome, text):
     async def complete(request):
         return LLMResult(Message('assistant', (TextContent(text),)), outcome=outcome)
 

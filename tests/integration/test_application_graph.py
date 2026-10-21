@@ -1,4 +1,4 @@
-"""The bundled selected flow compiles and executes its real renderer node."""
+"""The bundled selected flow compiles and executes its real llm_call node."""
 import asyncio
 from pathlib import Path
 
@@ -12,7 +12,7 @@ pytestmark = pytest.mark.feature('Application workflow')
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_selected_application_flow_executes_renderer():
+def test_selected_application_flow_executes_llm_call():
     requests = []
     events = []
 
@@ -34,11 +34,11 @@ def test_selected_application_flow_executes_renderer():
 
     assert workflow.definition.entry == ROOT / 'flow.md.html'
     assert workflow.definition.graph_id == 'simple_chat'
-    assert [event['node'] for event in events if event['event'] == 'node'] == ['renderer']
+    assert [event['node'] for event in events if event['event'] == 'node'] == ['llm_call']
     assert len(requests) == 1
     assert [(message.role, message.content[0].text) for message in requests[0].payload.messages] == [
         ('user', 'Earlier question'), ('assistant', 'Earlier answer'),
         ('user', 'Respond with exactly: Ok')]
-    assert result['renderer']['response_text'] == 'Ok'
-    assert result['renderer']['actual_model'] == 'selected-revision'
-    assert result['renderer']['usage']['input_tokens'] == 8
+    assert result['llm_call']['response_text'] == 'Ok'
+    assert result['llm_call']['actual_model'] == 'selected-revision'
+    assert result['llm_call']['usage']['input_tokens'] == 8

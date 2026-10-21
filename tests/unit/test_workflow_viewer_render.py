@@ -192,3 +192,14 @@ def test_missing_installed_assets_cannot_fall_back_to_sibling_tree(tmp_path, mon
 
     with pytest.raises(RenderError, match="assets missing"):
         viewer_render._asset_root()
+
+
+@pytest.mark.parametrize('installed', [False, True])
+def test_bundle_missing_dependencies_provides_source_or_installed_guidance(tmp_path, monkeypatch, installed):
+    projection = SimpleNamespace(version=1, documents=(), projection_sha256='0' * 64)
+    source = Path(viewer_render.__file__).resolve().parents[3] / '.private_resources/viewer'
+    monkeypatch.setattr(viewer_render, '_asset_root', lambda: tmp_path if installed else source)
+    monkeypatch.setattr(viewer_render, '_read_view_file', lambda path: None)
+    expected = 'reinstall api-agent' if installed else 'run npm ci from the repository root'
+    with pytest.raises(RenderError, match=expected):
+        build_view_bundle(projection, roots={}, renderer=object(), verify=False)

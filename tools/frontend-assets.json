@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "package": "marked",
+      "version": "18.1.1",
+      "source": "lib/marked.umd.js",
+      "target": ".private_resources/viewer/marked.js",
+      "sha256": "b82b9334406d8bdd16b6236c08de1cb65b2a859873ca9503d9cc0b292ca3c12a",
+      "size": 47956
+    },
+    {
+      "package": "marked",
+      "version": "18.1.1",
+      "source": "lib/marked.esm.js",
+      "target": "apps/api-agent-ui/public/marked.js",
+      "sha256": "930457e5d55439f90465015cc507d3323366e80df5f7a701b61189d4e1046bda",
+      "size": 47076
+    },
+    {
+      "package": "marked",
+      "version": "18.1.1",
+      "source": "LICENSE",
+      "target": ".private_resources/viewer/marked-LICENSE.txt",
+      "sha256": "8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c",
+      "size": 2942
+    },
+    {
+      "package": "marked",
+      "version": "18.1.1",
+      "source": "LICENSE",
+      "target": "apps/api-agent-ui/marked-LICENSE.txt",
+      "sha256": "8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c",
+      "size": 2942
+    },
+    {
+      "package": "dompurify",
+      "version": "3.4.17",
+      "source": "dist/purify.js",
+      "target": ".private_resources/viewer/dompurify.js",
+      "sha256": "a7b6dc750251c79c95592d6abf8908bcecb51319b0b5c4194b82222566ed29b9",
+      "size": 88636
+    },
+    {
+      "package": "dompurify",
+      "version": "3.4.17",
+      "source": "dist/purify.es.mjs",
+      "target": "apps/api-agent-ui/public/dompurify.js",
+      "sha256": "60c5d5ccbb466de3de3ba863461a92bf134f8c156cef7992da43e0f659bc5cbd",
+      "size": 85820
+    },
+    {
+      "package": "dompurify",
+      "version": "3.4.17",
+      "source": "LICENSE",
+      "target": ".private_resources/viewer/dompurify-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    },
+    {
+      "package": "dompurify",
+      "version": "3.4.17",
+      "source": "LICENSE",
+      "target": "apps/api-agent-ui/dompurify-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    },
+    {
+      "package": "marked-gfm-heading-id",
+      "version": "4.1.4",
+      "source": "lib/index.umd.js",
+      "target": ".private_resources/viewer/heading-id.js",
+      "sha256": "b3b048774d0ac233138d647d08638c0fa661bb787f513f6b68d2e51bdd29c279",
+      "size": 12382
+    },
+    {
+      "package": "marked-gfm-heading-id",
+      "version": "4.1.4",
+      "source": "LICENSE",
+      "target": ".private_resources/viewer/heading-id-LICENSE.txt",
+      "sha256": "a846b93fda6af8008a89d1394d827afc60d62eebb70c68efbfeeafe0b01928ed",
+      "size": 1066
+    },
+    {
+      "package": "github-slugger",
+      "version": "2.0.0",
+      "source": "LICENSE",
+      "target": ".private_resources/viewer/github-slugger-LICENSE.txt",
+      "sha256": "542aefa99456832996da0cc63b14d8b89f04a30ba403e241dbe3e5aaf49fa372",
+      "size": 750
+    }
+  ]
+}

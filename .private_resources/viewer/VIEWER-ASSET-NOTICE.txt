@@ -2,10 +2,11 @@ The workflow viewer uses the public Marked 18.1.1 and DOMPurify 3.4.17
 bundles already distributed with api-agent. Their license texts are retained
 as marked-LICENSE.txt and dompurify-LICENSE.txt.
 
-For direct file:// opening, the viewer copies those browser bundles and
-changes only their final ECMAScript module export to assign the exported
-object to globalThis.marked or globalThis.DOMPurify. Source-map references
-are removed. Their original copyright/license headers are retained.
+The root locked npm install copies the unchanged official Marked UMD,
+DOMPurify browser build and heading-plugin UMD into ignored runtime files.
+Studio uses the unchanged official ESM builds. No export rewriting, runtime CDN
+or first-view download is performed. Original copyright/license headers and
+notices remain intact; prepared Python distributions include all required files.
 
 PlantUML is an optional development renderer and is not bundled in the
 application wheel. PlantUML-NOTICE.txt records the pinned MIT JAR's own

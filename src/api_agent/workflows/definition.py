@@ -280,7 +280,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
         return capture(path, kind, root_id)
     capture(entry, 'declaration', entry_root)
     title, root_sections = _sections(entry, captured[entry][1])
-    if title != '# Workflow v2':
+    if title not in ('# Workflow v2', '# LangGraph flow'):
         raise LayoutError(f'{entry}:1: expected Workflow v2 heading')
     allowed = {'Graph ID', 'Flow', *_COLUMNS, 'Notes'}
     if set(root_sections) - allowed or 'Graph ID' not in root_sections or 'Flow' not in root_sections:

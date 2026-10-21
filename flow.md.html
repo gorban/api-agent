@@ -32,7 +32,7 @@
     <pre>./launch.py --view-flow</pre></section>"
 [workflow-source]: <plaintext id="workflow-source" hidden>
 
-# Workflow v2
+# LangGraph flow
 
 <!-- workflow-generated-diagram-v2:start -->
 [![Workflow diagram](.private_resources/diagrams/flow.svg)](.private_resources/diagrams/flow.svg)
@@ -42,7 +42,8 @@
 
 [Open standalone diagram](.private_resources/diagrams/flow.svg)
 
-- [renderer](workflows/components/renderer.md.html)
+- [agent](workflows/components/agent.md.html)
+- [llm_call](workflows/components/agent/llm_call.md.html)
 
 </details>
 <!-- workflow-generated-diagram-v2:end -->
@@ -55,10 +56,10 @@
 
 ## Flow
 
-1.  [node renderer](workflows/components/renderer.md.html)
+1.  [component agent](workflows/components/agent.md.html)
 
 ## Bindings
 
 | Node | Input | From | Field | Default |
 | --- | --- | --- | --- | --- |
-| renderer | messages | START | messages | - |
+| llm_call | messages | START | messages | - |

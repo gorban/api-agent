@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import os
+import stat
+import re
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
@@ -69,9 +72,54 @@ def _proof(root):
     return dict(version=1, manifest=manifest, objects=objects)
 
 
+def _validate_frontend_assets(root):
+    """Packaging consumes prepared bytes only and cannot run npm or fetch."""
+    guidance = "Frontend assets are missing or invalid; run npm ci from the repository root before building."
+    try:
+        manifest = json.loads((root / 'tools/frontend-assets.json').read_text())
+        expected = {
+            '.private_resources/viewer/' + name for name in (
+                'marked.js', 'dompurify.js', 'heading-id.js', 'marked-LICENSE.txt',
+                'dompurify-LICENSE.txt', 'heading-id-LICENSE.txt', 'github-slugger-LICENSE.txt')
+        } | {'apps/api-agent-ui/' + name for name in (
+            'public/marked.js', 'public/dompurify.js', 'marked-LICENSE.txt', 'dompurify-LICENSE.txt')}
+        if manifest.get('version') != 1 or {entry['target'] for entry in manifest['assets']} != expected or len(manifest['assets']) != len(expected):
+            raise ValueError('invalid asset inventory')
+        lock = json.loads((root / 'package-lock.json').read_text())
+        definition = json.loads((root / 'package.json').read_text())
+        if lock.get('lockfileVersion') != 3:
+            raise ValueError('invalid lock version')
+        for entry in manifest['assets']:
+            if (not re.fullmatch(r'[0-9a-f]{64}', entry['sha256']) or
+                    type(entry['size']) is not int or not 0 < entry['size'] <= 2_000_000 or
+                    definition['dependencies'][entry['package']] != entry['version'] or
+                    lock['packages']['']['dependencies'][entry['package']] != entry['version'] or
+                    lock['packages']['node_modules/' + entry['package']]['version'] != entry['version']):
+                raise ValueError('asset and lock differ')
+            path = root / entry['target']
+            if any(parent.is_symlink() for parent in (path, *path.parents) if parent.is_relative_to(root) and parent != root):
+                raise ValueError('asset link rejected')
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0))
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_size != entry['size']:
+                    raise ValueError('asset is not the expected regular file')
+                with os.fdopen(descriptor, 'rb') as asset:
+                    descriptor = -1
+                    data = asset.read(2_000_001)
+                if len(data) != entry['size'] or sha256(data).hexdigest() != entry['sha256']:
+                    raise ValueError('asset digest differs')
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError(guidance) from error
+
+
 class CustomBuildHook(BuildHookInterface):
     def initialize(self, version, build_data):
         root = Path(self.root).resolve()
+        _validate_frontend_assets(root)
         sidecar = root / 'workflow-source-proof.json'
         try:
             source_root = Path(_git(root, 'rev-parse', '--show-toplevel').decode().strip())

@@ -104,7 +104,7 @@ def _lines(data, offset):
 
 def _is_root_document(data: bytes) -> bool:
     lines = data.splitlines()
-    return bool(lines) and lines[0] in (b'# Workflow v2', b'# Workflow v3')
+    return bool(lines) and lines[0] in (b'# Workflow v2', b'# LangGraph flow', b'# Workflow v3')
 
 
 def extract_document(raw: bytes, *, path: Path) -> ExtractedDocument:

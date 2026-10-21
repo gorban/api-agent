@@ -21,6 +21,10 @@ export function origin(value, { listener = false } = {}) {
 }
 
 export function createStudioServer(env = process.env) {
+  for (const relative of ['public/marked.js', 'public/dompurify.js']) {
+    try { readFileSync(new URL('./' + relative, import.meta.url)); }
+    catch { throw new Error('Studio frontend dependencies are missing. In a source checkout run npm ci from the repository root; reinstall a complete distribution for an installed package.'); }
+  }
   const listener = origin(env.UI_LISTENER_URL || 'https://localhost:9443', { listener: true });
   const api = origin(env.AGENT_DJANGO_URL || 'https://localhost:8443');
   const accessToken = env.API_AGENT_UI_ACCESS_TOKEN;

@@ -137,7 +137,7 @@ def test_bundle_route_proof_detects_mutated_body(copied_source_view):
 def test_publication_failure_restores_earlier_owned_output(copied_source_view, monkeypatch):
     renderer = _qa_renderer()
     diagrams = copied_source_view / ".private_resources/diagrams"
-    first, second = diagrams / "flow.md", diagrams / "workflows/components/renderer.md"
+    first, second = diagrams / "flow.md", diagrams / "workflows/components/agent.md"
     first.write_bytes(first.read_bytes() + b"\nlocal edit\n")
     second.write_bytes(second.read_bytes() + b"\nlocal edit\n")
     before = (first.read_bytes(), second.read_bytes())

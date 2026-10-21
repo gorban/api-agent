@@ -14,6 +14,8 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 - [x] Store generated SVGs under `.private_resources/diagrams/`, mirroring declaration paths: root `flow.md.html` maps to `flow.svg`; each nested declaration maps to its corresponding nested SVG. Put viewer scripts, styles and required third-party notices under `.private_resources/viewer/`. Package declarations and assets together; navigation works after relocation without sibling source checkouts. Source links remain external where declared; retain configuration-line links and optional local source viewing within allowed roots.
 - [ ] Preserve grouped nodes, inline prompts, conditional routes, type fields and inbound backlinks in the versioned grammar. Resolve registry identifiers to native Python functions and validate input/output bindings, conditions, prompt order, timeout scopes and explicit selected-pack overrides before graph execution. A versioned, nonexecuting `Diagram` section may contain fixed node/edge tables for conceptual views that cannot be inferred; it cannot alter executable routing or contain Python expressions or raw PlantUML.
 
+- [ ] Complete [generic graph names, title and component counts](implementation_plan_b1a2.md).
+
 ## Viewer and generated views
 
 - [x] Derive registered nodes, forward routes, inbound backlinks, type fields and navigation links from the Markdown declaration body. Build SVG links and companion Markdown links from the same inventory. A standalone SVG may expose its links while GitHub's embedded SVG image requires companion Markdown navigation.

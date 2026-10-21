@@ -250,6 +250,10 @@ def _validate(layout, resource_bytes=None):
     for row in layout.tables['Components']:
         if not re.fullmatch(r'[1-9][0-9]*', row['Max passes']):
             layout.error('Max passes must be a positive integer', row['line'])
+        if row['Guard'] == '-':
+            if row['Max passes'] != '1':
+                layout.error('Unguarded components require exactly one pass', row['line'])
+            continue
         guard = steps.get(row['Guard'])
         if guard is None or guard.kind != 'node' or guard.parent != row['ID']:
             layout.error('Guard must be a directly owned node', row['line'])

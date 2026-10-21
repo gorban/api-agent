@@ -20,14 +20,20 @@ dev = ["Authlib>=1.7.2,<1.8", "pytest>=8,<10", "pytest-cov>=6,<8", "pytest-xdist
 api-agent = "api_agent.runtime.bootstrap:cli_main"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["LICENSE", "README.md", "pyproject.toml", "hatch_build.py", "launch.py", "package.json", "src", "demo", "cfg", "infra/compose", "apps/api-agent-ui", "workflows", "flow.md.html", "tests", "docs", "tools/checks.py", "tools/pre_commit_dispatcher.py", "tools/workflow_views.py"]
+only-include = ["LICENSE", "README.md", "pyproject.toml", "hatch_build.py", "launch.py", "package.json", "package-lock.json", "tools/prepare_frontend_assets.mjs", "tools/frontend-assets.json",
+  "tools/frontend_assets.py", "src", "demo", "cfg", "infra/compose", "apps/api-agent-ui", "workflows", "flow.md.html", "tests", "docs", "tools/checks.py", "tools/pre_commit_dispatcher.py", "tools/workflow_views.py"]
 exclude = [".*", "**/.*", "**/__pycache__/**", "**/node_modules/**", "**/*.pyc"]
 
 [tool.hatch.build.targets.sdist.force-include]
+".npmrc" = ".npmrc"
+"apps/api-agent-ui/public/marked.js" = "apps/api-agent-ui/public/marked.js"
+"apps/api-agent-ui/public/dompurify.js" = "apps/api-agent-ui/public/dompurify.js"
 ".private_resources/diagrams/flow.svg" = ".private_resources/diagrams/flow.svg"
 ".private_resources/diagrams/flow.md" = ".private_resources/diagrams/flow.md"
-".private_resources/diagrams/workflows/components/renderer.svg" = ".private_resources/diagrams/workflows/components/renderer.svg"
-".private_resources/diagrams/workflows/components/renderer.md" = ".private_resources/diagrams/workflows/components/renderer.md"
+".private_resources/diagrams/workflows/components/agent.svg" = ".private_resources/diagrams/workflows/components/agent.svg"
+".private_resources/diagrams/workflows/components/agent/llm_call.svg" = ".private_resources/diagrams/workflows/components/agent/llm_call.svg"
+".private_resources/diagrams/workflows/components/agent.md" = ".private_resources/diagrams/workflows/components/agent.md"
+".private_resources/diagrams/workflows/components/agent/llm_call.md" = ".private_resources/diagrams/workflows/components/agent/llm_call.md"
 ".private_resources/viewer/viewer.js" = ".private_resources/viewer/viewer.js"
 ".private_resources/viewer/svg-links.js" = ".private_resources/viewer/svg-links.js"
 ".private_resources/viewer/github-slugger-LICENSE.txt" = ".private_resources/viewer/github-slugger-LICENSE.txt"
@@ -48,8 +54,10 @@ exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 [tool.hatch.build.targets.wheel.force-include]
 ".private_resources/diagrams/flow.svg" = "api_agent/.private_resources/diagrams/flow.svg"
 ".private_resources/diagrams/flow.md" = "api_agent/.private_resources/diagrams/flow.md"
-".private_resources/diagrams/workflows/components/renderer.svg" = "api_agent/.private_resources/diagrams/workflows/components/renderer.svg"
-".private_resources/diagrams/workflows/components/renderer.md" = "api_agent/.private_resources/diagrams/workflows/components/renderer.md"
+".private_resources/diagrams/workflows/components/agent.svg" = "api_agent/.private_resources/diagrams/workflows/components/agent.svg"
+".private_resources/diagrams/workflows/components/agent/llm_call.svg" = "api_agent/.private_resources/diagrams/workflows/components/agent/llm_call.svg"
+".private_resources/diagrams/workflows/components/agent.md" = "api_agent/.private_resources/diagrams/workflows/components/agent.md"
+".private_resources/diagrams/workflows/components/agent/llm_call.md" = "api_agent/.private_resources/diagrams/workflows/components/agent/llm_call.md"
 "demo" = "api_agent/demo"
 "flow.md.html" = "api_agent/flow.md.html"
 "workflows" = "api_agent/workflows"

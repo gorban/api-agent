@@ -1,5 +1,11 @@
 # Included Studio host
 
+For a source checkout, first run the root locked `npm ci` with Node.js 24 or
+newer. It prepares verified local Markdown/sanitization assets; the Studio stays
+offline afterward. Installed distributions already contain them and must not run
+npm inside the installed package. Missing assets fail with explicit preparation
+or reinstall guidance.
+
 Run `node apps/api-agent-ui/launch.mjs` with `UI_LISTENER_URL`,
 `AGENT_DJANGO_URL` and an `API_AGENT_UI_LAUNCH_TOKEN` (20–128 URL-safe
 characters). HTTPS additionally requires `API_AGENT_UI_TLS_CERT` and

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import json
 
 
 _VIEWER_FILES = (
@@ -13,8 +14,10 @@ _VIEWER_FILES = (
     'VIEWER-ASSET-NOTICE.txt', 'heading-id.js', 'heading-id-LICENSE.txt',
     'github-slugger-LICENSE.txt', 'svg-links.js',
 )
-_DIAGRAM_FILES = ('flow.svg', 'flow.md', 'workflows/components/renderer.svg',
-                  'workflows/components/renderer.md')
+_DIAGRAM_FILES = ('flow.svg', 'flow.md', 'workflows/components/agent.svg',
+                  'workflows/components/agent.md',
+                  'workflows/components/agent/llm_call.svg',
+                  'workflows/components/agent/llm_call.md')
 
 
 def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
@@ -23,6 +26,12 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
     staged.mkdir()
     shutil.copyfile(root / 'pyproject.toml', staged / 'pyproject.toml')
     shutil.copyfile(root / 'hatch_build.py', staged / 'hatch_build.py')
+    for relative in ('package.json', 'package-lock.json', '.npmrc'):
+        shutil.copyfile(root / relative, staged / relative)
+    for entry in json.loads((root / 'tools/frontend-assets.json').read_text())['assets']:
+        path = staged / entry['target']
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / entry['target'], path)
     (staged / 'LICENSE').write_text('Synthetic license for archive selection test.\n')
     (staged / 'README.md').write_text('Synthetic package.\n')
     (staged / 'flow.md.html').write_text('# Workflow v2\n')
@@ -34,7 +43,7 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
     (staged / 'workflows/component.md.html').write_text('# Component v2\n')
     (staged / 'tests').mkdir()
     (staged / 'tests/test_public.py').write_text('def test_public(): pass\n')
-    admitted_hidden = {
+    admitted_hidden = {'.npmrc',
         *('.private_resources/viewer/' + name for name in _VIEWER_FILES),
         *('.private_resources/diagrams/' + name for name in _DIAGRAM_FILES),
     }
@@ -43,7 +52,8 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / relative, path)
     admitted_tools = {'tools/checks.py', 'tools/pre_commit_dispatcher.py',
-                      'tools/workflow_views.py'}
+                      'tools/workflow_views.py', 'tools/frontend-assets.json',
+                      'tools/prepare_frontend_assets.mjs', 'tools/frontend_assets.py'}
     for relative in admitted_tools:
         path = staged / relative
         path.parent.mkdir(parents=True, exist_ok=True)

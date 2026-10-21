@@ -1,4 +1,4 @@
-"""Single selected-model chat renderer for the bundled application flow."""
+"""Single selected-model chat call for the bundled application flow."""
 from uuid import uuid4
 
 from api_agent.providers.inference import request_from_wire, result_to_wire
@@ -6,7 +6,7 @@ from api_agent.providers.llm import GenerationOptions
 from api_agent.workflows.execution import WorkflowError
 
 
-async def render(inputs, context):
+async def llm_call(inputs, context):
     generation = context.services.get('generation') or GenerationOptions()
     selection = context.services['selection']
     messages = inputs['messages']
