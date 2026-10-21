@@ -14,3 +14,6 @@ Implementation and independent/external source review are complete. The 12,708-u
 - [x] Admit an edge following a child only when its recorded source scope ended with outcome `passed`. A successful enclosing one-pass component or graph cannot make a failed child a complete causal route, including retained journals with a recomputed digest. Keep failed runs valid as partial observations; preserve guarded retry after a passed guard node returns rejection and the existing terminal-root observation policy. Verify both journal finalization and retained-journal validation.
 
 - [ ] Human acceptance of the displayed root title, agent/component navigation and declaration/diagram presentation, alongside the combined viewer checkpoint. Managed HTTP evidence does not substitute for direct-file or repository-platform observation.
+
+
+The [scope/discovery repair](implementation_plan_b1a3.md) supersedes package/group rendering and the earlier count-label syntax. Retain one-pass runtime behavior; diagrams show one opaque component at its parent and its children on the component page.

@@ -160,55 +160,73 @@ def _label(value: object) -> str:
 
 
 def _projection_source(projection: object, document: object, *, repositories: Mapping[str, RepositoryIdentity] | None = None) -> tuple[bytes, frozenset[str]]:
+    all_steps = {step.id: step for step in projection.steps}
     if document.logical_path == projection.entry_path:
-        steps = list(projection.steps)
-        edges = list(projection.edges)
+        owner = "GRAPH"
+        steps = [step for step in projection.steps if step.parent is None]
+        node_detail = False
     else:
-        local = {s.id for s in projection.steps if s.declaration_path == document.logical_path}
-        edges = [e for e in projection.edges if e.source in local or e.target in local]
-        relevant = local | {e.source for e in edges} | {e.target for e in edges}
-        steps = [s for s in projection.steps if s.id in relevant]
+        matches = [step for step in projection.steps
+                   if step.declaration_path == document.logical_path
+                   and (not hasattr(document, 'stable_id') or step.id == document.stable_id)]
+        if len(matches) != 1:
+            raise RenderError("unadmitted diagram document scope")
+        selected = matches[0]
+        owner = selected.id
+        node_detail = selected.kind == "node"
+        steps = [selected] if node_detail else [step for step in projection.steps if step.parent == owner]
+    visible = {step.id for step in steps}
+    edges = [] if node_detail else [edge for edge in projection.edges
+        if edge.owner == owner or visible.intersection((edge.source, edge.target))]
     if len(steps) + len(edges) > _MAX_RECORDS:
         raise RenderError("diagram exceeds record limit")
-    aliases = {s.id: "n" + str(i) for i, s in enumerate(steps)}
-    for special in ("START", "END"):
-        if any(special in (e.source, e.target) for e in edges):
-            aliases[special] = special.lower()
-    admitted = {_route(d.logical_path) for d in projection.documents}
+    aliases = {step.id: "n" + str(index) for index, step in enumerate(steps)}
+    admitted = {_route(item.logical_path) for item in projection.documents}
     links: set[str] = set()
     lines = ["@startuml", "left to right direction", "skinparam shadowing false",
              "skinparam defaultFontName sans-serif", "skinparam svgLinkTarget _top"]
-    for special in ("START", "END"):
-        if special in aliases:
-            lines.append(f'circle "{special}" as {aliases[special]}')
-    def emit_step(step):
+    children = {}
+    for step in projection.steps:
+        children.setdefault(step.parent, []).append(step)
+
+    def step_label(step):
         name = _label(step.id)
+        if step.kind == "component":
+            pending = list(children.get(step.id, ()))
+            seen = {step.id}
+            count = 0
+            while pending:
+                child = pending.pop()
+                if child.id in seen:
+                    continue
+                seen.add(child.id)
+                count += child.kind == "node"
+                pending.extend(children.get(child.id, ()))
+            if count != 1:
+                name += f" · {count} registered nodes"
+        return name
+
+    def step_href(step):
         target = _route(step.declaration_path)
         if target not in admitted:
             raise RenderError("unadmitted diagram link")
         href = posixpath.relpath(target, posixpath.dirname(_svg_route(document.logical_path)))
         if repositories:
-            owner, relative = step.declaration_path.split("/", 1)
-            if owner not in repositories:
+            root_owner, relative = step.declaration_path.split("/", 1)
+            if root_owner not in repositories:
                 raise RenderError("missing workflow repository identity")
-            href = repositories[owner].link(relative)
+            href = repositories[root_owner].link(relative)
         links.add(href)
-        if step.kind == "component":
-            descendants = {step.id}
-            for candidate in projection.steps:
-                if candidate.parent in descendants:
-                    descendants.add(candidate.id)
-            count = sum(candidate.kind == 'node' and candidate.id in descendants
-                        for candidate in projection.steps)
-            label = name + (f' ({count} nodes)' if count >= 2 else '')
-            lines.append(f'package "{label}" {{')
-        lines.append(f'rectangle "{name}" as {aliases[step.id]} [[{href}]]')
+        return href
+
+    for step in steps:
+        lines.append(f'rectangle "{step_label(step)}" as {aliases[step.id]} [[{step_href(step)}]]')
         details = []
         for reference in projection.references:
             if reference.owner_id != step.id or reference.kind != "functions":
                 continue
             field = dict(reference.attributes).get("field", "")
-            resource = next((r for r in projection.resources if r.logical_path == reference.target_path), None)
+            resource = next((item for item in projection.resources if item.logical_path == reference.target_path), None)
             if resource is None or len(resource.content_bytes) > 65536:
                 continue
             try:
@@ -222,20 +240,43 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
                     details.append(_label(field + ": " + ", ".join(names)))
         if details:
             lines.append(f'note right of {aliases[step.id]} : {"; ".join(details)[:_MAX_LABEL]}')
-        for child in steps:
-            if child.parent == step.id:
-                emit_step(child)
-        if step.kind == "component":
-            lines.append("}")
 
-    visible = {s.id for s in steps}
-    for step in steps:
-        if step.parent not in visible:
-            emit_step(step)
+    boundaries = {}
+    specials = set()
+
+    def endpoint(identifier, edge_owner):
+        if identifier in visible:
+            return aliases[identifier], False
+        if identifier in ("START", "END") and edge_owner == owner:
+            if identifier not in specials:
+                lines.append(f'circle "{identifier}" as {identifier.lower()}')
+                specials.add(identifier)
+            return identifier.lower(), False
+        step = all_steps.get(identifier)
+        key = (edge_owner if step is None else step.parent or "GRAPH", identifier)
+        if key not in boundaries:
+            alias = "boundary" + str(len(boundaries))
+            label = "Boundary: " + (step_label(step) if step is not None else _label(identifier))
+            label += " · scope " + _label(key[0])
+            link = f" [[{step_href(step)}]]" if step is not None else ""
+            lines.append(f'rectangle "{label}" as {alias}{link}')
+            boundaries[key] = alias
+        return boundaries[key], True
+
     for edge in edges:
-        if edge.source in aliases and edge.target in aliases:
-            label = _label(edge.condition or "route")
-            lines.append(f'{aliases[edge.source]} --> {aliases[edge.target]} : {label}')
+        if any(identifier not in all_steps and identifier not in ("START", "END")
+               for identifier in (edge.source, edge.target)):
+            continue
+        source, source_boundary = endpoint(edge.source, edge.owner)
+        target, target_boundary = endpoint(edge.target, edge.owner)
+        boundary = edge.owner != owner or source_boundary or target_boundary
+        label = _label(edge.condition or "route")
+        if boundary:
+            label = "boundary (" + _label(edge.owner) + "): " + label
+        arrow = "..>" if boundary else "-->"
+        lines.append(f'{source} {arrow} {target} : {label}')
+    if len(steps) + len(edges) + len(boundaries) > _MAX_RECORDS:
+        raise RenderError("diagram exceeds record limit")
     lines.append("@enduml")
     data = ("\n".join(lines) + "\n").encode()
     if len(data) > _MAX_INPUT:
@@ -682,7 +723,8 @@ def _physical_file(route: str, roots: Mapping[str, Path]) -> Path:
     return result
 
 
-def check_view_bundle(bundle: ViewBundle, *, roots: Mapping[str, Path]) -> None:
+def check_view_bundle(bundle: ViewBundle, *, roots: Mapping[str, Path],
+                      check_orphans: bool = True) -> None:
     """Compare owned presentation bytes with the admitted markup projection."""
     expected: dict[str, set[Path]] = {}
     for file in bundle.files:
@@ -690,7 +732,7 @@ def check_view_bundle(bundle: ViewBundle, *, roots: Mapping[str, Path]) -> None:
         expected.setdefault(PurePosixPath(file.path).parts[1], set()).add(path)
         if _read_view_file(path) != file.body:
             raise RenderError(f"missing or stale workflow view: {file.path}; regenerate workflow views")
-    for owner, paths in expected.items():
+    for owner, paths in expected.items() if check_orphans else ():
         diagram_dir = Path(roots[owner]).resolve() / ".private_resources/diagrams"
         if diagram_dir.exists():
             for pattern in ("*.svg", "*.md"):
@@ -748,7 +790,7 @@ def _saved_graphic(path: Path, *, metadata: dict[str, object],
 
 def build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                       renderer: PlantUMLRenderer | None = None, verify: bool = True,
-                      hosted_selected: bool | None = None,
+                      hosted_selected: bool | None = None, check_orphans: bool = False,
                       repositories: Mapping[str, RepositoryIdentity] | None = None,
                       repository_sources: tuple[ViewSource, ...] = ()) -> ViewBundle:
     from api_agent.providers.progress import report_timeout_sync
@@ -759,12 +801,13 @@ def build_view_bundle(projection: object, *, roots: Mapping[str, Path],
             raise RenderError("hosted selected views cannot use source-owned static verification")
         return _build_view_bundle(projection, roots=roots, renderer=renderer,
                                   verify=verify, hosted_selected=selected, budget=budget,
+                                  check_orphans=check_orphans,
                                   repositories=repositories, repository_sources=repository_sources)
 
 
 def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                        renderer: PlantUMLRenderer | None, verify: bool,
-                       hosted_selected: bool, budget: object,
+                       hosted_selected: bool, budget: object, check_orphans: bool = False,
                        repositories: Mapping[str, RepositoryIdentity] | None = None,
                        repository_sources: tuple[ViewSource, ...] = ()) -> ViewBundle:
     """Generate a finite immutable bundle from one admitted projection."""
@@ -858,7 +901,7 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                         projection.projection_sha256, tuple(sources) + repository_sources, routes)
     verify_bundle_proof(bundle, projection, repository_sources=repository_sources)
     if verify:
-        check_view_bundle(bundle, roots=roots)
+        check_view_bundle(bundle, roots=roots, check_orphans=check_orphans)
     return bundle
 
 

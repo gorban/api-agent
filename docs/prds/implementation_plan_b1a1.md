@@ -42,3 +42,8 @@ The source implementation and repairs passed independent code review, the comple
 - [x] Build self-contained wheels and sdists only after validating all expected generated asset hashes. Builds never fetch or invoke npm. Verify missing-dependency failures, root/nested HTTP viewing, source and relocated installed-package behavior; keep actual direct-file browser acceptance unchecked.
 
 The joined source and retained-journal repair passed independent and external source review at `9125c59e`. The full gate passes 12,708 units at exact measured line/branch coverage. Locked npm preparation, installed-only runtime checks and package notices are verified; direct-file and repository-platform human acceptance remains open above. [Fresh runtime qualification](implementation_plan_b2b1a4.md) preserves the earlier observations for their original source bindings.
+
+
+## Scope and discovery correction
+
+The [scope-correct diagram and recursive discovery repair](implementation_plan_b1a3.md) reopens presentation delivery. Earlier source/qualification evidence remains historical; opaque scope views and the permanent fixture require renewed technical and human review.

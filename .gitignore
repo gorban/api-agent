@@ -22,8 +22,8 @@ node_modules/
 coverage/
 
 # Prepared by the root locked npm install; distributions include these assets.
-/.private_resources/viewer/marked.js
+**/.private_resources/viewer/marked.js
 /apps/api-agent-ui/public/marked.js
-/.private_resources/viewer/dompurify.js
+**/.private_resources/viewer/dompurify.js
 /apps/api-agent-ui/public/dompurify.js
-/.private_resources/viewer/heading-id.js
+**/.private_resources/viewer/heading-id.js

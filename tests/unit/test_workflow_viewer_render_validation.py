@@ -44,7 +44,7 @@ def test_diagram_rejects_labels_that_break_bounded_single_line_syntax(label):
 
 
 def test_diagram_rejects_excessive_route_records():
-    edge = SimpleNamespace(source="START", target="task", condition="go")
+    edge = SimpleNamespace(owner="GRAPH", source="START", target="task", condition="go")
     projection, entry = _projection(edges=(edge,) * 1001)
 
     with pytest.raises(RenderError, match="record limit"):

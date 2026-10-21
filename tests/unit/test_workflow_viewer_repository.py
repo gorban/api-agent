@@ -177,6 +177,7 @@ def empty_generation(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from api_agent.workflows import viewer_build
     from api_agent.workflows.viewer_render import ViewBundle
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
     return viewer_build

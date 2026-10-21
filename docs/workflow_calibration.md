@@ -8,7 +8,7 @@ Review a fresh pilot when the selected model or serving revision changes; when e
 
 Read the fingerprint diagnostic rather than copying a different model's budget. Preserve the observed settings, trial records, source/dependency identity and methodology with every reviewed baseline. A wider timeout must not rewrite what an older pilot actually used.
 
-Stale diagnostics list changed categories such as `effective_settings`, `sources` or `dependency_versions`, without disclosing configured values. A first-attempt failure at this preflight makes no graph inference calls; DEBUG does not bypass qualification. Returning settings to an older profile cannot repair changed source bindings. A fresh pilot and independent review are required before replacing the packaged entry; the command below consumes real inference usage.
+Stale diagnostics list changed categories such as `effective_settings`, `sources` or `dependency_versions`, without disclosing configured values. A first-attempt failure at this preflight makes no graph inference calls; DEBUG does not bypass qualification. Returning settings to an older profile cannot repair changed source bindings. Material sampling changes require a fresh pilot and independent review before replacing the packaged entry; the command below consumes real inference usage. The narrowly reviewed presentation-only carry-forward below does not make new measurements.
 
 ## Procedure
 
@@ -42,10 +42,16 @@ Stale diagnostics list changed categories such as `effective_settings`, `sources
    PY
    ```
 
-   This verifies provenance and arithmetic, not current compatibility or independent approval. Compare every current fingerprint field using `fingerprint(selection, resolved_config, root=context.base_root, owner_root=context.owner_root)` with the same standard configuration/context. A changed source or setting requires fresh qualification, not silently replacing its digest.
+   This verifies provenance and arithmetic, not current compatibility or independent approval. Compare every current fingerprint field using `fingerprint(selection, resolved_config, root=context.base_root, owner_root=context.owner_root)` with the same standard configuration/context. A changed sampling source or setting requires fresh qualification, not silently replacing its digest. Independently established presentation-only equivalence follows the separate exception below.
 6. Independently review the unsigned entry. Keep credentials, absolute/local paths, signing keys, receipt fields and raw producer content outside the public artifact. The candidate and `.receipt-key` remain private. After approval, manually replace or add the appropriate entry in `src/api_agent/workflows/fixture_baselines.json` under `{"schema": 1, "reports": [...]}`. Preserve another model's entry; reject duplicate entries for the same reviewed selection. Neither the maintenance command nor this export overwrites checked-in bounds. Retain old evidence separately when replacing an entry.
 7. Run the normal node-coverage integration test with the same supported settings. It stops at all-node coverage; defects or missing nodes at the cap fail. Preserve its actual stopping reason and usage.
 
 The 99.9% target is conditional coverage within a cap under independent, unchanged graph trials. It does not promise 99.9% end-to-end availability. A failed maintenance batch can contain useful diagnostic measurements without qualifying as finalized evidence.
 
 [Owning requirements](prds/implementation_plan_b2b1.md).
+
+## Presentation-only source equivalence
+
+Changing only the inert browser envelope or saved diagram/navigation can change raw declaration hashes without changing executable Markdown. Maintainers may retain reviewed observations through an explicitly authorized, independently reviewed carry-forward. Preserve the original payload, fingerprint and measurements at their original commit; prove canonical executable declarations, native/prompt/schema/configuration bytes, graph behavior, loader ownership, sampling code and effective profile are unchanged. Record exact old/current identities and promote only the reviewed current source binding. Do not imply a fresh pilot occurred or edit the observed records, bounds, minimum or margin.
+
+This is not an automatic fingerprint bypass or an end-user repair command. Strict current-fingerprint and statistical validation remain in force. Unproven drift stays stale; model family/version, reasoning, effective requests, graph execution or relevant dependency changes require fresh qualification. See the [current reviewed carry-forward](prds/implementation_plan_b2b1a5.md).

@@ -30,6 +30,7 @@ def _prepare_view(context):
     canonical = _canonical_selection(context, definition, projection)
     repositories, repository_sources = capture_repository_sources(definition.roots)
     bundle = build_view_bundle(projection, roots=definition.roots, verify=canonical,
+                               check_orphans=False,
                                repositories=repositories, repository_sources=repository_sources)
     return definition, projection, canonical, bundle, repository_sources
 

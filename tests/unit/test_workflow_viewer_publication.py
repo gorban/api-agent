@@ -7,6 +7,7 @@ from api_agent.workflows.viewer_render import ViewBundle, ViewFile
 
 @pytest.fixture
 def controlled(tmp_path, monkeypatch):
+    monkeypatch.setattr(vb, "discover_view_entries", lambda root: (root / "flow.md.html",))
     root = tmp_path / "root"
     root.mkdir()
     (root / "cfg").mkdir()
@@ -76,6 +77,7 @@ def test_pinned_staging_parent_swap_preserves_external_files(controlled, monkeyp
     assert (diagrams.with_name('kept-diagrams') / 'first.svg').read_bytes() == b'old first'
 
 def test_exclusive_initialization_preserves_concurrent_config(tmp_path, monkeypatch):
+    (tmp_path / "flow.md.html").write_text("# Workflow v2\n")
     monkeypatch.setattr(vb, '_projection', lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(vb, 'build_view_bundle', lambda *a, **kw: ViewBundle('', ()))
     config = tmp_path / 'cfg/workflow-view.toml'
