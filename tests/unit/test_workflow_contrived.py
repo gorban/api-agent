@@ -21,14 +21,13 @@ def test_format_preserves_verbatim_input():
 
 
 @pytest.mark.parametrize('draft', [{'original_input':'changed','final_output':'original'}, {'original_input':'original','final_output':''}])
-def test_format_defect_is_fatal(draft):
-    with pytest.raises(WorkflowError):
-        validate_format({'draft':draft,'user_input':'original'}, None)
+def test_format_defect_is_validation_result(draft):
+    assert validate_format({'draft':draft,'user_input':'original'}, None) == {'valid': False}
 
 
 @pytest.mark.parametrize('ready', [True,False])
 def test_guard_does_not_relax_final_pass(ready):
-    assert guard({'draft':{'ready':ready}}, SimpleNamespace(attempt=2))['accepted'] is ready
+    assert guard({'draft':{'ready':ready}, 'format': {'valid': True}}, SimpleNamespace(attempt=2))['accepted'] is ready
 
 
 @pytest.mark.parametrize('output,outcome,previous,error', [('[]','completed',None,'non-object'), ('{bad','completed',None,'invalid JSON'), ('{"route":"skip"}','completed',{'route':'next_a'},'routing'), ('{}','failed',None,'completed')])
@@ -78,14 +77,17 @@ def test_declarative_fixture_preserves_legacy_graph_contract():
     for section in previous.tables:
         def contract(rows):
             return [{key: value for key, value in row.items()
-                     if key not in {'line', '_owner', 'Input schema', 'Output schema', 'Kind'}}
+                     if key not in {'line', '_owner', '_owner_id', 'Input schema', 'Output schema', 'Kind'}
+                     and not (section == 'Prompts' and key == 'File')}
                     for row in rows]
         assert contract(current.layout.tables[section]) == contract(previous.tables[section])
+    assert [current.contents[row['File']] for row in current.layout.tables['Prompts']] == [
+        row['File'].read_bytes() for row in previous.tables['Prompts']]
     assert {row['ID']: row['Kind'] for row in current.layout.tables['Functions']} == {
         name: 'llm' if name.endswith('_draft') else 'deterministic'
         for name in (step.id for step in previous.steps if step.kind == 'node')}
     for resource in current.resources:
-        if resource.kind in {'schema', 'prompt', 'configuration', 'native_source'}:
+        if resource.kind in {'schema', 'configuration', 'native_source'}:
             scope, relative = resource.logical_path.split('/', 1)
             source_root = root / 'demo' if scope == 'pack' else root
             assert resource.content_bytes == (source_root / relative).read_bytes()
@@ -136,15 +138,16 @@ def test_typed_timeout_configuration_defaults_env_cli(argv,environ,expected,sour
     assert result.values['WORKFLOW_LLM_TIMEOUT_SECONDS']==expected
     assert result.fields['WORKFLOW_LLM_TIMEOUT_SECONDS'].source==source
     assert all(not schema.fields[key].acknowledge_default for key in schema.fields if key.endswith('TIMEOUT_SECONDS'))
-    assert all(key not in result.values for key in ('WORKFLOW_GRAPH_TIMEOUT_SECONDS','WORKFLOW_COMPONENT_TIMEOUT_SECONDS','WORKFLOW_NODE_TIMEOUT_SECONDS'))
+    assert result.values['WORKFLOW_GRAPH_TIMEOUT_SECONDS'] == 600.0
+    assert result.values['WORKFLOW_COMPONENT_TIMEOUT_SECONDS'] == 300.0
+    assert 'WORKFLOW_NODE_TIMEOUT_SECONDS' not in result.values
 
 
 def test_typed_timeout_bindings_and_default_disabled_limits():
     from pathlib import Path
     from api_agent.workflows.contrived import build
     workflow=build(Path(__file__).resolve().parents[2],llm=None,selection='synthetic',trial='id')
-    assert set(workflow.timeouts)=={'GRAPH','first','second','first_draft','first_format','first_guard','second_draft','second_format','second_guard'}
-    assert all(value is None for value in workflow.timeouts.values())
+    assert workflow.timeouts == {'GRAPH': 600.0, 'first': 300.0, 'second': 300.0}
     assert workflow.services['llm_timeout']==120
 
 
@@ -192,7 +195,7 @@ def test_configured_typed_limits_clip_all_workflow_scopes():
     async def llm(request):
         text=request.payload.messages[1].content[0].text
         return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text=json.dumps({'route':'skip','original_input':text,'ready':True,'final_output':text})),)))
-    settings={'WORKFLOW_LLM_TIMEOUT_SECONDS':7.5,'WORKFLOW_NODE_TIMEOUT_SECONDS':8.0,'WORKFLOW_COMPONENT_TIMEOUT_SECONDS':9.0,'WORKFLOW_GRAPH_TIMEOUT_SECONDS':2.0}
+    settings={'WORKFLOW_LLM_TIMEOUT_SECONDS':7.5,'WORKFLOW_COMPONENT_TIMEOUT_SECONDS':9.0,'WORKFLOW_GRAPH_TIMEOUT_SECONDS':2.0}
     workflow=build(Path(__file__).resolve().parents[2],llm=llm,selection='synthetic',trial='id',config=settings,observe=events.append)
     asyncio.run(workflow.arun({'user_input':'synthetic'}))
     starts=[event for event in events if event['event']=='scope_start']

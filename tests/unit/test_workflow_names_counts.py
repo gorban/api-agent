@@ -58,11 +58,11 @@ def test_real_contrived_components_show_counts_on_opaque_parent_steps():
         if document.logical_path == projection.entry_path or document.stable_id in ('first', 'second'):
             source, _ = _projection_source(projection, document)
             if document.logical_path == projection.entry_path:
-                assert 'rectangle "first · 3 registered nodes"'.encode() in source
-                assert 'rectangle "second · 3 registered nodes"'.encode() in source
+                assert b'rectangle "first &#183; 3 registered nodes"' in source
+                assert b'rectangle "second &#183; 3 registered nodes"' in source
             else:
                 assert b'package ' not in source
-                assert len([line for line in source.splitlines() if line.startswith(b'rectangle ')]) == 3
+                assert len([line for line in source.splitlines() if line.startswith(b'rectangle ') and b' as n' in line]) == 3
 
 
 def test_nested_counts_include_executable_descendants_only_even_in_component_view():
@@ -85,10 +85,10 @@ def test_nested_counts_include_executable_descendants_only_even_in_component_vie
     source, _ = _projection_source(projection, root)
     local_source, _ = _projection_source(projection, group_doc)
 
-    assert 'rectangle "group · 3 registered nodes"'.encode() in source
-    assert 'rectangle "nested · 2 registered nodes"'.encode() in local_source
-    assert b'rectangle "single"' in local_source
-    assert b'1 registered nodes' not in local_source
+    assert b'rectangle "group &#183; 3 registered nodes"' in source
+    assert b'rectangle "nested &#183; 2 registered nodes"' in local_source
+    assert b'rectangle "single" as n1' in local_source
+    assert b'1 registered node' not in local_source
     assert b'rectangle "group' not in local_source
 
 

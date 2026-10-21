@@ -9,6 +9,10 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
+from .predicates import PredicateError, parse_predicate, predicate_fields
+
+
+MAX_COMPONENT_PASSES = 99
 
 
 class LayoutError(ValueError):
@@ -250,6 +254,9 @@ def _validate(layout, resource_bytes=None):
     for row in layout.tables['Components']:
         if not re.fullmatch(r'[1-9][0-9]*', row['Max passes']):
             layout.error('Max passes must be a positive integer', row['line'])
+        if (len(row['Max passes']) > len(str(MAX_COMPONENT_PASSES))
+                or int(row['Max passes']) > MAX_COMPONENT_PASSES):
+            layout.error(f'Max passes must be at most {MAX_COMPONENT_PASSES}', row['line'])
         if row['Guard'] == '-':
             if row['Max passes'] != '1':
                 layout.error('Unguarded components require exactly one pass', row['line'])
@@ -284,6 +291,7 @@ def _validate(layout, resource_bytes=None):
         if not set(row['Input schema'].get('required', ())) <= bound[key]:
             layout.error('required inputs must have declared bindings', row['line'])
     seen = set()
+    edge_groups = {}
     for row in layout.tables['Edges']:
         source, target = row['From'], row['To']
         if source not in steps or (target != 'END' and (target not in steps or steps[target].parent != steps[source].parent)):
@@ -291,11 +299,22 @@ def _validate(layout, resource_bytes=None):
         if target != 'END' and ordered.index(target) <= ordered.index(source):
             layout.error('verification loops belong to bounded components; edges must advance', row['line'])
         identity = source, row['When']
-        if identity in seen or (row['When'] != 'always' and _ID.fullmatch(row['When']) is None):
-            layout.error('duplicate or invalid edge condition', row['line'])
+        if identity in seen:
+            layout.error('duplicate edge condition', row['line'])
         seen.add(identity)
+        edge_groups.setdefault(source, []).append(row)
+        if row['When'] not in ('always', 'otherwise') and _ID.fullmatch(row['When']) is None:
+            try:
+                parse_predicate(row['When'], predicate_fields(layout, source))
+            except PredicateError as error:
+                layout.error(str(error), row['line'])
+    for rows in edge_groups.values():
+        whens = {row['When'] for row in rows}
+        if ('always' in whens and len(rows) > 1) or ('otherwise' in whens and 'always' in whens):
+            layout.error('conditional edges require otherwise fallback; always must stand alone', rows[-1]['line'])
     for row in layout.tables['Prompts']:
-        if row['Node'] not in functions or (row['When'] != 'always' and _ID.fullmatch(row['When']) is None):
+        if (row['Node'] not in functions or row['When'] == 'otherwise'
+                or (row['When'] != 'always' and _ID.fullmatch(row['When']) is None)):
             layout.error('unknown prompt node or condition', row['line'])
     seen = set()
     for row in layout.tables['Timeouts']:

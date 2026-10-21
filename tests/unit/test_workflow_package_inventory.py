@@ -44,6 +44,7 @@ def packaged_owner(tmp_path):
         'tests/integration/fixture/nodes/step.md.html': '# Node v2: step\n',
         'tests/integration/fixture/cfg/workflow-view.toml': 'version=1\n',
         'tests/integration/fixture/.private_resources/diagrams/flow.svg': '<svg/>',
+        'tests/integration/fixture/.private_resources/diagrams/contracts/0123456789abcdef01234567.md.html': '<!doctype html><title>Captured field</title>',
         'tests/integration/fixture/.private_resources/viewer/viewer.js': '// first party',
     }.items():
         target = root / relative
@@ -78,7 +79,8 @@ def test_git_inventory_is_exact_and_survives_relocated_no_git_rebuild(packaged_o
     paths = {row['path'] for row in inventory['files']}
     assert {'tests/integration/fixture/flow.md.html', 'tests/integration/fixture/nodes/step.md.html',
             'tests/integration/fixture/cfg/workflow-view.toml',
-            'tests/integration/fixture/.private_resources/diagrams/flow.svg'} <= paths
+            'tests/integration/fixture/.private_resources/diagrams/flow.svg',
+            'tests/integration/fixture/.private_resources/diagrams/contracts/0123456789abcdef01234567.md.html'} <= paths
     assert sum('/.private_resources/viewer/' in '/' + path for path in paths) == 24
     assert 'tests/integration/fixture/private-sentinel.txt' not in paths
     assert 'tests/integration/fixture/.private_resources/diagrams/unknown.svg' not in paths
@@ -87,7 +89,7 @@ def test_git_inventory_is_exact_and_survives_relocated_no_git_rebuild(packaged_o
     assert build['_package_inventory'](root, False) == inventory
 
 
-@pytest.mark.parametrize('change', ['bytes', 'mode', 'duplicate', 'unknown-viewer',
+@pytest.mark.parametrize('change', ['bytes', 'mode', 'duplicate', 'unknown-viewer', 'unknown-reference',
                                     'escape', 'missing-original', 'symlink', 'missing-sidecar'])
 def test_no_git_inventory_rejects_changed_or_unbounded_payload(packaged_owner, change):
     root, build = packaged_owner
@@ -102,6 +104,8 @@ def test_no_git_inventory_rejects_changed_or_unbounded_payload(packaged_owner, c
         inventory['files'].append(inventory['files'][0])
     elif change == 'unknown-viewer':
         inventory['files'][0]['path'] = 'tests/integration/fixture/.private_resources/viewer/secret.txt'
+    elif change == 'unknown-reference':
+        inventory['files'][0]['path'] = 'tests/integration/fixture/.private_resources/diagrams/contracts/not-a-digest.md.html'
     elif change == 'escape':
         inventory['files'][0]['path'] = '../outside'
     elif change == 'missing-original':
@@ -193,6 +197,7 @@ def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_
         assert installed.read('api_agent/demo/placeholder.txt') == b'Public example fixture.\n'
         for suffix in ('flow.md.html', 'cfg/workflow-view.toml',
                        '.private_resources/diagrams/flow.svg',
+                       '.private_resources/diagrams/contracts/0123456789abcdef01234567.md.html',
                        '.private_resources/viewer/marked.js',
                        '.private_resources/viewer/heading-id-LICENSE.txt'):
             relative = owner + '/' + suffix

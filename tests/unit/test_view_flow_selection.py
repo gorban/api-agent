@@ -122,6 +122,7 @@ def test_sibling_workflow_library_is_temporary_selected_view(tmp_path, monkeypat
     library.mkdir()
     pack.mkdir()
     shutil.copy2(ROOT / 'flow.md.html', library / 'flow.md.html')
+    shutil.copytree(ROOT / 'cfg', library / 'cfg')
     shutil.copytree(ROOT / 'workflows', library / 'workflows')
     shutil.copytree(ROOT / 'demo/simple', library / 'demo/simple')
     (pack / 'config.toml').write_text('version=1\n')

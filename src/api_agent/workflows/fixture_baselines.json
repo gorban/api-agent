@@ -10,9 +10,9 @@
         "first_draft": 0.7871199821209823,
         "first_format": 0.7871199821209823,
         "first_guard": 0.7871199821209823,
-        "second_draft": 0.36204651348821093,
-        "second_format": 0.36204651348821093,
-        "second_guard": 0.36204651348821093
+        "second_draft": 0.6339019593532035,
+        "second_format": 0.6339019593532035,
+        "second_guard": 0.6339019593532035
       },
       "confidence": 0.95,
       "dependency_versions": {
@@ -25,8 +25,11 @@
       "effective_settings": {
         "api_mode": "responses",
         "cache_policy": "medium",
-        "component_timeout": null,
-        "graph_timeout": null,
+        "component_timeout": {
+          "first": 300.0,
+          "second": 300.0
+        },
+        "graph_timeout": 600.0,
         "llm_timeout": 120.0,
         "max_output_tokens": null,
         "node_timeout": null,
@@ -42,14 +45,14 @@
         "first_draft": 20,
         "first_format": 20,
         "first_guard": 20,
-        "second_draft": 13,
-        "second_format": 13,
-        "second_guard": 13
+        "second_draft": 18,
+        "second_format": 18,
+        "second_guard": 18
       },
-      "max_runs": 22,
-      "minimum_missing_node_bound": 0.0009190169693321882,
-      "minimum_runs": 18,
-      "missing_node_bound": 0.00015222275946124523,
+      "max_runs": 12,
+      "minimum_missing_node_bound": 0.0009807092243226867,
+      "minimum_runs": 8,
+      "missing_node_bound": 1.7415606734067215e-05,
       "model": "gpt-6-luna",
       "provider_identity": {
         "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
@@ -91,7 +94,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 3
         },
         {
@@ -112,7 +115,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 5
         },
         {
@@ -145,7 +148,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 8
         },
         {
@@ -169,16 +172,19 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 10
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 11
         },
         {
@@ -190,7 +196,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 12
         },
         {
@@ -202,7 +208,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 13
         },
         {
@@ -221,9 +227,12 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 15
         },
         {
@@ -235,7 +244,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 16
         },
         {
@@ -254,56 +263,60 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 18
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 19
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 20
         }
       ],
       "routes": {
-        "next_a": 6,
-        "next_b": 7,
-        "skip": 7
+        "next_a": 7,
+        "next_b": 11,
+        "skip": 2
       },
       "safety_margin": 4,
       "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
       "sources": {
-        "pack/cfg/config.toml": "62f2a19a2ef6cdaa4e6aaa41081c708a76ab0b6746327ebcd079f6cd9ceb8347",
-        "pack/contrived/flow.md.html": "9732cd37498af9c5668da5b3c26b9c9d1f0ee49e83cbc4c55bb449da450cb1b0",
+        "inline/pack/first_draft_prompt": "06e6e7a6c82dd7f1d26aad8d8b63831acfae53101eec026102dd6a98455014a0",
+        "inline/pack/second_draft_prompt": "06e6e7a6c82dd7f1d26aad8d8b63831acfae53101eec026102dd6a98455014a0",
+        "pack/cfg/config.toml": "ff7d31c20abb33826935a33a13feb62647dee3a7ed84f87ff9603391a612694d",
+        "pack/contrived/flow.md.html": "7473443cf98765aaffdb9b799566cbd103d1c338958ba03598709e3831dfc7cf",
         "pack/contrived/functions.py": "d640084da754b1c43791cae1ee08144abd3d4509380f1eb8d43b7ebab3f54e7b",
-        "pack/contrived/prompts/produce.md": "06e6e7a6c82dd7f1d26aad8d8b63831acfae53101eec026102dd6a98455014a0",
         "pack/contrived/schemas/draft.json": "d371c5daeb256f52ba6ecd8bc2bf4516bf753aceb239dd79a5c4710b1b5f4ad6",
         "pack/contrived/schemas/format_input.json": "e04b3eb4f89ce9775fbb5f6b134de15e1c4ccf04e93ff0150fe6177d26ff40c1",
         "pack/contrived/schemas/format_output.json": "d9139f0f4fb9c62bdfe0129e38f115f39b564053210f6452a0a400cc9393fb05",
-        "pack/contrived/schemas/guard_input.json": "7113b44a4e3dd62bb491f22525e5c6040acccd271abdc1da38a2dee068d08322",
+        "pack/contrived/schemas/guard_input.json": "5faa39ba5bccb7906609d52874ffc5bd16b15971ea4493171c41210500bc0681",
         "pack/contrived/schemas/guard_output.json": "57ee7a68c56b92ad1d9411bca0b26826bc09aaea53571a79c64293f843714017",
         "pack/contrived/schemas/producer.json": "6d1569b887fce1f3d5b4783ee212d0c56c797c09d6bf7793d2bc006e81b8f4e0",
-        "pack/contrived/workflows/components/first.md.html": "e4c3267b69d9e2dca4ae330fe852390830458859ade1d8348de6917904b8cbd4",
-        "pack/contrived/workflows/components/first/first_draft.md.html": "e5a1f81b5f4f5b67f673fc60fb1a124e293b117dcd2de64a1684fdc42fe9ce15",
-        "pack/contrived/workflows/components/first/first_format.md.html": "889249c7b7439f746bc81bc2345af7f8b2ea8293294997e8841a856860ccbf00",
-        "pack/contrived/workflows/components/first/first_guard.md.html": "ac28c2a4318efcaa4d58b4ecdfab1a2452fe55273a23c940f0f361672fcc1d92",
-        "pack/contrived/workflows/components/second.md.html": "7b10ab587c6244c155d223dfe889a07055cd9f33c7d9cd47c0b8bb2aaceef0ea",
-        "pack/contrived/workflows/components/second/second_draft.md.html": "d03196cbe56840a82a5c794b079c38abf1610882c5189d70af230a1a66a02393",
-        "pack/contrived/workflows/components/second/second_format.md.html": "fbd5a727484a4a2d73a947edbcb1135e06c52625f554c3acaa2bc2b563ad45f2",
-        "pack/contrived/workflows/components/second/second_guard.md.html": "a691adabaee5e3386ac0f23637d9d44e9ad7b0cfc5393807f77c7cda6b22efe1",
+        "pack/contrived/workflows/components/first.md.html": "0f7afd71ebd3f6a4601062ed7fd2562268249463b949cbfb3edef04fe45bf433",
+        "pack/contrived/workflows/components/second.md.html": "b750de3375e3637e42a6855503d8c881b168cf084683d1c26d92970b01d3d89f",
         "src/api_agent/auth/bindings.py": "ef139637dc7341a7818f3e0f051dfb9879baeab1f36e0176115365b9d7943a56",
         "src/api_agent/llm_providers/gpt/cache_policy.py": "458832c70e9b37b9523b8f74f06fc36ceeb84f73dd3cd71b44f223221082b84a",
         "src/api_agent/llm_providers/gpt/discovery.py": "eafdb478d3050a0875a437fa349e97d43abeca8e80c74284a99d45b470cd6829",
@@ -327,12 +340,13 @@
         "src/api_agent/runtime/tasks.py": "9a2783e2eb15c302e98cacd84d16ebd96348627bc682b025ffc0042073cc4146",
         "src/api_agent/testing/provider_setup.py": "7523115faf1bb79a326816c6ab9c6e2086aee7f3db7301bf7a75e9114e03d939",
         "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
-        "src/api_agent/workflows/contrived.py": "459d7b62b0c8c9de9fa863e1f9a635a481b29bd04ad91409fcf7a1d7a0051758",
-        "src/api_agent/workflows/definition.py": "8ab42fb5c08a187b50cd822c7ced41c59612cbeb8dfe2b3976261b643658bf08",
-        "src/api_agent/workflows/document_format.py": "134c2c215d0b38e7ff2ed490cd635a180b5141d24365e59d6ed5182ebd0fe066",
-        "src/api_agent/workflows/execution.py": "496c94228e322f2aca642d5408b0be9f23670f355e529f6238c380307f66bd8e",
+        "src/api_agent/workflows/contrived.py": "4e17710c9ecb291fbe70df3e9bd6c6afc284f30dcaff13d820383d98b7b53e0b",
+        "src/api_agent/workflows/definition.py": "ce546f04636db84f8fd83f0f2a2971fe380ad1dfb0e7e83611b026d3771ff375",
+        "src/api_agent/workflows/document_format.py": "86d6a6cabf757de50667ed2979a6323db8061aa322ff08da2c9ebf75138f8b11",
+        "src/api_agent/workflows/execution.py": "5489d5de4ce4a946574339f67e4ff7256fed137d65531206a3d3674c3c268380",
         "src/api_agent/workflows/fixture_driver.py": "dba2357da44f1ed29c8c8c0c1a3c06c75796e475c71772ef21e3ef986107e87a",
-        "src/api_agent/workflows/layout.py": "2309bad717f36e97da2fcd71534f146f73337949cd5018867339b61aff65431d"
+        "src/api_agent/workflows/layout.py": "85dfb8b5f1bd2c5510faf6de40de1ad600184af500c3e4b00943f43bfe54a8b5",
+        "src/api_agent/workflows/predicates.py": "c25379cb15d10b9f6143ae593083c7bcd8695d94d879213c6c2332c62076c423"
       },
       "target": 0.999,
       "trials": 20,

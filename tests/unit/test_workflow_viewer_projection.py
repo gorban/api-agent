@@ -176,13 +176,14 @@ def test_root_fallback_is_exact_and_nested_document_has_bootstrap_only(tmp_path)
     assert b'<h2>Viewing this file</h2>' in root
     assert b'Python 3.13 or newer' in root
     assert b'<!--\n\n\n\n\n\n  Open this file' in root
-    assert b'./launch.py --view-flow\n\n\n\n\n\n-->\n\n[workflow-help]:' in root
+    assert b'./launch.py --view-flow\n\n\n\n\n\n-->\n\n\n<meta charset' in root
+    assert root.index(b'Open this file') < root.index(b'<meta charset') < root.index(b'[workflow-help]:')
     assert b'<h2>Viewing this file</h2>' not in nested
     assert extract_document(root, path=entry).executable_bytes == entry.read_bytes()
     assert extract_document(nested, path=child).executable_bytes == child.read_bytes()
     from api_agent.workflows import document_format
-    entry.write_bytes(root.replace(document_format._ROOT_FALLBACK, b''))
-    with pytest.raises(LayoutError, match='asset prefix'):
+    entry.write_bytes(root.replace(document_format._ROOT_HELP, b''))
+    with pytest.raises(LayoutError, match='presentation envelope'):
         admit(entry)
 
 
@@ -676,7 +677,8 @@ def test_markdown_bootstrap_has_exact_safe_style_hashes_and_hidden_carrier(tmp_p
     prefix = saved.split(b'# Workflow v3')[0]
     styles = re.findall(rb'style="([^"]+)"', prefix)
 
-    assert saved.startswith(b'<!-- -*- mode: markdown -*- -->\n\n<meta charset=')
+    assert saved.startswith(b'<!-- -*- mode: markdown -*- -->\n<!--\n')
+    assert prefix.index(b'Open this file') < prefix.index(b'<meta charset')
     assert b"'unsafe-inline'" not in prefix
     assert len(styles) == 2
     for style in styles:

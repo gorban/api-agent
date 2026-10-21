@@ -1,4 +1,4 @@
-<!-- api-agent-companion-v1 sha256:ee5623127f34d520ff09b2a59bb5fc213b5d667988ddb8bf3f2f70bc2e52afe9 -->
+<!-- api-agent-companion-v1 sha256:b156b59b59ef636d0a222629d5ad318b9f9e0077bce6bf6c07ae77cbedd1554f -->
 # Workflow diagram: answer
 
 ![Workflow diagram](answer.svg)
@@ -10,5 +10,3 @@
 ## Navigation
 
 - [workflow_preferences](../../flow.md)
-- [draft](answer/draft.md)
-- [review](answer/review.md)

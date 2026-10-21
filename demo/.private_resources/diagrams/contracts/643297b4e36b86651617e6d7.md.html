@@ -1,0 +1,115 @@
+<!-- api-agent-reference-v1 sha256:97cf27e151d8a9ffbaca69239545ff01baa7c716360fd7b6118cda57bc21f7f8 -->
+<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;"><title>Input schema</title><h1>Input schema</h1><pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;user_input&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;previous&quot;: {
+      &quot;anyOf&quot;: [
+        {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;original_input&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            },
+            &quot;route&quot;: {
+              &quot;type&quot;: &quot;string&quot;,
+              &quot;enum&quot;: [
+                &quot;skip&quot;,
+                &quot;next_a&quot;,
+                &quot;next_b&quot;
+              ]
+            },
+            &quot;ready&quot;: {
+              &quot;type&quot;: &quot;boolean&quot;
+            },
+            &quot;final_output&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            }
+          },
+          &quot;required&quot;: [
+            &quot;original_input&quot;,
+            &quot;route&quot;,
+            &quot;ready&quot;,
+            &quot;final_output&quot;
+          ],
+          &quot;additionalProperties&quot;: false
+        },
+        {
+          &quot;type&quot;: &quot;null&quot;
+        }
+      ]
+    },
+    &quot;feedback&quot;: {
+      &quot;anyOf&quot;: [
+        {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;reason&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            }
+          },
+          &quot;required&quot;: [
+            &quot;reason&quot;
+          ],
+          &quot;additionalProperties&quot;: false
+        },
+        {
+          &quot;type&quot;: &quot;null&quot;
+        }
+      ]
+    },
+    &quot;attempt&quot;: {
+      &quot;type&quot;: &quot;integer&quot;
+    },
+    &quot;max_passes&quot;: {
+      &quot;type&quot;: &quot;integer&quot;
+    },
+    &quot;upstream&quot;: {
+      &quot;anyOf&quot;: [
+        {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;original_input&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            },
+            &quot;route&quot;: {
+              &quot;type&quot;: &quot;string&quot;,
+              &quot;enum&quot;: [
+                &quot;skip&quot;,
+                &quot;next_a&quot;,
+                &quot;next_b&quot;
+              ]
+            },
+            &quot;ready&quot;: {
+              &quot;type&quot;: &quot;boolean&quot;
+            },
+            &quot;final_output&quot;: {
+              &quot;type&quot;: &quot;string&quot;
+            }
+          },
+          &quot;required&quot;: [
+            &quot;original_input&quot;,
+            &quot;route&quot;,
+            &quot;ready&quot;,
+            &quot;final_output&quot;
+          ],
+          &quot;additionalProperties&quot;: false
+        },
+        {
+          &quot;type&quot;: &quot;null&quot;
+        }
+      ]
+    }
+  },
+  &quot;required&quot;: [
+    &quot;user_input&quot;,
+    &quot;previous&quot;,
+    &quot;feedback&quot;,
+    &quot;attempt&quot;,
+    &quot;max_passes&quot;,
+    &quot;upstream&quot;
+  ],
+  &quot;additionalProperties&quot;: false
+}</pre></html>

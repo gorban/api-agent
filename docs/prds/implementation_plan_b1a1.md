@@ -47,3 +47,7 @@ The joined source and retained-journal repair passed independent and external so
 ## Scope and discovery correction
 
 The [scope-correct diagram and recursive discovery repair](implementation_plan_b1a3.md) has independent/external technical closure at `1992ca2`. Earlier source/qualification evidence remains historical; combined human presentation acceptance remains unchecked.
+
+## Grouped declaration and control-flow follow-through
+
+The [grouped declaration, deadline and compact-inspection requirements](implementation_plan_b1a4.md) have technical review and fresh qualification closure. Earlier evidence remains historical; combined direct-file/repository-platform presentation acceptance is still unchecked.

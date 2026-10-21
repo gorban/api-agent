@@ -5,11 +5,15 @@ API_AGENT_TEST_WHEEL optionally selects a freshly built local wheel. The consume
 loader/configuration surface uses only the standard library. This does not
 exercise the application Runtime or dependency preparation.
 """
+from hashlib import sha256
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
+import tarfile
+import zipfile
 
 import pytest
 
@@ -209,6 +213,161 @@ def run(command, *, cwd):
     return result.stdout
 
 
+def _synthetic_git_environment():
+    environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                       GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME='Test Author',
+                       GIT_AUTHOR_EMAIL='test@example.invalid', GIT_COMMITTER_NAME='Test Author',
+                       GIT_COMMITTER_EMAIL='test@example.invalid')
+    return environment
+
+
+def _wheel_source_snapshot(repository, destination):
+    """Build from finite indexed paths and current, stable wheel input bytes."""
+    helper = runpy.run_path(str(repository / 'tools/frontend_assets.py'))
+    build = runpy.run_path(str(repository / 'hatch_build.py'))
+    build['_validate_frontend_assets'](repository)
+    listed = subprocess.run(['git', '-C', str(repository), 'ls-files', '--stage', '-z'],
+                            check=True, capture_output=True, timeout=20,
+                            env=_synthetic_git_environment()).stdout
+    assert len(listed) <= 4 * 1024 * 1024, 'Installed wheel index list exceeds limit'
+    selected = set()
+    observed = {}
+    prefixes = ('src/', 'demo/', 'cfg/', 'workflows/', '.private_resources/viewer/',
+                '.private_resources/diagrams/', 'apps/api-agent-ui/', 'infra/compose/',
+                'tests/integration/fixtures/workflow_preferences/')
+    individual = {'pyproject.toml', 'hatch_build.py', 'package.json', 'package-lock.json',
+                  '.npmrc', 'launch.py', 'tools/frontend-assets.json',
+                  'tools/frontend_assets.py', 'tools/prepare_frontend_assets.mjs',
+                  'tools/checks.py', 'tools/pre_commit_dispatcher.py',
+                  'tools/workflow_views.py', 'LICENSE', 'README.md', 'flow.md.html'}
+
+    def copy(relative, mode):
+        helper['_relative'](relative)
+        data = helper['_read'](repository, relative, 8 * 1024 * 1024)
+        source_mode = (repository / relative).lstat().st_mode & 0o777
+        assert bool(source_mode & 0o111) == bool(mode & 0o111), 'Installed wheel source mode changed'
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        target.chmod(mode)
+        observed[relative] = (len(data), sha256(data).digest(), source_mode)
+
+    for row in listed.split(b'\0'):
+        if not row:
+            continue
+        metadata, raw_path = row.split(b'\t', 1)
+        mode, _, stage = metadata.split()
+        assert mode in (b'100644', b'100755') and stage == b'0'
+        relative = raw_path.decode('utf-8')
+        if relative not in individual and not relative.startswith(prefixes):
+            continue
+        assert relative not in selected
+        selected.add(relative)
+        assert len(selected) <= 10000, 'Installed wheel source list exceeds limit'
+        copy(relative, int(mode, 8) & 0o777)
+    assert {'pyproject.toml', 'hatch_build.py', 'tools/frontend-assets.json',
+            'src/api_agent/__init__.py'} <= selected
+    manifest = helper['_json'](helper['_read'](repository, 'tools/frontend-assets.json'))
+    for relative, _ in helper['expanded_assets'](repository, manifest['assets']):
+        if relative not in selected:
+            copy(relative, 0o644)
+    for relative, expected in observed.items():
+        current = helper['_read'](repository, relative, 8 * 1024 * 1024)
+        assert (len(current), sha256(current).digest(),
+                (repository / relative).lstat().st_mode & 0o777) == expected, (
+                    'Installed wheel source changed while copying')
+    build['_validate_frontend_assets'](repository)
+
+    for arguments in (('init', '-q', '-b', 'synthetic'),
+                      ('add', '-f', '--', *sorted(selected)),
+                      ('-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + os.devnull,
+                       'commit', '-qm', 'Synthetic installed-wheel test snapshot')):
+        subprocess.run(['git', '-C', str(destination), *arguments], check=True,
+                       capture_output=True, timeout=20, env=_synthetic_git_environment())
+
+
+def _git_owned_checkout(repository):
+    result = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--show-toplevel'],
+                            capture_output=True, text=True, timeout=20,
+                            env=_synthetic_git_environment())
+    return result.returncode == 0 and Path(result.stdout.strip()).resolve() == repository.resolve()
+
+
+def test_wheel_snapshot_ignores_dirty_prd_and_packages_current_runtime_bytes(tmp_path, monkeypatch):
+    repository = Path(__file__).resolve().parents[2]
+    first = tmp_path / 'first'
+    first.mkdir()
+    foreign = tmp_path / 'foreign-git'
+    foreign.mkdir()
+    subprocess.run(['git', '-C', str(foreign), 'init', '-q'], check=True,
+                   capture_output=True, timeout=20, env=_synthetic_git_environment())
+    empty_index = tmp_path / 'empty-index'
+    foreign_environment = _synthetic_git_environment()
+    foreign_environment['GIT_INDEX_FILE'] = str(empty_index)
+    subprocess.run(['git', '-C', str(foreign), 'read-tree', '--empty'], check=True,
+                   capture_output=True, timeout=20, env=foreign_environment)
+    with monkeypatch.context() as hostile:
+        hostile.setenv('GIT_INDEX_FILE', str(empty_index))
+        hostile.setenv('GIT_DIR', str(foreign / '.git'))
+        hostile.setenv('GIT_WORK_TREE', str(foreign))
+        assert _git_owned_checkout(repository) is True
+        _wheel_source_snapshot(repository, first)
+    unrelated = first / 'docs/prds/review-notes.md'
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text('Committed review note.\n')
+    for arguments in (('add', 'docs/prds/review-notes.md'),
+                      ('-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + os.devnull,
+                       'commit', '-qm', 'Synthetic unrelated document')):
+        subprocess.run(['git', '-C', str(first), *arguments], check=True,
+                       capture_output=True, env=_synthetic_git_environment())
+    unrelated.write_text('Unstaged review draft.\n')
+    runtime = first / 'src/api_agent/__init__.py'
+    updated = runtime.read_bytes() + b'\n# Current wheel input proof.\n'
+    runtime.write_bytes(updated)
+
+    second = tmp_path / 'second'
+    second.mkdir()
+    _wheel_source_snapshot(first, second)
+    assert (second / 'src/api_agent/__init__.py').read_bytes() == updated
+    assert not (second / 'docs/prds/review-notes.md').exists()
+    output = tmp_path / 'wheels'
+    run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
+         '--outdir', str(output), str(second)], cwd=tmp_path)
+    wheel, = output.glob('*.whl')
+    with zipfile.ZipFile(wheel) as installed:
+        assert installed.read('api_agent/__init__.py') == updated
+    source_archives = tmp_path / 'source-archives'
+    run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--sdist',
+         '--outdir', str(source_archives), str(second)], cwd=tmp_path)
+    archive, = source_archives.glob('*.tar.gz')
+    extracted = tmp_path / 'extracted'
+    extracted.mkdir()
+    with tarfile.open(archive) as source:
+        source.extractall(extracted, filter='data')
+    unpacked, = extracted.iterdir()
+    assert _git_owned_checkout(unpacked) is False
+    rebuilt = tmp_path / 'rebuilt-wheels'
+    run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
+         '--outdir', str(rebuilt), str(unpacked)], cwd=tmp_path)
+    rebuilt_wheel, = rebuilt.glob('*.whl')
+    with zipfile.ZipFile(rebuilt_wheel) as installed:
+        assert installed.read('api_agent/__init__.py') == updated
+
+    runtime.unlink()
+    missing = tmp_path / 'missing'
+    missing.mkdir()
+    with pytest.raises(FileNotFoundError):
+        _wheel_source_snapshot(first, missing)
+    outside = tmp_path / 'outside.py'
+    outside.write_text('Private sentinel must not be copied.\n')
+    runtime.symlink_to(outside)
+    alias = tmp_path / 'alias'
+    alias.mkdir()
+    with pytest.raises(OSError):
+        _wheel_source_snapshot(first, alias)
+
+
 @pytest.fixture(scope='module')
 def installed_wheel(tmp_path_factory):
     repository = Path(__file__).resolve().parents[2]
@@ -218,9 +377,14 @@ def installed_wheel(tmp_path_factory):
         wheel = Path(wheel_setting).resolve()
         assert wheel.is_file(), 'API_AGENT_TEST_WHEEL must name a local wheel'
     else:
+        source = repository
+        if _git_owned_checkout(repository):
+            source = temporary / 'source'
+            source.mkdir()
+            _wheel_source_snapshot(repository, source)
         output = temporary / 'wheels'
         run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
-             '--outdir', str(output), str(repository)], cwd=temporary)
+             '--outdir', str(output), str(source)], cwd=temporary)
         wheel, = output.glob('*.whl')
     environment = temporary / 'consumer-env'
     run([sys.executable, '-I', '-m', 'venv', str(environment)], cwd=temporary)

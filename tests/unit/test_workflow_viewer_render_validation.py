@@ -35,7 +35,7 @@ def test_diagram_rejects_link_to_document_outside_admitted_selection():
         _projection_source(projection, entry)
 
 
-@pytest.mark.parametrize("label", ["line\nbreak", "tab\tname", "x" * 241])
+@pytest.mark.parametrize("label", ["line\nbreak", "tab\tname", "x" * 257])
 def test_diagram_rejects_labels_that_break_bounded_single_line_syntax(label):
     projection, entry = _projection(label=label)
 

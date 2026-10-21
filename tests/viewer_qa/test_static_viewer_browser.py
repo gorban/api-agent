@@ -41,8 +41,9 @@ def static_view(tmp_path):
     root_html = wrap_document(root_source, root=True, asset_prefix=".private_resources/viewer/", generated=root_generated)
     (owner / "flow.md.html").write_bytes(root_html)
     nested_generated = (b"![Workflow diagram](../../.private_resources/diagrams/workflows/components/agent.svg)\n\n"
-                        b"[Open standalone diagram](../../.private_resources/diagrams/workflows/components/agent.svg)")
-    nested = wrap_document(b"# Component v2: agent\n\n## Notes\n", root=False,
+                        b"[Open standalone diagram](../../.private_resources/diagrams/workflows/components/agent.svg)\n\n"
+                        b"- [llm_call](#node-llm_call)")
+    nested = wrap_document(b"# Component v2: agent\n\n## Node: llm_call\n", root=False,
                            asset_prefix="../../.private_resources/viewer/", generated=nested_generated)
     (owner / "workflows/components/agent.md.html").write_bytes(nested)
     (tmp_path / "outside.svg").write_text(
@@ -53,6 +54,67 @@ def static_view(tmp_path):
 def _image_state(page):
     return page.locator("main.workflow-document img").evaluate_all(
         "images => images.map(image => ({alt: image.alt, width: image.naturalWidth}))")
+
+
+@pytest.mark.parametrize('view_url', ['http'], indirect=True)
+def test_http_inline_fragment_navigation_is_hidden_locally(view_url):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('workflows/components/agent.md.html'))
+            page.locator('main.workflow-document').wait_for()
+
+            assert page.locator('main details').count() == 0
+            assert page.locator('main #node-llm_call').count() == 1
+            assert page.locator('main img[alt="Workflow diagram"]').count() == 1
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['http'], indirect=True)
+def test_http_fragment_hiding_depends_on_exact_viewer_pattern(view_url, static_view):
+    from playwright.sync_api import sync_playwright
+
+    source = (static_view / '.private_resources/viewer/viewer.js').read_text()
+    mutated = source.replace(r'|#node-\\2', '').replace(r'|#node-\\3', '')
+    assert mutated != source
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/viewer.js', lambda route: route.fulfill(
+                status=200, content_type='text/javascript', body=mutated))
+            page.goto(view_url('workflows/components/agent.md.html'))
+            page.locator('main.workflow-document').wait_for()
+
+            assert page.locator('main details > summary').all_inner_texts() == ['Diagram links']
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['http'], indirect=True)
+def test_http_mismatched_fragment_navigation_is_not_hidden(view_url, static_view):
+    from playwright.sync_api import sync_playwright
+
+    document = static_view / 'workflows/components/agent.md.html'
+    document.write_bytes(document.read_bytes().replace(b'[llm_call](#node-llm_call)',
+                                                       b'[llm_call](#node-other)'))
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('workflows/components/agent.md.html'))
+            page.locator('main.workflow-document').wait_for()
+
+            assert page.locator('main details').count() == 1
+            assert page.locator('main details a[href="#node-other"]').count() == 1
+        finally:
+            browser.close()
 
 
 def _watch_outside_file(page, outside):
@@ -472,5 +534,37 @@ def test_duplicate_svg_navigation_scripts_do_not_rewrite_while_parsing(static_vi
             page = browser.new_page()
             page.goto(view_url('.private_resources/diagrams/duplicates.svg'))
             assert page.locator('#target').get_attribute('href') == prefix + 'flow.md.html'
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['http'], indirect=True)
+def test_http_hosted_flow_click_targets_inline_heading(view_url, static_view):
+    from types import SimpleNamespace
+    from api_agent.workflows.document_format import wrap_document
+    from api_agent.workflows.viewer_render import _hosted_declaration
+    from playwright.sync_api import sync_playwright
+
+    raw = b'# Component: agent\n\n## Flow\n\n1. [node llm_call](#node-llm_call)\n\n## Node: llm_call\n'
+    document = SimpleNamespace(logical_path='base/workflows/components/agent.md.html',
+                               raw_bytes=raw, executable_bytes=raw)
+    step = SimpleNamespace(id='llm_call', owner_path=document.logical_path,
+                           declaration_path=document.logical_path, flow_line=5,
+                           declaration_fragment='node-llm_call')
+    projection = SimpleNamespace(steps=(step,), documents=(document,), resources=())
+    hosted = _hosted_declaration(projection, document)
+    (static_view / 'workflows/components/agent.md.html').write_bytes(wrap_document(
+        hosted, root=False, asset_prefix='../../.private_resources/viewer/'))
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('workflows/components/agent.md.html'))
+            link = page.get_by_role('link', name='node llm_call', exact=True)
+            assert link.get_attribute('href') == 'agent.md.html#node-llm_call'
+            link.click()
+            page.wait_for_url('**/agent.md.html#node-llm_call')
+            assert page.locator('main #node-llm_call').inner_text() == 'Node: llm_call'
         finally:
             browser.close()

@@ -29,7 +29,7 @@
     `<!-- workflow-generated-diagram-v2:start -->\\n` +
     `\\[!\\[Workflow diagram\\]\\((${pathV2}\\.svg)\\)\\]\\(\\1\\)\\n\\n` +
     `<details open>\\n<summary>Diagram links</summary>\\n\\n` +
-    `\\[Open standalone diagram\\]\\(\\1\\)(?:\\n\\n- \\[[a-z][a-z0-9_]{0,63}\\]\\(${pathV2}\\.md\\.html\\)(?:\\n- \\[[a-z][a-z0-9_]{0,63}\\]\\(${pathV2}\\.md\\.html\\))*)?` +
+    `\\[Open standalone diagram\\]\\(\\1\\)(?:\\n\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${pathV2}\\.md\\.html|#node-\\2)\\)(?:\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${pathV2}\\.md\\.html|#node-\\3)\\))*)?` +
     `\\n\\n</details>\\n<!-- workflow-generated-diagram-v2:end -->`, "g");
   let tokenOffset = 0;
   const codeRanges = [];

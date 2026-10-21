@@ -1,0 +1,36 @@
+<!-- api-agent-reference-v1 sha256:e3b643f55de3fcba807dbcbebdce47428a49bd73d5c33ced366acb84deee703e -->
+<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;"><title>Input schema</title><h1>Input schema</h1><pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;messages&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;minItems&quot;: 1,
+      &quot;maxItems&quot;: 64,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: {
+          &quot;role&quot;: {
+            &quot;enum&quot;: [
+              &quot;system&quot;,
+              &quot;user&quot;,
+              &quot;assistant&quot;
+            ]
+          },
+          &quot;content&quot;: {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;maxLength&quot;: 32768
+          }
+        },
+        &quot;required&quot;: [
+          &quot;role&quot;,
+          &quot;content&quot;
+        ],
+        &quot;additionalProperties&quot;: false
+      }
+    }
+  },
+  &quot;required&quot;: [
+    &quot;messages&quot;
+  ],
+  &quot;additionalProperties&quot;: false
+}</pre></html>

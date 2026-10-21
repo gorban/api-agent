@@ -186,8 +186,8 @@ def test_nested_declaration_change_invalidates_fixture_fingerprint(tmp_path, mon
     source_root = Path(__file__).resolve().parents[2]
     copytree(source_root / 'demo', tmp_path / 'demo')
     before = driver.fingerprint('gpt-6-luna', CONFIG, root=tmp_path)
-    node = tmp_path / 'demo/contrived/workflows/components/first/first_draft.md.html'
-    node.write_text(node.read_text() + '\n## Notes\n\nChanged declaration.\n')
+    node = tmp_path / 'demo/contrived/workflows/components/first.md.html'
+    node.write_text(node.read_text().replace('## Node: first_draft\n', '## Node: first_draft\n\n', 1))
 
     after = driver.fingerprint('gpt-6-luna', CONFIG, root=tmp_path)
 

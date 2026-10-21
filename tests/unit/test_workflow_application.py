@@ -93,6 +93,7 @@ def test_builder_uses_selected_relocated_package_root(tmp_path, monkeypatch):
     package = tmp_path / 'foreign/api_agent'
     package.mkdir(parents=True)
     (package / 'flow.md.html').write_bytes((ROOT / 'flow.md.html').read_bytes())
+    copytree(ROOT / 'cfg', package / 'cfg')
     copytree(ROOT / 'workflows', package / 'workflows')
     copytree(ROOT / 'demo/simple', package / 'demo/simple')
     monkeypatch.setattr(application, 'bundled_root', lambda: package)

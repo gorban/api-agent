@@ -28,6 +28,7 @@ class ViewerStep:
     owner_path: str
     flow_line: int
     declaration_path: str
+    declaration_fragment: str = ''
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,16 @@ class ViewerReference:
 
 
 @dataclass(frozen=True)
+class ViewerController:
+    component_id: str
+    guard: str
+    max_passes: int
+    accepted: bool
+    retry: bool
+    exhaustion: bool
+
+
+@dataclass(frozen=True)
 class ViewerProjection:
     version: int
     graph_id: str
@@ -64,6 +75,7 @@ class ViewerProjection:
     resources: tuple
     replacements: tuple
     projection_sha256: str
+    controllers: tuple[ViewerController, ...] = ()
 
 
 def project_view(definition) -> ViewerProjection:
@@ -95,7 +107,11 @@ def project_view(definition) -> ViewerProjection:
                                                     if step.id == identifier), None), line)
                         for identifier, (_, line, target) in definition.selected_declarations.items())
     documents = []
+    seen_documents = set()
     for path, identifier, parent, line in declarations:
+        if path in seen_documents:
+            continue
+        seen_documents.add(path)
         raw = definition.contents[path]
         canonical = canonical_executable_bytes(raw, path=path)
         digest = sha256(canonical).hexdigest()
@@ -103,7 +119,8 @@ def project_view(definition) -> ViewerProjection:
     steps = tuple(ViewerStep(step.id, step.kind, step.parent,
                              logical(definition.selected_declarations[step.id][0]),
                              definition.selected_declarations[step.id][1],
-                             logical(definition.selected_declarations[step.id][2]))
+                             logical(definition.selected_declarations[step.id][2]),
+                             (getattr(definition, 'declaration_fragments', None) or {}).get(step.id, ''))
                   for step in definition.layout.steps)
 
     if hasattr(definition, 'nodes'):
@@ -166,17 +183,29 @@ def project_view(definition) -> ViewerProjection:
                     target = row[field]
                     attrs = {key: value for key, value in row.items()
                              if key not in ('line', '_owner', field) and isinstance(value, str)}
-                    add_reference(name.lower(), owner, owner_by_path.get(owner), row['line'], target,
+                    if name == 'Functions':
+                        owner_id = row['ID']
+                    elif name == 'Timeouts':
+                        owner_id = None if row['Owner'] == 'GRAPH' else row['Owner']
+                    else:
+                        owner_id = row.get('_owner_id', owner_by_path.get(owner))
+                    add_reference(name.lower(), owner, owner_id, row['line'], target,
                                   field=field, **attrs)
         for row in definition.layout.tables['Bindings']:
             owner = row.get('_owner', definition.entry)
-            references.append(ViewerReference('binding', logical(owner), owner_by_path.get(owner), row['line'],
+            references.append(ViewerReference('binding', logical(owner), row.get('_owner_id', owner_by_path.get(owner)), row['line'],
                                               '', '', tuple(sorted((key, str(value)) for key, value in row.items()
                                                                    if key not in ('line', '_owner')))))
+    controllers = ()
+    if not hasattr(definition, 'nodes'):
+        from .predicates import component_controller
+        controllers = tuple(ViewerController(row['ID'], **component_controller(row))
+                            for row in definition.layout.tables['Components'])
     payload = {'version': 1, 'graph_id': definition.graph_id,
                'entry_path': logical(definition.entry),
                'documents': [(d.logical_path, d.stable_id, d.owner_id, d.sha256) for d in documents],
-               'steps': [(s.id, s.kind, s.parent, s.owner_path, s.declaration_path) for s in steps],
+               'steps': [(s.id, s.kind, s.parent, s.owner_path, s.declaration_path,
+                          s.declaration_fragment) for s in steps],
                'edges': [(e.owner, e.source, e.target, e.condition, e.implicit) for e in edges],
                'references': [(r.kind, r.owner_path, r.owner_id, r.target_path, r.target_sha256,
                                r.attributes) for r in references],
@@ -184,9 +213,11 @@ def project_view(definition) -> ViewerProjection:
                               next((d.sha256 for d in documents if d.logical_path == r.logical_path),
                                    r.sha256)) for r in definition.resources],
                'replacements': [(r.target_id, r.root_id, Path(r.entry).as_posix()) for r in definition.replacements]}
+    payload['controllers'] = [(c.component_id, c.guard, c.max_passes, c.accepted,
+                               c.retry, c.exhaustion) for c in controllers]
     digest = sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     backlinks = tuple(sorted(edges, key=lambda edge: (edge.owner, edge.target, edge.source,
                                                        edge.condition, edge.implicit)))
     return ViewerProjection(1, definition.graph_id, definition.definition_id, logical(definition.entry),
                             tuple(documents), steps, tuple(edges), backlinks, tuple(references),
-                            definition.resources, definition.replacements, digest)
+                            definition.resources, definition.replacements, digest, controllers)

@@ -1,0 +1,83 @@
+<!-- api-agent-reference-v1 sha256:0432bf2564c3b1889706a9ca3fbe3c38e40fc65f7b02c76470a6be7bc786a644 -->
+<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;"><title>Output schema</title><h1>Output schema</h1><pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;response_text&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;selected_model&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;outcome&quot;: {
+      &quot;const&quot;: &quot;completed&quot;
+    },
+    &quot;usage&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;input_tokens&quot;: {
+          &quot;type&quot;: [
+            &quot;integer&quot;,
+            &quot;null&quot;
+          ],
+          &quot;minimum&quot;: 0
+        },
+        &quot;output_tokens&quot;: {
+          &quot;type&quot;: [
+            &quot;integer&quot;,
+            &quot;null&quot;
+          ],
+          &quot;minimum&quot;: 0
+        },
+        &quot;cached_input_tokens&quot;: {
+          &quot;type&quot;: [
+            &quot;integer&quot;,
+            &quot;null&quot;
+          ],
+          &quot;minimum&quot;: 0
+        },
+        &quot;reasoning_tokens&quot;: {
+          &quot;type&quot;: [
+            &quot;integer&quot;,
+            &quot;null&quot;
+          ],
+          &quot;minimum&quot;: 0
+        },
+        &quot;cache_write_tokens&quot;: {
+          &quot;type&quot;: [
+            &quot;integer&quot;,
+            &quot;null&quot;
+          ],
+          &quot;minimum&quot;: 0
+        }
+      },
+      &quot;required&quot;: [
+        &quot;input_tokens&quot;,
+        &quot;output_tokens&quot;,
+        &quot;cached_input_tokens&quot;,
+        &quot;reasoning_tokens&quot;
+      ],
+      &quot;additionalProperties&quot;: false
+    },
+    &quot;actual_model&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;service_tier&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;serving_revision&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;billing&quot;: {
+      &quot;type&quot;: &quot;object&quot;
+    }
+  },
+  &quot;required&quot;: [
+    &quot;response_text&quot;,
+    &quot;selected_model&quot;,
+    &quot;outcome&quot;,
+    &quot;usage&quot;
+  ],
+  &quot;additionalProperties&quot;: false
+}</pre></html>

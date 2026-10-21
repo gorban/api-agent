@@ -13,7 +13,7 @@
 
 [workflow-source]: <plaintext id="workflow-source" hidden>
 
-# Component v2: answer
+# Component: answer
 
 <!-- workflow-generated-diagram-v2:start -->
 [![Workflow diagram](../../.private_resources/diagrams/workflows/components/answer.svg)](../../.private_resources/diagrams/workflows/components/answer.svg)
@@ -23,20 +23,54 @@
 
 [Open standalone diagram](../../.private_resources/diagrams/workflows/components/answer.svg)
 
+- [draft](#node-draft)
+- [review](#node-review)
 - [workflow_preferences](../../flow.md.html)
-- [draft](answer/draft.md.html)
-- [review](answer/review.md.html)
 
 </details>
 <!-- workflow-generated-diagram-v2:end -->
 
 ## Flow
 
-1.  [node draft](answer/draft.md.html)
-2.  [node review](answer/review.md.html)
+1.  [node draft](#node-draft)
+2.  [node review](#node-review)
 
 ## Components
 
 | ID | Max passes | Guard |
 | --- | --- | --- |
 | answer | 2 | review |
+
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| answer | [configuration](../../timeouts.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+
+## Node: draft
+
+### Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| produce | deterministic | [source](../../functions.py) |
+
+### Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| draft | produce | [input](../../schemas/input.json) | [output](../../schemas/draft.json) |
+
+## Node: review
+
+### Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| guard | deterministic | [source](../../functions.py) |
+
+### Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| review | guard | [input](../../schemas/review.json) | [output](../../schemas/guard.json) |

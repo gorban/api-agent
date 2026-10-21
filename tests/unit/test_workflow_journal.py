@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -60,6 +61,63 @@ def test_changed_or_resequenced_artifact_rejected():
     payload['events'][0]['sequence'] = 7
     with pytest.raises(ValueError, match='digest'):
         validate_journal(payload)
+
+
+def test_exact_admitted_expression_is_recorded_and_tampering_rejected():
+    selected = definition()
+    expression = 'Make["route"] == "skip"'
+    selected.layout.tables['Edges'] = [{'From': 'Make', 'To': 'END', 'When': expression}]
+    journal = WorkflowJournal(selected)
+    journal.observe({'event': 'scope_start', 'scope_id': 'scope', 'kind': 'graph',
+                     'owner': 'GRAPH', 'started_ms': 1})
+    journal.observe({'event': 'edge', 'source': 'START', 'target': 'Make',
+                     'owner': 'GRAPH', 'condition': 'always', 'implicit': True})
+    journal.observe({'event': 'scope_start', 'scope_id': 'visit', 'parent_id': 'scope',
+                     'kind': 'node', 'owner': 'Make', 'started_ms': 1})
+    journal.observe({'event': 'node', 'scope_id': 'visit', 'node': 'Make'})
+    journal.observe({'event': 'scope_end', 'scope_id': 'visit', 'parent_id': 'scope',
+                     'kind': 'node', 'owner': 'Make', 'started_ms': 1, 'stopped_ms': 2,
+                     'outcome': 'passed'})
+    journal.observe({'event': 'edge', 'source': 'Make', 'target': 'END', 'owner': 'GRAPH',
+                     'condition': expression, 'implicit': False, 'visit_id': 'visit'})
+    journal.observe({'event': 'scope_end', 'scope_id': 'scope', 'kind': 'graph',
+                     'owner': 'GRAPH', 'started_ms': 1, 'stopped_ms': 2, 'outcome': 'passed'})
+
+    packet = journal.finalize()
+    assert packet['completeness'] == 'complete'
+    assert validate_journal(packet, expected_definition=selected) == packet
+    recorded = next(row for row in packet['events'] if row.get('condition') == expression)
+    recorded['condition'] = 'Make["route"] != "skip"'
+    packet['sha256'] = sha256(json.dumps({key: value for key, value in packet.items() if key != 'sha256'},
+                                      sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    with pytest.raises(ValueError, match='Undeclared workflow event edge'):
+        validate_journal(packet)
+
+
+@pytest.mark.parametrize('condition,diagnostic', [
+    ('Make["route"] != "skip"', 'Undeclared workflow observation edge'),
+    ('__import__("os").system("id")', 'Unsafe workflow observation condition'),
+    (7, 'Unsafe workflow observation condition'),
+])
+def test_unadmitted_expression_cannot_be_observed(condition, diagnostic):
+    selected = definition()
+    selected.layout.tables['Edges'] = [{'From': 'Make', 'To': 'END', 'When': 'Make["route"] == "skip"'}]
+    journal = WorkflowJournal(selected)
+
+    with pytest.raises(ValueError, match=diagnostic):
+        journal.observe({'event': 'edge', 'source': 'Make', 'target': 'END', 'owner': 'GRAPH',
+                         'condition': condition, 'implicit': False})
+
+
+def test_scrubbed_predicate_literal_cannot_misstate_executed_route():
+    selected = definition()
+    expression = 'Make["route"] == "skip"'
+    selected.layout.tables['Edges'] = [{'From': 'Make', 'To': 'END', 'When': expression}]
+    journal = WorkflowJournal(selected, secrets=('skip',))
+
+    with pytest.raises(ValueError, match='condition label changed during export'):
+        journal.observe({'event': 'edge', 'source': 'Make', 'target': 'END', 'owner': 'GRAPH',
+                         'condition': expression, 'implicit': False})
 
 
 def test_runtime_emits_implicit_entry_and_exit_edges():

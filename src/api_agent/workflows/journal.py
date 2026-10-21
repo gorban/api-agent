@@ -8,11 +8,26 @@ from threading import Lock
 from uuid import uuid4, UUID
 
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+from .layout import MAX_COMPONENT_PASSES
+from .predicates import PredicateError, native_condition_id, parse_predicate
 
 _MAX_EVENTS = 8192
 _MAX_BYTES = 4 * 1024 * 1024
 _SAFE_LABEL = re.compile(r'[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z')
 _UNSAFE_FIELD = re.compile(r'(?i)(?:auth|token|secret|password|credential|cookie|session|continuation|reasoning|analysis|thought|deliberation|scratchpad|internal|hidden|chain.of.thought|private.key|bearer|(?:^|_)cot(?:_|$))')
+
+
+def _condition_label(value):
+    """Allow only legacy identifiers or bounded, data-only predicate syntax."""
+    if type(value) is not str:
+        return False
+    if native_condition_id(value):
+        return True
+    try:
+        parse_predicate(value, None)
+    except PredicateError:
+        return False
+    return True
 
 
 def _plain_values(data, schema, fields, boundary):
@@ -285,6 +300,8 @@ class WorkflowJournal:
     def __init__(self, definition, *, log_content=False, secrets=(), test_id=None,
                  source_manifest=None, boundary=None, turn_id=None):
         self.projection = projection(definition)
+        self._admitted_edges = {tuple(row[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
+                                for row in self.projection['edges']}
         self.invocation_id = str(uuid4())
         self.turn_id = str(uuid4()) if turn_id is None else turn_id
         try:
@@ -323,16 +340,23 @@ class WorkflowJournal:
                    'call_id', 'cause_id', 'usage', 'selection', 'direction',
                    'values', 'reason', 'accounting', 'plain_fields', 'capture_class',
                    'truncated_fields')
-        for key in ('event', 'owner', 'kind', 'node', 'component', 'source', 'condition',
+        for key in ('event', 'owner', 'kind', 'node', 'component', 'source',
                     'target', 'outcome', 'timeout_key', 'selection'):
             value = row.get(key)
             if value is not None and (type(value) is not str or _SAFE_LABEL.fullmatch(value) is None):
                 raise ValueError('Unsafe workflow observation label')
+        if 'condition' in row and not _condition_label(row['condition']):
+            raise ValueError('Unsafe workflow observation condition')
+        if row['event'] == 'edge' and 'condition' in row and tuple(row.get(key) for key in (
+                'owner', 'source', 'target', 'condition', 'implicit')) not in self._admitted_edges:
+            raise ValueError('Undeclared workflow observation edge')
         for key in ('scope_id', 'parent_id', 'visit_id', 'attempt_id', 'call_id', 'cause_id'):
             value = row.get(key)
             if value is not None and (type(value) is not str or len(value) > 64):
                 raise ValueError('Invalid workflow observation identity')
         clean = self._boundary.content_export({key: row[key] for key in allowed if key in row})
+        if clean.get('condition') != row.get('condition'):
+            raise ValueError('Workflow condition label changed during export')
         clean.update(sequence=len(self._events) + 1, event_id=str(uuid4()),
                      invocation_id=self.invocation_id, turn_id=self.turn_id)
         size = len(_encoded(clean))
@@ -473,9 +497,12 @@ def validate_journal(payload, *, expected_definition=None):
     for edge in projection_data['edges']:
         if (type(edge) is not dict or set(edge) != {'owner', 'source', 'target', 'condition', 'implicit'}
                 or any(type(edge[key]) is not str or _SAFE_LABEL.fullmatch(edge[key]) is None
-                       for key in ('owner', 'source', 'target', 'condition'))
+                       for key in ('owner', 'source', 'target'))
+                or not _condition_label(edge['condition'])
                 or type(edge['implicit']) is not bool):
             raise ValueError('Invalid workflow projection edge')
+    admitted_edges = {tuple(edge[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
+                      for edge in projection_data['edges']}
     for component in projection_data['component_passes']:
         if (type(component) is not dict or set(component) != {'id', 'max_passes', 'guard'}
                 or type(component['id']) is not str or _SAFE_LABEL.fullmatch(component['id']) is None
@@ -483,7 +510,7 @@ def validate_journal(payload, *, expected_definition=None):
                 or (component['guard'] != '-' and _SAFE_LABEL.fullmatch(component['guard']) is None)
                 or (component['guard'] == '-' and component['max_passes'] != 1)
                 or type(component['max_passes']) is not int
-                or not 1 <= component['max_passes'] <= 99):
+                or not 1 <= component['max_passes'] <= MAX_COMPONENT_PASSES):
             raise ValueError('Invalid workflow component pass contract')
     for resource in projection_data['resources']:
         path = resource.get('logical_path') if type(resource) is dict else None
@@ -534,6 +561,9 @@ def validate_journal(payload, *, expected_definition=None):
         event_ids.add(event_id)
         if event.get('invocation_id') != payload['invocation_id'] or event.get('turn_id') != payload['turn_id']:
             raise ValueError('Workflow event owner mismatch')
+        if event.get('event') == 'edge' and 'condition' in event and tuple(event.get(key) for key in (
+                'owner', 'source', 'target', 'condition', 'implicit')) not in admitted_edges:
+            raise ValueError('Undeclared workflow event edge')
         if event.get('event') == 'capture':
             if payload['content'] == 'withheld' and 'values' in event:
                 raise ValueError('Withheld workflow capture contains values')
