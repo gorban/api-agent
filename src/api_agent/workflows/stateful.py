@@ -28,7 +28,7 @@ from langgraph.graph.message import add_messages
 
 from api_agent.providers.progress import bind_timeout_budget, component_timeout
 from api_agent.runtime.tasks import offload, settle
-from .definition import Replacement, Resource, _freeze, _read_bounded, _sections, _table as _shared_table
+from .definition import Replacement, Resource, _declaration_parts, _inline_selection, _freeze, _read_bounded, _sections, _table as _shared_table
 from .document_format import canonical_executable_bytes, validate_presentation_location
 from .layout import Layout, LayoutError, Step, _ID
 
@@ -99,6 +99,7 @@ class StatefulDefinition:
     definition_id: str
     layout: Layout
     selected_declarations: object = None
+    declaration_fragments: object = None
 
     def verify_sources(self):
         for path, admitted in self.contents.items():
@@ -213,6 +214,8 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
     nodes = []
     steps = []
     selected_declarations = {}
+    declaration_fragments = {}
+    inline_references = {}
     def visit(owner, body, parent=None, depth=0):
         if depth > 64:
             raise LayoutError(f'{owner}:1: component nesting exceeds 64 levels')
@@ -228,34 +231,40 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             if identifier in {item[0] for item in steps}:
                 raise LayoutError(f'{owner}:{number}: duplicate step ID')
             replacement = next((item for item in replacements if item.target_id == identifier), None)
+            inline = _inline_selection(owner, contents[owner], target, kind, identifier, parent, number)
+            if inline is not None:
+                inline_references.setdefault(owner, set()).add(identifier)
             if replacement is not None:
-                if (re.search(r'%(?![0-9A-Fa-f]{2})', target)
-                        or any(ord(char) < 32 or ord(char) == 127 for char in target)):
-                    raise LayoutError(f'{owner}:{number}: invalid declaration link')
-                try:
-                    parsed = urlsplit(target)
-                except ValueError as error:
-                    raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
-                if (parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
-                        or re.search(r'%(?:2f|5c)', target, re.I)):
-                    raise LayoutError(f'{owner}:{number}: invalid declaration link')
-                try:
-                    decoded = unquote(parsed.path, errors='strict')
-                except UnicodeError as error:
-                    raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
-                if (not decoded or decoded.startswith('/') or '\\' in decoded or '?' in decoded
-                        or '#' in decoded or any(ord(char) < 32 or ord(char) == 127 for char in decoded)):
-                    raise LayoutError(f'{owner}:{number}: invalid declaration link')
-                try:
-                    original = (owner.parent / decoded).resolve(strict=False)
-                except (OSError, RuntimeError, ValueError) as error:
-                    raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
-                if (not any(original.is_relative_to(root) for root in roots.values())
-                        or original.suffixes[-2:] != ['.md', '.html']):
-                    raise LayoutError(f'{owner}:{number}: declaration link outside roots or wrong format')
+                if inline is None:
+                    if (re.search(r'%(?![0-9A-Fa-f]{2})', target)
+                            or any(ord(char) < 32 or ord(char) == 127 for char in target)):
+                        raise LayoutError(f'{owner}:{number}: invalid declaration link')
+                    try:
+                        parsed = urlsplit(target)
+                    except ValueError as error:
+                        raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
+                    if (parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
+                            or re.search(r'%(?:2f|5c)', target, re.I)):
+                        raise LayoutError(f'{owner}:{number}: invalid declaration link')
+                    try:
+                        decoded = unquote(parsed.path, errors='strict')
+                    except UnicodeError as error:
+                        raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
+                    if (not decoded or decoded.startswith('/') or '\\' in decoded or '?' in decoded
+                            or '#' in decoded or any(ord(char) < 32 or ord(char) == 127 for char in decoded)):
+                        raise LayoutError(f'{owner}:{number}: invalid declaration link')
+                    try:
+                        original = (owner.parent / decoded).resolve(strict=False)
+                    except (OSError, RuntimeError, ValueError) as error:
+                        raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
+                    if (not any(original.is_relative_to(root) for root in roots.values())
+                            or original.suffixes[-2:] != ['.md', '.html']):
+                        raise LayoutError(f'{owner}:{number}: declaration link outside roots or wrong format')
                 if replacement.root_id not in roots or Path(replacement.entry).is_absolute() or '..' in Path(replacement.entry).parts:
                     raise LayoutError(f'{owner}:{number}: invalid replacement')
                 declaration = (roots[replacement.root_id] / replacement.entry).resolve()
+            elif inline is not None:
+                declaration = owner
             else:
                 if Path(target).is_absolute() or '#' in target or '?' in target:
                     raise LayoutError(f'{owner}:{number}: invalid declaration link')
@@ -265,8 +274,12 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             if declaration not in contents:
                 contents[declaration] = read(declaration)
             kinds[declaration] = 'declaration'
-            title, child = _sections(declaration, contents[declaration])
-            if title != f'# {kind.title()} v3: {identifier}':
+            if inline is not None and replacement is None:
+                title, child = f'# Node: {identifier}', inline
+                declaration_fragments[identifier] = 'node-' + identifier
+            else:
+                title, child = _sections(declaration, contents[declaration])
+            if title not in (f'# {kind.title()} v3: {identifier}', f'# {kind.title()}: {identifier}'):
                 raise LayoutError(f'{declaration}:1: declaration identity mismatch')
             steps.append((identifier, kind, parent, declaration))
             selected_declarations[identifier] = (owner, number, declaration)
@@ -281,10 +294,16 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                 if len(binding) != 1 or not _ID.fullmatch(binding[0]['Registry']) or binding[0]['Kind'] not in ('deterministic', 'llm'):
                     raise LayoutError(f'{declaration}:1: invalid native binding')
                 nodes.append(dict(ID=identifier, Registry=binding[0]['Registry'], Kind=binding[0]['Kind'],
-                                  Source=source(dict(binding[0], line=binding[0]['line'], _owner=declaration))))
+                                  Source=source(dict(binding[0], line=binding[0]['line'], _owner=declaration)),
+                                  _owner_id=identifier, line=binding[0]['line']))
         if count == 0:
             raise LayoutError(f'{owner}:1: Flow requires steps')
     visit(entry, sections['Flow'])
+    for physical, kind in kinds.items():
+        if kind == 'declaration':
+            _, _, inline_nodes = _declaration_parts(physical, contents[physical])
+            if set(inline_nodes) != inline_references.get(physical, set()):
+                raise LayoutError(f'{physical}:1: unreferenced inline node declaration')
     if set(declared_resources) & {item[0] for item in steps}:
         raise LayoutError(f'{entry}:1: resource ID conflicts with step ID')
     if {item.target_id for item in replacements} - {item[0] for item in steps} - set(declared_resources):
@@ -336,7 +355,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                                        'replacements': [(r.target_id, r.root_id, Path(r.entry).as_posix()) for r in replacements]},
                                       sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     layout_steps = tuple(Step(name, kind, parent, next(row['Source'] for row in nodes if row['ID'] == name)
-                              if kind == 'node' else path, 1) for name, kind, parent, path in steps)
+                              if kind == 'node' else path, selected_declarations[name][1]) for name, kind, parent, path in steps)
     layout_edges = tuple(_freeze(dict(row, When='always' if row['Router'] == '-' else row['Router']))
                          for row in edges)
     layout = Layout(entry, layout_steps, MappingProxyType({'Edges': layout_edges}), tuple(sorted(contents)))
@@ -352,7 +371,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                                     state[0]['Registry'], state_source,
                                     tuple(_freeze(row) for row in nodes), tuple(_freeze(row) for row in edges),
                                     MappingProxyType(contents), definition_id, layout,
-                                    MappingProxyType(selected_declarations))
+                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments))
     _validated_timeouts(definition)
     return definition
 

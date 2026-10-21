@@ -18,6 +18,7 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
+from .predicates import component_controller, component_decision, native_condition_id, parse_predicate, predicate_fields
 
 
 class WorkflowError(RuntimeError):
@@ -86,6 +87,30 @@ class _State(TypedDict):
     attempt_id: str | None
 
 
+def resolve_timeouts(layout, config, definition=None):
+    """Resolve only declared scope budgets from captured configuration defaults."""
+    from api_agent.config.declarations import schema_from_dict, UNSET
+    import tomllib
+
+    values, keys = {}, {}
+    for row in layout.tables['Timeouts']:
+        try:
+            source_bytes = (definition.contents[row['Source']] if definition is not None
+                            else row['Source'].read_bytes())
+            schema = schema_from_dict(tomllib.loads(source_bytes.decode('utf-8')))
+        except (OSError, UnicodeError, ValueError) as error:
+            layout.error(str(error), row['line'])
+        field = schema.fields.get(row['Key'])
+        if field is None or field.type not in ('int', 'float'):
+            layout.error('timeout must reference a numeric configuration declaration', row['line'])
+        value = config.get(row['Key'], None if field.default is UNSET else field.default)
+        if value is not None and (type(value) not in (int, float) or not 0 < value < float('inf')):
+            layout.error('timeout must be finite positive seconds or omitted', row['line'])
+        values[row['Owner']] = value
+        keys[row['Owner']] = row['Key']
+    return values, keys
+
+
 class Workflow:
     def __init__(self, layout, registry, conditions=None, *, config=None, services=None):
         self.definition = layout if hasattr(layout, 'definition_id') else None
@@ -94,27 +119,10 @@ class Workflow:
         self.layout, self.registry = layout, registry
         self.conditions = conditions or {}
         self.config, self.services = config or {}, services or {}
+        self._predicates = {}
         self.functions = {row['ID']: row for row in layout.tables['Functions']}
         self.components = {row['ID']: row for row in layout.tables['Components']}
-        self.timeouts = {}
-        self.timeout_keys = {}
-        for row in layout.tables['Timeouts']:
-            from api_agent.config.declarations import schema_from_dict, UNSET
-            import tomllib
-            try:
-                source_bytes = (self.definition.contents[row['Source']] if self.definition is not None
-                                else row['Source'].read_bytes())
-                schema = schema_from_dict(tomllib.loads(source_bytes.decode('utf-8')))
-            except (OSError, UnicodeError, ValueError) as error:
-                layout.error(str(error), row['line'])
-            field = schema.fields.get(row['Key'])
-            if field is None or field.type not in ('int', 'float'):
-                layout.error('timeout must reference a numeric configuration declaration', row['line'])
-            value = self.config.get(row['Key'], None if field.default is UNSET else field.default)
-            if value is not None and (type(value) not in (int, float) or not 0 < value < float('inf')):
-                layout.error('timeout must be finite positive seconds or omitted', row['line'])
-            self.timeouts[row['Owner']] = value
-            self.timeout_keys[row['Owner']] = row['Key']
+        self.timeouts, self.timeout_keys = resolve_timeouts(layout, self.config, self.definition)
         steps = {step.id: step for step in layout.steps}
         if self.definition is not None:
             self.definition.verify_native_sources()
@@ -137,8 +145,17 @@ class Workflow:
                 if native_origin(function.invoke) != (self.definition.definition_id, path):
                     layout.error('native callable does not belong to the admitted definition', row['line'])
         for row in (*layout.tables['Edges'], *layout.tables['Prompts']):
-            if row['When'] != 'always' and not callable(self.conditions.get(row['When'])):
+            when = row['When']
+            if when == 'always' or (when == 'otherwise' and row in layout.tables['Edges']):
+                continue
+            if native_condition_id(when) and callable(self.conditions.get(when)):
+                continue
+            if row in layout.tables['Prompts']:
                 layout.error('unknown registered condition', row['line'])
+            try:
+                self._predicates[when] = parse_predicate(when, predicate_fields(layout, row['From']))
+            except ValueError as error:
+                layout.error(str(error), row['line'])
         self.graph = self._compile(None)
 
     def _event(self, event, **values):
@@ -180,7 +197,11 @@ class Workflow:
             raise TimeoutError('Workflow component deadline expired')
 
     def _condition(self, identifier, values):
-        result = self.conditions[identifier](deepcopy(values))
+        if identifier in self._predicates:
+            predicate = self._predicates[identifier]
+            result = predicate.evaluate(values)
+        else:
+            result = self.conditions[identifier](deepcopy(values))
         if type(result) is not bool:
             raise WorkflowError(f'Condition {identifier} must return a boolean')
         return result
@@ -209,8 +230,8 @@ class Workflow:
                                             {target: END if target == 'END' else target})
             else:
                 def route(state, edges=edges, step=step):
-                    matches = [row for row in edges if row['When'] != 'always' and self._condition(row['When'], state['values'])]
-                    fallback = [row for row in edges if row['When'] == 'always']
+                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'])]
+                    fallback = [row for row in edges if row['When'] in ('always', 'otherwise')]
                     choices = matches or fallback
                     if len(choices) != 1:
                         raise WorkflowError('Routing requires exactly one matching condition or fallback')
@@ -225,7 +246,8 @@ class Workflow:
     def _component(self, step):
         graph = self._compile(step.id)
         row = self.components[step.id]
-        maximum = int(row['Max passes'])
+        controller = component_controller(row)
+        maximum = controller['max_passes']
         async def execute(state):
             original_ancestry, original_feedback = state['ancestry'], state['feedback']
             original_previous = state['previous']
@@ -244,7 +266,7 @@ class Workflow:
                     self._event('attempt', scope_id=budget.id, component=step.id, attempt=attempt,
                                 attempt_id=attempt_id, max_passes=maximum)
                     current = await graph.ainvoke(current, {'recursion_limit': len(self.layout.steps) + 1})
-                    if row['Guard'] == '-':
+                    if not controller['accepted']:
                         return dict(current, ancestry=original_ancestry, feedback=original_feedback,
                                     previous=original_previous, attempt_id=original_attempt_id,
                                     visit_id=budget.id)
@@ -252,7 +274,7 @@ class Workflow:
                         raise WorkflowError(f'Component {step.id} did not execute its guard in the current pass')
                     guard = GuardResult.from_output(current['values'][row['Guard']])
                     self._event('guard', scope_id=budget.id, component=step.id, attempt=attempt, accepted=guard.accepted)
-                    if guard.accepted:
+                    if component_decision(controller, guard.accepted, attempt) == 'accepted':
                         return dict(current, ancestry=original_ancestry, feedback=original_feedback,
                                     previous=original_previous, attempt_id=original_attempt_id,
                                     visit_id=budget.id)
@@ -405,8 +427,16 @@ def diagram_layout(layout):
                 lines.append(f'    {step.id} --> {target}')
         if parent is not None:
             component = next(row for row in layout.tables['Components'] if row['ID'] == parent)
-            if component['Guard'] != '-':
-                lines.append(f'    {scope}_END -. reject, at most {component["Max passes"]} passes .-> {scope}_START')
+            controller = component_controller(component)
+            if controller['accepted']:
+                lines.append(f'    {scope}_DECISION{{"guard {controller["guard"]} · attempt / {controller["max_passes"]}"}}')
+                lines.append(f'    {scope}_ACCEPTED([accepted])')
+                lines.append(f'    {scope}_EXHAUSTED([exhausted error])')
+                lines.append(f'    {scope}_END --> {scope}_DECISION')
+                lines.append(f'    {scope}_DECISION -->|accepted| {scope}_ACCEPTED')
+                if controller['retry']:
+                    lines.append(f'    {scope}_DECISION -->|rejected, attempt < {controller["max_passes"]}| {scope}_START')
+                lines.append(f'    {scope}_DECISION -->|rejected, attempt = {controller["max_passes"]}| {scope}_EXHAUSTED')
             lines.append('    end')
     lines.extend(['```', '', 'Source links:', ''])
     lines.extend(f'- [{step.id}]({step.source.as_uri()})' for step in layout.steps)

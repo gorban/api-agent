@@ -13,7 +13,7 @@
 
 [workflow-source]: <plaintext id="workflow-source" hidden>
 
-# Component v2: agent
+# Component: agent
 
 <!-- workflow-generated-diagram-v2:start -->
 [![Workflow diagram](../../.private_resources/diagrams/workflows/components/agent.svg)](../../.private_resources/diagrams/workflows/components/agent.svg)
@@ -23,18 +23,38 @@
 
 [Open standalone diagram](../../.private_resources/diagrams/workflows/components/agent.svg)
 
+- [llm_call](#node-llm_call)
 - [simple_chat](../../flow.md.html)
-- [llm_call](agent/llm_call.md.html)
 
 </details>
 <!-- workflow-generated-diagram-v2:end -->
 
 ## Flow
 
-1.  [node llm_call](agent/llm_call.md.html)
+1.  [node llm_call](#node-llm_call)
 
 ## Components
 
 | ID | Max passes | Guard |
 | --- | --- | --- |
 | agent | 1 | - |
+
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| agent | [configuration](../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+
+## Node: llm_call
+
+### Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| llm_call | llm | [Python](../../demo/simple/functions.py) |
+
+### Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| llm_call | llm_call | [input](../contracts/llm_call_input.json) | [output](../contracts/llm_call_output.json) |

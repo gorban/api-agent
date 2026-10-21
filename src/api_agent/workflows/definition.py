@@ -51,6 +51,7 @@ class WorkflowDefinition:
     layout: Layout
     contents: object
     selected_declarations: object = None
+    declaration_fragments: object = None
 
     def verify_native_sources(self):
         """Reject a source change before importing its admitted native binding."""
@@ -157,7 +158,8 @@ def load_native_catalog(definition: WorkflowDefinition, source: Path, *, reporti
     return namespace
 
 
-def _sections(path, data):
+def _declaration_parts(path, data):
+    """Parse physical headings once, retaining scoped node sections and lines."""
     extracted = extract_document(data, path=path)
     text = extracted.executable_bytes.decode('utf-8')
     lines = text.splitlines()
@@ -180,17 +182,58 @@ def _sections(path, data):
     if not headings or headings[0][0] != 0 or headings[0][1] != 'h1':
         raise LayoutError(f'{path}:{line_map[0]}: expected version heading')
     title = lines[0]
-    sections = {}
+    component = re.fullmatch(r'# Component(?: v[23])?: [a-z][a-z0-9_]{0,63}', title)
+    sections, nodes = {}, {}
+    current = None
     if any(line.strip() for line in lines[1:headings[1][0] if len(headings) > 1 else len(lines)]):
         raise LayoutError(f'{path}:{line_map[0]}: content before section')
     for index, (start, tag, heading) in enumerate(headings[1:], 1):
-        if tag != 'h2' or not _SECTION.fullmatch(lines[start]):
-            raise LayoutError(f'{path}:{line_map[start]}: unknown heading')
-        if heading in sections:
-            raise LayoutError(f'{path}:{line_map[start]}: duplicate section {heading}')
         stop = headings[index + 1][0] if index + 1 < len(headings) else len(lines)
-        sections[heading] = [(line_map[line], lines[line]) for line in range(start + 1, stop)]
+        body = [(line_map[line], lines[line]) for line in range(start + 1, stop)]
+        if tag == 'h2' and heading.startswith('Node: '):
+            identifier = heading.removeprefix('Node: ')
+            if not component or not _ID.fullmatch(identifier) or identifier in nodes:
+                raise LayoutError(f'{path}:{line_map[start]}: invalid or duplicate inline node')
+            if any(value.strip() for _, value in body):
+                raise LayoutError(f'{path}:{line_map[start]}: content before inline node section')
+            current = nodes[identifier] = {}
+            continue
+        if tag == 'h2' and _SECTION.fullmatch(lines[start]):
+            current = None
+            target = sections
+        elif tag == 'h3' and current is not None and lines[start] == '### ' + heading:
+            target = current
+        else:
+            raise LayoutError(f'{path}:{line_map[start]}: unknown heading')
+        if heading in target:
+            raise LayoutError(f'{path}:{line_map[start]}: duplicate section {heading}')
+        target[heading] = body
+    return title, sections, nodes
+
+
+def _sections(path, data):
+    title, sections, _ = _declaration_parts(path, data)
     return title, sections
+
+
+def _prompt_body(path, data, identifier, *, scope=None):
+    """Find one physical prompt scope; duplicate virtual identities are unsafe."""
+    title, sections, nodes = _declaration_parts(path, data)
+    outer = re.fullmatch(r'# (?:Component|Node)(?: v[23])?: ([a-z][a-z0-9_]{0,63})', title)
+    scopes = ((outer.group(1) if outer else None, sections), *nodes.items())
+    matches = [body['Prompt: ' + identifier] for owner_id, body in scopes
+               if (scope is None or owner_id == scope) and 'Prompt: ' + identifier in body]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _inline_selection(path, data, target, kind, identifier, parent, line):
+    if not target.startswith('#'):
+        return None
+    _, _, nodes = _declaration_parts(path, data)
+    if (kind != 'node' or parent is None or target != '#node-' + identifier or
+            identifier not in nodes):
+        raise LayoutError(f'{path}:{line}: missing or foreign inline node fragment')
+    return nodes[identifier]
 
 
 def _table(path, body, columns):
@@ -298,6 +341,8 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     resolved = []
     declarations = {}
     selected_declarations = {}
+    declaration_fragments = {}
+    inline_references = {}
     def visit_flow(owner, section, parent=None, depth=0):
         if depth > 64:
             raise LayoutError(f'{owner}:1: component nesting exceeds 64 levels')
@@ -321,8 +366,11 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             if any(item.id == identifier for item in resolved):
                 raise LayoutError(f'{owner}:{number}: duplicate step ID')
             replacement = next((item for item in replacements if item.target_id == identifier), None)
-            declaration = link(owner, f'[{label}]({target})', 'declaration',
-                               selected=replacement is None)
+            inline = _inline_selection(owner, captured[owner][1], target, kind, identifier, parent, number)
+            if inline is not None:
+                inline_references.setdefault(owner, set()).add(identifier)
+            declaration = owner if inline is not None else link(
+                owner, f'[{label}]({target})', 'declaration', selected=replacement is None)
             if declaration.suffixes[-2:] != ['.md', '.html']:
                 raise LayoutError(f'{owner}:{number}: child declaration must end .md.html')
             if replacement:
@@ -337,8 +385,12 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             step = Step(identifier, kind, parent, declaration, number)
             resolved.append(step)
             selected_declarations[identifier] = (owner, number, declaration)
-            title, child_sections = _sections(declaration, captured[declaration][1])
-            if title != f'# {kind.title()} v2: {identifier}':
+            if inline is not None and replacement is None:
+                title, child_sections = f'# Node: {identifier}', inline
+                declaration_fragments[identifier] = 'node-' + identifier
+            else:
+                title, child_sections = _sections(declaration, captured[declaration][1])
+            if title not in (f'# {kind.title()} v2: {identifier}', f'# {kind.title()}: {identifier}'):
                 raise LayoutError(f'{declaration}:1: declaration identity mismatch')
             declarations[identifier] = child_sections
             if kind == 'component':
@@ -350,6 +402,11 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
         if count == 0:
             raise LayoutError(f'{owner}:1: Flow requires steps')
     visit_flow(entry, root_sections['Flow'])
+    # Resource rows are captured below; every physical snapshot here is a declaration.
+    for physical, (_, data) in captured.items():
+        _, _, nodes = _declaration_parts(physical, data)
+        if set(nodes) != inline_references.get(physical, set()):
+            raise LayoutError(f'{physical}:1: unreferenced inline node declaration')
     if seen != {item.id for item in resolved if item.id in seen}:
         raise LayoutError(f'{entry}:1: unknown replacement target')
     tables = {name: [] for name in _COLUMNS}
@@ -373,6 +430,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             rows = _table(step.source, sections.get(name, []), _COLUMNS[name])
             for row in rows:
                 row['_owner'] = step.source
+                row['_owner_id'] = step.id
             tables[name].extend(rows)
         for name, body in sections.items():
             if not name.startswith('Prompt: '):
@@ -385,7 +443,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                 raw.pop()
             if not _ID.fullmatch(prompt_id) or len(raw) < 2 or raw[0] != '```text' or raw[-1] != '```' or prompt_id in inline_prompts:
                 raise LayoutError(f'{step.source}:1: invalid inline prompt')
-            inline_prompts[prompt_id] = ('\n'.join(raw[1:-1]) + '\n').encode()
+            inline_prompts[prompt_id] = (step.id, ('\n'.join(raw[1:-1]) + '\n').encode())
     execution_steps = []
     for step in resolved:
         if step.kind == 'node':
@@ -401,6 +459,13 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             execution_steps.append(Step(step.id, step.kind, step.parent, source, step.line))
         else:
             execution_steps.append(step)
+    parents = {step.id: step.parent for step in resolved}
+    def belongs_to(scope, identifier):
+        while identifier is not None:
+            if identifier == scope:
+                return True
+            identifier = parents.get(identifier)
+        return False
     for name in ('Functions', 'Prompts', 'Timeouts'):
         for row in tables[name]:
             owner = row.get('_owner', entry)
@@ -411,13 +476,18 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                     prompt_id = value[1:]
                     if prompt_id not in inline_prompts:
                         raise LayoutError(f'{entry}:{row["line"]}: unknown inline prompt')
-                    virtual = InlinePromptRef(owner, prompt_id)
+                    prompt_owner, prompt_bytes = inline_prompts[prompt_id]
+                    row_scope = row.get('_owner_id')
+                    if ((row_scope is not None and not belongs_to(row_scope, row['Node']))
+                            or prompt_owner != (row_scope or row['Node'])):
+                        raise LayoutError(f'{owner}:{row["line"]}: foreign inline prompt scope')
+                    prompt_document = selected_declarations[prompt_owner][2]
+                    virtual = InlinePromptRef(prompt_document, prompt_id)
                     if virtual not in captured:
-                        prompt_bytes = inline_prompts[prompt_id]
                         if sum(len(item[1]) for item in captured.values()) + len(prompt_bytes) > _MAX_SNAPSHOT_BYTES:
-                            raise LayoutError(f'{owner}:{row["line"]}: workflow snapshot exceeds 64 MiB')
+                            raise LayoutError(f'{prompt_document}:{row["line"]}: workflow snapshot exceeds 64 MiB')
                         captured[virtual] = ('prompt', prompt_bytes)
-                        origins[virtual] = origins[owner]
+                        origins[virtual] = origins[prompt_document]
                     row[column] = virtual
                 else:
                     row[column] = link(owner, value, kind)
@@ -447,4 +517,4 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
                               layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
-                              MappingProxyType(selected_declarations))
+                              MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments))

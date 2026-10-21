@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from .definition import InlinePromptRef, LayoutError, _read_bounded, _sections
+from .definition import InlinePromptRef, LayoutError, _read_bounded, _prompt_body
 
 
 def _git(root, *arguments):
@@ -25,8 +25,17 @@ def verify_inline_prompts(definition):
         parent = definition.contents.get(ref.owner)
         if type(parent) is not bytes:
             raise LayoutError('Inline prompt has no admitted parent document')
-        _, sections = _sections(ref.owner, parent)
-        body = sections.get('Prompt: ' + ref.id)
+        scope = None
+        if definition.layout is not None and definition.selected_declarations is not None:
+            rows = [row for row in definition.layout.tables['Prompts'] if row['File'] == ref]
+            scopes = {row.get('_owner_id') or row['Node'] for row in rows}
+            if len(scopes) != 1:
+                raise LayoutError('Inline prompt has no selected declaration scope')
+            scope = scopes.pop()
+            selected = definition.selected_declarations.get(scope)
+            if selected is None or selected[2] != ref.owner:
+                raise LayoutError('Inline prompt has no selected declaration scope')
+        body = _prompt_body(ref.owner, parent, ref.id, scope=scope)
         if body is None:
             raise LayoutError('Inline prompt is absent from its admitted parent')
         raw = [value for _, value in body]

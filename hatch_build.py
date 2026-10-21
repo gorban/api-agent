@@ -129,8 +129,10 @@ def _package_path(relative, owners, helper, directories=None):
             return local.removeprefix('.private_resources/viewer/') in _VIEWER_NAMES
         if local.startswith('.private_resources/diagrams/'):
             suffix = local.removeprefix('.private_resources/diagrams/')
-            return (Path(suffix).suffix in ('.svg', '.md') and
-                    all(not part.startswith('.') for part in suffix.split('/')))
+            reference_page = re.fullmatch(r'contracts/[0-9a-f]{24}\.md\.html', suffix)
+            return (bool(reference_page) or
+                    (Path(suffix).suffix in ('.svg', '.md') and
+                     all(not part.startswith('.') for part in suffix.split('/'))))
         if owner != '.' and all(not part.startswith('.') and part != 'node_modules'
                                 for part in local.split('/')):
             return True

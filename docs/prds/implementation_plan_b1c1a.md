@@ -28,3 +28,7 @@ This child records the supported generic workflow runtime. It does not claim app
 ## Installed reporting verification
 
 Normal reporting-enabled installed execution verifies admitted source before native imports and saves manifest-hashed projection, journal and accounting artifacts plus nested Allure steps. Controlled HTTP calls reconcile once each between accounting and node visits; unknown cost remains unknown. Missing/duplicate calls and mismatched turns remain partial. Altered profiles and corrupt committed receipts reject before native import. These checks establish the recording seam, not live diagnostics, historical viewing or full application acceptance.
+
+## Native projection follow-through
+
+Journal integrity and immutable accounting retain their verified scope. [Canonical native Allure scope projection](implementation_plan_b1c1a1.md) remains open: paired journal/runner evidence currently duplicates visible trees. Native step presentation and its human acceptance must not be inferred from journal or statistical qualification closure.

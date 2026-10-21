@@ -396,6 +396,7 @@ def test_mapping_edit_during_render_fails_without_outputs(tmp_path, monkeypatch)
 def test_failure_after_nested_owner_publish_rolls_back_every_owner(tmp_path, monkeypatch):
     pack, fixture = mapped_graphs(tmp_path)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    prior_recovery = set(tmp_path.parent.glob(".workflow-view-recovery-*"))
     actual = vb._apply_output
     applied = []
     def fail_after_nested(root, stage, recovery):
@@ -409,7 +410,7 @@ def test_failure_after_nested_owner_publish_rolls_back_every_owner(tmp_path, mon
     assert tmp_path / "cfg/workflow-view.toml" in applied
     assert fixture / "cfg/workflow-view.toml" in applied
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
-    assert not list(tmp_path.parent.glob(".workflow-view-recovery-*"))
+    assert set(tmp_path.parent.glob(".workflow-view-recovery-*")) == prior_recovery
 
 
 def test_owner_local_orphan_requires_confirmation_without_deleting_other_graphs(tmp_path):

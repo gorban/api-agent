@@ -56,3 +56,7 @@ The portable presentation and one-pass example use a [fresh reviewed pilot and n
 
 
 The [presentation-only source-equivalence carry-forward](implementation_plan_b2b1a5.md) retains the accepted minimum18+4=cap22 without a new pilot. Preserve the original observations and bindings; only independently reviewed current presentation bindings may change.
+
+## Grouped-workflow runtime renewal
+
+The validation/retry and deadline changes require [fresh grouped-workflow qualification](implementation_plan_b2b1a6.md). Earlier carry-forward evidence remains historical.

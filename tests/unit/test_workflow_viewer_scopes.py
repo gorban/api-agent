@@ -1,5 +1,6 @@
 """Each document presents its immediate execution scope and explicit boundaries."""
 import re
+from html import unescape
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,11 +30,11 @@ def synthetic_projection(specifications, edges):
 def source_for(projection, stable_id):
     document = next(document for document in projection.documents if document.stable_id == stable_id)
     source, links = _projection_source(projection, document)
-    return source.decode(), links
+    return unescape(source.decode()), links
 
 
 def rectangles(source):
-    return re.findall(r'^rectangle "([^\"]*)" as (\w+)', source, flags=re.MULTILINE)
+    return re.findall(r'^rectangle "([^\"]*)" as (n\d+|boundary\d+)', source, flags=re.MULTILINE)
 
 
 def execution_routes(source):
@@ -77,7 +78,7 @@ def test_original_bundled_root_has_one_opaque_component_and_scoped_route():
     assert execution_routes(source) == ['start --> n0 : always', 'n0 --> end : always']
     assert 'package ' not in source
     assert 'llm_call' not in source
-    assert links == frozenset({'../../workflows/components/agent.md.html'})
+    assert '../../workflows/components/agent.md.html' in links
 
 
 def test_original_component_shows_child_once_without_a_self_execution_link():
@@ -87,19 +88,18 @@ def test_original_component_shows_child_once_without_a_self_execution_link():
 
     assert rectangles(source) == [('llm_call', 'n0')]
     assert execution_routes(source) == ['start --> n0 : always', 'n0 --> end : always']
-    assert all(not link.endswith('/agent.md.html') for link in links)
+    assert any(link.endswith('/agent.md.html#node-llm_call') for link in links)
     assert 'package ' not in source
 
 
-def test_node_document_contains_own_details_without_an_invented_graph_route():
+def test_inline_node_has_fragment_navigation_without_an_invented_document():
     projection = project_view(load_definition(ROOT / 'flow.md.html', base_root=ROOT, pack_root=ROOT))
 
-    source, _ = source_for(projection, 'llm_call')
+    source, links = source_for(projection, 'agent')
 
     assert rectangles(source) == [('llm_call', 'n0')]
-    assert 'note right of n0' in source
-    assert execution_routes(source) == []
-    assert 'START' not in source and 'END' not in source
+    assert any(link.endswith('/agent.md.html#node-llm_call') for link in links)
+    assert all(document.stable_id != 'llm_call' for document in projection.documents)
 
 
 def test_nested_and_sibling_components_are_opaque_and_counts_follow_all_descendants(nested_projection):
@@ -224,7 +224,7 @@ def test_guarded_components_keep_only_their_pass_nodes_and_declared_conditions()
     assert {label for label, _ in rectangles(first_source)} == {'first_draft', 'first_format', 'first_guard'}
     assert len(execution_routes(first_source)) == 4
     assert 'second_draft' not in first_source
-    assert 'skip_second' in root_source
+    assert 'first_draft["route"] == "skip"' in root_source
 
 
 def test_real_v3_router_is_scoped_without_leaking_child_start_end_to_root(tmp_path):
@@ -260,7 +260,6 @@ def test_recursive_component_count_terminates_on_repeated_component_identity():
     ], ())
     source, _ = source_for(projection, 'graph')
     assert 'rectangle "group" as n0' in source
-    assert 'registered nodes' not in source
 
 
 def test_repository_mapping_must_include_every_displayed_declaration_owner(nested_projection):

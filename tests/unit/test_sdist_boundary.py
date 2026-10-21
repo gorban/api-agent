@@ -15,9 +15,7 @@ _VIEWER_FILES = (
     'github-slugger-LICENSE.txt', 'svg-links.js',
 )
 _DIAGRAM_FILES = ('flow.svg', 'flow.md', 'workflows/components/agent.svg',
-                  'workflows/components/agent.md',
-                  'workflows/components/agent/llm_call.svg',
-                  'workflows/components/agent/llm_call.md')
+                  'workflows/components/agent.md')
 
 
 def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):

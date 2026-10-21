@@ -102,8 +102,15 @@ def test_registry_rejects_unavailable_declared_source(runtime_layout, tmp_path, 
         workflow(layout)
 
 def test_unknown_condition_rejected_before_execution(runtime_layout):
-    with pytest.raises(LayoutError, match='registered condition'):
+    runtime_layout.tables['Edges'][0]['When'] = 'skip_second'
+    with pytest.raises(LayoutError, match='bounded Boolean comparisons'):
         workflow(runtime_layout, conditions={})
+
+
+def test_unknown_prompt_condition_rejected_before_execution(runtime_layout):
+    runtime_layout.tables['Prompts'][0]['When'] = 'unregistered'
+    with pytest.raises(LayoutError, match='unknown registered condition'):
+        workflow(runtime_layout)
 
 
 @pytest.mark.parametrize('value', [{}, {'accepted': 1, 'feedback': {}}, {'accepted': True, 'feedback': []}, []])
@@ -220,7 +227,9 @@ def test_conditional_prompt_and_compiled_topology(runtime_layout):
     diagram = compiled.diagram()
     assert 'first_draft --> first_format' in diagram
     assert 'first --> first_guard' not in diagram
-    assert 'subgraph first' in diagram and 'first_END -. reject, at most 2 passes .-> first_START' in diagram
+    assert 'subgraph first' in diagram
+    assert 'first_DECISION -->|rejected, attempt < 2| first_START' in diagram
+    assert 'first_DECISION -->|rejected, attempt = 2| first_EXHAUSTED' in diagram
 
 
 @pytest.mark.parametrize('command', ['validate', 'diagram'])
@@ -386,6 +395,7 @@ def test_nested_components_reset_independent_passes_and_restore_parent_feedback(
     runtime_layout.tables['Components'].append({'ID': 'outer', 'Max passes': '2', 'Guard': 'outer_guard'})
     runtime_layout.tables['Functions'].append({**runtime_layout.tables['Functions'][2], 'ID': 'outer_guard', 'Registry': 'outer_guard'})
     runtime_layout.tables['Bindings'].append({'Node': 'outer_guard', 'Input': 'draft', 'From': 'first_draft', 'Field': '*', 'Default': '-'})
+    runtime_layout.tables['Bindings'].append({'Node': 'outer_guard', 'Input': 'format', 'From': 'first_format', 'Field': '*', 'Default': '-'})
     runtime_layout.tables['Edges'] = [{'From': 'outer', 'To': 'END', 'When': 'always'}]
     compiled = Workflow(runtime_layout, {'produce': NodeFunction(nested_produce), 'validate_format': NodeFunction(local_format),
                                         'guard': NodeFunction(local_guard), 'outer_guard': NodeFunction(outer_guard)})
@@ -400,12 +410,14 @@ def test_nested_components_reset_independent_passes_and_restore_parent_feedback(
 
 
 def test_registered_conditions_require_boolean_results(runtime_layout):
+    runtime_layout.tables['Edges'][0]['When'] = 'skip_second'
     compiled = workflow(runtime_layout, conditions={'skip_second': lambda values: 'yes'})
     with pytest.raises(WorkflowError, match='must return a boolean'):
         asyncio.run(compiled.arun({'user_input': 'x'}))
 
 
 def test_condition_mutation_cannot_change_execution_state(runtime_layout):
+    runtime_layout.tables['Edges'][0]['When'] = 'skip_second'
     def mutate(values):
         values['first_draft']['original_input'] = 'changed'
         return True

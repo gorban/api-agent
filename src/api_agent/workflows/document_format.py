@@ -59,6 +59,9 @@ _ROOT_FALLBACK = (
     b'    <h2>Viewing this file</h2><p>Use Python 3.13 or newer from the repository root:</p>\n'
     b'    <pre>./launch.py --view-flow</pre></section>"\n'
 )
+_ROOT_INSTRUCTIONS, _ROOT_HELP_BODY = _ROOT_FALLBACK.split(b'[workflow-help]', 1)
+_ROOT_HELP = b'[workflow-help]' + _ROOT_HELP_BODY
+_ROOT_HEAD = _HEAD.replace(_HINT, _HINT + _ROOT_INSTRUCTIONS, 1)
 _CARRIER = (
     b'[workflow-source]: <plaintext id="workflow-source" hidden>\n'
     b'\n'
@@ -83,11 +86,12 @@ _END_MARKER = b'<!-- workflow-generated-diagram-v1:end -->'
 _ID = rb'[a-z][a-z0-9_]{0,63}'
 _SEGMENT = rb'(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+'
 _RELATIVE = rb'(?:' + _SEGMENT + rb'/)*' + _SEGMENT
+_NAV_TARGET = rb'(?:' + _RELATIVE + rb'\.md\.html|#node-' + _ID + rb')'
+_NAV_ITEM = rb'- \[' + _ID + rb'\]\(' + _NAV_TARGET + rb'\)'
 _GENERATED_BODY = re.compile(
     rb'!\[Workflow diagram\]\((' + _RELATIVE + rb'\.svg)\)\n\n'
     rb'\[Open standalone diagram\]\(\1\)'
-    rb'(?:\n\n- \[' + _ID + rb'\]\(' + _RELATIVE + rb'\.md\.html\)'
-    rb'(?:\n- \[' + _ID + rb'\]\(' + _RELATIVE + rb'\.md\.html\))*' rb')?')
+    rb'(?:\n\n' + _NAV_ITEM + rb'(?:\n' + _NAV_ITEM + rb')*)?')
 
 
 @dataclass(frozen=True)
@@ -125,12 +129,12 @@ def extract_document(raw: bytes, *, path: Path) -> ExtractedDocument:
         asset_match = re.search(rb'<link rel="stylesheet" href="([^" ]+)viewer.css">', raw)
         if asset_match is None or _ASSETS.fullmatch(asset_match[1]) is None:
             raise LayoutError(f'{path}:1: invalid workflow presentation envelope')
-        prefix = head.replace(b'{assets}', asset_match[1])
-        if not raw.startswith(prefix):
-            raise LayoutError(f'{path}:1: invalid workflow presentation envelope')
-        suffix = raw[len(prefix):]
-        prefix += fallback + carrier if suffix.startswith(fallback) else carrier
-        if not raw.startswith(prefix):
+        formatted = head.replace(b'{assets}', asset_match[1])
+        prefixes = [formatted + fallback + carrier, formatted + carrier]
+        if version2:
+            prefixes.insert(0, _ROOT_HEAD.replace(b'{assets}', asset_match[1]) + _ROOT_HELP + carrier)
+        prefix = next((candidate for candidate in prefixes if raw.startswith(candidate)), None)
+        if prefix is None:
             raise LayoutError(f'{path}:1: invalid workflow presentation envelope')
         data = raw[len(prefix):]
         offset = prefix.count(b'\n')
@@ -217,9 +221,10 @@ def validate_presentation_location(raw: bytes, *, path: Path, root: Path) -> Non
         version2 = raw.startswith(_HINT)
         head, fallback, carrier = ((_HEAD, _ROOT_FALLBACK, _CARRIER) if version2 else
                                     (_HEAD_V1, _ROOT_FALLBACK_V1, _CARRIER_V1))
-        expected_prefix = (head.replace(b'{assets}', assets)
-                           + (fallback if is_root else b'') + carrier)
-        if expected_prefix != raw[:len(expected_prefix)]:
+        expected = [head.replace(b'{assets}', assets) + (fallback if is_root else b'') + carrier]
+        if version2 and is_root:
+            expected.append(_ROOT_HEAD.replace(b'{assets}', assets) + _ROOT_HELP + carrier)
+        if not any(raw.startswith(prefix) for prefix in expected):
             raise LayoutError(f'{path}:1: viewer asset prefix does not match declaration owner')
     if extracted.generated is not None:
         svg = posixpath.relpath('.private_resources/diagrams/' + relative.removesuffix('.md.html') + '.svg',
@@ -228,6 +233,19 @@ def validate_presentation_location(raw: bytes, *, path: Path, root: Path) -> Non
         expected = f'![Workflow diagram]({svg_uri})\n\n[Open standalone diagram]({svg_uri})'.encode()
         if not extracted.generated.startswith(expected):
             raise LayoutError(f'{path}:1: generated diagram path does not match declaration owner')
+        local_links = re.findall(rb'- \[(' + _ID + rb')\]\(#node-(' + _ID + rb')\)',
+                                 extracted.generated[len(expected):])
+        if local_links:
+            from .layout import _MD
+            text = extracted.executable_bytes.decode('utf-8')
+            lines = text.splitlines()
+            headings = {lines[token.map[0]].removeprefix('## Node: ')
+                        for token in _MD.parse(text)
+                        if token.type == 'heading_open' and token.tag == 'h2'
+                        and token.map is not None and lines[token.map[0]].startswith('## Node: ')}
+            if any(label != identifier or identifier.decode() not in headings
+                   for label, identifier in local_links):
+                raise LayoutError(f'{path}:1: generated node navigation has no local declaration')
         for target in re.findall(rb'\]\((' + _RELATIVE + rb'\.md\.html)\)',
                                  extracted.generated[len(expected):]):
             encoded = target.decode('ascii')
@@ -264,5 +282,6 @@ def wrap_document(executable_bytes: bytes, *, root: bool, asset_prefix: str,
         if not separator:
             raise LayoutError('generated diagram requires a complete heading line')
         executable_bytes = heading + separator + _saved_generated(generated) + remainder
-    return (_HEAD.replace(b'{assets}', prefix) + (_ROOT_FALLBACK if root else b'')
+    head = _ROOT_HEAD if root else _HEAD
+    return (head.replace(b'{assets}', prefix) + (_ROOT_HELP if root else b'')
             + _CARRIER + executable_bytes)

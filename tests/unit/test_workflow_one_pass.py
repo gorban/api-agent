@@ -40,6 +40,7 @@ def test_one_pass_executes_once_and_journal_requires_the_complete_child_route():
 
 @pytest.mark.parametrize('maximum', ['0', '2', '01', 'invalid'])
 def test_unguarded_component_rejects_any_budget_except_exactly_one(tmp_path, maximum):
+    shutil.copytree(ROOT / 'cfg', tmp_path / 'cfg')
     shutil.copytree(ROOT / 'workflows', tmp_path / 'workflows')
     shutil.copytree(ROOT / 'demo/simple', tmp_path / 'demo/simple')
     shutil.copyfile(ROOT / 'flow.md.html', tmp_path / 'flow.md.html')

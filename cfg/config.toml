@@ -8,6 +8,20 @@
 # configuration; explicit .env, environment and CLI assignments still work.
 version = 1
 
+[fields.WORKFLOW_GRAPH_TIMEOUT_SECONDS]
+type = "float"
+default = 600.0
+validation = "positive"
+acknowledge_default = false
+help = "Whole workflow deadline in seconds; nested work inherits the remaining budget."
+
+[fields.WORKFLOW_COMPONENT_TIMEOUT_SECONDS]
+type = "float"
+default = 300.0
+validation = "positive"
+acknowledge_default = false
+help = "Component deadline in seconds across all passes, clipped to the graph deadline."
+
 [fields.LLM_ALLOWED_MODELS]
 type = "str"
 validation = "regex"

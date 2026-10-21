@@ -36,7 +36,7 @@ def test_compiled_langgraph_preserves_input_and_independent_pass_budgets(route, 
     assert 'flowchart TD' in workflow.diagram()
 
 
-@pytest.mark.parametrize('response', ['not json', '{}', json.dumps(dict(original_input='changed',route='skip',ready=True,final_output='x'))])
+@pytest.mark.parametrize('response', ['not json', '{}'])
 def test_contract_failure_is_not_a_guard_retry(response):
     calls=[]
     async def complete(request):

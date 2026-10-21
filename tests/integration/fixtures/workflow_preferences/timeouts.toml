@@ -1,0 +1,14 @@
+# Positive declaration defaults for the deterministic workflow fixture.
+version = 1
+
+[fields.WORKFLOW_GRAPH_TIMEOUT_SECONDS]
+type = "float"
+default = 20.0
+validation = "positive"
+help = "Whole fixture deadline in seconds."
+
+[fields.WORKFLOW_COMPONENT_TIMEOUT_SECONDS]
+type = "float"
+default = 10.0
+validation = "positive"
+help = "Component deadline across all passes, clipped to the graph deadline."

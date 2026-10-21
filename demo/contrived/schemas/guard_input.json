@@ -29,10 +29,23 @@
         "final_output"
       ],
       "additionalProperties": false
+    },
+    "format": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "valid"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
-    "draft"
+    "draft",
+    "format"
   ],
   "additionalProperties": false
 }

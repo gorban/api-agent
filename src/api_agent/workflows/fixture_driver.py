@@ -16,6 +16,7 @@ from api_agent.testing.inference_usage import user_turn
 from .contrived import build
 from .definition import load_definition
 from .evidence import publish
+from .execution import resolve_timeouts
 from .sampling import DECLARED, cover, validate_calibration
 
 USER_INPUT = 'Repeat this demo request verbatim: hello Markdown graph.'
@@ -25,6 +26,7 @@ DEPENDENCIES = ('langgraph', 'langchain-core', 'jsonschema', 'markdown-it-py', '
 SAMPLING_SOURCES = (
     'workflows/fixture_driver.py', 'workflows/contrived.py', 'workflows/execution.py',
     'workflows/layout.py', 'workflows/definition.py', 'workflows/document_format.py',
+    'workflows/predicates.py',
     'llm_providers/gpt/inference.py', 'llm_providers/gpt/rich.py',
     'llm_providers/gpt/cache_policy.py', 'llm_providers/gpt/reasoning.py', 'llm_providers/gpt/discovery.py',
     'llm_providers/gpt/endpoint.py', 'providers/llm.py', 'providers/contracts.py',
@@ -88,6 +90,7 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
                for name in SAMPLING_SOURCES}
     definition = load_definition(base / 'demo/contrived/flow.md.html', base_root=base,
                                  pack_root=base / 'demo')
+    timeouts, _ = resolve_timeouts(definition.layout, config, definition)
     sources.update({resource.logical_path: resource.sha256 for resource in definition.resources})
     backend = {'auth_mode': config.get('GPT_AUTH_MODE', 'subscription'),
                'backend_identity': sha256(str(config.get('GPT_BASE_URL', 'https://api.openai.com/v1')).encode()).hexdigest()}
@@ -101,9 +104,9 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
             'reasoning_effort': config.get('LLM_REASONING_EFFORT') or None,
             'api_mode': config.get('GPT_API_MODE'), 'retries': {'first': 2, 'second': 2},
             'llm_timeout': config.get('WORKFLOW_LLM_TIMEOUT_SECONDS', 120),
-            'node_timeout': config.get('WORKFLOW_NODE_TIMEOUT_SECONDS'),
-            'component_timeout': config.get('WORKFLOW_COMPONENT_TIMEOUT_SECONDS'),
-            'graph_timeout': config.get('WORKFLOW_GRAPH_TIMEOUT_SECONDS')}, sources=sources)
+            'node_timeout': None,
+            'component_timeout': {name: timeouts.get(name) for name in ('first', 'second')},
+            'graph_timeout': timeouts.get('GRAPH')}, sources=sources)
 
 
 def _baselines():

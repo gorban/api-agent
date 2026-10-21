@@ -62,16 +62,16 @@ def strict_json(text):
 
 
 def validate_format(inputs, context):
-    if inputs['draft']['original_input'] != inputs['user_input']:
-        raise WorkflowError('The original user input was not preserved verbatim')
-    if inputs['user_input'] not in inputs['draft']['final_output'] or not inputs['draft']['final_output']:
-        raise WorkflowError('Final output must repeat the original user input')
-    return {'valid': True}
+    draft = inputs['draft']
+    return {'valid': (draft['original_input'] == inputs['user_input']
+                      and bool(draft['final_output'])
+                      and inputs['user_input'] in draft['final_output'])}
 
 
 def guard(inputs, context):
-    return {'accepted': inputs['draft']['ready'],
-            'feedback': {'reason': 'Accepted' if inputs['draft']['ready'] else 'Repair this draft: set ready=true while preserving original_input and route.'}}
+    accepted = inputs['draft']['ready'] and inputs['format']['valid']
+    return {'accepted': accepted,
+            'feedback': {'reason': 'Accepted' if accepted else 'Repair this draft: preserve original_input and route; make final_output include the original input and set ready=true.'}}
 
 
 def build(base_root, *, llm, selection, trial, observe=None, config=None):
@@ -88,6 +88,6 @@ def build(base_root, *, llm, selection, trial, observe=None, config=None):
     catalog = load_native_catalog(definition, source)
     return Workflow(definition, {'produce': NodeFunction(catalog['produce'], 'llm'),
         'validate_format': NodeFunction(catalog['validate_format']), 'guard': NodeFunction(catalog['guard'])},
-        {'skip_second': lambda values: values['first_draft']['route'] == 'skip'}, config=config,
+        config=config,
         services=dict(llm=llm, selection=selection, trial=trial, output_schema=schema, observe=observe,
                       llm_timeout=(config or {}).get('WORKFLOW_LLM_TIMEOUT_SECONDS', 120)))

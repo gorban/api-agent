@@ -216,7 +216,7 @@ def test_hosted_annotation_requires_matching_fence_length():
 def test_hosted_bundle_annotates_captured_resources_without_source_write():
     root = Path(__file__).resolve().parents[2]
     flow = root / "flow.md.html"
-    nested = root / "workflows/components/agent/llm_call.md.html"
+    nested = root / "workflows/components/agent.md.html"
     before = (flow.read_bytes(), nested.read_bytes())
     projection = viewer_build._projection(root)
 
@@ -224,10 +224,10 @@ def test_hosted_bundle_annotates_captured_resources_without_source_write():
                                renderer=TinyRenderer(), verify=False)
 
     pages = {file.path: file.body for file in bundle.files}
-    hosted = pages["r/base/workflows/components/agent/llm_call.md.html"]
+    hosted = pages["r/base/workflows/components/agent.md.html"]
     assert b"captured native_source:" in hosted
     assert b"captured functions:" in hosted or b"captured schema:" in hosted
-    assert b"../../../flow.md.html" in hosted
+    assert b"../../flow.md.html" in hosted
     assert (flow.read_bytes(), nested.read_bytes()) == before
 
 
@@ -243,10 +243,13 @@ def test_projection_source_renders_component_children_and_schema_fields():
              SimpleNamespace(owner="GRAPH", source="group", target="END", condition="always"),
              SimpleNamespace(owner="group", source="START", target="task", condition="always"),
              SimpleNamespace(owner="group", source="task", target="END", condition="ready"))
-    reference = SimpleNamespace(owner_id="task", kind="functions", target_path="base/schema.json",
+    content = b'{"properties":{"name":{},"age":{}}}'
+    digest = sha256(content).hexdigest()
+    reference = SimpleNamespace(owner_path=child.logical_path, owner_id="task", kind="functions", target_path="base/schema.json",
+                                target_sha256=digest,
                                 attributes=(("field", "Input"),))
     resource = SimpleNamespace(logical_path="base/schema.json",
-                               content_bytes=b'{"properties":{"name":{},"age":{}}}')
+                               sha256=digest, content_bytes=content)
     projection = SimpleNamespace(entry_path=root.logical_path, documents=(root, component, child),
                                  steps=(group, task), edges=edges, references=(reference,),
                                  resources=(resource,))
@@ -258,26 +261,29 @@ def test_projection_source_renders_component_children_and_schema_fields():
     assert b'rectangle "group" as n0' in source
     assert b"package " not in source
     assert b"task" not in source
-    assert b'note right of n0 : Input: name, age' in local_source
+    assert b'rectangle "task" as n0' in local_source
+    assert b'Input: schema&#46;json' in local_source
     assert b'n0 --> end : ready' in local_source
-    assert len(links) == len(local_links) == 1
+    assert len(links) == 1
+    assert len(local_links) == 2
 
 
-@pytest.mark.parametrize("content", [b"not-json", b'{"properties":{}}', b"x" * 70000])
-def test_projection_source_skips_unusable_schema_details(content):
+@pytest.mark.parametrize("content", [b"not-json", b"x" * 70000])
+def test_projection_source_rejects_unusable_schema_details(content):
     root = SimpleNamespace(logical_path="base/flow.md.html")
     task = SimpleNamespace(id="task", kind="node", parent=None,
                            declaration_path=root.logical_path)
+    digest = sha256(content).hexdigest()
     reference = SimpleNamespace(owner_id="task", kind="functions", target_path="base/schema.json",
+                                target_sha256=digest,
                                 attributes=(("field", "Input"),))
-    resource = SimpleNamespace(logical_path="base/schema.json", content_bytes=content)
+    resource = SimpleNamespace(logical_path="base/schema.json", sha256=digest,
+                               content_bytes=content)
     projection = SimpleNamespace(entry_path=root.logical_path, documents=(root,), steps=(task,),
                                  edges=(), references=(reference,), resources=(resource,))
 
-    source, links = _projection_source(projection, root)
-
-    assert b"note right" not in source
-    assert links == frozenset({"../../flow.md.html"})
+    with pytest.raises(RenderError, match='reference|display'):
+        _projection_source(projection, root)
 
 
 def test_projection_source_drops_unadmitted_edge_and_caps_encoded_diagram():
@@ -1331,6 +1337,18 @@ def test_svg_orphan_marker_requires_valid_graphic_binding(tmp_path, metadata, ex
     artifact.write_bytes(b"<!-- api-agent-view-v1 " + marker + b" -->\n" + graphic)
 
     assert viewer_build._owned_orphan(artifact) is expected
+
+
+@pytest.mark.parametrize('valid', [False, True])
+def test_contract_orphan_marker_requires_matching_page_bytes(tmp_path, valid):
+    directory = tmp_path / 'contracts'
+    directory.mkdir()
+    body = b'<!doctype html><title>Captured field</title>'
+    digest = sha256(body).hexdigest().encode() if valid else b'0' * 64
+    artifact = directory / ('0' * 24 + '.md.html')
+    artifact.write_bytes(b'<!-- api-agent-reference-v1 sha256:' + digest + b' -->\n' + body)
+
+    assert viewer_build._owned_orphan(artifact) is valid
 
 
 def test_output_snapshot_refuses_symlink(tmp_path):

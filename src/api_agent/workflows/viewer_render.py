@@ -24,6 +24,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import tomllib
 from xml.etree import ElementTree as ET
 
 
@@ -37,7 +38,8 @@ _MAX_INPUT = 250_000
 _MAX_OUTPUT = 4_000_000
 _MAX_JAR = 30_000_000
 _MAX_RECORDS = 1_000
-_MAX_LABEL = 240
+_MAX_LABEL = 256
+_MAX_REFERENCE = 65_536
 _ALLOWED_TAGS = frozenset("svg g a rect ellipse circle path line polygon polyline text tspan defs linearGradient stop title desc clipPath".split())
 _ALLOWED_ATTRS = frozenset("width height viewBox version xmlns xmlns:xlink id class style fill fill-opacity stroke stroke-width stroke-dasharray stroke-linecap stroke-linejoin x y x1 x2 y1 y2 cx cy rx ry r d points transform font-family font-size font-weight text-anchor dominant-baseline opacity offset gradientUnits target href preserveAspectRatio role aria-label contentStyleType data-diagram-type data-entity-1 data-entity-2 data-link-type data-qualified-name data-source-line lengthAdjust textLength zoomAndPan type actuate show title".split())
 _STYLE_COLORS = frozenset({"none", "transparent", "currentcolor"})
@@ -117,8 +119,13 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_so
         allowed.update(((_route(document.logical_path), "text/html; charset=utf-8"),
                         (_svg_route(document.logical_path), "image/svg+xml"),
                         (_companion_route(document.logical_path), "text/markdown; charset=utf-8")))
+    allowed.update((route, 'text/html; charset=utf-8') for route in _reference_pages(projection))
     if {(file.path, file.content_type) for file in bundle.files} != allowed or len(bundle.files) != len(allowed):
         raise RenderError("workflow view route inventory mismatch")
+    reference_pages = _reference_pages(projection)
+    if any(file.body != reference_pages[file.path] for file in bundle.files
+           if file.path in reference_pages):
+        raise RenderError('workflow reference page differs from captured source')
     selected_paths = {d.logical_path for d in projection.documents}
     expected_sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),
                                    len(d.raw_bytes), True) for d in projection.documents]
@@ -151,12 +158,78 @@ def _companion_route(logical_path: str) -> str:
     return _svg_route(logical_path)[:-4] + ".md"
 
 
+def _reference_route(reference: object) -> str:
+    """A generated route whose identity includes the selected target and field."""
+    identity = (reference.kind, reference.target_path, reference.target_sha256,
+                reference.attributes)
+    digest = sha256(repr(identity).encode()).hexdigest()[:24]
+    owner = reference.owner_path.split('/', 1)[0]
+    return f'r/{owner}/.private_resources/diagrams/contracts/{digest}.md.html'
+
+
+def _reference_pages(projection: object) -> dict[str, bytes]:
+    """Render only bounded, frozen schema and timeout declarations."""
+    resources = {item.logical_path: item for item in projection.resources}
+    pages: dict[str, bytes] = {}
+    for reference in projection.references:
+        attrs = dict(reference.attributes)
+        is_schema = reference.kind == 'functions' and attrs.get('field') in ('Input', 'Output')
+        is_timeout = reference.kind in ('timeout', 'timeouts') and bool(attrs.get('key') or attrs.get('Key'))
+        if not (is_schema or is_timeout):
+            continue
+        resource = resources.get(reference.target_path)
+        if resource is None or resource.sha256 != reference.target_sha256:
+            raise RenderError('reference differs from captured resource')
+        if len(resource.content_bytes) > _MAX_REFERENCE:
+            raise RenderError('reference exceeds display limit')
+        try:
+            if is_schema:
+                if not reference.target_path.endswith('.json'):
+                    continue
+                value = json.loads(resource.content_bytes)
+                body = json.dumps(value, indent=2, ensure_ascii=False)
+                title = attrs['field'] + ' schema'
+            else:
+                if not reference.target_path.endswith('.toml'):
+                    continue
+                source = tomllib.loads(resource.content_bytes.decode('utf-8'))
+                key = attrs.get('key') or attrs['Key']
+                field = source.get('fields', {}).get(key)
+                if not isinstance(field, dict):
+                    raise RenderError('referenced timeout field is absent')
+                body = '\n'.join(f'{name} = {json.dumps(value, ensure_ascii=False)}'
+                                 for name, value in sorted(field.items()))
+                title = 'Timeout ' + key
+        except (UnicodeError, ValueError, TypeError) as exc:
+            raise RenderError('invalid captured reference') from exc
+        if len(body.encode()) > _MAX_REFERENCE:
+            raise RenderError('reference display exceeds limit')
+        route = _reference_route(reference)
+        escaped = html.escape(body, quote=True)
+        heading = html.escape(title, quote=True)
+        page = (f'<!doctype html><html lang="en"><meta charset="utf-8">'
+                        f'<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;">'
+                        f'<title>{heading}</title><h1>{heading}</h1><pre>{escaped}</pre></html>').encode()
+        pages[route] = (b'<!-- api-agent-reference-v1 sha256:' + sha256(page).hexdigest().encode() +
+                        b' -->\n' + page)
+    return pages
+
+
 def _label(value: object) -> str:
     text = str(value)
     if len(text) > _MAX_LABEL or any(ord(c) < 32 or ord(c) == 127 for c in text):
         raise RenderError("invalid diagram label")
-    # Quoted PlantUML text is constructed from data only; directives cannot reach line starts.
-    return html.escape(text.replace("\\", "\\\\").replace('"', "'"), quote=False)
+    # Numeric references keep PlantUML's Creole and link syntax inert while
+    # rendering the admitted text exactly, including quotes and backslashes.
+    return ''.join(char if char.isascii() and (char.isalnum() or char == ' ')
+                   else f'&#{ord(char)};' for char in text)
+
+
+def _markdown_id(value: object) -> str:
+    text = str(value)
+    if re.fullmatch(r'[a-z][a-z0-9_]{0,63}', text) is None:
+        raise RenderError('invalid diagram navigation ID')
+    return text
 
 
 def _projection_source(projection: object, document: object, *, repositories: Mapping[str, RepositoryIdentity] | None = None) -> tuple[bytes, frozenset[str]]:
@@ -190,21 +263,19 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         children.setdefault(step.parent, []).append(step)
 
     def step_label(step):
-        name = _label(step.id)
-        if step.kind == "component":
-            pending = list(children.get(step.id, ()))
-            seen = {step.id}
-            count = 0
-            while pending:
-                child = pending.pop()
-                if child.id in seen:
-                    continue
-                seen.add(child.id)
-                count += child.kind == "node"
-                pending.extend(children.get(child.id, ()))
-            if count != 1:
-                name += f" · {count} registered nodes"
-        return name
+        if step.kind != 'component':
+            return _label(step.id)
+        count = 0
+        for candidate in projection.steps:
+            if candidate.kind != 'node':
+                continue
+            cursor = candidate.parent
+            while cursor is not None and cursor != step.id:
+                cursor = all_steps[cursor].parent
+            count += cursor == step.id
+        if count == 1:
+            return _label(step.id)
+        return _label(f'{step.id} · {count} registered nodes')
 
     def step_href(step):
         target = _route(step.declaration_path)
@@ -216,30 +287,94 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
             if root_owner not in repositories:
                 raise RenderError("missing workflow repository identity")
             href = repositories[root_owner].link(relative)
+        fragment = getattr(step, 'declaration_fragment', '')
+        if fragment:
+            href += '#' + quote(fragment, safe='-._~')
         links.add(href)
         return href
 
+    reference_pages = _reference_pages(projection)
+    controllers = {item.component_id: item for item in getattr(projection, 'controllers', ())}
+
+    def pass_limit(step):
+        cursor = step.parent
+        while cursor is not None:
+            controller = controllers.get(cursor)
+            if controller is not None:
+                return controller.max_passes
+            cursor = all_steps[cursor].parent
+        return 1
+
+    def reference_href(reference):
+        target = _reference_route(reference)
+        # Both callers select only pages in this frozen, local map.
+        href = posixpath.relpath(target, posixpath.dirname(_svg_route(document.logical_path)))
+        if repositories:
+            root_owner, relative = target.removeprefix('r/').split('/', 1)
+            if root_owner not in repositories:
+                raise RenderError('missing workflow repository identity')
+            href = repositories[root_owner].link(relative)
+        links.add(href)
+        return href
+
+    reference_index = 0
     for step in steps:
+        schema_refs = [reference for reference in projection.references
+                       if reference.owner_id == step.id and reference.kind == 'functions'
+                       and _reference_route(reference) in reference_pages]
+        schema_refs.sort(key=lambda item: ('Input', 'Output').index(dict(item.attributes)['field']))
         lines.append(f'rectangle "{step_label(step)}" as {aliases[step.id]} [[{step_href(step)}]]')
-        details = []
-        for reference in projection.references:
-            if reference.owner_id != step.id or reference.kind != "functions":
-                continue
-            field = dict(reference.attributes).get("field", "")
-            resource = next((item for item in projection.resources if item.logical_path == reference.target_path), None)
-            if resource is None or len(resource.content_bytes) > 65536:
-                continue
-            try:
-                schema = json.loads(resource.content_bytes)
-            except (TypeError, ValueError):
-                continue
-            properties = schema.get("properties") if isinstance(schema, dict) else None
-            if isinstance(properties, dict):
-                names = [key for key in properties if isinstance(key, str)][:12]
-                if names:
-                    details.append(_label(field + ": " + ", ".join(names)))
-        if details:
-            lines.append(f'note right of {aliases[step.id]} : {"; ".join(details)[:_MAX_LABEL]}')
+        prior_schema_alias = None
+        for reference in schema_refs:
+            field = dict(reference.attributes)['field']
+            name = PurePosixPath(reference.target_path).name
+            alias = f'ref{reference_index}'
+            reference_index += 1
+            lines.append(f'rectangle "{_label(field)}: {_label(name)}" as {alias} [[{reference_href(reference)}]]')
+            lines.append(f'{aliases[step.id]} .. {alias}')
+            if prior_schema_alias is not None:
+                lines.append(f'{prior_schema_alias} -[hidden]down-> {alias}')
+            prior_schema_alias = alias
+        if step.kind == 'node':
+            maximum = pass_limit(step)
+            alias = f'context{reference_index}'
+            reference_index += 1
+            lines.append(f'rectangle "Attempt context: attempt 1..{maximum}; max_passes {maximum}" as {alias}')
+            lines.append(f'{aliases[step.id]} .. {alias}')
+
+    scope_ids = set(visible)
+    cursor = owner if owner != 'GRAPH' else None
+    while cursor in all_steps:
+        scope_ids.add(cursor)
+        cursor = all_steps[cursor].parent
+    relevant_timeouts = [ref for ref in projection.references if ref.kind in ('timeout', 'timeouts')
+                         and _reference_route(ref) in reference_pages
+                         and (ref.owner_id in scope_ids or ref.owner_id is None)]
+    for reference in relevant_timeouts:
+        attrs = dict(reference.attributes)
+        key = attrs.get('key') or attrs['Key']
+        alias = f'timeout{reference_index}'
+        reference_index += 1
+        lines.append(f'rectangle "Timeout: {_label(key)}" as {alias} [[{reference_href(reference)}]]')
+        if reference.owner_id in aliases:
+            lines.append(f'{aliases[reference.owner_id]} .. {alias}')
+
+    for controller in controllers.values():
+        if controller.component_id != owner and controller.component_id not in visible:
+            continue
+        component = all_steps[controller.component_id]
+        if not controller.accepted:
+            continue
+        if owner == controller.component_id:
+            continue  # The actual guard routes are drawn below in this scope.
+        description = (_label(f'Guard: {controller.guard}') + '\\n' +
+                       _label(f'Max passes: {controller.max_passes}'))
+        alias = f'control{reference_index}'
+        reference_index += 1
+        lines.append(f'rectangle "{description}" as {alias} [[{step_href(component)}]]')
+        # A visible component has a required alias; the guard alias takes priority.
+        anchor = aliases.get(controller.guard, aliases[controller.component_id])
+        lines.append(f'{anchor} .. {alias}')
 
     boundaries = {}
     specials = set()
@@ -263,6 +398,16 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
             boundaries[key] = alias
         return boundaries[key], True
 
+    active_controller = controllers.get(owner)
+    if active_controller is not None and not node_detail:
+        component = all_steps[owner]
+        budget_href = step_href(component).partition('#')[0] + '#components'
+        links.add(budget_href)
+        alias = f'budget{reference_index}'
+        reference_index += 1
+        lines.append(f'rectangle "Max passes: {active_controller.max_passes}" as {alias} [[{budget_href}]]')
+        if active_controller.guard in aliases:
+            lines.append(f'{aliases[active_controller.guard]} .. {alias}')
     for edge in edges:
         if any(identifier not in all_steps and identifier not in ("START", "END")
                for identifier in (edge.source, edge.target)):
@@ -270,11 +415,36 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         source, source_boundary = endpoint(edge.source, edge.owner)
         target, target_boundary = endpoint(edge.target, edge.owner)
         boundary = edge.owner != owner or source_boundary or target_boundary
-        label = _label(edge.condition or "route")
+        from .predicates import edge_label
+        label = _label(edge_label(edge.condition or 'route'))
+        if (active_controller is not None and active_controller.accepted
+                and edge.owner == owner and edge.source == active_controller.guard
+                and edge.target == 'END'):
+            label = _label(f'{active_controller.guard}["accepted"] == True')
         if boundary:
             label = "boundary (" + _label(edge.owner) + "): " + label
         arrow = "..>" if boundary else "-->"
         lines.append(f'{source} {arrow} {target} : {label}')
+    if active_controller is not None and active_controller.accepted:
+        from .predicates import component_decision
+        guard_alias = aliases.get(active_controller.guard)
+        first_child = children.get(owner, [None])[0]
+        if guard_alias is None or first_child is None:
+            raise RenderError('component controller differs from selected steps')
+        if component_decision(active_controller.__dict__, True, 1) != 'accepted':
+            raise RenderError('component acceptance metadata differs from runtime')
+        if active_controller.retry:
+            if component_decision(active_controller.__dict__, False, 1) != 'retry':
+                raise RenderError('component retry metadata differs from runtime')
+            retry_label = _label(f'{active_controller.guard}["accepted"] == False and attempt < {active_controller.max_passes}')
+            lines.append(f'{guard_alias} ..> {aliases[first_child.id]} : {retry_label}')
+        if active_controller.exhaustion:
+            if component_decision(active_controller.__dict__, False,
+                                  active_controller.max_passes) != 'exhausted':
+                raise RenderError('component exhaustion metadata differs from runtime')
+            lines.append('circle "EXHAUSTED" as exhausted')
+            exhaustion_label = _label(f'{active_controller.guard}["accepted"] == False and attempt == {active_controller.max_passes}')
+            lines.append(f'{guard_alias} ..> exhausted : {exhaustion_label}')
     if len(steps) + len(edges) + len(boundaries) > _MAX_RECORDS:
         raise RenderError("diagram exceeds record limit")
     lines.append("@enduml")
@@ -290,13 +460,16 @@ def _navigation(projection: object, document: object) -> bytes:
     relative_svg = posixpath.relpath(svg, posixpath.dirname(source))
     rows = [f"![Workflow diagram]({relative_svg})", f"[Open standalone diagram]({relative_svg})"]
     owner = PurePosixPath(document.logical_path).parts[0]
+    for step in projection.steps:
+        if step.declaration_path == document.logical_path and getattr(step, 'declaration_fragment', ''):
+            rows.append(f"- [{_markdown_id(step.id)}](#{quote(step.declaration_fragment, safe='-._~')})")
     for target in projection.documents:
         if target.logical_path == document.logical_path:
             continue
         if PurePosixPath(target.logical_path).parts[0] != owner:
             continue
         relative = posixpath.relpath(_route(target.logical_path), posixpath.dirname(source))
-        rows.append(f"- [{_label(target.stable_id)}]({relative})")
+        rows.append(f"- [{_markdown_id(target.stable_id)}]({relative})")
     body = "\n\n".join(rows[:2])
     if len(rows) > 2:
         body += "\n\n" + "\n".join(rows[2:])
@@ -322,6 +495,9 @@ def _hosted_declaration(projection: object, document: object) -> bytes:
             raise RenderError("selected Flow link differs from admitted stable ID")
         target = _route(step.declaration_path)
         href = posixpath.relpath(target, posixpath.dirname(_route(document.logical_path)))
+        fragment = getattr(step, 'declaration_fragment', '')
+        if fragment:
+            href += '#' + quote(fragment, safe='-._~')
         lines[offset] = match[1] + href.encode() + match[4]
     return _annotate_hosted_resources(projection, document, lines)
 
@@ -408,7 +584,7 @@ def _companion(projection: object, document: object, *, hosted_selected: bool = 
     folder = posixpath.dirname(route)
     svg = posixpath.relpath(_svg_route(document.logical_path), folder)
     declaration = posixpath.relpath(_route(document.logical_path), folder)
-    lines = [f"# Workflow diagram: {_label(document.stable_id)}", "",
+    lines = [f"# Workflow diagram: {_markdown_id(document.stable_id)}", "",
              f"![Workflow diagram]({svg})", "",
              f"[Open standalone diagram]({svg})", "",
              f"[Source declaration]({declaration})"]
@@ -420,7 +596,7 @@ def _companion(projection: object, document: object, *, hosted_selected: bool = 
         lines.extend(("", "## Navigation", ""))
         for item in peers:
             target = posixpath.relpath(_companion_route(item.logical_path), folder)
-            lines.append(f"- [{_label(item.stable_id)}]({target})")
+            lines.append(f"- [{_markdown_id(item.stable_id)}]({target})")
     body = ("\n".join(lines) + "\n").encode()
     marker = b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode() + b" -->\n"
     return marker + body
@@ -577,6 +753,9 @@ def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) ->
                     return False
             elif key == "stroke-linecap":
                 if raw not in {"butt", "round", "square"}:
+                    return False
+            elif key == "stroke-dasharray":
+                if raw != "7,7":
                     return False
             elif key == "font-weight":
                 if raw not in {"normal", "bold"}:
@@ -735,7 +914,7 @@ def check_view_bundle(bundle: ViewBundle, *, roots: Mapping[str, Path],
     for owner, paths in expected.items() if check_orphans else ():
         diagram_dir = Path(roots[owner]).resolve() / ".private_resources/diagrams"
         if diagram_dir.exists():
-            for pattern in ("*.svg", "*.md"):
+            for pattern in ("*.svg", "*.md", "contracts/*.md.html"):
                 for artifact in diagram_dir.rglob(pattern):
                     if artifact not in paths:
                         raise RenderError("orphaned workflow diagram; regenerate workflow views")
@@ -821,8 +1000,10 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
     semantic = projection.projection_sha256
     asset_root = _asset_root()
     owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
+    reference_pages = _reference_pages(projection)
     if repositories:
-        repositories = {owner: identity for owner, identity in repositories.items() if owner in owners}
+        repositories = {owner: identity for owner, identity in repositories.items()
+                        if owner in owners}
     asset_names = ("viewer.js", "viewer.css", "marked.js", "dompurify.js",
                    "marked-LICENSE.txt", "dompurify-LICENSE.txt", "PlantUML-NOTICE.txt",
                    "VIEWER-ASSET-NOTICE.txt", "heading-id.js", "svg-links.js",
@@ -845,6 +1026,8 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
             content_type = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
                             "txt": "text/plain; charset=utf-8"}[suffix]
             files.append(ViewFile(f"r/{owner}/.private_resources/viewer/{name}", content_type, body))
+    for route, body in sorted(reference_pages.items()):
+        files.append(ViewFile(route, 'text/html; charset=utf-8', body))
     for document in projection.documents:
         if budget.remaining is not None and budget.remaining <= 0:
             raise RenderError("workflow view generation timed out")

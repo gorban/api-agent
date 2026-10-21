@@ -13,7 +13,7 @@
 
 [workflow-source]: <plaintext id="workflow-source" hidden>
 
-# Component v2: second
+# Component: second
 
 <!-- workflow-generated-diagram-v2:start -->
 [![Workflow diagram](../../../.private_resources/diagrams/contrived/workflows/components/second.svg)](../../../.private_resources/diagrams/contrived/workflows/components/second.svg)
@@ -23,26 +23,123 @@
 
 [Open standalone diagram](../../../.private_resources/diagrams/contrived/workflows/components/second.svg)
 
+- [second_draft](#node-second_draft)
+- [second_format](#node-second_format)
+- [second_guard](#node-second_guard)
 - [contrived_qualification](../../flow.md.html)
 - [first](first.md.html)
-- [first_draft](first/first_draft.md.html)
-- [first_format](first/first_format.md.html)
-- [first_guard](first/first_guard.md.html)
-- [second_draft](second/second_draft.md.html)
-- [second_format](second/second_format.md.html)
-- [second_guard](second/second_guard.md.html)
 
 </details>
 <!-- workflow-generated-diagram-v2:end -->
 
 ## Flow
 
-1.  [node second_draft](second/second_draft.md.html)
-2.  [node second_format](second/second_format.md.html)
-3.  [node second_guard](second/second_guard.md.html)
+1.  [node second_draft](#node-second_draft)
+2.  [node second_format](#node-second_format)
+3.  [node second_guard](#node-second_guard)
 
 ## Components
 
 | ID | Max passes | Guard |
 | --- | --- | --- |
 | second | 2 | second_guard |
+
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| second | [configuration](../../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+
+## Node: second_draft
+
+### Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| produce | llm | [source](../../functions.py) |
+
+### Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| second_draft | produce | [input](../../schemas/producer.json) | [output](../../schemas/draft.json) |
+
+### Prompts
+
+| Node | File | When |
+| --- | --- | --- |
+| second_draft | @second_draft_prompt | always |
+
+### Prompt: second_draft_prompt
+
+```text
+# Contrived structured producer
+
+Return the supplied JSON schema only. The FIRST user message after this system
+prompt contains the complete original request. Copy that entire first user
+message character for character into original_input, including its instruction
+prefix, whitespace, punctuation and Unicode. Do not extract only a quoted phrase
+or the request's final sentence, and do not summarize or normalize any part.
+
+The LAST user message is machine metadata only. Never copy that metadata, its
+previous draft or its upstream fields into original_input. Upstream accepted
+output is context for the second component; the first user message remains the
+source of original_input on every component and correction attempt.
+
+final_output must be nonempty and repeat the entire first user message without
+inventing factual information. JSON escaping may represent characters, but the
+decoded original_input must exactly equal the complete first user message.
+
+On attempt 1, interpret the metadata's trial UUID as an independent random seed,
+not request content. Ignore its hyphens and read the hexadecimal characters from
+the end. Use the FINAL hex character for route:
+- 0, 1, 2, 3, 4: skip
+- 5, 6, 7, 8, 9: next_a
+- a, b, c, d, e, f: next_b
+
+Use a DIFFERENT seed character for initial readiness. When upstream is null
+(first component), read the SECOND-LAST hex character. When upstream is an
+object (second component), read the THIRD-LAST hex character. That character
+0 through 7 means ready=true; 8 through f means ready=false. Route and each
+component's initial readiness therefore use separate seed characters. Apply
+these mappings yourself when producing the JSON fields; do not invent another
+sampling rule or infer choices from user wording, upstream content or prior
+trials. The route mapping approximates three equal choices (5/16, 5/16, 6/16),
+and each initial readiness mapping splits the seed range equally.
+
+The supplied UUID is only a seed. Never include it or machine metadata in
+original_input or final_output. The caller supplies a fresh UUID for each graph;
+it does not supply a preselected route or readiness value.
+
+On a correction attempt, apply the guard feedback: set ready=true, preserve
+original_input, preserve the previous draft's route, and repair final_output.
+All attempts retain these same rules; there is no last-attempt relaxation.
+```
+
+## Node: second_format
+
+### Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| validate_format | deterministic | [source](../../functions.py) |
+
+### Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| second_format | validate_format | [input](../../schemas/format_input.json) | [output](../../schemas/format_output.json) |
+
+## Node: second_guard
+
+### Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| guard | deterministic | [source](../../functions.py) |
+
+### Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| second_guard | guard | [input](../../schemas/guard_input.json) | [output](../../schemas/guard_output.json) |

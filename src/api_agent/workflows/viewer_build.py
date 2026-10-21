@@ -192,7 +192,7 @@ def discover_view_entries(root: Path) -> tuple[Path, ...]:
                 heading = data.split(b"\n", 1)[0]
                 if heading in (b"# Workflow v2", b"# LangGraph flow", b"# Workflow v3"):
                     found.append(path)
-                elif not re.fullmatch(rb"# (?:Component|Node) v[23]: [^\r\n]+", heading):
+                elif not re.fullmatch(rb"# (?:Component|Node)(?: v[23])?: [^\r\n]+", heading):
                     raise RenderError("workflow discovery found an invalid entry heading")
                 if len(found) > _MAX_GRAPH_ENTRIES:
                     raise RenderError("workflow discovery graph limit exceeded")
@@ -476,6 +476,9 @@ def _assert_unchanged(snapshot):
 
 def _owned_orphan(path: Path) -> bool:
     data = _read_regular_view(path)
+    if path.suffix == '.html' and path.parent.name == 'contracts':
+        match = re.fullmatch(rb'<!-- api-agent-reference-v1 sha256:([0-9a-f]{64}) -->\n([\s\S]+)', data)
+        return match is not None and sha256(match[2]).hexdigest().encode() == match[1]
     if path.suffix == ".md":
         match = re.fullmatch(rb'<!-- api-agent-companion-v1 sha256:([0-9a-f]{64}) -->\n([\s\S]+)', data)
         return match is not None and sha256(match[2]).hexdigest().encode() == match[1]
@@ -617,7 +620,7 @@ def generate_views(root: Path, *, renderer: PlantUMLRenderer | None = None,
             raise RenderError("admitted workflow source changed during view generation")
         planned.append((path, prior, file.body))
     expected = {path for path, _, _ in planned}
-    orphans = sorted({path for owner in owners for pattern in ("*.svg", "*.md")
+    orphans = sorted({path for owner in owners for pattern in ("*.svg", "*.md", "contracts/*.md.html")
                       for path in (owner / ".private_resources/diagrams").rglob(pattern)
                       if path not in expected})
     confirmed = {Path(path).resolve() for path in confirmed_orphans}

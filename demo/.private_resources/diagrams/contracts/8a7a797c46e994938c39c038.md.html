@@ -1,0 +1,26 @@
+<!-- api-agent-reference-v1 sha256:39fe636b6cbde3a12be0c89944b3a271779ad348f3c3f97c7f637b8d8839eaa0 -->
+<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;"><title>Output schema</title><h1>Output schema</h1><pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;accepted&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;
+    },
+    &quot;feedback&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;reason&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        }
+      },
+      &quot;required&quot;: [
+        &quot;reason&quot;
+      ],
+      &quot;additionalProperties&quot;: false
+    }
+  },
+  &quot;required&quot;: [
+    &quot;accepted&quot;,
+    &quot;feedback&quot;
+  ],
+  &quot;additionalProperties&quot;: false
+}</pre></html>

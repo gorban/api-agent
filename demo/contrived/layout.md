@@ -42,6 +42,7 @@
 | first_format | draft | first_draft | * | - |
 | first_format | user_input | START | user_input | - |
 | first_guard | draft | first_draft | * | - |
+| first_guard | format | first_format | * | - |
 | second_draft | user_input | START | user_input | - |
 | second_draft | upstream | first_draft | * | - |
 | second_draft | previous | PREVIOUS | * | null |
@@ -51,13 +52,14 @@
 | second_format | draft | second_draft | * | - |
 | second_format | user_input | START | user_input | - |
 | second_guard | draft | second_draft | * | - |
+| second_guard | format | second_format | * | - |
 
 ## Edges
 
 | From | To | When |
 | --- | --- | --- |
-| first | END | skip_second |
-| first | second | always |
+| first | END | first_draft["route"] == "skip" |
+| first | second | otherwise |
 
 ## Prompts
 
@@ -73,12 +75,6 @@
 | GRAPH | [configuration](../cfg/config.toml) | WORKFLOW_GRAPH_TIMEOUT_SECONDS |
 | first | [configuration](../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
 | second | [configuration](../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
-| first_draft | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
-| first_format | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
-| first_guard | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
-| second_draft | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
-| second_format | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
-| second_guard | [configuration](../cfg/config.toml) | WORKFLOW_NODE_TIMEOUT_SECONDS |
 
 
 ## Notes
