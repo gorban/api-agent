@@ -51,3 +51,5 @@ The reviewed replacement is promoted, current strict preflight and 163 focused s
 
 
 The presentation-parser change has a [fresh qualification and normal coverage record](implementation_plan_b2b1a3.md). Earlier observations remain historical for their original source bindings.
+
+The portable presentation and one-pass example use a [fresh reviewed pilot and normal coverage check](implementation_plan_b2b1a4.md). Earlier observations remain historical for their original source.
