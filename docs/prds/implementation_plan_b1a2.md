@@ -10,3 +10,5 @@ The bundled chat example uses independently authored generic declarations and na
 - [ ] Verify both independently authored three-node example components, nested containment, single-node behavior, real pinned SVG output and managed loopback navigation. No provider call is needed. Keep direct-file human acceptance separate from managed HTTP evidence.
 
 Implementation and independent review remain pending. Public provider/application metadata contracts are unchanged by this naming and presentation work.
+
+- [ ] Admit an edge following a child only when its recorded source scope ended with outcome `passed`. A successful enclosing one-pass component or graph cannot make a failed child a complete causal route, including retained journals with a recomputed digest. Keep failed runs valid as partial observations; preserve guarded retry after a passed guard node returns rejection and the existing terminal-root observation policy. Verify both journal finalization and retained-journal validation.

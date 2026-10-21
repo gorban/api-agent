@@ -203,7 +203,8 @@ def _routes_complete(projection_data, events):
             else:
                 sid = event.get('visit_id')
                 scope = scopes.get(sid)
-                if (scope is None or scope['end'] is None or scope['owner'] != source
+                if (scope is None or scope['end'] is None
+                        or scope['end'].get('outcome') != 'passed' or scope['owner'] != source
                         or scope.get('attempt_id') != attempt
                         or scope['end']['sequence'] != event['sequence'] - 1):
                     return False
