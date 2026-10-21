@@ -14,3 +14,9 @@ The pilot observed routes next_a=7, next_b=11 and skip=2. First-component nodes 
 The separate prompt-cache issue retains its own gate. Combined presentation acceptance remains in [grouped declaration review](implementation_plan_b1a4.md); renewal does not invent human approval.
 
 The normal selected test passed with complete Allure publication: two actual graphs hit all six nodes using three provider calls. Installed strict preflight accepts cap 12 and rejects changed bindings; source/package/license and offline rebuild checks pass. The separate [native Allure step duplication](implementation_plan_b1c1a1.md) does not invalidate the qualified observations, journals, accounting or artifact settlement and remains unaccepted for presentation.
+
+## Reviewed source-equivalent notation and configuration
+
+- [x] Preserve the original 20 observations at commit `5bf09d7cc924490a2cc9811815258a486982f0ad`, whose packaged report wrapper has SHA-256 `085ef7ebf49489316235cfeb7477f566eece3a0c5d8c6a23710c9d736784eeb0`. Independently compare captured requests, routes, retries, prompts and outcomes before carrying those observations forward to dotted route syntax and linked pass limits with the same effective default of two.
+- [x] Bind only the reviewed current sources, retaining all other report values. The reviewed unsigned report has SHA-256 `72b898e8c7623e8a6049fd7195dceeb59467cf118c1696c64cdf6b12322b2e6e`; this is source equivalence, not a new pilot. Minimum eight plus margin four remains cap 12.
+- [x] Require installed-source and joined coverage verification plus external review before delivery. A changed effective pass limit must reject the carried-forward qualification; an unproved semantic or profile change still requires fresh qualification.

@@ -111,6 +111,27 @@ def resolve_timeouts(layout, config, definition=None):
     return values, keys
 
 
+def resolve_component_passes(layout, config):
+    """Resolve captured component limits against explicit effective configuration."""
+    from .layout import MAX_COMPONENT_PASSES
+
+    passes, constants = {}, {}
+    for row in layout.tables.get('Components', ()):
+        key = row.get('max_passes_key')
+        default = row.get('max_passes_default')
+        if default is None:
+            default = int(row['Max passes'])
+        value = config.get(key, default) if key is not None else default
+        if type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES:
+            layout.error(f'Max passes must be an integer from 1 to {MAX_COMPONENT_PASSES}', row.get('line'))
+        if row['Guard'] == '-' and value != 1:
+            layout.error('unguarded component requires one pass', row.get('line'))
+        passes[row['ID']] = value
+        if key is not None:
+            constants[key] = value
+    return passes, constants
+
+
 class Workflow:
     def __init__(self, layout, registry, conditions=None, *, config=None, services=None):
         self.definition = layout if hasattr(layout, 'definition_id') else None
@@ -123,6 +144,7 @@ class Workflow:
         self.functions = {row['ID']: row for row in layout.tables['Functions']}
         self.components = {row['ID']: row for row in layout.tables['Components']}
         self.timeouts, self.timeout_keys = resolve_timeouts(layout, self.config, self.definition)
+        self.component_passes, self.pass_constants = resolve_component_passes(layout, self.config)
         steps = {step.id: step for step in layout.steps}
         if self.definition is not None:
             self.definition.verify_native_sources()
@@ -153,7 +175,7 @@ class Workflow:
             if row in layout.tables['Prompts']:
                 layout.error('unknown registered condition', row['line'])
             try:
-                self._predicates[when] = parse_predicate(when, predicate_fields(layout, row['From']))
+                self._predicates[row['From'], when] = parse_predicate(when, predicate_fields(layout, row['From']))
             except ValueError as error:
                 layout.error(str(error), row['line'])
         self.graph = self._compile(None)
@@ -196,10 +218,12 @@ class Workflow:
         if budget.remaining == 0:
             raise TimeoutError('Workflow component deadline expired')
 
-    def _condition(self, identifier, values):
-        if identifier in self._predicates:
-            predicate = self._predicates[identifier]
-            result = predicate.evaluate(values)
+    def _condition(self, identifier, values, *, source=None, ancestry=()):
+        if (source, identifier) in self._predicates:
+            predicate = self._predicates[source, identifier]
+            attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
+            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum,
+                                        constants=self.pass_constants)
         else:
             result = self.conditions[identifier](deepcopy(values))
         if type(result) is not bool:
@@ -230,7 +254,7 @@ class Workflow:
                                             {target: END if target == 'END' else target})
             else:
                 def route(state, edges=edges, step=step):
-                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'])]
+                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'], source=step.id, ancestry=state['ancestry'])]
                     fallback = [row for row in edges if row['When'] in ('always', 'otherwise')]
                     choices = matches or fallback
                     if len(choices) != 1:
@@ -246,8 +270,8 @@ class Workflow:
     def _component(self, step):
         graph = self._compile(step.id)
         row = self.components[step.id]
-        controller = component_controller(row)
-        maximum = controller['max_passes']
+        maximum = self.component_passes[step.id]
+        controller = component_controller(row, maximum=maximum)
         async def execute(state):
             original_ancestry, original_feedback = state['ancestry'], state['feedback']
             original_previous = state['previous']
@@ -364,6 +388,10 @@ class Workflow:
 
     async def arun(self, inputs, *, turn_id=None, turn_kind='initial'):
         journal = self.services.get('journal')
+        if journal is not None and self.definition is not None:
+            from .journal import projection
+            if journal.projection != projection(self.definition, component_passes=self.component_passes):
+                raise WorkflowError('Workflow journal uses a different effective component pass limit')
         if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1':
             if self.definition is None:
                 raise WorkflowError('Reporting requires an admitted workflow definition')
@@ -372,6 +400,7 @@ class Workflow:
             source_manifest = verified_documents(self.definition, packaged_proof=proof)
             from .journal import WorkflowJournal
             journal = WorkflowJournal(self.definition,
+                component_passes=self.component_passes,
                 log_content=self.config.get('LOG_CONTENT') is True,
                 source_manifest=source_manifest,
                 boundary=self.services.get('emissions'),
@@ -399,10 +428,10 @@ class Workflow:
                 publish(journal.finalize())
 
     def diagram(self):
-        return diagram_layout(self.layout)
+        return diagram_layout(self.layout, component_passes=self.component_passes)
 
 
-def diagram_layout(layout):
+def diagram_layout(layout, *, component_passes=None):
     """Render the same sibling routing used by compilation, grouping ownership."""
     lines = ['```mermaid', 'flowchart TD']
     parents = [None, *(step.id for step in layout.steps if step.kind == 'component')]
@@ -427,7 +456,8 @@ def diagram_layout(layout):
                 lines.append(f'    {step.id} --> {target}')
         if parent is not None:
             component = next(row for row in layout.tables['Components'] if row['ID'] == parent)
-            controller = component_controller(component)
+            maximum = (component_passes or {}).get(parent)
+            controller = component_controller(component, maximum=maximum)
             if controller['accepted']:
                 lines.append(f'    {scope}_DECISION{{"guard {controller["guard"]} · attempt / {controller["max_passes"]}"}}')
                 lines.append(f'    {scope}_ACCEPTED([accepted])')

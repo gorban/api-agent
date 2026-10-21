@@ -59,6 +59,8 @@ class ViewerController:
     accepted: bool
     retry: bool
     exhaustion: bool
+    max_passes_key: str | None = None
+    max_passes_link: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,10 +198,17 @@ def project_view(definition) -> ViewerProjection:
             references.append(ViewerReference('binding', logical(owner), row.get('_owner_id', owner_by_path.get(owner)), row['line'],
                                               '', '', tuple(sorted((key, str(value)) for key, value in row.items()
                                                                    if key not in ('line', '_owner')))))
+        for row in definition.layout.tables['Components']:
+            if 'max_passes_link' in row:
+                add_reference('pass_limit', row.get('_owner', definition.entry), row['ID'],
+                              row['line'], row['max_passes_link'], key=row['max_passes_key'])
     controllers = ()
     if not hasattr(definition, 'nodes'):
         from .predicates import component_controller
-        controllers = tuple(ViewerController(row['ID'], **component_controller(row))
+        controllers = tuple(ViewerController(row['ID'], **component_controller(row),
+                                             max_passes_key=row.get('max_passes_key'),
+                                             max_passes_link=(logical(row['max_passes_link'])
+                                                              if 'max_passes_link' in row else None))
                             for row in definition.layout.tables['Components'])
     payload = {'version': 1, 'graph_id': definition.graph_id,
                'entry_path': logical(definition.entry),
@@ -214,7 +223,8 @@ def project_view(definition) -> ViewerProjection:
                                    r.sha256)) for r in definition.resources],
                'replacements': [(r.target_id, r.root_id, Path(r.entry).as_posix()) for r in definition.replacements]}
     payload['controllers'] = [(c.component_id, c.guard, c.max_passes, c.accepted,
-                               c.retry, c.exhaustion) for c in controllers]
+                               c.retry, c.exhaustion, c.max_passes_key, c.max_passes_link)
+                              for c in controllers]
     digest = sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     backlinks = tuple(sorted(edges, key=lambda edge: (edge.owner, edge.target, edge.source,
                                                        edge.condition, edge.implicit)))

@@ -15,6 +15,13 @@ validation = "positive"
 acknowledge_default = false
 help = "Whole workflow deadline in seconds; nested work inherits the remaining budget."
 
+[fields.WORKFLOW_MAX_PASSES]
+type = "int"
+default = 2
+validation = "positive"
+acknowledge_default = false
+help = "Maximum passes through a guarded workflow component before rejection exhausts it."
+
 [fields.WORKFLOW_COMPONENT_TIMEOUT_SECONDS]
 type = "float"
 default = 300.0
@@ -318,7 +325,7 @@ COLLECT_ONLY = false
 [fields.ALLURE_S3_BUCKET]
 type = "str"
 conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "allure-results"}]
-help = "Required S3 bucket for integration/E2E result history. LocalStack may provide local S3."
+help = "Required S3 bucket for integration/E2E result history. Automatically defaults to allure-results when ALLURE_S3_USE_LOCALSTACK=True."
 [fields.ALLURE_S3_BUCKET.required_when]
 TUI_MODE = ["integration", "e2e"]
 SKIP_ALLURE_REPORTING = false

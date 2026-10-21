@@ -287,12 +287,12 @@ def test_component_guard_routes_show_accepted_retry_and_exhaustion():
     source, links = _projection_source(projection, group)
 
     display = unescape(source.decode())
-    assert 'n1 --> end : verify["accepted"] == True' in display
-    assert 'n1 ..> n0 : verify["accepted"] == False and attempt < 3' in display
-    assert 'n1 ..> exhausted : verify["accepted"] == False and attempt == 3' in display
-    assert source.count(b'Attempt context: attempt 1..3; max_passes 3') == 2
-    assert b'Max passes: 3' in source
-    assert any(link.endswith('group.md.html#components') for link in links)
+    assert 'n1 --> end : .accepted' in display
+    assert 'n1 ..> n0 : not .accepted and attempt < 3' in display
+    assert 'n1 ..> exhausted : not .accepted and attempt == 3' in display
+    assert b'Attempt context:' not in source
+    assert b'Max passes:' not in source
+    assert b'top to bottom direction' in source
     assert any(link.endswith('group.md.html#node-draft') for link in links)
 
 
@@ -318,6 +318,15 @@ def test_component_controller_rejects_missing_guard_step():
     projection, group = _guard_projection(guard='ghost')
 
     with pytest.raises(RenderError, match='controller differs from selected steps'):
+        _projection_source(projection, group)
+
+
+def test_component_pass_limit_rejects_missing_captured_configuration():
+    projection, group = _guard_projection()
+    projection.controllers = (replace(projection.controllers[0],
+                                      max_passes_key='WORKFLOW_MAX_PASSES'),)
+
+    with pytest.raises(RenderError, match='pass limit differs from captured configuration'):
         _projection_source(projection, group)
 
 
@@ -351,7 +360,7 @@ def test_component_controller_without_retry_or_exhaustion_has_no_synthetic_route
     assert b'..> n0' not in source
 
 
-def test_nested_node_context_uses_nearest_component_budget():
+def test_nested_node_diagram_omits_repeated_context_and_budget():
     root = SimpleNamespace(logical_path='base/flow.md.html', stable_id='graph')
     outer_document = SimpleNamespace(logical_path='base/outer.md.html', stable_id='outer')
     inner_document = SimpleNamespace(logical_path='base/inner.md.html', stable_id='inner')
@@ -376,10 +385,9 @@ def test_nested_node_context_uses_nearest_component_budget():
     source, links = _projection_source(projection, inner_document)
     overview, _ = _projection_source(projection, root)
 
-    assert b'Attempt context: attempt 1..2; max_passes 2' in source
-    assert b'Attempt context: attempt 1..1' not in source
-    assert b'Max passes: 2' in source
-    assert any(link.endswith('inner.md.html#components') for link in links)
+    assert b'Attempt context:' not in source
+    assert b'Max passes:' not in source
+    assert b'top to bottom direction' in source
     assert b'outer' in overview
     assert b'leaf' not in overview
 
@@ -607,3 +615,42 @@ def test_hosted_flow_preserves_selected_fragment(fragment, expected):
     hosted = viewer_render._hosted_declaration(projection, document)
 
     assert hosted == raw.replace(b'original.md.html#ignored', expected)
+
+
+def test_unguarded_linked_single_pass_has_configuration_without_guard_anchor(tmp_path):
+    from api_agent.workflows.definition import load_definition
+    from api_agent.workflows.viewer_projection import project_view
+
+    (tmp_path / 'native.py').write_text('def work(inputs, context):\n    return {}\n')
+    (tmp_path / 'input.json').write_text('{"type":"object"}')
+    (tmp_path / 'output.json').write_text('{"type":"object"}')
+    (tmp_path / 'passes.toml').write_text(
+        'version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\ndefault = 1\n')
+    (tmp_path / 'flow.md.html').write_text(
+        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| single_pass |\n\n'
+        '## Flow\n\n1.  [component group](group.md.html)\n')
+    (tmp_path / 'group.md.html').write_text(
+        '# Component: group\n\n## Flow\n\n1.  [node work](#node-work)\n\n'
+        '## Components\n\n| ID | Max passes | Guard |\n| --- | --- | --- |\n'
+        '| group | [WORKFLOW_MAX_PASSES](passes.toml) | - |\n\n'
+        '## Node: work\n\n### Native\n\n| Registry | Kind | Source |\n'
+        '| --- | --- | --- |\n| work | deterministic | [source](native.py) |\n\n'
+        '### Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
+        '| work | work | [input](input.json) | [output](output.json) |\n')
+    definition = load_definition(tmp_path / 'flow.md.html',
+                                 base_root=tmp_path, pack_root=tmp_path)
+    projection = project_view(definition)
+    document = next(item for item in projection.documents if item.stable_id == 'group')
+
+    source, links = _projection_source(projection, document)
+
+    controller = next(item for item in projection.controllers if item.component_id == 'group')
+    assert (controller.guard, controller.max_passes, controller.accepted) == ('-', 1, False)
+    display = unescape(source.decode())
+    setting = re.search(
+        r'rectangle "Configuration: WORKFLOW_MAX_PASSES" as (passlimit\d+) '
+        r'\[\[(contracts/[0-9a-f]{24}\.md\.html)\]\]', display)
+    assert setting is not None
+    assert setting[2] in links
+    assert f'n0 .. {setting[1]}' not in display
+    assert 'EXHAUSTED' not in display

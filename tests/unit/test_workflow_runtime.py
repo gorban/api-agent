@@ -101,9 +101,9 @@ def test_registry_rejects_unavailable_declared_source(runtime_layout, tmp_path, 
     with pytest.raises(LayoutError, match='source link'):
         workflow(layout)
 
-def test_unknown_condition_rejected_before_execution(runtime_layout):
+def test_undeclared_bare_condition_rejected_before_execution(runtime_layout):
     runtime_layout.tables['Edges'][0]['When'] = 'skip_second'
-    with pytest.raises(LayoutError, match='bounded Boolean comparisons'):
+    with pytest.raises(LayoutError, match='declared scalar output fields'):
         workflow(runtime_layout, conditions={})
 
 

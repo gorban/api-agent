@@ -35,6 +35,16 @@ def synthetic_current_report(config=CONFIG):
     return measured_calibration(records, DECLARED) | driver.fingerprint('gpt-6-luna', config)
 
 
+def test_effective_component_pass_override_changes_exact_fixture_fingerprint():
+    default = driver.fingerprint('gpt-6-luna', CONFIG)
+    changed = driver.fingerprint('gpt-6-luna', CONFIG | {'WORKFLOW_MAX_PASSES': 3})
+
+    assert default['effective_settings']['retries'] == {'first': 2, 'second': 2}
+    assert changed['effective_settings']['retries'] == {'first': 3, 'second': 3}
+    assert changed['sources'] == default['sources']
+    assert changed['effective_settings'] != default['effective_settings']
+
+
 def historical_fingerprint(report):
     keys = ('fingerprint_version', 'sampling_method', 'model', 'dependency_versions',
             'python_version', 'backend', 'provider_identity', 'user_input_hash',

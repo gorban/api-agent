@@ -45,6 +45,12 @@
 | --- | --- | --- |
 | agent | [configuration](../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
 
+## Notes
+
+Node functions receive `context.attempt` (1-based, here 1..1) and
+`context.max_passes` (here 1). These reset for each invocation of this
+component. The Components table declares the pass limit.
+
 ## Node: llm_call
 
 ### Native

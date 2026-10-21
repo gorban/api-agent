@@ -174,6 +174,70 @@ def test_duplicate_timeout_owner(declaration):
         parse(declaration)
 
 
+def test_linked_pass_limit_reads_declared_integer_default(declaration):
+    config = declaration.parent / 'passes.toml'
+    config.write_text('version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\ndefault = 3\n')
+    declaration.write_text(declaration.read_text().replace(
+        '| first | 2 | first_guard |',
+        '| first | [WORKFLOW_MAX_PASSES](passes.toml) | first_guard |'))
+
+    row = parse(declaration).tables['Components'][0]
+    assert row['Max passes'] == 'WORKFLOW_MAX_PASSES'
+    assert row['max_passes_key'] == 'WORKFLOW_MAX_PASSES'
+    assert row['max_passes_link'] == config
+    assert row['max_passes_default'] == 3
+
+
+@pytest.mark.parametrize('default', ['true', '2.5', '0', '100'])
+def test_linked_pass_limit_rejects_invalid_default(declaration, default):
+    config = declaration.parent / 'passes.toml'
+    config.write_text(f'version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\ndefault = {default}\n')
+    declaration.write_text(declaration.read_text().replace(
+        '| first | 2 | first_guard |',
+        '| first | [WORKFLOW_MAX_PASSES](passes.toml) | first_guard |'))
+
+    with pytest.raises(LayoutError, match='Max passes'):
+        parse(declaration)
+
+
+@pytest.mark.parametrize('key,contents', [
+    ('lowercase', 'version = 1\n[fields.lowercase]\ntype = "int"\ndefault = 2\n'),
+    ('WORKFLOW_MAX_PASSES', 'version = 1\n[fields.OTHER]\ntype = "int"\ndefault = 2\n'),
+    ('WORKFLOW_MAX_PASSES', 'version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "str"\ndefault = "2"\n'),
+    ('WORKFLOW_MAX_PASSES', 'version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\n'),
+])
+def test_pass_link_requires_an_uppercase_declared_integer_default(declaration, key, contents):
+    (declaration.parent / 'passes.toml').write_text(contents)
+    declaration.write_text(declaration.read_text().replace(
+        '| first | 2 | first_guard |', f'| first | [{key}](passes.toml) | first_guard |'))
+
+    with pytest.raises(LayoutError, match='Max passes'):
+        parse(declaration)
+
+
+def test_guard_edge_rejects_predicate_even_with_fallback(declaration):
+    declaration.write_text(declaration.read_text().replace(
+        '| first | END | first_draft["route"] == "skip" |',
+        '| first_guard | END | first_guard.accepted |'))
+
+    with pytest.raises(LayoutError, match='guard node may only declare always to END'):
+        parse(declaration)
+
+
+def test_same_pass_key_cannot_resolve_from_conflicting_sources(declaration):
+    for name in ('first.toml', 'second.toml'):
+        (declaration.parent / name).write_text(
+            'version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\ndefault = 2\n')
+    declaration.write_text(declaration.read_text().replace(
+        '| first | 2 | first_guard |',
+        '| first | [WORKFLOW_MAX_PASSES](first.toml) | first_guard |').replace(
+        '| second | 2 | second_guard |',
+        '| second | [WORKFLOW_MAX_PASSES](second.toml) | second_guard |'))
+
+    with pytest.raises(LayoutError, match='conflicting configuration sources'):
+        parse(declaration)
+
+
 def test_two_digit_numbering_supports_all_99_siblings(tmp_path):
     (tmp_path / 'functions.py').write_text('# local source fixture')
     (tmp_path / 'schema.json').write_text('{"type":"object"}')

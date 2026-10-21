@@ -168,14 +168,15 @@ def _reference_route(reference: object) -> str:
 
 
 def _reference_pages(projection: object) -> dict[str, bytes]:
-    """Render only bounded, frozen schema and timeout declarations."""
+    """Render only bounded, frozen schema and configuration declarations."""
     resources = {item.logical_path: item for item in projection.resources}
     pages: dict[str, bytes] = {}
     for reference in projection.references:
         attrs = dict(reference.attributes)
         is_schema = reference.kind == 'functions' and attrs.get('field') in ('Input', 'Output')
         is_timeout = reference.kind in ('timeout', 'timeouts') and bool(attrs.get('key') or attrs.get('Key'))
-        if not (is_schema or is_timeout):
+        is_pass_limit = reference.kind == 'pass_limit' and bool(attrs.get('key'))
+        if not (is_schema or is_timeout or is_pass_limit):
             continue
         resource = resources.get(reference.target_path)
         if resource is None or resource.sha256 != reference.target_sha256:
@@ -196,10 +197,10 @@ def _reference_pages(projection: object) -> dict[str, bytes]:
                 key = attrs.get('key') or attrs['Key']
                 field = source.get('fields', {}).get(key)
                 if not isinstance(field, dict):
-                    raise RenderError('referenced timeout field is absent')
+                    raise RenderError('referenced configuration field is absent')
                 body = '\n'.join(f'{name} = {json.dumps(value, ensure_ascii=False)}'
                                  for name, value in sorted(field.items()))
-                title = 'Timeout ' + key
+                title = ('Pass limit ' if is_pass_limit else 'Timeout ') + key
         except (UnicodeError, ValueError, TypeError) as exc:
             raise RenderError('invalid captured reference') from exc
         if len(body.encode()) > _MAX_REFERENCE:
@@ -256,7 +257,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
     aliases = {step.id: "n" + str(index) for index, step in enumerate(steps)}
     admitted = {_route(item.logical_path) for item in projection.documents}
     links: set[str] = set()
-    lines = ["@startuml", "left to right direction", "skinparam shadowing false",
+    lines = ["@startuml", "top to bottom direction", "skinparam shadowing false",
              "skinparam defaultFontName sans-serif", "skinparam svgLinkTarget _top"]
     children = {}
     for step in projection.steps:
@@ -296,15 +297,6 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
     reference_pages = _reference_pages(projection)
     controllers = {item.component_id: item for item in getattr(projection, 'controllers', ())}
 
-    def pass_limit(step):
-        cursor = step.parent
-        while cursor is not None:
-            controller = controllers.get(cursor)
-            if controller is not None:
-                return controller.max_passes
-            cursor = all_steps[cursor].parent
-        return 1
-
     def reference_href(reference):
         target = _reference_route(reference)
         # Both callers select only pages in this frozen, local map.
@@ -335,13 +327,6 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
             if prior_schema_alias is not None:
                 lines.append(f'{prior_schema_alias} -[hidden]down-> {alias}')
             prior_schema_alias = alias
-        if step.kind == 'node':
-            maximum = pass_limit(step)
-            alias = f'context{reference_index}'
-            reference_index += 1
-            lines.append(f'rectangle "Attempt context: attempt 1..{maximum}; max_passes {maximum}" as {alias}')
-            lines.append(f'{aliases[step.id]} .. {alias}')
-
     scope_ids = set(visible)
     cursor = owner if owner != 'GRAPH' else None
     while cursor in all_steps:
@@ -359,22 +344,19 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         if reference.owner_id in aliases:
             lines.append(f'{aliases[reference.owner_id]} .. {alias}')
 
-    for controller in controllers.values():
-        if controller.component_id != owner and controller.component_id not in visible:
-            continue
-        component = all_steps[controller.component_id]
-        if not controller.accepted:
-            continue
-        if owner == controller.component_id:
-            continue  # The actual guard routes are drawn below in this scope.
-        description = (_label(f'Guard: {controller.guard}') + '\\n' +
-                       _label(f'Max passes: {controller.max_passes}'))
-        alias = f'control{reference_index}'
+    if owner in controllers and controllers[owner].max_passes_key:
+        pass_refs = [ref for ref in projection.references
+                     if ref.kind == 'pass_limit' and ref.owner_id == owner
+                     and _reference_route(ref) in reference_pages]
+        if (len(pass_refs) != 1 or
+                dict(pass_refs[0].attributes).get('key') != controllers[owner].max_passes_key):
+            raise RenderError('component pass limit differs from captured configuration')
+        alias = f'passlimit{reference_index}'
         reference_index += 1
-        lines.append(f'rectangle "{description}" as {alias} [[{step_href(component)}]]')
-        # A visible component has a required alias; the guard alias takes priority.
-        anchor = aliases.get(controller.guard, aliases[controller.component_id])
-        lines.append(f'{anchor} .. {alias}')
+        label = _label(controllers[owner].max_passes_key)
+        lines.append(f'rectangle "Configuration: {label}" as {alias} [[{reference_href(pass_refs[0])}]]')
+        if controllers[owner].guard in aliases:
+            lines.append(f'{aliases[controllers[owner].guard]} .. {alias}')
 
     boundaries = {}
     specials = set()
@@ -399,15 +381,6 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         return boundaries[key], True
 
     active_controller = controllers.get(owner)
-    if active_controller is not None and not node_detail:
-        component = all_steps[owner]
-        budget_href = step_href(component).partition('#')[0] + '#components'
-        links.add(budget_href)
-        alias = f'budget{reference_index}'
-        reference_index += 1
-        lines.append(f'rectangle "Max passes: {active_controller.max_passes}" as {alias} [[{budget_href}]]')
-        if active_controller.guard in aliases:
-            lines.append(f'{aliases[active_controller.guard]} .. {alias}')
     for edge in edges:
         if any(identifier not in all_steps and identifier not in ("START", "END")
                for identifier in (edge.source, edge.target)):
@@ -420,7 +393,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         if (active_controller is not None and active_controller.accepted
                 and edge.owner == owner and edge.source == active_controller.guard
                 and edge.target == 'END'):
-            label = _label(f'{active_controller.guard}["accepted"] == True')
+            label = _label('.accepted')
         if boundary:
             label = "boundary (" + _label(edge.owner) + "): " + label
         arrow = "..>" if boundary else "-->"
@@ -436,14 +409,16 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         if active_controller.retry:
             if component_decision(active_controller.__dict__, False, 1) != 'retry':
                 raise RenderError('component retry metadata differs from runtime')
-            retry_label = _label(f'{active_controller.guard}["accepted"] == False and attempt < {active_controller.max_passes}')
+            limit = active_controller.max_passes_key or str(active_controller.max_passes)
+            retry_label = _label(f'not .accepted and attempt < {limit}')
             lines.append(f'{guard_alias} ..> {aliases[first_child.id]} : {retry_label}')
         if active_controller.exhaustion:
             if component_decision(active_controller.__dict__, False,
                                   active_controller.max_passes) != 'exhausted':
                 raise RenderError('component exhaustion metadata differs from runtime')
             lines.append('circle "EXHAUSTED" as exhausted')
-            exhaustion_label = _label(f'{active_controller.guard}["accepted"] == False and attempt == {active_controller.max_passes}')
+            limit = active_controller.max_passes_key or str(active_controller.max_passes)
+            exhaustion_label = _label(f'not .accepted and attempt == {limit}')
             lines.append(f'{guard_alias} ..> exhausted : {exhaustion_label}')
     if len(steps) + len(edges) + len(boundaries) > _MAX_RECORDS:
         raise RenderError("diagram exceeds record limit")

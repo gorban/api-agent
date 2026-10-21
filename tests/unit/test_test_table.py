@@ -26,7 +26,7 @@ async def show_table(app, pilot, kind, count=40):
 
 
 @pytest.mark.parametrize('kind', ['tests', 'test-results'])
-@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'super+c')])
+@pytest.mark.parametrize('platform,key', [('linux', 'ctrl+c'), ('darwin', 'ctrl+c')])
 def test_range_copy_and_bulk_toggle(tmp_path, monkeypatch, kind, platform, key):
     async def scenario():
         tests = identities()

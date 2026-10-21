@@ -86,6 +86,31 @@ def test_component_owns_nested_flow_without_root_repetition(tmp_path):
         ('review', None), ('inspect', 'review')]
 
 
+def test_linked_pass_limit_is_captured_with_definition(tmp_path):
+    entry = make_graph(tmp_path)
+    config = tmp_path / 'passes.toml'
+    config.write_text('version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\ndefault = 2\n')
+    component = tmp_path / 'workflows' / 'review.md.html'
+    component.write_text(
+        '# Component v2: review\n\n## Flow\n\n'
+        '1.  [node inspect](inspect.md.html)\n\n'
+        '## Components\n\n| ID | Max passes | Guard |\n'
+        '| --- | --- | --- |\n'
+        '| review | [WORKFLOW_MAX_PASSES](../passes.toml) | inspect |\n')
+    entry.write_text(entry.read_text().replace(
+        '1.  [node inspect](workflows/inspect.md.html)',
+        '1.  [component review](workflows/review.md.html)'))
+
+    definition = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+    row = definition.layout.tables['Components'][0]
+
+    assert row['max_passes_link'] == config
+    assert row['max_passes_key'] == 'WORKFLOW_MAX_PASSES'
+    assert row['max_passes_default'] == 2
+    assert definition.contents[config] == config.read_bytes()
+    assert any(resource.kind == 'configuration' for resource in definition.resources)
+
+
 def test_native_source_change_after_admission_is_rejected(tmp_path):
     definition = load_definition(make_graph(tmp_path), base_root=tmp_path, pack_root=tmp_path)
     (tmp_path / 'native.py').write_text('def inspect(inputs, context):\n    return {"seen": False}\n')

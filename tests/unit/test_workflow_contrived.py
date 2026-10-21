@@ -77,10 +77,34 @@ def test_declarative_fixture_preserves_legacy_graph_contract():
     for section in previous.tables:
         def contract(rows):
             return [{key: value for key, value in row.items()
-                     if key not in {'line', '_owner', '_owner_id', 'Input schema', 'Output schema', 'Kind'}
+                     if key not in {'line', '_owner', '_owner_id', 'Input schema', 'Output schema', 'Kind',
+                                    'max_passes_key', 'max_passes_link', 'max_passes_default'}
                      and not (section == 'Prompts' and key == 'File')}
                     for row in rows]
-        assert contract(current.layout.tables[section]) == contract(previous.tables[section])
+        if section == 'Components':
+            assert [(row['ID'], row['max_passes_default'], row['Guard'])
+                    for row in current.layout.tables[section]] == [
+                (row['ID'], int(row['Max passes']), row['Guard'])
+                for row in previous.tables[section]]
+            assert all(row['max_passes_key'] == 'WORKFLOW_MAX_PASSES'
+                       for row in current.layout.tables[section])
+        elif section == 'Edges':
+            from api_agent.workflows.predicates import parse_predicate, predicate_fields
+            before, after = previous.tables[section], current.layout.tables[section]
+            assert [(row['From'], row['To']) for row in after] == [
+                (row['From'], row['To']) for row in before]
+            for old, new in zip(before, after):
+                if old['When'] == 'otherwise':
+                    assert new['When'] == 'otherwise'
+                    continue
+                fields = predicate_fields(current.layout, new['From'])
+                old_predicate = parse_predicate(old['When'], fields)
+                new_predicate = parse_predicate(new['When'], fields)
+                for route in ('skip', 'next_a', 'next_b'):
+                    values = {'first_draft': {'route': route}}
+                    assert old_predicate.evaluate(values) == new_predicate.evaluate(values)
+        else:
+            assert contract(current.layout.tables[section]) == contract(previous.tables[section])
     assert [current.contents[row['File']] for row in current.layout.tables['Prompts']] == [
         row['File'].read_bytes() for row in previous.tables['Prompts']]
     assert {row['ID']: row['Kind'] for row in current.layout.tables['Functions']} == {

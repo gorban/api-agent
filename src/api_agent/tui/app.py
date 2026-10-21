@@ -177,9 +177,8 @@ class StopContainersDialog(QuitDialog):
 
 
 class SelectedTextCopy:
-    """Shared platform shortcut and clipboard feedback for read-only selections."""
-    COPY_BINDINGS = [Binding('ctrl+c', 'copy_value', 'Copy value', key_display='^c', priority=True),
-                     Binding('super+c', 'copy_selected_text', 'Copy value', key_display='⌘c', priority=True)]
+    """Shared terminal shortcut and clipboard feedback for read-only selections."""
+    COPY_BINDINGS = [Binding('ctrl+c', 'copy_value', 'Copy value', key_display='^c', priority=True)]
 
     async def _watch_selections(self, old_selections, selections):
         await super()._watch_selections(old_selections, selections)
@@ -188,20 +187,18 @@ class SelectedTextCopy:
     @property
     def active_bindings(self):
         bindings = super().active_bindings
-        for key in ('ctrl+c', 'super+c'):
-            if key in bindings and bindings[key].binding.action in {'copy_value', 'copy_selected_text'}:
-                copy = bindings.pop(key)
-                bindings[key] = copy
+        if 'ctrl+c' in bindings and bindings['ctrl+c'].binding.action == 'copy_value':
+            copy = bindings.pop('ctrl+c')
+            bindings['ctrl+c'] = copy
         return bindings
 
-    def check_copy_action(self, action):
+    def check_copy_action(self):
         return (self.app.screen is self
-                and (sys.platform == 'darwin') == (action == 'copy_selected_text')
                 and self.copy_target()[0] is not None)
 
     def check_action(self, action, parameters):
-        if action in {'copy_value', 'copy_selected_text'}:
-            return self.check_copy_action(action)
+        if action == 'copy_value':
+            return self.check_copy_action()
         return super().check_action(action, parameters)
 
     def copy_target(self):
@@ -220,9 +217,6 @@ class SelectedTextCopy:
     async def action_copy_value(self):
         value, _ = self.copy_target()
         await self._copy_with_feedback(value, self.clear_selection)
-
-    async def action_copy_selected_text(self):
-        await self.action_copy_value()
 
 
 class SettingHelpDialog(SelectedTextCopy, ModalScreen):
@@ -649,7 +643,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             return self.test_search is not None
         if action == 'edit_search_query':
             return self.test_search is not None and isinstance(self.app.focused, TestTable)
-        if self.test_search is not None and action not in {'copy_value', 'copy_selected_text', 'toggle_selection'}:
+        if self.test_search is not None and action not in {'copy_value', 'toggle_selection'}:
             return (action == 'start_selected' and isinstance(self.app.focused, Button)
                     and self.app.focused.id == 'continue')
         if action in {'search_forward', 'search_backward'}:
@@ -676,8 +670,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             return self.kind == "defaults"
         if action == "setting_help":
             return self.selected_setting_help() is not None
-        if action in {'copy_value', 'copy_selected_text'}:
-            return self.check_copy_action(action)
+        if action == 'copy_value':
+            return self.check_copy_action()
         if action == "delete_assignment":
             return self.kind == "cleanup" and self.app.focused_cleanup_present()
         if action == "switch_target":
