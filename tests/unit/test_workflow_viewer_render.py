@@ -28,8 +28,8 @@ def _projection():
     child = SimpleNamespace(logical_path="base/workflows/components/task.md.html", stable_id="task")
     step = SimpleNamespace(id="task", kind="node", parent=None, owner_path=document.logical_path,
                            declaration_path=child.logical_path)
-    edges = (SimpleNamespace(source="START", target="task", condition="always"),
-             SimpleNamespace(source="task", target="END", condition="ready"))
+    edges = (SimpleNamespace(owner="GRAPH", source="START", target="task", condition="always"),
+             SimpleNamespace(owner="GRAPH", source="task", target="END", condition="ready"))
     return SimpleNamespace(entry_path=document.logical_path, documents=(document, child),
                            steps=(step,), edges=edges, references=(), resources=()), document
 

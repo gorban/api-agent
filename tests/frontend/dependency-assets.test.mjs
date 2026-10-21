@@ -5,7 +5,7 @@ import path from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
-import {prepareAssets, validateNodeVersion} from '../../tools/prepare_frontend_assets.mjs';
+import {prepareAssets, validateNodeVersion, ownerRoots} from '../../tools/prepare_frontend_assets.mjs';
 
 const source = fileURLToPath(new URL('../../', import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(path.join(source, 'tools/frontend-assets.json')));
@@ -175,7 +175,8 @@ test('opening and reading altered inode metadata abort before publication', asyn
 
 test('repository CLI checks its prepared source and rejects excess arguments', () => {
   const helper = path.join(source, 'tools/prepare_frontend_assets.mjs');
-  assert.match(execFileSync(process.execPath, [helper, '--check'], {encoding: 'utf8'}), /Verified 11/);
+  assert.match(execFileSync(process.execPath, [helper, '--check'], {encoding: 'utf8'}),
+    new RegExp('Verified ' + (ownerRoots(source).length * 7 + 4)));
   assert.throws(() => execFileSync(process.execPath, [helper, '--check', 'extra'], {stdio: 'pipe'}), error => {
     assert.match(error.stderr.toString(), /Usage:/);
     return true;
@@ -236,3 +237,82 @@ test('source Studio dependency preflight reports preparation before configuratio
     syncBuiltinESMExports();
   }
 });
+
+function nestedContext(root) {
+  fs.mkdirSync(path.join(root, 'nested'));
+  fs.writeFileSync(path.join(root, 'nested/flow.md.html'), '# Workflow v2\n');
+  fs.mkdirSync(path.join(root, 'cfg'));
+  const context = {version: 1, entries: {'nested/flow.md.html': {
+    base_root: 'nested', pack_root: 'nested', entry_root: 'base',
+  }}};
+  fs.writeFileSync(path.join(root, 'cfg/workflow-view-roots.json'), JSON.stringify(context));
+  return context;
+}
+
+test('explicit owner roots receive the same seven reviewed viewer originals offline', t => {
+  const root = fixture(t);
+  nestedContext(root);
+  assert.deepEqual(ownerRoots(root), ['.', 'nested']);
+  assert.equal(prepareAssets({root}), 18);
+  for (const entry of manifest.assets.filter(entry => entry.target.startsWith('.private_resources/viewer/'))) {
+    assert.deepEqual(fs.readFileSync(path.join(root, 'nested', entry.target)),
+      fs.readFileSync(path.join(root, entry.target)));
+  }
+  assert.equal(prepareAssets({root, checkOnly: true}), 18);
+});
+
+for (const change of ['duplicate', 'escape', 'missing', 'linked-owner', 'unknown', 'outside-entry', 'redundant']) {
+  test('owner mapping rejects ' + change + ' before copying originals', t => {
+    const root = fixture(t);
+    const context = nestedContext(root);
+    const row = context.entries['nested/flow.md.html'];
+    if (change === 'escape') row.base_root = '../outside';
+    if (change === 'missing') fs.unlinkSync(path.join(root, 'nested/flow.md.html'));
+    if (change === 'linked-owner') {
+      fs.symlinkSync(path.join(root, 'nested'), path.join(root, 'alias'), 'dir');
+      row.pack_root = 'alias';
+    }
+    if (change === 'unknown') row.unknown = '.';
+    if (change === 'outside-entry') {
+      fs.mkdirSync(path.join(root, 'other'));
+      row.base_root = 'other';
+    }
+    if (change === 'redundant') Object.assign(row, {base_root: '.', pack_root: '.'});
+    fs.writeFileSync(path.join(root, 'cfg/workflow-view-roots.json'), change === 'duplicate'
+      ? '{"version":1,"version":1,"entries":{}}' : JSON.stringify(context));
+    assert.throws(() => prepareAssets({root}));
+    assert.equal(fs.existsSync(path.join(root, manifest.assets[0].target)), false);
+  });
+}
+
+test('nested check mode does not create absent owner resource directories', t => {
+  const root = fixture(t);
+  nestedContext(root);
+  assert.throws(() => prepareAssets({root, checkOnly: true}));
+  assert.equal(fs.existsSync(path.join(root, 'nested/.private_resources')), false);
+});
+
+for (const owner of ['.hidden', 'node_modules', 'build', 'foreign']) {
+  test('excluded or foreign owner ' + owner + ' is never hydrated', t => {
+    const root = fixture(t);
+    const context = nestedContext(root);
+    fs.mkdirSync(path.join(root, owner), {recursive: true});
+    if (owner === 'foreign') fs.writeFileSync(path.join(root, owner, '.git'), 'gitdir: unrelated\n');
+    context.entries['nested/flow.md.html'].pack_root = owner;
+    fs.writeFileSync(path.join(root, 'cfg/workflow-view-roots.json'), JSON.stringify(context));
+    assert.throws(() => prepareAssets({root}));
+    assert.equal(fs.existsSync(path.join(root, manifest.assets[0].target)), false);
+  });
+}
+
+for (const owner of ['nested?owner', 'nested#owner']) {
+  test('context rejects URL query or fragment owner ' + owner, t => {
+    const root = fixture(t);
+    const context = nestedContext(root);
+    fs.mkdirSync(path.join(root, owner));
+    context.entries['nested/flow.md.html'].pack_root = owner;
+    fs.writeFileSync(path.join(root, 'cfg/workflow-view-roots.json'), JSON.stringify(context));
+    assert.throws(() => prepareAssets({root}));
+    assert.equal(fs.existsSync(path.join(root, manifest.assets[0].target)), false);
+  });
+}

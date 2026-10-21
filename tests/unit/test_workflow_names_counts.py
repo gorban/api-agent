@@ -49,19 +49,20 @@ def test_unapproved_root_titles_are_rejected(tmp_path, heading):
         load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
 
 
-def test_real_contrived_components_have_three_executable_nodes_in_both_views():
+def test_real_contrived_components_show_counts_on_opaque_parent_steps():
     root = ROOT / 'demo/contrived'
-    definition = load_definition(root / 'flow.md.html', base_root=ROOT, pack_root=ROOT)
+    definition = load_definition(root / 'flow.md.html', base_root=ROOT, pack_root=ROOT / 'demo', entry_root='pack')
     projection = project_view(definition)
 
     for document in projection.documents:
         if document.logical_path == projection.entry_path or document.stable_id in ('first', 'second'):
             source, _ = _projection_source(projection, document)
             if document.logical_path == projection.entry_path:
-                assert b'package "first (3 nodes)" {' in source
-                assert b'package "second (3 nodes)" {' in source
+                assert 'rectangle "first · 3 registered nodes"'.encode() in source
+                assert 'rectangle "second · 3 registered nodes"'.encode() in source
             else:
-                assert ('package "' + document.stable_id + ' (3 nodes)" {').encode() in source
+                assert b'package ' not in source
+                assert len([line for line in source.splitlines() if line.startswith(b'rectangle ')]) == 3
 
 
 def test_nested_counts_include_executable_descendants_only_even_in_component_view():
@@ -84,11 +85,11 @@ def test_nested_counts_include_executable_descendants_only_even_in_component_vie
     source, _ = _projection_source(projection, root)
     local_source, _ = _projection_source(projection, group_doc)
 
-    assert b'package "group (3 nodes)" {' in source
-    assert b'package "nested (2 nodes)" {' in source
-    assert b'package "single" {' in source
-    assert b'package "single (1 nodes)"' not in source
-    assert b'package "group (3 nodes)" {' in local_source
+    assert 'rectangle "group · 3 registered nodes"'.encode() in source
+    assert 'rectangle "nested · 2 registered nodes"'.encode() in local_source
+    assert b'rectangle "single"' in local_source
+    assert b'1 registered nodes' not in local_source
+    assert b'rectangle "group' not in local_source
 
 
 def test_alias_keeps_physical_diagnostics_and_cannot_replace_child_identity(tmp_path):

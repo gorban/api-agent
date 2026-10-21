@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "entries": {
+    "demo/contrived/flow.md.html": {
+      "base_root": ".",
+      "pack_root": "demo",
+      "entry_root": "pack"
+    },
+    "tests/integration/fixtures/workflow_preferences/flow.md.html": {
+      "base_root": "tests/integration/fixtures/workflow_preferences",
+      "pack_root": "tests/integration/fixtures/workflow_preferences",
+      "entry_root": "base"
+    }
+  }
+}

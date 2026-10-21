@@ -270,7 +270,8 @@ def test_default_cli_uses_explicit_base_root_for_entry(tmp_path, capsys):
 
 def test_cli_explicit_roots_and_invalid_path(tmp_path, capsys):
     path = ROOT / 'demo/contrived/flow.md.html'
-    assert main(['validate', '--entry', str(path), '--base-root', str(ROOT), '--pack-root', str(path.parent)]) == 0
+    assert main(['validate', '--entry', str(path), '--base-root', str(ROOT),
+                 '--pack-root', str(ROOT / 'demo'), '--entry-root', 'pack']) == 0
     with pytest.raises(SystemExit) as caught:
         main(['validate', '--entry', str(tmp_path / 'absent.md.html')])
     assert caught.value.code == 2

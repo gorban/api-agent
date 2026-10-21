@@ -239,21 +239,28 @@ def test_projection_source_renders_component_children_and_schema_fields():
                             declaration_path=component.logical_path)
     task = SimpleNamespace(id="task", kind="node", parent="group",
                            declaration_path=child.logical_path)
-    edge = SimpleNamespace(source="group", target="task", condition="ready")
+    edges = (SimpleNamespace(owner="GRAPH", source="START", target="group", condition="always"),
+             SimpleNamespace(owner="GRAPH", source="group", target="END", condition="always"),
+             SimpleNamespace(owner="group", source="START", target="task", condition="always"),
+             SimpleNamespace(owner="group", source="task", target="END", condition="ready"))
     reference = SimpleNamespace(owner_id="task", kind="functions", target_path="base/schema.json",
                                 attributes=(("field", "Input"),))
     resource = SimpleNamespace(logical_path="base/schema.json",
                                content_bytes=b'{"properties":{"name":{},"age":{}}}')
     projection = SimpleNamespace(entry_path=root.logical_path, documents=(root, component, child),
-                                 steps=(group, task), edges=(edge,), references=(reference,),
+                                 steps=(group, task), edges=edges, references=(reference,),
                                  resources=(resource,))
 
     source, links = _projection_source(projection, root)
 
-    assert b'package "group" {' in source
-    assert b'note right of n1 : Input: name, age' in source
-    assert b'n0 --> n1 : ready' in source
-    assert len(links) == 2
+    local_source, local_links = _projection_source(projection, component)
+
+    assert b'rectangle "group" as n0' in source
+    assert b"package " not in source
+    assert b"task" not in source
+    assert b'note right of n0 : Input: name, age' in local_source
+    assert b'n0 --> end : ready' in local_source
+    assert len(links) == len(local_links) == 1
 
 
 @pytest.mark.parametrize("content", [b"not-json", b'{"properties":{}}', b"x" * 70000])
@@ -277,12 +284,12 @@ def test_projection_source_drops_unadmitted_edge_and_caps_encoded_diagram():
     document = SimpleNamespace(logical_path="base/flow.md.html")
     task = SimpleNamespace(id="task", kind="node", parent=None,
                            declaration_path=document.logical_path)
-    ghost_edge = SimpleNamespace(source="task", target="missing", condition="unadmitted")
+    ghost_edge = SimpleNamespace(owner="GRAPH", source="task", target="missing", condition="unadmitted")
     projection = SimpleNamespace(entry_path=document.logical_path, documents=(document,),
                                  steps=(task,), edges=(ghost_edge,), references=(), resources=())
     source, _ = _projection_source(projection, document)
     assert b"unadmitted" not in source
-    large_edge = SimpleNamespace(source="task", target="task", condition="A" * 240)
+    large_edge = SimpleNamespace(owner="GRAPH", source="task", target="task", condition="A" * 240)
     projection.edges = (large_edge,) * 999
     with pytest.raises(RenderError, match="diagram exceeds input limit"):
         _projection_source(projection, document)
@@ -469,13 +476,13 @@ def test_bundle_verify_true_invokes_static_byte_check_without_renderer(monkeypat
     projection = viewer_build._projection(root)
     seen = []
     monkeypatch.setattr(viewer_render, "check_view_bundle",
-                        lambda bundle, *, roots: seen.append((bundle, roots)))
+                        lambda bundle, *, roots, check_orphans: seen.append((bundle, roots, check_orphans)))
     monkeypatch.setattr(viewer_render, "default_renderer",
                         lambda: pytest.fail("static check must not load Java renderer"))
     monkeypatch.setattr(viewer_render, "_saved_graphic",
                         lambda path, *, metadata, allowed_links, script=b"": path.read_bytes())
     bundle = build_view_bundle(projection, roots={"base": root, "pack": root}, verify=True)
-    assert seen == [(bundle, {"base": root, "pack": root})]
+    assert seen == [(bundle, {"base": root, "pack": root}, False)]
 
 
 def test_saved_diagram_checks_markup_provenance_and_actual_graphic(tmp_path):
@@ -574,6 +581,7 @@ def test_orphan_requires_explicit_path_even_with_matching_self_hash(tmp_path, mo
     body = b"# independent notes\n"
     orphan.write_bytes(b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode()
                        + b" -->\n" + body)
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
 
@@ -597,6 +605,7 @@ def test_orphan_swap_to_symlink_does_not_copy_external_bytes(tmp_path, monkeypat
     marker = b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode() + b" -->\n"
     orphan = diagrams / "old.md"
     orphan.write_bytes(marker + body)
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
     replace = viewer_build.os.rename
@@ -626,6 +635,7 @@ def test_orphan_swap_to_directory_keeps_unknown_content_for_recovery(tmp_path, m
     orphan = diagrams / "old.md"
     orphan.write_bytes(b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode()
                        + b" -->\n" + body)
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
     replace = viewer_build.os.rename
@@ -689,6 +699,7 @@ def test_orphan_confirmation_must_name_exact_owned_path(tmp_path, monkeypatch):
     orphan = diagrams / "old.md"
     orphan.write_bytes(b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode()
                        + b" -->\n" + body)
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
     with pytest.raises(RenderError, match="orphaned or edited"):
@@ -705,6 +716,7 @@ def test_generation_rechecks_orphan_ownership_at_move(tmp_path, monkeypatch):
     orphan = diagrams / "old.md"
     orphan.write_bytes(b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode()
                        + b" -->\n" + body)
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     monkeypatch.setattr(viewer_build, "_projection", lambda root: SimpleNamespace(documents=(), resources=()))
     monkeypatch.setattr(viewer_build, "build_view_bundle", lambda *args, **kwargs: ViewBundle("", ()))
     original_owned = viewer_build._owned_orphan
@@ -914,7 +926,7 @@ def _assert_child_stopped(pid):
         stat_path = Path(f"/proc/{pid}/stat")
         try:
             state = stat_path.read_text().split()[2]
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             state = "gone"
         if state in {"Z", "X", "gone"}:
             return
@@ -932,6 +944,33 @@ def test_renderer_timeout_kills_descendant_after_leader_exits(fake_renderer, tmp
 
     pid = int(child_pid.read_text())
     _assert_child_stopped(pid)
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_child_stopped_helper_accepts_disappearance_during_proc_read(monkeypatch, error):
+    def vanished(path):
+        raise error("controlled process disappeared")
+    monkeypatch.setattr(Path, "read_text", vanished)
+
+    _assert_child_stopped(123)
+
+
+def test_child_stopped_helper_still_rejects_live_descendant(monkeypatch):
+    moments = iter((0.0, 2.0))
+    monkeypatch.setattr(time, "monotonic", lambda: next(moments))
+    monkeypatch.setattr(Path, "read_text", lambda path: "123 child S")
+
+    with pytest.raises(pytest.fail.Exception, match=r"remained active \(S\)"):
+        _assert_child_stopped(123)
+
+
+def test_child_stopped_helper_propagates_unrelated_proc_error(monkeypatch):
+    def denied(path):
+        raise PermissionError("controlled unrelated error")
+    monkeypatch.setattr(Path, "read_text", denied)
+
+    with pytest.raises(PermissionError, match="controlled unrelated error"):
+        _assert_child_stopped(123)
 
 
 def test_renderer_successful_leader_exit_still_kills_owned_descendant(fake_renderer, tmp_path):
@@ -1343,11 +1382,12 @@ def test_source_module_entry_reports_missing_source_as_cli_error(tmp_path, monke
         with pytest.raises(SystemExit) as exit_info:
             runpy.run_module("api_agent.workflows.viewer_build", run_name="__main__")
     assert exit_info.value.code == 2
-    assert "flow.md.html" in capsys.readouterr().err
+    assert "workflow discovery found no graph entries" in capsys.readouterr().err
 
 
 @pytest.fixture
 def controlled_generation(tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     flow = tmp_path / "flow.md.html"
     flow.write_bytes(b"admitted declaration")
     diagram_dir = tmp_path / ".private_resources/diagrams"
@@ -1474,11 +1514,13 @@ def test_generation_detects_edit_between_output_replacements(controlled_generati
 
 
 def test_view_check_is_read_only_and_requires_fresh_bundle(tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     projection = SimpleNamespace(graph_id="captured")
     called = []
     monkeypatch.setattr(viewer_build, "_projection", lambda root: projection)
 
-    def verify(admitted, *, roots, verify, repositories, repository_sources):
+    def verify(admitted, *, roots, verify, check_orphans, repositories, repository_sources):
+        assert check_orphans is False
         called.append((admitted, roots, verify))
         raise RenderError("stale graphic")
 
@@ -1492,11 +1534,16 @@ def test_view_check_is_read_only_and_requires_fresh_bundle(tmp_path, monkeypatch
 
 
 def test_check_does_not_request_renderer(tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     projection = SimpleNamespace(graph_id="captured")
     received = []
     monkeypatch.setattr(viewer_build, "_projection", lambda root: projection)
-    monkeypatch.setattr(viewer_build, "build_view_bundle",
-                        lambda admitted, *, roots, verify, repositories, repository_sources: received.append((admitted, roots, verify)))
+    def checked_bundle(admitted, *, roots, verify, check_orphans, repositories, repository_sources):
+        assert check_orphans is False
+        received.append((admitted, roots, verify))
+        return ViewBundle("", ())
+
+    monkeypatch.setattr(viewer_build, "build_view_bundle", checked_bundle)
 
     viewer_build.check_views(tmp_path)
 
@@ -1553,10 +1600,10 @@ def test_generation_detects_output_edit_after_last_snapshot(controlled_generatio
     original_read = viewer_build._read_regular_view
     calls = 0
 
-    def race_on_prior_read(path):
+    def race_on_prior_read(path, *, parent=None):
         nonlocal calls
-        value = original_read(path)
-        if path == first:
+        value = original_read(path, parent=parent)
+        if parent is None and path == first:
             calls += 1
             if calls == 2:
                 first.write_bytes(b"late human edit")
@@ -1639,13 +1686,13 @@ def test_generation_detects_admitted_edit_between_snapshot_and_planning(controll
     original_read = viewer_build._read_regular_view
     calls = 0
 
-    def edit_on_planned_read(path):
+    def edit_on_planned_read(path, *, parent=None):
         nonlocal calls
-        if path == flow:
+        if parent is None and path == flow:
             calls += 1
             if calls == 2:
                 flow.write_bytes(b"late human source edit")
-        return original_read(path)
+        return original_read(path, parent=parent)
 
     monkeypatch.setattr(viewer_build, "_read_regular_view", edit_on_planned_read)
     with pytest.raises(RenderError, match="admitted workflow source changed"):
@@ -1655,6 +1702,7 @@ def test_generation_detects_admitted_edit_between_snapshot_and_planning(controll
 
 @pytest.mark.usefixtures("recorded_repository_for_generation_controls")
 def test_generation_updates_admitted_snapshot_when_publishing_selected_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer_build, "discover_view_entries", lambda root: (root / "flow.md.html",))
     flow = tmp_path / "flow.md.html"
     flow.write_bytes(b"admitted source")
     document = SimpleNamespace(logical_path="base/flow.md.html", raw_bytes=b"admitted source")
