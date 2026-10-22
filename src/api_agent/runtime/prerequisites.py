@@ -7,11 +7,14 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import fcntl
 from hashlib import sha256
+from http.client import HTTPConnection, HTTPException, HTTPResponse
+import io
 import json
 import os
 from pathlib import Path
 import re
 import selectors
+import socket
 import stat
 import shutil
 import shlex
@@ -19,8 +22,9 @@ import subprocess
 import sys
 import time
 import tempfile
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from urllib.error import URLError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import uuid4
 
@@ -492,20 +496,79 @@ def _readiness(profile, timeout, environment):
         return False
 
 
-def _http_identity(readiness, timeout):
+def _request_remaining(deadline, cancelled):
+    if cancelled():
+        raise PrerequisiteCancelled('Prerequisite operation cancelled.')
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('Prerequisite HTTP deadline exceeded.')
+    return remaining
+
+
+class _DeadlineHTTPReader(io.RawIOBase):
+    def __init__(self, connection, deadline, cancelled):
+        self.connection, self.deadline, self.cancelled = connection, deadline, cancelled
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        while True:
+            remaining = _request_remaining(self.deadline, self.cancelled)
+            self.connection.settimeout(min(.05, remaining))
+            try:
+                return self.connection.recv_into(buffer)
+            except TimeoutError:
+                # Progress cannot renew the absolute request budget. Short idle
+                # polls also let cancellation interrupt a quiet peer promptly.
+                continue
+
+
+@contextmanager
+def _identity_response(request, timeout, *, cancelled=lambda: False):
+    deadline = time.monotonic() + timeout
+    parsed = urlsplit(request.full_url)
+    if (parsed.scheme != 'http' or parsed.hostname not in {'localhost', '127.0.0.1'}
+            or parsed.port is None or parsed.username or parsed.password or parsed.fragment):
+        raise ValueError('Prerequisite identity requires a loopback HTTP endpoint.')
+    remaining = _request_remaining(deadline, cancelled)
+    with socket.create_connection(('127.0.0.1', parsed.port), timeout=min(.05, remaining)) as connection:
+        connection.settimeout(min(.05, _request_remaining(deadline, cancelled)))
+        client = HTTPConnection(parsed.hostname, parsed.port)
+        client.sock = connection
+        try:
+            path = parsed.path or '/'
+            if parsed.query:
+                path += '?' + parsed.query
+            client.request('GET', path, headers={'Connection': 'close'})
+            reader = _DeadlineHTTPReader(connection, deadline, cancelled)
+            response = HTTPResponse(SimpleNamespace(makefile=lambda mode: io.BufferedReader(reader)))
+            try:
+                response.begin()
+                yield response
+            finally:
+                response.close()
+        finally:
+            client.close()
+
+
+def _http_identity(readiness, timeout, *, cancelled=lambda: False):
     """Probe a captured loopback contract without proxies or redirects."""
+    deadline = time.monotonic() + timeout
     try:
-        with urlopen(Request(readiness.url), timeout=timeout) as response:
-            if response.status != readiness.status:
+        with _identity_response(Request(readiness.url), timeout=timeout, cancelled=cancelled) as response:
+            if response.status != readiness.status or 300 <= response.status < 400:
                 return False
             body = response.read(65537)
-            if len(body) > 65536:
+            if len(body) > 65536 or getattr(response, 'length', None) not in (None, 0):
                 return False
             value = json.loads(body)
-            return (isinstance(value, dict)
+            matches = (isinstance(value, dict)
                 and type(value.get(readiness.identity_field)) is type(readiness.identity_value)
                 and value.get(readiness.identity_field) == readiness.identity_value)
-    except (OSError, URLError, ValueError, AttributeError, TypeError):
+            _request_remaining(deadline, cancelled)
+            return matches
+    except (OSError, URLError, HTTPException, ValueError, AttributeError, TypeError):
         return False
 
 
@@ -660,7 +723,7 @@ class PrerequisiteManager:
                     if current[name].health != 'healthy':
                         return False
                 elif not _http_identity(readiness, min(1, readiness.timeout,
-                        max(.001, deadline - self.now()))):
+                        max(.001, deadline - self.now())), cancelled=self.cancelled):
                     return False
         return True
 

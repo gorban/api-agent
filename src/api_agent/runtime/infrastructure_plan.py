@@ -48,7 +48,8 @@ def _name(prefix: str, identifier: str) -> str:
 
 
 def _url(value: str, *, local: bool, hostname: str | None = None):
-    if type(value) is not str or len(value) > 512:
+    if (type(value) is not str or len(value) > 512 or '?' in value or '#' in value
+            or any(not 33 <= ord(character) <= 126 for character in value)):
         raise ComposeError('Infrastructure endpoint is invalid.')
     try:
         parsed = urlsplit(value)
@@ -67,11 +68,13 @@ def _url(value: str, *, local: bool, hostname: str | None = None):
 def _check(rule: Readiness, endpoints: Mapping[str, ResolvedEndpoint]) -> ResolvedCheck:
     if rule.kind == 'health':
         return ResolvedCheck('health', status=rule.status, timeout=rule.timeout)
-    if rule.kind != 'http' or '/' not in rule.target:
+    if (rule.kind != 'http' or '/' not in rule.target
+            or any(not 33 <= ord(character) <= 126 for character in rule.target)):
         raise ComposeError('Infrastructure HTTP readiness requires an endpoint and path.')
     name, path = rule.target.split('/', 1)
     if (name not in endpoints or not path or any(part in ('', '.', '..') for part in path.split('/'))
-            or '?' in path or '#' in path or '\\' in path):
+            or not re.fullmatch("[A-Za-z0-9._~!$&'()*+,;=:@%/-]+", path)
+            or re.search(r'%(?![0-9A-Fa-f]{2})', path)):
         raise ComposeError('Infrastructure HTTP readiness target is invalid.')
     return ResolvedCheck('http', endpoints[name].host.rstrip('/') + '/' + path,
                          rule.status, rule.identity_field, rule.identity_value, rule.timeout)

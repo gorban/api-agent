@@ -80,7 +80,7 @@ class Engine:
         raise AssertionError(command)
 
     @contextmanager
-    def open(self, request, timeout):
+    def open(self, request, timeout, **kwargs):
         url = request.full_url
         metadata = next(item for item in self.manager.conditional.values()
                         if item.readiness.url.rsplit('/', 1)[0] == url.rsplit('/', 1)[0])
@@ -107,7 +107,7 @@ def synthetic(tmp_path, monkeypatch):
         command_runner=engine.run, engine_environment=TRANSPORT,
         now=clock.now, sleep=clock.sleep, identity=lambda pid: 'synthetic:process')
     engine.manager = manager
-    monkeypatch.setattr(p, 'urlopen', engine.open)
+    monkeypatch.setattr(p, '_identity_response', engine.open)
     return manager, engine, clock, pack, captured
 
 
@@ -208,9 +208,9 @@ def test_unowned_log_identifier_is_rejected(synthetic):
     (200,b'x'*65537,False)])
 def test_http_identity_requires_bounded_matching_json(monkeypatch, status, body, expected):
     @contextmanager
-    def open_response(request, timeout):
+    def open_response(request, timeout, **kwargs):
         yield SimpleNamespace(status=status, read=lambda limit: body)
-    monkeypatch.setattr(p, 'urlopen', open_response)
+    monkeypatch.setattr(p, '_identity_response', open_response)
     assert p._http_identity(ResolvedCheck('http','http://127.0.0.1:8090/ready',
                            identity_field='id',identity_value='fixture'), 1) is expected
 
@@ -227,7 +227,7 @@ def test_external_mode_keeps_explicit_external_backing_without_managed_dependenc
 
 def test_http_readiness_failure_is_not_ready(monkeypatch):
     def unavailable(*args, **kwargs): raise OSError('synthetic unavailable')
-    monkeypatch.setattr(p, 'urlopen', unavailable)
+    monkeypatch.setattr(p, '_identity_response', unavailable)
     assert not p._http_identity(ResolvedCheck('http', 'http://127.0.0.1:8090/ready'), 1)
 
 
@@ -371,10 +371,10 @@ def test_readiness_and_seed_completion_receive_independent_budgets(synthetic, mo
         readiness=replace(record.readiness, timeout=30),
         seed_completion=replace(record.seed_completion, timeout=1))
     original = p._http_identity
-    def delayed(check, timeout):
+    def delayed(check, timeout, **kwargs):
         if check.url.endswith('/ready') and clock.value < 2:
             return False
-        return original(check, timeout)
+        return original(check, timeout, **kwargs)
     monkeypatch.setattr(p, '_http_identity', delayed)
     manager.acquire()
     assert 2 <= clock.value < 3
@@ -610,3 +610,121 @@ def test_stale_duty_does_not_transfer_to_unrelated_live_lease(synthetic):
     recovered = p._read_journal(manager.directory, manager.scope, manager.identity)
     assert recovered['unrelated']['conditional_cleanup_ids'] == []
     assert recovered[lease.invocation_id]['cleanup_only'] is True
+
+
+@contextmanager
+def _loopback_response(mode):
+    import socket
+    import threading
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    listener.settimeout(1)
+    stopped = threading.Event()
+    failures = []
+    body = json.dumps({'id': 'fixture', 'padding': 'x' * 64}).encode()
+    headers = (b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Padding: '
+               + b'x' * 64 + b'\r\nContent-Length: ' + str(len(body)).encode() + b'\r\n\r\n')
+    def serve():
+        try:
+            with listener.accept()[0] as connection:
+                connection.settimeout(1)
+                connection.recv(4096)
+                if mode == 'quiet':
+                    stopped.wait(2)
+                    return
+                if mode == 'headers':
+                    fragments = [bytes([value]) for value in headers] + [body]
+                elif mode == 'body':
+                    fragments = [headers] + [bytes([value]) for value in body]
+                elif mode == 'truncated_length':
+                    fragments = [b'HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n' + body]
+                elif mode == 'chunked':
+                    fragments = [b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n'
+                        + format(len(body), 'x').encode() + b'\r\n' + body + b'\r\n0\r\n\r\n']
+                elif mode == 'close_delimited':
+                    fragments = [b'HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n' + body]
+                elif mode == 'truncated_chunked':
+                    fragments = [b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n'
+                        + b'1000\r\n' + body]
+                elif mode == 'malformed':
+                    fragments = [b'not-an-http-response\r\n\r\n']
+                else:
+                    fragments = [headers + body]
+                for fragment in fragments:
+                    if stopped.is_set(): return
+                    connection.sendall(fragment)
+                    if mode in {'headers', 'body'}: stopped.wait(.01)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except BaseException as error:
+            failures.append(error)
+    thread = threading.Thread(target=serve, name='owned-http-fixture')
+    thread.start()
+    try:
+        yield 'http://127.0.0.1:' + str(listener.getsockname()[1]) + '/ready'
+    finally:
+        stopped.set()
+        thread.join(2)
+        listener.close()
+        assert not thread.is_alive()
+        assert not failures
+
+
+@pytest.mark.parametrize('mode', ['headers', 'body'])
+def test_real_progressing_http_response_cannot_extend_absolute_deadline(mode):
+    import time
+    with _loopback_response(mode) as url:
+        started = time.monotonic()
+        assert not p._http_identity(ResolvedCheck('http', url, identity_field='id', identity_value='fixture'), .05)
+        assert time.monotonic() - started < .3
+
+
+@pytest.mark.parametrize('mode,expected', [('fast', True), ('quiet', False), ('malformed', False)])
+def test_real_http_response_success_idle_timeout_and_bad_headers(mode, expected):
+    with _loopback_response(mode) as url:
+        assert p._http_identity(ResolvedCheck('http', url, identity_field='id', identity_value='fixture'), .1) is expected
+
+
+def test_real_http_wait_observes_cancellation_without_waiting_for_deadline():
+    import time
+    with _loopback_response('quiet') as url:
+        started = time.monotonic()
+        with pytest.raises(p.PrerequisiteCancelled):
+            p._http_identity(ResolvedCheck('http', url), 5,
+                             cancelled=lambda: time.monotonic() - started >= .03)
+        assert time.monotonic() - started < .3
+
+
+@pytest.mark.parametrize('url', ['https://127.0.0.1:8090/ready', 'http://example.invalid:8090/ready',
+    'http://127.0.0.1/ready', 'http://user:pass@127.0.0.1:8090/ready', 'http://127.0.0.1:8090/ready#fragment'])
+def test_identity_response_requires_captured_loopback_http_contract(url):
+    assert not p._http_identity(ResolvedCheck('http', url), .1)
+
+
+def test_identity_reader_checks_expired_budget_before_connecting():
+    assert not p._http_identity(ResolvedCheck('http', 'http://127.0.0.1:8090/ready'), 0)
+
+
+def test_identity_never_accepts_redirect_even_when_status_matches(monkeypatch):
+    @contextmanager
+    def redirect(*args, **kwargs):
+        yield SimpleNamespace(status=302, read=lambda limit: b'{"id":"fixture"}')
+    monkeypatch.setattr(p, '_identity_response', redirect)
+    assert not p._http_identity(ResolvedCheck('http', 'http://127.0.0.1:8090/ready', status=302,
+                                            identity_field='id', identity_value='fixture'), 1)
+
+
+@pytest.mark.parametrize('suffix', ['', '/ready?probe=1'])
+def test_owned_http_request_uses_default_path_and_bounded_query(suffix):
+    with _loopback_response('fast') as url:
+        target = url.rsplit('/ready', 1)[0] + suffix
+        assert p._http_identity(ResolvedCheck('http', target, identity_field='id', identity_value='fixture'), .2)
+
+
+@pytest.mark.parametrize('mode,expected', [('truncated_length', False), ('chunked', True),
+    ('close_delimited', True), ('truncated_chunked', False)])
+def test_real_identity_requires_completed_http_framing(mode, expected):
+    with _loopback_response(mode) as url:
+        assert p._http_identity(ResolvedCheck('http', url, identity_field='id',
+                                            identity_value='fixture'), .2) is expected
