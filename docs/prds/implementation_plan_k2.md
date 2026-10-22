@@ -33,3 +33,11 @@ Official documentation: [Langfuse headless initialization](https://langfuse.com/
 
 - [ ] Apply [development graph refresh](implementation_plan_b1d.md) to the existing Run local flow tab and attached DEBUG browser. Display the definition actually used; document Python restart and incompatible-state handling. Refreshing a diagram never invokes the graph or reauthenticates.
 - [ ] After the static final flow tab and application lifecycle pass, reuse this same owned server/browser tab for [live workflow inspection](implementation_plan_b1c.md). Preserve tab order/readiness and static fallback; playback controls never pause execution or allocate another browser. Earlier application work reserves the evidence identities without pulling the full inspector into initial frontend integration.
+
+## Core runtime checkpoint
+
+The [core operation join](implementation_plan_h1a1.md) delivers local ownership,
+unauthenticated home/status, optional prepared UI and the final actual-flow tab
+with tracing disabled. Its technical checks and independent review are complete;
+human acceptance remains in that child. The tracing/dashboard requirements and
+combined acceptance above remain open for their following integration batch.
