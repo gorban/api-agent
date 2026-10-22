@@ -53,4 +53,4 @@ The caller runs `validate_compose(plan)` before acquisition to check the selecte
 
 - [x] Verify these declarations, limits and APIs against source and relocated installed-pack conformance.
 - [x] Close independent review and exact applicable coverage before delivery.
-- [ ] Human acceptance remains in the parent contract.
+- [x] Human acceptance is recorded in the parent contract.
