@@ -38,6 +38,13 @@ def _projection():
                            steps=(step,), edges=edges, references=(), resources=()), document
 
 
+def test_svg_adapter_is_present_without_repository_mapping(tmp_path):
+    script = viewer_render._navigation_script('base/flow.md.html', {'base': tmp_path}, None)
+    assert b'data-workflow-links="v1"' in script
+    assert b'data-workflow-roots="{}"' in script
+    assert b'../viewer/svg-links.js' in script
+
+
 def test_projection_source_preserves_effective_routes_and_admitted_links():
     projection, document = _projection()
 
@@ -591,11 +598,14 @@ def test_hosted_configuration_route_serves_captured_toml_and_rejects_forged_byte
 
     class StubRenderer:
         def render(self, source, *, allowed_links=frozenset()):
-            return b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"/>'
+            return (b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" '
+                    b'width="1" height="1" viewBox="0 0 1 1"><rect width="1" height="1"/></svg>')
 
     bundle = build_view_bundle(projection, roots={'base': root, 'pack': demo},
                                renderer=StubRenderer(), verify=False)
     files = {file.path: file for file in bundle.files}
+    assert files['r/pack/.private_resources/diagrams/contrived/flow.svg'].body.count(
+        b'data-workflow-links="v1"') == 1
     config = files['r/pack/cfg/config.toml']
 
     assert config.content_type == 'text/plain; charset=utf-8'

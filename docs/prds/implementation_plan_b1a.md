@@ -63,3 +63,7 @@ Select **Run local** to start the app and open a managed browser with the Agent 
 ## Managed lifetime and browser-rendering repair
 
 - [x] Complete [managed listener lifetime, single-interrupt cleanup and SVG style fidelity](implementation_plan_b1a6.md) after interactive failures. Preserve earlier technical closures; renew independent/external and human acceptance for this repaired scope.
+
+## Shared interactive diagrams
+
+- [ ] Deliver the [fitted, zoomable interactive SVG overlay](implementation_plan_b1a7.md) for saved files and managed viewing, with interactive resource navigation and explicit human acceptance.

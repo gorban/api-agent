@@ -28,7 +28,7 @@ _HEAD = (
     b'\n'
     b'<meta charset="utf-8">\n'
     b'<meta name="workflow-view" content="v2">\n'
-    b'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'self\'; style-src \'self\' \'unsafe-hashes\' \'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=\' \'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E=\'; img-src \'self\'; connect-src \'none\'">\n'
+    b'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'self\'; style-src \'self\' \'unsafe-hashes\' \'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=\' \'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E=\'; img-src \'self\'; frame-src \'self\'; connect-src \'none\'">\n'
     b'\n'
     b'[workflow-hidden-text]: <html style="font-size:0">\n'
     b'[workflow-styles]: <link rel="stylesheet" href="{assets}viewer.css">\n'
@@ -36,6 +36,8 @@ _HEAD = (
     b'[workflow-headings]: <script defer src="{assets}heading-id.js"> "</script>"\n'
     b'[workflow-sanitize]: <script defer src="{assets}dompurify.js"> "</script>"\n'
     b'[workflow-viewer]: <script defer src="{assets}viewer.js"> "</script>"\n'
+    b'[workflow-modal-styles]: <link rel="stylesheet" href="{assets}flow-modal.css">\n'
+    b'[workflow-modal-script]: <script defer src="{assets}flow-modal.js"> "</script>"\n'
     b'\n'
 )
 _ROOT_FALLBACK = (
@@ -62,6 +64,11 @@ _ROOT_FALLBACK = (
 _ROOT_INSTRUCTIONS, _ROOT_HELP_BODY = _ROOT_FALLBACK.split(b'[workflow-help]', 1)
 _ROOT_HELP = b'[workflow-help]' + _ROOT_HELP_BODY
 _ROOT_HEAD = _HEAD.replace(_HINT, _HINT + _ROOT_INSTRUCTIONS, 1)
+_HEAD_PRE_MODAL = (_HEAD.replace(b"img-src 'self'; frame-src 'self'; connect-src 'none'",
+                                b"img-src 'self'; connect-src 'none'")
+                   .replace(b'[workflow-modal-styles]: <link rel="stylesheet" href="{assets}flow-modal.css">\n', b'')
+                   .replace(b'[workflow-modal-script]: <script defer src="{assets}flow-modal.js"> "</script>"\n', b''))
+_ROOT_HEAD_PRE_MODAL = _HEAD_PRE_MODAL.replace(_HINT, _HINT + _ROOT_INSTRUCTIONS, 1)
 _CARRIER = (
     b'[workflow-source]: <plaintext id="workflow-source" hidden>\n'
     b'\n'
@@ -133,6 +140,9 @@ def extract_document(raw: bytes, *, path: Path) -> ExtractedDocument:
         prefixes = [formatted + fallback + carrier, formatted + carrier]
         if version2:
             prefixes.insert(0, _ROOT_HEAD.replace(b'{assets}', asset_match[1]) + _ROOT_HELP + carrier)
+            old = _HEAD_PRE_MODAL.replace(b'{assets}', asset_match[1])
+            prefixes.extend((old + fallback + carrier, old + carrier))
+            prefixes.append(_ROOT_HEAD_PRE_MODAL.replace(b'{assets}', asset_match[1]) + _ROOT_HELP + carrier)
         prefix = next((candidate for candidate in prefixes if raw.startswith(candidate)), None)
         if prefix is None:
             raise LayoutError(f'{path}:1: invalid workflow presentation envelope')
@@ -224,6 +234,11 @@ def validate_presentation_location(raw: bytes, *, path: Path, root: Path) -> Non
         expected = [head.replace(b'{assets}', assets) + (fallback if is_root else b'') + carrier]
         if version2 and is_root:
             expected.append(_ROOT_HEAD.replace(b'{assets}', assets) + _ROOT_HELP + carrier)
+        if version2:
+            expected.append(_HEAD_PRE_MODAL.replace(b'{assets}', assets)
+                            + (fallback if is_root else b'') + carrier)
+            if is_root:
+                expected.append(_ROOT_HEAD_PRE_MODAL.replace(b'{assets}', assets) + _ROOT_HELP + carrier)
         if not any(raw.startswith(prefix) for prefix in expected):
             raise LayoutError(f'{path}:1: viewer asset prefix does not match declaration owner')
     if extracted.generated is not None:

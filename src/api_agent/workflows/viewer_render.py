@@ -103,6 +103,8 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_so
     owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
     asset_types = {"viewer.js": "text/javascript; charset=utf-8",
                    "viewer.css": "text/css; charset=utf-8",
+                   "flow-modal.js": "text/javascript; charset=utf-8",
+                   "flow-modal.css": "text/css; charset=utf-8",
                    "marked.js": "text/javascript; charset=utf-8",
                    "dompurify.js": "text/javascript; charset=utf-8",
                    "marked-LICENSE.txt": "text/plain; charset=utf-8",
@@ -964,7 +966,8 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         link_owners = owners | {PurePosixPath(route).parts[1] for route in reference_sources}
         repositories = {owner: identity for owner, identity in repositories.items()
                         if owner in link_owners}
-    asset_names = ("viewer.js", "viewer.css", "marked.js", "dompurify.js",
+    asset_names = ("viewer.js", "viewer.css", "flow-modal.js", "flow-modal.css",
+                   "marked.js", "dompurify.js",
                    "marked-LICENSE.txt", "dompurify-LICENSE.txt", "PlantUML-NOTICE.txt",
                    "VIEWER-ASSET-NOTICE.txt", "heading-id.js", "svg-links.js",
                    "heading-id-LICENSE.txt", "github-slugger-LICENSE.txt")
@@ -1015,10 +1018,9 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
             if not graphic.startswith(b"<?xml ") or b"?>\n" not in graphic:
                 raise RenderError("renderer SVG has no XML declaration")
             graphic = validate_svg(graphic, allowed_links=links)
-            if script:
-                if graphic.endswith(b" />"):
-                    graphic = graphic[:-3] + b"></svg>"
-                graphic = graphic.removesuffix(b"</svg>") + script + b"</svg>"
+            if graphic.endswith(b" />"):
+                graphic = graphic[:-3] + b"></svg>"
+            graphic = graphic.removesuffix(b"</svg>") + script + b"</svg>"
             generated_metadata = {**metadata, "graphic_sha256": sha256(graphic).hexdigest()}
             marker = b"<!-- api-agent-view-v1 " + json.dumps(generated_metadata, sort_keys=True, separators=(",", ":")).encode() + b" -->\n"
             declaration, separator, body = graphic.partition(b"?>\n")
@@ -1057,8 +1059,9 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
 def _navigation_script(logical_path: str, roots: Mapping[str, Path],
                        repositories: Mapping[str, RepositoryIdentity] | None,
                        *, admission_roots: Mapping[str, Path] | None = None) -> bytes:
-    if not repositories:
-        return b""
+    # Every saved diagram gets the same admitted local adapter. Repository
+    # rewrites are optional; modal readiness and Escape remain available.
+    repositories = repositories or {}
     svg = _physical_file(_svg_route(logical_path), roots)
     mapping = {}
     identities = {}

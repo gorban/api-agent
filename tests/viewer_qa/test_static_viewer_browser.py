@@ -170,7 +170,7 @@ def test_static_diagram_follows_title_and_opens_svg(view_url, path, target):
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, args=["--allow-file-access-from-files"])
+        browser = playwright.chromium.launch(headless=True)
         try:
             page = browser.new_page()
             policy_errors = []
@@ -185,8 +185,139 @@ def test_static_diagram_follows_title_and_opens_svg(view_url, path, target):
             assert len(_image_state(page)) == 1
             assert _image_state(page)[0]["width"] > 0
             page.locator("main > h1 + p > a").click()
-            assert page.url.endswith(target.replace("../../", ""))
-            assert page.locator("svg").count() == 1
+            if page.url.startswith("file:"):
+                dialog = page.locator('dialog.workflow-flow-modal')
+                assert dialog.count() == 1
+                assert dialog.locator('iframe').get_attribute('src').endswith(target.replace("../../", ""))
+            else:
+                assert page.url.endswith(target.replace("../../", ""))
+                assert page.locator("svg").count() == 1
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['file'], indirect=True)
+def test_file_modal_fits_and_svg_links_navigate_without_file_access_flag(view_url):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={'width': 260, 'height': 480})
+            page.goto(view_url('flow.md.html'))
+            source = page.url
+            page.locator('main > h1 + p > a').click()
+            dialog = page.locator('dialog.workflow-flow-modal')
+            dialog.locator('iframe').wait_for()
+            page.wait_for_function('''() => {
+              const d = document.querySelector('dialog.workflow-flow-modal');
+              return d && d.querySelector('.workflow-flow-status').hidden;
+            }''')
+            stage = dialog.locator('.workflow-flow-stage').evaluate('''element => ({
+              width: element.clientWidth, height: element.clientHeight,
+              scrollWidth: element.scrollWidth, scrollHeight: element.scrollHeight
+            })''')
+            assert stage['scrollWidth'] <= stage['width']
+            assert stage['scrollHeight'] <= stage['height']
+            assert page.url == source
+            page.evaluate('window.postMessage("workflow-modal-close-v1", "*")')
+            page.wait_for_timeout(50)
+            assert dialog.count() == 1
+            page.frame_locator('dialog iframe').locator('svg').evaluate(
+                'element => window.parent.postMessage({kind: "workflow-modal-close-v1"}, "*")')
+            page.wait_for_timeout(50)
+            assert dialog.count() == 1
+            page.evaluate('''() => {
+              const sibling = document.createElement('iframe');
+              sibling.id = 'unrelated-svg';
+              sibling.src = document.querySelector('dialog iframe').src;
+              document.body.append(sibling);
+            }''')
+            page.frame_locator('#unrelated-svg').locator('svg').evaluate(
+                'element => window.parent.postMessage("workflow-modal-close-v1", "*")')
+            page.wait_for_timeout(50)
+            assert dialog.count() == 1
+            page.locator('#unrelated-svg').evaluate('element => element.remove()')
+            page.evaluate('window.oldSvgFrame = document.querySelector("dialog iframe").contentWindow')
+            page.frame_locator('dialog iframe').locator('g.entity[data-qualified-name="n0"] a').focus()
+            page.frame_locator('dialog iframe').locator('g.entity[data-qualified-name="n0"] a').press('Escape')
+            dialog.wait_for(state='detached')
+            assert dialog.count() == 0
+            assert page.url == source
+
+            page.locator('main > h1 + p > a').click()
+            dialog.locator('iframe').wait_for()
+            page.evaluate('''() => window.dispatchEvent(new MessageEvent('message', {
+              data: 'workflow-modal-close-v1', source: window.oldSvgFrame
+            }))''')
+            assert dialog.count() == 1
+            page.frame_locator('dialog iframe').locator('g.entity[data-qualified-name="n0"] a').click()
+            page.wait_for_url(view_url('workflows/components/agent.md.html'))
+            assert dialog.count() == 0
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['file'], indirect=True)
+def test_file_modal_uses_canonical_percent_escaped_diagram_path(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+
+    (static_view / '.private_resources/diagrams/space name.svg').write_bytes(
+        (static_view / '.private_resources/diagrams/flow.svg').read_bytes())
+    document = static_view / 'flow.md.html'
+    document.write_bytes(document.read_bytes().replace(
+        b'.private_resources/diagrams/flow.svg', b'.private_resources/diagrams/space%20name.svg'))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('flow.md.html'))
+            page.locator('main > h1 + p > a').click()
+            assert page.locator('dialog.workflow-flow-modal iframe').count() == 1
+            assert page.locator('dialog.workflow-flow-modal iframe').get_attribute('src').endswith(
+                '/space%20name.svg')
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['file'], indirect=True)
+def test_file_modal_css_missing_keeps_standalone_navigation(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+
+    (static_view / '.private_resources/viewer/flow-modal.css').unlink()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('flow.md.html'))
+            page.locator('main > h1 + p > a').click()
+            page.wait_for_url(view_url('.private_resources/diagrams/flow.svg'))
+            assert page.locator('dialog.workflow-flow-modal').count() == 0
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['file'], indirect=True)
+def test_file_modal_missing_svg_after_image_load_shows_fallback(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('flow.md.html'))
+            page.wait_for_function('''() => {
+              const image = document.querySelector('main img[alt="Workflow diagram"]');
+              return image?.complete && image.naturalWidth > 0;
+            }''')
+            (static_view / '.private_resources/diagrams/flow.svg').unlink()
+            page.clock.install()
+            page.locator('main > h1 + p > a').click()
+            page.clock.run_for(20001)
+            dialog = page.locator('dialog.workflow-flow-modal')
+            assert dialog.get_by_text('Diagram loading timed out.').count() == 1
+            assert dialog.get_by_role('link', name='Open standalone diagram').count() == 1
+            assert dialog.locator('iframe').count() == 0
         finally:
             browser.close()
 

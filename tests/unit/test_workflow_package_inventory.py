@@ -33,7 +33,8 @@ def packaged_owner(tmp_path):
             target = root / 'tests/integration/fixture' / entry['target']
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / entry['target'], target)
-    for name in ('viewer.js', 'viewer.css', 'svg-links.js', 'PlantUML-NOTICE.txt',
+    for name in ('viewer.js', 'viewer.css', 'flow-modal.js', 'flow-modal.css',
+                 'svg-links.js', 'PlantUML-NOTICE.txt',
                  'VIEWER-ASSET-NOTICE.txt'):
         for owner in ('', 'tests/integration/fixture/'):
             target = root / (owner + '.private_resources/viewer/' + name)
@@ -59,8 +60,10 @@ def packaged_owner(tmp_path):
     git(root, 'init', '-q')
     git(root, 'add', '.')
     git(root, 'add', '-f', 'tests/integration/fixture/.private_resources/viewer/viewer.js',
+        'tests/integration/fixture/.private_resources/viewer/flow-modal.js',
         'tests/integration/fixture/.private_resources/viewer/svg-links.js',
-        '.private_resources/viewer/viewer.js', '.private_resources/viewer/svg-links.js')
+        '.private_resources/viewer/viewer.js', '.private_resources/viewer/flow-modal.js',
+        '.private_resources/viewer/svg-links.js')
     git(root, '-c', 'user.name=Test Author', '-c', 'user.email=test@example.invalid',
         'commit', '-qm', 'Create independent package fixture')
     namespace = runpy.run_path(str(ROOT / 'hatch_build.py'))
@@ -81,7 +84,7 @@ def test_git_inventory_is_exact_and_survives_relocated_no_git_rebuild(packaged_o
             'tests/integration/fixture/cfg/workflow-view.toml',
             'tests/integration/fixture/.private_resources/diagrams/flow.svg',
             'tests/integration/fixture/.private_resources/diagrams/contracts/0123456789abcdef01234567.md.html'} <= paths
-    assert sum('/.private_resources/viewer/' in '/' + path for path in paths) == 24
+    assert sum('/.private_resources/viewer/' in '/' + path for path in paths) == 28
     assert 'tests/integration/fixture/private-sentinel.txt' not in paths
     assert 'tests/integration/fixture/.private_resources/diagrams/unknown.svg' not in paths
     (root / 'workflow-package-files.json').write_text(json.dumps(inventory))
@@ -164,6 +167,7 @@ def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_
         target.write_text(text)
     git(root, 'add', '.')
     git(root, 'add', '-f', owner + '/.private_resources/viewer/viewer.js',
+        owner + '/.private_resources/viewer/flow-modal.js',
         owner + '/.private_resources/viewer/svg-links.js')
     git(root, '-c', 'user.name=Test Author', '-c', 'user.email=test@example.invalid',
         'commit', '-qm', 'Prepare independent source archive fixture')

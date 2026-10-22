@@ -57,6 +57,19 @@
     }
   }
   };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", applyLinks, { once: true });
-  else applyLinks();
+  const notifyReady = () => {
+    applyLinks();
+    if (location.protocol === "file:" && window.parent !== window)
+      window.parent.postMessage("workflow-modal-ready-v1", "*");
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", notifyReady, { once: true });
+  else notifyReady();
+  if (location.protocol === "file:" && window.parent !== window) {
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        window.parent.postMessage("workflow-modal-close-v1", "*");
+      }
+    });
+  }
 })();
