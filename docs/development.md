@@ -6,18 +6,28 @@ Choose **Run local** to launch the agent. `RUN_UI=True` also launches the select
 UI provider as a host process. Packs/providers declare any managed upstream API
 and database prerequisites; an explicit blank API_ENDPOINT requests that local
 API, while a remote URL starts no local API stack. AGENT_DJANGO_URL addresses the
-agent itself. The current launcher does not yet execute local-run; the service/log controls
-below describe its planned contract. See [the infrastructure plan](prds/implementation_plan_h.md).
+agent itself. Only enabled declared prerequisites are acquired; concrete upstream
+APIs and databases remain the selected pack's responsibility.
+
+Use `./launch.py --tui-mode run-local --no-std-in` for the terminal consumer.
+`RUN_UI=True` or `DEBUG=True` opens one headed browser with agent home first,
+optional prepared UI next and the actual selected graph last. With both false,
+home and flow URLs remain available without a browser, credentials or catalog
+access. Required later LLM authentication is always headed in Run local.
 
 Use **b** for browser destinations and **l** for available log sources; **\***
 selects interleaved, labeled logs. `RUN_LOG_SOURCE` selects the initial source
 by name. **Stop running containers** lists only eligible owned services and
 requires confirmation; it excludes unrelated containers and the hosting session.
 
-TRACE_MODE selects LangFuse or OTEL; TRACE_TARGET chooses its destination.
-Default local targets acquire the corresponding managed profile. Local-run
-resources stop on exit; retained test services remain available for observation
-and explicit cleanup. `LOG_CONTENT=False` keeps user/LLM/tool content out of
+The current core Run local checkpoint requires an empty `TRACE_MODE`; dashboard
+configuration and login follow separately. Other supported modes retain their
+existing tracing behavior. Local-run resources stop on exit after active requests
+and cleanup duties acknowledge completion; failed cleanup retains a retry receipt.
+Retained test services remain available for observation and explicit cleanup.
+UI-process output produces content-free activity messages, even when content
+logging is enabled; arbitrary streaming output has a separate privacy gate.
+`LOG_CONTENT=False` keeps user/LLM/tool content out of
 logs and traces; credentials stay excluded regardless of that setting.
 
 ## Recorded content and token usage

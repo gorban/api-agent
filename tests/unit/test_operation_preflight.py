@@ -44,13 +44,34 @@ def test_tui_checks_dependency_at_start_not_during_collection(tmp_path, monkeypa
     asyncio.run(scenario())
 
 
-def test_local_run_without_pack_dependency_reaches_existing_stub(tmp_path):
+def test_local_run_without_pack_dependency_dispatches_controller(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from api_agent.runtime.local_contracts import LocalSnapshot
+    from api_agent.tui.local_run import LocalRunScreen
+    calls = []
+    class Owner:
+        pending_cleanup = None
+        def __init__(self, *args, **kwargs): self.stop = asyncio.Event()
+        async def start(self):
+            calls.append('start')
+            return LocalSnapshot('ready')
+        async def wait(self):
+            await self.stop.wait()
+            return 0
+        def request_stop(self): self.stop.set()
+        async def aclose(self): calls.append('close')
+    monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', SimpleNamespace(LocalRunOwner=Owner))
     async def scenario():
-        app=fixture(tmp_path,'run-local')
+        app = fixture(tmp_path, 'run-local', fields={'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.screen.kind=='unavailable'
-            assert 'Run local execution is not implemented yet' in str(app.screen.query_one('#body',Static).content)
+            assert isinstance(app.screen, LocalRunScreen)
+            assert calls == ['start']
+            await app.screen.action_stop()
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+            assert calls == ['start', 'close']
     asyncio.run(scenario())
 
 
@@ -67,16 +88,27 @@ def test_no_stdin_local_run_reports_pack_todo_only_for_missing_endpoint(tmp_path
     context = pack(tmp_path, source)
     context.config_path.write_text('version=1\n[fields.API_ENDPOINT]\ntype="str"\n')
     monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+    prepared = Mock(return_value=None)
+    monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', prepared)
+    dispatched = []
+    async def run(context, resolve, **kwargs):
+        dispatched.append(resolve().values['API_ENDPOINT'])
+        return 7
+    monkeypatch.setattr('api_agent.runtime.local_terminal.run_local_terminal', run)
     with patch.dict('os.environ', {}, clear=True):
         args = ['--no-std-in', '--tui-mode=run-local']
         if endpoint is not None:
             args.append('--api-endpoint=' + endpoint)
-        assert main(args, base_root=base, resource_pack_dir=context.pack_root, _worktrees_verified=True) == 3
+        assert main(args, base_root=base, resource_pack_dir=context.pack_root, _worktrees_verified=True) == (7 if endpoint else 3)
     output = capsys.readouterr().err
     if endpoint:
-        assert TODO not in output and 'Requested operation is not implemented yet' in output
+        assert TODO not in output
+        assert dispatched == [endpoint]
+        prepared.assert_called_once()
     else:
         assert output.strip() == TODO
+        assert dispatched == []
+        prepared.assert_not_called()
 
 
 @pytest.mark.parametrize('mode', ['integration', 'e2e'])

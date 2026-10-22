@@ -23,7 +23,7 @@ async def assert_native_focus_cycle(app, pilot, controls):
     assert app.focused is controls[0]
 
 
-@pytest.mark.parametrize('mode', [None, 'run-local', 'unit', 'integration', 'e2e',
+@pytest.mark.parametrize('mode', [None, 'unit', 'integration', 'e2e',
                                  'allure', 'cleanup-containers'])
 def test_operation_screens_have_no_container_tab_stops(tmp_path, mode):
     async def scenario():

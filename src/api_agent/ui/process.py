@@ -2,6 +2,7 @@
 import asyncio
 import hmac
 import ipaddress
+import os
 import subprocess
 from secrets import token_urlsafe
 
@@ -9,7 +10,7 @@ import httpx
 
 from api_agent.providers.contracts import SetupPrerequisiteError
 from api_agent.providers.control import CleanupPendingError, finish_cleanup
-from api_agent.providers.progress import component_timeout
+from api_agent.providers.progress import component_timeout, independent_timeout_scope, report_timeout
 from api_agent.runtime.client_tls import require_verified_context
 
 
@@ -21,6 +22,33 @@ class OwnedStudioProcess:
         self._terminated = False
         self._killed = False
         self._stdin_closed = False
+        self._reader = None
+        self._output_closed = False
+        self._output_owned = False
+
+    def capture(self, callback, emissions):
+        """Read only this child's bounded output; no global handlers or threads."""
+        self._output_owned = True
+        os.set_blocking(self.process.stdout.fileno(), False)
+        with independent_timeout_scope():
+            self._reader = asyncio.create_task(self._capture(callback, emissions))
+
+    async def _capture(self, callback, emissions):
+        # Arbitrary streaming child text cannot be safely scrubbed before a
+        # later fragment completes a credential carrier. Report activity only.
+        async with report_timeout('Studio process output', None):
+            while True:
+                try:
+                    data = os.read(self.process.stdout.fileno(), 4096)
+                except BlockingIOError:
+                    if self.process.poll() is not None:
+                        return
+                    await asyncio.sleep(.02)
+                    continue
+                if not data:
+                    return
+                callback(f'UI process output: {len(data)} bytes received; content omitted.\n')
+                await asyncio.sleep(0)
 
     async def _wait(self, timeout):
         async with asyncio.timeout(timeout):
@@ -46,6 +74,15 @@ class OwnedStudioProcess:
                             self.process.kill()
                             self._killed = True
                         await self._wait(self.timeout / 2)
+                if self._reader is not None:
+                    done, _ = await asyncio.wait({self._reader}, timeout=self.timeout / 4)
+                    if not done:
+                        raise CleanupPendingError((self,), self.aclose)
+                    if not self._reader.cancelled():
+                        self._reader.exception()
+                if self._output_owned and not self._output_closed:
+                    self.process.stdout.close()
+                    self._output_closed = True
         except Exception:
             raise CleanupPendingError((self,), self.aclose) from None
 
@@ -57,12 +94,18 @@ class OwnedStudioProcess:
 
 class StudioProcesses:
     """A launch adapter; returned owners remain the UI provider's responsibility."""
-    def __init__(self, *, ssl_context, timeout=15, cleanup_timeout=5):
+    def __init__(self, *, ssl_context, timeout=15, cleanup_timeout=5,
+                 log_callback=None, emissions=None):
         self.ssl_context = require_verified_context(ssl_context)
         if (type(timeout) not in (int, float) or not 0 < timeout <= 60
                 or type(cleanup_timeout) not in (int, float) or not 0 < cleanup_timeout <= 10):
             raise ValueError('Invalid Studio process timeout')
         self.timeout, self.cleanup_timeout = timeout, cleanup_timeout
+        if log_callback is not None and (not callable(log_callback)
+                or not callable(getattr(emissions, 'register_secret', None))
+                or not callable(getattr(emissions, 'content_export', None))):
+            raise ValueError('Studio output capture requires an emission boundary')
+        self.log_callback, self.emissions = log_callback, emissions
 
     async def start(self, argv, *, cwd, host, port, scheme, env):
         if host != 'localhost':
@@ -75,6 +118,8 @@ class StudioProcesses:
         if scheme not in ('http', 'https') or type(port) is not int or not 1 <= port <= 65535:
             raise ValueError('Invalid Studio process listener')
         token = token_urlsafe(32)
+        if self.log_callback is not None:
+            self.emissions.register_secret(token)
         environment = dict(env, API_AGENT_UI_LAUNCH_TOKEN=token,
                            API_AGENT_UI_PARENT_LIVENESS='stdin-v1')
         process = None
@@ -90,11 +135,14 @@ class StudioProcesses:
                 # Popen completes ownership transfer before the next cancellation point.
                 try:
                     child = subprocess.Popen(argv, cwd=cwd, env=environment, stdin=subprocess.PIPE,
-                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             stdout=subprocess.PIPE if self.log_callback is not None else subprocess.DEVNULL,
+                                             stderr=subprocess.STDOUT if self.log_callback is not None else subprocess.DEVNULL,
                                              start_new_session=True)
                 except OSError:
                     raise SetupPrerequisiteError('Studio could not start Node.js') from None
                 process = OwnedStudioProcess(child, timeout=self.cleanup_timeout)
+                if self.log_callback is not None:
+                    process.capture(self.log_callback, self.emissions)
                 address = '[' + host + ']' if ':' in host else host
                 url = f'{scheme}://{address}:{port}/'
                 try:

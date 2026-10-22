@@ -29,8 +29,10 @@ services:
 
 The pack/API provider owns upstream provisioning and any database options;
 there is no separate shared `RUN_API` switch. See [local operations](development.md#running-locally)
-for readiness, logs and cleanup. The current launcher does not yet execute local-run or upstream API provisioning;
-[the infrastructure plan](prds/implementation_plan_h.md) tracks that wiring.
+for readiness, logs and cleanup. Run local consumes enabled declared prerequisites;
+each pack owns its concrete upstream API and database implementation. The initial
+local runtime requires an empty `TRACE_MODE`; tracing dashboard login follows
+separately under [startup requirements](prds/implementation_plan_k2.md).
 
 ## Review and save settings
 

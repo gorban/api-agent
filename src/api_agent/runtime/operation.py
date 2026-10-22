@@ -65,6 +65,7 @@ class OperationSession:
     application: object
     listener: object
     callback: CallbackEndpoint
+    infrastructure: object = None
 
 
 class OperationCleanup:
@@ -191,7 +192,9 @@ class OperationRunner:
             owned_listener = self.listener()
             await owned_listener.start(application, tls.material, endpoint)
             await owned_listener.wait_ready(self.timeout)
-            yield OperationSession(config, tls, lease, runtime, application, owned_listener, endpoint)
+            from .infrastructure_session import InfrastructureSession
+            yield OperationSession(config, tls, lease, runtime, application, owned_listener, endpoint,
+                                   InfrastructureSession(owned_manager))
         finally:
             primary = sys.exc_info()[1]
             if lease is None:
@@ -218,7 +221,8 @@ class OperationRunner:
 
 
 def local_operation(context, *, resolve, argv, scope, ownership_directory,
-                    engine_environment=None, collect=False, groups=(), timeout=120):
+                    engine_environment=None, collect=False, groups=(), timeout=120,
+                    runtime_factory=None, application_wrapper=None, required_kinds=None, prepared_plan=None):
     """Wire the local engine/TLS/API owners after an explicit operation choice.
 
     The caller supplies fresh resolution and handles an interpreter handoff
@@ -253,7 +257,7 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
             selected_groups.append('tracing')
         from api_agent.api.composition import activation_kinds
         from api_agent.providers.distribution import selected_manifests
-        active = activation_kinds(config.values)
+        active = activation_kinds(config.values, required_kinds)
         manifests = selected_manifests(config.values, owner_root=getattr(context, 'owner_root', context.base_root),
                                        active_kinds=active)
         options = {'selected_provider_manifests': manifests} if manifests else {}
@@ -267,7 +271,7 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
                                    interactive=not config.values.get('NO_STD_IN', False))
 
     def plan(config):
-        return plan_compose(config.values, scope, engine_environment=engine_environment)
+        return prepared_plan if prepared_plan is not None else plan_compose(config.values, scope, engine_environment=engine_environment)
 
     def manager(selected_plan, cancelled):
         return PrerequisiteManager(selected_plan, scope, ownership_directory,
@@ -275,10 +279,14 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
                                    cancelled=cancelled, deadline_seconds=timeout)
 
     def runtime(config, origin, material):
-        return compose_runtime(context, config, callback_origin=origin, tls_material=material)
+        if runtime_factory is not None:
+            return runtime_factory(config, origin, material)
+        return compose_runtime(context, config, callback_origin=origin, tls_material=material,
+                               required_kinds=required_kinds)
 
     def application(runtime, hostname):
-        return create_application(runtime, allowed_hosts=(hostname, 'localhost', '127.0.0.1'))
+        app = create_application(runtime, allowed_hosts=(hostname, 'localhost', '127.0.0.1'))
+        return application_wrapper(app) if application_wrapper is not None else app
 
     return OperationRunner(resolve=resolved_for_operation, prepare_dependencies=dependencies,
         prepare_https=https, plan=plan, manager=manager, compose_runtime=runtime,

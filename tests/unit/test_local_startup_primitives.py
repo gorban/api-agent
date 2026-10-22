@@ -1,0 +1,389 @@
+"""Local read-only status and ordered original-browser startup contracts."""
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+import pytest
+from api_agent.runtime.local_status import LocalStatusApplication, project_status, safe_destination
+from api_agent.runtime.local_browser import BorrowedBrowserPage, LocalBrowserOwner
+
+
+@pytest.mark.parametrize('url', [None, '', 'https://u:p@example.org/', 'https://example.org/?secret=x',
+    'https://example.org/#secret', 'file:///tmp/x', 'https://example.org:0', 'https://example.org:bad', 'https://example.org/\n'])
+def test_rejects_credential_bearing_or_invalid_destination(url):
+    assert safe_destination(url) is None
+
+
+def test_projection_drops_unknown_data():
+    assert project_status({'application':'secret', 'components':{'agent':'ready','ui':'secret'},
+        'destinations':{'flow':'http://127.0.0.1:123/r/flow.html'}, 'token':'secret'}) == {
+        'application':'Agent', 'components':{'agent':'ready','ui':'unavailable','tracing':'unavailable','flow':'unavailable'},
+        'destinations':{'flow':'http://127.0.0.1:123/r/flow.html'}}
+
+
+@pytest.mark.parametrize('path,method', [('/', 'GET'),('/local-status.json','GET'),('/', 'POST')])
+def test_status_bypasses_actual_application(path, method):
+    actual = AsyncMock(side_effect=AssertionError('authentication must remain lazy'))
+    app = LocalStatusApplication(actual, lambda: {'components':{'agent':'ready'}})
+    sent = []
+    async def exercise():
+        await app({'type':'http','path':path,'method':method}, AsyncMock(), AsyncMock(side_effect=sent.append))
+    asyncio.run(exercise())
+    actual.assert_not_awaited()
+    assert sent[0]['status'] == (200 if method == 'GET' else 405)
+
+
+def test_status_failure_does_not_expose_diagnostics():
+    app = LocalStatusApplication(AsyncMock(), Mock(side_effect=RuntimeError('private secret')))
+    sent = []
+    asyncio.run(app({'type':'http','path':'/local-status.json','method':'GET'}, AsyncMock(), AsyncMock(side_effect=sent.append)))
+    assert json.loads(sent[-1]['body'])['components']['agent'] == 'unavailable'
+    assert b'private' not in sent[-1]['body']
+
+
+def test_other_routes_delegate():
+    actual = AsyncMock()
+    scope = {'type':'lifespan'}
+    receive, send = AsyncMock(), AsyncMock()
+    asyncio.run(LocalStatusApplication(actual, lambda: {}) (scope, receive, send))
+    actual.assert_awaited_once_with(scope, receive, send)
+
+
+@pytest.mark.parametrize('run_ui,debug', [(False,False),(False,True),(True,False),(True,True)])
+def test_ordered_tabs_use_one_original_browser(run_ui, debug):
+    events = []
+    def page(name):
+        async def goto(url, **kwargs):
+            events.append((name,url))
+            return SimpleNamespace(status=200)
+        return SimpleNamespace(goto=goto)
+    home, ui_page, flow = page('home'), page('ui'), page('flow')
+    context = SimpleNamespace(new_page=AsyncMock(side_effect=[ui_page,flow] if run_ui else [flow]))
+    ui_page.context, ui_page.is_closed, ui_page.url = context, lambda: False, 'http://localhost:9443/'
+    context.pages = [home, ui_page]
+    session = SimpleNamespace(page=home, context=context, browser=SimpleNamespace(is_connected=lambda: True), inspection_endpoint='http://127.0.0.1:123')
+    browser = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
+    factory = Mock(return_value=browser)
+    host = SimpleNamespace(entry_url='http://127.0.0.1:124/r/flow.html', aclose=AsyncMock())
+    ui = SimpleNamespace(aclose=AsyncMock())
+    async def prepare_ui(*, browser_owner):
+        borrowed = await browser_owner.start()
+        assert borrowed.browser is session.browser and borrowed.context is context
+        assert borrowed.page is ui_page
+        await borrowed.page.goto('http://localhost:9443')
+        ui.session = borrowed
+        await browser_owner.aclose()
+        browser.aclose.assert_not_awaited()
+        return ui
+    owner = LocalBrowserOwner(object(), {'RUN_UI':run_ui,'DEBUG':debug,'UI_LISTENER_URL':'http://localhost:9443'}, 'http://localhost:8443',
+        prepare_ui=prepare_ui, browser_factory=factory, prepare_view=lambda _: (None,'projection',None,'bundle','sources'),
+        host_factory=AsyncMock(return_value=host))
+    async def exercise():
+        await owner.start()
+        assert owner.flow_url == host.entry_url
+        if run_ui or debug:
+            assert events == [('home','http://localhost:8443')] + ([('ui','http://localhost:9443')] if run_ui else []) + [('flow',host.entry_url)]
+            factory.assert_called_once_with(inspection=owner.inspection, headless=False)
+        else:
+            factory.assert_not_called()
+        await owner.aclose()
+        await owner.aclose()
+        with pytest.raises(RuntimeError):
+            await owner.start()
+    asyncio.run(exercise())
+    host.aclose.assert_awaited_once()
+
+
+def test_default_view_helpers_use_existing_renderer(monkeypatch):
+    from api_agent.runtime.local_browser import _prepare_view, _start_viewer_host
+    import sys
+    prepare, host = Mock(return_value='prepared'), AsyncMock(return_value='host')
+    monkeypatch.setitem(sys.modules, 'api_agent.runtime.view_flow', SimpleNamespace(_prepare_view=prepare))
+    monkeypatch.setitem(sys.modules, 'api_agent.runtime.viewer_host', SimpleNamespace(start_viewer_host=host))
+    assert _prepare_view('selection') == 'prepared'
+    assert asyncio.run(_start_viewer_host('bundle', projection='proof')) == 'host'
+    prepare.assert_called_once_with('selection')
+    host.assert_awaited_once_with('bundle', projection='proof')
+
+
+@pytest.mark.parametrize('failure', ['missing-ui', 'flow-http', 'flow-no-response', 'ui-retained', 'cleanup', 'ui-replaced'])
+def test_startup_failure_releases_owned_resources_and_preserves_retry(failure):
+    home = SimpleNamespace(goto=AsyncMock(return_value=SimpleNamespace(status=200)))
+    flow = SimpleNamespace(goto=AsyncMock(return_value=None if failure == 'flow-no-response' else SimpleNamespace(status=503)))
+    context = SimpleNamespace(new_page=AsyncMock(return_value=flow))
+    browser = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=home, context=context,
+        browser=object(), inspection_endpoint=None)), aclose=AsyncMock())
+    host = SimpleNamespace(entry_url='http://127.0.0.1:124/r/flow.html', aclose=AsyncMock())
+    retained = SimpleNamespace(aclose=AsyncMock())
+    failure_error = RuntimeError('Preparation failed')
+    failure_error.retained_owners = (retained,)
+    prepare = AsyncMock(side_effect=failure_error) if failure in {'ui-retained','cleanup'} else None
+    if failure == 'ui-replaced':
+        prepare = AsyncMock(return_value=SimpleNamespace(session=object(), aclose=AsyncMock()))
+    if failure == 'cleanup':
+        retained.aclose.side_effect = [RuntimeError('retry disposal'), None]
+    prepared = (None,object(),None,object(),object())
+    view = Mock(return_value=prepared)
+    host_factory = AsyncMock(return_value=host)
+    owner = LocalBrowserOwner(object(), {'RUN_UI':failure in {'missing-ui','ui-retained','cleanup','ui-replaced'},'DEBUG':True},
+        'http://localhost:8443', prepare_ui=prepare, browser_factory=Mock(return_value=browser),
+        prepare_view=view, host_factory=host_factory)
+    async def exercise():
+        with pytest.raises(RuntimeError) as caught:
+            await owner.start()
+        if failure == 'ui-replaced':
+            assert str(caught.value) == 'UI preparation replaced the original session'
+        if failure == 'cleanup':
+            assert caught.value is failure_error
+            assert caught.value.retained_owners == (owner,)
+            assert isinstance(caught.value.cleanup_error, RuntimeError)
+            browser.aclose.assert_not_awaited()
+        await owner.aclose()
+    asyncio.run(exercise())
+    view.assert_called_once_with(owner.context)
+    args, kwargs = host_factory.call_args
+    assert args[0] is prepared[3] and kwargs['projection'] is prepared[1]
+    assert kwargs['repository_sources'] is prepared[4]
+    browser.aclose.assert_awaited_once()
+    host.aclose.assert_awaited_once()
+    assert not owner._failed_owners
+
+
+@pytest.mark.parametrize('response', [None, SimpleNamespace(status=503)])
+def test_home_failure_prevents_later_tabs(response):
+    home = SimpleNamespace(goto=AsyncMock(return_value=response))
+    context = SimpleNamespace(new_page=AsyncMock())
+    browser = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=home, context=context)), aclose=AsyncMock())
+    host = SimpleNamespace(entry_url='http://localhost/flow', aclose=AsyncMock())
+    owner = LocalBrowserOwner(None, {'DEBUG':True}, 'http://localhost/', browser_factory=Mock(return_value=browser),
+        prepare_view=lambda _: (None,None,None,None,None),host_factory=AsyncMock(return_value=host))
+    async def exercise():
+        with pytest.raises(RuntimeError, match='Agent home did not load'):
+            await owner.start()
+    asyncio.run(exercise())
+    context.new_page.assert_not_awaited()
+    host.aclose.assert_awaited_once()
+
+
+@pytest.mark.parametrize('path', ['/', '/local-status.json'])
+def test_actual_application_host_admission_is_preserved(path):
+    import httpx
+    from api_agent.api.application import Runtime, create_application
+    async def exercise():
+        app = LocalStatusApplication(create_application(Runtime('synthetic')), lambda: {'components':{'agent':'ready'}})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://untrusted.invalid') as client:
+            assert (await client.get(path)).status_code == 400
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://localhost') as client:
+            response = await client.get(path)
+            assert response.status_code == 200
+            if path == '/':
+                assert 'http-equiv="refresh" content="2"' in response.text
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('replacement', ['valid', 'foreign', 'closed', 'origin', 'extra', 'browser', 'context', 'already-closed'])
+def test_ui_active_page_handoff(replacement):
+    browser = SimpleNamespace(is_connected=lambda: replacement != 'closed')
+    context = SimpleNamespace()
+    home = object()
+    original = SimpleNamespace(is_closed=lambda: replacement == 'already-closed', close=AsyncMock())
+    active = SimpleNamespace(context=object() if replacement == 'foreign' else context,
+        is_closed=lambda: False, url='https://localhost:9443/' if replacement != 'origin' else 'https://elsewhere.invalid/')
+    context.pages = [home,active] + ([object()] if replacement == 'extra' else [])
+    session = SimpleNamespace(browser=browser,context=context,page=active)
+    owner = LocalBrowserOwner(None, {'UI_LISTENER_URL':'https://localhost:9443'}, 'http://localhost/')
+    owner.session = SimpleNamespace(browser=browser,context=context,page=home)
+    owner.ui = SimpleNamespace(session=session)
+    if replacement == 'browser':
+        session.browser = object()
+    if replacement == 'context':
+        session.context = object()
+    async def exercise():
+        if replacement in {'valid','already-closed'}:
+            await owner._verify_ui(BorrowedBrowserPage(session), original)
+        else:
+            with pytest.raises(RuntimeError):
+                await owner._verify_ui(BorrowedBrowserPage(session), original)
+    asyncio.run(exercise())
+    if replacement == 'valid':
+        original.close.assert_awaited_once()
+    if replacement == 'already-closed':
+        original.close.assert_not_awaited()
+
+
+def test_close_acknowledges_late_host_acquisition():
+    async def exercise():
+        entered, cancelled, proceed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        host = SimpleNamespace(entry_url='http://localhost/flow', aclose=AsyncMock())
+        async def acquire(*args, **kwargs):
+            entered.set()
+            try:
+                await proceed.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await proceed.wait()
+            return host
+        owner = LocalBrowserOwner(None, {}, 'http://localhost/', prepare_view=lambda _: (None,None,None,None,None),host_factory=acquire)
+        starting = asyncio.create_task(owner.start())
+        await entered.wait()
+        closing = asyncio.create_task(owner.aclose())
+        await cancelled.wait()
+        assert not closing.done()
+        proceed.set()
+        await closing
+        with pytest.raises(RuntimeError, match='closed during preparation'):
+            await starting
+        host.aclose.assert_awaited_once()
+    asyncio.run(exercise())
+
+
+def test_close_reports_pending_until_startup_acknowledges(monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    async def exercise():
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        host = SimpleNamespace(entry_url='http://localhost/flow', aclose=AsyncMock())
+        async def acquire(*args, **kwargs):
+            entered.set()
+            try:
+                await proceed.wait()
+            except asyncio.CancelledError:
+                await proceed.wait()
+            return host
+        owner = LocalBrowserOwner(None, {}, 'http://localhost/', prepare_view=lambda _: (None,None,None,None,None),host_factory=acquire)
+        starting = asyncio.create_task(owner.start())
+        await entered.wait()
+        original_wait = asyncio.wait
+        monkeypatch.setattr(asyncio, 'wait', AsyncMock(return_value=(set(),{starting})))
+        with pytest.raises(CleanupPendingError):
+            await owner.aclose()
+        monkeypatch.setattr(asyncio, 'wait', original_wait)
+        assert not starting.done()
+        proceed.set()
+        with pytest.raises(RuntimeError, match='closed during preparation'):
+            await starting
+        await owner.aclose()
+        host.aclose.assert_awaited_once()
+    asyncio.run(exercise())
+
+
+def test_closed_during_final_navigation_never_reports_ready():
+    async def exercise():
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        async def goto(*args, **kwargs):
+            entered.set()
+            try:
+                await proceed.wait()
+            except asyncio.CancelledError:
+                await proceed.wait()
+            return SimpleNamespace(status=200)
+        flow = SimpleNamespace(goto=goto)
+        home = SimpleNamespace(goto=AsyncMock(return_value=SimpleNamespace(status=200)))
+        browser = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=home,context=SimpleNamespace(new_page=AsyncMock(return_value=flow)))),aclose=AsyncMock())
+        host = SimpleNamespace(entry_url='http://localhost/flow',aclose=AsyncMock())
+        owner = LocalBrowserOwner(None, {'DEBUG':True}, 'http://localhost/',browser_factory=Mock(return_value=browser),
+            prepare_view=lambda _: (None,None,None,None,None),host_factory=AsyncMock(return_value=host))
+        starting = asyncio.create_task(owner.start())
+        await entered.wait()
+        owner.closed = True
+        proceed.set()
+        with pytest.raises(RuntimeError, match='closed during preparation'):
+            await starting
+        host.aclose.assert_awaited_once()
+    asyncio.run(exercise())
+
+
+def test_original_ui_active_page_must_match_configured_origin():
+    browser = SimpleNamespace(is_connected=lambda:True)
+    context = SimpleNamespace()
+    home = object()
+    page = SimpleNamespace(context=context,is_closed=lambda:False,url='https://foreign.invalid/')
+    context.pages = [home,page]
+    session = SimpleNamespace(browser=browser,context=context,page=page)
+    owner = LocalBrowserOwner(None,{'UI_LISTENER_URL':'https://localhost:9443'},'https://localhost/')
+    owner.session = SimpleNamespace(browser=browser,context=context,page=home)
+    owner.ui = SimpleNamespace(session=session)
+    with pytest.raises(RuntimeError, match='unexpected origin'):
+        asyncio.run(owner._verify_ui(BorrowedBrowserPage(session),page))
+
+
+def test_concurrent_closes_cancel_startup_once_and_acknowledge_disposal():
+    async def exercise():
+        entered, disposal_entered, allow_disposal = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        disposed = False
+        async def dispose():
+            nonlocal disposed
+            disposal_entered.set()
+            await allow_disposal.wait()
+            disposed = True
+        host = SimpleNamespace(entry_url='http://localhost/flow',aclose=dispose)
+        async def acquire(*args,**kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await host.aclose()
+                raise
+        owner = LocalBrowserOwner(None,{},'https://localhost/',prepare_view=lambda _:(None,None,None,None,None),host_factory=acquire)
+        starting = asyncio.create_task(owner.start())
+        await entered.wait()
+        first = asyncio.create_task(owner.aclose())
+        await disposal_entered.wait()
+        second = asyncio.create_task(owner.aclose())
+        await asyncio.sleep(0)
+        assert starting.cancelling() == 1
+        assert not first.done() and not second.done() and not disposed
+        allow_disposal.set()
+        await asyncio.gather(first,second)
+        assert disposed and starting.cancelled()
+        assert starting.cancelling() == 1
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('configured,actual', [
+    ('https://localhost:443','https://localhost/'),
+    ('https://localhost','https://localhost:443/'),
+    ('http://localhost:80','http://localhost/'),
+    ('http://localhost','http://localhost:80/'),
+])
+def test_ui_origin_normalizes_explicit_default_port(configured, actual):
+    browser = SimpleNamespace(is_connected=lambda:True)
+    context = SimpleNamespace()
+    home = object()
+    page = SimpleNamespace(context=context,is_closed=lambda:False,url=actual)
+    context.pages = [home,page]
+    session = SimpleNamespace(browser=browser,context=context,page=page)
+    owner = LocalBrowserOwner(None,{'UI_LISTENER_URL':configured},'http://localhost/')
+    owner.session = SimpleNamespace(browser=browser,context=context,page=home)
+    owner.ui = SimpleNamespace(session=session)
+    asyncio.run(owner._verify_ui(BorrowedBrowserPage(session),page))
+
+
+def test_status_projects_bounded_qualified_services_and_verified_endpoints():
+    snapshot = {'components':{'agent':'ready','service:sample/database':'ready','SECRET':'ready',
+        'service:sample/other':'raw error', 'service:Bad/id':'ready', 4:'ready'},
+        'destinations':{'service:sample/database:console':'https://localhost:9443/',
+        'service:sample/database:secret':'https://localhost/?token=secret',
+        'service:sample/missing:console':'https://localhost/', 'service:bad/<script>:url':'https://localhost/',4:'https://localhost/'}}
+    projected = project_status(snapshot)
+    assert projected['components'] == {'agent':'ready','ui':'unavailable','tracing':'unavailable','flow':'unavailable',
+        'service:sample/database':'ready'}
+    assert projected['destinations'] == {'service:sample/database:console':'https://localhost:9443/'}
+
+
+def test_status_caps_service_and_endpoint_declaration_totals():
+    snapshot = {'components':{f'service:owner/s{i}':'ready' for i in range(40)},
+        'destinations':{f'service:owner/s{i}:e{j}':'http://localhost/' for i in range(32) for j in range(20)}}
+    projected = project_status(snapshot)
+    assert len(projected['components']) == 36
+    assert all(sum(name.startswith(f'service:owner/s{i}:') for name in projected['destinations']) <= 16 for i in range(32))
+    assert len(projected['destinations']) <= 512
+    assert 'service:owner/s32' not in projected['components']
+
+
+def test_service_links_are_visible_in_friendly_home():
+    sent = []
+    app = LocalStatusApplication(AsyncMock(), lambda: {'components':{'service:sample/database':'ready'},
+        'destinations':{'service:sample/database:console':'https://localhost:9443/'}})
+    asyncio.run(app({'type':'http','path':'/','method':'GET'},AsyncMock(),AsyncMock(side_effect=sent.append)))
+    assert b'service:sample/database: ready' in sent[-1]['body']
+    assert b'>service:sample/database:console</a>' in sent[-1]['body']
