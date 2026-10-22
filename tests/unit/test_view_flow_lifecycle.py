@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from api_agent.providers.control import CleanupPendingError
+from api_agent.providers.sessions import InspectionOwner
 from api_agent.runtime import view_flow as viewer
 from api_agent.workflows import viewer_projection, viewer_render
 from api_agent.workflows.viewer_render import ViewBundle, ViewFile, ViewRoute, ViewSource
@@ -63,16 +64,22 @@ def test_selected_view_uses_original_page_and_retries_browser_cleanup(tmp_path, 
                 raise CleanupPendingError((self,), self.aclose)
 
     class Inspection:
+        settled = False
         async def wait_closed(self):
             return None
         async def aclose(self):
-            return None
+            raise CleanupPendingError((self,), self.aclose)
+        async def settle_terminated_inspection(self):
+            self.settled = True
+            return True
 
     browser = Browser()
     monkeypatch.setattr(viewer, 'managed_browser', lambda **_: browser)
-    monkeypatch.setattr(viewer, 'InspectionOwner', Inspection)
+    inspection = Inspection()
+    monkeypatch.setattr(viewer, 'InspectionOwner', lambda: inspection)
     asyncio.run(viewer.view_flow(SimpleNamespace()))
     assert browser.closes == 2
+    assert inspection.settled
     assert captured == [(projection, definition.roots, False)]
 
 
@@ -237,3 +244,56 @@ def test_run_view_flow_reports_interrupt_without_success(monkeypatch):
 
     monkeypatch.setattr(viewer.asyncio, 'run', interrupted)
     assert viewer.run_view_flow(SimpleNamespace()) == 130
+
+
+def test_terminated_inspection_requires_failed_exact_stack_and_terminal_proof():
+    class Context:
+        async def close(self):
+            raise ConnectionError('driver pipe is gone')
+
+    class Browser:
+        async def close(self):
+            raise AssertionError('unreached')
+
+    class Driver:
+        terminal = False
+        async def stop(self):
+            raise AssertionError('unreached')
+        async def terminated_inspection(self, session):
+            return self.terminal
+
+    async def exercise():
+        inspection = InspectionOwner()
+        context, browser, driver = Context(), Browser(), Driver()
+        session = SimpleNamespace(context=context, browser=browser)
+        inspection.observe(session)
+        inspection.retain([(driver, 'stop'), (browser, 'close'), (context, 'close')])
+        assert not await inspection.settle_terminated_inspection()
+        with pytest.raises(CleanupPendingError):
+            await inspection.aclose()
+        assert not await inspection.settle_terminated_inspection()
+        assert len(inspection._resources) == 3
+        failed_close = inspection._closing
+        other_failure = asyncio.get_running_loop().create_future()
+        other_failure.set_exception(RuntimeError('unclassified close failure'))
+        inspection._closing = other_failure
+        assert not await inspection.settle_terminated_inspection()
+        inspection._closing = failed_close
+        other_failure.exception()
+        driver.terminal = True
+        class HostileEqual:
+            def __eq__(self, other):
+                return True
+
+        inspection._resources[1] = (HostileEqual(), 'close')
+        assert not await inspection.settle_terminated_inspection()
+        assert len(inspection._resources) == 3
+        inspection._resources.append((object(), 'close'))
+        assert not await inspection.settle_terminated_inspection()
+        inspection._resources.pop()
+        inspection._resources[1] = (browser, 'close')
+        assert await inspection.settle_terminated_inspection()
+        assert not inspection._resources and not inspection.sessions
+
+    import pytest
+    asyncio.run(exercise())

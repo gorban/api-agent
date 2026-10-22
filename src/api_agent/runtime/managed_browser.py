@@ -1,7 +1,9 @@
 """Shared Stealth-enabled Chromium for provider, test and local UI sessions."""
 import asyncio
+import os
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from api_agent.providers.sessions import BrowserOwner
 from api_agent.providers.control import finish_cleanup as _dispose
@@ -16,6 +18,7 @@ class ChromiumDriver:
         self.handed_browser = False
         self.inspectable = inspectable
         self.inspection_endpoint = None
+        self.browser_pid = None
 
     async def launch(self, *, headless):
         self.preparing = asyncio.create_task(asyncio.to_thread(
@@ -40,6 +43,15 @@ class ChromiumDriver:
                 if not 0 < port < 65536:
                     raise ValueError('Invalid inspection port')
                 self.inspection_endpoint = f'http://127.0.0.1:{port}'
+                try:
+                    processes = (await session.send('SystemInfo.getProcessInfo'))['processInfo']
+                    browser_pids = [item['id'] for item in processes if item.get('type') == 'browser']
+                    if len(browser_pids) == 1 and type(browser_pids[0]) is int and browser_pids[0] > 0:
+                        self.browser_pid = browser_pids[0]
+                except Exception:
+                    # An unavailable process report never qualifies a later
+                    # terminal-settlement decision.
+                    self.browser_pid = None
             finally:
                 await _dispose(session.detach())
         self.handed_browser = True
@@ -69,6 +81,48 @@ class ChromiumDriver:
 
     async def stop(self):
         await _dispose(self._close())
+
+    async def terminated_inspection(self, session):
+        """Confirm that an interrupted inspectable browser has no live transport."""
+        if (not self.inspectable or not self.handed_browser
+                or self.starting is None or not self.starting.done()
+                or self.launching is None or not self.launching.done()
+                or self.inspection_endpoint != session.inspection_endpoint
+                or not self.inspection_endpoint or self.browser_pid is None
+                or session.browser.is_connected()):
+            return False
+        try:
+            try:
+                os.kill(self.browser_pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                return False
+            if self.launching.result() is not session.browser:
+                return False
+            playwright = self.starting.result()
+            transport = playwright._impl_obj._connection._transport
+            process = transport._proc
+            if process is None:
+                return False
+            await asyncio.wait_for(process.wait(), timeout=.25)
+            endpoint = urlsplit(self.inspection_endpoint)
+            if endpoint.scheme != 'http' or endpoint.hostname != '127.0.0.1' or not endpoint.port:
+                return False
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection('127.0.0.1', endpoint.port), timeout=.25)
+                writer.close()
+                await asyncio.wait_for(writer.wait_closed(), timeout=.25)
+                return False
+            except ConnectionRefusedError:
+                failure = transport.on_error_future
+                if failure.done() and not failure.cancelled():
+                    failure.exception()
+                return True
+        except (AttributeError, ValueError, asyncio.TimeoutError, OSError):
+            return False
+        return False
 
 
 def managed_browser(*, inspection=None, headless=False):

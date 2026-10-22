@@ -670,6 +670,53 @@ def _drain(process: subprocess.Popen[bytes], *, timeout: float) -> tuple[bytes, 
     return bytes(buffers[process.stdout]), bytes(buffers[process.stderr])
 
 
+def _finite_svg_dimension(value: str) -> float:
+    if not re.fullmatch(r"(?:0|[1-9]\d*)(?:\.\d+)?(?:px)?", value):
+        raise RenderError("invalid SVG dimension")
+    number = float(value.removesuffix("px"))
+    if not math.isfinite(number) or number <= 0 or number > 16384:
+        raise RenderError("SVG dimension exceeds limit")
+    return number
+
+def _safe_svg_style(value: str) -> bool:
+    for declaration in value.split(";"):
+        if not declaration.strip():
+            continue
+        key, separator, raw = declaration.partition(":")
+        if not separator:
+            return False
+        key, raw = key.strip().lower(), raw.strip()
+        if key in {"width", "height", "stroke-width", "stroke-miterlimit", "font-size"}:
+            try:
+                _finite_svg_dimension(raw)
+            except RenderError:
+                return False
+        elif key in {"fill", "stroke", "background"}:
+            if not (re.fullmatch(r"#[0-9a-fA-F]{3,8}", raw) or raw.lower() in _STYLE_COLORS):
+                return False
+        elif key in {"fill-opacity", "stroke-opacity", "opacity"}:
+            if not re.fullmatch(r"(?:0(?:\.\d+)?|1(?:\.0+)?)", raw):
+                return False
+        elif key == "stroke-linejoin":
+            if raw not in {"miter", "round", "bevel"}:
+                return False
+        elif key == "stroke-linecap":
+            if raw not in {"butt", "round", "square"}:
+                return False
+        elif key == "stroke-dasharray":
+            if raw != "7,7":
+                return False
+        elif key == "font-weight":
+            if raw not in {"normal", "bold"}:
+                return False
+        elif key == "text-anchor":
+            if raw not in {"start", "middle", "end"}:
+                return False
+        else:
+            return False
+    return True
+
+
 def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) -> bytes:
     if len(data) > _MAX_OUTPUT or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
         raise RenderError("unsafe SVG")
@@ -679,52 +726,6 @@ def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) ->
         raise RenderError("invalid SVG") from exc
     if root.tag != "{" + _SVG_NS + "}svg":
         raise RenderError("invalid SVG root")
-    def finite_dimension(value: str) -> float:
-        if not re.fullmatch(r"(?:0|[1-9]\d*)(?:\.\d+)?(?:px)?", value):
-            raise RenderError("invalid SVG dimension")
-        number = float(value.removesuffix("px"))
-        if not math.isfinite(number) or number <= 0 or number > 16384:
-            raise RenderError("SVG dimension exceeds limit")
-        return number
-
-    def safe_style(value: str) -> bool:
-        for declaration in value.split(";"):
-            if not declaration.strip():
-                continue
-            key, separator, raw = declaration.partition(":")
-            if not separator:
-                return False
-            key, raw = key.strip().lower(), raw.strip()
-            if key in {"width", "height", "stroke-width", "stroke-miterlimit", "font-size"}:
-                try:
-                    finite_dimension(raw)
-                except RenderError:
-                    return False
-            elif key in {"fill", "stroke", "background"}:
-                if not (re.fullmatch(r"#[0-9a-fA-F]{3,8}", raw) or raw.lower() in _STYLE_COLORS):
-                    return False
-            elif key in {"fill-opacity", "stroke-opacity", "opacity"}:
-                if not re.fullmatch(r"(?:0(?:\.\d+)?|1(?:\.0+)?)", raw):
-                    return False
-            elif key == "stroke-linejoin":
-                if raw not in {"miter", "round", "bevel"}:
-                    return False
-            elif key == "stroke-linecap":
-                if raw not in {"butt", "round", "square"}:
-                    return False
-            elif key == "stroke-dasharray":
-                if raw != "7,7":
-                    return False
-            elif key == "font-weight":
-                if raw not in {"normal", "bold"}:
-                    return False
-            elif key == "text-anchor":
-                if raw not in {"start", "middle", "end"}:
-                    return False
-            else:
-                return False
-        return True
-
     def bounded_numbers(value: str, allowed: str = "") -> list[float]:
         numbers = _SVG_NUMBER.findall(value)
         residue = _SVG_NUMBER.sub("", value)
@@ -744,8 +745,8 @@ def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) ->
             if operation in {"scale", "matrix"} and any(abs(number) > 100 for number in numbers):
                 raise RenderError("SVG transform exceeds limit")
 
-    width = finite_dimension(root.attrib.get("width", ""))
-    height = finite_dimension(root.attrib.get("height", ""))
+    width = _finite_svg_dimension(root.attrib.get("width", ""))
+    height = _finite_svg_dimension(root.attrib.get("height", ""))
     if width * height > 50_000_000:
         raise RenderError("SVG area exceeds limit")
     viewbox = root.attrib.get("viewBox", "").split()
@@ -758,7 +759,7 @@ def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) ->
     root_style = root.attrib.get("style", "")
     for key, value in re.findall(r"(?:^|;)\s*(width|height)\s*:\s*([^;]+)", root_style, flags=re.I):
         key = key.lower()
-        if finite_dimension(value.strip()) != (width if key == "width" else height):
+        if _finite_svg_dimension(value.strip()) != (width if key == "width" else height):
             raise RenderError("SVG CSS dimensions disagree")
     ids: set[str] = set()
     refs: list[str] = []
@@ -785,7 +786,7 @@ def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) ->
                     refs.append(value[1:])
                 elif value not in allowed_links:
                     raise RenderError("unadmitted SVG link")
-            elif attr == "style" and not safe_style(value):
+            elif attr == "style" and not _safe_svg_style(value):
                 raise RenderError("unsafe SVG style")
             elif "url(" in value.lower() or "javascript:" in value.lower() or "data:" in value.lower():
                 raise RenderError("unsafe SVG resource")

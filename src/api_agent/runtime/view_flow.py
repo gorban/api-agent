@@ -62,6 +62,9 @@ async def _serve_view(prepared):
                         await owner.aclose()
                         return
                     except CleanupPendingError:
+                        settle = getattr(owner, 'settle_terminated_inspection', None)
+                        if owner is inspection and settle is not None and await settle():
+                            return
                         if not reported:
                             print('Workflow viewer cleanup remains pending; retrying owned resources.', flush=True)
                             reported = True
