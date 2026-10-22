@@ -2,7 +2,7 @@
 
 [Conditional prerequisites](implementation_plan_o1.md)
 
-The bounded contract below was approved October 22, 2026. Its bounded technical implementation and conformance are complete; human acceptance remains separate below.
+The bounded contract below was approved October 22, 2026. Its bounded technical implementation, conformance and human acceptance are complete. Human acceptance was recorded October 22, 2026 for the delivered synthetic-service lifecycle scope.
 
 ## Discovery and authority
 
@@ -27,7 +27,7 @@ The bounded contract below was approved October 22, 2026. Its bounded technical 
 - [x] Freeze the [concrete v1 format](implementation_plan_o1b.md) and public Python interfaces alongside implementation, with finite capture/readiness budgets and source/installed equivalence. Do not add an arbitrary shell or lifecycle-plugin escape hatch.
 - [x] Prove the unchanged core consumes an independently authored external synthetic pack: remote/disabled, local API with external backing, and local API with managed backing. Verify dependency order, endpoint delivery, seeding/reuse, status/logs, occupied ports, rollback, concurrent leases, cancellation and volume preservation with controlled and disposable native proofs.
 - [x] Complete exact applicable unit line/branch coverage, causal mutations, installed/relocated resources, notices, public source/index/metadata, independent adversarial and joined external review before delivery. No live inference is needed.
-- [ ] Human acceptance of conditional startup, endpoint/status/log visibility, reuse and Stop/Exit cleanup remains separate. Run local and product-specific consumers keep their later gates.
+- [x] Human acceptance of conditional startup, endpoint/status/log visibility, reuse and Stop/Exit cleanup was recorded October 22, 2026. Run local and product-specific consumers keep their later gates.
 
 ## Delivered requirements
 
@@ -46,4 +46,4 @@ The original TUI publication requirement remains in the unchecked startup status
 - [x] Use an independently authored external synthetic pack declaring an API plus a conditional backing service. Prove the unchanged core consumes both, orders startup/readiness and passes the resolved endpoint to the API. This conformance fixture requires no particular database engine.
 - [x] Prove disabled, remote, local/external-backing and local/managed-backing cases; invalid combinations reject before startup. Include missing readiness, occupied ports, compatible reuse, concurrent leases, cancellation, failure rollback and volume preservation. Test dependency/profile validation through controlled commands and disposable native services where applicable.
 - [x] Prove source and relocated installed-pack discovery from unrelated directories, complete packaged assets and unsupported-contract rejection. Use meaningful mutations, applicable exact unit line/branch coverage, package/license/public-boundary checks and independent review.
-- [ ] Human-review conditional activation, endpoint/status/log visibility and Stop/Exit cleanup with disposable synthetic services. Confirm that help/collection and disabled services cause no startup. Later demo and external-pack services reuse this accepted extension point.
+- [x] Human-review conditional activation, endpoint/status/log visibility and Stop/Exit cleanup with disposable synthetic services. Confirm that help/collection and disabled services cause no startup. Later demo and external-pack services reuse this accepted extension point.

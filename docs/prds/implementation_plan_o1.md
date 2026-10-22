@@ -13,9 +13,9 @@ Resource packs can declare selected Compose prerequisites through the existing s
 - [x] Prove remote/disabled, local API/external backing and local API/managed backing with an independently authored external synthetic pack. Complete controlled/disposable lifecycle, exact applicable coverage, causal mutation, package/license/public-boundary and independent/external review gates. See [detailed requirements and acceptance](implementation_plan_o1a.md).
 - [x] Verify the [concrete declaration format and public runtime interfaces](implementation_plan_o1b.md) against source and installed conformance.
 
-## Deferred human review
+## Human acceptance
 
-The bounded Compose foundation has completed substantive work and independent/external review. Its unchecked human acceptance remains in the child; dependent Run local, full UI/authentication, concrete service providers and broader reporting retain their own gates.
+The bounded Compose foundation completed substantive work and independent/external review and received human acceptance on October 22, 2026. Dependent Run local, full UI/authentication, concrete service providers and broader reporting retain their own gates.
 
 - [Approved contract and acceptance](implementation_plan_o1a.md)
 - [Declaration format](implementation_plan_o1b.md)
