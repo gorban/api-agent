@@ -30,7 +30,7 @@ For Run local, RUN_UI or DEBUG opens one headed startup browser; DEBUG alone
 does not enable the optional frontend or eager UI/LLM login. Run local never
 uses headless browsing, including separate login browsers. Test consumers retain
 their headless/visible policy. [Startup tabs](implementation_plan_k2.md) are the
-unauthenticated home/status page, optional UI, optional tracing and final flow.
+unauthenticated home/status page, optional tracing, actual flow and optional UI last.
 Tracing login uses its configured dashboard credentials independently of UI/LLM
 login; a dashboard tab does not authorize frontend authentication. Attended login requiring human action must
 be visible; a headless attempt that cannot finish reports interaction required

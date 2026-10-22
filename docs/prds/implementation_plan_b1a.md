@@ -2,7 +2,7 @@
 
 [Declarative descriptions](implementation_plan_b.md) · [Markdown grammar](implementation_plan_b1.md) · [staged checks](implementation_plan_i1.md)
 
-Versioned declarations and the standalone static/managed viewer are implemented. Application startup, final workflow tabs, broader CI enforcement and execution overlays retain their own requirements below. Public examples are independently authored from generic contracts; earlier accepted fixture evidence remains historical.
+Versioned declarations and the standalone static/managed viewer are implemented. Application startup, workflow tabs, broader CI enforcement and execution overlays retain their own requirements below. Public examples are independently authored from generic contracts; earlier accepted fixture evidence remains historical.
 
 The ordered migration and behavior-preservation acceptance live in [B1b](implementation_plan_b1b.md); this file owns the target resource/viewer contract.
 
@@ -27,7 +27,7 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 
 - [ ] Convert the parser/compiler and selected application declarations to the versioned `.md.html` format together. Prove equivalent graph transitions, prompt composition, routing, state/bindings, timeouts, streaming and explicit pack selection/overrides before treating the new format as executable.
 - [x] Implement `./launch.py --view-flow` through the shared managed Playwright lifecycle. Prepare the browser dependency, start an owned loopback preview on an available port and open root `flow.md.html` automatically in a headed browser regardless of caller working directory. Cleanup closes owned browser/server resources. Viewing performs no graph execution, provider login or application startup.
-- [ ] In Run local, host the same workflow resources and open the selected flow as the final tab in its existing managed Playwright browser after readiness, regardless of UI or tracing settings. This is a static declaration/diagram view of the graph compiled for this invocation, including resolved pack overrides. Preserve the other Run local tabs and ownership rules; [K2](implementation_plan_k2.md) owns their readiness and ordering.
+- [ ] In Run local, host the same workflow resources and open the selected flow before the enabled UI in its existing managed Playwright browser (last when UI is disabled) after readiness, regardless of UI or tracing settings. This is a static declaration/diagram view of the graph compiled for this invocation, including resolved pack overrides. Preserve the other Run local tabs and ownership rules; [K2](implementation_plan_k2.md) owns their readiness and ordering.
 - [x] Verify root-only fallback, ordinary query rendering, markup freshness, temporary cleanup, packaged-resource navigation, launcher/browser cleanup and staged-check rejection cases. See [I1](implementation_plan_i1.md) for the index and CI contract.
 - [ ] Complete the [three-context template and navigation acceptance](implementation_plan_b1a1.md), including root editor-comment layout and repository Markdown links. Optional declared configuration/source viewing remains separate from the delivered source inventory and must not be claimed from inventory-only checks.
 
@@ -38,12 +38,12 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 
 ## Get started documentation
 
-- [ ] Once the browser tabs and workflow entry are implemented, update `README.md` under **Get started**, immediately after the launcher command. Describe Run local starting the app and opening a managed browser with the Agent app, the enabled UI provider for interacting with the agent's API, configured tracing viewers, and the selected workflow as the final tab. Link the exact words `actual LangGraph flow` to root `flow.md.html`. Verify this sequence with UI/tracing enabled and disabled and with explicit pack selection before README acceptance.
+- [ ] Once the browser tabs and workflow entry are implemented, update `README.md` under **Get started**, immediately after the launcher command. Describe Run local starting the app and opening a managed browser with the Agent app, the enabled UI provider for interacting with the agent's API, configured tracing viewers, and the selected workflow before the enabled UI, with UI last. Link the exact words `actual LangGraph flow` to root `flow.md.html`. Verify this sequence with UI/tracing enabled and disabled and with explicit pack selection before README acceptance.
 
 Target wording for the repository-root `README.md`, to publish with the implemented behavior:
 
 ```markdown
-Select **Run local** to start the app and open a managed browser with the Agent app, the configured UI provider (when enabled) for interacting with the agent's API, and any configured tracing viewer after it is ready. A final tab shows the [actual LangGraph flow](flow.md.html) used by this run.
+Select **Run local** to start the app and open a managed browser with the Agent app, any configured tracing viewer after it is ready, and the [actual LangGraph flow](flow.md.html) used by this run. The configured UI provider, when enabled, opens last for interacting with the agent's API.
 ```
 
 ## Later dynamic inspection

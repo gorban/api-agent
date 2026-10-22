@@ -69,6 +69,12 @@ class LocalBrowserOwner:
                 response = await self.session.page.goto(self.home_url, wait_until='load')
                 if response is None or response.status != 200:
                     raise RuntimeError('Agent home did not load')
+                flow_page = await self.session.context.new_page()
+                response = await flow_page.goto(self.flow_url, wait_until='load')
+                if response is None or response.status != 200:
+                    raise RuntimeError('Selected workflow view did not load')
+                if self.closed:
+                    raise RuntimeError('Local startup closed during preparation')
                 if self.config.get('RUN_UI', False):
                     if self.prepare_ui is None:
                         raise RuntimeError('Enabled local UI requires preparation')
@@ -76,11 +82,8 @@ class LocalBrowserOwner:
                     borrowed = BorrowedBrowserPage(BrowserSession(self.session.browser, self.session.context,
                                                                  page, self.session.inspection_endpoint))
                     self.ui = await self.prepare_ui(browser_owner=borrowed)
-                    await self._verify_ui(borrowed, page)
-                flow_page = await self.session.context.new_page()
-                response = await flow_page.goto(self.flow_url, wait_until='load')
-                if response is None or response.status != 200:
-                    raise RuntimeError('Selected workflow view did not load')
+                    await self._verify_ui(borrowed, page, flow_page)
+                    await self.ui.session.page.bring_to_front()
             if self.closed:
                 raise RuntimeError('Local startup closed during preparation')
             return self
@@ -96,7 +99,7 @@ class LocalBrowserOwner:
         finally:
             self._starting = None
 
-    async def _verify_ui(self, borrowed, original):
+    async def _verify_ui(self, borrowed, original, flow_page):
         session = borrowed.session
         if (self.ui.session is not session or session.browser is not self.session.browser
                 or session.context is not self.session.context):
@@ -114,7 +117,7 @@ class LocalBrowserOwner:
         if page is not original:
             if not original.is_closed():
                 await original.close()
-        if list(session.context.pages) != [self.session.page, page]:
+        if list(session.context.pages) != [self.session.page, flow_page, page]:
             raise RuntimeError('UI preparation left unexpected startup tabs')
 
     async def aclose(self, *, _starting_failure=False):

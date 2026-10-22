@@ -32,7 +32,7 @@ or save an explicit blank to launch that API locally alongside the agent.
 See [setup and configuration](docs/workbench.md#getting-started).
 
 Run local opens one headed browser when `RUN_UI=True` or `DEBUG=True`: agent
-home first, the optional prepared UI second, and the [actual LangGraph flow](flow.md.html) last.
+home first, the [actual LangGraph flow](flow.md.html) next, and the optional prepared UI last.
 With both settings false, it prints the home and flow URLs without opening a
 browser or authenticating an LLM. To use the same operation without the TUI:
 

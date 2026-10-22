@@ -59,7 +59,7 @@ def test_live_screen_keeps_capture_across_menus_and_retries_cleanup(monkeypatch)
             screen.action_all_logs()
             assert screen.query_one('#local-output').text == '[agent] one\n[ui] two\n'
             screen.action_browsers()
-            await pilot.press('1', 'enter')
+            await pilot.press('enter')
             assert opened == ['https://localhost/']
             screen.action_view()
             assert not await screen.close_owned()
@@ -201,16 +201,222 @@ def test_menus_support_tenth_log_and_destination_and_opener_failure(monkeypatch)
             destinations=tuple(LocalDestination(f'Service {i}', f'https://localhost/{i}') for i in range(1, 11)))
         screen.action_sources()
         await screen.on_key(NS(character=None, key='x'))
-        for digit in '10':
-            await screen.on_key(NS(character=digit, key=digit, stop=lambda: None))
-        await screen.on_key(NS(character=None, key='enter', stop=lambda: None))
+        await screen.on_key(NS(character='0', key='0', stop=lambda: None))
         assert screen.source == 'service-10'
         screen.action_browsers()
-        for digit in '10':
-            await screen.on_key(NS(character=digit, key=digit, stop=lambda: None))
-        await screen.on_key(NS(character=None, key='enter', stop=lambda: None))
+        await screen.on_key(NS(character='0', key='0', stop=lambda: None))
         assert opened == ['https://localhost/10']
         assert 'Could not open the host browser' in screen.failure
+    asyncio.run(exercise())
+
+
+def test_live_menu_buttons_navigation_hotkeys_and_copy(monkeypatch):
+    async def exercise():
+        opened, copied, callbacks = [], [], []
+        async def open_url(url): opened.append(url)
+        async def copy_text(app, value):
+            copied.append(value)
+            return True
+        monkeypatch.setattr('api_agent.runtime.local_terminal.open_host_url', open_url)
+        monkeypatch.setattr('api_agent.tui.local_run.copy_text', copy_text)
+        stop = asyncio.Event()
+        names = tuple(f'Source {i}' for i in range(12)) + ('Ω [bold]',)
+        destinations = tuple(LocalDestination(name, f'https://localhost/{i}')
+                             for i, name in enumerate(names))
+        class Owner:
+            pending_cleanup = None
+            def diagnostic(self, error): return str(error)
+            def __init__(self, *args, on_event, **kwargs): callbacks.append(on_event)
+            async def start(self): return LocalSnapshot('ready', log_sources=names,
+                                                        destinations=destinations)
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': names[0]}), owner_factory=Owner)
+        app = Harness(screen)
+        native_copies = []
+        app.copy_to_clipboard = native_copies.append
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            callbacks[0](LocalEvent('log', source=names[0], text='selected log text'))
+            area = screen.query_one('#local-output')
+            area.focus()
+            area.action_select_all()
+            assert area.selected_text == 'selected log text'
+            await pilot.press('ctrl+c')
+            assert native_copies == ['selected log text']
+            screen.action_browsers()
+            await pilot.pause()
+            first = app.focused
+            assert first.id.endswith('-0')
+            assert screen.query_one('#local-output').display is False
+            callbacks[0](LocalEvent('log', source=names[0], text='still live\n'))
+            assert app.focused is first
+            assert screen.query_one('#local-output').text == 'selected log textstill live\n'
+            await pilot.press('j')
+            assert app.focused.id.endswith('-1')
+            await pilot.press('k')
+            assert app.focused is first
+            await pilot.press('l')
+            assert app.focused.id.endswith('-1')
+            await pilot.press('h')
+            assert app.focused is first
+            await pilot.press('ctrl+c')
+            assert copied == ['https://localhost/0']
+            await pilot.press('enter')
+            assert opened == ['https://localhost/0']
+            await pilot.press('0')
+            assert opened[-1] == 'https://localhost/9'
+            assert len(opened) == 2
+            screen.action_sources()
+            await pilot.pause()
+            await pilot.press('ctrl+c')
+            assert copied[-1] == names[0]
+            buttons = list(screen.query('#local-choices Button'))
+            assert len(buttons) == 14
+            buttons[12].focus()
+            await pilot.press('enter')
+            assert screen.source == names[12]
+            assert screen.menu is None
+            assert screen.query_one('#local-output').display is True
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_menu_copy_guards_empty_choices_and_all_logs(monkeypatch):
+    from textual.widgets import Button
+    from api_agent.tui.clipboard import ClipboardError
+
+    async def exercise():
+        async def failed_copy(app, text): raise ClipboardError('unavailable')
+        monkeypatch.setattr('api_agent.tui.local_run.copy_text', failed_copy)
+        stop = asyncio.Event()
+        class Owner:
+            pending_cleanup = None
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'first'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await screen.action_copy_choice()
+            screen.open_menu('browsers', ())
+            await pilot.pause()
+            assert list(screen.query('#local-choices Button')) == []
+            assert screen.check_action('copy_choice', ()) is False
+            await screen.on_key(NS(key='down', prevent_default=lambda: None, stop=lambda: None))
+            await screen.activate_choice(0)
+            screen.open_menu('logs', ('first',))
+            await pilot.pause()
+            assert screen.check_action('sources', ()) is False
+            first = app.focused
+            await screen.action_copy_choice()
+            assert app.focused is first
+            all_logs = list(screen.query('#local-choices Button'))[-1]
+            all_logs.focus()
+            await screen.action_copy_choice()
+            await pilot.press('enter')
+            assert screen.source == 'all'
+            assert screen.menu is None
+            screen.open_menu('logs', ('first',))
+            await pilot.pause()
+            old = app.focused
+            screen.open_menu('logs', ('second',))
+            await pilot.pause()
+            await screen.on_button_pressed(NS(button=old, stop=lambda: None))
+            assert screen.menu_choices == ('second',)
+            await screen.on_button_pressed(NS(button=Button('Other'), stop=lambda: None))
+            assert screen.menu == 'logs'
+            screen.query_one('#local-output').focus()
+            await screen.action_copy_choice()
+            pane = screen.query_one('#local-choices')
+            stale = Button('Stale', id='local-choice-0-0')
+            invalid = Button('Missing', id=f'local-choice-{screen.menu_generation}-99')
+            other = Button('Other', id='other-choice')
+            await pane.mount(stale, invalid, other)
+            other.focus()
+            await pilot.pause()
+            assert screen.check_action('copy_choice', ()) is False
+            await screen.action_copy_choice()
+            stale.focus()
+            await pilot.pause()
+            await screen.action_copy_choice()
+            invalid.focus()
+            await pilot.pause()
+            await screen.action_copy_choice()
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_status_reconciles_open_menu_and_preserves_focused_destination(monkeypatch):
+    async def exercise():
+        opened, callbacks = [], []
+        async def open_url(url): opened.append(url)
+        monkeypatch.setattr('api_agent.runtime.local_terminal.open_host_url', open_url)
+        stop = asyncio.Event()
+        class Owner:
+            pending_cleanup = None
+            def __init__(self, *args, on_event, **kwargs): callbacks.append(on_event)
+            async def start(self): return LocalSnapshot('starting')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        a = LocalDestination('A', 'https://localhost/a')
+        b = LocalDestination('B', 'https://localhost/b')
+        c = LocalDestination('C', 'https://localhost/c')
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press('b')
+            assert screen.menu_choices == ()
+            assert 'Enter Open' in str(screen.query_one('#local-hint').render())
+            callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', destinations=(a, b))))
+            await pilot.pause()
+            assert len(list(screen.query('#local-choices Button'))) == 2
+            assert app.focused.id.endswith('-0')
+            await pilot.press('down')
+            focused = app.focused
+            assert focused.id.endswith('-1')
+            callbacks[0](LocalEvent('log', source='agent', text='event\n'))
+            callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', destinations=(a, b))))
+            assert app.focused is focused
+            callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', destinations=(c, a, b))))
+            await pilot.pause()
+            assert screen.menu_choices == (c, a, b)
+            assert app.focused.id.endswith('-2')
+            await screen.on_button_pressed(NS(button=focused, stop=lambda: None))
+            assert opened == []
+            await pilot.press('enter')
+            assert opened == [b.url]
+            callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', destinations=(c, a))))
+            await pilot.pause()
+            assert app.focused.id.endswith('-1')
+            await pilot.press('enter')
+            assert opened[-1] == a.url
+            screen.action_sources()
+            await pilot.pause()
+            callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('new',))))
+            await pilot.pause()
+            assert screen.menu_choices == ('new',)
+            await pilot.press('down')
+            assert app.focused.id.endswith('-all')
+            callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('new', 'next'))))
+            await pilot.pause()
+            assert app.focused.id.endswith('-0')
+            await pilot.press('escape')
+            assert screen.menu is None
+            assert 'l Log sources' in str(screen.query_one('#local-hint').render())
+            assert await screen.close_owned()
     asyncio.run(exercise())
 
 

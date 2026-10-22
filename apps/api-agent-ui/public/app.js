@@ -248,19 +248,38 @@ const configuration = fetch('/config.json', {signal:configSignal}).then(r => rea
   apiOrigin = url.origin;
 });
 // Attach rejection handling immediately; sending still receives the configuration error.
-configuration.catch(() => { catalogStatus = 'The API configuration could not be loaded.'; $('model-status').textContent = catalogStatus; });
+configuration.catch(() => { catalogStatus = 'The API configuration could not be loaded. Reload the page after checking the Studio host.'; $('model-status').textContent = catalogStatus; });
+let modelsLoading = false;
 async function loadModels() {
+  if (modelsLoading) return;
+  modelsLoading = true;
   let response;
+  const status = $('model-status');
+  const retry = $('retry-models');
+  status.dataset.catalogState = 'loading';
+  catalogStatus = 'Loading model choices…';
+  status.textContent = catalogStatus;
+  retry.hidden = true;
+  const slow = setTimeout(() => {
+    catalogStatus = 'The model provider is still getting ready…';
+    status.textContent = catalogStatus;
+  }, 5000);
   try {
     await configuration;
-    response = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(5000)});
+    response = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(125000)});
     const data = await readJSONResponse(response);
     catalog = normalizeCatalog(data);
-    catalogStatus = catalog.length ? '' : 'No model choices are available. Reconnect before sending.';
+    catalogStatus = catalog.length ? '' : 'No model choices are available. Retry after checking the provider.';
     syncSettings();
-  } catch { catalogStatus ||= response && !response.ok ? `Model list unavailable (HTTP ${response.status}). Reconnect before sending.` : 'Model list unavailable. Reconnect before sending.'; $('model-status').textContent = catalogStatus; }
-  finally { $('model-status').dataset.catalogState = 'settled'; }
+    retry.hidden = catalog.length > 0;
+  } catch {
+    catalogStatus = !apiOrigin ? 'The API configuration could not be loaded. Reload the page after checking the Studio host.' : response && !response.ok ? `Model list unavailable (HTTP ${response.status}). Retry after checking the provider.` : 'Model list unavailable. Retry after checking the provider.';
+    status.textContent = catalogStatus;
+    retry.hidden = !apiOrigin;
+  }
+  finally { clearTimeout(slow); status.dataset.catalogState = 'settled'; modelsLoading = false; }
 }
+$('retry-models').addEventListener('click', loadModels);
 $('backend-default').addEventListener('click', () => {
   if (state.settings.model || state.settings.family) state.settings = defaults();
   else { const selected = resolveSelection(catalog, state.settings).selection; if (selected) state.settings.model = selected.selected_llm; }

@@ -19,7 +19,7 @@ Complete the [mixed-model pricing and quota qualification](implementation_plan_f
 
 ## Live local runs
 
-- [ ] Open the same inspector as Run local's final workflow tab. Follow live by default; navigating older retained turns/visits pauses following only, never execution. Provide Return to live. Bound retention and rendering; mark earlier events expired and disable unavailable detail. Retain honest aggregate summaries when exact route/content expires. No Allure lookup is required for live in-memory inspection.
+- [ ] Open the same inspector as Run local's workflow tab before the enabled UI. Follow live by default; navigating older retained turns/visits pauses following only, never execution. Provide Return to live. Bound retention and rendering; mark earlier events expired and disable unavailable detail. Retain honest aggregate summaries when exact route/content expires. No Allure lookup is required for live in-memory inspection.
 
 ## Cheap, accessible diagnosis
 

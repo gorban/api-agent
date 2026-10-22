@@ -13,7 +13,7 @@
 ## Shared presentation and safe destinations
 
 - [x] Expose bounded immutable status/log events and a safe snapshot to both terminal and TUI consumers. Preserve component identities, named log-source defaults and raw single-source versus labeled combined output. Reject unknown/numeric sources before startup; do not advertise inaccessible remote logs. Status/home pages expose safe health and verified destination links without raw configuration, credentials, session tokens or diagnostic details.
-- [x] Reuse one managed browser/context for home first, optional provider-prepared UI and actual selected flow last. Share the read-only viewer host instead of launching a second viewer operation; retain home/flow URLs without automatic browser startup. Preserve original-session CDP inspection, tab readiness/order and cleanup. Tracing dashboard requirements remain separately governed by K2 and follow this core checkpoint.
+- [ ] Reuse one managed browser/context for home first, actual selected flow next and optional provider-prepared UI last. Share the read-only viewer host instead of launching a second viewer operation; retain home/flow URLs without automatic browser startup. Preserve original-session CDP inspection, tab readiness/order and cleanup. Tracing dashboard requirements remain separately governed by K2 and follow this core checkpoint.
 - [x] Replace main-menu and explicit terminal Run local placeholders with the same owned operation. Opening status/log controls or changing sources retains the live session. Stop/Exit/interrupt awaits ordered cleanup, preserving retry receipts and meaningful failure exit status.
 
 ## Verification and acceptance
@@ -34,9 +34,6 @@
 
 - [x] Scrub terminal and TUI failure messages through the operation's retained credential boundary, including setup failures before session handoff and cleanup retries. Register nonempty string session tokens before catalog or completion callbacks. Preserve actionable ordinary causes while escaping terminal controls. If no trusted owner exists, show a fixed safe failure message; do not render arbitrary factory exception text or replace pending cleanup ownership with a successful exit.
 
-## Deferred human review
+## Open human-review repairs
 
-Substantive implementation and independent review of this core checkpoint are
-complete. Only its unchecked human acceptance remains. Tracing/dashboard startup,
-workflow diagnostic content, product adapters and full application E2E retain
-their separately governed requirements; this checkpoint does not close them.
+- [ ] Close the [navigation, tab-order and catalog findings](implementation_plan_h1a2.md) before renewing this checkpoint. The earlier reviewed baseline remains recorded, but these substantive repairs and human acceptance are open. Tracing/dashboard startup, diagnostic content, product adapters and full application E2E retain separate gates.
