@@ -406,7 +406,7 @@ def test_pure_infrastructure_planning_requires_authoritative_schema(local, monke
     with pytest.raises(ValueError, match='schema'): _plan(local.config, None, context, 'scope')
     schema = object()
     assert _plan(local.config, schema, context, 'scope') == 'frozen-plan'
-    planner.assert_called_once_with(local.config, schema, ('captured',), 'scope')
+    planner.assert_called_once_with(local.config, schema, ('captured',), 'scope', engine_environment=None)
     capture.return_value = ()
     monkeypatch.setattr(compose, 'plan_compose', Mock(return_value='base-plan'))
     assert _plan(local.config, None, context, 'scope') == 'base-plan'

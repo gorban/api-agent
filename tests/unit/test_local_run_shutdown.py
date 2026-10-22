@@ -90,3 +90,59 @@ def test_shutdown_retry_waits_for_active_test_then_keeps_pending_inspection(tmp_
         app.test_run.stop_and_wait.assert_awaited_once()
         app.reporting_sessions.aclose.assert_not_awaited()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_real_child_unmount_exports_local_and_reporting_retry(tmp_path, monkeypatch, cancelled):
+    import sys
+    from api_agent.runtime.local_contracts import LocalSnapshot
+    async def exercise():
+        async def retry_owner(): pass
+        pending = CleanupPendingError(('local',), retry_owner)
+        failure = asyncio.CancelledError() if cancelled else pending
+        class Owner:
+            pending_cleanup = pending
+            reject = True
+            def __init__(self, *args, **kwargs): self.stop = asyncio.Event()
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await self.stop.wait()
+                return 0
+            def request_stop(self): self.stop.set()
+            async def aclose(self):
+                if self.reject:
+                    raise failure
+                self.pending_cleanup = None
+            def diagnostic(self, error): return 'cleanup pending'
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', SimpleNamespace(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        app.reporting_sessions = SimpleNamespace(aclose=AsyncMock())
+        with pytest.raises(type(failure)) as caught:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+        receipt = app.pending_shutdown_cleanup
+        assert caught.value is (failure if cancelled else receipt)
+        if cancelled:
+            assert caught.value.cleanup_pending is receipt
+        assert app.local_run_screen is not None
+        app.reporting_sessions.aclose.assert_not_awaited()
+        app.local_run_screen.owner.reject = False
+        await receipt.retry()
+        assert app.pending_shutdown_cleanup is None
+        assert app.local_run_screen is None
+        app.reporting_sessions.aclose.assert_awaited_once()
+    asyncio.run(exercise())
+
+
+def test_stale_ownerless_screen_receipt_can_be_retried(tmp_path):
+    async def exercise():
+        app = fixture(tmp_path)
+        local_screen = SimpleNamespace(owner=None, pending_cleanup=None, close_owned=AsyncMock(return_value=True))
+        app.local_run_screen = local_screen
+        app.reporting_sessions = SimpleNamespace(aclose=AsyncMock())
+        receipt = app.shutdown_cleanup_receipt()
+        await receipt.retry()
+        assert app.local_run_screen is None
+        await receipt.retry()
+        assert app.pending_shutdown_cleanup is None
+    asyncio.run(exercise())

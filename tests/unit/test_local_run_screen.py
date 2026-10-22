@@ -20,6 +20,7 @@ class Harness(App):
     def show_menu(self): self.menu_shown = True
     def open_url(self, url): self.opened.append(url)
     async def confirm_quit(self): self.menu_shown = await self.local.close_owned()
+    def shutdown_cleanup_receipt(self): return self.local.pending_cleanup
 
 
 def test_live_screen_keeps_capture_across_menus_and_retries_cleanup(monkeypatch):
@@ -132,7 +133,9 @@ def test_live_controls_stop_quit_and_cleanup_rejection():
             try:
                 await screen.on_unmount()
             except RuntimeError as error:
-                assert error is pending
+                from api_agent.providers.control import CleanupPendingError
+                assert isinstance(error, CleanupPendingError)
+                assert owner.pending_cleanup is pending
             else:
                 raise AssertionError('cleanup must reject unmount')
             owner.reject = False
@@ -301,4 +304,80 @@ def test_app_factory_failure_disposes_without_reporting_success(tmp_path, monkey
             await app.confirm_quit()
             assert app.return_value == 1
             assert app.local_run_screen is None
+    asyncio.run(exercise())
+
+
+def test_unsettled_consumer_task_retains_bounded_retry_without_an_owner(monkeypatch):
+    from contextlib import asynccontextmanager
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.providers.progress import component_timeout
+    from api_agent.tui import local_run
+    @asynccontextmanager
+    async def short_settlement(name, timeout):
+        async with component_timeout(name, .02) as budget:
+            yield budget
+    monkeypatch.setattr(local_run, 'component_timeout', short_settlement)
+    async def exercise():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def late_task():
+            entered.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+        screen.run_task = asyncio.create_task(late_task())
+        await entered.wait()
+        try:
+            assert not await screen.close_owned()
+            assert not screen.disposed
+            assert 'Local presentation shutdown remains pending' in screen.failure
+            receipt = screen.pending_cleanup
+            with pytest.raises(CleanupPendingError):
+                await receipt.retry()
+            assert screen.pending_cleanup is not None
+        finally:
+            release.set()
+            await screen.run_task
+        assert await screen.close_owned()
+        assert screen.pending_cleanup is None
+    asyncio.run(exercise())
+
+
+def test_interrupted_owner_disposal_retains_presentation_receipt():
+    from unittest.mock import AsyncMock
+    from api_agent.providers.control import CleanupPendingError
+    async def exercise():
+        interruption = asyncio.CancelledError()
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+        screen.owner = NS(request_stop=lambda: None, aclose=AsyncMock(side_effect=interruption))
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await screen.close_owned()
+        assert caught.value is interruption
+        assert isinstance(screen.pending_cleanup, CleanupPendingError)
+        assert caught.value.cleanup_pending is screen.pending_cleanup
+        assert not screen.disposed
+    asyncio.run(exercise())
+
+
+def test_consumer_wait_timeout_does_not_cancel_the_owned_task(monkeypatch):
+    from api_agent.tui import local_run
+    async def exercise():
+        release = asyncio.Event()
+        task = asyncio.create_task(release.wait())
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+        screen.run_task = task
+        async def elapsed_wait(tasks, *, timeout):
+            assert tasks == {task}
+            assert 0 < timeout <= 15
+            return set(), tasks
+        monkeypatch.setattr(local_run.asyncio, 'wait', elapsed_wait)
+        try:
+            with pytest.raises(TimeoutError, match='presentation shutdown remains pending'):
+                await screen.settle_run_task()
+            assert not task.done()
+        finally:
+            release.set()
+            await task
     asyncio.run(exercise())

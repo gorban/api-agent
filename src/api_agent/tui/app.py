@@ -1740,7 +1740,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             # Inspection may still publish or access storage; retain session
             # ownership until its complete subtree has acknowledged disposal.
             if local is not None:
-                pending = local.owner.pending_cleanup
+                pending = getattr(local, 'pending_cleanup', None) or getattr(local.owner, 'pending_cleanup', None)
                 if pending is not None:
                     await pending.retry()
                 elif not await local.close_owned():
