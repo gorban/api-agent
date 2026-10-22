@@ -1,0 +1,32 @@
+version = 1
+owner = "synthetic"
+
+[[services]]
+id = "backing"
+compose = "backing.json"
+assets = ["server.py"]
+when = {field = "USE_LOCAL_BACKING", equals = true}
+dependencies = []
+readiness = {kind = "http", target = "http/ready", identity_field = "service", identity_value = "backing", timeout = 15}
+endpoints = [{name = "http", host = "http://127.0.0.1:58091", in_project = "http://self:8090"}]
+seed = {asset = "server.py", completion = {kind = "http", target = "http/seed", identity_field = "seed", identity_value = "done", timeout = 15}}
+
+[[services]]
+id = "managed"
+compose = "managed.json"
+assets = ["server.py"]
+when = {field = "USE_LOCAL_BACKING", equals = true}
+dependencies = ["synthetic/backing"]
+readiness = {kind = "http", target = "http/ready", identity_field = "service", identity_value = "api", timeout = 15}
+endpoints = [{name = "http", host = "http://127.0.0.1:58090", in_project = "http://self:8090"}]
+seed = {asset = "server.py", completion = {kind = "http", target = "http/seed", identity_field = "seed", identity_value = "done", timeout = 15}}
+
+[[services]]
+id = "external"
+compose = "external.json"
+assets = ["server.py"]
+when = {field = "USE_LOCAL_BACKING", equals = false}
+dependencies = []
+readiness = {kind = "http", target = "http/ready", identity_field = "service", identity_value = "api", timeout = 15}
+endpoints = [{name = "http", host = "http://127.0.0.1:58090", in_project = "http://self:8090"}]
+seed = {asset = "server.py", completion = {kind = "http", target = "http/seed", identity_field = "seed", identity_value = "done", timeout = 15}}

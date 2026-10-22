@@ -1,0 +1,24 @@
+{
+  "image": "docker.io/library/python@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
+  "command": [
+    "python",
+    "/opt/fixture/server.py"
+  ],
+  "ports": [
+    "127.0.0.1:58090:8090"
+  ],
+  "environment": {
+    "ROLE": "api",
+    "UPSTREAM": "http://external-backing:8090"
+  },
+  "volumes": [
+    {
+      "asset": "server.py",
+      "target": "/opt/fixture/server.py"
+    },
+    {
+      "volume": "data",
+      "target": "/data"
+    }
+  ]
+}

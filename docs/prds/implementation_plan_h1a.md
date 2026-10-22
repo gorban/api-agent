@@ -49,3 +49,7 @@ Implementation references: [Compose profiles](https://docs.docker.com/compose/ho
 
 - [x] Coordinate the user-guide naming with pack-owned hosting selection: RUN_UI enables the connected frontend; API_ENDPOINT uses a remote URL or an explicit blank for the pack's managed local upstream API. AGENT_DJANGO_URL selects the agent listener and must not trigger upstream provisioning. Do not introduce a competing shared RUN_API/API_MODE control. An unset endpoint retains its owning declaration's default, which can be remote.
 - [ ] On local-run wiring, verify the README Get started path: configure RUN_UI and the selected pack/provider's API_ENDPOINT in Review configuration, choose Run local, acquire only declared enabled services, wait for readiness, and display their resolved endpoints/logs. Never infer an undeclared upstream API stack.
+
+## Pack prerequisite conformance follow-through
+
+- [ ] Complete the [conditional contribution contract and synthetic pack proof](implementation_plan_o1.md) before dependent Run local and demo API consumers. Use the existing lifecycle foundation; concrete database/service implementations remain separately owned.

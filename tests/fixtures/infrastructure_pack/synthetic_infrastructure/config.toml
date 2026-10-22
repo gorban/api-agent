@@ -1,0 +1,4 @@
+version = 1
+[fields.USE_LOCAL_BACKING]
+type = "bool"
+help = "Omit for remote services; false selects a local API with external backing; true also manages its backing service."
