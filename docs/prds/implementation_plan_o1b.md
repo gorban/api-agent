@@ -51,6 +51,6 @@ session.release()
 
 The caller runs `validate_compose(plan)` before acquisition to check the selected Compose frontend against captured input; it never substitutes another engine. This foundation is explicitly consumed by an operation; declaration discovery alone starts nothing. Run local and concrete application providers remain separate integration tasks.
 
-- [ ] Verify these declarations, limits and APIs against source and relocated installed-pack conformance.
-- [ ] Close independent review and exact applicable coverage before delivery.
+- [x] Verify these declarations, limits and APIs against source and relocated installed-pack conformance.
+- [x] Close independent review and exact applicable coverage before delivery.
 - [ ] Human acceptance remains in the parent contract.
