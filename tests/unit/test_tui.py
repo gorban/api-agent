@@ -156,7 +156,7 @@ def test_e2e_picker_acceptance_and_unavailable(tmp_path):
 
 def test_required_rows_allow_explicit_empty_and_startup_close_resumes_operation(tmp_path):
     async def scenario():
-        app = fixture(tmp_path, "run-local", {"VALUE": {"type": "str", "required": True}, "COUNT": {"type": "int", "default": 4}})
+        app = fixture(tmp_path, "deployment-logs", {"VALUE": {"type": "str", "required": True}, "COUNT": {"type": "int", "default": 4}})
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
@@ -766,7 +766,7 @@ def test_optional_trace_review_does_not_block_mode_or_repeat_explicit_settings(t
             assert app.screen.kind == 'defaults'
             await pilot.press('c')
             await pilot.pause()
-            await pilot.click('#mode-run-local')
+            await pilot.click('#mode-deployment-logs')
             await pilot.pause()
             assert app.screen.kind == 'unavailable'
         configured = fixture(tmp_path, fields=fields)

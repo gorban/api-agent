@@ -1,0 +1,521 @@
+"""Controlled operation lifecycle; no actual listener, browser or infrastructure."""
+import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from api_agent.providers.control import CleanupPendingError
+from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
+from api_agent.runtime.local_run import LocalRunOwner, LocalCleanup
+
+
+@pytest.fixture
+def local(tmp_path):
+    events, calls = [], []
+    config = SimpleNamespace(errors=(), missing=(), values={'RUN_UI': False, 'TRACE_MODE': '', 'UI_LISTENER_URL': 'https://localhost:9443'})
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
+    definition = SimpleNamespace(definition_id='selected-definition')
+    prepared = (definition, object(), False, object(), {})
+    application_factory = Mock()
+    runtime = SimpleNamespace(emissions=EmissionBoundary(ContentPolicy()), services={})
+    session = SimpleNamespace(callback=SimpleNamespace(origin='https://localhost:8443'), runtime=runtime,
+                              infrastructure=None, listener=None)
+    class Operation:
+        pending_cleanup = None
+        @asynccontextmanager
+        async def open(self, **options):
+            calls.append('operation-start')
+            try: yield session
+            finally: calls.append('operation-stop')
+    operation = Operation()
+    factory = Mock(return_value=operation)
+    class Browser:
+        session = None
+        flow_url = 'http://127.0.0.1:1234/flow'
+        async def start(self): calls.append('browser-start')
+        async def aclose(self): calls.append('browser-stop')
+    browser = Browser()
+    browser_factory = Mock(return_value=browser)
+    owner = LocalRunOwner(context, lambda: config, operation_factory=factory, browser_factory=browser_factory,
+        prepare_view=Mock(return_value=prepared), application_factory=application_factory, on_event=events.append,
+        plan_factory=Mock(return_value=SimpleNamespace(conditional=(), services=())))
+    return SimpleNamespace(owner=owner, config=config, calls=calls, events=events, prepared=prepared,
+                           operation=operation, operation_factory=factory, browser=browser,
+                           browser_factory=browser_factory, application_factory=application_factory, session=session)
+
+
+def test_start_freezes_selected_definition_and_stop_releases_reverse(local):
+    async def run():
+        snapshot = await local.owner.start()
+        assert snapshot.phase == 'ready' and snapshot.definition_id == 'selected-definition'
+        assert [item.name for item in snapshot.destinations] == ['agent', 'flow']
+        local.application_factory.assert_called_once_with(local.prepared[0], config=local.config.values)
+        assert local.browser_factory.call_args.kwargs['prepare_view'](object()) is local.prepared
+        assert local.calls == ['operation-start', 'browser-start']
+        assert local.operation_factory.call_args.kwargs['groups'] == ('browser',)
+        with pytest.raises(RuntimeError): await local.owner.start()
+        local.owner.request_stop()
+        assert await local.owner.wait() == 0
+        await local.owner.aclose()
+        assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
+        assert local.owner.snapshot.phase == 'stopped'
+        assert any(event.kind == 'log' and 'ready' in event.text for event in local.events)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('invalid', ['trace', 'errors', 'missing', 'graph'])
+def test_preflight_rejects_without_runtime_side_effects(local, invalid):
+    if invalid == 'trace': local.config.values['TRACE_MODE'] = 'LangFuse'
+    if invalid == 'errors': local.config.errors = ('bad',)
+    if invalid == 'missing': local.config.missing = ('required',)
+    if invalid == 'graph': local.application_factory.side_effect = ValueError('Unsupported selected graph')
+    async def run():
+        with pytest.raises(ValueError): await local.owner.start()
+        local.operation_factory.assert_not_called()
+        local.browser_factory.assert_not_called()
+        assert local.calls == []
+    asyncio.run(run())
+
+
+def test_failed_browser_cleanup_retains_operation(local):
+    local.browser.aclose = AsyncMock(side_effect=[RuntimeError('pending'), None])
+    async def run():
+        await local.owner.start()
+        with pytest.raises(CleanupPendingError) as pending: await local.owner.aclose()
+        assert local.calls == ['operation-start', 'browser-start']
+        assert local.owner.pending_cleanup is pending.value
+        await pending.value.retry()
+        assert local.calls[-1] == 'operation-stop'
+        assert local.owner.pending_cleanup is None
+    asyncio.run(run())
+
+
+def test_failed_start_closes_partial_browser_before_operation(local):
+    local.browser.start = AsyncMock(side_effect=ValueError('failed readiness'))
+    async def run():
+        with pytest.raises(ValueError): await local.owner.start()
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+    asyncio.run(run())
+
+
+def test_wait_without_start_rejected(local):
+    async def run():
+        with pytest.raises(RuntimeError): await local.owner.wait()
+        await local.owner.aclose()
+        with pytest.raises(RuntimeError): await local.owner.start()
+    asyncio.run(run())
+
+
+def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local, monkeypatch):
+    from api_agent.runtime import local_run
+    from api_agent.runtime import client_tls
+    from api_agent.ui import process
+    config, origin, material = local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca'))
+    config.values['LLM_REASONING_EFFORT'] = ''
+    runtime = SimpleNamespace(services={}, emissions=EmissionBoundary(ContentPolicy()))
+    compose = Mock(return_value=runtime)
+    monkeypatch.setattr(local_run, 'compose_runtime', compose)
+    monkeypatch.setattr(client_tls, 'verified_client_context', lambda value: 'verified')
+    monkeypatch.setattr(process, 'StudioProcesses', Mock(return_value='process-owner'))
+    llm = SimpleNamespace(describe=AsyncMock(return_value=()), complete=AsyncMock(),
+                          ensure_ready=AsyncMock(), aclose=AsyncMock())
+    local.owner.llm_factory = Mock(return_value=llm)
+    local.owner._graph = SimpleNamespace(complete=AsyncMock(return_value='graph-result'))
+    async def run():
+        result = local.owner._runtime(config, origin, material)
+        compose.assert_called_once_with(local.owner.context, config, callback_origin=origin,
+                                         tls_material=material, required_kinds=())
+        assert result.services['ui_processes'] == 'process-owner'
+        assert await result.services['studio_backend'].describe(auth=None) == ()
+        context = object()
+        assert await result.services['studio_backend'].complete('request', auth=None, context=context) == 'graph-result'
+        local.owner._graph.complete.assert_awaited_once_with('request', llm=llm, context=context)
+        llm.ensure_ready.assert_not_called()
+        await result.services['studio_backend'].aclose()
+    asyncio.run(run())
+
+
+def test_optional_ui_uses_one_prepared_owner_and_then_llm(local, monkeypatch):
+    from api_agent.runtime import local_run
+    local.config.values['RUN_UI'] = True
+    prepared = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
+    factory = Mock(return_value=prepared)
+    monkeypatch.setattr(local_run, 'PreparedUISession', factory)
+    llm = SimpleNamespace(ensure_ready=AsyncMock(), _helpers=set())
+    local.owner._llm = llm
+    async def run():
+        await local.owner.start()
+        borrowed = object()
+        assert await local.owner._ui(browser_owner=borrowed) is prepared
+        prepared.start.assert_awaited_once()
+        llm.ensure_ready.assert_awaited_once()
+        assert factory.call_args.kwargs['browser_owner'] is borrowed
+        assert local.owner._status()['components']['ui'] == 'ready'
+        assert [row.name for row in local.owner.snapshot.destinations] == ['agent', 'ui', 'flow']
+        await local.owner.aclose()
+        prepared.aclose.assert_awaited_once()
+    asyncio.run(run())
+
+
+def test_ui_credential_binder_keeps_selected_account(local, monkeypatch):
+    from api_agent.runtime import local_run
+    from api_agent.auth import bindings, managers
+    local.owner._config = local.config
+    local.owner._session = local.session
+    local.config.values['UNATTENDED_USER_INDEX'] = 3
+    local.owner._llm = SimpleNamespace(ensure_ready=AsyncMock(), _helpers=set())
+    bind = Mock(return_value='scoped')
+    monkeypatch.setattr(bindings, 'bind_role_credentials', bind)
+    monkeypatch.setattr(managers, 'registry_for_owner', lambda root: 'registry')
+    def factory(config, services, **kwargs):
+        assert kwargs['user_index'] == 3
+        assert kwargs['credentials_for'](('ui',), 3) == 'scoped'
+        return SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
+    monkeypatch.setattr(local_run, 'PreparedUISession', factory)
+    async def run():
+        await local.owner._ui(browser_owner=object())
+        assert bind.call_args.args == (local.config.values, ('ui',), 3)
+        await local.owner.aclose()
+    asyncio.run(run())
+
+
+def test_status_without_event_consumer_and_sanitized_logs(local):
+    local.owner.on_event = None
+    async def run():
+        await local.owner.start()
+        local.owner._session.runtime.emissions.register_secret('credential-value')
+        local.owner.on_event = local.events.append
+        local.owner._log('agent', 'value credential-value\n')
+        assert 'credential-value' not in local.events[-1].text
+        assert local.owner._logs['agent'] == local.events[-1].text
+        await local.owner.aclose()
+    asyncio.run(run())
+
+
+def test_continuous_owned_infrastructure_logs_and_endpoints(local):
+    logs = Mock(return_value='owned output\n')
+    infrastructure = SimpleNamespace(status=Mock(return_value=(SimpleNamespace(service='database', id='owned-id', running=True, health=None),)),
+        logs=logs, endpoints={'db': (SimpleNamespace(name='web', host='http://localhost:2345'),
+                                   SimpleNamespace(name='bad', host='http://user:password@localhost:2345'))})
+    local.session.infrastructure = infrastructure
+    local.owner.plan_factory.return_value = SimpleNamespace(
+        conditional=(SimpleNamespace(compose_name='database', id='synthetic/database'),), services=('database',))
+    async def run():
+        await local.owner.start()
+        assert local.owner.snapshot.log_sources == ('agent', 'synthetic/database')
+        assert local.owner.snapshot.destinations[-1].url == 'http://localhost:2345'
+        for _ in range(50):
+            if any(event.source == 'synthetic/database' for event in local.events): break
+            await asyncio.sleep(.01)
+        assert any(event.text == 'owned output\n' for event in local.events)
+        logs.assert_called_once_with('owned-id', tail=100, output_limit=16384)
+        await local.owner.aclose()
+    asyncio.run(run())
+
+
+def test_log_capture_degrades_and_deduplicates(local):
+    async def run():
+        await local.owner.start()
+        local.owner._infra_sources = {'service:db': 'owned-id'}
+        local.session.infrastructure = SimpleNamespace(logs=Mock(side_effect=RuntimeError('private detail')))
+        task = asyncio.create_task(local.owner._capture_logs())
+        for _ in range(50):
+            if local.owner._logs.get('service:db'): break
+            await asyncio.sleep(.01)
+        await asyncio.sleep(1.02)
+        local.owner.request_stop()
+        await task
+        assert [event.text for event in local.events if event.source == 'service:db'] == ['Service logs are unavailable.']
+        await local.owner.aclose()
+    asyncio.run(run())
+
+
+def test_stop_during_start_cancels_owned_preparation(local):
+    entered = None
+    async def run():
+        entered = asyncio.Event()
+        async def start():
+            entered.set()
+            await asyncio.Event().wait()
+        local.browser.start = start
+        task = asyncio.create_task(local.owner.start())
+        await entered.wait()
+        local.owner.request_stop()
+        with pytest.raises(asyncio.CancelledError): await task
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('trigger', ['browser', 'listener'])
+def test_wait_observes_owned_browser_or_listener_termination(local, trigger):
+    async def run():
+        await local.owner.start()
+        if trigger == 'browser':
+            local.browser.session = SimpleNamespace(browser=SimpleNamespace(is_connected=lambda: False))
+            expected = 0
+        else:
+            task = asyncio.create_task(asyncio.sleep(0))
+            await task
+            local.session.listener = SimpleNamespace(task=task)
+            expected = 3
+        assert await local.owner.wait() == expected
+        assert local.owner.snapshot.phase == 'stopped'
+    asyncio.run(run())
+
+
+def test_wait_reaches_stop_and_preserves_original_browser_inspection(local):
+    local.browser.session = SimpleNamespace(inspection_endpoint='http://127.0.0.1:1235',
+        browser=SimpleNamespace(is_connected=lambda: True))
+    async def run():
+        await local.owner.start()
+        assert local.owner.snapshot.inspection_endpoint == 'http://127.0.0.1:1235'
+        waiter = asyncio.create_task(local.owner.wait())
+        await asyncio.sleep(.11)
+        local.owner.request_stop()
+        assert await waiter == 0
+    asyncio.run(run())
+
+
+def test_cleanup_receipt_requires_parent_acknowledgement():
+    async def run():
+        duties = LocalCleanup()
+        receipt = CleanupPendingError((), AsyncMock())
+        callback = AsyncMock(side_effect=[receipt, None])
+        duties.push(callback)
+        with pytest.raises(CleanupPendingError): await duties.aclose()
+        await duties.aclose()
+        receipt.retry.assert_awaited_once()
+        assert callback.await_count == 2 and not duties.callbacks
+    asyncio.run(run())
+
+
+def test_partial_operation_entry_and_cleanup_receipt_survive(local):
+    receipt = CleanupPendingError((), AsyncMock())
+    @asynccontextmanager
+    async def opening(**options):
+        local.operation.pending_cleanup = receipt
+        raise ValueError('startup failure')
+        yield
+    local.operation.open = opening
+    async def run():
+        with pytest.raises(ValueError): await local.owner.start()
+        assert receipt.retry.await_count >= 1
+        assert local.owner.pending_cleanup is None
+    asyncio.run(run())
+
+
+def test_start_failure_retains_failed_cleanup_receipt(local):
+    local.browser.start = AsyncMock(side_effect=ValueError('startup failed'))
+    local.browser.aclose = AsyncMock(side_effect=[RuntimeError('cleanup failed'), None])
+    async def run():
+        with pytest.raises(ValueError) as primary: await local.owner.start()
+        assert primary.value.cleanup_pending is local.owner.pending_cleanup
+        await primary.value.cleanup_pending.retry()
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+def test_log_projection_rejects_non_text_and_never_reads_prestart_config(local):
+    local.owner._log('agent', 'before startup')
+    assert local.events[-1].text == 'before startup'
+    local.owner._session = local.session
+    local.owner._config = local.config
+    local.config.values['API_KEY'] = 'configured-material'
+    local.owner._log('agent', 'configured-material')
+    assert 'configured-material' not in local.events[-1].text
+    async def run(): await local.owner._close_logs()
+    asyncio.run(run())
+
+
+def test_operation_injection_keeps_shared_listener_and_dependency_ownership(local, monkeypatch):
+    from api_agent.runtime.operation import local_operation
+    from api_agent.api import application
+    core_app, wrapped_app, runtime = object(), object(), object()
+    monkeypatch.setattr(application, 'create_application', Mock(return_value=core_app))
+    runtime_factory, wrapper = Mock(return_value=runtime), Mock(return_value=wrapped_app)
+    runner = local_operation(local.owner.context, resolve=lambda: local.config, argv=(),
+        scope='scope', ownership_directory=local.owner.context.owner_root,
+        runtime_factory=runtime_factory, application_wrapper=wrapper, required_kinds={'llm'}, prepared_plan='frozen-plan')
+    assert runner.plan(local.config) == 'frozen-plan'
+    assert runner.compose_runtime(local.config, 'https://localhost:8443', 'material') is runtime
+    runtime_factory.assert_called_once_with(local.config, 'https://localhost:8443', 'material')
+    assert runner.create_application(runtime, 'localhost') is wrapped_app
+    wrapper.assert_called_once_with(core_app)
+
+
+def test_cancelled_child_cleanup_preserves_cancellation_and_receipt(local):
+    local.browser.aclose = AsyncMock(side_effect=[asyncio.CancelledError(), None])
+    async def run():
+        await local.owner.start()
+        with pytest.raises(asyncio.CancelledError): await local.owner.aclose()
+        assert local.owner.pending_cleanup is not None
+        await local.owner.pending_cleanup.retry()
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+def test_finished_log_collector_failure_does_not_block_owned_cleanup(local):
+    async def run():
+        await local.owner.start()
+        async def failed(): raise RuntimeError('collector failed')
+        local.owner._log_task = asyncio.create_task(failed())
+        await asyncio.sleep(0)
+        await local.owner._close_logs()
+        await local.owner.aclose()
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('source', ['1', 'missing-service', 'ui'])
+def test_unknown_or_unavailable_sources_rejected_before_preparation(local, source):
+    local.config.values['RUN_LOG_SOURCE'] = source
+    async def run():
+        with pytest.raises(ValueError, match='RUN_LOG_SOURCE'): await local.owner.start()
+        local.operation_factory.assert_not_called()
+        local.browser_factory.assert_not_called()
+        assert local.calls == []
+    asyncio.run(run())
+
+
+def test_declared_source_admission_uses_frozen_plan(local):
+    plan = SimpleNamespace(conditional=(SimpleNamespace(compose_name='hashed-engine-name', id='synthetic/database'),),
+                           services=('hashed-engine-name',))
+    local.owner.plan_factory.return_value = plan
+    local.config.values['RUN_LOG_SOURCE'] = 'synthetic/database'
+    async def run():
+        await local.owner.start()
+        assert local.owner.snapshot.log_sources == ('agent', 'synthetic/database')
+        assert local.operation_factory.call_args.kwargs['prepared_plan'] is plan
+        local.owner.plan_factory.assert_called_once()
+        await local.owner.aclose()
+    asyncio.run(run())
+
+
+def test_pure_infrastructure_planning_requires_authoritative_schema(local, monkeypatch):
+    from api_agent.runtime.local_run import _plan
+    from api_agent.runtime import infrastructure_contract, infrastructure_plan, compose
+    context = local.owner.context
+    context.infrastructure_paths = ('selected.toml',)
+    capture = Mock(return_value=('captured',))
+    monkeypatch.setattr(infrastructure_contract, 'load_infrastructure_contributions', capture)
+    planner = Mock(return_value='frozen-plan')
+    monkeypatch.setattr(infrastructure_plan, 'plan_infrastructure', planner)
+    with pytest.raises(ValueError, match='schema'): _plan(local.config, None, context, 'scope')
+    schema = object()
+    assert _plan(local.config, schema, context, 'scope') == 'frozen-plan'
+    planner.assert_called_once_with(local.config, schema, ('captured',), 'scope')
+    capture.return_value = ()
+    monkeypatch.setattr(compose, 'plan_compose', Mock(return_value='base-plan'))
+    assert _plan(local.config, None, context, 'scope') == 'base-plan'
+    context.infrastructure_paths = ()
+    assert _plan(local.config, None, context, 'scope') == 'base-plan'
+
+
+def test_close_during_start_waits_for_late_allocations_before_acknowledgement(local):
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def start():
+            entered.set()
+            try: await release.wait()
+            except asyncio.CancelledError: await release.wait()
+            local.calls.append('late-browser-allocation')
+        local.browser.start = start
+        startup = asyncio.create_task(local.owner.start())
+        await entered.wait()
+        closing = asyncio.create_task(local.owner.aclose())
+        await asyncio.sleep(.02)
+        assert not closing.done() and 'browser-stop' not in local.calls
+        local.owner.request_stop()
+        release.set()
+        with pytest.raises(asyncio.CancelledError): await startup
+        await closing
+        assert not any(event.snapshot is not None and event.snapshot.phase == 'ready' for event in local.events)
+        assert local.calls == ['operation-start', 'late-browser-allocation', 'browser-stop', 'operation-stop']
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('run_ui,expected', [(False, ('llm',)), (True, ('llm', 'ui'))])
+def test_pure_plan_reads_only_consumed_provider_declarations(local, monkeypatch, run_ui, expected):
+    from api_agent.runtime.local_run import _plan
+    from api_agent.runtime import infrastructure_contract, compose
+    context = local.owner.context
+    context.infrastructure_paths = ()
+    local.config.values.update(LLM_PROVIDER='llm', UI_PROVIDER='ui', API_PROVIDER='unused', RUN_UI=run_ui)
+    capture = Mock(return_value=())
+    monkeypatch.setattr(infrastructure_contract, 'load_infrastructure_contributions', capture)
+    monkeypatch.setattr(compose, 'plan_compose', Mock(return_value='base'))
+    assert _plan(local.config, None, context, 'scope') == 'base'
+    capture.assert_called_once_with(context, selected_provider_locations=expected)
+
+
+def test_log_events_escape_terminal_control_sequences_after_secret_scrubbing(local):
+    local.owner._session = local.session
+    local.owner._log('agent', 'safe\x1b[2J\r\u202econtent\n')
+    text = local.events[-1].text
+    assert '\x1b' not in text and '\r' not in text and '\u202e' not in text
+    assert '\\u001b' in text and text.endswith('content\n')
+
+
+@pytest.mark.parametrize('running,health,state', [(True, None, 'ready'), (True, 'unhealthy', 'degraded'), (False, 'unhealthy', 'unavailable')])
+def test_verified_prerequisite_inventory_status_reaches_snapshot(local, running, health, state):
+    local.owner.plan_factory.return_value = SimpleNamespace(
+        conditional=(SimpleNamespace(compose_name='hashed-engine-name', id='synthetic/database'),),
+        services=('hashed-engine-name',))
+    local.session.infrastructure = SimpleNamespace(
+        status=Mock(return_value=(SimpleNamespace(service='hashed-engine-name', id='owned-id', running=running, health=health),)),
+        endpoints={}, logs=Mock(return_value=''))
+    async def run():
+        await local.owner.start()
+        assert local.owner._status()['components']['service:synthetic/database'] == state
+        assert 'service:hashed-engine-name' not in local.owner._status()['components']
+        await local.owner.aclose()
+    asyncio.run(run())
+
+
+def test_diagnostic_retains_runtime_boundary_before_partial_composition_fails(local, monkeypatch):
+    from api_agent.runtime import local_run
+    boundary = EmissionBoundary(ContentPolicy())
+    boundary.register_secret('partial-runtime-credential')
+    monkeypatch.setattr(local_run, 'compose_runtime', Mock(return_value=SimpleNamespace(emissions=boundary)))
+    local.owner.llm_factory = Mock(side_effect=RuntimeError('Connection setup failed: partial-runtime-credential\x1b[2J\r'))
+    with pytest.raises(RuntimeError) as failure:
+        local.owner._runtime(local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca')))
+    text = local.owner.diagnostic(failure.value)
+    assert local.owner._session is None
+    assert 'Connection setup failed' in text
+    assert 'partial-runtime-credential' not in text
+    assert '\x1b' not in text and '\r' not in text
+
+
+def test_diagnostic_scrubs_config_before_runtime_and_registration_after_cleanup(local):
+    local.config.values['API_KEY'] = 'configured-credential'
+    local.owner._config = local.config
+    text = local.owner.diagnostic(ValueError('Preflight failed: configured-credential\x1b[2J'))
+    assert 'configured-credential' not in text and 'Preflight failed' in text and '\x1b' not in text
+    async def run():
+        await local.owner.start()
+        local.session.runtime.emissions.register_secret('runtime-credential')
+        await local.owner.aclose()
+        text = local.owner.diagnostic(RuntimeError('Cleanup failed: runtime-credential configured-credential\r'))
+        assert 'runtime-credential' not in text and 'configured-credential' not in text
+        assert 'Cleanup failed' in text and '\r' not in text
+    asyncio.run(run())
+
+
+def test_repeated_diagnostics_preserve_latest_boundary_without_registration_growth(local):
+    boundary = EmissionBoundary(ContentPolicy())
+    secret = 'synthetic"quoted-material'
+    boundary.register_secret(secret)
+    local.owner._emissions = boundary
+    original = frozenset(boundary._secrets)
+    for _ in range(6):
+        text = local.owner.diagnostic(RuntimeError('Connection failed: ' + secret))
+        assert secret not in text and 'Connection failed' in text
+        assert frozenset(boundary._secrets) == original
+    boundary.register_secret('refreshed-runtime-material')
+    text = local.owner.diagnostic(RuntimeError('Connection failed: refreshed-runtime-material'))
+    assert 'refreshed-runtime-material' not in text and 'Connection failed' in text
+    assert frozenset(boundary._secrets) == original | {'refreshed-runtime-material'}

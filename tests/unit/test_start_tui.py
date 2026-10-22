@@ -132,7 +132,7 @@ def test_start_e2e_keeps_human_acceptance(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('mode', ['run-local', 'deployment-logs'])
+@pytest.mark.parametrize('mode', ['deployment-logs'])
 def test_start_service_modes_retain_current_operation_boundary(tmp_path, mode):
     async def scenario():
         app = fixture(tmp_path, mode, fields={'START': START}, argv=['--start'])

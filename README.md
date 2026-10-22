@@ -31,6 +31,21 @@ or save an explicit blank to launch that API locally alongside the agent.
 `AGENT_DJANGO_URL` is the agent's own address, not the upstream API setting.
 See [setup and configuration](docs/workbench.md#getting-started).
 
+Run local opens one headed browser when `RUN_UI=True` or `DEBUG=True`: agent
+home first, the optional prepared UI second, and the selected LangGraph flow last.
+With both settings false, it prints the home and flow URLs without opening a
+browser or authenticating an LLM. To use the same operation without the TUI:
+
+```bash
+./launch.py --tui-mode run-local --no-std-in
+```
+
+Press Ctrl+C to stop the terminal operation; use Stop or Quit in the TUI.
+Shutdown waits for owned requests and resources to finish cleanup. This initial
+Run local release requires an empty `TRACE_MODE`; tracing dashboard startup and
+login follow separately. UI-process logs show safe activity messages rather than
+arbitrary child output, which may contain credentials even with `LOG_CONTENT=True`.
+
 ## Guides
 
 - [Settings and TUI controls](docs/workbench.md)

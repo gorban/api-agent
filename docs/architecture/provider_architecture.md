@@ -148,4 +148,9 @@ Future tool, streaming and browser evidence must use the same gate and scrubber.
 
 E2E owner/selector compatibility is not a complete E2E executor. Before claiming that runtime, share effective DEBUG (including E2E_DEBUG compatibility) across UI, LLM and backend retention; preserve explicit execution acceptance and existing authentication handoff ownership.
 
-The Run local rows describe the required future consumer, not certification of an executable local runtime. Its executor must impose headed/inspection policy on later lazy login even with RUN_UI=False. The direct provider factory still follows its existing local RUN_UI/inspection settings for automated login; the library-level visibility matrix does not satisfy that future Run local acceptance gate.
+The core Run local executor supplies its own inspection owner for later lazy
+authentication, including when RUN_UI=False, so local login stays headed.
+Startup opens a browser only when RUN_UI or DEBUG is enabled; a no-UI startup
+does not authenticate or discover models. The direct provider factory retains
+its own existing visibility controls. Tracing dashboard and full application
+acceptance remain separate from this core runtime checkpoint.

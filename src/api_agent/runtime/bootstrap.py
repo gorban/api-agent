@@ -353,6 +353,20 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 if isinstance(error, (SystemExit, GeneratorExit)):
                     raise terminal_exception(error, scrubber) from None
                 return 1
+        if result.values.get('NO_STD_IN') and mode == 'run-local':
+            from api_agent.auth.extensions import validate_operation
+            try:
+                validate_operation(context, result.values)
+            except ValueError as error:
+                print(str(error), file=sys.stderr)
+                return 3
+            from api_agent.runtime.dependencies import ensure_environment
+            status = ensure_environment(context, argv, groups=('browser',), **handoff_options)
+            if status is not None:
+                return status
+            import asyncio
+            from api_agent.runtime.local_terminal import run_local_terminal
+            return asyncio.run(run_local_terminal(context, lambda: result, argv=argv, schema=schema))
         if result.values.get('NO_STD_IN'):
             if mode in {'run-local', 'e2e'}:
                 from api_agent.auth.extensions import validate_operation

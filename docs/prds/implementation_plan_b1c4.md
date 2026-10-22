@@ -32,3 +32,7 @@ Give an agent inspecting Run local a cheap read-only connection to execution evi
 - [ ] With a managed DEBUG browser attached, inspect deterministic multi-turn nested/parallel/loop/retry/failure examples through the printed address. Verify hierarchy, attempts/maxima, elapsed values, provisional/final costs, source generations and Allure identity parity without requiring Allure persistence or another tracing backend.
 - [ ] Use large synthetic input/output payloads to prove metadata-only stream size and bounded selective reads; record client bytes needed to locate a failure or costly node without a root payload dump. Test LOG_CONTENT states, credentials across split events, missing/partial usage, unknown loop bounds, eviction, reconnect/races, slow clients, closure and repeated cleanup. No paid inference is required.
 - [ ] Mutations must detect payloads leaking into summaries, omitted privacy/bounds/identity checks, dropped gap reporting and duplicated cost attribution. Independently review schema, actual HTTP/SSE lifecycle and agent usability; renew applicable exact coverage, installed-package/license and public-boundary gates before implementation acceptance.
+
+## Local content output follow-through
+
+- [ ] Deliver [workflow/tool diagnostic previews and durable full output](implementation_plan_b1c4a.md), retaining the separate content, credential and bounded-display policies.

@@ -1005,7 +1005,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
 
     def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
         screen = WorkbenchScreen(kind, title, text, actions, rows, selected_row=selected_row)
-        if isinstance(self.screen, WorkbenchScreen):
+        if isinstance(self.screen, WorkbenchScreen) or getattr(self.screen, "kind", None) == "local-run":
             return self.switch_screen(screen)
         return self.push_screen(screen)
 
@@ -1441,7 +1441,15 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.review_destination = None
             self.startup_review = False
             self.auto_start_pending = False
-            if self.mode == "run-local" and not self.check_operation_start():
+            if self.mode == "run-local":
+                if self.check_operation_start():
+                    from .local_run import LocalRunScreen
+                    screen = LocalRunScreen(self.context, self.session.result, argv=self.session.argv, schema=self.session.schema)
+                    self.local_run_screen = screen
+                    if isinstance(self.screen, WorkbenchScreen):
+                        self.switch_screen(screen)
+                    else:
+                        self.push_screen(screen)
                 return
             self.unavailable(f"{dict(MODES)[self.mode]} execution is not implemented yet. No services or processes were started.")
 
@@ -1726,17 +1734,32 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def shutdown_cleanup_receipt(self):
         from api_agent.providers.control import CleanupPendingError
         inspection = self.pending_inspection_cleanup
+        local = getattr(self, 'local_run_screen', None)
         sessions = self.reporting_sessions
         async def retry():
             # Inspection may still publish or access storage; retain session
             # ownership until its complete subtree has acknowledged disposal.
+            if local is not None:
+                pending = local.owner.pending_cleanup
+                if pending is not None:
+                    await pending.retry()
+                elif not await local.close_owned():
+                    raise CleanupPendingError((local,), retry)
+                if getattr(self, 'local_run_screen', None) is local:
+                    self.local_run_screen = None
+            self.stop_allure_admission(shutdown=True)
+            self.collection_cancel.set()
+            if self.test_run_active():
+                await self.test_run.stop_and_wait()
             if inspection is not None:
                 await inspection.retry()
+            elif not await self.end_inspection(force=True):
+                raise self.inspection_cleanup_receipt()
             await self.close_container_logs()
             await sessions.aclose()
             self.pending_shutdown_cleanup = None
         logs = getattr(self, "container_log_screen", None)
-        owners = ((inspection,) if inspection is not None else ()) + ((logs,) if logs is not None else ()) + (sessions,)
+        owners = ((local,) if local is not None else ()) + ((inspection,) if inspection is not None else ()) + ((logs,) if logs is not None else ()) + (sessions,)
         error = CleanupPendingError(owners, retry)
         error.inspections = getattr(inspection, 'inspections', ())
         error.inspection_group = getattr(inspection, 'inspection_group', self.inspections)
@@ -2315,6 +2338,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             await super().action_quit()
 
     async def confirm_quit(self):
+        local = getattr(self, "local_run_screen", None)
+        if local is not None and not await local.close_owned():
+            return
         self.stop_allure_admission(shutdown=True)
         if self.mode in {"unit", "integration"} and self.unit_rows and self.unit_result is None:
             self.operation_status = 130
@@ -2329,6 +2355,10 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.exit(self.operation_status)
 
     async def on_unmount(self):
+        local = getattr(self, "local_run_screen", None)
+        if local is not None and not await local.close_owned():
+            self.pending_shutdown_cleanup = self.shutdown_cleanup_receipt()
+            return
         self.stop_allure_admission(shutdown=True)
         self._inspection_shutdown = True
         for screen in self.screen_stack:
@@ -2429,8 +2459,8 @@ def run_tui(context, schema, argv=(), environ=None) -> int:
         pending = getattr(app, 'pending_shutdown_cleanup', None) or getattr(app, 'pending_inspection_cleanup', None)
         if pending is not None:
             error.cleanup_pending = pending
-            error.inspections = pending.inspections
-            error.inspection_group = pending.inspection_group
+            error.inspections = getattr(pending, 'inspections', ())
+            error.inspection_group = getattr(pending, 'inspection_group', None)
         raise
     pending = getattr(app, 'pending_shutdown_cleanup', None) or getattr(app, 'pending_inspection_cleanup', None)
     if pending is not None:
