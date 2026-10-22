@@ -240,6 +240,36 @@ def test_debug_endpoint_is_loopback_and_cdp_session_is_disposed(chromium, tmp_pa
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(('report', 'pid'), [
+    ({'processInfo': [{'type': 'browser', 'id': 321}, {'type': 'gpu', 'id': 322}]}, 321),
+    ({'processInfo': []}, None),
+    ({'processInfo': [{'type': 'browser', 'id': 0}]}, None),
+    ({'processInfo': [{'type': 'browser', 'id': True}]}, None),
+    ({'processInfo': [{'type': 'browser', 'id': 321}, {'type': 'browser', 'id': 322}]}, None),
+    ({'missing': True}, None),
+])
+def test_inspection_browser_pid_requires_unique_positive_process_report(chromium, tmp_path, report, pid):
+    (tmp_path / 'DevToolsActivePort').write_text('32123\n/browser/path\n')
+
+    async def send(command):
+        if command == 'Browser.getBrowserCommandLine':
+            return {'arguments': ['--user-data-dir=' + str(tmp_path)]}
+        assert command == 'SystemInfo.getProcessInfo'
+        return report
+
+    cdp = SimpleNamespace(send=AsyncMock(side_effect=send), detach=AsyncMock())
+    chromium.browser.new_browser_cdp_session = AsyncMock(return_value=cdp)
+
+    async def scenario():
+        driver = module.ChromiumDriver(inspectable=True)
+        assert await driver.launch(headless=False) is chromium.browser
+        assert driver.browser_pid == pid
+        await driver.stop()
+        cdp.detach.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
 def test_debug_browser_hands_resources_to_common_inspector(chromium, monkeypatch):
     from api_agent.providers.sessions import InspectionOwner
     monkeypatch.setattr(module.ChromiumDriver, 'launch', AsyncMock(return_value=chromium.browser))
@@ -253,4 +283,73 @@ def test_debug_browser_hands_resources_to_common_inspector(chromium, monkeypatch
         await inspection.aclose()
         chromium.browser.close.assert_awaited_once()
         assert not inspection.sessions
+    asyncio.run(scenario())
+
+
+def test_terminated_inspection_requires_confirmed_browser_pid_exit(monkeypatch):
+    async def scenario():
+        browser = SimpleNamespace(is_connected=lambda: False)
+        process = SimpleNamespace(wait=AsyncMock(return_value=0))
+        transport = SimpleNamespace(_proc=process, on_error_future=asyncio.get_running_loop().create_future())
+        transport.on_error_future.set_result(None)
+        playwright = SimpleNamespace(_impl_obj=SimpleNamespace(
+            _connection=SimpleNamespace(_transport=transport)))
+        driver = module.ChromiumDriver(inspectable=True)
+        driver.handed_browser = True
+        driver.inspection_endpoint = 'http://127.0.0.1:32123'
+        driver.starting = asyncio.create_task(asyncio.sleep(0, result=playwright))
+        driver.launching = asyncio.create_task(asyncio.sleep(0, result=browser))
+        await asyncio.gather(driver.starting, driver.launching)
+        session = SimpleNamespace(browser=browser, inspection_endpoint=driver.inspection_endpoint)
+        monkeypatch.setattr(module.asyncio, 'open_connection', AsyncMock(side_effect=ConnectionRefusedError))
+
+        assert not await driver.terminated_inspection(session)
+        process.wait.assert_not_awaited()
+        driver.browser_pid = 12345
+        monkeypatch.setattr(module.os, 'kill', lambda pid, signal: None)
+        assert not await driver.terminated_inspection(session)
+        process.wait.assert_not_awaited()
+
+        def absent(pid, signal):
+            assert (pid, signal) == (12345, 0)
+            raise ProcessLookupError
+        monkeypatch.setattr(module.os, 'kill', absent)
+
+        original_launching = driver.launching
+        driver.launching = asyncio.create_task(asyncio.sleep(0, result=object()))
+        await driver.launching
+        assert not await driver.terminated_inspection(session)
+        driver.launching = original_launching
+
+        transport._proc = None
+        assert not await driver.terminated_inspection(session)
+        transport._proc = process
+        driver.inspection_endpoint = session.inspection_endpoint = 'http://localhost:32123'
+        assert not await driver.terminated_inspection(session)
+        driver.inspection_endpoint = session.inspection_endpoint = 'http://127.0.0.1:32123'
+
+        class Writer:
+            closed = False
+            def close(self):
+                self.closed = True
+            async def wait_closed(self):
+                await asyncio.sleep(1)
+
+        writer = Writer()
+        monkeypatch.setattr(module.asyncio, 'open_connection', AsyncMock(return_value=(object(), writer)))
+        assert not await driver.terminated_inspection(session)
+        assert writer.closed
+        monkeypatch.setattr(module.asyncio, 'open_connection', AsyncMock(
+            return_value=(object(), SimpleNamespace(close=Mock(), wait_closed=AsyncMock()))))
+        assert not await driver.terminated_inspection(session)
+
+        process.wait.reset_mock()
+        monkeypatch.setattr(module.asyncio, 'open_connection', AsyncMock(side_effect=ConnectionRefusedError))
+        assert await driver.terminated_inspection(session)
+        process.wait.assert_awaited_once()
+        module.asyncio.open_connection.assert_awaited_once_with('127.0.0.1', 32123)
+        transport.on_error_future = asyncio.get_running_loop().create_future()
+        transport.on_error_future.cancel()
+        assert await driver.terminated_inspection(session)
+
     asyncio.run(scenario())

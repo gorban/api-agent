@@ -219,6 +219,34 @@ class InspectionOwner(_Owner):
         self._check()
         self._resources.extend(resources)
 
+    async def settle_terminated_inspection(self) -> bool:
+        """Settle only an already failed close of one terminated inspectable browser.
+
+        The driver supplies independent process and endpoint evidence. Live or
+        unrecognized resources remain in the normal retryable owner stack.
+        """
+        self._context()
+        if (not self._closed or self._closing is None or not self._closing.done()
+                or self._closing.cancelled() or self._resource_task is not None
+                or len(self.sessions) != 1 or not self._resources):
+            return False
+        failure = self._closing.exception()
+        if not isinstance(failure, ContractError) or str(failure) != 'Resource cleanup remains pending':
+            return False
+        session = self.sessions[0]
+        driver = self._resources[0][0]
+        expected = [(driver, 'stop'), (session.browser, 'close'), (session.context, 'close')]
+        if (len(self._resources) > len(expected)
+                or any(resource is not owned or type(method) is not str or method != owned_method
+                       for (resource, method), (owned, owned_method)
+                       in zip(self._resources, expected))
+                or not callable(getattr(driver, 'terminated_inspection', None))
+                or not await driver.terminated_inspection(session)):
+            return False
+        self._resources.clear()
+        await self.aclose()
+        return True
+
     async def _dispose(self) -> None:
         await self._release()
         self.sessions.clear()

@@ -8,7 +8,7 @@ from urllib.parse import unquote
 
 import pytest
 
-from api_agent.runtime.viewer_host import start_viewer_host, _files, _close_writer
+from api_agent.runtime.viewer_host import start_viewer_host, _files, _close_writer, _style_policy
 from api_agent.runtime import viewer_host
 from api_agent.providers.progress import component_timeout as original_timeout
 from api_agent.workflows.viewer_render import ViewBundle, ViewFile, ViewSource, ViewRoute
@@ -195,6 +195,51 @@ def test_incomplete_request_has_bounded_deadline(monkeypatch):
         finally:
             await host.aclose()
     asyncio.run(exercise())
+
+
+def test_connections_outlive_host_startup_deadline(monkeypatch):
+    @asynccontextmanager
+    async def short_startup(name, seconds):
+        async with original_timeout(name, .05 if name == 'Workflow viewer host startup' else seconds):
+            yield
+
+    monkeypatch.setattr(viewer_host, 'component_timeout', short_startup)
+
+    async def exercise():
+        file = SimpleNamespace(path='r/base/flow.md.html', content_type='text/html; charset=utf-8', body=b'ok')
+        bundle, projection = admitted(file)
+        host = await start_viewer_host(bundle, projection=projection)
+        try:
+            await asyncio.sleep(.1)
+            for _ in range(2):
+                response = await request(host.port, wire('GET', '/' + file.path, host.port))
+                assert response.startswith(b'HTTP/1.1 200 OK')
+                assert response.endswith(b'ok')
+        finally:
+            await host.aclose()
+
+    asyncio.run(exercise())
+
+
+def test_svg_style_policy_is_bounded_to_captured_attributes():
+    svg = (b'<svg xmlns="http://www.w3.org/2000/svg">'
+           b'<rect style="stroke:#181818;stroke-width:0.5;"/>'
+           b'<path style="stroke:#181818;stroke-width:0.5;"/>'
+           b'</svg>')
+    policy = _style_policy('image/svg+xml', svg)
+    expected = sha256(b'stroke:#181818;stroke-width:0.5;').digest()
+    import base64
+    assert "'sha256-" + base64.b64encode(expected).decode('ascii') + "'" in policy
+    assert policy.count('sha256-') == 1
+    assert 'unsafe-inline' not in policy
+    assert _style_policy('text/html; charset=utf-8', b'').count('sha256-') == 2
+    with pytest.raises(ValueError, match='Invalid SVG route'):
+        _style_policy('image/svg+xml', b'<html style="color:red"/>')
+    with pytest.raises(ValueError, match='exceed host policy'):
+        _style_policy('image/svg+xml', b'<svg style="' + b'fill:#fff;' * 2000 + b'"/>')
+    for unsafe in (b'position:absolute', b'fill:url(evil)', b'stroke:#fff&#10;'):
+        with pytest.raises(ValueError, match='Unsafe SVG style'):
+            _style_policy('image/svg+xml', b'<svg style="' + unsafe + b'"/>')
 
 
 def test_shutdown_cancels_nonreading_large_response():

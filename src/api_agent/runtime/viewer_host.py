@@ -1,10 +1,13 @@
 """Finite, snapshot-backed loopback host for admitted workflow views."""
 import asyncio
+import base64
 from dataclasses import dataclass
+from hashlib import sha256
 from types import MappingProxyType
 from urllib.parse import quote, unquote_to_bytes, urlsplit
+from xml.etree import ElementTree
 
-from api_agent.providers.progress import component_timeout
+from api_agent.providers.progress import component_timeout, independent_timeout_scope
 
 
 class ViewerRequestError(ValueError):
@@ -59,6 +62,32 @@ def _files(bundle):
     return routes
 
 
+_HTML_STYLE_HASHES = (
+    "'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis='",
+    "'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='",
+)
+
+
+def _style_policy(content_type, body):
+    """Admit only style attributes in this captured SVG response."""
+    hashes = _HTML_STYLE_HASHES
+    if content_type == 'image/svg+xml':
+        from api_agent.workflows.viewer_render import _safe_svg_style
+        root = ElementTree.fromstring(body)
+        if root.tag not in ('svg', '{http://www.w3.org/2000/svg}svg'):
+            raise ValueError('Invalid SVG route')
+        styles = {element.attrib['style'] for element in root.iter() if 'style' in element.attrib}
+        if any(not _safe_svg_style(style) or any(ord(char) < 32 or ord(char) == 127
+                                                 for char in style) for style in styles):
+            raise ValueError('Unsafe SVG style')
+        encoded = [style.encode('utf-8') for style in styles]
+        if len(styles) > 256 or sum(map(len, encoded)) > 16384:
+            raise ValueError('SVG style attributes exceed host policy')
+        hashes = tuple(sorted({"'sha256-" + base64.b64encode(sha256(style).digest()).decode('ascii') + "'"
+                               for style in encoded}))
+    return "style-src 'self' 'unsafe-hashes' " + ' '.join(hashes)
+
+
 @dataclass
 class OwnedViewerHost:
     server: asyncio.AbstractServer
@@ -91,6 +120,8 @@ async def start_viewer_host(bundle, *, projection, repository_sources=()):
     from api_agent.workflows.viewer_render import verify_bundle_proof
     verify_bundle_proof(bundle, projection, repository_sources=repository_sources)
     routes = _files(bundle)
+    style_policies = {path: _style_policy(content_type, body)
+                      for path, (content_type, body) in routes.items()}
     async with component_timeout('Workflow viewer host startup', 10):
         host = None
 
@@ -98,45 +129,49 @@ async def start_viewer_host(bundle, *, projection, repository_sources=()):
             task = asyncio.current_task()
             host.clients.add(task)
             try:
-                async with component_timeout('Workflow viewer request', 5):
-                    line = await reader.readline()
-                    if len(line) > 4096 or not line.endswith(b'\r\n'):
-                        raise ViewerRequestError('Invalid request line')
-                    fields = line[:-2].decode('ascii', 'strict').split(' ')
-                    if len(fields) != 3 or fields[2] != 'HTTP/1.1':
-                        raise ViewerRequestError('Invalid request line')
-                    method, target, _ = fields
-                    headers = []
-                    while True:
-                        row = await reader.readline()
-                        if len(row) > 4096 or sum(map(len, headers)) + len(row) > 16384:
-                            raise ViewerRequestError('Headers too large')
-                        if row == b'\r\n':
-                            break
-                        if not row.endswith(b'\r\n') or b':' not in row:
-                            raise ViewerRequestError('Invalid header')
-                        headers.append(row[:-2].decode('ascii', 'strict'))
-                    hosts = [value.strip() for row in headers if row.lower().startswith('host:')
-                             for value in [row.partition(':')[2]]]
-                    if hosts != [f'127.0.0.1:{host.port}']:
-                        raise ViewerRequestError('Invalid host')
-                    if any(row.lower().startswith(('proxy-', 'forwarded:', 'transfer-encoding:')) for row in headers):
-                        raise ViewerRequestError('Disallowed header')
-                    path = _route(target)
-                    if method not in ('GET', 'HEAD'):
-                        status, content_type, body = '405 Method Not Allowed', 'text/plain; charset=utf-8', b'Method not allowed'
-                    elif path not in routes:
-                        status, content_type, body = '404 Not Found', 'text/plain; charset=utf-8', b'Not found'
-                    else:
-                        status = '200 OK'
-                        content_type, body = routes[path]
-                    payload = (f'HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\n'
-                               "X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\n"
-                               "Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; "
-                               "style-src 'self' 'unsafe-hashes' 'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=' "
-                               "'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='\r\n"
-                               'Connection: close\r\n\r\n').encode('ascii')
-                    writer.write(payload + (body if method == 'GET' else b''))
+                # asyncio.start_server retains its registration ContextVars. A
+                # connection must start its own five-second request budget,
+                # even after the host's ten-second startup budget has ended.
+                with independent_timeout_scope():
+                    async with component_timeout('Workflow viewer request', 5):
+                        line = await reader.readline()
+                        if len(line) > 4096 or not line.endswith(b'\r\n'):
+                            raise ViewerRequestError('Invalid request line')
+                        fields = line[:-2].decode('ascii', 'strict').split(' ')
+                        if len(fields) != 3 or fields[2] != 'HTTP/1.1':
+                            raise ViewerRequestError('Invalid request line')
+                        method, target, _ = fields
+                        headers = []
+                        while True:
+                            row = await reader.readline()
+                            if len(row) > 4096 or sum(map(len, headers)) + len(row) > 16384:
+                                raise ViewerRequestError('Headers too large')
+                            if row == b'\r\n':
+                                break
+                            if not row.endswith(b'\r\n') or b':' not in row:
+                                raise ViewerRequestError('Invalid header')
+                            headers.append(row[:-2].decode('ascii', 'strict'))
+                        hosts = [value.strip() for row in headers if row.lower().startswith('host:')
+                                 for value in [row.partition(':')[2]]]
+                        if hosts != [f'127.0.0.1:{host.port}']:
+                            raise ViewerRequestError('Invalid host')
+                        if any(row.lower().startswith(('proxy-', 'forwarded:', 'transfer-encoding:')) for row in headers):
+                            raise ViewerRequestError('Disallowed header')
+                        path = _route(target)
+                        if method not in ('GET', 'HEAD'):
+                            status, content_type, body = '405 Method Not Allowed', 'text/plain; charset=utf-8', b'Method not allowed'
+                        elif path not in routes:
+                            status, content_type, body = '404 Not Found', 'text/plain; charset=utf-8', b'Not found'
+                        else:
+                            status = '200 OK'
+                            content_type, body = routes[path]
+                        style_policy = style_policies.get(path, _style_policy('', b''))
+                        payload = (f'HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\n'
+                                   "X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\n"
+                                   "Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; "
+                                   f'{style_policy}\r\n'
+                                   'Connection: close\r\n\r\n').encode('ascii')
+                        writer.write(payload + (body if method == 'GET' else b''))
             except (ViewerRequestError, UnicodeError, ValueError):
                 writer.write(b'HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
             except (ConnectionError, TimeoutError):
