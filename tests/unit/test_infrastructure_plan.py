@@ -295,6 +295,24 @@ def test_bare_and_trailing_slash_endpoint_bases_join_readiness(slash):
     assert result.conditional[0].readiness.url == 'http://127.0.0.1:58090/ready'
 
 
+@pytest.mark.parametrize('userinfo', ['@', ':@', 'user:@', ':password@'])
+@pytest.mark.parametrize('address', ['host', 'in_project'])
+def test_empty_or_partial_userinfo_rejected(address, userinfo):
+    host = ('http://' + userinfo + '127.0.0.1:58090' if address == 'host'
+            else 'http://127.0.0.1:58090')
+    internal = ('http://' + userinfo + 'self:8090' if address == 'in_project'
+                else 'http://self:8090')
+    with pytest.raises(ComposeError, match='endpoint'):
+        plan((service(endpoints=(EndpointOutput('api', host, internal),)),))
+
+
+def test_plain_host_and_in_project_endpoints_have_no_userinfo():
+    result = plan()
+    output = result.conditional[0].endpoints[0]
+    assert output.host == 'http://127.0.0.1:58090'
+    assert output.in_project.startswith('http://infra-')
+
+
 def test_untyped_or_incomplete_config_rejected():
     with pytest.raises(ComposeError, match='typed configuration'):
         plan_infrastructure(None, SCHEMA, (service(),), SCOPE)

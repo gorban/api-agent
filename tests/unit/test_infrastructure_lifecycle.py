@@ -657,6 +657,8 @@ def _loopback_response(mode):
                     if mode in {'headers', 'body'}: stopped.wait(.01)
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except TimeoutError as error:
+            if mode != 'no_request': failures.append(error)
         except BaseException as error:
             failures.append(error)
     thread = threading.Thread(target=serve, name='owned-http-fixture')
@@ -728,3 +730,11 @@ def test_real_identity_requires_completed_http_framing(mode, expected):
     with _loopback_response(mode) as url:
         assert p._http_identity(ResolvedCheck('http', url, identity_field='id',
                                             identity_value='fixture'), .2) is expected
+
+
+@pytest.mark.parametrize('userinfo', ['@', ':@'])
+def test_real_identity_rejects_present_empty_userinfo(userinfo):
+    with _loopback_response('no_request') as url:
+        target = url.replace('http://', 'http://' + userinfo, 1)
+        assert not p._http_identity(ResolvedCheck('http', target, identity_field='id',
+                                                identity_value='fixture'), .2)

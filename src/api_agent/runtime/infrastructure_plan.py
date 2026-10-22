@@ -57,7 +57,7 @@ def _url(value: str, *, local: bool, hostname: str | None = None):
     except ValueError as error:
         raise ComposeError('Infrastructure endpoint is invalid.') from error
     if (parsed.scheme != 'http' or not parsed.hostname or port is None
-            or parsed.username or parsed.password or parsed.fragment or parsed.query
+            or parsed.username is not None or parsed.password is not None or parsed.fragment or parsed.query
             or parsed.path not in ('', '/')
             or (local and parsed.hostname not in {'127.0.0.1', 'localhost'})
             or (hostname is not None and parsed.hostname not in {'self', hostname})):
