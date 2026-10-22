@@ -32,3 +32,7 @@
 - [New Relic OTEL resource requirements](https://docs.newrelic.com/docs/opentelemetry/best-practices/opentelemetry-best-practices-resources/): service identity and infrastructure correlation.
 - [OpenTelemetry resources](https://opentelemetry.io/docs/concepts/resources/) and [deployment attributes](https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/): standard service/environment metadata.
 - [OpenTelemetry GenAI conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/): authoritative attribute and span contracts. Recheck current stability and supported library versions when implementing.
+
+## Signal conformance follow-through
+
+- [ ] Deliver [GenAI signals and instrumentation conformance](implementation_plan_k1a.md), including metrics, propagation, instrumentation ownership and installed dependency qualification before claiming application tracing compatibility.
