@@ -1,5 +1,6 @@
 """One local application controller shared by terminal and workbench consumers."""
 import asyncio
+import os
 from copy import deepcopy
 from secrets import token_urlsafe
 from types import MappingProxyType
@@ -18,7 +19,7 @@ from api_agent.ui.session import PreparedUISession
 from api_agent.workflows.local_application import LocalChatApplication
 
 
-def _plan(config, schema, context, scope):
+def _plan(config, schema, context, scope, *, engine_environment=None):
     """Admit exact consumed declarations without importing provider factories."""
     from api_agent.runtime.compose import plan_compose
     from api_agent.runtime.infrastructure_contract import load_infrastructure_contributions
@@ -31,8 +32,8 @@ def _plan(config, schema, context, scope):
     if contributions:
         if schema is None:
             raise ValueError('Selected infrastructure requires the resolved configuration schema.')
-        return plan_infrastructure(config, schema, contributions, scope)
-    return plan_compose(config.values, scope)
+        return plan_infrastructure(config, schema, contributions, scope, engine_environment=engine_environment)
+    return plan_compose(config.values, scope, engine_environment=engine_environment)
 
 
 class LocalCleanup:
@@ -60,11 +61,13 @@ class LocalCleanup:
 class LocalRunOwner:
     """Creating-loop owner; consumers observe state and request cooperative stop."""
     def __init__(self, context, resolve, *, argv=(), on_event=None,
-                 schema=None, plan_factory=None, operation_factory=local_operation, browser_factory=None,
+                 schema=None, engine_environment=None, plan_factory=None, operation_factory=local_operation, browser_factory=None,
                  prepare_view=_prepare_view, application_factory=LocalChatApplication,
                  llm_factory=LocalLLM):
         self.context, self.resolve, self.argv = context, resolve, tuple(argv)
         self.on_event = on_event
+        self._engine_environment_source = engine_environment
+        self._engine_environment = None
         self.schema, self.plan_factory = schema, plan_factory or _plan
         self._available_sources = ('agent',)
         self._planned_sources = {}
@@ -162,10 +165,21 @@ class LocalRunOwner:
                     raise ValueError('invalid_runtime_configuration')
                 if self._config.values.get('TRACE_MODE'):
                     raise ValueError('Core Run local requires TRACE_MODE to be empty; tracing dashboards are a later milestone.')
+                from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment
+                source = self._engine_environment_source
+                if source is None:
+                    source = {key: os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ}
+                selected = controlled_engine_environment(source)
+                if 'CONTAINER_HOST' in selected and 'DOCKER_HOST' not in selected:
+                    # The default Docker-compatible command consumes DOCKER_HOST.
+                    # Translate the explicitly selected endpoint without guessing.
+                    selected['DOCKER_HOST'] = selected['CONTAINER_HOST']
+                self._engine_environment = MappingProxyType(selected)
                 self._prepared = self.prepare_view(self.context)
                 self._graph = self.application_factory(self._prepared[0], config=self._config.values)
                 scope = StackScope.from_roots(self.context.base_root, self.context.pack_root)
-                plan = self.plan_factory(self._config, self.schema, self.context, scope)
+                plan = self.plan_factory(self._config, self.schema, self.context, scope,
+                                         engine_environment=self._engine_environment)
                 self._planned_sources = {item.compose_name: item.id for item in plan.conditional}
                 self._available_sources = ('agent', *(('ui',) if self._config.values.get('RUN_UI') else ()),
                     *(self._planned_sources.get(service, 'api-agent/' + service) for service in plan.services))
@@ -180,7 +194,7 @@ class LocalRunOwner:
                     required_kinds={'llm', 'ui'} if self._config.values.get('RUN_UI') else {'llm'},
                     runtime_factory=self._runtime,
                     application_wrapper=lambda app: LocalStatusApplication(app, self._status),
-                    prepared_plan=plan)
+                    prepared_plan=plan, engine_environment=self._engine_environment)
                 opening = self._operation.open(retain=False)
                 exited = False
                 async def close_operation():

@@ -8,6 +8,8 @@ from textual.widgets import Static, TextArea
 
 from api_agent.runtime.local_terminal import format_log
 from api_agent.runtime.local_contracts import LocalSnapshot
+from api_agent.providers.control import CleanupPendingError
+from api_agent.providers.progress import component_timeout, independent_timeout_scope
 
 
 class LocalRunScreen(Screen):
@@ -35,6 +37,9 @@ class LocalRunScreen(Screen):
         self.finished = False
         self.closing = False
         self.disposed = False
+        self.pending_cleanup = None
+        self._local_app = None
+        self._local_unmounting = False
 
     def compose(self):
         yield Static('Starting local operation…', id='local-status', markup=False)
@@ -43,6 +48,7 @@ class LocalRunScreen(Screen):
         yield Static('', id='local-error', markup=False)
 
     def on_mount(self):
+        self._local_app = self.app
         self.run_task = asyncio.create_task(self.run())
 
     async def run(self):
@@ -76,7 +82,7 @@ class LocalRunScreen(Screen):
         self.refresh_view()
 
     def refresh_view(self):
-        if not self.is_mounted or self.closing or self not in self.app.screen_stack:
+        if self._local_unmounting or not self.is_mounted or self.closing or self not in self.app.screen_stack:
             return
         phase = self.snapshot.phase
         components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
@@ -144,38 +150,58 @@ class LocalRunScreen(Screen):
                 self.refresh_view()
         event.stop()
 
+    async def settle_run_task(self):
+        if self.run_task is None:
+            return
+        with independent_timeout_scope():
+            async with component_timeout('Local presentation shutdown', 15) as budget:
+                done, _ = await asyncio.wait({self.run_task}, timeout=budget.remaining)
+                if not done:
+                    raise TimeoutError('Local presentation shutdown remains pending.')
+                if not self.run_task.cancelled():
+                    self.run_task.result()
+
+    async def retry_cleanup(self):
+        if not await self.close_owned():
+            raise self.pending_cleanup
+
     async def close_owned(self):
         if self.disposed:
             return True
         self.closing = True
-        if self.owner is None:
-            if self.run_task is not None:
-                self.run_task.cancel()
-                try:
-                    await self.run_task
-                except asyncio.CancelledError:
-                    pass
-            if self.is_mounted:
-                self.retire()
-            return True
-        self.owner.request_stop()
-        if self.run_task is not None:
-            await self.run_task
         try:
-            await self.owner.aclose()
-        except Exception as error:
+            if self.owner is None:
+                if self.run_task is not None:
+                    self.run_task.cancel()
+                await self.settle_run_task()
+                if self.is_mounted:
+                    self.retire()
+            else:
+                self.owner.request_stop()
+                # The controller bounds startup settlement and retains late
+                # acquisitions before the presentation can acknowledge Stop.
+                await self.owner.aclose()
+                await self.settle_run_task()
+                self.retire()
+        except BaseException as error:
             self.closing = False
-            self.failure = 'Cleanup pending; retry Stop or Quit. ' + self.owner.diagnostic(error)
+            self.pending_cleanup = CleanupPendingError((self,), self.retry_cleanup)
+            if not isinstance(error, Exception):
+                error.cleanup_pending = self.pending_cleanup
+                raise
+            detail = self.owner.diagnostic(error) if self.owner is not None else 'Local presentation shutdown remains pending.'
+            self.failure = 'Cleanup pending; retry Stop or Quit. ' + detail
             self.refresh_view()
             return False
-        self.retire()
+        self.pending_cleanup = None
         return True
 
     def retire(self):
         self.disposed = True
-        if getattr(self.app, 'local_run_screen', self) is self:
-            self.app.operation_status = self.status
-            self.app.local_run_screen = None
+        app = self._local_app or self.app
+        if getattr(app, 'local_run_screen', self) is self:
+            app.operation_status = self.status
+            app.local_run_screen = None
 
     async def action_stop(self):
         if await self.close_owned():
@@ -186,5 +212,14 @@ class LocalRunScreen(Screen):
         self.app.push_screen(QuitDialog(), lambda yes: self.app.run_worker(self.app.confirm_quit()) if yes else None)
 
     async def on_unmount(self):
-        if not await self.close_owned():
-            raise self.owner.pending_cleanup
+        self._local_unmounting = True
+        app = self._local_app or self.app
+        try:
+            closed = await self.close_owned()
+        except BaseException as error:
+            app.pending_shutdown_cleanup = app.shutdown_cleanup_receipt()
+            error.cleanup_pending = app.pending_shutdown_cleanup
+            raise
+        if not closed:
+            app.pending_shutdown_cleanup = app.shutdown_cleanup_receipt()
+            raise app.pending_shutdown_cleanup
