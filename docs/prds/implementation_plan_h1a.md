@@ -52,4 +52,4 @@ Implementation references: [Compose profiles](https://docs.docker.com/compose/ho
 
 ## Pack prerequisite conformance follow-through
 
-- [ ] Complete the [conditional contribution contract and synthetic pack proof](implementation_plan_o1.md) before dependent Run local and demo API consumers. Use the existing lifecycle foundation; concrete database/service implementations remain separately owned.
+- [x] Complete the [conditional contribution contract and synthetic pack proof](implementation_plan_o1.md) before dependent Run local and demo API consumers. The bounded Compose technical scope is delivered through the existing lifecycle foundation; human acceptance remains in its detail, and concrete database/service implementations remain separately owned. Generic host-process and Run local/UI wiring above remain open.

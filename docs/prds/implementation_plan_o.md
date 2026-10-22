@@ -13,6 +13,10 @@ These requirements supplement existing groups without changing their historical 
 
 ## Pack infrastructure
 
-- [ ] Deliver [conditional pack-declared prerequisites and conformance](implementation_plan_o1.md) through the existing shared infrastructure manager before dependent local startup and synthetic API consumers.
+- [x] Deliver [conditional pack-declared prerequisites and conformance](implementation_plan_o1.md) through the existing shared infrastructure manager before dependent local startup and synthetic API consumers.
 
-No capability or acceptance is completed by recording these requirements.
+The bounded Compose contribution foundation is delivered. Broader decisions and dependent consumers remain open; technical completion does not establish human acceptance.
+
+## Deferred process extension
+
+- [ ] Specify and deliver [generic host-process prerequisites](implementation_plan_o2.md) separately if needed.
