@@ -12,6 +12,12 @@ Companion Markdown under `.private_resources/diagrams/` provides another reposit
 navigation path. When scripts are unavailable, only the root shows launcher guidance;
 the inert declaration carrier remains hidden.
 
+Click a linked diagram to open a fitted overlay in both saved files and managed
+viewing. Use Zoom in, Zoom out, Fit or Close; Escape returns to the document.
+Diagram links remain interactive, so components, schemas and settings open directly.
+Browsers lacking the required overlay APIs keep ordinary standalone SVG navigation.
+The shared enhancement uses local packaged assets and needs no additional service.
+
 Direct file opening shows the last generated diagram. It does not check whether
 declarations have changed since generation. The commands below check freshness.
 

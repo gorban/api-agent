@@ -8,6 +8,8 @@ from urllib.parse import quote, unquote_to_bytes, urlsplit
 from xml.etree import ElementTree
 
 from api_agent.providers.progress import component_timeout, independent_timeout_scope
+from api_agent.runtime.viewer_modal import (admitted_svg_paths, capture_modal_assets, compose_modal_script,
+                                            decorate_managed_wrapper)
 
 
 class ViewerRequestError(ValueError):
@@ -120,9 +122,22 @@ async def start_viewer_host(bundle, *, projection, repository_sources=()):
     from api_agent.workflows.viewer_render import verify_bundle_proof
     verify_bundle_proof(bundle, projection, repository_sources=repository_sources)
     routes = _files(bundle)
-    style_policies = {path: _style_policy(content_type, body)
-                      for path, (content_type, body) in routes.items()}
     async with component_timeout('Workflow viewer host startup', 10):
+        assets = capture_modal_assets()
+        if routes.keys() & assets.keys():
+            raise ValueError('Managed viewer asset route collision')
+        manifest = admitted_svg_paths(routes)
+        script_type, script = assets['.private_resources/managed-modal.js']
+        assets['.private_resources/managed-modal.js'] = (script_type, compose_modal_script(script, manifest))
+        decorated = set()
+        for path, (content_type, body) in tuple(routes.items()):
+            presented, managed = decorate_managed_wrapper(path, content_type, body)
+            if managed:
+                routes[path] = (content_type, presented)
+                decorated.add(path)
+        routes.update(assets)
+        style_policies = {path: _style_policy(content_type, body)
+                          for path, (content_type, body) in routes.items()}
         host = None
 
         async def handle(reader, writer):
@@ -166,10 +181,11 @@ async def start_viewer_host(bundle, *, projection, repository_sources=()):
                             status = '200 OK'
                             content_type, body = routes[path]
                         style_policy = style_policies.get(path, _style_policy('', b''))
+                        frame_policy = "frame-src 'self'; " if path in decorated else ''
                         payload = (f'HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\n'
                                    "X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\n"
                                    "Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; "
-                                   f'{style_policy}\r\n'
+                                   f'{frame_policy}{style_policy}\r\n'
                                    'Connection: close\r\n\r\n').encode('ascii')
                         writer.write(payload + (body if method == 'GET' else b''))
             except (ViewerRequestError, UnicodeError, ValueError):

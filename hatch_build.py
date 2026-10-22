@@ -79,7 +79,7 @@ def _proof(root):
 
 
 _VIEWER_NAMES = frozenset((
-    'viewer.js', 'viewer.css', 'svg-links.js', 'marked.js', 'dompurify.js',
+    'viewer.js', 'viewer.css', 'flow-modal.js', 'flow-modal.css', 'svg-links.js', 'marked.js', 'dompurify.js',
     'heading-id.js', 'marked-LICENSE.txt', 'dompurify-LICENSE.txt',
     'heading-id-LICENSE.txt', 'github-slugger-LICENSE.txt',
     'PlantUML-NOTICE.txt', 'VIEWER-ASSET-NOTICE.txt',

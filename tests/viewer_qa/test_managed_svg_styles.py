@@ -31,7 +31,7 @@ def test_managed_standalone_svg_keeps_admitted_plantuml_styles_and_links():
                     image = page.locator('main img[alt="Workflow diagram"]')
                     await image.wait_for()
                     assert await image.evaluate("element => element.naturalWidth > 0")
-                    await page.locator('main > h1 + p > a').click()
+                    await page.goto(host.entry_url.replace('flow.md.html', '.private_resources/diagrams/flow.svg'))
                     assert page.url.endswith('/r/base/.private_resources/diagrams/flow.svg')
                     rectangle = page.locator('g.entity rect').first
                     edge = page.locator('g.link path').first

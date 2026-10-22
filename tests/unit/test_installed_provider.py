@@ -262,6 +262,12 @@ def _wheel_source_snapshot(repository, destination):
         relative = raw_path.decode('utf-8')
         if relative not in individual and not relative.startswith(prefixes):
             continue
+        if (relative in ('src/api_agent/runtime/viewer_assets/flow-modal.js',
+                         'src/api_agent/runtime/viewer_assets/flow-modal.css')
+                and not (repository / relative).exists()):
+            # The shared asset move is represented as exact tracked deletions
+            # until the feature commit; the synthetic snapshot models its tree.
+            continue
         assert relative not in selected
         selected.add(relative)
         assert len(selected) <= 10000, 'Installed wheel source list exceeds limit'
@@ -272,6 +278,17 @@ def _wheel_source_snapshot(repository, destination):
     for relative, _ in helper['expanded_assets'](repository, manifest['assets']):
         if relative not in selected:
             copy(relative, 0o644)
+    # These two first-party modal assets are fixed package inputs. During an
+    # uncommitted feature checkout their owner copies have not reached the
+    # index yet; include only these exact paths in the synthetic wheel source.
+    for name in ('flow-modal.js', 'flow-modal.css'):
+        canonical = helper['_read'](repository, '.private_resources/viewer/' + name)
+        for owner in ('', 'demo/', 'tests/integration/fixtures/workflow_preferences/'):
+            relative = owner + '.private_resources/viewer/' + name
+            assert helper['_read'](repository, relative) == canonical
+            if relative not in selected:
+                selected.add(relative)
+                copy(relative, 0o644)
     for relative, expected in observed.items():
         current = helper['_read'](repository, relative, 8 * 1024 * 1024)
         assert (len(current), sha256(current).digest(),

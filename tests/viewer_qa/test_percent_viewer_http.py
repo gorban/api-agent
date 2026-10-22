@@ -74,19 +74,23 @@ def test_percent_declaration_and_diagram_clicks_resolve_exact_captured_http_rout
                     origin = f"http://127.0.0.1:{host.port}/"
                     expected_url = origin + expected_route
                     response = await page.request.get(expected_url)
-                    assert await response.body() == captured
+                    from api_agent.workflows.document_format import _CARRIER
+                    served = await response.body()
+                    assert served.partition(_CARRIER)[2] == captured.partition(_CARRIER)[2]
+                    assert b'workflow-managed-svg-routes' in served.partition(_CARRIER)[0]
                     absent_url = expected_url.replace(".md.html", "%2525-missing.md.html")
                     assert (await page.request.get(absent_url)).status == 404
                     await page.goto(host.entry_url)
                     await page.locator("main > h1 + p > a > img").wait_for()
                     await page.locator("main > h1 + p > a").click()
                     await page.wait_for_function(
-                        "expected => document.querySelector('svg a')?.getAttribute('href') === expected",
+                        "expected => document.querySelector('dialog iframe')?.contentDocument?.querySelector('svg a')?.getAttribute('href') === expected",
                         arg=expected_url,
                     )
-                    assert await page.locator("svg a").get_attribute("href") == expected_url
-                    assert await page.locator("svg a").get_attribute("xlink:href") == expected_url
-                    await page.locator("svg a").click()
+                    link = page.frame_locator('dialog iframe').locator('svg a').first
+                    assert await link.get_attribute("href") == expected_url
+                    assert await link.get_attribute("xlink:href") == expected_url
+                    await link.click()
                     await page.locator("main > h1 + p > a > img").wait_for()
                     assert page.url == expected_url
                     await page.wait_for_function(
@@ -96,10 +100,10 @@ def test_percent_declaration_and_diagram_clicks_resolve_exact_captured_http_rout
                     assert await image.get_attribute("src") == "../" * len(Path(parent).parts) + ".private_resources/diagrams/" + quote(parent + "/" + name + ".svg", safe="/-._~")
                     await page.locator("main > h1 + p > a").click()
                     await page.wait_for_function(
-                        "expected => document.querySelector('svg a')?.getAttribute('href') === expected",
+                        "expected => document.querySelector('dialog iframe')?.contentDocument?.querySelector('svg a')?.getAttribute('href') === expected",
                         arg=expected_url,
                     )
-                    await page.locator("svg a").click()
+                    await page.frame_locator('dialog iframe').locator('svg a').first.click()
                     await page.locator("main").wait_for()
                     assert page.url == expected_url
                     assert await page.locator("main h1").inner_text() == "Node v2: work"

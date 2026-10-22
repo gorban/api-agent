@@ -91,6 +91,8 @@
     }
     if (!safe) {
       image.remove();
+    } else {
+      image.dataset.workflowAdmittedSvg = "v1";
     }
   }
   for (const heading of template.content.querySelectorAll(`[${headingMarker}]`)) {

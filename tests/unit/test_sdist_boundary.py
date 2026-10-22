@@ -9,7 +9,7 @@ import json
 
 
 _VIEWER_FILES = (
-    'viewer.js', 'viewer.css', 'marked.js', 'dompurify.js',
+    'viewer.js', 'viewer.css', 'flow-modal.js', 'flow-modal.css', 'marked.js', 'dompurify.js',
     'marked-LICENSE.txt', 'dompurify-LICENSE.txt', 'PlantUML-NOTICE.txt',
     'VIEWER-ASSET-NOTICE.txt', 'heading-id.js', 'heading-id-LICENSE.txt',
     'github-slugger-LICENSE.txt', 'svg-links.js',

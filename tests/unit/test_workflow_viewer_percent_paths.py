@@ -10,7 +10,7 @@ _HARNESS = r'''
 const fs = require('fs'), vm = require('vm');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const location = new URL(input.base);
-const images = input.paths.map(path => ({removed:false, getAttribute: () => path, remove() {this.removed=true;}}));
+const images = input.paths.map(path => ({removed:false, dataset:{}, getAttribute: () => path, remove() {this.removed=true;}}));
 const links = input.paths.map(path => ({href:input.prefix + path, getAttribute() {return this.href;}, getAttributeNS() {return this.href;}, setAttribute(name,value) {this.href=value;}, setAttributeNS(ns,name,value) {this.xlink=value;}}));
 const carrier = {textContent:'# Workflow v2\n', before() {}};
 const main = {append() {}, querySelector() {return null;}, querySelectorAll() {return [];}};
@@ -21,17 +21,20 @@ const document = {baseURI:input.base, readyState:'complete', currentScript:scrip
  querySelectorAll(selector) {return selector === 'a' ? links : selector.startsWith('script') ? [script] : [];},
  createElement(name) {return name === 'template' ? {content} : main;}, getElementById() {return null;}};
 const window = {marked:{lexer() {return [];}, parse() {return '';}}, DOMPurify:{sanitize() {return '';}}};
+window.top = window; window.self = window; window.parent = window;
 vm.runInNewContext(fs.readFileSync(input.asset, 'utf8'), {document,window,location,URL});
-process.stdout.write(JSON.stringify(input.mode === 'image' ? images.map(image => !image.removed) : links.map(link => ({href:link.href,xlink:link.xlink}))));
+process.stdout.write(JSON.stringify(input.mode === 'image' ? images.map(image => !image.removed) :
+ input.mode === 'image-marker' ? images.map(image => image.dataset.workflowAdmittedSvg || null) :
+ links.map(link => ({href:link.href,xlink:link.xlink}))));
 '''
 
 
 def run_asset(mode, paths, *, protocol="file", relative="../../"):
-    base = ("file:///tmp/owner/flow.md.html" if mode == "image" else
+    base = ("file:///tmp/owner/flow.md.html" if mode.startswith("image") else
             "file:///tmp/owner/.private_resources/diagrams/probe.svg")
     if protocol == "http":
         base = base.replace("file:///tmp/owner/", "http://127.0.0.1:8080/r/base/")
-    asset = "viewer.js" if mode == "image" else "svg-links.js"
+    asset = "viewer.js" if mode.startswith("image") else "svg-links.js"
     payload = {"mode": mode, "paths": paths, "base": base, "relative": relative,
                "prefix": "//github.com/example/workflow/blob/_____switch_branch_____/",
                "asset": str(ROOT / ".private_resources/viewer" / asset)}
@@ -73,3 +76,9 @@ def test_svg_adapter_single_decodes_percent_bearing_owner_mapping():
     result = run_asset("adapter", ["flow.md.html"], relative="../../other%25owner/")
     assert result == [{"href": "file:///tmp/owner/other%25owner/flow.md.html",
                        "xlink": "file:///tmp/owner/other%25owner/flow.md.html"}]
+
+
+def test_only_owner_local_canonical_diagram_images_receive_modal_marker():
+    assert run_asset("image-marker", [".private_resources/diagrams/a%20b.svg",
+                                      ".private_resources/diagrams/%2E%2E/outside.svg",
+                                      "../sibling/.private_resources/diagrams/other.svg"]) == ["v1", None, None]
