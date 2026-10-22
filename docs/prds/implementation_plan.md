@@ -43,3 +43,7 @@ See [delivery evidence, current provider architecture and accounting follow-thro
 ## Final follow-up
 
 - [ ] Last, profile native-key scanning; optimize only if material, otherwise record a no-change conclusion. [Requirements](implementation_plan_f2e1.md).
+
+## Design decisions and pack prerequisites
+
+- [ ] Resolve blocking implementation decisions with the user before dependent behavior, and prove conditional pack-contributed infrastructure through the shared lifecycle manager. See [follow-through requirements](implementation_plan_o.md).

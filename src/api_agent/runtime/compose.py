@@ -42,6 +42,7 @@ class ComposePlan:
     directory: Path
     environment: Mapping[str, str] = field(repr=False)
     assets: Mapping[str, bytes] = field(repr=False)
+    conditional: tuple = ()
 
     @property
     def enabled(self):
@@ -350,6 +351,9 @@ def snapshot_compose(plan, directory):
     """
     for name, content in plan.assets.items():
         path = directory / name
+        if Path(name).is_absolute() or '..' in Path(name).parts:
+            raise ComposeError('Invalid captured Compose asset path.')
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         path.chmod(0o755 if name == 'localstack-ready.sh' else 0o444)
     command = tuple(str(directory / Path(arg).name) if arg in {
@@ -360,6 +364,9 @@ def snapshot_compose(plan, directory):
     environment = dict(plan.environment)
     environment['SA_LOCALSTACK_READY_HOOK'] = str(directory / 'localstack-ready.sh')
     environment['SA_JAEGER_CONFIG'] = str(directory / 'jaeger-config.json')
+    for item in plan.conditional:
+        for key, asset_name in item.asset_paths.items():
+            environment[key] = str(directory / asset_name)
     return command, environment
 
 

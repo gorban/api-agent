@@ -1,0 +1,14 @@
+version = 1
+id = "synthetic"
+owner = "."
+service_name = "synthetic-service"
+config = "config.toml"
+
+[workflow]
+version = 2
+root = "base"
+entry = "flow.md.html"
+
+[infrastructure]
+version = 1
+declarations = ["infrastructure.toml"]

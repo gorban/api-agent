@@ -24,7 +24,8 @@ from urllib.error import URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import uuid4
 
-from api_agent.runtime.compose import controlled_engine_environment, snapshot_compose
+from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment, snapshot_compose
+from api_agent.runtime.ownership import PROFILES
 from api_agent.testing.processes import disposal_complete, finalize
 
 CONFIG_LABEL = 'api-agent.config'
@@ -348,15 +349,44 @@ def _read_journal(directory, scope, identity):
     except (OSError, ValueError) as error:
         raise PrerequisiteError('Cannot read ownership journal.') from error
     active = {}
+    stale_duties = []
     for key, record in journal.items():
         if (not isinstance(record, dict) or not isinstance(record.get('pid'), int)
                 or not isinstance(record.get('identity'), str)
                 or not isinstance(record.get('ids'), list)
-                or any(not isinstance(item, str) or not _ID.fullmatch(item) for item in record['ids'])):
+                or any(not isinstance(item, str) or not _ID.fullmatch(item) for item in record['ids'])
+                or ('conditional_engine_id' in record and (not isinstance(record['conditional_engine_id'], str)
+                    or not _ID.fullmatch(record['conditional_engine_id'])))
+                or type(record.get('cleanup_only', False)) is not bool
+                or (record.get('cleanup_only', False) and not record.get('conditional_cleanup_ids'))
+                or not isinstance(record.get('conditional_cleanup_ids', []), list)
+                or any(item not in record['ids'] for item in record.get('conditional_cleanup_ids', []))):
             raise PrerequisiteError('Invalid ownership lease record.')
-        if identity(record['pid']) == record['identity']:
-            active[key] = record
+        if not record.get('cleanup_only', False) and identity(record['pid']) == record['identity']:
+            active[key] = dict(record)
+        elif record.get('conditional_cleanup_ids'):
+            stale_duties.append((key, record))
+    for key, record in stale_duties:
+        remaining = set(record['conditional_cleanup_ids'])
+        for successor_key in sorted(active):
+            successor = active[successor_key]
+            if (successor.get('cleanup_only', False) or not record.get('conditional_engine_id')
+                    or successor.get('conditional_engine_id') != record['conditional_engine_id']):
+                continue
+            transferred = remaining.intersection(successor['ids'])
+            if transferred:
+                successor['conditional_cleanup_ids'] = sorted(
+                    set(successor.get('conditional_cleanup_ids', [])) | transferred)
+                remaining -= transferred
+        if remaining:
+            active[key] = {**record, 'cleanup_only': True, 'ids': sorted(remaining),
+                           'conditional_cleanup_ids': sorted(remaining)}
     return active
+
+
+def _leased_ids(journal):
+    return {item for record in journal.values() if not record.get('cleanup_only', False)
+            for item in record['ids']}
 
 
 def _write_journal(directory, scope, journal):
@@ -390,7 +420,7 @@ def guarded_cleanup(ownership_directory, scope, *, identity=process_identity,
     with _locked(directory, scope, deadline=time.monotonic() + deadline_seconds,
                  cancelled=lambda: False, now=time.monotonic, sleep=time.sleep):
         journal = _read_journal(directory, scope, identity)
-        yield frozenset(item for record in journal.values() for item in record['ids'])
+        yield frozenset(_leased_ids(journal))
 
 
 def active_leased_ids(ownership_directory, scope, *, identity=process_identity,
@@ -409,6 +439,7 @@ def _interpolate(value, environment):
     if isinstance(value, str):
         for key, item in environment.items():
             value = value.replace('${' + key + ':?controlled local development value required}', item)
+            value = value.replace('${' + key + ':?controlled asset required}', item)
     return value
 
 
@@ -461,28 +492,57 @@ def _readiness(profile, timeout, environment):
         return False
 
 
+def _http_identity(readiness, timeout):
+    """Probe a captured loopback contract without proxies or redirects."""
+    try:
+        with urlopen(Request(readiness.url), timeout=timeout) as response:
+            if response.status != readiness.status:
+                return False
+            body = response.read(65537)
+            if len(body) > 65536:
+                return False
+            value = json.loads(body)
+            return (isinstance(value, dict)
+                and type(value.get(readiness.identity_field)) is type(readiness.identity_value)
+                and value.get(readiness.identity_field) == readiness.identity_value)
+    except (OSError, URLError, ValueError, AttributeError, TypeError):
+        return False
+
+
 class PrerequisiteManager:
     def __init__(self, plan, scope, ownership_directory, *, engine_environment=None,
                  command_runner=run_command, cancelled=lambda: False,
                  readiness_probe=_readiness, deadline_seconds=120,
                  now=time.monotonic, sleep=time.sleep, identity=process_identity):
         self.plan, self.scope = plan, scope
+        self.conditional = {item.compose_name: item for item in getattr(plan, 'conditional', ())}
         self._rollback = None
         if plan.environment.get('SA_SCOPE') != scope.id:
             raise PrerequisiteError('Prerequisite plan ownership does not match scope.')
         if deadline_seconds <= 0:
             raise PrerequisiteError('Prerequisite deadline must be positive.')
         self.directory = Path(ownership_directory).resolve()
-        self.environment = MappingProxyType({**dict(plan.environment),
-            **controlled_engine_environment(engine_environment)})
+        engine_override = controlled_engine_environment(engine_environment)
+        if self.conditional and any(plan.environment.get(key) != value
+                for key, value in engine_override.items()):
+            raise PrerequisiteError('Prerequisite engine configuration differs from the captured plan.')
+        self.environment = MappingProxyType({**dict(plan.environment), **engine_override})
+        self.engine_environment = MappingProxyType({key: self.environment[key]
+            for key in ENGINE_ENVIRONMENT_KEYS if key in self.environment})
+        self.engine_id = sha256(json.dumps({'command': plan.command[0],
+            'environment': dict(self.engine_environment)}, sort_keys=True).encode()).hexdigest()
         self.runner, self.cancelled, self.probe = command_runner, cancelled, readiness_probe
         self.timeout, self.now, self.sleep, self.identity = deadline_seconds, now, sleep, identity
         document = json.loads(plan.assets['compose.json'])
+        self.document = document
         self.specs = {name: _interpolate(document['services'][name], self.environment) for name in plan.services}
         if 'jaeger' in plan.services and 'jaeger-config.json' not in plan.assets:
             raise PrerequisiteError('Selected Jaeger configuration is missing.')
-        fingerprint_environment = {**self.environment,
-            'SA_LOCALSTACK_READY_HOOK': 'sha256:' + self.environment['SA_LOCALSTACK_READY_DIGEST']}
+        fingerprint_environment = dict(self.environment)
+        if 'SA_LOCALSTACK_READY_DIGEST' in self.environment:
+            fingerprint_environment['SA_LOCALSTACK_READY_HOOK'] = 'sha256:' + self.environment['SA_LOCALSTACK_READY_DIGEST']
+        for item in self.conditional.values():
+            fingerprint_environment.update({key: 'sha256:' + digest for key, digest in item.asset_digests.items()})
         if 'jaeger-config.json' in plan.assets:
             fingerprint_environment['SA_JAEGER_CONFIG'] = 'sha256:' + sha256(plan.assets['jaeger-config.json']).hexdigest()
         self.fingerprints = {name: sha256(json.dumps(_interpolate(document['services'][name],
@@ -532,7 +592,7 @@ class PrerequisiteManager:
                 labels = config.get('Labels', {})
                 if identifier not in ids or identifier in result:
                     raise ValueError()
-                if not self.scope.owns(labels):
+                if not self.scope.owns(labels, profiles=PROFILES | frozenset(self.plan.profiles)):
                     raise PrerequisiteError('Compose project includes a container with foreign ownership.')
                 result[identifier] = ManagedService(identifier, labels['com.docker.compose.service'],
                     config['Image'], record.get('Image'), labels.get(CONFIG_LABEL, ''), bool(state.get('Running')),
@@ -540,6 +600,142 @@ class PrerequisiteManager:
             return result
         except (KeyError, TypeError, ValueError) as error:
             raise PrerequisiteError('Invalid prerequisite inspection response.') from error
+
+    def _retire_disposed_duties(self, journal, inventory):
+        """Retire only absent immutable IDs proved on the recorded engine."""
+        for key, record in tuple(journal.items()):
+            if (not record.get('cleanup_only', False)
+                    or record.get('conditional_engine_id') != self.engine_id):
+                continue
+            remaining = sorted(set(record['conditional_cleanup_ids']).intersection(inventory))
+            if remaining:
+                journal[key] = {**record, 'ids': remaining, 'conditional_cleanup_ids': remaining}
+            else:
+                journal.pop(key)
+
+    def status(self, *, _deadline=None):
+        """Return bounded ownership-verified inventory without changing services."""
+        deadline = self.now() + self.timeout
+        if _deadline is not None:
+            deadline = min(deadline, _deadline)
+        _check(deadline, self.cancelled, self.now)
+        inventory = self._inventory(deadline)
+        current = self._compatible(inventory, deadline, allow_stopped=True)
+        return tuple(current[name] for name in self.plan.services if name in current)
+
+    def logs(self, identifier, *, tail=100, output_limit=16384, _deadline=None):
+        """Read bounded scrubbed logs from a selected immutable owned object."""
+        if (not isinstance(identifier, str) or not _ID.fullmatch(identifier)
+                or type(tail) is not int or not 1 <= tail <= 1000
+                or type(output_limit) is not int or not 256 <= output_limit <= 65536):
+            raise PrerequisiteError('Invalid prerequisite log selection or bound.')
+        deadline = self.now() + self.timeout
+        if _deadline is not None:
+            deadline = min(deadline, _deadline)
+        inventory = self._inventory(deadline)
+        current = self._compatible(inventory, deadline, allow_stopped=True)
+        if identifier not in {item.id for item in current.values()}:
+            raise PrerequisiteError('Prerequisite log selection is not owned by this plan.')
+        from api_agent.testing.diagnostics import CredentialScrubber
+        scrubber = CredentialScrubber({**self.environment, **{name + '.' + key: value
+            for name, specification in self.specs.items()
+            for key, value in specification.get('environment', {}).items()}})
+        return self.runner((self.plan.command[0], 'logs', '--tail', str(tail), identifier),
+            environment=self.environment, directory=self.plan.directory, deadline=deadline,
+            cancelled=self.cancelled, now=self.now, combine_output=True,
+            output_limit=output_limit, output_scrubber=scrubber)
+
+    def _conditional_ready(self, current, deadline, *, names=None, checks=None):
+        for name, specification in self.conditional.items():
+            if names is not None and name not in names:
+                continue
+            if name not in current:
+                return False
+            for readiness in ((specification.readiness, specification.seed_completion)
+                              if checks is None else checks):
+                if readiness is None:
+                    continue
+                _check(deadline, self.cancelled, self.now)
+                if readiness.kind == 'health':
+                    if current[name].health != 'healthy':
+                        return False
+                elif not _http_identity(readiness, min(1, readiness.timeout,
+                        max(.001, deadline - self.now()))):
+                    return False
+        return True
+
+    def _wait_conditional(self, name, deadline, verified):
+        observed = dict(verified)
+        specification = self.conditional[name]
+        for readiness in (specification.readiness, specification.seed_completion):
+            if readiness is None:
+                continue
+            check_deadline = min(deadline, self.now() + readiness.timeout)
+            while True:
+                _check(check_deadline, self.cancelled, self.now)
+                inventory = self._inventory(check_deadline)
+                current = self._compatible(inventory, check_deadline, allow_stopped=True)
+                if any(key not in current or current[key].id != item.id
+                        or not current[key].running for key, item in observed.items()):
+                    raise PrerequisiteError('Existing prerequisite changed during acquisition.')
+                if (name in current and current[name].running
+                        and self._conditional_ready(current, check_deadline,
+                            names={name}, checks=(readiness,))):
+                    observed[name] = current[name]
+                    break
+                self.sleep(.1)
+        self.verify_conditional_storage(name, observed[name].id, deadline)
+        return observed[name]
+
+    def verify_conditional_storage(self, name, identifier, deadline, *, cleanup=False):
+        """Verify every retained bind against captured bytes and scoped volumes."""
+        specification = self.conditional[name]
+        try:
+            record, = json.loads(self._command((self.plan.command[0], 'inspect', identifier),
+                deadline, cleanup=cleanup))
+            if record['Id'] != identifier:
+                raise ValueError()
+            mounts = record['Mounts']
+            expected = self.specs[name].get('volumes', [])
+            if len(mounts) != len(expected):
+                raise ValueError()
+            for index, volume in enumerate(expected):
+                template = self.document['services'][name]['volumes'][index]
+                source, target, *options = volume.rsplit(':', 2)
+                actual, = [item for item in mounts if item['Destination'] == target]
+                asset_key = next((key for key in specification.asset_digests
+                    if template.startswith('${' + key + ':?')), None)
+                if asset_key is not None:
+                    path = Path(actual['Source'])
+                    if (actual['Type'] != 'bind' or actual.get('RW') is not False
+                            or not path.is_relative_to(self.directory)):
+                        raise ValueError()
+                    inside = len(path.parent.relative_to(self.directory).parts) + 1
+                    for parent in (path.parent, *path.parent.parents)[:inside]:
+                        info = parent.lstat()
+                        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                                or info.st_mode & 0o022):
+                            raise ValueError()
+                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(descriptor, 'rb') as stream:
+                        info = os.fstat(stream.fileno())
+                        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                                or info.st_mode & 0o022 or info.st_size > 1024 * 1024
+                                or sha256(stream.read(1024 * 1024 + 1)).hexdigest()
+                                != specification.asset_digests[asset_key]):
+                            raise ValueError()
+                else:
+                    volume_name = self.scope.project + '_' + source
+                    if actual['Type'] != 'volume' or actual.get('Name') != volume_name:
+                        raise ValueError()
+                    owned, = json.loads(self._command((self.plan.command[0], 'volume', 'inspect',
+                        volume_name), deadline, cleanup=cleanup))
+                    labels = self.scope.labels(specification.profile, profiles=self.plan.profiles)
+                    if (owned['Name'] != volume_name or any(owned['Labels'].get(key) != value
+                            for key, value in labels.items())):
+                        raise ValueError()
+        except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
+            raise PrerequisiteError('Prerequisite storage or captured assets could not be verified.') from error
 
     def verify_reporting_storage(self, identifier, directory, deadline, *, cleanup=False):
         """Verify the retained controlled bind and named volume before adoption."""
@@ -678,7 +874,7 @@ class PrerequisiteManager:
         return desired
 
     def _stop_new(self, identifiers, journal, deadline):
-        protected = {item for record in journal.values() for item in record['ids']}
+        protected = _leased_ids(journal)
         eligible = set(identifiers) - protected
         if not eligible:
             return ()
@@ -725,10 +921,14 @@ class PrerequisiteManager:
                 self.lease = ServiceLease(invocation, self.scope.id, (), (), ())
                 return self.lease
             initial = self._inventory(deadline)
+            self._retire_disposed_duties(journal, initial)
             if expected_ids is not None and (set(initial) != set(expected_ids)
                     or (reporting_directory is None and any(not item.running for item in initial.values()))):
                 raise PrerequisiteError('Registered reporting container changed or stopped; no restart was attempted.')
             compatible = self._compatible(initial, deadline, allow_stopped=True)
+            for name, item in compatible.items():
+                if name in self.conditional:
+                    self.verify_conditional_storage(name, item.id, deadline)
             if 'jaeger' in compatible:
                 self.verify_jaeger_storage(compatible['jaeger'].id, deadline)
             if reporting_directory is not None:
@@ -738,12 +938,13 @@ class PrerequisiteManager:
                     self.verify_reporting_storage(identifier, reporting_directory, deadline)
             existing = {name: item for name, item in compatible.items() if item.running}
             restarted = {item.id for item in compatible.values() if not item.running}
-            protected = {item for record in journal.values() for item in record['ids']}
+            protected = _leased_ids(journal)
             if restarted & protected:
                 raise PrerequisiteError('Stopped prerequisite has an active invocation lease.')
             newly = ()
             snapshot = None
             missing = tuple(name for name in self.plan.services if name not in existing)
+            verified = dict(existing)
             try:
                 if restarted and reporting_directory is not None:
                     # Restart only the registered immutable objects. Compose up
@@ -760,11 +961,16 @@ class PrerequisiteManager:
                     snapshot = Path(tempfile.mkdtemp(prefix=f'{self.scope.id}-assets-', dir=self.directory))
                     self.snapshot_directory = snapshot
                     command, environment = snapshot_compose(self.plan, snapshot)
-                    self.environment = MappingProxyType({**self.environment,
-                        'SA_LOCALSTACK_READY_HOOK': environment['SA_LOCALSTACK_READY_HOOK'],
-                        'SA_JAEGER_CONFIG': environment['SA_JAEGER_CONFIG']})
-                    self._command((*command, '-f', str(override), 'up', '-d',
-                        '--no-recreate', *missing), deadline)
+                    self.environment = MappingProxyType({**self.environment, **environment, **self.engine_environment})
+                    fixed_missing = tuple(name for name in missing if name not in self.conditional)
+                    if fixed_missing:
+                        self._command((*command, '-f', str(override), 'up', '-d',
+                            '--no-recreate', *fixed_missing), deadline)
+                for name, specification in self.conditional.items():
+                    if name in missing:
+                        self._command((*command, '-f', str(override), 'up', '-d', '--no-deps',
+                            '--no-recreate', name), deadline)
+                    verified[name] = self._wait_conditional(name, deadline, verified)
                 while True:
                     _check(deadline, self.cancelled, self.now)
                     inventory = self._inventory(deadline)
@@ -772,13 +978,19 @@ class PrerequisiteManager:
                         and inventory[item].service in missing)
                     current = self._compatible(inventory, deadline)
                     if any(name not in current or current[name].id != item.id
-                           for name, item in existing.items()):
+                           for name, item in verified.items()):
                         raise PrerequisiteError('Existing prerequisite changed during acquisition.')
+                    if not self._conditional_ready(current, deadline):
+                        raise PrerequisiteError('Verified prerequisite readiness changed during acquisition.')
                     if (len(current) == len(self.specs)
                             and all(item.health in {None, 'healthy'} for item in current.values())
                             and all(self.probe(profile, min(1, max(.001, deadline - self.now())),
-                                    self.environment) for profile in self.plan.profiles)):
+                                    self.environment) for profile in self.plan.profiles
+                                    if profile not in {item.profile for item in self.conditional.values()})):
                         _check(deadline, self.cancelled, self.now)
+                        for name, item in current.items():
+                            if name in self.conditional:
+                                self.verify_conditional_storage(name, item.id, deadline)
                         if 'jaeger' in current:
                             self.verify_jaeger_storage(current['jaeger'].id, deadline)
                         if 'localstack' in current and reporting_directory is None:
@@ -791,7 +1003,10 @@ class PrerequisiteManager:
                 lease = ServiceLease(invocation, self.scope.id, self.plan.profiles, newly, reused)
                 pending_journal = dict(journal)
                 pending_journal[invocation] = {'pid': pid, 'identity': identity, 'ids': list(lease.container_ids),
-                    'owned_ids': list(newly), 'reused_ids': list(reused), 'fingerprints': self.fingerprints}
+                    'owned_ids': list(newly), 'reused_ids': list(reused), 'fingerprints': self.fingerprints,
+                    'conditional_engine_id': self.engine_id,
+                    'conditional_cleanup_ids': [identifier for identifier in newly
+                        if inventory[identifier].service in self.conditional]}
                 _write_journal(self.directory, self.scope, pending_journal)
                 self.lease = lease
                 return lease
@@ -803,7 +1018,9 @@ class PrerequisiteManager:
                     rollback_deadline = self.now() + 15
                     inventory = self._inventory(rollback_deadline, cleanup=True)
                     newly = tuple(item for item in inventory if (item not in initial or item in restarted)
-                        and inventory[item].service in missing)
+                        and inventory[item].service in missing
+                        and (inventory[item].service not in verified
+                            or item == verified[inventory[item].service].id))
                     # Pin IDs while the acquisition lock still excludes other
                     # invocations; a retry cannot adopt later replacements.
                     self._rollback = (newly, snapshot, invocation)
@@ -831,7 +1048,22 @@ class PrerequisiteManager:
             journal = _read_journal(self.directory, self.scope, self.identity)
             if self._rollback is not None:
                 return self._rollback_acquisition(journal, deadline)
-            journal.pop(self.lease.invocation_id, None)
+            if self.conditional and any(record.get('cleanup_only', False) for record in journal.values()):
+                self._retire_disposed_duties(journal, self._inventory(deadline, cleanup=True))
+            record = journal.pop(self.lease.invocation_id, {})
+            cleanup_ids = set(record.get('conditional_cleanup_ids', []))
+            if not retain:
+                for key in sorted(journal):
+                    successor = dict(journal[key])
+                    if (successor.get('cleanup_only', False)
+                            or successor.get('conditional_engine_id') != self.engine_id):
+                        continue
+                    transferred = cleanup_ids.intersection(successor['ids'])
+                    if transferred:
+                        successor['conditional_cleanup_ids'] = sorted(
+                            set(successor.get('conditional_cleanup_ids', [])) | transferred)
+                        journal[key] = successor
+                        cleanup_ids -= transferred
             if reporting_ids is not None and not retain:
                 # The final consumer may have reused every object. Ownership is
                 # the verified registry chain, not which invocation created it.
@@ -843,14 +1075,14 @@ class PrerequisiteManager:
                     raise PrerequisiteError('Registered reporting service changed; cleanup remains owned.')
                 for identifier in reporting_ids:
                     self.verify_reporting_storage(identifier, reporting_directory, deadline, cleanup=True)
-                protected = {item for record in journal.values() for item in record['ids']}
+                protected = _leased_ids(journal)
                 eligible = tuple(sorted(item for item in reporting_ids
                     if item not in protected and current[item].running))
                 if eligible:
                     self._command((self.plan.command[0], 'stop', '--time', '5', *eligible), deadline, cleanup=True)
                 stopped = eligible
             else:
-                stopped = () if retain else self._stop_new(self.lease.owned_ids, journal, deadline)
+                stopped = () if retain else self._stop_new(tuple(sorted(set(self.lease.owned_ids) | cleanup_ids)), journal, deadline)
             _write_journal(self.directory, self.scope, journal)
             # Both running and stopped container definitions keep their original
             # bind source. Removal/asset garbage collection requires an explicit

@@ -47,16 +47,16 @@ class StackScope:
     def project(self):
         return f"sa-{self.id}"
 
-    def labels(self, profile):
-        if profile not in PROFILES:
+    def labels(self, profile, *, profiles=PROFILES):
+        if profile not in profiles:
             raise ValueError("Unsupported stack profile.")
         return {MANAGED_LABEL: "true", SCOPE_LABEL: self.id, PROFILE_LABEL: profile}
 
-    def owns(self, labels):
+    def owns(self, labels, *, profiles=PROFILES):
         return (isinstance(labels, dict)
                 and labels.get(MANAGED_LABEL) == "true"
                 and labels.get(SCOPE_LABEL) == self.id
-                and labels.get(PROFILE_LABEL) in PROFILES
+                and labels.get(PROFILE_LABEL) in profiles
                 and labels.get("com.docker.compose.project") == self.project
                 and isinstance(labels.get("com.docker.compose.service"), str)
                 and bool(labels["com.docker.compose.service"].strip()))

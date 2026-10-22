@@ -41,6 +41,7 @@ class LaunchContext:
     workflow_replacements: tuple[tuple[str, Path, str], ...] = ()
     workflow_base_root: Path | None = None
     workflow_library_files: frozenset[str] | None = None
+    infrastructure_paths: tuple[Path, ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -95,7 +96,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -115,6 +116,23 @@ def load_launch_context(
     config = _relative_path(data.get("config"), pack, "config")
     if not config.is_file():
         raise ResourcePackError(f"Resource-pack configuration does not exist: {config}")
+    infrastructure = data.get("infrastructure", {"version": 1, "declarations": []})
+    if (type(infrastructure) is not dict or set(infrastructure) != {"version", "declarations"}
+            or type(infrastructure["version"]) is not int or infrastructure["version"] != 1
+            or type(infrastructure["declarations"]) is not list
+            or len(infrastructure["declarations"]) > 16):
+        raise ResourcePackError("infrastructure requires version 1 and bounded declarations")
+    infrastructure_paths = []
+    for entry in infrastructure["declarations"]:
+        if (type(entry) is not str or not entry or len(entry) > 512 or Path(entry).is_absolute()
+                or ".." in Path(entry).parts or "." in Path(entry).parts or "\\" in entry
+                or not entry.endswith(".toml")):
+            raise ResourcePackError("infrastructure declaration must be a pack-relative TOML path")
+        path = pack.joinpath(*entry.split("/"))
+        if (path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(pack)
+                or path in infrastructure_paths):
+            raise ResourcePackError("infrastructure declaration is absent, duplicated or escapes pack")
+        infrastructure_paths.append(path)
     workflow = data.get('workflow')
     workflow_root = 'base'
     workflow_entry = None
@@ -240,6 +258,7 @@ def load_launch_context(
         workflow_replacements=workflow_replacements,
         workflow_base_root=workflow_base_root,
         workflow_library_files=workflow_library_files,
+        infrastructure_paths=tuple(infrastructure_paths),
     )
 
 
