@@ -66,4 +66,4 @@ Select **Run local** to start the app and open a managed browser with the Agent 
 
 ## Shared interactive diagrams
 
-- [ ] Deliver the [fitted, zoomable interactive SVG overlay](implementation_plan_b1a7.md) for saved files and managed viewing, with interactive resource navigation and explicit human acceptance.
+- [x] Deliver the [fitted, zoomable interactive SVG overlay](implementation_plan_b1a7.md) for saved files and managed viewing, with interactive resource navigation; human acceptance remains unchecked in the detail.
