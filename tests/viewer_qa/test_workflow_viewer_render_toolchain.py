@@ -70,6 +70,8 @@ def copied_source_view(tmp_path):
     root.mkdir()
     for name in ("workflows", "demo", "cfg", ".private_resources"):
         shutil.copytree(source / name, root / name)
+    fixture = Path('tests/integration/fixtures/workflow_preferences')
+    shutil.copytree(source / fixture, root / fixture)
     shutil.copy2(source / "flow.md.html", root / "flow.md.html")
     return root
 
@@ -84,14 +86,14 @@ def test_generation_preserves_edit_after_admission(copied_source_view, monkeypat
     flow = copied_source_view / "flow.md.html"
     original = flow.read_bytes()
     edited = original + b"\n<!-- concurrent human edit -->\n"
-    project = viewer_build._projection
+    project = viewer_build._projections
 
     def edit_after_projection(root):
         result = project(root)
         flow.write_bytes(edited)
         return result
 
-    monkeypatch.setattr(viewer_build, "_projection", edit_after_projection)
+    monkeypatch.setattr(viewer_build, "_projections", edit_after_projection)
     with pytest.raises(RenderError, match="admitted workflow source changed"):
         viewer_build.generate_views(copied_source_view, renderer=renderer)
     assert flow.read_bytes() == edited
@@ -126,7 +128,7 @@ def test_bundle_route_proof_detects_mutated_body(copied_source_view):
     renderer = _qa_renderer()
     projection = viewer_build._projection(copied_source_view)
     bundle = build_view_bundle(projection, roots={"base": copied_source_view, "pack": copied_source_view},
-                               renderer=renderer)
+                               renderer=renderer, verify=False)
     changed_file = replace(bundle.files[0], body=bundle.files[0].body + b"changed")
     changed_bundle = replace(bundle, files=(changed_file, *bundle.files[1:]))
 
@@ -141,17 +143,17 @@ def test_publication_failure_restores_earlier_owned_output(copied_source_view, m
     first.write_bytes(first.read_bytes() + b"\nlocal edit\n")
     second.write_bytes(second.read_bytes() + b"\nlocal edit\n")
     before = (first.read_bytes(), second.read_bytes())
-    actual_replace = viewer_build.os.replace
+    actual_publish = viewer_build._publish_link
     calls = 0
 
-    def fail_second(source, target):
+    def fail_second(stage, target):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise OSError("simulated second write failure")
-        actual_replace(source, target)
+        actual_publish(stage, target)
 
-    monkeypatch.setattr(viewer_build.os, "replace", fail_second)
+    monkeypatch.setattr(viewer_build, "_publish_link", fail_second)
     with pytest.raises(OSError, match="second write"):
         viewer_build.generate_views(copied_source_view, renderer=renderer)
 

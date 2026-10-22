@@ -26,3 +26,9 @@ This follow-through supersedes earlier diagram-only attempt-context and pass-bud
 - [x] Treat a singleton JSON Schema type array as its equivalent scalar type for Boolean shortcuts and nested object-path admission, including immutable captured schema forms. Keep nullable or mixed unions outside exact Boolean/object shorthand contracts.
 - [x] Admit source-relative field reads in either operand of a supported comparison, preserving declared-field checks, string/number literals, bounded syntax and rejection of internal aliases.
 - [x] Prove both cases through declaration loading and real controlled execution, with causal negative controls; renew source bindings and verification before delivery.
+
+## Direct source navigation
+
+- [x] Point input/output schema, timeout and pass-limit diagram links directly to their selected, captured `.json` or `.toml` source. Use relative source paths in saved and hosted views and the recorded repository identity with `_____switch_branch_____` in GitHub links. Generate no schema or setting HTML wrappers.
+- [x] Serve only admitted JSON and TOML bytes in the hosted route inventory. Bind route content, source provenance and SVG links to the immutable capture, and reject altered or unadmitted bytes. Keep source limits and owned-orphan cleanup for superseded helper pages.
+- [ ] Human review of direct source navigation in the final static and hosted diagrams.

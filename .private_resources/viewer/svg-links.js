@@ -43,7 +43,10 @@
       if (!target.startsWith(prefix)) continue;
       const suffix = target.slice(prefix.length);
       const [path, fragment, ...extra] = suffix.split("#");
-      if (extra.length || !path.endsWith(".md.html") || path.length > 2048 ||
+      const documentTarget = path.endsWith(".md.html");
+      const resourceTarget = path.endsWith(".json") || path.endsWith(".toml");
+      if (extra.length || !(documentTarget || (resourceTarget && fragment === undefined)) ||
+          path.length > 2048 ||
           !path.split("/").every(safePart)) break;
       const localTarget = new URL(path, root);
       if (!localTarget.href.startsWith(root.href)) break;

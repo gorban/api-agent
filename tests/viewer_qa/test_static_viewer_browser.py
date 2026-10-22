@@ -378,6 +378,50 @@ def test_svg_adapter_rebases_only_admitted_targets(static_view, view_url):
             browser.close()
 
 
+@pytest.mark.parametrize('view_url', ['http'], indirect=True)
+def test_http_svg_adapter_rebases_captured_resource_suffixes_only(static_view, view_url):
+    import html
+    import json
+    from playwright.sync_api import sync_playwright
+
+    prefix = '//github.com/example/workflow/blob/_____switch_branch_____/'
+    roots = html.escape(json.dumps({prefix: '../../'}), quote=True)
+    svg = static_view / '.private_resources/diagrams/resources.svg'
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+                   f'<a id="schema" href="{prefix}contracts/input.json"><text y="20">Schema</text></a>'
+                   f'<a id="config" href="{prefix}cfg/config.toml"><text y="40">Config</text></a>'
+                   f'<a id="fragment" href="{prefix}cfg/config.toml#field"><text y="60">Fragment</text></a>'
+                   f'<a id="encoded" href="{prefix}%2e%2e/outside.json"><text y="80">Encoded</text></a>'
+                   '<a id="foreign" href="//github.com/example/foreign/blob/_____switch_branch_____/cfg/config.toml">'
+                   '<text y="100">Foreign</text></a>'
+                   f'<script data-workflow-links="v1" data-workflow-roots="{roots}" '
+                   'href="../viewer/svg-links.js" xlink:href="../viewer/svg-links.js"></script></svg>')
+    adapter = (static_view / '.private_resources/viewer/svg-links.js').read_text()
+    legacy = adapter.replace('const resourceTarget = path.endsWith(".json") || path.endsWith(".toml");',
+                             'const resourceTarget = false;')
+    assert legacy != adapter
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('.private_resources/diagrams/resources.svg'))
+            assert page.locator('#schema').get_attribute('href') == view_url('contracts/input.json')
+            assert page.locator('#config').get_attribute('href') == view_url('cfg/config.toml')
+            assert page.locator('#fragment').get_attribute('href') == prefix + 'cfg/config.toml#field'
+            assert page.locator('#encoded').get_attribute('href') == prefix + '%2e%2e/outside.json'
+            assert page.locator('#foreign').get_attribute('href').startswith('//github.com/example/foreign/')
+
+            legacy_page = browser.new_page()
+            legacy_page.route('**/svg-links.js', lambda route: route.fulfill(
+                status=200, content_type='text/javascript', body=legacy))
+            legacy_page.goto(view_url('.private_resources/diagrams/resources.svg'))
+            assert legacy_page.locator('#schema').get_attribute('href') == prefix + 'contracts/input.json'
+            assert legacy_page.locator('#config').get_attribute('href') == prefix + 'cfg/config.toml'
+        finally:
+            browser.close()
+
+
 def test_blocked_viewer_keeps_fallback_and_source_inert(view_url):
     from playwright.sync_api import sync_playwright
 
@@ -448,7 +492,9 @@ def test_nested_missing_dependency_shows_readable_diagnostic(static_view, view_u
         try:
             page = browser.new_page()
             page.goto(view_url("workflows/components/agent.md.html"))
-            assert "assets are unavailable" in page.locator("body").inner_text()
+            diagnostic = page.locator("body").inner_text()
+            assert "Workflow viewer dependencies are unavailable" in diagnostic
+            assert "run npm ci from the repository root" in diagnostic
             assert page.locator(".workflow-viewer-error").evaluate("item => getComputedStyle(item).fontSize") == "16px"
             assert page.locator("main").count() == 0
         finally:

@@ -33,7 +33,7 @@ def test_pack_resource_uses_pinned_renderer_and_keeps_owner_source(tmp_path, mon
     (pack / 'pack.toml').write_text('version=1\nid="synthetic-pack"\nconfig="config.toml"\n')
     source_before = {path: path.read_bytes() for path in base.rglob('*') if path.is_file()}
 
-    _, projection, canonical, bundle = _prepare_view(load_launch_context(base, pack))
+    _, projection, canonical, bundle, _ = _prepare_view(load_launch_context(base, pack))
 
     assert not canonical
     assert any(resource.logical_path == 'pack/prompt.md' for resource in projection.resources)
