@@ -251,6 +251,50 @@ def test_mount_target_rejects_compose_interpolation(volume):
         plan((service(compose=MappingProxyType(fragment)),))
 
 
+@pytest.mark.parametrize('bad', ['\r\n', '\x00', '\t', ' ', '\u00e9'])
+def test_raw_host_endpoint_controls_rejected(bad):
+    with pytest.raises(ComposeError, match='endpoint'):
+        plan((service(endpoints=(EndpointOutput('api',
+            'http://127.0.0.1:58090' + bad, 'http://self:8090'),)),))
+
+
+@pytest.mark.parametrize('bad', ['\r\n', '\x00', '\t', ' ', '\u00e9'])
+def test_raw_in_project_endpoint_controls_rejected(bad):
+    with pytest.raises(ComposeError, match='endpoint'):
+        plan((service(endpoints=(EndpointOutput('api',
+            'http://127.0.0.1:58090', 'http://self:8090' + bad),)),))
+
+
+@pytest.mark.parametrize('path', ['api/ready\r\n', 'api/ready\x00',
+    'api/ready path', 'api/ready\\part', 'api/ready%ZZ'])
+def test_raw_readiness_path_controls_rejected(path):
+    with pytest.raises(ComposeError, match='readiness|target'):
+        plan((service(readiness=Readiness('http', path)),))
+
+
+def test_percent_encoded_readiness_path_remains_admitted():
+    result = plan((service(readiness=Readiness('http', 'api/ready%20now')) ,))
+    assert result.conditional[0].readiness.url == 'http://127.0.0.1:58090/ready%20now'
+
+
+@pytest.mark.parametrize('delimiter', ['?', '#'])
+@pytest.mark.parametrize('address', ['host', 'in_project'])
+def test_empty_url_delimiters_rejected_before_readiness_join(delimiter, address):
+    output = EndpointOutput('api',
+        'http://127.0.0.1:58090' + (delimiter if address == 'host' else ''),
+        'http://self:8090' + (delimiter if address == 'in_project' else ''))
+    with pytest.raises(ComposeError, match='endpoint'):
+        plan((service(endpoints=(output,)),))
+
+
+@pytest.mark.parametrize('slash', ['', '/'])
+def test_bare_and_trailing_slash_endpoint_bases_join_readiness(slash):
+    output = EndpointOutput('api', 'http://127.0.0.1:58090' + slash,
+                            'http://self:8090' + slash)
+    result = plan((service(endpoints=(output,)),))
+    assert result.conditional[0].readiness.url == 'http://127.0.0.1:58090/ready'
+
+
 def test_untyped_or_incomplete_config_rejected():
     with pytest.raises(ComposeError, match='typed configuration'):
         plan_infrastructure(None, SCHEMA, (service(),), SCOPE)
