@@ -228,7 +228,7 @@ def test_guarded_components_keep_only_their_pass_nodes_and_declared_conditions()
     assert 'not .accepted and attempt < WORKFLOW_MAX_PASSES' in first_source
     assert 'not .accepted and attempt == WORKFLOW_MAX_PASSES' in first_source
     assert 'Configuration: WORKFLOW_MAX_PASSES' in first_source
-    assert any('/contracts/' in link and link.endswith('.md.html') for link in first_links)
+    assert any(link.endswith('/cfg/config.toml') for link in first_links)
     assert next(controller for controller in projection.controllers
                 if controller.component_id == 'first').max_passes_key == 'WORKFLOW_MAX_PASSES'
 

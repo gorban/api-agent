@@ -2,12 +2,13 @@
 
 from hashlib import sha256
 from pathlib import Path
+import posixpath
 
 import pytest
 
 from api_agent.workflows.definition import Replacement, load_definition
 from api_agent.workflows.viewer_projection import project_view
-from api_agent.workflows.viewer_render import _projection_source
+from api_agent.workflows.viewer_render import _projection_source, _route, _svg_route
 
 
 FUNCTIONS = ('\n## Functions\n\n| ID | Registry | Input | Output |\n'
@@ -73,4 +74,8 @@ def test_functions_follow_row_node_with_physical_provenance(tmp_path, scope, inl
     source, links = _projection_source(projection, document)
     assert b'Input: schema&#46;json' in source
     assert b'Output: schema&#46;json' in source
-    assert len([link for link in links if 'contracts/' in link]) == 2
+    expected = posixpath.relpath(_route(refs[0].target_path),
+                                 posixpath.dirname(_svg_route(document.logical_path)))
+    assert source.count(f'[[{expected}]]'.encode()) == 2
+    assert expected in links
+    assert len([link for link in links if link.endswith('/schema.json')]) == 1

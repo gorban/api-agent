@@ -81,7 +81,7 @@ def test_predicate_labels_encode_plantuml_markup_as_exact_text(literal):
     assert links == frozenset({'../../workflows/components/task.md.html'})
 
 
-def test_schema_references_have_separate_lines_and_captured_pages():
+def test_schema_references_have_separate_lines_and_direct_captured_sources():
     projection, document = _projection()
     schema = b'{"type":"object","properties":{"answer":{"type":"string"}}}'
     digest = __import__('hashlib').sha256(schema).hexdigest()
@@ -93,23 +93,20 @@ def test_schema_references_have_separate_lines_and_captured_pages():
     projection.resources = (resource,)
 
     source, links = _projection_source(projection, document)
-    pages = viewer_render._reference_pages(projection)
+    sources = viewer_render._reference_sources(projection)
 
     assert b'rectangle "task" as n0' in source
     assert b'Input: answer&#46;json' in source
-    assert len(pages) == 1
-    assert b'&quot;answer&quot;' in next(iter(pages.values()))
-    assert any('contracts/' in link for link in links)
+    assert sources == {'r/base/contracts/answer.json': schema}
+    assert '../../contracts/answer.json' in links
 
     _, repository_links = _projection_source(
         projection, document,
         repositories={'base': RepositoryIdentity('//github.com/example/viewer')})
-    assert any(link.startswith('//github.com/example/viewer/blob/_____switch_branch_____/')
-               and '/contracts/' in link and link.endswith('.md.html')
-               for link in repository_links)
+    assert '//github.com/example/viewer/blob/_____switch_branch_____/contracts/answer.json' in repository_links
 
 
-def test_cross_owner_schema_page_uses_referencing_declaration_owner():
+def test_cross_owner_schema_link_uses_captured_source_owner():
     projection, document = _projection()
     document.logical_path = 'pack/task.md.html'
     projection.entry_path = document.logical_path
@@ -125,22 +122,20 @@ def test_cross_owner_schema_page_uses_referencing_declaration_owner():
     projection.resources = (SimpleNamespace(logical_path=reference.target_path,
                                             sha256=digest, content_bytes=schema),)
 
-    pages = viewer_render._reference_pages(projection)
-    assert len(pages) == 1
-    route = next(iter(pages))
-    assert route.startswith('r/pack/.private_resources/diagrams/contracts/')
-    assert b'&quot;type&quot;' in next(iter(pages.values()))
+    sources = viewer_render._reference_sources(projection)
+    assert sources == {'r/base/contracts/input.json': schema}
     _, links = _projection_source(
         projection, document,
-        repositories={'pack': RepositoryIdentity('//github.com/example/viewer', 'demo')})
-    assert any('/demo/.private_resources/diagrams/contracts/' in link for link in links)
+        repositories={'pack': RepositoryIdentity('//github.com/example/viewer', 'demo'),
+                      'base': RepositoryIdentity('//github.com/example/viewer')})
+    assert '//github.com/example/viewer/blob/_____switch_branch_____/contracts/input.json' in links
 
 
 @pytest.mark.parametrize('kind, field, path, data', [
     ('functions', 'Input', 'base/cfg/input.toml', b'{"type":"object"}'),
     ('timeouts', 'LIMIT', 'base/contracts/limit.json', b'[fields.LIMIT]\ndefault = 1\n'),
 ])
-def test_reference_pages_skip_non_companion_target_extensions(kind, field, path, data):
+def test_reference_sources_skip_wrong_target_extensions(kind, field, path, data):
     projection, document = _projection()
     digest = __import__('hashlib').sha256(data).hexdigest()
     attributes = (('field', field),) if kind == 'functions' else (('Key', field),)
@@ -149,10 +144,10 @@ def test_reference_pages_skip_non_companion_target_extensions(kind, field, path,
     projection.resources = (SimpleNamespace(logical_path=path, sha256=digest,
                                             content_bytes=data),)
 
-    assert viewer_render._reference_pages(projection) == {}
+    assert viewer_render._reference_sources(projection) == {}
 
 
-def test_timeout_companion_rejects_absent_selected_field():
+def test_direct_configuration_rejects_absent_selected_field():
     projection, document = _projection()
     data = b'[fields.OTHER]\ndefault = 1\n'
     digest = __import__('hashlib').sha256(data).hexdigest()
@@ -162,14 +157,28 @@ def test_timeout_companion_rejects_absent_selected_field():
     projection.resources = (SimpleNamespace(logical_path=path, sha256=digest,
                                             content_bytes=data),)
 
-    with pytest.raises(RenderError, match='invalid captured reference'):
-        viewer_render._reference_pages(projection)
+    with pytest.raises(RenderError, match='referenced configuration field is absent'):
+        viewer_render._reference_sources(projection)
 
 
-def test_pretty_reference_cannot_expand_past_display_budget():
+def test_direct_configuration_rejects_bytes_outside_captured_digest():
     projection, document = _projection()
-    data = b'[' + b','.join([b'{}'] * 18_000) + b']'
-    assert len(data) < viewer_render._MAX_REFERENCE
+    original = b'[fields.LIMIT]\ndefault = 2\n'
+    digest = __import__('hashlib').sha256(original).hexdigest()
+    path = 'base/cfg/limits.toml'
+    projection.references = (ViewerReference('timeouts', document.logical_path, 'task', 1,
+                                             path, digest, (('Key', 'LIMIT'),)),)
+    projection.resources = (SimpleNamespace(logical_path=path, sha256=digest,
+                                            content_bytes=b'[fields.LIMIT]\ndefault = 3\n'),)
+
+    with pytest.raises(RenderError, match='reference differs from captured resource'):
+        viewer_render._reference_sources(projection)
+
+
+def test_raw_reference_cannot_exceed_display_budget():
+    projection, document = _projection()
+    data = b'[' + b','.join([b'{}'] * 22_000) + b']'
+    assert len(data) > viewer_render._MAX_REFERENCE
     digest = __import__('hashlib').sha256(data).hexdigest()
     path = 'base/contracts/input.json'
     projection.references = (ViewerReference('functions', document.logical_path, 'task', 1,
@@ -177,8 +186,8 @@ def test_pretty_reference_cannot_expand_past_display_budget():
     projection.resources = (SimpleNamespace(logical_path=path, sha256=digest,
                                             content_bytes=data),)
 
-    with pytest.raises(RenderError, match='reference display exceeds limit'):
-        viewer_render._reference_pages(projection)
+    with pytest.raises(RenderError, match='reference exceeds display limit'):
+        viewer_render._reference_sources(projection)
 
 
 def test_markdown_navigation_rejects_non_id_markup():
@@ -187,12 +196,12 @@ def test_markdown_navigation_rejects_non_id_markup():
         viewer_render._markdown_id('llm[call]')
 
 
-def test_forged_reference_owner_cannot_borrow_selected_repository_identity():
+def test_reference_target_requires_its_repository_identity():
     projection, document = _projection()
     data = b'{"type":"object"}'
     digest = __import__('hashlib').sha256(data).hexdigest()
-    path = 'base/contracts/input.json'
-    projection.references = (ViewerReference('functions', 'pack/foreign.md.html', 'task', 1,
+    path = 'pack/contracts/input.json'
+    projection.references = (ViewerReference('functions', document.logical_path, 'task', 1,
                                              path, digest, (('field', 'Input'),)),)
     projection.resources = (SimpleNamespace(logical_path=path, sha256=digest,
                                             content_bytes=data),)
@@ -202,7 +211,7 @@ def test_forged_reference_owner_cannot_borrow_selected_repository_identity():
                            repositories={'base': RepositoryIdentity('//github.com/example/viewer')})
 
 
-def test_timeout_page_contains_only_selected_field():
+def test_timeout_link_uses_complete_captured_configuration_source():
     projection, document = _projection()
     config = (b'[fields.GRAPH_LIMIT]\ntype = "float"\ndefault = 600\n'
               b'[fields.SECRET_OTHER]\ndefault = "hidden"\n')
@@ -213,14 +222,19 @@ def test_timeout_page_contains_only_selected_field():
     projection.resources = (SimpleNamespace(logical_path=reference.target_path,
                                             sha256=digest, content_bytes=config),)
 
-    page = next(iter(viewer_render._reference_pages(projection).values()))
+    sources = viewer_render._reference_sources(projection)
+    source, links = _projection_source(projection, document)
+    _, repository_links = _projection_source(
+        projection, document,
+        repositories={'base': RepositoryIdentity('//github.com/example/viewer')})
 
-    assert b'600' in page
-    assert b'SECRET_OTHER' not in page
-    assert b'hidden' not in page
+    assert sources == {'r/base/cfg/limits.toml': config}
+    assert b'../../cfg/limits.toml' in source
+    assert '../../cfg/limits.toml' in links
+    assert '//github.com/example/viewer/blob/_____switch_branch_____/cfg/limits.toml' in repository_links
 
 
-def test_reference_pages_escape_selected_bytes_and_exclude_native_source():
+def test_direct_references_serve_captured_source_bytes_and_exclude_native_source():
     projection, document = _projection()
     schema = b'{"description":"<script>alert(1)</script>","type":"object"}'
     config = (b'[fields.LIMIT]\ndefault = "<img src=x onerror=alert(1)>"\n'
@@ -240,19 +254,15 @@ def test_reference_pages_escape_selected_bytes_and_exclude_native_source():
     projection.references = tuple(references)
     projection.resources = tuple(resources)
 
-    pages = viewer_render._reference_pages(projection)
-    combined = b''.join(pages.values())
+    sources = viewer_render._reference_sources(projection)
 
-    assert len(pages) == 2
-    assert combined.count(b'Content-Security-Policy') == 2
-    assert b'&lt;script&gt;' in combined and b'<script>' not in combined
-    assert b'&lt;img' in combined and b'<img' not in combined
-    assert b'private unrelated declaration' not in combined
-    assert b'private native body' not in combined
+    assert sources == {'r/base/contracts/input.json': schema,
+                       'r/base/cfg/settings.toml': config}
+    assert b'private native body' not in b''.join(sources.values())
 
 
 @pytest.mark.parametrize('captured', [False, True])
-def test_reference_page_requires_matching_captured_resource(captured):
+def test_direct_reference_requires_matching_captured_resource(captured):
     projection, document = _projection()
     body = b'{"type":"object"}'
     digest = __import__('hashlib').sha256(body).hexdigest()
@@ -264,7 +274,7 @@ def test_reference_page_requires_matching_captured_resource(captured):
                             if captured else ())
 
     with pytest.raises(RenderError, match='reference differs from captured resource'):
-        viewer_render._reference_pages(projection)
+        viewer_render._reference_sources(projection)
 
 
 def test_component_guard_routes_show_accepted_retry_and_exhaustion():
@@ -557,8 +567,8 @@ def test_selected_hosted_flow_uses_admitted_replacement_without_original(tmp_pat
     assert b"missing-original.md.html" not in pages["r/base/flow.md.html"]
     assert b"../pack/chosen.md.html" in pages["r/base/flow.md.html"]
     assert not (base / "missing-original.md.html").exists()
-    reference_routes = [path for path in pages if '/contracts/' in path]
-    assert len(reference_routes) == 2
+    reference_routes = [path for path in pages if path.endswith('/schema.json')]
+    assert len(reference_routes) == 1
     route = reference_routes[0]
     modified = tuple(replace(file, body=b'<html>changed</html>') if file.path == route else file
                      for file in bundle.files)
@@ -566,8 +576,45 @@ def test_selected_hosted_flow_uses_admitted_replacement_without_original(tmp_pat
                      routes=tuple(viewer_render.ViewRoute(file.path, file.content_type,
                                                           __import__('hashlib').sha256(file.body).hexdigest(),
                                                           len(file.body)) for file in modified))
-    with pytest.raises(RenderError, match='reference page differs'):
+    with pytest.raises(RenderError, match='reference route differs from captured source'):
         verify_bundle_proof(forged, selected)
+
+
+def test_hosted_configuration_route_serves_captured_toml_and_rejects_forged_bytes():
+    from api_agent.workflows.definition import load_definition
+    from api_agent.workflows.viewer_projection import project_view
+
+    root = Path(__file__).resolve().parents[2]
+    demo = root / 'demo'
+    projection = project_view(load_definition(demo / 'contrived/flow.md.html',
+                                              base_root=root, pack_root=demo, entry_root='pack'))
+
+    class StubRenderer:
+        def render(self, source, *, allowed_links=frozenset()):
+            return b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"/>'
+
+    bundle = build_view_bundle(projection, roots={'base': root, 'pack': demo},
+                               renderer=StubRenderer(), verify=False)
+    files = {file.path: file for file in bundle.files}
+    config = files['r/pack/cfg/config.toml']
+
+    assert config.content_type == 'text/plain; charset=utf-8'
+    assert config.body == (demo / 'cfg/config.toml').read_bytes()
+    assert b'[WORKFLOW_MAX_PASSES](../../../cfg/config.toml)' in files[
+        'r/pack/contrived/workflows/components/first.md.html'].body
+    assert not any('/.private_resources/diagrams/contracts/' in path
+                   for path in files)
+    assert next(source for source in bundle.sources
+                if source.logical_path == 'pack/cfg/config.toml').served
+
+    modified = tuple(replace(file, body=b'version = 1\n') if file.path == config.path else file
+                     for file in bundle.files)
+    forged = replace(bundle, files=modified,
+                     routes=tuple(viewer_render.ViewRoute(file.path, file.content_type,
+                                                          __import__('hashlib').sha256(file.body).hexdigest(),
+                                                          len(file.body)) for file in modified))
+    with pytest.raises(RenderError, match='reference route differs from captured source'):
+        verify_bundle_proof(forged, projection)
 
 
 def test_missing_installed_assets_cannot_fall_back_to_sibling_tree(tmp_path, monkeypatch):
@@ -649,7 +696,7 @@ def test_unguarded_linked_single_pass_has_configuration_without_guard_anchor(tmp
     display = unescape(source.decode())
     setting = re.search(
         r'rectangle "Configuration: WORKFLOW_MAX_PASSES" as (passlimit\d+) '
-        r'\[\[(contracts/[0-9a-f]{24}\.md\.html)\]\]', display)
+        r'\[\[(\.\./\.\./passes\.toml)\]\]', display)
     assert setting is not None
     assert setting[2] in links
     assert f'n0 .. {setting[1]}' not in display

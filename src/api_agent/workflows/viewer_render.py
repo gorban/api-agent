@@ -119,20 +119,23 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_so
         allowed.update(((_route(document.logical_path), "text/html; charset=utf-8"),
                         (_svg_route(document.logical_path), "image/svg+xml"),
                         (_companion_route(document.logical_path), "text/markdown; charset=utf-8")))
-    allowed.update((route, 'text/html; charset=utf-8') for route in _reference_pages(projection))
+    reference_sources = _reference_sources(projection)
+    allowed.update((route, ('application/json; charset=utf-8' if route.endswith('.json')
+                            else 'text/plain; charset=utf-8')) for route in reference_sources)
     if {(file.path, file.content_type) for file in bundle.files} != allowed or len(bundle.files) != len(allowed):
         raise RenderError("workflow view route inventory mismatch")
-    reference_pages = _reference_pages(projection)
-    if any(file.body != reference_pages[file.path] for file in bundle.files
-           if file.path in reference_pages):
-        raise RenderError('workflow reference page differs from captured source')
+    if any(file.body != reference_sources[file.path] for file in bundle.files
+           if file.path in reference_sources):
+        raise RenderError('workflow reference route differs from captured source')
     selected_paths = {d.logical_path for d in projection.documents}
+    served_references = {unquote(route.removeprefix('r/')) for route in reference_sources}
     expected_sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),
                                    len(d.raw_bytes), True) for d in projection.documents]
     for resource in projection.resources:
         if resource.logical_path not in selected_paths:
             expected_sources.append(ViewSource(resource.logical_path, resource.kind, resource.sha256,
-                                               len(resource.content_bytes), False))
+                                               len(resource.content_bytes),
+                                               resource.logical_path in served_references))
     if bundle.sources != tuple(expected_sources) + repository_sources:
         raise RenderError("workflow view source inventory mismatch")
 
@@ -158,62 +161,37 @@ def _companion_route(logical_path: str) -> str:
     return _svg_route(logical_path)[:-4] + ".md"
 
 
-def _reference_route(reference: object) -> str:
-    """A generated route whose identity includes the selected target and field."""
-    identity = (reference.kind, reference.target_path, reference.target_sha256,
-                reference.attributes)
-    digest = sha256(repr(identity).encode()).hexdigest()[:24]
-    owner = reference.owner_path.split('/', 1)[0]
-    return f'r/{owner}/.private_resources/diagrams/contracts/{digest}.md.html'
-
-
-def _reference_pages(projection: object) -> dict[str, bytes]:
-    """Render only bounded, frozen schema and configuration declarations."""
+def _reference_sources(projection: object) -> dict[str, bytes]:
+    """Admit direct schema and configuration routes from captured resources."""
     resources = {item.logical_path: item for item in projection.resources}
-    pages: dict[str, bytes] = {}
+    sources: dict[str, bytes] = {}
     for reference in projection.references:
         attrs = dict(reference.attributes)
-        is_schema = reference.kind == 'functions' and attrs.get('field') in ('Input', 'Output')
-        is_timeout = reference.kind in ('timeout', 'timeouts') and bool(attrs.get('key') or attrs.get('Key'))
-        is_pass_limit = reference.kind == 'pass_limit' and bool(attrs.get('key'))
-        if not (is_schema or is_timeout or is_pass_limit):
+        schema = reference.kind == 'functions' and attrs.get('field') in ('Input', 'Output')
+        configuration = reference.kind in ('timeout', 'timeouts', 'pass_limit')
+        if not (schema or configuration):
+            continue
+        key = attrs.get('key') or attrs.get('Key') if configuration else None
+        suffix = '.json' if schema else '.toml'
+        if (configuration and not key) or not reference.target_path.endswith(suffix):
             continue
         resource = resources.get(reference.target_path)
-        if resource is None or resource.sha256 != reference.target_sha256:
+        if (resource is None or resource.sha256 != reference.target_sha256 or
+                sha256(resource.content_bytes).hexdigest() != resource.sha256):
             raise RenderError('reference differs from captured resource')
         if len(resource.content_bytes) > _MAX_REFERENCE:
             raise RenderError('reference exceeds display limit')
         try:
-            if is_schema:
-                if not reference.target_path.endswith('.json'):
-                    continue
-                value = json.loads(resource.content_bytes)
-                body = json.dumps(value, indent=2, ensure_ascii=False)
-                title = attrs['field'] + ' schema'
-            else:
-                if not reference.target_path.endswith('.toml'):
-                    continue
-                source = tomllib.loads(resource.content_bytes.decode('utf-8'))
-                key = attrs.get('key') or attrs['Key']
-                field = source.get('fields', {}).get(key)
-                if not isinstance(field, dict):
-                    raise RenderError('referenced configuration field is absent')
-                body = '\n'.join(f'{name} = {json.dumps(value, ensure_ascii=False)}'
-                                 for name, value in sorted(field.items()))
-                title = ('Pass limit ' if is_pass_limit else 'Timeout ') + key
+            source = (json.loads(resource.content_bytes) if schema else
+                      tomllib.loads(resource.content_bytes.decode('utf-8')))
         except (UnicodeError, ValueError, TypeError) as exc:
             raise RenderError('invalid captured reference') from exc
-        if len(body.encode()) > _MAX_REFERENCE:
-            raise RenderError('reference display exceeds limit')
-        route = _reference_route(reference)
-        escaped = html.escape(body, quote=True)
-        heading = html.escape(title, quote=True)
-        page = (f'<!doctype html><html lang="en"><meta charset="utf-8">'
-                        f'<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;">'
-                        f'<title>{heading}</title><h1>{heading}</h1><pre>{escaped}</pre></html>').encode()
-        pages[route] = (b'<!-- api-agent-reference-v1 sha256:' + sha256(page).hexdigest().encode() +
-                        b' -->\n' + page)
-    return pages
+        if configuration and (not isinstance(source.get('fields'), dict) or
+                              not isinstance(source['fields'].get(key), dict)):
+            raise RenderError('referenced configuration field is absent')
+        route = _route(reference.target_path)
+        sources[route] = resource.content_bytes
+    return sources
 
 
 def _label(value: object) -> str:
@@ -294,15 +272,15 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         links.add(href)
         return href
 
-    reference_pages = _reference_pages(projection)
+    reference_sources = _reference_sources(projection)
     controllers = {item.component_id: item for item in getattr(projection, 'controllers', ())}
 
     def reference_href(reference):
-        target = _reference_route(reference)
-        # Both callers select only pages in this frozen, local map.
+        # Callers select only targets in the frozen captured-source map.
+        target = _route(reference.target_path)
         href = posixpath.relpath(target, posixpath.dirname(_svg_route(document.logical_path)))
         if repositories:
-            root_owner, relative = target.removeprefix('r/').split('/', 1)
+            root_owner, relative = reference.target_path.split('/', 1)
             if root_owner not in repositories:
                 raise RenderError('missing workflow repository identity')
             href = repositories[root_owner].link(relative)
@@ -313,7 +291,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
     for step in steps:
         schema_refs = [reference for reference in projection.references
                        if reference.owner_id == step.id and reference.kind == 'functions'
-                       and _reference_route(reference) in reference_pages]
+                       and _route(reference.target_path) in reference_sources]
         schema_refs.sort(key=lambda item: ('Input', 'Output').index(dict(item.attributes)['field']))
         lines.append(f'rectangle "{step_label(step)}" as {aliases[step.id]} [[{step_href(step)}]]')
         prior_schema_alias = None
@@ -333,7 +311,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         scope_ids.add(cursor)
         cursor = all_steps[cursor].parent
     relevant_timeouts = [ref for ref in projection.references if ref.kind in ('timeout', 'timeouts')
-                         and _reference_route(ref) in reference_pages
+                         and _route(ref.target_path) in reference_sources
                          and (ref.owner_id in scope_ids or ref.owner_id is None)]
     for reference in relevant_timeouts:
         attrs = dict(reference.attributes)
@@ -347,7 +325,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
     if owner in controllers and controllers[owner].max_passes_key:
         pass_refs = [ref for ref in projection.references
                      if ref.kind == 'pass_limit' and ref.owner_id == owner
-                     and _reference_route(ref) in reference_pages]
+                     and _route(ref.target_path) in reference_sources]
         if (len(pass_refs) != 1 or
                 dict(pass_refs[0].attributes).get('key') != controllers[owner].max_passes_key):
             raise RenderError('component pass limit differs from captured configuration')
@@ -479,10 +457,11 @@ def _hosted_declaration(projection: object, document: object) -> bytes:
 
 def _annotate_hosted_resources(projection: object, document: object,
                                lines: list[bytes]) -> bytes:
-    """Describe captured, unserved resources without creating broken host links."""
+    """Link served configuration and describe captured, unserved resources."""
     selected = {item.logical_path for item in projection.documents}
     resources = {item.logical_path: item for item in projection.resources
                  if item.logical_path not in selected}
+    reference_sources = _reference_sources(projection) if getattr(projection, 'references', ()) else {}
     folder = posixpath.dirname(document.logical_path)
     data = b"".join(lines)
     fence: tuple[bytes, int] | None = None
@@ -548,6 +527,10 @@ def _annotate_hosted_resources(projection: object, document: object,
         if resource is None:
             return match[0]
         label = match[1]
+        target = _route(logical)
+        if target in reference_sources:
+            relative = posixpath.relpath(target, posixpath.dirname(_route(document.logical_path)))
+            return b'[' + label + b'](' + relative.encode() + b')'
         detail = (f" (captured {resource.kind}: {logical}; SHA-256 "
                   f"{resource.sha256}; unavailable in hosted view)").encode()
         return label + detail
@@ -975,10 +958,11 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
     semantic = projection.projection_sha256
     asset_root = _asset_root()
     owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
-    reference_pages = _reference_pages(projection)
+    reference_sources = _reference_sources(projection)
     if repositories:
+        link_owners = owners | {PurePosixPath(route).parts[1] for route in reference_sources}
         repositories = {owner: identity for owner, identity in repositories.items()
-                        if owner in owners}
+                        if owner in link_owners}
     asset_names = ("viewer.js", "viewer.css", "marked.js", "dompurify.js",
                    "marked-LICENSE.txt", "dompurify-LICENSE.txt", "PlantUML-NOTICE.txt",
                    "VIEWER-ASSET-NOTICE.txt", "heading-id.js", "svg-links.js",
@@ -1001,14 +985,17 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
             content_type = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
                             "txt": "text/plain; charset=utf-8"}[suffix]
             files.append(ViewFile(f"r/{owner}/.private_resources/viewer/{name}", content_type, body))
-    for route, body in sorted(reference_pages.items()):
-        files.append(ViewFile(route, 'text/html; charset=utf-8', body))
+    for route, body in sorted(reference_sources.items()):
+        content_type = ('application/json; charset=utf-8' if route.endswith('.json')
+                        else 'text/plain; charset=utf-8')
+        files.append(ViewFile(route, content_type, body))
     for document in projection.documents:
         if budget.remaining is not None and budget.remaining <= 0:
             raise RenderError("workflow view generation timed out")
         source, links = _projection_source(projection, document, repositories=repositories)
         script_roots = ({owner: Path("/r") / owner for owner in roots} if hosted_selected else roots)
-        script = _navigation_script(document.logical_path, script_roots, repositories)
+        script = _navigation_script(document.logical_path, script_roots, repositories,
+                                    admission_roots=roots)
         svg_path = _svg_route(document.logical_path)
         metadata = {"version": 1, "semantic": semantic, "document": document.sha256,
                     "puml": sha256(source).hexdigest(),
@@ -1049,10 +1036,13 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
     sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),
                           len(d.raw_bytes), True) for d in projection.documents]
     selected_paths = {d.logical_path for d in projection.documents}
+    served_references = {unquote(route.removeprefix('r/'))
+                         for route in reference_sources}
     for resource in projection.resources:
         if resource.logical_path not in selected_paths:
             sources.append(ViewSource(resource.logical_path, resource.kind, resource.sha256,
-                                      len(resource.content_bytes), False))
+                                      len(resource.content_bytes),
+                                      resource.logical_path in served_references))
     routes = tuple(ViewRoute(f.path, f.content_type, sha256(f.body).hexdigest(), len(f.body))
                    for f in files)
     bundle = ViewBundle(entry, tuple(files), projection.graph_id, projection.definition_id,
@@ -1064,22 +1054,31 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
 
 
 def _navigation_script(logical_path: str, roots: Mapping[str, Path],
-                       repositories: Mapping[str, RepositoryIdentity] | None) -> bytes:
+                       repositories: Mapping[str, RepositoryIdentity] | None,
+                       *, admission_roots: Mapping[str, Path] | None = None) -> bytes:
     if not repositories:
         return b""
     svg = _physical_file(_svg_route(logical_path), roots)
     mapping = {}
     identities = {}
+    if admission_roots is None:
+        admission_roots = roots
     for owner, identity in sorted(repositories.items()):
-        if owner not in roots:
+        if owner not in roots or owner not in admission_roots:
             raise RenderError("unadmitted workflow repository owner")
         root = Path(roots[owner]).resolve()
+        admitted_root = Path(admission_roots[owner]).resolve()
         prefix = identity.link_prefix
-        if prefix in identities and identities[prefix] != root:
+        if prefix in identities and identities[prefix] != admitted_root:
             raise RenderError("ambiguous workflow repository mapping")
-        if any(prefix != other and (prefix.startswith(other) or other.startswith(prefix)) for other in identities):
-            raise RenderError("overlapping workflow repository mapping")
-        identities[prefix] = root
+        for other, other_root in identities.items():
+            if prefix.startswith(other) and admitted_root != other_root / prefix[len(other):].rstrip("/"):
+                raise RenderError("overlapping workflow repository mapping")
+            if other.startswith(prefix) and other_root != admitted_root / other[len(prefix):].rstrip("/"):
+                raise RenderError("overlapping workflow repository mapping")
+        # Nested repository prefixes are admitted only when their physical
+        # roots have the same relative suffix; svg-links.js resolves longest first.
+        identities[prefix] = admitted_root
         mapping[prefix] = quote(Path(os.path.relpath(root, svg.parent)).as_posix().rstrip("/"), safe="/-._~") + "/"
     asset = posixpath.relpath(f"r/{logical_path.split('/')[0]}/.private_resources/viewer/svg-links.js", posixpath.dirname(_svg_route(logical_path)))
     encoded = html.escape(json.dumps(mapping, sort_keys=True, separators=(",", ":")), quote=True)

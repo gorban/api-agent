@@ -24,7 +24,7 @@ This revision follows renewed presentation review. Preserve earlier accepted exe
 
 - [x] Separate input and output on explicit lines. Use compact linked model/schema labels rather than long field lists, with accurate node-fragment targets. Show available attempt context separately from declared input fields. Preserve opaque component counts and scoped START/END.
 - [x] Display relevant declared settings, including inherited timeout keys and retry-budget references, as individually clickable links. Multiple references are allowed; never infer settings by executing or scanning native implementation code.
-- [x] Make only selected, captured schema/configuration references inspectable through bounded deterministic companion pages. Schema pages show the captured contract; configuration pages show only the referenced declaration, never runtime/environment values or unrelated declarations. Tie routes and bytes to admitted provenance, validate generated HTML/links, preserve static relative navigation and finite loopback inventories, and reject stale, unadmitted or escaping resources. General native-source browsing remains separate work.
+- [x] Make selected, captured schema and configuration references inspectable through bounded, direct source routes as specified in [the D5 follow-through](implementation_plan_b1a5.md). Input/output links open their captured JSON source; timeout and pass-limit links open their captured TOML source. They do not expose runtime/environment values. Tie routes and bytes to admitted provenance, validate SVG links, preserve static relative navigation and finite loopback inventories, and reject stale, unadmitted or escaping resources. General native-source browsing remains separate work.
 
 ## Verification and acceptance
 

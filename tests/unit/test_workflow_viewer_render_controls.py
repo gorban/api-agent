@@ -226,7 +226,10 @@ def test_hosted_bundle_annotates_captured_resources_without_source_write():
     pages = {file.path: file.body for file in bundle.files}
     hosted = pages["r/base/workflows/components/agent.md.html"]
     assert b"captured native_source:" in hosted
-    assert b"captured functions:" in hosted or b"captured schema:" in hosted
+    assert b"[input](../contracts/llm_call_input.json)" in hosted
+    assert b"[output](../contracts/llm_call_output.json)" in hosted
+    assert pages["r/base/workflows/contracts/llm_call_input.json"] == (
+        root / "workflows/contracts/llm_call_input.json").read_bytes()
     assert b"../../flow.md.html" in hosted
     assert (flow.read_bytes(), nested.read_bytes()) == before
 

@@ -216,6 +216,43 @@ def test_repository_mapping_rejects_overlapping_distinct_roots(tmp_path):
         _navigation_script("base/flow.md.html", {"base": tmp_path, "pack": tmp_path / "pack"}, {"base": RepositoryIdentity("//github.com/example/agent"), "pack": RepositoryIdentity("//github.com/example/agent", "nested")})
 
 
+def test_repository_mapping_allows_matching_nested_root_and_prefix(tmp_path):
+    roots = {"base": tmp_path, "pack": tmp_path / "pack"}
+    base = RepositoryIdentity("//github.com/example/agent")
+    matching = RepositoryIdentity("//github.com/example/agent", "pack")
+    script = _navigation_script("base/flow.md.html", roots, {"base": base, "pack": matching})
+    assert base.link_prefix.encode() in script
+    assert matching.link_prefix.encode() in script
+    with pytest.raises(RenderError, match="overlapping"):
+        _navigation_script("base/flow.md.html", roots, {"base": base,
+                                                     "pack": RepositoryIdentity("//github.com/example/agent", "other")})
+    hosted = _navigation_script("base/flow.md.html", {"base": Path("/r/base"), "pack": Path("/r/pack")},
+                                {"base": base, "pack": matching}, admission_roots=roots)
+    assert matching.link_prefix.encode() in hosted
+    assert b"../../../pack/" in hosted
+    with pytest.raises(RenderError, match="unadmitted"):
+        _navigation_script("base/flow.md.html", roots, {"base": base}, admission_roots={})
+
+
+def test_repository_mapping_checks_nested_prefixes_in_reverse_owner_order(tmp_path):
+    roots = {"a": tmp_path / "pack", "z": tmp_path}
+    base = RepositoryIdentity("//github.com/example/agent")
+    matching = RepositoryIdentity("//github.com/example/agent", "pack")
+    script = _navigation_script("z/flow.md.html", roots, {"a": matching, "z": base})
+    assert matching.link_prefix.encode() in script
+    assert base.link_prefix.encode() in script
+    with pytest.raises(RenderError, match="overlapping"):
+        _navigation_script("z/flow.md.html", roots, {"a": RepositoryIdentity("//github.com/example/agent", "other"),
+                                                   "z": base})
+
+
+def test_repository_mapping_rejects_nested_url_for_non_nested_physical_root(tmp_path):
+    with pytest.raises(RenderError, match="overlapping"):
+        _navigation_script("base/flow.md.html", {"base": tmp_path / "base", "pack": tmp_path / "pack"},
+                           {"base": RepositoryIdentity("//github.com/example/agent"),
+                            "pack": RepositoryIdentity("//github.com/example/agent", "pack")})
+
+
 def test_projection_rejects_missing_owner_identity():
     from api_agent.workflows.viewer_build import _projection
     from api_agent.workflows.viewer_render import _projection_source
