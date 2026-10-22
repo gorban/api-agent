@@ -529,7 +529,7 @@ def _identity_response(request, timeout, *, cancelled=lambda: False):
     deadline = time.monotonic() + timeout
     parsed = urlsplit(request.full_url)
     if (parsed.scheme != 'http' or parsed.hostname not in {'localhost', '127.0.0.1'}
-            or parsed.port is None or parsed.username or parsed.password or parsed.fragment):
+            or parsed.port is None or parsed.username is not None or parsed.password is not None or parsed.fragment):
         raise ValueError('Prerequisite identity requires a loopback HTTP endpoint.')
     remaining = _request_remaining(deadline, cancelled)
     with socket.create_connection(('127.0.0.1', parsed.port), timeout=min(.05, remaining)) as connection:
