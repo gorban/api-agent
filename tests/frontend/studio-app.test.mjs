@@ -428,14 +428,43 @@ for (const [field, value, correction, error] of [['version','obsolete','',/versi
 test('settings changes preserve actual catalog network failure', async () => {
   const {browser,page} = await openStudio(route => route.abort());
   try {
-    await page.route('**/app/agent/models',route => fulfill(route,{status:503,body:'Unavailable'}));
+    let available=false, requests=0;
+    await page.route('**/app/agent/models',route => {requests++;return available ? fulfill(route,{json:[model]}) : fulfill(route,{status:503,body:'Unavailable'});});
     await reloadPage(page); await page.locator('#settings-nav').click();
     await page.waitForFunction(() => document.querySelector('#model-status').textContent.includes('Model list unavailable'));
     await page.locator('#model').dispatchEvent('change');
     assert.match(await page.locator('#model-status').textContent(),/Model list unavailable/);
     await page.locator('#version').selectOption('');
     assert.match(await page.locator('#model-status').textContent(),/Model list unavailable/);
+    assert.equal(await page.locator('#retry-models').isVisible(),true);
+    available=true;await page.locator('#retry-models').click();
+    await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled' && document.querySelector('#model option[value="sample"]'));
+    assert.equal(requests,2);
+    assert.equal(await page.locator('#retry-models').isHidden(),true);
+    assert.equal(await page.locator('#model option[value="sample"]').count(),1);
   } finally { await closeBrowser(browser); }
+});
+test('rapid retry activations share one catalog request and cannot overwrite its result', async()=>{
+  const {browser,page}=await openStudio(route=>route.abort());
+  try{
+    const release=Promise.withResolvers();let requests=0;
+    await page.route('**/app/agent/models',async route=>{
+      requests++;
+      if(requests===1)return fulfill(route,{status:503,body:'Unavailable'});
+      await release.promise;
+      return fulfill(route,{json:[model]});
+    });
+    await reloadPage(page);
+    await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+    await page.locator('#settings-nav').click();
+    await page.locator('#retry-models').evaluate(button=>{button.click();button.click();});
+    await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='loading');
+    assert.equal(requests,2);
+    release.resolve();
+    await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled' && document.querySelector('#model option[value="sample"]'));
+    assert.equal(requests,2);
+    assert.equal(await page.locator('#model-status').textContent(),'');
+  }finally{await closeBrowser(browser);}
 });
 test('deep valid Markdown falls back to literal text and keeps chat usable', async () => {
   const source='>'.repeat(8000)+' <img src="https://passive.invalid/fallback" onerror="window.fallbackPwned=1"><script>window.fallbackPwned=2</script>';
@@ -727,9 +756,48 @@ test('progressive HTTP responses preserve metadata focus, finish Stop focus, and
     await page.getByRole('button',{name:'Retry response'}).waitFor();assert.equal(await page.getByText('Late forbidden final',{exact:true}).count(),0);assert.match(await page.locator('.error-note').textContent(),/stopped/);
   }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
-test('configuration HTTP failure blocks sending and keeps the draft',async()=>{
+test('slow real HTTP model catalog remains pending, then enables selection and chat', {timeout:20000}, async()=>{
+  const {createServer}=await import('node:http');
+  let uiOrigin, catalogRequests=0, chatRequests=0;
+  const api=createServer((request,response)=>{
+    response.setHeader('Access-Control-Allow-Origin',uiOrigin);
+    if(request.method==='OPTIONS'){
+      response.setHeader('Access-Control-Allow-Methods','GET, POST');
+      response.setHeader('Access-Control-Allow-Headers','content-type');
+      response.writeHead(204);response.end();return;
+    }
+    response.setHeader('Content-Type',request.url==='/app/agent/models'?'application/json':'text/event-stream');
+    if(request.url==='/app/agent/models'){
+      catalogRequests++;
+      setTimeout(()=>response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null})),5300);
+      return;
+    }
+    chatRequests++;
+    let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{
+      const id=JSON.parse(body).session_id;
+      response.end(sessionFrame(id)+finishFrames(id,result('Delayed catalog works')));
+    });
+  });
+  await new Promise(resolve=>api.listen(0,'127.0.0.1',resolve));
+  const {server:ui}=createStudioServer({UI_LISTENER_URL:'http://127.0.0.1:9443',AGENT_DJANGO_URL:'http://127.0.0.1:'+api.address().port,API_AGENT_UI_LAUNCH_TOKEN:'synthetic-browser-test-token'});
+  await new Promise(resolve=>ui.listen(0,'127.0.0.1',resolve));uiOrigin='http://127.0.0.1:'+ui.address().port;
+  const browser=await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER||undefined});
+  try{
+    const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);
+    await page.locator('#settings-nav').click();
+    await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('still getting ready'),null,{timeout:8000});
+    assert.equal(await page.locator('#model-status').getAttribute('data-catalog-state'),'loading');
+    assert.equal(await page.locator('#retry-models').isHidden(),true);
+    await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'),null,{timeout:10000});
+    assert.equal(await page.locator('#model-status').getAttribute('data-catalog-state'),'settled');
+    assert.equal(catalogRequests,1);
+    await page.locator('#close-settings').click();await page.locator('#prompt').fill('Hello');await page.locator('#send').click();
+    await page.getByText('Delayed catalog works',{exact:true}).waitFor();assert.equal(chatRequests,1);
+  }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
+});
+test('configuration HTTP failure blocks sending, hides retry, and keeps the draft',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
-  try{await page.route('**/config.json',route=>fulfill(route,{status:503,body:'Unavailable'}));await reloadPage(page);await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');assert.equal(await page.locator('.message').count(),0);await page.locator('#settings-nav').click();assert.match(await page.locator('#model-status').textContent(),/configuration could not be loaded/);}finally{await closeBrowser(browser);}
+  try{await page.route('**/config.json',route=>fulfill(route,{status:503,body:'Unavailable'}));await reloadPage(page);await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');assert.equal(await page.locator('.message').count(),0);await page.locator('#settings-nav').click();assert.match(await page.locator('#model-status').textContent(),/configuration could not be loaded.*Reload the page/);assert.equal(await page.locator('#retry-models').isHidden(),true);}finally{await closeBrowser(browser);}
 });
 test('empty catalog communicates unavailable choices without inventing a default',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());

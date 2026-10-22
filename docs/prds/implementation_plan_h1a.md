@@ -56,4 +56,4 @@ Implementation references: [Compose profiles](https://docs.docker.com/compose/ho
 
 ## Local operation consumer join
 
-- [x] Deliver the [shared Run local runtime, frontend/browser and launcher join](implementation_plan_h1a1.md) on the accepted prerequisite foundation. Preserve the separately owned dashboard, product-service and application E2E gates.
+- [ ] Deliver the [shared Run local runtime, frontend/browser and launcher join](implementation_plan_h1a1.md) on the accepted prerequisite foundation. Preserve the separately owned dashboard, product-service and application E2E gates.

@@ -1,15 +1,18 @@
 """Live local-run presentation; resource ownership stays in its controller."""
 import asyncio
 from collections import deque
+from rich.text import Text
 
 from textual.binding import Binding
+from textual.containers import VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Static, TextArea
+from textual.widgets import Button, Static, TextArea
 
 from api_agent.runtime.local_terminal import format_log
 from api_agent.runtime.local_contracts import LocalSnapshot
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.progress import component_timeout, independent_timeout_scope
+from .clipboard import ClipboardError, copy_text
 
 
 class LocalRunScreen(Screen):
@@ -18,7 +21,16 @@ class LocalRunScreen(Screen):
                 Binding('l', 'sources', 'Log sources'),
                 Binding('escape,c', 'view', 'Close menu'),
                 Binding('asterisk', 'all_logs', 'All logs'),
-                Binding('s', 'stop', 'Stop'), Binding('q', 'quit', 'Quit')]
+                Binding('s', 'stop', 'Stop'), Binding('q', 'quit', 'Quit'),
+                Binding('ctrl+c', 'copy_choice', 'Copy choice', priority=True)]
+    DEFAULT_CSS = '''
+    #local-output, #local-choices { height: 1fr; }
+    #local-choices { display: none; }
+    #local-choices Button { width: 100%; height: auto; min-height: 3; margin: 0 0 1 0; }
+    #local-choices Button:focus { border: heavy $accent; }
+    '''
+    VIEW_HINT = 'b Browser destinations  l Log sources  * All logs  s Stop  q Quit'
+    MENU_HINT = 'Arrows/hjkl Move  1–9,0 or Enter Open\n^C Copy  Esc/c Back  s Stop  q Quit'
 
     def __init__(self, context, resolve, *, argv=(), schema=None, owner_factory=None):
         super().__init__()
@@ -31,7 +43,8 @@ class LocalRunScreen(Screen):
         self.events = deque(maxlen=10000)
         self.snapshot = LocalSnapshot("starting")
         self.menu = None
-        self.menu_number = ""
+        self.menu_choices = ()
+        self.menu_generation = 0
         self.failure = ''
         self.status = 0
         self.finished = False
@@ -44,7 +57,8 @@ class LocalRunScreen(Screen):
     def compose(self):
         yield Static('Starting local operation…', id='local-status', markup=False)
         yield TextArea('', id='local-output', read_only=True, soft_wrap=False)
-        yield Static('b Browser destinations  l Log sources  * All logs  s Stop  q Quit', markup=False)
+        yield VerticalScroll(id='local-choices')
+        yield Static(self.VIEW_HINT, id='local-hint', markup=False)
         yield Static('', id='local-error', markup=False)
 
     def on_mount(self):
@@ -60,6 +74,7 @@ class LocalRunScreen(Screen):
             options = {'schema': self.config_schema} if self.config_schema is not None else {}
             self.owner = factory(self.context, self.resolve, argv=self.argv, on_event=self.receive, **options)
             self.snapshot = await self.owner.start()
+            self.reconcile_menu()
             self.refresh_view()
             self.status = await self.owner.wait()
         except asyncio.CancelledError:
@@ -79,6 +94,7 @@ class LocalRunScreen(Screen):
             self.events.append(event)
         elif event.kind == 'status':
             self.snapshot = event.snapshot
+            self.reconcile_menu()
         self.refresh_view()
 
     def refresh_view(self):
@@ -88,15 +104,13 @@ class LocalRunScreen(Screen):
         components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
         self.query_one('#local-status', Static).update(f'Run local: {phase} — logs: {self.source}\n{components}')
         self.query_one('#local-error', Static).update(self.failure)
-        if self.menu == 'logs':
-            text = '\n'.join(f'{i}: {name}' for i, name in enumerate(self.sources(), 1)) + '\n*: All logs\nType a number then Enter: ' + self.menu_number
-        elif self.menu == 'browsers':
-            text = '\n'.join(f'{i}: {item.name} — {item.url}' for i, item in enumerate(self.destinations(), 1)) + '\nType a number then Enter: ' + self.menu_number
-        else:
-            text = ''.join(format_log(event, self.source) for event in self.events)
+        self.query_one('#local-hint', Static).update(self.MENU_HINT if self.menu else self.VIEW_HINT)
+        text = ''.join(format_log(event, self.source) for event in self.events)
         area = self.query_one('#local-output', TextArea)
         area.load_text(text)
         area.scroll_end(animate=False)
+        area.display = self.menu is None
+        self.query_one('#local-choices', VerticalScroll).display = self.menu is not None
 
     def sources(self):
         return self.snapshot.log_sources
@@ -105,50 +119,145 @@ class LocalRunScreen(Screen):
         return self.snapshot.destinations
 
     def action_browsers(self):
-        self.menu_number = ''
-        self.menu = 'browsers'
-        self.refresh_view()
+        self.open_menu('browsers', self.destinations())
 
     def action_sources(self):
-        self.menu_number = ''
-        self.menu = 'logs'
+        self.open_menu('logs', self.sources())
+
+    def reconcile_menu(self):
+        if self.menu is None:
+            return
+        choices = self.sources() if self.menu == 'logs' else self.destinations()
+        if tuple(choices) != self.menu_choices:
+            self.open_menu(self.menu, choices, preserve_focus=True)
+
+    def open_menu(self, kind, choices, *, preserve_focus=False):
+        selection = 0
+        if preserve_focus and self.is_mounted:
+            focused = self.app.focused
+            if isinstance(focused, Button) and (focused.id or '').startswith(f'local-choice-{self.menu_generation}-'):
+                index_text = focused.id.rsplit('-', 1)[-1]
+                if index_text.isdigit():
+                    old_index = int(index_text)
+                    previous = self.menu_choices[old_index]
+                    selection = (tuple(choices).index(previous) if previous in choices
+                                 else min(old_index, max(0, len(choices) - 1)))
+        self.menu = kind
+        self.menu_choices = tuple(choices)
+        self.menu_generation += 1
+        if self.is_mounted:
+            pane = self.query_one('#local-choices', VerticalScroll)
+            pane.remove_children()
+            buttons = []
+            for index, choice in enumerate(self.menu_choices):
+                hotkey = str((index + 1) % 10) if index < 10 else None
+                prefix = f'{hotkey}  ' if hotkey else '   '
+                label = (f'{prefix}{choice.name}\n   {choice.url}' if kind == 'browsers'
+                         else f'{prefix}{choice}')
+                buttons.append(Button(Text(label), id=f'local-choice-{self.menu_generation}-{index}'))
+            if kind == 'logs':
+                buttons.append(Button(Text('*  All logs'), id=f'local-choice-{self.menu_generation}-all'))
+            pane.mount(*buttons)
+            if buttons:
+                generation = self.menu_generation
+                target = buttons[min(selection, len(buttons) - 1)]
+                self.call_after_refresh(lambda: target.focus() if self.menu_generation == generation
+                                        and self.menu == kind else None)
         self.refresh_view()
 
     def action_view(self):
         self.menu = None
+        self.menu_choices = ()
         self.refresh_view()
 
     def action_all_logs(self):
         self.source = 'all'
         self.action_view()
 
-    async def on_key(self, event):
-        if self.menu is None:
+    def check_action(self, action, parameters):
+        if action == 'copy_choice':
+            if not self.is_mounted or self.app.screen is not self or self.menu is None:
+                return False
+            focused = self.app.focused
+            if not isinstance(focused, Button) or focused.screen is not self:
+                return False
+            identifier = focused.id or ''
+            prefix = f'local-choice-{self.menu_generation}-'
+            if not identifier.startswith(prefix):
+                return False
+            index_text = identifier.removeprefix(prefix)
+            return index_text.isdigit() and 0 <= int(index_text) < len(self.menu_choices)
+        if self.menu is not None and action in {'sources', 'browsers', 'all_logs'}:
+            return False
+        return super().check_action(action, parameters)
+
+    async def on_button_pressed(self, event: Button.Pressed):
+        identifier = event.button.id or ''
+        if self.menu is None or not identifier.startswith('local-choice-'):
             return
-        if event.character and event.character.isdigit():
-            self.menu_number += event.character
-            self.refresh_view()
-            event.stop()
+        suffix = identifier.removeprefix('local-choice-').split('-')
+        if len(suffix) != 2 or int(suffix[0]) != self.menu_generation:
             return
-        if event.key != 'enter' or not self.menu_number:
-            return
-        index = int(self.menu_number) - 1
-        self.menu_number = ''
-        choices = self.sources() if self.menu == 'logs' else self.destinations()
-        if not 0 <= index < len(choices):
-            self.refresh_view()
+        if suffix[1] == 'all':
+            self.action_all_logs()
+        else:
+            await self.activate_choice(int(suffix[1]))
+        event.stop()
+
+    async def activate_choice(self, index):
+        if not 0 <= index < len(self.menu_choices):
             return
         if self.menu == 'logs':
-            self.source = choices[index]
+            self.source = self.menu_choices[index]
             self.action_view()
         else:
             from api_agent.runtime.local_terminal import open_host_url
             try:
-                await open_host_url(choices[index].url)
+                await open_host_url(self.menu_choices[index].url)
             except Exception:
                 self.failure = 'Could not open the host browser. Open the displayed URL on the host.'
                 self.refresh_view()
-        event.stop()
+
+    async def action_copy_choice(self):
+        if self.menu is None:
+            return
+        focused = self.app.focused
+        if not isinstance(focused, Button) or not (focused.id or '').startswith('local-choice-'):
+            return
+        suffix = focused.id.removeprefix('local-choice-').split('-')
+        if len(suffix) != 2 or int(suffix[0]) != self.menu_generation or suffix[1] == 'all':
+            return
+        index = int(suffix[1])
+        if not 0 <= index < len(self.menu_choices):
+            return
+        value = self.menu_choices[index]
+        try:
+            native = await copy_text(self.app, value if self.menu == 'logs' else value.url)
+        except ClipboardError:
+            self.app.notify('Could not copy the selected value.', severity='error', timeout=2)
+        else:
+            self.app.notify('Value copied.' if native else 'Value sent to terminal clipboard.', timeout=2)
+
+    async def on_key(self, event):
+        if self.menu is None:
+            return
+        key = event.key
+        if key in '1234567890' and len(key) == 1:
+            index = 9 if key == '0' else int(key) - 1
+            await self.activate_choice(index)
+            event.stop()
+            return
+        directions = {'up': -1, 'k': -1, 'left': -1, 'h': -1,
+                      'down': 1, 'j': 1, 'right': 1, 'l': 1}
+        if key in directions:
+            buttons = [button for button in self.query('#local-choices Button')
+                       if (button.id or '').startswith(f'local-choice-{self.menu_generation}-')]
+            focused = self.app.focused
+            if buttons:
+                index = buttons.index(focused) if focused in buttons else 0
+                buttons[max(0, min(len(buttons) - 1, index + directions[key]))].focus()
+            event.prevent_default()
+            event.stop()
 
     async def settle_run_task(self):
         if self.run_task is None:

@@ -11,12 +11,15 @@ APIs and databases remain the selected pack's responsibility.
 
 Use `./launch.py --tui-mode run-local --no-std-in` for the terminal consumer.
 `RUN_UI=True` or `DEBUG=True` opens one headed browser with agent home first,
-optional prepared UI next and the actual selected graph last. With both false,
+the actual selected graph next and optional prepared UI last. With both false,
 home and flow URLs remain available without a browser, credentials or catalog
 access. Required later LLM authentication is always headed in Run local.
 
 Use **b** for browser destinations and **l** for available log sources; **\***
-selects interleaved, labeled logs. `RUN_LOG_SOURCE` selects the initial source
+selects interleaved, labeled logs. In either menu, use arrow keys or **h/j/k/l**
+to select a button, then **Enter** to activate it. **1–9**, then **0**, activate
+the first ten choices directly. **Ctrl+C** copies the selected destination URL
+or log-source name. `RUN_LOG_SOURCE` selects the initial source
 by name. **Stop running containers** lists only eligible owned services and
 requires confirmation; it excludes unrelated containers and the hosting session.
 
