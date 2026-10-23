@@ -61,7 +61,9 @@ def test_ordered_tabs_use_one_original_browser(run_ui, debug):
     ui_page.bring_to_front = AsyncMock(side_effect=lambda: events.append(('front','ui')))
     context = SimpleNamespace(new_page=AsyncMock(side_effect=[flow,ui_page] if run_ui else [flow]))
     ui_page.context, ui_page.is_closed, ui_page.url = context, lambda: False, 'http://localhost:9443/'
-    context.pages = [home, flow, ui_page]
+    context.pages = [home, flow, ui_page] if run_ui else [home, flow]
+    for retained in (home, flow):
+        retained.context, retained.is_closed = context, lambda: False
     session = SimpleNamespace(page=home, context=context, browser=SimpleNamespace(is_connected=lambda: True), inspection_endpoint='http://127.0.0.1:123')
     browser = SimpleNamespace(start=AsyncMock(return_value=session), aclose=AsyncMock())
     factory = Mock(return_value=browser)
@@ -189,16 +191,17 @@ def test_actual_application_host_admission_is_preserved(path):
 def test_ui_active_page_handoff(replacement):
     browser = SimpleNamespace(is_connected=lambda: replacement != 'closed')
     context = SimpleNamespace()
-    home = object()
+    home = SimpleNamespace(context=context,is_closed=lambda:False)
     original = SimpleNamespace(is_closed=lambda: replacement == 'already-closed', close=AsyncMock())
     active = SimpleNamespace(context=object() if replacement == 'foreign' else context,
         is_closed=lambda: False, url='https://localhost:9443/' if replacement != 'origin' else 'https://elsewhere.invalid/')
-    flow = object()
+    flow = SimpleNamespace(context=context,is_closed=lambda:False)
     context.pages = [home,flow,active] + ([object()] if replacement == 'extra' else [])
     session = SimpleNamespace(browser=browser,context=context,page=active)
     owner = LocalBrowserOwner(None, {'UI_LISTENER_URL':'https://localhost:9443'}, 'http://localhost/')
     owner.session = SimpleNamespace(browser=browser,context=context,page=home)
     owner.ui = SimpleNamespace(session=session)
+    owner._tab_prefix = [home,flow]
     if replacement == 'browser':
         session.browser = object()
     if replacement == 'context':
@@ -206,9 +209,11 @@ def test_ui_active_page_handoff(replacement):
     async def exercise():
         if replacement in {'valid','already-closed'}:
             await owner._verify_ui(BorrowedBrowserPage(session), original, flow)
+            owner._verify_browser()
         else:
             with pytest.raises(RuntimeError):
                 await owner._verify_ui(BorrowedBrowserPage(session), original, flow)
+                owner._verify_browser()
     asyncio.run(exercise())
     if replacement == 'valid':
         original.close.assert_awaited_once()
@@ -338,6 +343,8 @@ def test_closed_during_ui_focus_never_reports_ready():
         context = SimpleNamespace()
         ui_page = SimpleNamespace(context=context,is_closed=lambda:False,url='http://localhost:9443/')
         context.pages = [home,flow,ui_page]
+        for retained in (home,flow):
+            retained.context, retained.is_closed = context, lambda: False
         context.new_page = AsyncMock(side_effect=[flow,ui_page])
         browser_handle = SimpleNamespace(is_connected=lambda:True)
         session = SimpleNamespace(page=home,context=context,browser=browser_handle,inspection_endpoint=None)
@@ -364,14 +371,15 @@ def test_closed_during_ui_focus_never_reports_ready():
 def test_original_ui_active_page_must_match_configured_origin():
     browser = SimpleNamespace(is_connected=lambda:True)
     context = SimpleNamespace()
-    home = object()
+    home = SimpleNamespace(context=context,is_closed=lambda:False)
     page = SimpleNamespace(context=context,is_closed=lambda:False,url='https://foreign.invalid/')
-    flow = object()
+    flow = SimpleNamespace(context=context,is_closed=lambda:False)
     context.pages = [home,flow,page]
     session = SimpleNamespace(browser=browser,context=context,page=page)
     owner = LocalBrowserOwner(None,{'UI_LISTENER_URL':'https://localhost:9443'},'https://localhost/')
     owner.session = SimpleNamespace(browser=browser,context=context,page=home)
     owner.ui = SimpleNamespace(session=session)
+    owner._tab_prefix = [home,flow]
     with pytest.raises(RuntimeError, match='unexpected origin'):
         asyncio.run(owner._verify_ui(BorrowedBrowserPage(session),page,flow))
 
@@ -418,14 +426,15 @@ def test_concurrent_closes_cancel_startup_once_and_acknowledge_disposal():
 def test_ui_origin_normalizes_explicit_default_port(configured, actual):
     browser = SimpleNamespace(is_connected=lambda:True)
     context = SimpleNamespace()
-    home = object()
+    home = SimpleNamespace(context=context,is_closed=lambda:False)
     page = SimpleNamespace(context=context,is_closed=lambda:False,url=actual)
-    flow = object()
+    flow = SimpleNamespace(context=context,is_closed=lambda:False)
     context.pages = [home,flow,page]
     session = SimpleNamespace(browser=browser,context=context,page=page)
     owner = LocalBrowserOwner(None,{'UI_LISTENER_URL':configured},'http://localhost/')
     owner.session = SimpleNamespace(browser=browser,context=context,page=home)
     owner.ui = SimpleNamespace(session=session)
+    owner._tab_prefix = [home,flow]
     asyncio.run(owner._verify_ui(BorrowedBrowserPage(session),page,flow))
 
 
@@ -458,3 +467,63 @@ def test_service_links_are_visible_in_friendly_home():
     asyncio.run(app({'type':'http','path':'/','method':'GET'},AsyncMock(),AsyncMock(side_effect=sent.append)))
     assert b'service:sample/database: ready' in sent[-1]['body']
     assert b'>service:sample/database:console</a>' in sent[-1]['body']
+
+
+@pytest.mark.parametrize('run_ui,debug',[(False,False),(False,True),(True,False)])
+def test_tracing_tab_between_home_and_actual_flow(run_ui,debug):
+    home,tracing_page,flow,ui_page=(SimpleNamespace(goto=AsyncMock(return_value=SimpleNamespace(status=200))) for _ in range(4))
+    context=SimpleNamespace(new_page=AsyncMock(side_effect=[tracing_page,flow,ui_page]),pages=[home,tracing_page,flow,ui_page] if run_ui else [home,tracing_page,flow])
+    for retained in (home,tracing_page,flow):
+        retained.context, retained.is_closed = context, lambda: False
+    browser=SimpleNamespace(is_connected=lambda:True)
+    session=SimpleNamespace(page=home,context=context,browser=browser,inspection_endpoint=None)
+    ui_page.context=context;ui_page.is_closed=lambda:False;ui_page.url='http://localhost:9443';ui_page.bring_to_front=AsyncMock()
+    owner_browser=SimpleNamespace(start=AsyncMock(return_value=session),aclose=AsyncMock())
+    tracing=SimpleNamespace(viewer_url='http://localhost:3000',login=AsyncMock())
+    async def prepare_ui(*,browser_owner):
+        return SimpleNamespace(session=await browser_owner.start(),aclose=AsyncMock())
+    owner=LocalBrowserOwner(object(),{'RUN_UI':run_ui,'DEBUG':debug,'UI_LISTENER_URL':'http://localhost:9443'},'http://localhost:8443',
+        tracing=tracing,prepare_ui=prepare_ui,browser_factory=Mock(return_value=owner_browser),
+        prepare_view=lambda context:(None,None,None,None,None),
+        host_factory=AsyncMock(return_value=SimpleNamespace(entry_url='http://localhost:123/flow',aclose=AsyncMock())))
+    async def exercise():
+        await owner.start()
+        if run_ui or debug:
+            tracing.login.assert_awaited_once_with(tracing_page)
+            assert owner._tab_prefix==[home,tracing_page,flow]
+        else:
+            tracing.login.assert_not_awaited()
+        await owner.aclose()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('failure',['missing-home','popup','order','disconnected','closed-home','closed-dashboard','closed-flow','foreign-page'])
+def test_debug_only_validates_original_pages_before_handoff(failure):
+    context=SimpleNamespace()
+    def page():
+        return SimpleNamespace(context=context,is_closed=lambda:False,
+            goto=AsyncMock(return_value=SimpleNamespace(status=200)))
+    home,dashboard,flow=page(),page(),page()
+    context.pages=[home,dashboard,flow]
+    context.new_page=AsyncMock(side_effect=[dashboard,flow])
+    browser=SimpleNamespace(is_connected=lambda:failure!='disconnected')
+    session=SimpleNamespace(page=home,context=context,browser=browser,inspection_endpoint=None)
+    browser_owner=SimpleNamespace(start=AsyncMock(return_value=session),aclose=AsyncMock())
+    async def login(page):
+        if failure=='missing-home': context.pages=[dashboard,flow]
+        if failure=='popup': context.pages.append(object())
+        if failure=='order': context.pages=[dashboard,home,flow]
+        if failure.startswith('closed-'):
+            {'closed-home':home,'closed-dashboard':dashboard,'closed-flow':flow}[failure].is_closed=lambda:True
+        if failure=='foreign-page': dashboard.context=object()
+    host=SimpleNamespace(entry_url='http://localhost:12345/flow',aclose=AsyncMock())
+    owner=LocalBrowserOwner(None,{'DEBUG':True,'RUN_UI':False},'http://localhost:8443',
+        tracing=SimpleNamespace(viewer_url='http://localhost:3000',login=login),
+        browser_factory=Mock(return_value=browser_owner),prepare_view=lambda _:(None,None,None,None,None),
+        host_factory=AsyncMock(return_value=host))
+    async def exercise():
+        with pytest.raises(RuntimeError,match='Local startup'):
+            await owner.start()
+        browser_owner.aclose.assert_awaited_once()
+        host.aclose.assert_awaited_once()
+    asyncio.run(exercise())

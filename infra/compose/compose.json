@@ -57,7 +57,7 @@
         "LANGFUSE_INIT_PROJECT_NAME": "API Agent local development",
         "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "${SA_LANGFUSE_PUBLIC_KEY:?controlled local development value required}",
         "LANGFUSE_INIT_PROJECT_SECRET_KEY": "${SA_LANGFUSE_SECRET_KEY:?controlled local development value required}",
-        "LANGFUSE_INIT_USER_EMAIL": "admin@api-agent.invalid",
+        "LANGFUSE_INIT_USER_EMAIL": "${SA_USER_EMAIL:?controlled local development value required}",
         "LANGFUSE_INIT_USER_NAME": "Local development",
         "LANGFUSE_INIT_USER_PASSWORD": "${SA_USER_PASSWORD:?controlled local development value required}",
         "LANGFUSE_S3_EVENT_UPLOAD_BUCKET": "langfuse",

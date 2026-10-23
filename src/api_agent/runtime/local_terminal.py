@@ -1,6 +1,265 @@
 """Terminal presentation for one same-loop local operation."""
 import asyncio
 import sys
+import os
+import errno
+import threading
+from collections import deque
+
+
+def _create_task(coroutine):
+    """Retain no unscheduled coroutine when a task factory rejects allocation."""
+    try:
+        return asyncio.create_task(coroutine)
+    except BaseException:
+        coroutine.close()
+        raise
+
+
+class TerminalWriter:
+    """Bounded best-effort descriptor delivery; a slow reader never stops work."""
+    GAP = b'\n[diagnostics gap: output dropped while consumer was slow]\n'
+
+    def __init__(self, descriptors, *, event_limit=256, byte_limit=1024 * 1024, drain_timeout=.2):
+        self.loop = asyncio.get_running_loop()
+        self.queue = deque()
+        self.bytes = 0
+        self.event_limit, self.byte_limit = event_limit, byte_limit
+        self.drain_timeout = drain_timeout
+        self.flags = {fd: os.get_blocking(fd) for fd in set(descriptors)}
+        self.wake = asyncio.Event()
+        self.gaps = set()
+        self.failed = set()
+        self.closed = False
+        self.active = set()
+        # Duplicated pipe descriptors share one delivery owner, so partial writes
+        # cannot interleave events (including multibyte characters).
+        self.destinations = {}
+        for fd in self.flags:
+            stat = os.fstat(fd)
+            self.destinations[fd] = (stat.st_dev, stat.st_ino)
+        self.descriptor_lock = threading.RLock()
+        self.owned = {}
+        self.pending_flags = {}
+        self.workers = {}
+        self.descriptor_cleanup = None
+        self.close_task = None
+        self.task = None
+        try:
+            for fd in self.flags:
+                self.owned[fd] = os.dup(fd)
+                self.pending_flags[fd] = self.flags[fd]
+            for fd, owned in self.owned.items():
+                os.set_blocking(owned, False)
+            self.task = _create_task(self._run())
+        except BaseException as error:
+            self._release_descriptors()
+            # Retry transient rollback failures once without replacing acquisition's error.
+            self._release_descriptors()
+            if self.owned:
+                self._retain_cleanup(error)
+            raise
+
+    def submit(self, fd, text):
+        if self.closed or fd in self.failed:
+            return
+        if len(text) > self.byte_limit:
+            self.gaps.add(fd)
+            self.wake.set()
+            return
+        data = text.encode('utf-8', errors='backslashreplace')
+        if len(self.queue) + len(self.active) >= self.event_limit or self.bytes + len(data) > self.byte_limit:
+            self.gaps.add(fd)
+        else:
+            self.queue.append((fd, data))
+            self.bytes += len(data)
+        self.wake.set()
+
+    async def _write(self, fd, data):
+        fd = self.owned[fd]
+        offset = 0
+        while offset < len(data):
+            try:
+                offset += os.write(fd, data[offset:])
+            except BlockingIOError:
+                ready = self.loop.create_future()
+                def writable():
+                    if not ready.done():
+                        ready.set_result(None)
+                self.loop.add_writer(fd, writable)
+                try:
+                    await ready
+                finally:
+                    self.loop.remove_writer(fd)
+
+    async def _drain(self, destination):
+        try:
+            while True:
+                gap = next((fd for fd in self.gaps
+                            if self.destinations[fd] == destination), None)
+                if gap is not None:
+                    self.gaps.remove(gap)
+                    fd, data, counted = gap, self.GAP, False
+                else:
+                    item = next((item for item in self.queue
+                                 if self.destinations[item[0]] == destination), None)
+                    if item is None:
+                        return
+                    self.queue.remove(item)
+                    fd, data = item
+                    counted = True
+                self.active.add(destination)
+                try:
+                    if fd not in self.failed:
+                        try:
+                            await self._write(fd, data)
+                        except OSError:
+                            self.failed.add(fd)
+                finally:
+                    self.active.discard(destination)
+                    if counted:
+                        self.bytes -= len(data)
+        finally:
+            self.workers.pop(destination, None)
+
+    async def _run(self):
+        try:
+            while True:
+                await self.wake.wait()
+                self.wake.clear()
+                for destination in set(self.destinations.values()):
+                    if destination not in self.workers:
+                        worker = _create_task(self._drain(destination))
+                        if worker.done():
+                            worker.result()
+                        else:
+                            self.workers[destination] = worker
+        finally:
+            workers = tuple(self.workers.values())
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            self.workers.clear()
+
+    async def aclose(self):
+        if (self.close_task is None or self.close_task.done()
+                and (self.close_task.cancelled() or self.close_task.exception() is not None)):
+            self.closed = True
+            try:
+                self.close_task = _create_task(self._close())
+            except BaseException as error:
+                await self._settle_delivery()
+                self._release_descriptors()
+                if self.owned:
+                    self._retain_cleanup(error)
+                raise
+        await asyncio.shield(self.close_task)
+
+    def _release_descriptors(self):
+        with self.descriptor_lock:
+            failures = []
+            for fd, owned in tuple(self.owned.items()):
+                try:
+                    os.set_blocking(owned, self.pending_flags[fd])
+                except OSError as error:
+                    failures.append(error)
+                    if error.errno == errno.EBADF:
+                        self.pending_flags.pop(fd)
+                        self.owned.pop(fd)
+                    continue
+                self.pending_flags.pop(fd)
+                try:
+                    os.close(owned)
+                except OSError as error:
+                    failures.append(error)
+                finally:
+                    # Linux releases the number before close errors can be reported.
+                    # Never retry it: another owner may already have reused it.
+                    self.owned.pop(fd)
+            return failures
+
+    async def retry_descriptors(self):
+        """Retry only retained restoration duties, independent of the delivery loop."""
+        with self.descriptor_lock:
+            if (self.task is not None and not self.task.done()
+                    or self.close_task is not None and not self.close_task.done()
+                    or any(not worker.done() for worker in self.workers.values())):
+                raise RuntimeError('Terminal delivery cleanup has not settled.')
+            failures = self._release_descriptors()
+            if failures:
+                if self.owned:
+                    self._retain_cleanup(failures[0])
+                raise failures[0]
+
+    def _retain_cleanup(self, error):
+        with self.descriptor_lock:
+            from api_agent.providers.control import CleanupPendingError
+            if self.descriptor_cleanup is None:
+                self.descriptor_cleanup = CleanupPendingError((self,), self.retry_descriptors)
+            pending = self.descriptor_cleanup
+            error.terminal_cleanup_pending = pending
+            cursor = error
+            seen = set()
+            while cursor is not pending and id(cursor) not in seen:
+                seen.add(id(cursor))
+                following = getattr(cursor, 'cleanup_pending', None)
+                if following is None:
+                    cursor.cleanup_pending = pending
+                    break
+                cursor = following
+            owners = (*getattr(error, 'retained_owners', ()), self)
+            error.retained_owners = tuple({id(owner): owner for owner in owners}.values())
+
+    async def finish(self):
+        """Settle delivery and give outstanding restoration one bounded retry."""
+        try:
+            await self.aclose()
+        except BaseException as error:
+            if self.close_task is not None:
+                while not self.close_task.done():
+                    try:
+                        await asyncio.shield(self.close_task)
+                    except BaseException:
+                        pass
+                if not self.close_task.cancelled():
+                    cleanup_error = self.close_task.exception()
+                    if cleanup_error is not None and cleanup_error is not error:
+                        error.terminal_cleanup_error = cleanup_error
+            await self._settle_delivery()
+            self._release_descriptors()
+            if self.owned:
+                self._retain_cleanup(error)
+            raise
+
+    async def _settle_delivery(self):
+        """Quiesce existing delivery without allocating another cleanup task."""
+        self.closed = True
+        if self.task is not None:
+            self.task.cancel()
+            while not self.task.done():
+                try:
+                    await asyncio.shield(self.task)
+                except BaseException:
+                    pass
+            if not self.task.cancelled():
+                self.task.exception()
+            # The manager's gather has acknowledged all workers, including those
+            # cancelled before their coroutine could enter its own finally.
+            self.workers.clear()
+
+    async def _close(self):
+        try:
+            async with asyncio.timeout(self.drain_timeout):
+                while self.queue or self.gaps or self.active:
+                    await asyncio.sleep(.001)
+        except TimeoutError:
+            pass
+        finally:
+            await self._settle_delivery()
+            failures = self._release_descriptors()
+            if failures:
+                raise failures[0]
+
 
 
 def format_log(event, source):
@@ -12,12 +271,63 @@ def format_log(event, source):
 
 async def run_local_terminal(context, resolve, *, argv=(), schema=None, owner_factory=None,
                              output=None, diagnostic=None):
+    writer = None
+    if output is None or diagnostic is None:
+        descriptors = []
+        if output is None:
+            descriptors.append(sys.stdout.fileno())
+        if diagnostic is None:
+            descriptors.append(sys.stderr.fileno())
+        writer = TerminalWriter(descriptors)
+    output = output or (lambda text: writer.submit(sys.stdout.fileno(), text))
+    diagnostic = diagnostic or (lambda text: writer.submit(sys.stderr.fileno(), text + '\n'))
+    primary = None
+    try:
+        return await _run_local_terminal(context, resolve, argv=argv, schema=schema,
+            owner_factory=owner_factory, output=output, diagnostic=diagnostic)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if writer is not None:
+            try:
+                cleanup = _create_task(writer.finish())
+            except BaseException as error:
+                await writer._settle_delivery()
+                writer._release_descriptors()
+                writer._release_descriptors()
+                if writer.owned:
+                    writer._retain_cleanup(error)
+                if primary is None:
+                    raise
+                if writer.owned:
+                    writer._retain_cleanup(primary)
+                primary.terminal_cleanup_error = error
+                raise primary
+            try:
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError as error:
+                        if primary is None:
+                            primary = error
+                cleanup.result()
+            except BaseException as error:
+                if primary is None:
+                    raise
+                if writer.owned:
+                    writer._retain_cleanup(primary)
+                primary.terminal_cleanup_error = error
+            if primary is not None:
+                raise primary
+
+
+async def _run_local_terminal(context, resolve, *, argv=(), schema=None, owner_factory=None,
+                             output=None, diagnostic=None):
     """Run without stdin; retain cleanup receipts when disposal cannot finish."""
-    output = output or (lambda text: print(text, end='', flush=True))
-    diagnostic = diagnostic or (lambda text: print(text, file=sys.stderr, flush=True))
     source = resolve().values['RUN_LOG_SOURCE']
     def event_received(event):
-        if event.kind == 'log':
+        if event.kind in {'log', 'diagnostic'}:
             output(format_log(event, source))
         elif event.kind == 'status' and event.snapshot is not None:
             snapshot = event.snapshot

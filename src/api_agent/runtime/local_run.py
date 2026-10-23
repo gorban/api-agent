@@ -92,6 +92,8 @@ class LocalRunOwner:
         self._config = self._prepared = self._graph = self._operation = self._browser = self._llm = None
         self._session = None
         self._emissions = None
+        self._tracing_dashboard = None
+        self._diagnostic_projection = None
 
     def _publish(self, phase, *, components=(), destinations=(), inspection=None):
         self.snapshot = LocalSnapshot(phase, tuple(components), tuple(destinations), self._available_sources,
@@ -116,7 +118,11 @@ class LocalRunOwner:
         runtime = compose_runtime(self.context, config, callback_origin=origin,
             tls_material=material, required_kinds=())
         self._emissions = runtime.emissions
-        self._llm = self.llm_factory(config.values, self.context.owner_root, emissions=runtime.emissions)
+        self._llm = self.llm_factory(config.values, self.context.owner_root, emissions=runtime.emissions,
+                                     on_status=self._workflow_event, trace=runtime.tracing)
+        from api_agent.workflows.observations import WorkflowObservationFactory
+        self._graph.observations = WorkflowObservationFactory(config, boundary=runtime.emissions,
+            sink=self._workflow_event, trace=runtime.tracing)
         async def describe(*, auth):
             return await self._llm.describe()
         async def complete(request, *, auth, context):
@@ -163,8 +169,9 @@ class LocalRunOwner:
                 self._config = self.resolve()
                 if self._config.errors or self._config.missing:
                     raise ValueError('invalid_runtime_configuration')
-                if self._config.values.get('TRACE_MODE'):
-                    raise ValueError('Core Run local requires TRACE_MODE to be empty; tracing dashboards are a later milestone.')
+                from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
+                self._diagnostic_projection = LocalDiagnosticProjection(
+                    full_content=self._config.values.get('RUN_LOG_FULL_CONTENT') is True)
                 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment
                 source = self._engine_environment_source
                 if source is None:
@@ -212,18 +219,26 @@ class LocalRunOwner:
                 except BaseException:
                     exited = True
                     raise
+                from api_agent.runtime.local_tracing import LocalTracing
+                self._tracing_dashboard = LocalTracing(self._config.values,
+                    emissions=self._session.runtime.emissions)
+                self._stack.push(self._tracing_dashboard.aclose)
+                await self._tracing_dashboard.start()
                 from api_agent.runtime.local_browser import LocalBrowserOwner
                 factory = self.browser_factory or LocalBrowserOwner
                 home = self._session.callback.origin + '/'
                 self._browser = factory(self.context, self._config.values, home,
-                    prepare_ui=self._ui, prepare_view=lambda context: self._prepared)
+                    prepare_ui=self._ui, prepare_view=lambda context: self._prepared,
+                    tracing=self._tracing_dashboard)
                 self._stack.push(self._browser.aclose)
                 await self._browser.start()
                 if self._stop.is_set():
                     raise asyncio.CancelledError
                 destinations = [LocalDestination('agent', home), LocalDestination('flow', self._browser.flow_url)]
-                components = [LocalComponent('agent', 'ready'), LocalComponent('tracing', 'disabled'),
+                components = [LocalComponent('agent', 'ready'), LocalComponent('tracing', self._tracing_dashboard.state),
                               LocalComponent('flow', 'ready'), LocalComponent('ui', 'disabled')]
+                if self._tracing_dashboard.viewer_url is not None:
+                    destinations.insert(1, LocalDestination('tracing', self._tracing_dashboard.viewer_url))
                 if self._config.values.get('RUN_UI'):
                     components[-1] = LocalComponent('ui', 'ready')
                     destinations.insert(1, LocalDestination('ui', self._config.values['UI_LISTENER_URL']))
@@ -274,6 +289,21 @@ class LocalRunOwner:
     def diagnostic(self, error):
         """Preserve the actionable cause without exposing owned credentials."""
         return self._safe_text(str(error))
+
+    def interactive_dashboard_credentials(self):
+        """Literal interactive status only; excluded from snapshots and events."""
+        return (self._tracing_dashboard.interactive_credentials()
+                if self._tracing_dashboard is not None else None)
+
+    def _workflow_event(self, row):
+        """Consume only the source's admitted log projection, never trace data."""
+        if self._diagnostic_projection is None:
+            return
+        text = self._diagnostic_projection.format(row)
+        self._sequence += 1
+        if self.on_event is not None:
+            self.on_event(LocalEvent('diagnostic', source='agent', text=text,
+                                    diagnostic=row, sequence=self._sequence))
 
     def _log(self, source, text):
         # Scrub a complete snapshot before truncation or terminal escaping.

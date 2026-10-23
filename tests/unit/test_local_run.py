@@ -20,7 +20,7 @@ def local(tmp_path):
     definition = SimpleNamespace(definition_id='selected-definition')
     prepared = (definition, object(), False, object(), {})
     application_factory = Mock()
-    runtime = SimpleNamespace(emissions=EmissionBoundary(ContentPolicy()), services={})
+    runtime = SimpleNamespace(emissions=EmissionBoundary(ContentPolicy()), services={}, tracing=None)
     session = SimpleNamespace(callback=SimpleNamespace(origin='https://localhost:8443'), runtime=runtime,
                               infrastructure=None, listener=None)
     class Operation:
@@ -66,9 +66,8 @@ def test_start_freezes_selected_definition_and_stop_releases_reverse(local):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('invalid', ['trace', 'errors', 'missing', 'graph'])
+@pytest.mark.parametrize('invalid', ['errors', 'missing', 'graph'])
 def test_preflight_rejects_without_runtime_side_effects(local, invalid):
-    if invalid == 'trace': local.config.values['TRACE_MODE'] = 'LangFuse'
     if invalid == 'errors': local.config.errors = ('bad',)
     if invalid == 'missing': local.config.missing = ('required',)
     if invalid == 'graph': local.application_factory.side_effect = ValueError('Unsupported selected graph')
@@ -115,7 +114,7 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
     from api_agent.ui import process
     config, origin, material = local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca'))
     config.values['LLM_REASONING_EFFORT'] = ''
-    runtime = SimpleNamespace(services={}, emissions=EmissionBoundary(ContentPolicy()))
+    runtime = SimpleNamespace(services={}, emissions=EmissionBoundary(ContentPolicy()), tracing=None)
     compose = Mock(return_value=runtime)
     monkeypatch.setattr(local_run, 'compose_runtime', compose)
     monkeypatch.setattr(client_tls, 'verified_client_context', lambda value: 'verified')
@@ -128,6 +127,7 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
         result = local.owner._runtime(config, origin, material)
         compose.assert_called_once_with(local.owner.context, config, callback_origin=origin,
                                          tls_material=material, required_kinds=())
+        assert local.owner.llm_factory.call_args.kwargs['trace'] is runtime.tracing
         assert result.services['ui_processes'] == 'process-owner'
         assert await result.services['studio_backend'].describe(auth=None) == ()
         context = object()
@@ -479,7 +479,7 @@ def test_diagnostic_retains_runtime_boundary_before_partial_composition_fails(lo
     from api_agent.runtime import local_run
     boundary = EmissionBoundary(ContentPolicy())
     boundary.register_secret('partial-runtime-credential')
-    monkeypatch.setattr(local_run, 'compose_runtime', Mock(return_value=SimpleNamespace(emissions=boundary)))
+    monkeypatch.setattr(local_run, 'compose_runtime', Mock(return_value=SimpleNamespace(emissions=boundary, tracing=None)))
     local.owner.llm_factory = Mock(side_effect=RuntimeError('Connection setup failed: partial-runtime-credential\x1b[2J\r'))
     with pytest.raises(RuntimeError) as failure:
         local.owner._runtime(local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca')))
@@ -519,3 +519,58 @@ def test_repeated_diagnostics_preserve_latest_boundary_without_registration_grow
     text = local.owner.diagnostic(RuntimeError('Connection failed: refreshed-runtime-material'))
     assert 'refreshed-runtime-material' not in text and 'Connection failed' in text
     assert frozenset(boundary._secrets) == original | {'refreshed-runtime-material'}
+
+
+def test_enabled_tracing_joins_verified_dashboard_before_owned_browser(local, monkeypatch):
+    from api_agent.runtime import local_tracing
+    local.config.values['TRACE_MODE'] = 'OTEL'
+    local.config.values['TRACE_TARGET'] = 'https://collector.example/v1/traces'
+    dashboard = SimpleNamespace(state='ready', viewer_url='https://viewer.example',
+        start=AsyncMock(), aclose=AsyncMock(), interactive_credentials=Mock(return_value=None))
+    factory = Mock(return_value=dashboard)
+    monkeypatch.setattr(local_tracing, 'LocalTracing', factory)
+    async def run():
+        snapshot = await local.owner.start()
+        factory.assert_called_once_with(local.config.values, emissions=local.session.runtime.emissions)
+        dashboard.start.assert_awaited_once()
+        assert local.browser_factory.call_args.kwargs['tracing'] is dashboard
+        assert [item.name for item in snapshot.destinations] == ['agent', 'tracing', 'flow']
+        assert next(item.state for item in snapshot.components if item.name == 'tracing') == 'ready'
+        assert local.owner.interactive_dashboard_credentials() is None
+        await local.owner.aclose()
+        dashboard.aclose.assert_awaited_once()
+    asyncio.run(run())
+
+
+def test_dashboard_start_failure_keeps_cleanup_owned(local, monkeypatch):
+    from api_agent.runtime import local_tracing
+    dashboard = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError('unavailable')),
+        aclose=AsyncMock())
+    monkeypatch.setattr(local_tracing, 'LocalTracing', Mock(return_value=dashboard))
+    async def run():
+        with pytest.raises(RuntimeError, match='unavailable'):
+            await local.owner.start()
+        dashboard.aclose.assert_awaited_once()
+        local.browser_factory.assert_not_called()
+        assert local.calls == ['operation-start', 'operation-stop']
+    asyncio.run(run())
+
+
+def test_local_workflow_projection_does_not_apply_process_log_tail_limit(local):
+    import json
+    from types import MappingProxyType
+    from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
+    local.owner._workflow_event(MappingProxyType({'event': 'lifecycle'}))
+    assert local.events == []
+    local.owner._diagnostic_projection = LocalDiagnosticProjection(full_content=True)
+    row = MappingProxyType({'event': 'capture', 'event_id': 'shared-event',
+        'direction': 'output', 'values': MappingProxyType({'response_text': 'z' * 20000})})
+    local.owner._workflow_event(row)
+    emitted = local.events[-1]
+    assert emitted.kind == 'diagnostic' and emitted.diagnostic is row
+    assert json.loads(emitted.text)['values']['response_text'] == 'z' * 20000
+    assert local.owner.interactive_dashboard_credentials() is None
+    local.owner._tracing_dashboard = SimpleNamespace(interactive_credentials=lambda: ('admin@example.test', 'literal-password'))
+    assert local.owner.interactive_dashboard_credentials() == ('admin@example.test', 'literal-password')
+    local.owner.on_event = None
+    local.owner._workflow_event(row)

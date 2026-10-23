@@ -291,3 +291,102 @@ def test_log_filter_clears_arbitrary_record_attributes():
     assert OwnedLogFilter(EmissionBoundary()).filter(record) is True
     assert record.levelno == logging.INFO and record.msg == '{}'
     assert MARKER not in json.dumps(record.__dict__)
+
+
+@pytest.mark.parametrize('key',[
+    'hidden_reasoning','hiddenReasoning','Hidden-Reasoning','hidden.reasoning',
+    'reasoning_content','internal_analysis','thinking_content','scratchpad','chain_of_thought',
+    'continuation_state','continuationState','continuation.id',
+    'encrypted_content','previous_response_id','conversation_state',
+])
+@pytest.mark.parametrize('serialized',[False,True])
+def test_hidden_protocol_fields_are_excluded_even_with_content_opt_in(key,serialized):
+    boundary = EmissionBoundary(ContentPolicy(True))
+    hidden = 'excluded-hidden-sentinel'
+    value = {key:hidden,'response_text':'visible answer','reasoning_tokens':7,'reasoning_effort':'high'}
+    payload = {'nested':json.dumps(value) if serialized else value,'prompt':'visible question'}
+    original = json.dumps(payload)
+    exported = boundary.export(payload)
+    assert hidden not in json.dumps(exported)
+    assert exported['prompt']=='visible question'
+    nested = json.loads(exported['nested']) if serialized else exported['nested']
+    assert nested['response_text']=='visible answer'
+    assert nested['reasoning_tokens']==7 and nested['reasoning_effort']=='high'
+    assert json.dumps(payload)==original
+
+
+@pytest.mark.parametrize('tag',[{'type':'reasoning'},{'type':'redacted_thinking'},
+    {'type':'continuation'},{'channel':'analysis'},{'channel':'reasoning'}])
+@pytest.mark.parametrize('carrier',['native','serialized','embedded','parts'])
+def test_tagged_hidden_carriers_cannot_escape_through_serialized_or_split_json(tag,carrier):
+    boundary = EmissionBoundary(ContentPolicy(True))
+    hidden = {**tag,'text':'excluded-hidden-sentinel'}
+    encoded = json.dumps(hidden)
+    value = {'native':hidden,'serialized':encoded,'embedded':'prefix '+encoded+' suffix',
+        'parts':[encoded[:len(encoded)//2],encoded[len(encoded)//2:]]}[carrier]
+    result = boundary.export({'payload':value,'visible':{'type':'output_text','text':'reasoning is a visible word'}})
+    assert 'excluded-hidden-sentinel' not in json.dumps(result)
+    assert result['visible']=={'type':'output_text','text':'reasoning is a visible word'}
+    assert boundary.export(hidden)=={}
+
+
+@pytest.mark.parametrize('allow',[False,True])
+def test_explicit_genai_reasoning_metadata_requires_typed_counts_and_requested_effort(allow):
+    boundary = EmissionBoundary(ContentPolicy(allow))
+    payload = {'reasoning_tokens':7,'gen_ai.usage.reasoning_tokens':8,
+        'reasoning_effort':'high','gen_ai.request.reasoning_effort':'low',
+        'hidden_reasoning':'excluded-hidden-sentinel'}
+    result = boundary.export(payload)
+    assert result=={key:value for key,value in payload.items() if key!='hidden_reasoning'}
+    for key in ('gen_ai.usage.reasoning_tokens','gen_ai.request.reasoning_effort'):
+        assert key not in boundary.export({key:'excluded-hidden-sentinel'})
+
+
+def test_visible_analysis_explanation_fields_are_not_hidden_protocol_aliases():
+    boundary = EmissionBoundary(ContentPolicy(True))
+    visible = {'analysis':'visible user analysis','reasoning':'visible explanation',
+        'thinking':'visible user text','response_text':'visible answer'}
+    assert boundary.export(visible)==visible
+    assert json.loads(boundary.export({'serialized':json.dumps(visible)})['serialized'])==visible
+    assert boundary.export({'gen_ai.response.hidden_reasoning':'excluded-hidden-sentinel'})=={}
+
+
+def test_embedded_reserved_metadata_still_obeys_typed_admission():
+    boundary = EmissionBoundary(ContentPolicy(True))
+    for key in ('gen_ai.request.reasoning_effort','gen_ai.usage.reasoning_tokens'):
+        assert 'excluded-hidden-sentinel' not in repr(boundary.export(
+            {'text':'prefix '+json.dumps({key:'excluded-hidden-sentinel'})+' suffix'}))
+
+
+def test_unavailable_token_accounting_retains_null_when_content_is_permitted():
+    payload = {'usage':{'input_tokens':None,'output_tokens':None,'reasoning_tokens':None}}
+    assert EmissionBoundary(ContentPolicy(True)).export(payload)==payload
+    assert EmissionBoundary().export({'reasoning_tokens':None})=={}
+
+
+def test_visible_literal_continuation_and_fractional_accounting_keep_owner_semantics():
+    boundary = EmissionBoundary(ContentPolicy(True),preserve_json_text=True)
+    text = 'Normal text with {"continuation":"user content"}'
+    payload = {'prompt':text,'category_costs_usd':{'input_tokens':.0000002,
+        'output_tokens':.0000004,'total_tokens':.0000006}}
+    assert boundary.export(payload)==payload
+    assert boundary.export({'continuation_state':'excluded-sentinel','prompt':text})=={'prompt':text}
+
+
+@pytest.mark.parametrize('effort',['off',None,'provider-specific-metadata'])
+def test_plain_reasoning_effort_metadata_retains_its_owner_defined_meaning(effort):
+    payload = {'reasoning_effort':effort}
+    assert EmissionBoundary(ContentPolicy(True)).export(payload)==payload
+    if effort=='off':
+        assert EmissionBoundary().export(payload)==payload
+    else:
+        assert EmissionBoundary().export(payload)=={}
+
+
+def test_explicit_genai_count_guards_do_not_exempt_other_credential_namespaces():
+    boundary = EmissionBoundary(ContentPolicy(True))
+    assert boundary.export({'gen_ai.usage.input_tokens':7,'gen_ai.usage.output_tokens':2,
+        'gen_ai.usage.access_token':'credential-sentinel'})=={
+            'gen_ai.usage.input_tokens':7,'gen_ai.usage.output_tokens':2}
+    assert boundary.export({'gen_ai.usage.input_tokens':.1})=={}
+    assert boundary.export({'gen_ai.request.reasoning_effort':None})=={'gen_ai.request.reasoning_effort':None}

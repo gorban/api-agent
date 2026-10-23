@@ -1,6 +1,7 @@
 """Persistent local inference ownership, independent of test executions."""
 import asyncio
 from copy import deepcopy
+from itertools import islice
 from types import MappingProxyType
 import time
 from uuid import uuid4
@@ -45,7 +46,7 @@ class LocalLLM(_Owner):
     def __init__(self, config, owner_root, *, emissions=None, registry=None,
                  unattended_index_source=None, interaction_owner=None,
                  loader=aload_provider, timeout=120, cleanup_timeout=5,
-                 on_session=None):
+                 on_session=None, on_status=None, trace=None):
         super().__init__(cleanup_timeout)
         if type(timeout) not in (int, float) or not 0 < timeout < float('inf'):
             raise ValueError('Invalid local inference timeout')
@@ -63,12 +64,25 @@ class LocalLLM(_Owner):
         self._usage = []
         self._operation_id = str(uuid4())
         self.policy = ModelSelectionPolicy(self.config)
+        self.on_status = on_status
+        self.trace = trace
+
+    def _status(self, category, outcome):
+        """Publish fixed content-free status, never provider/session values."""
+        if self.on_status is not None:
+            try:
+                self.on_status(MappingProxyType(dict(event='lifecycle', category=category,
+                    outcome=outcome, operation_id=self._operation_id)))
+            except BaseException:
+                # Optional diagnostics cannot change execution or mask its error.
+                pass
 
     @property
     def usage(self):
         return tuple(deepcopy(self._usage))
 
     async def _initialize(self):
+        self._status('setup', 'started')
         location = self.config.get('LLM_PROVIDER')
         if not location:
             raise SetupPrerequisiteError('Select LLM_PROVIDER before requesting LLM setup.')
@@ -105,12 +119,19 @@ class LocalLLM(_Owner):
         start = getattr(self.provider, 'astart', None)
         if start is not None:
             await start()
+        self._status('setup', 'ready')
 
     async def _get(self):
         self._check()
         if self._initialization is None:
+            async def initialize():
+                try:
+                    await self._initialize()
+                except BaseException:
+                    self._status('setup', 'failed')
+                    raise
             with independent_timeout_scope():
-                self._initialization = asyncio.create_task(self._initialize())
+                self._initialization = asyncio.create_task(initialize())
         await asyncio.shield(self._initialization)
         self._check()
         return self.shared
@@ -132,13 +153,35 @@ class LocalLLM(_Owner):
     async def ensure_ready(self):
         async def ready():
             shared = await self._get()
-            await shared.ensure_ready()
+            self._status('authentication', 'started')
+            try:
+                await shared.ensure_ready()
+            except BaseException:
+                self._status('authentication', 'failed')
+                raise
+            self._status('authentication', 'ready')
         return await self._run(ready)
 
     async def describe(self, *, context=None):
         async def describe():
             shared = await self._get()
-            return self.policy.filter(await shared.describe())
+            self._status('catalog', 'started')
+            try:
+                result = self.policy.filter(await shared.describe())
+            except BaseException:
+                self._status('catalog', 'failed')
+                raise
+            if self.trace is not None:
+                try:
+                    identities = tuple(item.selected_llm for item in islice(result, 256)
+                        if type(item.selected_llm) is str and 0 < len(item.selected_llm) <= 200
+                        and item.selected_llm.isprintable())
+                    self.trace.bind_model_identities(identities)
+                except Exception:
+                    # Optional trace metadata must not change catalog or request behavior.
+                    pass
+            self._status('catalog', 'ready')
+            return result
         return await self._run(describe, context)
 
     async def complete(self, request, *, context=None):
@@ -149,25 +192,46 @@ class LocalLLM(_Owner):
             await async_request_to_wire(request)
             self.policy.require_allowed(request.selected_llm)
             shared = await self._get()
+            self._status('request', 'accepted')
             result = None
             error = None
+            receipts = []
+            started = time.monotonic()
             try:
-                result = await shared.complete(request)
+                self._status('request', 'executing')
+                from api_agent.workflows.attribution import bind_terminal_call_receipts
+                with bind_terminal_call_receipts() as receipts:
+                    result = await shared.complete(request)
+                self._status('request', 'completed')
                 return result
             except BaseException as failure:
                 error = failure
+                self._status('request', 'cancelled' if isinstance(failure, asyncio.CancelledError) else 'failed')
                 raise
             finally:
                 usage = result.usage if result is not None else error.usage if isinstance(error, ProviderAccessError) else None
                 row = {'call_id': str(uuid4()), 'selection': request.selected_llm,
-                       'outcome': result.outcome if result is not None else 'failed',
+                       'outcome': result.outcome if result is not None else
+                           'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
                        'usage': None if usage is None else usage_to_wire(usage)}
                 try:
                     if result is not None:
                         row['quote'] = validate_quote(self.emissions.content_export(quote_cost(self.provider.implementation, request, result)))
                 except Exception:
                     pass
-                self._usage.append(row)
+                from api_agent.workflows.attribution import current_workflow_visit
+                owner = current_workflow_visit()
+                if owner is not None and not receipts:
+                    journal, visit_id, attempt_id = owner
+                    journal.record_call(call_id=row['call_id'], elapsed=time.monotonic() - started, visit_id=visit_id,
+                        attempt_id=attempt_id, usage=row['usage'],
+                        selection=row['selection'], outcome=row['outcome'])
+                # A central publisher may already have admitted terminal calls
+                # during this exact operation. Reuse those receipts; a separate
+                # local UUID would charge and instrument the same work twice.
+                if len(receipts) == 1 and 'quote' in row:
+                    receipts[0]['quote'] = row['quote']
+                self._usage.extend(receipts or [row])
                 del self._usage[:-128]
         return await self._run(complete, context)
 

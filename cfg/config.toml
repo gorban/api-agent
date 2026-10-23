@@ -85,7 +85,49 @@ TRACE_MODE = "OTEL"
 [fields.LOG_CONTENT]
 type = "bool"
 default = false
-help = "Default False omits raw prompts, responses and tool content from logs, traces and Allure. Set True to retain inference request/response attachments and content, including paths and code internals. Credentials and registered secrets are always redacted; tracing does not enable content logging."
+help = "Default False withholds prompts, responses and tool content from logs, local diagnostics and Allure details/screenshots. True permits scrubbed content only in those destinations. TRACELOOP_TRACE_CONTENT independently controls OTEL and LangFuse trace payloads. Credentials are always redacted."
+
+[fields.TRACELOOP_TRACE_CONTENT]
+type = "bool"
+default = false
+help = "Default False withholds trace payload content. Explicit True permits scrubbed user-visible content in both OTEL and LangFuse spans. Does not enable logs, local diagnostics or Allure content; LOG_CONTENT controls those destinations. Credentials are always redacted."
+
+[fields.RUN_LOG_FULL_CONTENT]
+type = "bool"
+default = false
+help = "Show full permitted local diagnostic input/output within admitted payload limits instead of truncated previews. Default False. Requires LOG_CONTENT=True; credentials, authentication state and hidden reasoning are always excluded. Does not change trace content or the TUI display retention."
+
+[fields.LANGFUSE_ADMIN_EMAIL]
+type = "str"
+conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "admin@api-agent.invalid"}]
+help = "Administrator email for Run local sign-in to the selected local or remote LangFuse dashboard."
+[fields.LANGFUSE_ADMIN_EMAIL.applies_when]
+TRACE_MODE = "LangFuse"
+TUI_MODE = "run-local"
+COLLECT_ONLY = false
+[fields.LANGFUSE_ADMIN_EMAIL.required_when]
+TRACE_MODE = "LangFuse"
+TUI_MODE = "run-local"
+COLLECT_ONLY = false
+
+[fields.LANGFUSE_ADMIN_PASSWORD]
+type = "str"
+help = "Administrator password for Run local sign-in to the selected local or remote LangFuse dashboard. Configure the actual existing account; initialization does not reset it."
+[fields.LANGFUSE_ADMIN_PASSWORD.applies_when]
+TRACE_MODE = "LangFuse"
+TUI_MODE = "run-local"
+COLLECT_ONLY = false
+[fields.LANGFUSE_ADMIN_PASSWORD.required_when]
+TRACE_MODE = "LangFuse"
+TUI_MODE = "run-local"
+COLLECT_ONLY = false
+
+[fields.TRACE_VIEWER_URL]
+type = "str"
+review_optional = true
+help = "Optional OTEL trace viewer URL, separate from TRACE_TARGET ingestion. Local managed Jaeger derives its viewer URL from JAEGER_VIEWER_PORT when omitted."
+[fields.TRACE_VIEWER_URL.applies_when]
+TRACE_MODE = "OTEL"
 
 [fields.CLIENT_CA_FILE]
 acknowledge_default = false

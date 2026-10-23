@@ -20,7 +20,7 @@
 
 - [x] Prove lazy/no-UI startup, selected graph traversal, settings, multi-turn request/cancel/heartbeat behavior and late request deadlines with controlled real HTTP/browser checks. Include selected pack overrides and source/installed relocation; original suite histories are not manual activity records. Use causal mutations for eager authentication, graph bypass/stale selection and skipped cleanup acknowledgement.
 - [x] Complete exact applicable unit line/branch coverage, package/notices, public index/history/metadata checks, independent lane reviews and joined external review before delivery. Live authentication/inference checks require their own authorization.
-- [ ] Human acceptance of the delivered local-run scope. Earlier infrastructure and retained-test/Studio acceptance remain valid; broader tracing, private/product integration, application E2E and later workflow inspection keep their separate gates.
+- [x] Human acceptance of the delivered local-run scope, including reported follow-up repairs, recorded October 23, 2026. Earlier infrastructure and retained-test/Studio acceptance remain valid; broader tracing, private/product integration, application E2E and later workflow inspection keep their separate gates.
 
 ## Core-first delivery boundary
 
@@ -34,10 +34,10 @@
 
 - [x] Scrub terminal and TUI failure messages through the operation's retained credential boundary, including setup failures before session handoff and cleanup retries. Register nonempty string session tokens before catalog or completion callbacks. Preserve actionable ordinary causes while escaping terminal controls. If no trusted owner exists, show a fixed safe failure message; do not render arbitrary factory exception text or replace pending cleanup ownership with a successful exit.
 
-## Deferred human review
+## Human acceptance
 
-Substantive core work, reported repairs and independent/external reviews are
-complete. Human acceptance remains unchecked above and in the child. Tracing,
-product integration and full E2E retain their separate gates.
+The user approved the delivered core Run local scope and reported repairs on
+October 23, 2026. Tracing, product integration and full E2E retain their separate
+gates.
 
 - [Navigation and catalog repairs](implementation_plan_h1a2.md)

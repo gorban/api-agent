@@ -10,8 +10,9 @@ from .resources import bundled_root
 
 class LocalChatApplication:
     """Freeze the admitted definition; unsupported application shapes fail early."""
-    def __init__(self, definition, *, config=None):
+    def __init__(self, definition, *, config=None, observations=None):
         self.definition, self.config = definition, dict(config or {})
+        self.observations = observations
         layout = definition.layout
         nodes = [step for step in layout.steps if step.kind == 'node']
         functions = layout.tables['Functions']
@@ -46,13 +47,33 @@ class LocalChatApplication:
             if called or value.selected_llm != request.selected_llm or value.payload != request.payload or value.request_id != request.request_id:
                 raise WorkflowError('Local chat changed the selected provider call.')
             called = True
+            from .attribution import current_workflow_visit
+            owner = current_workflow_visit()
+            def capture(direction, name, text):
+                if owner is not None and self.observations is not None:
+                    journal, visit_id, _ = owner
+                    # This application accepts validated plain text only. Large
+                    # values stay withheld without changing execution semantics.
+                    journal.capture(visit_id=visit_id, direction=direction,
+                        values={name: text}, schema={'type': 'object',
+                            'properties': {name: {'type': 'string'}}},
+                        plain_fields=[name])
+            capture('input', 'messages_text', '\n'.join(
+                message['role'] + ': ' + message['content'] for message in messages))
             result = await llm.complete(value, context=context)
+            capture('output', 'response_text', result_to_wire(result)['text'])
             results.append(result)
             return result
+        observations = self.observations.create(self.definition) if self.observations is not None else None
         graph = Workflow(self.definition, self.registry, config=self.config,
             services={'llm': selected, 'selection': request.selected_llm,
-                      'generation': request.payload.generation, 'request_id': request.request_id})
-        values = await graph.arun({'messages': messages})
+                      'generation': request.payload.generation, 'request_id': request.request_id,
+                      'journal': observations, 'observation_factory': self.observations})
+        try:
+            values = await graph.arun({'messages': messages})
+        finally:
+            if observations is not None:
+                observations.close()
         if len(results) != 1:
             raise WorkflowError('Local chat did not execute its declared LLM call.')
         expected = result_to_wire(results[0])

@@ -1,5 +1,6 @@
 """Immutable local-operation observations shared by runtime consumers."""
 from dataclasses import dataclass
+from collections.abc import Mapping
 
 
 @dataclass(frozen=True)
@@ -31,3 +32,4 @@ class LocalEvent:
     source: str = ''
     text: str = ''
     sequence: int = 0
+    diagnostic: Mapping | None = None

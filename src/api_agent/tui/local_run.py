@@ -1,6 +1,7 @@
 """Live local-run presentation; resource ownership stays in its controller."""
 import asyncio
 from collections import deque
+from dataclasses import replace
 from rich.text import Text
 
 from textual.binding import Binding
@@ -40,7 +41,8 @@ class LocalRunScreen(Screen):
         self.owner = None
         self.run_task = None
         self.source = resolve().values['RUN_LOG_SOURCE']
-        self.events = deque(maxlen=10000)
+        self.events = deque()
+        self._event_bytes = 0
         self.snapshot = LocalSnapshot("starting")
         self.menu = None
         self.menu_choices = ()
@@ -90,8 +92,18 @@ class LocalRunScreen(Screen):
             self.refresh_view()
 
     def receive(self, event):
-        if event.kind == 'log':
-            self.events.append(event)
+        if event.kind in {'log', 'diagnostic'}:
+            # Display retention is independent of the full terminal stream.
+            text = event.text
+            if len(text) > 16384:
+                text = text[:16384] + '\n[TUI display truncated]\n'
+            displayed = replace(event, text=text, diagnostic=None)
+            size = len(text.encode('utf-8'))
+            self.events.append(displayed)
+            self._event_bytes += size
+            while len(self.events) > 1000 or self._event_bytes > 1048576:
+                removed = self.events.popleft()
+                self._event_bytes -= len(removed.text.encode('utf-8'))
         elif event.kind == 'status':
             self.snapshot = event.snapshot
             self.reconcile_menu()
@@ -102,7 +114,13 @@ class LocalRunScreen(Screen):
             return
         phase = self.snapshot.phase
         components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
-        self.query_one('#local-status', Static).update(f'Run local: {phase} — logs: {self.source}\n{components}')
+        status = f'Run local: {phase} — logs: {self.source}\n{components}'
+        credentials = (self.owner.interactive_dashboard_credentials()
+                       if self.owner is not None and hasattr(self.owner, 'interactive_dashboard_credentials') else None)
+        if credentials is not None:
+            email, password = credentials
+            status += f'\nLangFuse dashboard account: {email}\nLangFuse dashboard password: {password}'
+        self.query_one('#local-status', Static).update(status)
         self.query_one('#local-error', Static).update(self.failure)
         self.query_one('#local-hint', Static).update(self.MENU_HINT if self.menu else self.VIEW_HINT)
         text = ''.join(format_log(event, self.source) for event in self.events)

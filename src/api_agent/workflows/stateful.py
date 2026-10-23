@@ -633,13 +633,22 @@ class StatefulWorkflow:
             context = StateNodeContext(row['ID'], self._services.get(), self._request.get(),
                                        self.definition.declared_resources)
             from .attribution import bind_workflow_visit
-            with bind_workflow_visit(self._journal.get(), budget.id):
+            journal = self._journal.get()
+            captures = (self._services.get().get('plain_io_contracts') or {}).get(row['ID'], {})
+            def capture(direction, values):
+                contract = captures.get(direction)
+                if journal is not None and contract is not None:
+                    journal.capture(visit_id=visit_id, direction=direction, values=values,
+                        schema=contract['schema'], plain_fields=contract['plain_fields'])
+            capture('input', state)
+            with bind_workflow_visit(journal, budget.id):
                 result = (await function(state, context) if inspect.iscoroutinefunction(function)
                           else await offload(function, state, context))
                 if inspect.isawaitable(result):
                     result = await result
             if type(result) is not dict or any(key not in self.schema.__annotations__ for key in result):
                 raise ValueError('node must return a partial state update')
+            capture('output', result)
             outcome = 'passed'
             self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
                         elapsed=time.monotonic() - started, kind=row['Kind'])
@@ -772,8 +781,12 @@ class StatefulWorkflow:
                 log_content=self.config.get('LOG_CONTENT') is True,
                 source_manifest=source_manifest,
                 boundary=selected_services.get('emissions'),
+                content_policy=selected_services.get('content_policy'),
                 turn_id=turn_id,
                 test_id=os.environ.get('PYTEST_CURRENT_TEST', '').rsplit(' ', 1)[0] or None)
+            factory = selected_services.get('observation_factory')
+            if factory is not None:
+                journal = factory.create(self.definition, journal=journal)
         with self._thread_guard:
             if thread_id in self._active_threads:
                 raise RuntimeError('conversation already has an active turn')

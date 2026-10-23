@@ -1,4 +1,5 @@
 """Bounded owner-sequenced workflow observations for recorded tests."""
+from collections.abc import Mapping
 from hashlib import sha256
 import json
 import math
@@ -30,12 +31,16 @@ def _condition_label(value):
     return True
 
 
-def _plain_values(data, schema, fields, boundary):
+class CaptureUnavailable(ValueError):
+    """A valid value cannot cross the privacy representation boundary."""
+
+
+def _plain_values(data, schema, fields, boundary, *, limit=512):
     """Only owner-classified top-level plain user I/O scalars may be retained."""
-    if type(data) is not dict or type(schema) is not dict or schema.get('type') != 'object':
+    if type(data) is not dict or not isinstance(schema, Mapping) or schema.get('type') != 'object':
         raise ValueError('Plain workflow capture requires a declared object')
     properties = schema.get('properties')
-    if type(properties) is not dict:
+    if not isinstance(properties, Mapping):
         raise ValueError('Plain workflow capture requires declared fields')
     if (type(fields) not in (tuple, list) or len(fields) > 16
             or any(type(field) is not str for field in fields)
@@ -50,7 +55,7 @@ def _plain_values(data, schema, fields, boundary):
         if key not in data:
             continue
         rule, value = properties[key], data[key]
-        if type(rule) is not dict:
+        if not isinstance(rule, Mapping):
             raise ValueError('Invalid plain workflow capture schema')
         kind = rule.get('type')
         if kind == 'string' and type(value) is str:
@@ -59,10 +64,10 @@ def _plain_values(data, schema, fields, boundary):
             # Scrub the original scalar: a secret can straddle the display limit.
             value = boundary.content_export({'value': value}).get('value')
             if type(value) is not str:
-                raise ValueError('Plain workflow capture value was withheld')
-            if len(value) > 512:
+                raise CaptureUnavailable('Plain workflow capture value was withheld')
+            if len(value) > limit:
                 truncated_fields.append(key)
-            result[key] = value[:512]
+            result[key] = value[:limit]
         elif kind == 'boolean' and type(value) is bool:
             result[key] = value
         elif kind in ('integer', 'number') and type(value) is int and abs(value) <= (1 << 53) - 1:
@@ -307,11 +312,23 @@ def _routes_complete(projection_data, events):
             and all(cursor == 'END' for cursor in routes.values()))
 
 
+class _JournalBoundary:
+    """Keep credential authorities live without replacing their registrations."""
+    def __init__(self, policy, *boundaries):
+        self.policy, self._boundaries = policy, boundaries
+
+    def content_export(self, payload):
+        for boundary in self._boundaries:
+            payload = boundary.content_export(payload)
+        return payload
+
+
 class WorkflowJournal:
     """Accept only structural events, scrub before retention, and disclose gaps."""
 
     def __init__(self, definition, *, log_content=False, secrets=(), test_id=None,
-                 source_manifest=None, boundary=None, turn_id=None, component_passes=None):
+                 source_manifest=None, boundary=None, turn_id=None, component_passes=None,
+                 content_policy=None, model_identity=None):
         self.projection = projection(definition, component_passes=component_passes)
         self._admitted_edges = {tuple(row[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                                 for row in self.projection['edges']}
@@ -327,6 +344,10 @@ class WorkflowJournal:
         if boundary is not None and not isinstance(boundary, EmissionBoundary):
             raise TypeError('Workflow boundary must be an emission boundary')
         self._boundary = boundary or EmissionBoundary(ContentPolicy(True), secrets=secrets)
+        self._model_identity = model_identity
+        self._started = False
+        self._policy_admitted = False
+        self._admitted_observers = []
         self._events = []
         self._call_ids = {}
         self._lock = Lock()
@@ -334,12 +355,48 @@ class WorkflowJournal:
         self._complete = False
         self._finalized = False
         self._gap = None
-        self._log_content = log_content is True
+        if content_policy is not None and not isinstance(content_policy, ContentPolicy):
+            raise TypeError('Journal content authority must be an explicit policy')
+        self._requested_content = (log_content is True and
+                                   (content_policy is None or content_policy.allow_content is True))
+        self._log_content = (self._requested_content and content_policy is not None
+                             and content_policy.allow_content is True)
+
+    def admit_policy(self, policy, boundary, *, model_identity=None):
+        """Constrain a fresh journal before retention; never reinterpret history."""
+        if not isinstance(policy, ContentPolicy) or not isinstance(boundary, EmissionBoundary):
+            raise TypeError('Journal policy admission requires an explicit policy and boundary')
+        with self._lock:
+            if self._started or self._policy_admitted or self._events or self._finalized or self._gap is not None:
+                raise ValueError('Journal policy must be admitted once before retention')
+            policy = ContentPolicy(policy.allow_content is True and self._requested_content)
+            self._boundary = _JournalBoundary(policy, self._boundary, boundary)
+            self._log_content = policy.allow_content
+            self._model_identity = model_identity or self._model_identity
+            self._policy_admitted = True
+        return policy, self._boundary
+
+    def _begin(self):
+        # Admission and producer entry share this short critical section; no
+        # exporter or observer runs while the lock is held.
+        with self._lock:
+            self._started = True
+
+    def subscribe(self, observer):
+        """Observe already admitted immutable-value rows, synchronously."""
+        self._admitted_observers.append(observer)
+
+    def _selection_admitted(self, selection):
+        try:
+            return self._model_identity is not None and self._model_identity(selection) is True
+        except Exception:
+            return False
 
     def observe(self, row):
-        self._observe(row, allow_values=False)
+        return self._observe(row, allow_values=False)
 
-    def _observe(self, row, *, allow_values):
+    def _observe(self, row, *, allow_values, observer_override=None):
+        self._begin()
         if type(row) is not dict or type(row.get('event')) is not str:
             raise ValueError('Invalid workflow observation')
         if 'values' in row and not allow_values:
@@ -354,10 +411,15 @@ class WorkflowJournal:
                    'values', 'reason', 'accounting', 'plain_fields', 'capture_class',
                    'truncated_fields')
         for key in ('event', 'owner', 'kind', 'node', 'component', 'source',
-                    'target', 'outcome', 'timeout_key', 'selection'):
+                    'target', 'outcome', 'timeout_key'):
             value = row.get(key)
             if value is not None and (type(value) is not str or _SAFE_LABEL.fullmatch(value) is None):
                 raise ValueError('Unsafe workflow observation label')
+        selection = row.get('selection')
+        if selection is not None and (type(selection) is not str or not selection.isprintable() or not 0 < len(selection) <= 200):
+            raise ValueError('Unsafe workflow observation selection')
+        if selection is not None and not self._selection_admitted(selection):
+            row = {**row, 'selection': None, 'reason': 'selection_unavailable'}
         if 'condition' in row and not _condition_label(row['condition']):
             raise ValueError('Unsafe workflow observation condition')
         if row['event'] == 'edge' and 'condition' in row and tuple(row.get(key) for key in (
@@ -404,17 +466,27 @@ class WorkflowJournal:
             self._bytes += size
             if clean['event'] == 'call':
                 self._call_ids[clean['call_id']] = (clean['visit_id'], clean.get('attempt_id'))
+        if clean['event'] == 'call':
+            from .attribution import admit_terminal_call_receipt
+            admit_terminal_call_receipt(json.loads(_encoded(clean)), self)
+        for observer in self._admitted_observers:
+            callback = (observer_override[1] if observer_override is not None
+                        and observer is observer_override[0] else observer)
+            callback(json.loads(_encoded(clean)))
+        return json.loads(_encoded(clean))
 
-    def capture(self, *, visit_id, direction, values, schema, plain_fields=None):
+    def capture(self, *, visit_id, direction, values, schema, plain_fields=None,
+                _observer_override=None):
         """Capture only owner-classified plain user I/O before observation/IPC."""
+        self._begin()
         if direction not in ('input', 'output'):
             raise ValueError('Invalid workflow capture direction')
         if type(visit_id) is not str or not visit_id:
             raise ValueError('Workflow capture requires a node visit')
         if not self._log_content or not plain_fields:
-            self.observe(dict(event='capture', visit_id=visit_id, direction=direction,
-                              reason='withheld' if not self._log_content else 'unclassified'))
-            return
+            return self._observe(dict(event='capture', visit_id=visit_id, direction=direction,
+                              reason='withheld' if not self._log_content else 'unclassified'),
+                                 allow_values=False, observer_override=_observer_override)
         safe, truncated_fields = _plain_values(values, schema, plain_fields, self._boundary)
         clean = self._boundary.content_export({'values': safe}).get('values')
         event = dict(event='capture', visit_id=visit_id, direction=direction,
@@ -423,10 +495,11 @@ class WorkflowJournal:
                      capture_class='plain_user_io')
         if truncated_fields:
             event['truncated_fields'] = sorted(truncated_fields)
-        self._observe(event, allow_values=True)
+        return self._observe(event, allow_values=True, observer_override=_observer_override)
 
     def record_call(self, *, visit_id, attempt_id=None, usage=None, selection=None,
                     elapsed=None, outcome='completed', call_id=None):
+        self._begin()
         if type(visit_id) is not str or not visit_id:
             raise ValueError('A leaf call requires a node visit owner')
         if usage is not None and (type(usage) is not dict or set(usage) - {
@@ -450,9 +523,11 @@ class WorkflowJournal:
             raise ValueError('Invalid leaf call identity') from None
         stopped_ms = time.time() * 1000
         started_ms = stopped_ms - elapsed * 1000 if type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0 else None
+        selection_available = type(selection) is str and 0 < len(selection) <= 200 and selection.isprintable()
+        selection_reason = 'selection_unavailable' if selection is not None and not selection_available else None
         self.observe(dict(event='call', call_id=call_id, visit_id=visit_id,
-                          attempt_id=attempt_id, usage=usage, selection=selection,
-                          elapsed=elapsed, started_ms=started_ms,
+                          attempt_id=attempt_id, usage=usage, selection=selection if selection_available else None,
+                          **({'reason': selection_reason} if selection_reason else {}), elapsed=elapsed, started_ms=started_ms,
                           stopped_ms=stopped_ms if started_ms is not None else None,
                           outcome=outcome,
                           accounting='unverified_tool' if unverified_tool else 'central_call_id'))
@@ -460,6 +535,7 @@ class WorkflowJournal:
 
     def finalize(self):
         with self._lock:
+            self._started = True
             if self._finalized:
                 raise ValueError('Journal already finalized')
             self._finalized = True

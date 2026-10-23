@@ -18,7 +18,7 @@
 
 - [ ] Emit the supported OpenTelemetry GenAI semantic conventions for LLM operations, requested/served LLM identifiers, latency, finish reasons, errors and token usage. Link agent steps, tools and inference calls through parent/child spans and propagated context. Pin and test the supported convention/instrumentation versions, including manually instrumented provider transports; SDK auto-instrumentation alone may not observe those transports.
 - [ ] Verify the resulting spans can populate New Relic AI monitoring through standard OTLP. No New Relic APM agent is required for this route. In production, the shared collector normally owns downstream ingest credentials/export configuration; direct export must supply required backend credentials through the existing privacy boundary, never embed them in URLs or telemetry.
-- [ ] Preserve `LOG_CONTENT=False` by default. Explicit True may include request/response/tool content after credential scrubbing, before SDK queues and export. Instrumentation environment flags cannot bypass the application's content policy. Trace metadata and errors remain useful without content.
+- [ ] Apply the [independent trace-content policy](implementation_plan_k1b.md): TRACELOOP_TRACE_CONTENT defaults False and controls permitted request/response/tool payloads for both backends, independently of LOG_CONTENT. Scrub before SDK queues; instrumentation switches cannot bypass the resolved application policy. Trace metadata and errors remain useful without content.
 
 ## Acceptance
 
@@ -36,3 +36,8 @@
 ## Signal conformance follow-through
 
 - [ ] Deliver [GenAI signals and instrumentation conformance](implementation_plan_k1a.md), including metrics, propagation, instrumentation ownership and installed dependency qualification before claiming application tracing compatibility.
+
+
+## Content-control follow-through
+
+- [x] Deliver bounded manual [independent log and trace capture](implementation_plan_k1b.md) for both backends. Human acceptance remains in that child; broader automatic instrumentation retains its separate gate. This supersedes the former requirement that LOG_CONTENT authorize every tracing destination.

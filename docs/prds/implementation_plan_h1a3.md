@@ -17,7 +17,7 @@
 ## Verification and acceptance
 
 - [x] Close independent adversarial and joined external review, applicable exact line/branch coverage, causal controls, installed/browser/package/notices and public-boundary gates. Preserve unrelated work and established authentication/account ownership.
-- [ ] Human review: copy selected log text; open Settings with unavailable models; dismiss its error; retry through Settings or Send; select model/version/reasoning and send successfully. No human acceptance is inferred.
+- [x] Human acceptance of the delivered Run local repairs is recorded October 23, 2026, including selected log copying and action-driven model readiness. Controlled failure evidence remains in the technical verification; no claim of a captured original upstream failure follows.
 
 ## Current diagnostic scope
 
@@ -48,10 +48,9 @@ the reviewed replacement has SHA-256
 
 - [x] While a Send waits for catalog readiness, disable conflicting response-retry and conversation suggestion actions consistently with active response execution. A disabled retry must not report a competing unavailable-selection action while the original queued Send remains live. Prove held-catalog/native-button behavior, unchanged draft and exactly the intended dispatch after readiness, with a causal guard-removal control.
 
-## Deferred human review
+## Human acceptance
 
-The technical repairs, applicable verification and independent/external review
-are complete. Human acceptance remains unchecked above. The reported transient
+The user approved Run local on October 23, 2026. The reported transient
 real-provider blank state was not captured independently; the user reported
 restart restored choices. Controlled real HTTP/browser checks prove failure
 recovery without asserting its exact original upstream cause. Richer lifecycle

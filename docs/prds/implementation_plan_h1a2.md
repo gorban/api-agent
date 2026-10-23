@@ -9,7 +9,7 @@
 - [x] Make catalog loading visible and bounded by the supported backend operation budget rather than a shorter first-page-only timeout. A slow initial provider setup must populate the real model/version/reasoning choices without reloading the page or fabricating choices. An actual failure must remain actionable and permit explicit retry without restarting the local operation or duplicating authentication.
 - [x] Prove focused-button activation, tenth/later choices, Vim/arrows, wrapping, refresh stability, explicit copy and failure handling through actual Textual events. Prove tab order/foreground with original and replacement UI pages. Reproduce delayed catalog setup and genuine errors with controlled HTTP/browser checks, including retry and request cancellation. Preserve privacy and no eager inference.
 - [x] Complete meaningful causal controls, exact applicable coverage, source/installed artifacts, independent lane reviews, public-boundary checks and external joined review. Do not use live inference merely to test startup/catalog behavior.
-- [ ] Human review of menus, clipboard, reordered tabs and working Studio catalog/chat remains open. Earlier accepted scopes retain their approvals.
+- [x] Human review of menus, clipboard, reordered tabs and working Studio catalog/chat is recorded in the October 23, 2026 Run local approval. Earlier accepted scopes retain their approvals.
 
 ## Catalog cache status and age
 
@@ -39,12 +39,11 @@ observations or broader provider qualification.
 
 ## Follow-up human findings
 
-- [x] Close [selected log copying and action-driven model readiness](implementation_plan_h1a3.md) before renewing this checkpoint. Prior verification remains historical; the reported findings are repaired, and human acceptance remains open.
+- [x] Close [selected log copying and action-driven model readiness](implementation_plan_h1a3.md) before renewing this checkpoint. Prior verification remains historical; the reported findings are repaired, and human acceptance is recorded below.
 
-## Deferred human review
+## Human acceptance
 
-The substantive repairs and independent/external reviews are complete. Human
-acceptance remains unchecked above and in the immediate follow-up child; broader
-tracing, product integration and full E2E are not completed by these repairs.
+The user approved Run local and its delivered follow-ups on October 23, 2026.
+Broader tracing, product integration and full E2E retain their separate gates.
 
 - [Selected log copying and action-driven readiness](implementation_plan_h1a3.md)

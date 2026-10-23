@@ -34,9 +34,11 @@ class BorrowedBrowserPage:
 class LocalBrowserOwner:
     def __init__(self, context, config, home_url, *, prepare_ui=None,
                  browser_factory=managed_browser, prepare_view=_prepare_view,
-                 host_factory=_start_viewer_host):
+                 host_factory=_start_viewer_host, tracing=None):
         self.context, self.config, self.home_url = context, config, home_url
         self.prepare_ui = prepare_ui
+        self.tracing = tracing
+        self._tab_prefix = []
         self.browser_factory, self.prepare_view, self.host_factory = browser_factory, prepare_view, host_factory
         self.inspection = InspectionOwner()
         self.host = self.browser = self.session = self.ui = None
@@ -69,10 +71,16 @@ class LocalBrowserOwner:
                 response = await self.session.page.goto(self.home_url, wait_until='load')
                 if response is None or response.status != 200:
                     raise RuntimeError('Agent home did not load')
+                self._tab_prefix = [self.session.page]
+                if self.tracing is not None and self.tracing.viewer_url:
+                    tracing_page = await self.session.context.new_page()
+                    await self.tracing.login(tracing_page)
+                    self._tab_prefix.append(tracing_page)
                 flow_page = await self.session.context.new_page()
                 response = await flow_page.goto(self.flow_url, wait_until='load')
                 if response is None or response.status != 200:
                     raise RuntimeError('Selected workflow view did not load')
+                self._tab_prefix.append(flow_page)
                 if self.closed:
                     raise RuntimeError('Local startup closed during preparation')
                 if self.config.get('RUN_UI', False):
@@ -84,6 +92,7 @@ class LocalBrowserOwner:
                     self.ui = await self.prepare_ui(browser_owner=borrowed)
                     await self._verify_ui(borrowed, page, flow_page)
                     await self.ui.session.page.bring_to_front()
+                self._verify_browser()
             if self.closed:
                 raise RuntimeError('Local startup closed during preparation')
             return self
@@ -105,8 +114,7 @@ class LocalBrowserOwner:
                 or session.context is not self.session.context):
             raise RuntimeError('UI preparation replaced the original session')
         page = session.page
-        if (page.context is not session.context or page.is_closed()
-                or not session.browser.is_connected()):
+        if page.context is not session.context or page.is_closed():
             raise RuntimeError('UI preparation lost the active page')
         expected = urlsplit(self.config['UI_LISTENER_URL'])
         actual = urlsplit(page.url)
@@ -117,8 +125,16 @@ class LocalBrowserOwner:
         if page is not original:
             if not original.is_closed():
                 await original.close()
-        if list(session.context.pages) != [self.session.page, flow_page, page]:
-            raise RuntimeError('UI preparation left unexpected startup tabs')
+
+    def _verify_browser(self):
+        session = self.session
+        expected = [*self._tab_prefix, *([self.ui.session.page] if self.ui is not None else [])]
+        if not session.browser.is_connected():
+            raise RuntimeError('Local startup browser disconnected')
+        if list(session.context.pages) != expected:
+            raise RuntimeError('Local startup left unexpected tabs')
+        if any(page.context is not session.context or page.is_closed() for page in expected):
+            raise RuntimeError('Local startup lost an original page')
 
     async def aclose(self, *, _starting_failure=False):
         self.closed = True

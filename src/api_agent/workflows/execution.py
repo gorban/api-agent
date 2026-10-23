@@ -404,8 +404,12 @@ class Workflow:
                 log_content=self.config.get('LOG_CONTENT') is True,
                 source_manifest=source_manifest,
                 boundary=self.services.get('emissions'),
+                content_policy=self.services.get('content_policy'),
                 turn_id=turn_id,
                 test_id=os.environ.get('PYTEST_CURRENT_TEST', '').rsplit(' ', 1)[0] or None)
+            factory = self.services.get('observation_factory')
+            if factory is not None:
+                journal = factory.create(self.definition, journal=journal)
         token = _CURRENT_JOURNAL.set(journal)
         try:
             active_turn = turn_id or (journal.turn_id if journal is not None else None)

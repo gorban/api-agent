@@ -1,3 +1,4 @@
+from api_agent.telemetry.privacy import ContentPolicy
 import json
 from hashlib import sha256
 from types import SimpleNamespace
@@ -202,7 +203,7 @@ def test_explicit_content_capture_keeps_safe_schema_fields_and_scrubs_secret():
         'question': {'type': 'string'}, 'api_token': {'type': 'string'},
         'metadata': {'type': 'object', 'properties': {'label': {'type': 'string'},
                                                     'continuation': {'type': 'string'}}}}}
-    journal = WorkflowJournal(definition(), log_content=True, secrets=('needle',))
+    journal = WorkflowJournal(definition(), log_content=True, content_policy=ContentPolicy(True), secrets=('needle',))
     journal.capture(visit_id=visit, direction='input',
                     values={'question': 'hello needle', 'api_token': 'needle',
                             'metadata': {'label': 'safe', 'continuation': 'opaque'}},
@@ -222,7 +223,7 @@ def test_explicit_content_capture_keeps_safe_schema_fields_and_scrubs_secret():
     ('%20' * 169, 'K' * 36),
 ])
 def test_capture_scrubs_original_scalar_before_display_limit(prefix, secret):
-    journal = WorkflowJournal(definition(), log_content=True, secrets=(secret,))
+    journal = WorkflowJournal(definition(), log_content=True, content_policy=ContentPolicy(True), secrets=(secret,))
     journal.capture(visit_id='visit', direction='output',
                     values={'answer': prefix + secret + ' end'},
                     schema={'type': 'object', 'properties': {'answer': {'type': 'string'}}},
@@ -234,7 +235,7 @@ def test_capture_scrubs_original_scalar_before_display_limit(prefix, secret):
 
 
 def test_capture_rejects_unbounded_classified_scalar():
-    journal = WorkflowJournal(definition(), log_content=True)
+    journal = WorkflowJournal(definition(), log_content=True, content_policy=ContentPolicy(True))
     with pytest.raises(ValueError, match='exceeds limit'):
         journal.capture(visit_id='visit', direction='input',
                         values={'question': 'x' * 65537},
@@ -244,7 +245,7 @@ def test_capture_rejects_unbounded_classified_scalar():
 
 
 def test_capture_rejects_boundary_withheld_scalar(monkeypatch):
-    journal = WorkflowJournal(definition(), log_content=True)
+    journal = WorkflowJournal(definition(), log_content=True, content_policy=ContentPolicy(True))
     monkeypatch.setattr(journal._boundary, 'content_export', lambda _value: {})
     with pytest.raises(ValueError, match='value was withheld'):
         journal.capture(visit_id='visit', direction='input',
@@ -260,7 +261,7 @@ def test_capture_scrubs_full_scalar_before_runner_attachment(monkeypatch):
     from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
     secret = 'long-credential-' + 'Z' * 520
     original = 'ordinary ' + secret
-    journal = WorkflowJournal(definition(), log_content=True, secrets=(secret,))
+    journal = WorkflowJournal(definition(), log_content=True, content_policy=ContentPolicy(True), secrets=(secret,))
     seen = []
     scrub = journal._boundary.content_export
 
@@ -290,7 +291,8 @@ def test_default_content_policy_records_withheld_reason():
     assert captured['reason'] == 'withheld' and 'values' not in captured
 
 
-def test_actual_inference_call_id_joins_node_visit(monkeypatch, tmp_path):
+@pytest.mark.parametrize('observe', [False, True])
+def test_actual_inference_call_id_joins_node_visit(monkeypatch, tmp_path, observe):
     import asyncio
     from pathlib import Path
     from api_agent.providers.llm import LLMResult, Message, TextContent, Usage
@@ -321,6 +323,12 @@ def test_actual_inference_call_id_joins_node_visit(monkeypatch, tmp_path):
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '0')
     workflow = build(Path(__file__).resolve().parents[2], llm=complete,
                      selection='example', trial='synthetic')
+    rows = []
+    if observe:
+        from api_agent.workflows.observations import WorkflowObservationFactory
+        from api_agent.telemetry.privacy import EmissionBoundary
+        workflow.services['observation_factory'] = WorkflowObservationFactory(
+            {}, boundary=EmissionBoundary(), sink=rows.append)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
     asyncio.run(workflow.arun({'user_input': 'hello'}))
     packets = [json.loads(line) for line in path.read_text().splitlines()]
@@ -328,6 +336,9 @@ def test_actual_inference_call_id_joins_node_visit(monkeypatch, tmp_path):
                  and packet['data']['usage'] is not None]
     journal = next(packet['data'] for packet in packets if packet['kind'] == 'workflow_evidence')
     assert journal['completeness'] == 'complete'
+    if observe:
+        assert rows
+        assert [row['event_id'] for row in rows] == [row['event_id'] for row in journal['events']]
     assert any(row['event'] == 'attempt' for row in journal['events'])
     assert any(row['event'] == 'guard' for row in journal['events'])
     from copy import deepcopy
@@ -347,3 +358,59 @@ def test_actual_inference_call_id_joins_node_visit(monkeypatch, tmp_path):
     assert call_rows[0]['turn_id'] == journal['turn_id']
     assert linked[0]['visit_id'] in {row['scope_id'] for row in journal['events']
                                      if row['event'] == 'scope_start' and row.get('kind') == 'node'}
+
+
+@pytest.mark.parametrize('selection',['x'*201,'invalid\nmetadata',123])
+def test_unavailable_optional_model_metadata_is_omitted_without_losing_call(selection):
+    journal = WorkflowJournal(definition())
+    journal.observe(dict(event='scope_start',scope_id='visit',kind='node',owner='Make'))
+    journal.record_call(visit_id='visit',selection=selection)
+    row = journal.finalize()['events'][-1]
+    assert row['event']=='call' and row['selection'] is None
+    assert row['reason']=='selection_unavailable'
+
+
+def test_explicit_observation_invalid_selection_remains_contract_error():
+    journal = WorkflowJournal(definition())
+    with pytest.raises(ValueError,match='Unsafe workflow observation selection'):
+        journal.observe(dict(event='node',selection='invalid\nmetadata'))
+
+
+@pytest.mark.parametrize('authority',[None,ContentPolicy(False),ContentPolicy(True)])
+@pytest.mark.parametrize('requested',[False,True])
+def test_standalone_journal_requires_explicit_content_authority(authority,requested):
+    journal = WorkflowJournal(definition(),log_content=requested,content_policy=authority)
+    permitted = requested and authority is not None and authority.allow_content
+    assert journal.finalize()['content']==('permitted_scrubbed' if permitted else 'withheld')
+
+
+@pytest.mark.parametrize('authority',[True,{},'enabled'])
+def test_standalone_journal_rejects_untyped_content_authority(authority):
+    with pytest.raises(TypeError,match='explicit policy'):
+        WorkflowJournal(definition(),log_content=True,content_policy=authority)
+
+
+def test_untrusted_selection_is_withheld_before_direct_journal_subscriber_and_retention():
+    journal = WorkflowJournal(definition())
+    rows = []
+    journal.subscribe(rows.append)
+
+    journal.observe({'event': 'node', 'node': 'Make', 'selection': 'customer_private_question'})
+
+    retained = journal.finalize()
+    assert rows[0]['selection'] is None
+    assert rows[0]['reason'] == 'selection_unavailable'
+    assert 'customer_private_question' not in repr(rows) + repr(retained)
+
+
+@pytest.mark.parametrize('result', ['truthy', 'failure'])
+def test_selection_authority_must_return_exact_true_without_failure(result):
+    def authority(value):
+        if result == 'failure':
+            raise RuntimeError('metadata unavailable')
+        return 'yes'
+    journal = WorkflowJournal(definition(), model_identity=authority)
+
+    journal.observe({'event': 'node', 'node': 'Make', 'selection': 'customer_private_question'})
+
+    assert 'customer_private_question' not in repr(journal.finalize())

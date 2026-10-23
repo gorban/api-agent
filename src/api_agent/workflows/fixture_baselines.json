@@ -344,7 +344,7 @@
         "src/api_agent/workflows/contrived.py": "4e17710c9ecb291fbe70df3e9bd6c6afc284f30dcaff13d820383d98b7b53e0b",
         "src/api_agent/workflows/definition.py": "869862c8bd11bbd176ec8028ca6d3d6fd127d0b742b05f7ed9f461eaa7eafd88",
         "src/api_agent/workflows/document_format.py": "86b7f5895a3e159f7b387fecba2ecd812f9ce5b6f66a3aa34ba63b74f8d37b8d",
-        "src/api_agent/workflows/execution.py": "61d1b6420f0c991d2f3721669d59faf431cbefefa0af37d439fe8f07d1b54494",
+        "src/api_agent/workflows/execution.py": "8a0f667af6233f595564993dd1e2791abfb66103d9a8bc2a33bb399b38571d6b",
         "src/api_agent/workflows/fixture_driver.py": "dba2357da44f1ed29c8c8c0c1a3c06c75796e475c71772ef21e3ef986107e87a",
         "src/api_agent/workflows/layout.py": "a7f4830897eb1f32a43beded0c9c280a8c3a2c3180dd449ac7b76aa4e66d97dc",
         "src/api_agent/workflows/predicates.py": "d7c9b82e06a36f6e2767765a1243d1471e899cb2666c17b6fa7ba92a25787474"

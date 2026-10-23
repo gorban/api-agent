@@ -28,15 +28,22 @@ Model discovery caches validated successful metadata for
 cache reuse. Failed discovery can be requested again; authentication/setup
 failures still require a new operation. This does not cache prompts or replies.
 
-The current core Run local checkpoint requires an empty `TRACE_MODE`; dashboard
-configuration and login follow separately. Other supported modes retain their
-existing tracing behavior. Local-run resources stop on exit after active requests
+[Tracing configuration](tracing.md) optionally enables local or remote tracing
+and ready dashboard tabs. Local-run resources stop on exit after active requests
 and cleanup duties acknowledge completion; failed cleanup retains a retry receipt.
 Retained test services remain available for observation and explicit cleanup.
 UI-process output produces content-free activity messages, even when content
 logging is enabled; arbitrary streaming output has a separate privacy gate.
-`LOG_CONTENT=False` keeps user/LLM/tool content out of
-logs and traces; credentials stay excluded regardless of that setting.
+`LOG_CONTENT=False` keeps user/LLM/tool content out of logs and Allure.
+`TRACELOOP_TRACE_CONTENT=False` independently keeps payload content out of both
+OTEL and LangFuse spans. Credentials stay excluded with either opt-in enabled.
+Run local emits shared workflow and safe provider lifecycle events.
+`RUN_LOG_FULL_CONTENT=True` removes the default 512-character preview limit from
+permitted, supported payload fields; it does not enable content capture or remove
+source admission bounds. Use `./launch.py --tui-mode run-local --no-std-in | tee run.log`
+to retain stdout; the TUI keeps its own smaller display buffer. Slow terminal
+consumers can cause dropped diagnostic events, explicitly marked when output
+resumes. Stopping the application does not wait indefinitely for a blocked pipe.
 
 ## Recorded content and token usage
 

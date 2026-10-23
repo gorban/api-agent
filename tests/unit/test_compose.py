@@ -267,7 +267,8 @@ def test_resolved_configuration_headless_readiness_and_tracing_keys_match_across
     from api_agent.runtime.ownership import StackScope
     from api_agent.runtime import prerequisites
     from api_agent.telemetry.tracing import TraceRuntime
-    environment = {'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse'}
+    environment = {'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse',
+                   'LANGFUSE_ADMIN_PASSWORD': 'synthetic-dashboard-password'}
     if explicit_keys:
         environment.update(LANGFUSE_PUBLIC_KEY='pk-lf-explicit-local', LANGFUSE_SECRET_KEY='sk-lf-explicit-local')
     result = resolve_config(load_shared_schema(), environ=environment, dotenv={})
@@ -471,3 +472,19 @@ def test_named_volume_labels_are_fixed_controlled_ownership(labels):
     document['volumes']['localstack-data'] = {'labels': labels}
     with pytest.raises(ComposeError, match='ownership labels'):
         validate_document(document, Scope(), ())
+
+
+def test_dashboard_admin_provisioning_uses_selected_account():
+    plan=plan_compose({'TRACE_MODE':'LangFuse','LANGFUSE_ADMIN_EMAIL':'operator@example.invalid',
+        'LANGFUSE_ADMIN_PASSWORD':'synthetic-dashboard-password'},Scope())
+    assert plan.environment['SA_USER_EMAIL']=='operator@example.invalid'
+    assert plan.environment['SA_USER_PASSWORD']=='synthetic-dashboard-password'
+    import json
+    document=json.loads(plan.assets['compose.json'])
+    assert document['services']['langfuse-web']['environment']['LANGFUSE_INIT_USER_EMAIL']=='${SA_USER_EMAIL:?controlled local development value required}'
+
+
+@pytest.mark.parametrize('key,value',[('LANGFUSE_ADMIN_EMAIL',''),('LANGFUSE_ADMIN_PASSWORD',None),('LANGFUSE_ADMIN_PASSWORD','\x00')])
+def test_dashboard_admin_provisioning_rejects_invalid_configured_account(key,value):
+    if value is None: value=17
+    with pytest.raises(ComposeError): plan_compose({'TRACE_MODE':'LangFuse',key:value},Scope())
