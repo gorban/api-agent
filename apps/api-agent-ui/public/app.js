@@ -45,13 +45,15 @@ function responseDetails(m) {
     ['Resolved catalog model', display(m.selectionSnapshot?.model || m.requested.model, 'Not recorded')],
     ['Reported model', display(m.actual?.actual_model || m.actual?.model, 'Not reported')],
     ['Requested version', display(m.requested.version, 'Provider default')],
-    ['Reported version', display(m.actual?.version, 'Not reported')],
+    ['Reported family (catalog)', m.reportedCatalog?.family],
+    ['Reported version (catalog)', m.actual?.version ? '' : m.reportedCatalog?.version],
+    ['Reported version', m.actual?.version],
     ['Requested reasoning', display(m.requested.reasoning, 'Provider default')],
-    ['Reported reasoning', display(m.actual?.reasoning, 'Not reported')],
-    ['Reported serving revision', display(m.actual?.serving_revision, 'Not reported')],
-    ['Reported service tier', display(m.actual?.service_tier, 'Not reported')],
+    ['Reported reasoning', m.actual?.reasoning],
+    ['Reported serving revision', m.actual?.serving_revision],
+    ['Reported service tier', m.actual?.service_tier],
     ['Status', m.pending ? 'Waiting for response' : m.error ? 'Incomplete' : 'Complete']
-  ]) { const row = el('div'); row.append(el('dt', '', key), el('dd', '', value)); grid.append(row); }
+  ].filter(([, value]) => value)) { const row = el('div'); row.append(el('dt', '', key), el('dd', '', value)); grid.append(row); }
   details.append(grid); return details;
 }
 function questionControls(m) {
@@ -142,6 +144,8 @@ async function run(text, requested, retryMessage, reply) {
   if (reply && !supportsContinuation) { announce('This backend no longer supports this question continuation. The original reply is preserved for retry.'); return; }
   const selection = resolveSelection(catalog, retryMessage?.selectionSnapshot || requested);
   if (!selection.valid) { announce(selection.error); return; }
+  if (!retryMessage && !requested.family && !requested.model) requested = {...requested, model: selection.selection.selected_llm};
+  const responseCatalog = structuredClone(catalog);
   previousChat = null; savePrevious(); clearPromptError();
   const history = retryMessage ? state.messages.slice(0, Math.max(0, state.messages.indexOf(retryMessage) - 1)) : state.messages;
   const messages = history.filter(m => !m.error && !m.pending).map(({role, text}) => ({role, text}));
@@ -154,7 +158,7 @@ async function run(text, requested, retryMessage, reply) {
     m.requestReply = reply ? structuredClone(reply) : null;
     m.selectionSnapshot = {...snapshot};
   }
-  Object.assign(m, {text: '', actual: {}, error: '', pending: true});
+  Object.assign(m, {text: '', actual: {}, reportedCatalog: null, error: '', pending: true});
   if (!retryMessage) state.messages.push(m);
   render(); follow(); save();
   const messageBody = [...$('conversation').children].find(node => node.dataset.messageId === m.id).querySelector('.message-body');
@@ -181,7 +185,12 @@ async function run(text, requested, retryMessage, reply) {
         renderMarkdown(messageBody, m.text);
         follow(); save();
       },
-      onMetadata(metadata) { for (const key of ['model', 'version', 'reasoning', 'actual_model', 'service_tier', 'serving_revision']) if (field(metadata[key]) && !Object.hasOwn(m.actual, key)) m.actual[key] = metadata[key]; },
+      onMetadata(metadata) {
+        for (const key of ['model', 'version', 'reasoning', 'actual_model', 'service_tier', 'serving_revision']) if (field(metadata[key]) && !Object.hasOwn(m.actual, key)) m.actual[key] = metadata[key];
+        const reported = m.actual.actual_model || m.actual.model;
+        const row = responseCatalog.find(item => item.selected_llm === reported);
+        m.reportedCatalog = row ? {family: row.family, version: row.version} : null;
+      },
       onClarification(question) { m.question = {...question, kind: 'clarification'}; },
       onApproval(question) { m.question = {...question, kind: 'approval'}; },
       signal: controller.signal
