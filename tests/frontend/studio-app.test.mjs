@@ -1502,3 +1502,44 @@ test('Settings opens immediately while Send joins acquisition; one failure modal
     assert.equal(await page.locator('#settings-nav').evaluate(button=>button===document.activeElement),true);
   } finally { await closeBrowser(browser); }
 });
+
+
+test('pending catalog Send disables an older failed response retry and dispatches only the intended draft', async()=>{
+  const posts=[];
+  const {browser,page}=await openStudio(route=>{
+    posts.push(route.request().postDataJSON());
+    return fulfill(route,{json:result('Intended new response')});
+  });
+  try {
+    await page.evaluate(()=>{
+      const requested={model:'sample',version:'v1',reasoning:''};
+      localStorage.setItem('api-agent-studio-v2',JSON.stringify({
+        session:'saved',draft:'Intended new request',settings:requested,
+        messages:[
+          {id:'old-user',role:'user',text:'Old failed request',requested},
+          {id:'old-assistant',role:'assistant',text:'Earlier partial response',request:'Old failed request',requested,error:'Earlier failure'}
+        ]
+      }));
+    });
+    const release=Promise.withResolvers();let catalogs=0;
+    await page.route('**/app/agent/models',async route=>{
+      catalogs++;await release.promise;return fulfill(route,{json:[model]});
+    });
+    await reloadPage(page);
+    const retry=page.getByRole('button',{name:'Retry response'});
+    assert.equal(await retry.isEnabled(),true);
+    await page.locator('#send').click();
+    assert.equal(await retry.isDisabled(),true);
+    const loadingStatus=await page.locator('#status').textContent();
+    await retry.evaluate(button=>button.click());
+    assert.equal(await page.locator('#status').textContent(),loadingStatus);
+    assert.equal(await page.locator('#prompt').inputValue(),'Intended new request');
+    assert.equal(posts.length,0);
+    assert.equal(await page.locator('#failure').isVisible(),false);
+    release.resolve();await page.getByText('Intended new response',{exact:true}).waitFor();
+    assert.equal(catalogs,1);assert.equal(posts.length,1);
+    assert.deepEqual(posts[0].messages,[{role:'user',content:'Old failed request'},{role:'user',content:'Intended new request'}]);
+    assert.equal(await page.getByText('Earlier partial response',{exact:true}).count(),1);
+    assert.equal(await retry.isEnabled(),true);
+  } finally { await closeBrowser(browser); }
+});

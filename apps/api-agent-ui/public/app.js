@@ -116,7 +116,7 @@ function render() {
     if (m.error) {
       article.append(el('p', 'error-note', m.error));
       const retry = el('button', 'suggestion', 'Retry response'); retry.type = 'button';
-      retry.disabled = !!active;
+      retry.disabled = !!active || !!pendingSend;
       retry.addEventListener('click', () => { focusComposer(); run(m.request, {...m.requested}, m); });
       article.append(retry);
     }
@@ -131,7 +131,7 @@ function render() {
   for (const n of [...c.children]) if (!nodes.includes(n)) n.remove();
   nodes.forEach((n, i) => { if (c.children[i] !== n) c.insertBefore(n, c.children[i] || null); });
   if (!focused.isConnected && wasSummary) nodes.find(n => n.dataset.messageId === focusedId)?.querySelector('summary')?.focus({preventScroll: true});
-  c.querySelectorAll('.suggestion').forEach(b => b.disabled = !!active);
+  c.querySelectorAll('.suggestion').forEach(b => b.disabled = !!active || !!pendingSend);
   $('send').disabled = !!active || !!pendingSend; $('new-chat').disabled = !!active;
   if (!active && document.activeElement === $('stop')) focusComposer();
   $('stop').hidden = !active && !pendingSend;
