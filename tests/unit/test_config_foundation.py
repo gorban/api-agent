@@ -428,3 +428,35 @@ def test_missing_integer_enum_option_formats_values_and_normalized_alias():
     parsed = parse_options(schema, ['--worker_count'])
     assert parsed.errors == ('WORKER_COUNT: option requires a value; expected one of 0, 2, 8',)
     assert parsed.values == {}
+
+
+@pytest.mark.parametrize('mode', ['unit', 'run-local', 'integration', 'e2e'])
+def test_model_catalog_cache_ttl_default_does_not_require_llm_authentication(mode):
+    result = resolve_config(load_shared_schema(), environ={'TUI_MODE': mode, **AUTH})
+
+    assert result.values['LLM_CATALOG_CACHE_TTL_SECONDS'] == 3600.0
+    assert result.fields['LLM_CATALOG_CACHE_TTL_SECONDS'].source == 'shared_default'
+    assert 'UNATTENDED_AUTH' not in result.missing
+
+
+@pytest.mark.parametrize('value, expected', [('12.5', 12.5), ('0', 0.0)])
+def test_model_catalog_cache_ttl_environment_override(value, expected):
+    result = resolve_config(load_shared_schema(), environ={
+        'TUI_MODE': 'unit', 'LLM_CATALOG_CACHE_TTL_SECONDS': value})
+
+    result.raise_for_errors()
+    assert result.values['LLM_CATALOG_CACHE_TTL_SECONDS'] == expected
+    assert result.fields['LLM_CATALOG_CACHE_TTL_SECONDS'].source == 'environment'
+
+
+@pytest.mark.parametrize('value, message', [
+    ('-1', 'expected nonnegative number'),
+    ('nan', 'expected finite number'),
+    ('inf', 'expected finite number'),
+    ('-inf', 'expected finite number'),
+])
+def test_model_catalog_cache_ttl_rejects_invalid_values(value, message):
+    result = resolve_config(load_shared_schema(), environ={
+        'TUI_MODE': 'unit', 'LLM_CATALOG_CACHE_TTL_SECONDS': value})
+
+    assert result.errors == (f'LLM_CATALOG_CACHE_TTL_SECONDS: {message}',)

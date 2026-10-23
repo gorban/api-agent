@@ -209,7 +209,8 @@ class IntegrationLLM:
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
                                                  credentials=credentials, describe=getattr(implementation, 'adescribe', None),
                                                  complete=complete if callable(getattr(implementation, 'acomplete', None)) else None,
-                                                 validate_request=lambda request: self._validate_request(implementation, request))
+                                                 validate_request=lambda request: self._validate_request(implementation, request),
+                                                 catalog_ttl=self._provider_config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600))
 
     async def _capture_quota(self, phase):
         async with self._quota_lock:

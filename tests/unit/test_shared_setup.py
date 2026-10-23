@@ -7,6 +7,7 @@ import pytest
 from api_agent.providers.contracts import ContractError, SessionClosedError
 from api_agent.providers.control import CleanupPendingError, OperationalError
 from api_agent.providers.shared_setup import SharedSetupOwner, RevocableCredentials
+from api_agent.providers.llm import AvailableSelection
 
 
 def test_concurrent_waiters_refresh_and_cancellation():
@@ -405,6 +406,215 @@ def test_actual_session_setup_failure_is_sticky():
         provider.asetup.assert_awaited_once()
         await owner.aclose()
     asyncio.run(scenario())
+
+
+def test_catalog_ttl_starts_at_validated_completion_and_refresh_failure_does_not_serve_expired_result(monkeypatch):
+    from api_agent.providers import shared_setup
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(shared_setup, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    async def scenario():
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                clock.now = 10.0
+            if len(calls) == 2:
+                raise OperationalError('unavailable')
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child,
+                                 describe=describe, catalog_ttl=5)
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        clock.now = 14.999
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert calls == ['describe']
+        clock.now = 15.0
+        with pytest.raises(OperationalError, match='unavailable'):
+            await owner.describe()
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert len(calls) == 3
+        await owner.aclose()
+        child.aclose.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_valid_empty_catalog_is_cached_until_ttl_expires(monkeypatch):
+    from api_agent.providers import shared_setup
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(shared_setup, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    async def scenario():
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            return ()
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child,
+                                 describe=describe, catalog_ttl=2)
+        assert await owner.describe() == ()
+        clock.now = 1.999
+        assert await owner.describe() == ()
+        assert len(calls) == 1
+        clock.now = 2.0
+        assert await owner.describe() == ()
+        assert len(calls) == 2
+        await owner.aclose()
+    asyncio.run(scenario())
+
+
+def test_catalog_failure_validation_and_cancelled_waiter_allow_later_retrieval():
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                entered.set()
+                await release.wait()
+                raise OperationalError('unavailable')
+            if len(calls) == 2:
+                return ('invalid',)
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child, describe=describe)
+        first = asyncio.create_task(owner.describe())
+        second = asyncio.create_task(owner.describe())
+        await entered.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        with pytest.raises(OperationalError, match='unavailable'):
+            await second
+        assert owner._catalog is None
+        with pytest.raises(ContractError):
+            await owner.describe()
+        assert owner._catalog is None
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert len(calls) == 3
+        await owner.aclose()
+        child.aclose.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_cancelled_catalog_operation_is_evicted_and_can_be_retrieved_again():
+    async def scenario():
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                raise asyncio.CancelledError()
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child, describe=describe)
+        with pytest.raises(asyncio.CancelledError):
+            await owner.describe()
+        assert owner._catalog is None
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert calls == ['describe', 'describe']
+        await owner.aclose()
+    asyncio.run(scenario())
+
+
+def test_catalog_failure_settles_after_sole_waiter_cancels():
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                entered.set()
+                await release.wait()
+                raise OperationalError('unavailable')
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child, describe=describe)
+        waiter = asyncio.create_task(owner.describe())
+        await entered.wait()
+        retrieval = owner._catalog
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not retrieval.done()
+        release.set()
+        with pytest.raises(OperationalError, match='unavailable'):
+            await retrieval
+        await asyncio.sleep(0)
+        assert owner._catalog is None
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert calls == ['describe', 'describe']
+        await owner.aclose()
+        child.aclose.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_zero_catalog_ttl_reuses_inflight_but_not_completed_result():
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            entered.set()
+            await release.wait()
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child,
+                                 describe=describe, catalog_ttl=0)
+        await owner.ensure_ready()
+        first = asyncio.create_task(owner.describe())
+        await entered.wait()
+        second = asyncio.create_task(owner.describe())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not second.done()
+        release.set()
+        assert [item[0].selected_llm for item in await asyncio.gather(first, second)] == ['sample', 'sample']
+        assert len(calls) == 1
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert len(calls) == 2
+        await owner.aclose()
+    asyncio.run(scenario())
+
+
+def test_waiter_cancelled_after_catalog_success_preserves_validated_cache():
+    async def scenario():
+        calls = []
+        waiter = None
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            asyncio.get_running_loop().call_soon(waiter.cancel)
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child, describe=describe)
+        await owner.ensure_ready()
+        waiter = asyncio.create_task(owner.describe())
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert owner._catalog.done() and owner._catalog.exception() is None
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert calls == ['describe']
+        await owner.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('ttl', [True, False, -1, float('nan'), float('inf'), 10 ** 1000, '3600', None])
+def test_invalid_catalog_ttl(ttl):
+    with pytest.raises(ContractError):
+        SharedSetupOwner('op', 'selected', lambda credentials: None, catalog_ttl=ttl)
 
 
 def test_actual_auth_cleanup_failure_and_double_cancellation_retain_credentials():

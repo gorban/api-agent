@@ -615,6 +615,41 @@ def test_real_registry_coalesces_clients_and_survives_one_deadline():
     run(scenario())
 
 
+def test_real_ipc_catalog_retries_failure_and_reuses_shared_success():
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.providers.llm import AvailableSelection
+    from api_agent.providers.setup_registry import SetupRegistry
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    async def scenario():
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                raise ProviderAccessError('unavailable', 'Synthetic catalog failure.')
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        shared = SharedSetupOwner('public-operation', 'frozen-selection',
+                                  lambda credentials: child, describe=describe)
+        registry = SetupRegistry('public-operation', 'frozen-selection', lambda: shared)
+        server = SetupServer(registry, CAPABILITY, timeout=3)
+        endpoint = await server.start()
+        client = SetupClient(endpoint, worker_id='catalog-worker', timeout=3)
+        try:
+            with pytest.raises(ProviderAccessError, match='Synthetic catalog failure'):
+                await asyncio.to_thread(client.describe)
+            assert (await asyncio.to_thread(client.describe))[0].selected_llm == 'sample'
+            assert (await asyncio.to_thread(client.describe))[0].selected_llm == 'sample'
+            assert calls == ['describe', 'describe']
+        finally:
+            await asyncio.to_thread(client.close)
+            await server.aclose()
+            await registry.aclose()
+        child.aclose.assert_awaited_once()
+    run(scenario())
+
+
 @pytest.mark.parametrize('pending', [False, True])
 def test_remote_timeout_disposes_client_before_fixture_teardown(monkeypatch, pending):
     import threading

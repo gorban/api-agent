@@ -74,6 +74,59 @@ def test_shared_auth_catalog_usage_and_fresh_requests(selected):
     asyncio.run(run())
 
 
+def test_studio_http_catalog_recovers_after_transient_provider_failure(selected):
+    import httpx
+    from api_agent.api import Runtime, create_application
+    from api_agent.api.studio import StudioBackend
+    from api_agent.providers.selection import ModelSelectionPolicy
+
+    owner, implementation, loaded, loader, events = selected
+    implementation.adescribe = AsyncMock(side_effect=[
+        ProviderAccessError('unavailable', 'Synthetic catalog failure.'),
+        (AvailableSelection('sample'),),
+    ])
+
+    async def describe(*, auth):
+        return await owner.describe()
+
+    backend = StudioBackend(owner=owner, describe=describe,
+        complete=lambda *args, **kwargs: None,
+        policy=ModelSelectionPolicy({'LLM_DEFAULT_MODEL': 'sample'}),
+        origin='http://127.0.0.1:9443', nonce='s' * 32, scrub=lambda text: text)
+    application = create_application(Runtime('synthetic', services={'studio_backend': backend}))
+
+    async def run():
+        transport = httpx.ASGITransport(app=application, client=('127.0.0.1', 41337))
+        async with httpx.AsyncClient(transport=transport, base_url='http://127.0.0.1:8443',
+            headers={'Origin': 'http://127.0.0.1:9443', 'X-API-Agent-Session': 's' * 32},
+            trust_env=False) as client:
+            first = await client.get('/app/agent/models')
+            second = await client.get('/app/agent/models')
+            third = await client.get('/app/agent/models')
+        assert first.status_code == 502 and first.json()['code'] == 'unavailable'
+        assert second.status_code == third.status_code == 200
+        assert second.json()['default'] == third.json()['default'] == 'sample'
+        assert implementation.adescribe.await_count == 2
+        assert [event[0] for event in events if isinstance(event, tuple)] == ['setup']
+        loader.assert_awaited_once()
+        await backend.aclose()
+        loaded.aclose.assert_awaited_once()
+        assert events.count('auth-close') == 1
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('configured, expected', [(None, 3600), (0, 0), (12.5, 12.5)])
+def test_local_llm_passes_catalog_ttl_to_shared_owner(selected, configured, expected):
+    owner, _, _, _, _ = selected
+    if configured is not None:
+        owner.config = {**owner.config, 'LLM_CATALOG_CACHE_TTL_SECONDS': configured}
+    async def run():
+        await owner.ensure_ready()
+        assert owner.shared._catalog_ttl == expected
+        await owner.aclose()
+    asyncio.run(run())
+
+
 def test_admission_rejects_before_authentication(selected):
     owner, _, _, loader, _ = selected
     async def run():

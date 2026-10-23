@@ -100,7 +100,7 @@ class LocalLLM(_Owner):
         self.shared = SharedSetupOwner(self._operation_id, self._operation_id, owner_factory,
             credentials=credentials, describe=getattr(implementation, 'adescribe', None),
             complete=complete, validate_request=lambda request: validate_provider_request(implementation, request),
-            timeout=self._timeout)
+            timeout=self._timeout, catalog_ttl=self.config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600))
         self._resources.append((self.shared, 'aclose'))
         start = getattr(self.provider, 'astart', None)
         if start is not None:

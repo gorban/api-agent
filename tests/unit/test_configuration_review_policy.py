@@ -150,3 +150,15 @@ def test_hidden_required_auth_uses_dedicated_setup_error(tmp_path):
             assert app.screen.heading == 'Unattended authentication required'
             assert app.operation_status == 3
     asyncio.run(scenario())
+
+
+def test_model_catalog_cache_ttl_is_visible_in_review_defaults(tmp_path):
+    app = fixture(tmp_path)
+    app.session.schema = load_shared_schema()
+    app.session.environ = {'TUI_MODE': 'unit'}
+    app.session.context.anchors.update({key: tmp_path for key in ('owner_root', 'base_root', 'pack_root')})
+
+    candidates = {item.name: item for item in app.session.default_candidates()}
+
+    assert candidates['LLM_CATALOG_CACHE_TTL_SECONDS'].value == 3600.0
+    assert candidates['LLM_CATALOG_CACHE_TTL_SECONDS'].field.acknowledge_default is True

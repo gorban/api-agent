@@ -49,6 +49,12 @@ enum = ["", "off", "low", "medium", "high"]
 default = ""
 help = "Reasoning effort. Empty omits the control and uses provider defaults; off explicitly requests disabled reasoning. Low, medium and high request supported effort levels. Explicit unsupported choices fail before inference. Inspecting this setting does not initiate login; model-specific support must be verified."
 
+[fields.LLM_CATALOG_CACHE_TTL_SECONDS]
+type = "float"
+validation = "nonnegative"
+default = 3600.0
+help = "Lifetime in seconds for successfully retrieved and validated model catalog metadata. Zero disables completed catalog reuse. Failed retrievals are not cached; later calls retry. This does not control prompt caching or authentication state."
+
 [fields.LLM_CACHE_POLICY]
 cost_affecting = true
 type = "str"
