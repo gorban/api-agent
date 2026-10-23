@@ -745,3 +745,88 @@ def test_http_hosted_flow_click_targets_inline_heading(view_url, static_view):
             assert page.locator('main #node-llm_call').inner_text() == 'Node: llm_call'
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize('browser_name', ['chromium', 'firefox'])
+@pytest.mark.parametrize('replay', ['deferred', 'late'])
+@pytest.mark.parametrize('path', ['flow.md.html', 'workflows/components/agent.md.html'])
+def test_repeated_bootstrap_keeps_one_rendered_document(static_view, view_url, browser_name, replay, path):
+    from playwright.sync_api import sync_playwright
+
+    document = static_view / path
+    if replay == 'deferred':
+        lines = document.read_bytes().splitlines(keepends=True)
+        bootstrap = next(line for line in lines if line.startswith(b'[workflow-viewer]:'))
+        document.write_bytes(document.read_bytes().replace(bootstrap, bootstrap + bootstrap, 1))
+
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, browser_name).launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url(path))
+            page.locator('main.workflow-document').wait_for()
+            page.evaluate('''() => {
+              window.originalWorkflowDocument = document.querySelector('main.workflow-document');
+              window.originalWorkflowAnchors = [...window.originalWorkflowDocument.querySelectorAll('[id]')]
+                .map(element => element.id);
+            }''')
+            if replay == 'late':
+                page.evaluate('''() => new Promise((resolve, reject) => {
+                  const original = [...document.scripts].find(script => script.src.endsWith('/viewer.js'));
+                  const repeated = document.createElement('script');
+                  repeated.src = original.getAttribute('src');
+                  const timeout = setTimeout(() => reject(new Error('Viewer replay did not load')), 10000);
+                  repeated.onload = () => { clearTimeout(timeout); resolve(); };
+                  repeated.onerror = () => { clearTimeout(timeout); reject(new Error('Viewer replay failed')); };
+                  document.body.append(repeated);
+                })''')
+
+            assert page.locator('main.workflow-document').count() == 1
+            assert page.locator('main > h1').count() == 1
+            assert page.locator('main img[alt="Workflow diagram"]').count() == 1
+            assert page.locator('#workflow-fallback').count() == 0
+            assert not page.locator('plaintext').is_visible()
+            assert page.evaluate('''() => document.querySelector('main.workflow-document') ===
+              window.originalWorkflowDocument''')
+            assert page.evaluate('''() => [...document.querySelectorAll('main [id]')].map(element => element.id)''') == page.evaluate('window.originalWorkflowAnchors')
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('browser_name', ['chromium', 'firefox'])
+@pytest.mark.parametrize('path', ['flow.md.html', 'workflows/components/agent.md.html'])
+def test_replayed_missing_dependency_diagnostic_recovers_once(static_view, view_url, browser_name, path):
+    from playwright.sync_api import sync_playwright
+
+    dependency = static_view / '.private_resources/viewer/marked.js'
+    original = dependency.read_bytes()
+    dependency.unlink()
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, browser_name).launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url(path))
+            page.locator('.workflow-viewer-error').wait_for()
+            replay = '''name => new Promise((resolve, reject) => {
+              const original = [...document.scripts].find(script => script.src.endsWith('/' + name));
+              const repeated = document.createElement('script');
+              repeated.src = original.getAttribute('src');
+              const timeout = setTimeout(() => reject(new Error('Viewer dependency did not load')), 10000);
+              repeated.onload = () => { clearTimeout(timeout); resolve(); };
+              repeated.onerror = () => { clearTimeout(timeout); reject(new Error('Viewer dependency failed')); };
+              document.body.append(repeated);
+            })'''
+            page.evaluate(replay, 'viewer.js')
+            assert page.locator('.workflow-viewer-error').count() == 1
+            assert page.locator('main.workflow-document').count() == 0
+
+            dependency.write_bytes(original)
+            page.evaluate(replay, 'marked.js')
+            page.evaluate(replay, 'viewer.js')
+
+            assert page.locator('.workflow-viewer-error, #workflow-fallback').count() == 0
+            assert page.locator('main.workflow-document').count() == 1
+            assert page.locator('main img[alt="Workflow diagram"]').count() == 1
+            assert not page.locator('plaintext').is_visible()
+        finally:
+            browser.close()

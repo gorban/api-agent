@@ -3,10 +3,15 @@
   "use strict";
   const carrier = document.querySelector("plaintext#workflow-source, plaintext");
   if (carrier) carrier.hidden = true;
+  // Replayed bootstrap scripts share the carrier, even across script elements.
+  const renderedDocument = Symbol.for("api-agent.workflow-viewer.document");
+  const state = carrier ? (carrier[renderedDocument] ||= {}) : {};
+  if (state.document) return;
   if (!carrier || !window.marked || !window.DOMPurify ||
       (document.querySelector('meta[name="workflow-view"]')?.content === "v2" && !window.markedGfmHeadingId)) {
     const fallback = document.getElementById("workflow-fallback");
-    const diagnostic = fallback || document.createElement("section");
+    const diagnostic = fallback || state.diagnostic || document.createElement("section");
+    state.diagnostic = diagnostic;
     diagnostic.className = "workflow-viewer-error";
     diagnostic.setAttribute("data-workflow-dependencies", "missing");
     const heading = document.createElement("h2");
@@ -134,9 +139,11 @@
     }
   }
   document.getElementById("workflow-fallback")?.remove();
+  state.diagnostic?.remove();
   const documentHeading = main.querySelector("h1,h2,h3,h4,h5,h6");
   if (documentHeading) document.title = documentHeading.textContent.trim();
   carrier.before(main);
+  state.document = main;
   // IDs become available after parsing; resolve an initial fragment explicitly.
   if (location.hash) {
     try { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }
