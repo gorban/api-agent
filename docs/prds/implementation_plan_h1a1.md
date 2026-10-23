@@ -34,6 +34,10 @@
 
 - [x] Scrub terminal and TUI failure messages through the operation's retained credential boundary, including setup failures before session handoff and cleanup retries. Register nonempty string session tokens before catalog or completion callbacks. Preserve actionable ordinary causes while escaping terminal controls. If no trusted owner exists, show a fixed safe failure message; do not render arbitrary factory exception text or replace pending cleanup ownership with a successful exit.
 
-## Open human-review follow-up
+## Deferred human review
 
-- [ ] Close the [selected-log and model-readiness findings](implementation_plan_h1a3.md). Earlier verification is preserved; substantive repairs and renewed review precede human acceptance. Tracing/product/full E2E remain separate.
+Substantive core work, reported repairs and independent/external reviews are
+complete. Human acceptance remains unchecked above and in the child. Tracing,
+product integration and full E2E retain their separate gates.
+
+- [Navigation and catalog repairs](implementation_plan_h1a2.md)
