@@ -43,3 +43,7 @@ settings drift still reject. The previous wrapper at `f62cc7c` has SHA-256
 `a96849852bd5cf0711deb70af1d3fb82039d9b1ca373e5d547874de49713fa17`;
 the reviewed replacement has SHA-256
 `9e55ac91eaf31061592b980149bd23d84a7478f992c854aff858633e2b249f52`.
+
+## Conflicting conversation actions
+
+- [ ] While a Send waits for catalog readiness, disable conflicting response-retry and conversation suggestion actions consistently with active response execution. A disabled retry must not report a competing unavailable-selection action while the original queued Send remains live. Prove held-catalog/native-button behavior, unchanged draft and exactly the intended dispatch after readiness, with a causal guard-removal control.
