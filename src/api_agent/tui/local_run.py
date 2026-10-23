@@ -22,14 +22,14 @@ class LocalRunScreen(Screen):
                 Binding('escape,c', 'view', 'Close menu'),
                 Binding('asterisk', 'all_logs', 'All logs'),
                 Binding('s', 'stop', 'Stop'), Binding('q', 'quit', 'Quit'),
-                Binding('ctrl+c', 'copy_choice', 'Copy choice', priority=True)]
+                Binding('ctrl+c', 'copy_choice', 'Copy selection', priority=True)]
     DEFAULT_CSS = '''
     #local-output, #local-choices { height: 1fr; }
     #local-choices { display: none; }
     #local-choices Button { width: 100%; height: auto; min-height: 3; margin: 0 0 1 0; }
     #local-choices Button:focus { border: heavy $accent; }
     '''
-    VIEW_HINT = 'b Browser destinations  l Log sources  * All logs  s Stop  q Quit'
+    VIEW_HINT = '^C Copy selected text  b Browser destinations  l Log sources  * All logs  s Stop  q Quit'
     MENU_HINT = 'Arrows/hjkl Move  1–9,0 or Enter Open\n^C Copy  Esc/c Back  s Stop  q Quit'
 
     def __init__(self, context, resolve, *, argv=(), schema=None, owner_factory=None):
@@ -107,8 +107,20 @@ class LocalRunScreen(Screen):
         self.query_one('#local-hint', Static).update(self.MENU_HINT if self.menu else self.VIEW_HINT)
         text = ''.join(format_log(event, self.source) for event in self.events)
         area = self.query_one('#local-output', TextArea)
-        area.load_text(text)
-        area.scroll_end(animate=False)
+        previous = area.text
+        if text != previous:
+            if text.startswith(previous) and previous:
+                selection = area.selection
+                scroll = area.scroll_offset
+                area.insert(text[len(previous):], area.document.end)
+                area.selection = selection
+                if area.selected_text:
+                    area.scroll_to(scroll.x, scroll.y, animate=False)
+                else:
+                    area.scroll_end(animate=False)
+            else:
+                area.load_text(text)
+                area.scroll_end(animate=False)
         area.display = self.menu is None
         self.query_one('#local-choices', VerticalScroll).display = self.menu is not None
 
@@ -169,6 +181,8 @@ class LocalRunScreen(Screen):
         self.menu = None
         self.menu_choices = ()
         self.refresh_view()
+        if self.is_mounted:
+            self.query_one('#local-output', TextArea).focus()
 
     def action_all_logs(self):
         self.source = 'all'
@@ -176,9 +190,12 @@ class LocalRunScreen(Screen):
 
     def check_action(self, action, parameters):
         if action == 'copy_choice':
-            if not self.is_mounted or self.app.screen is not self or self.menu is None:
+            if not self.is_mounted or self.app.screen is not self:
                 return False
             focused = self.app.focused
+            if self.menu is None:
+                return (isinstance(focused, TextArea) and focused.id == 'local-output'
+                        and focused.screen is self and focused.display and bool(focused.selected_text))
             if not isinstance(focused, Button) or focused.screen is not self:
                 return False
             identifier = focused.id or ''
@@ -220,6 +237,8 @@ class LocalRunScreen(Screen):
 
     async def action_copy_choice(self):
         if self.menu is None:
+            if self.check_action('copy_choice', ()):
+                await self.copy_value(self.query_one('#local-output', TextArea).selected_text)
             return
         focused = self.app.focused
         if not isinstance(focused, Button) or not (focused.id or '').startswith('local-choice-'):
@@ -231,8 +250,11 @@ class LocalRunScreen(Screen):
         if not 0 <= index < len(self.menu_choices):
             return
         value = self.menu_choices[index]
+        await self.copy_value(value if self.menu == 'logs' else value.url)
+
+    async def copy_value(self, value):
         try:
-            native = await copy_text(self.app, value if self.menu == 'logs' else value.url)
+            native = await copy_text(self.app, value)
         except ClipboardError:
             self.app.notify('Could not copy the selected value.', severity='error', timeout=2)
         else:

@@ -74,6 +74,7 @@ def test_unmounted_screen_ignores_events_and_close_without_owner():
         screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
         screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=())))
         screen.receive(NS(kind='other'))
+        assert screen.check_action('copy_choice', ()) is False
         assert screen.sources() == ()
         assert screen.destinations() == ()
         assert await screen.close_owned()
@@ -246,7 +247,8 @@ def test_live_menu_buttons_navigation_hotkeys_and_copy(monkeypatch):
             area.action_select_all()
             assert area.selected_text == 'selected log text'
             await pilot.press('ctrl+c')
-            assert native_copies == ['selected log text']
+            assert copied == ['selected log text']
+            assert native_copies == []
             screen.action_browsers()
             await pilot.pause()
             first = app.focused
@@ -264,7 +266,7 @@ def test_live_menu_buttons_navigation_hotkeys_and_copy(monkeypatch):
             await pilot.press('h')
             assert app.focused is first
             await pilot.press('ctrl+c')
-            assert copied == ['https://localhost/0']
+            assert copied == ['selected log text', 'https://localhost/0']
             await pilot.press('enter')
             assert opened == ['https://localhost/0']
             await pilot.press('0')
@@ -586,4 +588,104 @@ def test_consumer_wait_timeout_does_not_cancel_the_owned_task(monkeypatch):
         finally:
             release.set()
             await task
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('native', [True, False])
+def test_selected_source_log_copy_uses_shared_clipboard_and_preserves_refresh(monkeypatch, native):
+    from textual.widgets import TextArea
+
+    async def exercise():
+        copied, notices, callbacks = [], [], []
+        async def copy(app, value):
+            copied.append(value)
+            return native
+        monkeypatch.setattr('api_agent.tui.local_run.copy_text', copy)
+        stop = asyncio.Event()
+        snapshot = LocalSnapshot('ready', log_sources=('agent', 'ui'))
+        class Owner:
+            def __init__(self, *args, on_event, **kwargs): callbacks.append(on_event)
+            async def start(self): return snapshot
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        app.notify = lambda message, **kwargs: notices.append((message, kwargs))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            callbacks[0](LocalEvent('log', source='ui', text='visible selected text\n'))
+            await pilot.press('l')
+            await pilot.pause()
+            await pilot.press('2')
+            area = screen.query_one('#local-output', TextArea)
+            assert app.focused is area
+            area.action_select_all()
+            selected = area.selected_text
+            selection = area.selection
+            callbacks[0](LocalEvent('status', snapshot=snapshot))
+            callbacks[0](LocalEvent('log', source='agent', text='filtered out\n'))
+            assert area.selection == selection
+            assert area.selected_text == selected == 'visible selected text\n'
+            callbacks[0](LocalEvent('log', source='ui', text='new tail\n'))
+            assert area.selected_text == selected
+            assert app.focused is area
+            assert copied == []
+            await pilot.press('ctrl+c')
+            assert copied == [selected]
+            assert notices[-1][0] == ('Value copied.' if native else 'Value sent to terminal clipboard.')
+            assert not stop.is_set() and not screen.finished
+            assert area.selected_text == selected
+            from collections import deque
+            screen.events = deque(screen.events, maxlen=2)
+            callbacks[0](LocalEvent('log', source='ui', text='replacement one\n'))
+            callbacks[0](LocalEvent('log', source='ui', text='replacement two\n'))
+            assert area.text == 'replacement one\nreplacement two\n'
+            assert area.selected_text == ''
+            screen.events = deque(screen.events, maxlen=3)
+            callbacks[0](LocalEvent('log', source='ui', text='last tail\n'))
+            assert area.text == 'replacement one\nreplacement two\nlast tail\n'
+            assert area.selected_text == ''
+            assert app.focused is area
+            assert copied == [selected]
+            await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_selected_log_copy_failure_keeps_operation_and_selection(monkeypatch):
+    from api_agent.tui.clipboard import ClipboardError
+
+    async def exercise():
+        notices, copied = [], []
+        async def copy(app, value):
+            copied.append(value)
+            raise ClipboardError('unavailable')
+        monkeypatch.setattr('api_agent.tui.local_run.copy_text', copy)
+        stop = asyncio.Event()
+        class Owner:
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        app.notify = lambda message, **kwargs: notices.append((message, kwargs))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen.receive(LocalEvent('log', source='agent', text='copy this'))
+            area = screen.query_one('#local-output')
+            area.focus()
+            assert not screen.check_action('copy_choice', ())
+            area.action_select_all()
+            await pilot.press('ctrl+c')
+            assert copied == ['copy this']
+            assert notices[-1][1]['severity'] == 'error'
+            assert area.selected_text == 'copy this' and app.focused is area
+            assert not stop.is_set() and not screen.finished
+            await screen.close_owned()
     asyncio.run(exercise())

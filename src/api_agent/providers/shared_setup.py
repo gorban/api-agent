@@ -156,7 +156,7 @@ class SharedSetupOwner(_Owner):
         return result
 
     def _settle_catalog(self, task):
-        if self._catalog is task and (task.cancelled() or task.exception() is not None):
+        if self._catalog is task and (task.cancelled() or task.exception() is not None or not task.result()):
             self._catalog = None
 
     async def _validated_catalog(self):

@@ -337,7 +337,7 @@
         "src/api_agent/providers/schema_validation_worker.py": "22283bd59167e6b06a33b499db93c7b5ccc3db62cff663ef4b14b802c6138ab0",
         "src/api_agent/providers/setup_registry.py": "33118547d94080ba370531a1e3006fe53b647469ca9113f0420adfb5a0ba84bd",
         "src/api_agent/providers/setup_transport.py": "8f5169b86348be8dd15b97957d3d31389df9cc59d51c860b9a2cf501332dcfc2",
-        "src/api_agent/providers/shared_setup.py": "62537f080d93b6b3b985545fab374eb43ce4a478af6e9697918f15161438e06c",
+        "src/api_agent/providers/shared_setup.py": "f82eba8e349fcf61c261e6a664cbd065049e7b2ed349636c5ab8086a4ab1d311",
         "src/api_agent/runtime/tasks.py": "9a2783e2eb15c302e98cacd84d16ebd96348627bc682b025ffc0042073cc4146",
         "src/api_agent/testing/provider_setup.py": "88d427d8288c21f4c77cb9a04a4b8abea07299108f851d364988d18bf8e477fa",
         "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",

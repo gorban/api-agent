@@ -140,6 +140,7 @@ for (const [name, fixture, expected] of [
     assert.match(await page.locator('.error-note').textContent(),expected);
     assert.match(await page.locator('.assistant .metadata-grid').textContent(),/Incomplete/);
     assert.equal(await page.locator('#stop').isVisible(),false);
+    await page.locator('#close-failure').click();
     await page.locator('#new-chat').click();
     assert.equal(await page.locator('.message').count(),0);
     await page.locator('#undo-new-chat').click();
@@ -188,6 +189,9 @@ test('capable continuation adapter restores draft and preserves question identit
     assert.equal(await page.locator('legend').count(),0);
   } finally { await closeBrowser(browser); }
 });
+async function dismissFailure(page) {
+  if (await page.locator('#failure').isVisible()) await page.locator('#close-failure').click();
+}
 async function openStudio(handler, init) {
   const browser = await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER || undefined});
   const context = await browser.newContext();
@@ -265,6 +269,8 @@ for (const status of [400,401,403,429,500,503]) test('HTTP '+status+' never beco
     await page.locator('#prompt').fill('Hello'); await page.locator('#send').click();
     await page.getByRole('button',{name:'Retry response'}).waitFor();
     assert.match(await page.locator('.error-note').textContent(),new RegExp('HTTP '+status));
+    assert.equal(await page.locator('#failure').isVisible(),true);
+    assert.match(await page.locator('#failure-message').textContent(),/response could not be completed/);
     assert.match(await page.locator('.assistant .metadata-grid').textContent(),/Incomplete/);
   } finally { await closeBrowser(browser); }
 });
@@ -282,8 +288,9 @@ test('Stop preserves new draft and Retry sends original request once', async () 
     await page.getByRole('button',{name:'Retry response'}).waitFor();
     assert.equal(await page.locator('#prompt').inputValue(),'New unsent draft');
     assert.match(await page.locator('.error-note').textContent(),/stopped/);
+    assert.equal(await page.locator('#failure').isVisible(),false);
     await first.abort().catch(() => {});
-    await page.getByRole('button',{name:'Retry response'}).click();
+    await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();
     await page.getByText('Retried',{exact:true}).waitFor();
     assert.equal(await page.locator('.user').count(),1);
     assert.equal(await page.locator('.assistant').count(),1);
@@ -382,18 +389,19 @@ for (const kind of ['approval','clarification']) test(kind+' retry retains exact
     await page.getByRole('button',{name:'Proceed exactly',exact:true}).click();
     if (kind === 'clarification') await page.locator('#send').click();
     await page.getByRole('button',{name:'Retry response'}).waitFor();
+    await dismissFailure(page);
     await page.locator('#prompt').fill('Preserved next draft');
     await page.locator('#settings-nav').click(); await page.locator('#model').selectOption('sample'); await page.locator('#reasoning').selectOption('low'); await page.locator('#close-settings').click();
     if (kind === 'approval') {
       await page.evaluate(() => window.setContinuationSupport(false));
-      await page.getByRole('button',{name:'Retry response'}).click();
+      await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();
       assert.match(await page.locator('#status').textContent(),/no longer supports/);
       assert.equal(await page.evaluate(() => window.continuationCalls.length),1);
       assert.equal(ordinary,1);
       assert.equal(await page.locator('#prompt').inputValue(),'Preserved next draft');
       await page.evaluate(() => window.setContinuationSupport(true));
     }
-    await page.getByRole('button',{name:'Retry response'}).click();
+    await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();
     await page.getByText('Continuation retried',{exact:true}).waitFor({timeout:5000});
     const calls=await page.evaluate(() => window.continuationCalls);
     assert.equal(calls.length,2);
@@ -430,21 +438,26 @@ test('settings changes preserve actual catalog network failure', async () => {
   try {
     let available=false, requests=0;
     await page.route('**/app/agent/models',route => {requests++;return available ? fulfill(route,{json:[model]}) : fulfill(route,{status:503,body:'Unavailable'});});
-    await reloadPage(page); await page.locator('#settings-nav').click();
+    await reloadPage(page);
+    await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+    await page.locator('#settings-nav').click();
     await page.waitForFunction(() => document.querySelector('#model-status').textContent.includes('Model list unavailable'));
+    await page.locator('#failure').waitFor(); await page.locator('#close-failure').click();
     await page.locator('#model').dispatchEvent('change');
     assert.match(await page.locator('#model-status').textContent(),/Model list unavailable/);
-    await page.locator('#version').selectOption('');
+    assert.equal(await page.locator('#model').isDisabled(),true);
+    assert.equal(await page.locator('#version').isDisabled(),true);
+    await page.locator('#version').dispatchEvent('change');
     assert.match(await page.locator('#model-status').textContent(),/Model list unavailable/);
-    assert.equal(await page.locator('#retry-models').isVisible(),true);
-    available=true;await page.locator('#retry-models').click();
+    assert.equal(await page.locator('#retry-models').count(),0);
+    available=true;await page.locator('#close-settings').click(); await page.locator('#settings-nav').click();
     await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled' && document.querySelector('#model option[value="sample"]'));
-    assert.equal(requests,2);
-    assert.equal(await page.locator('#retry-models').isHidden(),true);
+    assert.equal(requests,3);
+    assert.equal(await page.locator('#retry-models').count(),0);
     assert.equal(await page.locator('#model option[value="sample"]').count(),1);
   } finally { await closeBrowser(browser); }
 });
-test('rapid retry activations share one catalog request and cannot overwrite its result', async()=>{
+test('rapid Settings activations share one catalog request and cannot overwrite its result', async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
   try{
     const release=Promise.withResolvers();let requests=0;
@@ -457,7 +470,7 @@ test('rapid retry activations share one catalog request and cannot overwrite its
     await reloadPage(page);
     await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
     await page.locator('#settings-nav').click();
-    await page.locator('#retry-models').evaluate(button=>{button.click();button.click();});
+    await page.locator('#settings-nav').evaluate(button=>{button.click();button.click();});
     await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='loading');
     assert.equal(requests,2);
     release.resolve();
@@ -702,7 +715,7 @@ test('queued retry and toolbar actions cannot duplicate an active request or los
   try{
     await page.locator('#prompt').fill('Original');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     const oldRetry=await page.getByRole('button',{name:'Retry response'}).elementHandle();
-    await page.getByRole('button',{name:'Retry response'}).click();const pending=await ready.promise;
+    await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();const pending=await ready.promise;
     await page.locator('#prompt').fill('Next draft');
     await oldRetry.evaluate(node=>node.dispatchEvent(new MouseEvent('click')));
     await page.locator('#prompt').press('Control+Enter');
@@ -787,7 +800,7 @@ test('slow real HTTP model catalog remains pending, then enables selection and c
     await page.locator('#settings-nav').click();
     await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('still getting ready'),null,{timeout:8000});
     assert.equal(await page.locator('#model-status').getAttribute('data-catalog-state'),'loading');
-    assert.equal(await page.locator('#retry-models').isHidden(),true);
+    assert.equal(await page.locator('#retry-models').count(),0);
     await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'),null,{timeout:10000});
     assert.equal(await page.locator('#model-status').getAttribute('data-catalog-state'),'settled');
     assert.equal(catalogRequests,1);
@@ -795,13 +808,13 @@ test('slow real HTTP model catalog remains pending, then enables selection and c
     await page.getByText('Delayed catalog works',{exact:true}).waitFor();assert.equal(chatRequests,1);
   }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
-test('configuration HTTP failure blocks sending, hides retry, and keeps the draft',async()=>{
+test('configuration HTTP failure blocks sending, reports failure, and keeps the draft',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
-  try{await page.route('**/config.json',route=>fulfill(route,{status:503,body:'Unavailable'}));await reloadPage(page);await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');assert.equal(await page.locator('.message').count(),0);await page.locator('#settings-nav').click();assert.match(await page.locator('#model-status').textContent(),/configuration could not be loaded.*Reload the page/);assert.equal(await page.locator('#retry-models').isHidden(),true);}finally{await closeBrowser(browser);}
+  try{await page.route('**/config.json',route=>fulfill(route,{status:503,body:'Unavailable'}));await reloadPage(page);await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');assert.equal(await page.locator('.message').count(),0);await page.locator('#failure').waitFor();await page.locator('#close-failure').click();await page.locator('#settings-nav').click();await page.locator('#failure').waitFor();assert.match(await page.locator('#model-status').textContent(),/configuration could not be loaded.*Open Settings/);assert.equal(await page.locator('#retry-models').count(),0);}finally{await closeBrowser(browser);}
 });
 test('empty catalog communicates unavailable choices without inventing a default',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
-  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[],default:null}}));await reloadPage(page);await page.locator('#settings-nav').click();await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('No model choices'));const errors=[];page.on('pageerror',error=>errors.push(error.message));assert.equal(await page.locator('#backend-default').isDisabled(),true);await page.locator('#backend-default').dispatchEvent('click');assert.deepEqual(errors,[]);assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'');await page.locator('#close-settings').click();await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('.message').count(),0);assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');}finally{await closeBrowser(browser);}
+  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[],default:null}}));await reloadPage(page);await page.locator('#settings-nav').click();await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('No model choices'));const errors=[];page.on('pageerror',error=>errors.push(error.message));assert.equal(await page.locator('#backend-default').isDisabled(),true);await page.locator('#backend-default').dispatchEvent('click');assert.deepEqual(errors,[]);assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'');await page.locator('#failure').waitFor();assert.equal(await page.locator('#settings').evaluate(dialog=>dialog.open),true);await page.locator('#close-failure').click();assert.equal(await page.locator('#appearance').isEnabled(),true);await page.locator('#close-settings').click();await page.locator('#prompt').fill('Keep draft');await page.locator('#send').click();assert.equal(await page.locator('.message').count(),0);assert.equal(await page.locator('#prompt').inputValue(),'Keep draft');}finally{await closeBrowser(browser);}
 });
 test('unversioned provider model succeeds without manufacturing a version',async()=>{
   const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Unversioned response')}));
@@ -821,7 +834,7 @@ test('new chat on an already empty conversation does not create an undo entry',a
 });
 test('retry refuses an unavailable original model without changing its saved text',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
-  try{await page.evaluate(()=>{const requested={model:'removed',version:'old',reasoning:''},settings={model:'sample',version:'v1',reasoning:''};localStorage.setItem('api-agent-studio-v2',JSON.stringify({session:'saved',draft:'Next draft',settings,messages:[{id:'u',role:'user',text:'Original request',requested},{id:'a',role:'assistant',text:'Partial',request:'Original request',requested,error:'Earlier failure'}]}));});await reloadPage(page);await page.getByRole('button',{name:'Retry response'}).click();assert.match(await page.locator('#status').textContent(),/available model/);assert.equal(await page.locator('.assistant .message-body p').textContent(),'Partial');assert.equal(await page.locator('#prompt').inputValue(),'Next draft');}finally{await closeBrowser(browser);}
+  try{await page.evaluate(()=>{const requested={model:'removed',version:'old',reasoning:''},settings={model:'sample',version:'v1',reasoning:''};localStorage.setItem('api-agent-studio-v2',JSON.stringify({session:'saved',draft:'Next draft',settings,messages:[{id:'u',role:'user',text:'Original request',requested},{id:'a',role:'assistant',text:'Partial',request:'Original request',requested,error:'Earlier failure'}]}));});await reloadPage(page);await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();assert.match(await page.locator('#status').textContent(),/available model/);assert.equal(await page.locator('.assistant .message-body p').textContent(),'Partial');assert.equal(await page.locator('#prompt').inputValue(),'Next draft');}finally{await closeBrowser(browser);}
 });
 test('persisted question with an unavailable original model cannot resolve or consume its draft',async()=>{
   const {browser,page}=await openStudio(route=>route.abort());
@@ -867,7 +880,7 @@ test('catalog raw cap cancels real HTTP before EOF and preserves the unsent draf
     const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);
     await page.locator('#prompt').fill('Retained unsent draft');await page.locator('#settings-nav').click();
     await page.waitForFunction(()=>document.querySelector('#model-status').textContent.includes('Model list unavailable'),null,{timeout:5000});
-    await closed.promise;await page.locator('#close-settings').click();await page.locator('#send').click();
+    await closed.promise;await page.locator('#failure').waitFor();await page.locator('#close-failure').click();await page.locator('#close-settings').click();await page.locator('#send').click();
     assert.equal(await page.locator('#prompt').inputValue(),'Retained unsent draft');assert.equal(await page.locator('.message').count(),0);assert.equal(posts,0);
   }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
@@ -934,20 +947,20 @@ test('actual HTTP heartbeat survives hidden state, Stop and persisted pagehide c
     assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,1);assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,0);
     await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     await page.waitForTimeout(100);assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,1);
-    const first=calls[0].session_id;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();
+    const first=calls[0].session_id;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();
     await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await page.getByRole('button',{name:'Retry response'}).waitFor();await page.waitForTimeout(100);
     assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,2);assert.notEqual(calls.filter(x=>x.path.endsWith('/stream'))[1].session_id,first);
     const heartbeatCount=calls.filter(x=>x.path.endsWith('/heartbeat')).length;await page.clock.fastForward(30001);await page.waitForTimeout(100);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,heartbeatCount);
-    completedHeartbeat=true;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.waitForTimeout(100);assert.equal(await page.locator('#stop').isVisible(),true);const completing=streams.at(-1);const completingId=calls.filter(x=>x.path.endsWith('/stream')).at(-1).session_id;completing.end(finishFrames(completingId,result('Completed after heartbeat')));await page.getByText('Completed after heartbeat',{exact:true}).waitFor();completedHeartbeat=false;
+    completedHeartbeat=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.waitForTimeout(100);assert.equal(await page.locator('#stop').isVisible(),true);const completing=streams.at(-1);const completingId=calls.filter(x=>x.path.endsWith('/stream')).at(-1).session_id;completing.end(finishFrames(completingId,result('Completed after heartbeat')));await page.getByText('Completed after heartbeat',{exact:true}).waitFor();completedHeartbeat=false;
     await page.locator('#prompt').fill('Another operation');await page.locator('#send').click();await page.getByText('Still running',{exact:true}).waitFor();await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     for(const malformed of ['null','session','status','extra']){
-      malformedHeartbeat=malformed;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/Invalid agent lifecycle response/);
+      malformedHeartbeat=malformed;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/Invalid agent lifecycle response/);
     }
     malformedHeartbeat='';
-    rejectHeartbeat=true;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/no longer running/);
-    rejectHeartbeat=false;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(150001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/too long/);
+    rejectHeartbeat=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/no longer running/);
+    rejectHeartbeat=false;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(150001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/too long/);
     await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false})));
-    failCancel=true;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/stopped/);for(let attempt=0;attempt<100&&cancelFailures===0;attempt++)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(cancelFailures,1);failCancel=false;
+    failCancel=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/stopped/);for(let attempt=0;attempt<100&&cancelFailures===0;attempt++)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(cancelFailures,1);failCancel=false;
     const exitPage=await browser.newPage();await startCoverage(exitPage);await exitPage.goto(uiOrigin);await exitPage.waitForFunction(()=>document.querySelector('#model').value==='sample');await exitPage.locator('#prompt').fill('Navigate away');await exitPage.locator('#send').click();await exitPage.getByText('Still running',{exact:true}).waitFor();const beforeExit=calls.filter(x=>x.path.endsWith('/cancel')).length;const navigating=streams.at(-1);await exitPage.goto('about:blank');
     for(let attempt=0;attempt<100&&!navigating.destroyed;attempt++)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(navigating.destroyed,true);assert.ok(calls.filter(x=>x.path.endsWith('/cancel')).length<=beforeExit+1);
     await exitPage.goto(uiOrigin);await exitPage.waitForFunction(()=>document.querySelector('#model').value==='sample');await exitPage.locator('#prompt').fill('Close active tab');await exitPage.locator('#send').click();await exitPage.getByText('Still running',{exact:true}).waitFor();const beforeClose=calls.filter(x=>x.path.endsWith('/cancel')).length;const closing=streams.at(-1);await exitPage.close();
@@ -1031,7 +1044,7 @@ test('actual HTTP follows changing backend defaults until explicit choice and re
     fail=true;await page.locator('#prompt').fill('New default');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     assert.equal(posts[1].model,'alternative');
     defaultModel='sample';await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model').value==='sample');
-    fail=false;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Reply 3',{exact:true}).waitFor();
+    fail=false;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Reply 3',{exact:true}).waitFor();
     assert.equal(posts[2].model,'alternative');assert.notEqual(posts[2].session_id,posts[1].session_id);
     await page.locator('#settings-nav').click();await page.locator('#model').selectOption('sample');await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
     defaultModel='alternative';await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-short-name').textContent==='Sample model: off');
@@ -1069,10 +1082,10 @@ test('actual HTTP schedules advertised heartbeat timing and preserves absolute d
     await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();await page.waitForTimeout(50);
     const stoppedHeartbeats=calls.filter(x=>x.path.endsWith('/heartbeat')).length;
     await page.clock.fastForward(15001);await page.waitForTimeout(50);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,stoppedHeartbeats);
-    await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Advertised timing draft',{exact:true}).waitFor();
+    await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Advertised timing draft',{exact:true}).waitFor();
     await page.clock.fastForward(150001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/too long/);
     invalid=true;const before=calls.filter(x=>x.path.endsWith('/cancel')).length;
-    await page.getByRole('button',{name:'Retry response'}).click();await page.getByRole('button',{name:'Retry response'}).waitFor();
+    await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     assert.match(await page.locator('.error-note').textContent(),/Invalid stream session/);
     for(let attempt=0;attempt<100&&calls.filter(x=>x.path.endsWith('/cancel')).length===before;attempt++)await new Promise(resolve=>setTimeout(resolve,10));
     assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,before+1);
@@ -1104,11 +1117,12 @@ test('native keyboard can pin the sole current model and reset backend policy wi
     assert.equal(await page.locator('#model').inputValue(),'sample');
     await page.locator('#prompt').fill('Pinned original');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     assert.equal(posts[0].model,'sample');
+    await dismissFailure(page);
     await page.locator('#settings-nav').click();await page.getByRole('button',{name:'Use backend default'}).click();
     assert.equal(await page.locator('#model').inputValue(),'alternative');
     assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')).settings.model),'');
     await page.locator('#close-settings').click();fail=false;
-    await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Pinned retry completed',{exact:true}).waitFor();
+    await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Pinned retry completed',{exact:true}).waitFor();
     assert.equal(posts[1].model,'sample');assert.notEqual(posts[1].session_id,posts[0].session_id);
   }finally{await studio.close();}
 });
@@ -1154,7 +1168,7 @@ test('family picker sends exact version IDs and pins old retries across family/d
   await page.locator('#settings-nav').click();await page.locator('#model').selectOption(solFamily);
   assert.match(await page.locator('#model-status').textContent(),/Choose an advertised version/);
   await page.locator('#version').selectOption(sol.selected_llm);await page.locator('#reasoning').selectOption('off');await page.locator('#close-settings').click();
-  fail=false;await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Family reply 3',{exact:true}).waitFor();
+  fail=false;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Family reply 3',{exact:true}).waitFor();
   assert.equal(posts[2].model,l6.selected_llm);assert.equal(posts[2].reasoning_effort,'high');
   await page.locator('#prompt').fill('New family');await page.locator('#send').click();await page.getByText('Family reply 4',{exact:true}).waitFor();
   assert.equal(posts[3].model,sol.selected_llm);assert.equal(posts[3].reasoning_effort,'off');
@@ -1260,7 +1274,7 @@ test('family default retries keep their send-time ID after the configured family
   await page.locator('#prompt').fill('Family default retry');await page.locator('#send').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
   assert.equal(posts[0].model,'new');defaultModel='old';fail=false;await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
   assert.equal(await page.locator('#model-short-name').textContent(),'GPT-5.6-Luna: off');
-  await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Family retry pinned',{exact:true}).waitFor();
+  await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Family retry pinned',{exact:true}).waitFor();
   assert.equal(posts[1].model,'new');assert.equal(posts[1].reasoning_effort,'off');
   const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('api-agent-studio-v2')));
   assert.equal(saved.messages[0].requested.family,'gpt-luna');assert.equal(saved.messages[0].selectionSnapshot.model,'new');assert.equal(saved.messages[1].selectionSnapshot.model,'new');
@@ -1374,4 +1388,117 @@ test('implicit backend family gates initial reset and stale reasoning while exac
   await page.locator('#settings-nav').click();assert.equal(await page.locator('#reasoning').isDisabled(),false);assert.equal(await page.locator('#version').inputValue(),'');await page.locator('#close-settings').click();
   await page.locator('#send').click();await page.getByText('Implicit selection 2',{exact:true}).waitFor();assert.equal(posts[1].model,'new');assert.equal(posts[1].reasoning_effort,'low');
  }finally{await studio.close();}
+});
+
+test('Settings failure is safe, dismissible, and the next keyboard Send retries once', async () => {
+  let posts=0;
+  const {browser,page}=await openStudio(route=>{posts++;return fulfill(route,{json:result('Recovered without restart')});});
+  try {
+    let catalogs=0;
+    await page.route('**/app/agent/models',route=>{
+      catalogs++;
+      return catalogs<3 ? fulfill(route,{status:503,body:'<script>window.catalogPwned=1</script> private diagnostic'}) : fulfill(route,{json:[model]});
+    });
+    await reloadPage(page);
+    await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+    await page.locator('#prompt').press('Control+Enter');
+    assert.equal(catalogs,1); assert.equal(await page.locator('#failure').isVisible(),false);
+    await page.locator('#prompt').fill('Keep this request');
+    await page.locator('#settings-nav').click(); await page.locator('#failure').waitFor();
+    assert.equal(catalogs,2); assert.equal(posts,0);
+    assert.match(await page.locator('#failure-message').textContent(),/HTTP 503/);
+    assert.doesNotMatch(await page.locator('#failure-message').textContent(),/private diagnostic|script/);
+    assert.equal(await page.evaluate(()=>window.catalogPwned),undefined);
+    assert.equal(await page.locator('#close-failure').evaluate(button=>button===document.activeElement),true);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#close-settings').evaluate(button=>button===document.activeElement),true);
+    await page.locator('#close-settings').click();
+    await page.locator('#prompt').press('Control+Enter');
+    await page.getByText('Recovered without restart',{exact:true}).waitFor();
+    assert.equal(catalogs,3);assert.equal(posts,1);
+    assert.equal(await page.locator('#retry-models').count(),0);
+    await page.locator('#settings-nav').click();assert.equal(catalogs,3);
+  } finally { await closeBrowser(browser); }
+});
+
+for (const invalidate of ['edit','new-chat','stop','suggestion','undo','programmatic']) test('pending catalog Send is cancelled by '+invalidate, async()=>{
+  let posts=0;
+  const {browser,page}=await openStudio(route=>{posts++;return fulfill(route,{json:result('Unexpected stale send')});});
+  try {
+    const release=Promise.withResolvers(); let catalogs=0;
+    await page.route('**/app/agent/models',async route=>{catalogs++;await release.promise;return fulfill(route,{json:[model]});});
+    await reloadPage(page);
+    if(invalidate==='undo') {
+      await page.locator('#prompt').fill('Previous draft');await page.locator('#new-chat').click();
+    }
+    await page.locator('#prompt').fill('Pending request');await page.locator('#send').click();
+    await page.locator('#prompt').press('Control+Enter');
+    assert.equal(await page.locator('#send').isDisabled(),true);
+    assert.equal(await page.locator('#stop').isVisible(),true);
+    if(invalidate==='edit') await page.locator('#prompt').fill('Changed request');
+    if(invalidate==='programmatic') await page.locator('#prompt').evaluate(input=>input.value='Changed without input event');
+    if(invalidate==='new-chat') await page.locator('#new-chat').click();
+    if(invalidate==='stop') await page.locator('#stop').click();
+    if(invalidate==='suggestion') await page.locator('[data-prompt]').first().click();
+    if(invalidate==='undo') await page.locator('#undo-new-chat').click();
+    release.resolve();
+    await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+    assert.equal(catalogs,1);assert.equal(posts,0);assert.equal(await page.locator('.message').count(),0);
+    assert.equal(await page.locator('#failure').isVisible(),false);
+    assert.equal(await page.locator('#send').isEnabled(),true);
+    if(invalidate==='edit') assert.equal(await page.locator('#prompt').inputValue(),'Changed request');
+    if(invalidate==='stop') assert.equal(await page.locator('#prompt').inputValue(),'Pending request');
+  } finally { await closeBrowser(browser); }
+});
+
+test('repeated Settings and Send join the eager catalog and dispatch only one message',async()=>{
+  let posts=0;
+  const {browser,page}=await openStudio(route=>{posts++;return fulfill(route,{json:result('Joined ready send')});});
+  try {
+    const release=Promise.withResolvers();let catalogs=0;
+    await page.route('**/app/agent/models',async route=>{catalogs++;await release.promise;return fulfill(route,{json:[model]});});
+    await reloadPage(page);
+    await page.locator('#prompt').fill('One joined request');await page.locator('#send').click();
+    await page.locator('#settings-nav').evaluate(button=>{button.click();button.click();});
+    assert.equal(await page.locator('#model-status').textContent(),'Loading model choices…');
+    await page.locator('#close-settings').click();await page.locator('#prompt').press('Control+Enter');
+    release.resolve();await page.getByText('Joined ready send',{exact:true}).waitFor();
+    assert.equal(catalogs,1);assert.equal(posts,1);assert.equal(await page.locator('.user').count(),1);
+  } finally { await closeBrowser(browser); }
+});
+
+test('failed configuration can recover on the next Settings action without a reload',async()=>{
+  const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Unused')}));
+  try {
+    let attempts=0;
+    await page.route('**/config.json',route=>++attempts===1 ? fulfill(route,{status:503,body:'Unavailable'}) : fulfill(route,{json:{apiOrigin:'http://127.0.0.1:1'}}));
+    await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-status').dataset.catalogState==='settled');
+    await page.locator('#settings-nav').click();await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
+    assert.equal(attempts,2);assert.equal(await page.locator('#failure').isVisible(),false);
+  } finally { await closeBrowser(browser); }
+});
+
+
+test('Settings opens immediately while Send joins acquisition; one failure modal restores a usable focus', async()=>{
+  const {browser,page}=await openStudio(route=>route.abort());
+  try {
+    const release=Promise.withResolvers();let catalogs=0;
+    await page.route('**/app/agent/models',async route=>{catalogs++;await release.promise;return fulfill(route,{status:503,body:'Unavailable'});});
+    await reloadPage(page);await page.locator('#prompt').fill('Retained failed intent');
+    await page.locator('#settings-nav').click();
+    assert.equal(await page.locator('#settings').evaluate(dialog=>dialog.open),true);
+    assert.equal(await page.locator('#appearance').isEnabled(),true);
+    await page.locator('#composer').evaluate(form=>form.requestSubmit());
+    release.resolve();await page.locator('#failure').waitFor();
+    assert.equal(catalogs,1);assert.equal(await page.locator('.message').count(),0);
+    assert.equal(await page.locator('#prompt').inputValue(),'Retained failed intent');
+    await page.locator('#close-failure').click();assert.equal(await page.locator('#settings').evaluate(dialog=>dialog.open),true);
+    assert.equal(await page.locator('#close-settings').evaluate(button=>button===document.activeElement),true);
+    await page.locator('#close-settings').click();
+    const next=Promise.withResolvers();
+    await page.route('**/app/agent/models',async route=>{await next.promise;return fulfill(route,{status:503,body:'Unavailable'});});
+    await page.locator('#settings-nav').click();await page.locator('#close-settings').click();
+    next.resolve();await page.locator('#failure').waitFor();await page.locator('#close-failure').click();
+    assert.equal(await page.locator('#settings-nav').evaluate(button=>button===document.activeElement),true);
+  } finally { await closeBrowser(browser); }
 });
