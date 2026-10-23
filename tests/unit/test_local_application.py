@@ -99,3 +99,137 @@ def test_graph_execution_cannot_bypass_or_replace_declared_call(application, mon
     async def run():
         with pytest.raises(WorkflowError): await application.complete(request, llm=provider, context=OperationContext('turn'))
     asyncio.run(run())
+
+
+def test_observations_capture_only_plain_text_without_changing_provider_request(application):
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    resolved = ConfigResult({'LOG_CONTENT':True}, {'LOG_CONTENT':ResolvedValue(True,'cli',True)}, (), (), ())
+    rows = []
+    application.observations = WorkflowObservationFactory(resolved,boundary=EmissionBoundary(),sink=rows.append)
+    result = LLMResult(Message('assistant',(TextContent('visible answer'),)),Usage(2,3))
+    provider = SimpleNamespace(complete=AsyncMock(return_value=result))
+    request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('visible question'),)),)))
+    async def run():
+        context = OperationContext('request')
+        assert await application.complete(request,llm=provider,context=context) is result
+        provider.complete.assert_awaited_once_with(request,context=context)
+    asyncio.run(run())
+    captures = [row for row in rows if row['event']=='capture' and row.get('values')]
+    assert [dict(row['values']) for row in captures] == [
+        {'messages_text':'user: visible question'}, {'response_text':'visible answer'}]
+    assert len({row['invocation_id'] for row in rows}) == 1
+
+
+@pytest.mark.parametrize('log,trace',[(True,False),(False,True),(True,True)])
+def test_privacy_unrepresentable_visible_response_preserves_actual_graph_result(application,log,trace):
+    from api_agent.config.resolve import ConfigResult,ResolvedValue
+    from api_agent.telemetry.privacy import EmissionBoundary,ContentPolicy
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from unittest.mock import Mock
+    values = {'LOG_CONTENT':log,'TRACELOOP_TRACE_CONTENT':trace}
+    resolved = ConfigResult(values,{key:ResolvedValue(value,'cli',True) for key,value in values.items()},(),(),())
+    rows = []
+    runtime = Mock(boundary=EmissionBoundary(ContentPolicy(trace)))
+    application.observations = WorkflowObservationFactory(resolved,boundary=EmissionBoundary(),sink=rows.append,trace=runtime)
+    visible = '123456789012345678901234567890'
+    result = LLMResult(Message('assistant',(TextContent(visible),)),Usage(2,3))
+    provider = SimpleNamespace(complete=AsyncMock(return_value=result))
+    request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('question'),)),)))
+    async def run():
+        context = OperationContext('request')
+        assert await application.complete(request,llm=provider,context=context) is result
+        provider.complete.assert_awaited_once_with(request,context=context)
+    asyncio.run(run())
+    capture = next(row for row in rows if row['event']=='capture' and row['direction']=='output' and row.get('reason')=='privacy_withheld')
+    assert 'values' not in capture
+    assert visible not in repr(rows)
+
+
+from test_workflow_observations import recording_policy
+
+
+def test_recorded_local_graph_publishes_only_resolved_log_permission(application,recording_policy,tmp_path,monkeypatch):
+    import json
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from api_agent.workflows.evidence import attachment
+    resolved,allowed = recording_policy
+    events = tmp_path/'recorded.jsonl'
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING','1')
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(events))
+    monkeypatch.setattr('api_agent.workflows.provenance.verified_documents',lambda *args,**kwargs:None)
+    rows = []
+    application.config['LOG_CONTENT'] = True
+    application.observations = WorkflowObservationFactory(resolved,boundary=EmissionBoundary(),sink=rows.append)
+    result = LLMResult(Message('assistant',(TextContent('private-response-sentinel'),)),Usage(2,3))
+    provider = SimpleNamespace(complete=AsyncMock(return_value=result))
+    request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('private-prompt-sentinel'),)),)))
+    assert asyncio.run(application.complete(request,llm=provider,context=OperationContext('request'))) is result
+    packet = next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['kind']=='workflow_evidence')
+    payload = packet['data']
+    _,attachment_bytes,_ = attachment(SimpleNamespace(text=json.dumps(payload)),None)
+    assert ('private-prompt-sentinel' in attachment_bytes.decode()) is allowed
+    assert ('private-response-sentinel' in attachment_bytes.decode()) is allowed
+    assert payload['content']==('permitted_scrubbed' if allowed else 'withheld')
+    assert [row['event_id'] for row in rows]==[row['event_id'] for row in payload['events']]
+
+
+@pytest.mark.parametrize('size', [65536, 65537])
+@pytest.mark.parametrize('log_content', [False, True])
+@pytest.mark.parametrize('full_content', [False, True])
+def test_local_chat_capture_scalar_limit_preserves_reason_and_execution(
+        application, size, log_content, full_content, monkeypatch):
+    import json
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    resolved = ConfigResult({'LOG_CONTENT': log_content},
+        {'LOG_CONTENT': ResolvedValue(log_content, 'cli', True)}, (), (), ())
+    rows = []
+    application.observations = WorkflowObservationFactory(
+        resolved, boundary=EmissionBoundary(), sink=rows.append)
+    from api_agent.workflows.observations import WorkflowObservations
+    capture_ids = []
+    original_capture = WorkflowObservations.capture
+    def observe_capture(adapter, **options):
+        row = original_capture(adapter, **options)
+        if tuple(options.get('values', {})) in (('messages_text',), ('response_text',)):
+            capture_ids.append(row['event_id'])
+        return row
+    monkeypatch.setattr(WorkflowObservations, 'capture', observe_capture)
+    # Two individually valid messages produce one scalar at the admission limit.
+    first = 'q' * 32760
+    second = 'r' * (size - 13 - len(first))
+    captured_input = 'user: ' + first + '\nuser: ' + second
+    answer = 'a' * size
+    request = LLMRequest('synthetic', CompletionRequest((
+        Message('user', (TextContent(first),)), Message('user', (TextContent(second),)))))
+    result = LLMResult(Message('assistant', (TextContent(answer),)), Usage(2, 3))
+    provider = SimpleNamespace(complete=AsyncMock(return_value=result))
+    context = OperationContext('request')
+
+    actual = asyncio.run(application.complete(request, llm=provider, context=context))
+
+    assert actual is result
+    provider.complete.assert_awaited_once_with(request, context=context)
+    captures = [row for row in rows if row['event_id'] in capture_ids]
+    assert [row['direction'] for row in captures] == ['input', 'output']
+    displayed = [json.loads(LocalDiagnosticProjection(full_content=full_content).format(row))
+                 for row in captures]
+    if size > 65536:
+        assert [row['reason'] for row in captures] == ['payload_limit', 'payload_limit']
+        assert [row['content'] for row in displayed] == ['payload_limit', 'payload_limit']
+        assert all('values' not in row for row in captures + displayed)
+    elif log_content:
+        assert [row['reason'] for row in captures] == ['captured', 'captured']
+        assert dict(captures[0]['values']) == {'messages_text': captured_input}
+        assert dict(captures[1]['values']) == {'response_text': answer}
+        limit = size if full_content else 512
+        assert len(displayed[0]['values']['messages_text']) == limit
+        assert len(displayed[1]['values']['response_text']) == limit
+    else:
+        assert [row['content'] for row in displayed] == ['withheld', 'withheld']
+        assert all('values' not in row for row in captures + displayed)

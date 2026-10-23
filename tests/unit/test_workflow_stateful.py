@@ -679,7 +679,8 @@ def test_nested_component_journal_has_scope_owned_route_chain(fixture_graph):
                for event in envelope['events'])
 
 
-def test_reporting_marker_verifies_before_native_exec_and_publishes_turn(fixture_graph, monkeypatch):
+@pytest.mark.parametrize('observe', [False, True])
+def test_reporting_marker_verifies_before_native_exec_and_publishes_turn(fixture_graph, monkeypatch, observe):
     root, entry = fixture_graph
     definition = load_stateful_definition(entry, base_root=root, pack_root=root)
     calls = []
@@ -689,13 +690,22 @@ def test_reporting_marker_verifies_before_native_exec_and_publishes_turn(fixture
     monkeypatch.setattr(evidence, 'publish', calls.append)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
     catalog = load_stateful_catalog(definition)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    rows = []
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from api_agent.telemetry.privacy import EmissionBoundary
+    services = {'observation_factory': WorkflowObservationFactory(
+        {}, boundary=EmissionBoundary(), sink=rows.append)} if observe else {}
+    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages},
+                                services=services)
 
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                thread_id='reported'))
 
     assert calls[:2] == [definition.definition_id, definition.definition_id]
     assert calls[2]['completeness'] == 'complete'
+    if observe:
+        assert rows
+        assert [row['event_id'] for row in rows] == [row['event_id'] for row in calls[2]['events']]
 
 
 def test_declared_recovery_loop_revisits_node_then_ends(fixture_graph):
@@ -2223,3 +2233,120 @@ def test_presented_stateful_cli_keeps_validation_and_topology(fixture_graph, cap
     assert capsys.readouterr().out == expected
     assert workflow_cli(['validate', '--entry', str(entry)]) == 0
     assert 'Valid workflow: synthetic_flow' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('with_journal', [False,True])
+def test_stateful_plain_capture_requires_explicit_contract_and_retains_only_fields(fixture_graph,with_journal):
+    root, entry = fixture_graph
+    definition = load_stateful_definition(entry,base_root=root,pack_root=root)
+    from api_agent.telemetry.privacy import ContentPolicy
+    journal = WorkflowJournal(definition,log_content=True,content_policy=ContentPolicy(True)) if with_journal else None
+    contract = {'schema':{'type':'object','properties':{'visits':{'type':'integer'}}},
+                'plain_fields':['visits']}
+    workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),
+        reducers={'messages':add_messages},journal=journal,
+        services={'plain_io_contracts':{'intake':{'input':contract,'output':contract}}})
+    result = asyncio.run(workflow.arun({'messages':[HumanMessage(content='unclassified text')],
+        'pending':False,'visits':0},thread_id='classified'))
+    assert result['visits'] == 1
+    if with_journal:
+        captures = [row for row in journal.finalize()['events'] if row['event']=='capture']
+        assert [row['values'] for row in captures] == [{'visits':0},{'visits':1}]
+        assert 'unclassified text' not in str(captures)
+
+
+from test_workflow_observations import recording_policy
+
+
+@pytest.mark.parametrize('observe',[False,True])
+@pytest.mark.parametrize('authority',[False,True])
+def test_recorded_stateful_graph_publishes_only_resolved_log_permission(fixture_graph,recording_policy,tmp_path,monkeypatch,observe,authority):
+    import json
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from api_agent.workflows.evidence import attachment
+    resolved,allowed = recording_policy
+    root,entry = fixture_graph
+    source = root/'native.py'
+    source.write_text(source.read_text().replace('    visits: int','    visits: int\n    text: str').replace(
+        "'visits': state['visits'] + 1}","'visits': state['visits'] + 1, 'text': state['text']}"))
+    events = tmp_path/'recorded.jsonl'
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING','1')
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(events))
+    monkeypatch.setattr('api_agent.workflows.provenance.verified_documents',lambda *args,**kwargs:None)
+    definition = load_stateful_definition(entry,base_root=root,pack_root=root)
+    rows = []
+    contract = {'schema':{'type':'object','properties':{'text':{'type':'string'}}},'plain_fields':['text']}
+    factory = WorkflowObservationFactory(resolved,boundary=EmissionBoundary(),sink=rows.append)
+    workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),reducers={'messages':add_messages},
+        config={'LOG_CONTENT':True},services={'observation_factory':factory if observe else None,
+            'content_policy':factory.log_policy if authority else None,
+            'plain_io_contracts':{'intake':{'input':contract,'output':contract}}})
+    result = asyncio.run(workflow.arun({'messages':[],'pending':False,'visits':0,
+        'text':'private-stateful-sentinel'},thread_id='recorded-policy'))
+    assert result['text']=='private-stateful-sentinel' and result['visits']==1
+    packet = next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['kind']=='workflow_evidence')
+    payload = packet['data']
+    _,attachment_bytes,_ = attachment(SimpleNamespace(text=json.dumps(payload)),None)
+    allowed = allowed and (observe or authority)
+    assert ('private-stateful-sentinel' in attachment_bytes.decode()) is allowed
+    assert payload['content']==('permitted_scrubbed' if allowed else 'withheld')
+    if observe:
+        assert [row['event_id'] for row in rows]==[row['event_id'] for row in payload['events']]
+
+
+@pytest.mark.parametrize('case',[
+    pytest.param('visible',id='plain-positive'),
+    pytest.param('x'*65536,id='at-limit'),
+    pytest.param('x'*65537,id='oversized'),
+    pytest.param(['unavailable-private-sentinel'],id='unsupported'),
+])
+@pytest.mark.parametrize('log',[False,True])
+@pytest.mark.parametrize('immutable',[False,True])
+def test_recorded_stateful_frozen_capture_contract_is_observational(
+        fixture_graph,case,log,tmp_path,monkeypatch,immutable):
+    import json
+    from types import MappingProxyType
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from api_agent.workflows.evidence import attachment
+    root,entry = fixture_graph
+    source = root/'native.py'
+    source.write_text(source.read_text().replace('    visits: int','    visits: int\n    text: object').replace(
+        "'visits': state['visits'] + 1}","'visits': state['visits'] + 1, 'text': state['text']}"))
+    events = tmp_path/'frozen-events.jsonl'
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING','1')
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(events))
+    monkeypatch.setattr('api_agent.workflows.provenance.verified_documents',lambda *a,**k:None)
+    resolved = ConfigResult({'LOG_CONTENT':log},{'LOG_CONTENT':ResolvedValue(log,'cli',True)},(),(),())
+    rows = []
+    factory = WorkflowObservationFactory(resolved,boundary=EmissionBoundary(),sink=rows.append)
+    freeze = MappingProxyType if immutable else dict
+    schema = freeze({'type':'object','properties':freeze({
+        'text':freeze({'type':'array' if isinstance(case,list) else 'string'})})})
+    contract = MappingProxyType({'schema':schema,'plain_fields':('text',)})
+    definition = load_stateful_definition(entry,base_root=root,pack_root=root)
+    workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),
+        reducers={'messages':add_messages},config={'LOG_CONTENT':log},
+        services={'observation_factory':factory,'plain_io_contracts':{
+            'intake':{'input':contract,'output':contract}}})
+    result = asyncio.run(workflow.arun({'messages':[],'pending':False,'visits':0,'text':case},
+        thread_id='frozen-capture'))
+    assert result['text']==case and result['visits']==1 and result['pending'] is True
+    payload = next(json.loads(line)['data'] for line in events.read_text().splitlines()
+        if json.loads(line)['kind']=='workflow_evidence')
+    _,data,_ = attachment(SimpleNamespace(text=json.dumps(payload)),None)
+    captures = [row for row in payload['events'] if row['event']=='capture']
+    live = [row for row in rows if row['event']=='capture']
+    reason = ('unsupported' if isinstance(case,list) else 'payload_limit' if len(case)>65536
+              else 'truncated' if log and len(case)>512 else 'captured' if log else 'withheld')
+    assert [row['reason'] for row in captures]==[reason,reason]
+    assert [row['event_id'] for row in live]==[row['event_id'] for row in captures]
+    if reason in ('captured','truncated'):
+        assert [row['values']['text'] for row in captures]==[case[:512],case[:512]]
+        assert [row['values']['text'] for row in live]==[case,case]
+    else:
+        assert all('values' not in row for row in captures+live)
+        assert 'unavailable-private-sentinel' not in data.decode()
+        assert 'x'*65537 not in data.decode()

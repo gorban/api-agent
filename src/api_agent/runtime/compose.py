@@ -124,7 +124,7 @@ def local_development_environment(scope):
     Stable values let repeated plans use an existing named-volume database. These
     are public local development placeholders, never production credentials.
     """
-    env = {'SA_SCOPE': scope.id, 'COMPOSE_DISABLE_ENV_FILE': '1'}
+    env = {'SA_SCOPE': scope.id, 'COMPOSE_DISABLE_ENV_FILE': '1', 'SA_USER_EMAIL': 'admin@api-agent.invalid'}
     for key in ('POSTGRES_PASSWORD', 'CLICKHOUSE_PASSWORD', 'REDIS_PASSWORD', 'MINIO_PASSWORD',
                 'SALT', 'NEXTAUTH_SECRET', 'USER_PASSWORD', 'ENCRYPTION_KEY',
                 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
@@ -316,6 +316,12 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
     environment['SA_ALLURE_S3_BUCKET'] = bucket if 'localstack' in profiles else 'allure-results'
     environment['SA_ALLURE_S3_REGION'] = region if 'localstack' in profiles else 'us-east-1'
     if 'langfuse' in profiles:
+        for setting, variable in (('LANGFUSE_ADMIN_EMAIL', 'SA_USER_EMAIL'), ('LANGFUSE_ADMIN_PASSWORD', 'SA_USER_PASSWORD')):
+            value = config.get(setting)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip() or '\x00' in value:
+                    raise ComposeError('Local LangFuse admin credentials must be nonempty strings.')
+                environment[variable] = value
         for key in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
             value = config.get(key)
             if value is not None:

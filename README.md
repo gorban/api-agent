@@ -32,7 +32,7 @@ or save an explicit blank to launch that API locally alongside the agent.
 See [setup and configuration](docs/workbench.md#getting-started).
 
 Run local opens one headed browser when `RUN_UI=True` or `DEBUG=True`: agent
-home first, the [actual LangGraph flow](flow.md.html) next, and the optional prepared UI last.
+home first, an enabled ready tracing dashboard next, the [actual LangGraph flow](flow.md.html), and the optional prepared UI last.
 With both settings false, it prints the home and flow URLs without opening a
 browser or authenticating an LLM. To use the same operation without the TUI:
 
@@ -41,9 +41,10 @@ browser or authenticating an LLM. To use the same operation without the TUI:
 ```
 
 Press Ctrl+C to stop the terminal operation; use Stop or Quit in the TUI.
-Shutdown waits for owned requests and resources to finish cleanup. This initial
-Run local release requires an empty `TRACE_MODE`; tracing dashboard startup and
-login follow separately. UI-process logs show safe activity messages rather than
+Shutdown waits for owned requests and resources to finish cleanup.
+[Tracing configuration](docs/tracing.md) enables a ready Jaeger or LangFuse dashboard;
+LangFuse dashboard login uses its separately configured admin account.
+UI-process logs show safe activity messages rather than
 arbitrary child output, which may contain credentials even with `LOG_CONTENT=True`.
 
 ## Guides

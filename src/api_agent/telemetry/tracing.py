@@ -10,6 +10,7 @@ from base64 import b64encode
 from contextlib import contextmanager
 import json
 import os
+import re
 from threading import Event, Lock, Thread
 from urllib.parse import urlsplit
 
@@ -20,11 +21,55 @@ class TraceError(RuntimeError):
     """Fixed diagnostics deliberately omit SDK messages and credentials."""
 
 
-def _attributes(boundary, payload):
+def _attributes(boundary, payload, *, model_identity=None):
     clean = boundary.export(payload)
+    clean.pop('gen_ai.request.model', None)
+    if type(payload) is dict and model_identity is not None:
+        model = payload.get('gen_ai.request.model')
+        if model_identity(model) is True:
+            clean.update(boundary.for_policy(ContentPolicy(True)).export({'gen_ai.request.model': model}))
     return {key: value if type(value) in (str, bool, int, float) else json.dumps(value)
             for key, value in clean.items()}
 
+
+
+def _model_identity(value, model_identities):
+    """Admit only exact identities explicitly established by the catalog owner."""
+    return (type(value) is str and 0 < len(value) <= 200 and value.isprintable()
+            and value in model_identities)
+
+
+def _structural(boundary, payload, model_identities=frozenset()):
+    """Only this versioned, bounded manual signal contract bypasses content gating."""
+    if type(payload) is not dict:
+        return {}
+    clean = {}
+    identifiers = {'api_agent.' + key for key in ('event_id', 'invocation_id', 'turn_id',
+        'scope_id', 'parent_id', 'visit_id', 'attempt_id', 'call_id')}
+    for key, value in payload.items():
+        if key == 'gen_ai.request.model':
+            if _model_identity(value, model_identities):
+                clean[key] = value
+        elif key in identifiers:
+            if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', value):
+                clean[key] = value
+        elif key in ('api_agent.attempt', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens'):
+            if type(value) is int and 0 <= value <= (1 << 53) - 1:
+                clean[key] = value
+        elif key == 'gen_ai.operation.name' and value == 'chat':
+            clean[key] = value
+    return _attributes(boundary.for_policy(ContentPolicy(True)), clean,
+        model_identity=lambda value: _model_identity(value, model_identities))
+
+
+def _span_name(boundary, name, model_identities=frozenset()):
+    if type(name) is str and name.startswith('chat ') and not _model_identity(name[5:], model_identities):
+        return 'chat'
+    if type(name) is not str or not (
+            re.fullmatch(r'(?:graph|component|node) [A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', name)
+            or (name.startswith('chat ') and _model_identity(name[5:], model_identities))):
+        return 'api_agent.span'
+    return boundary.content_export({'name': name}).get('name', 'api_agent.span')
 
 def _sdk_factory(endpoint, headers, resource):
     # Honor the SDK disable policy without silent data loss or modifying globals.
@@ -89,24 +134,32 @@ def _sdk_factory(endpoint, headers, resource):
 
 
 class TraceSpan:
-    def __init__(self, span, boundary):
+    def __init__(self, span, boundary, model_identity=None):
         self._span = span
         self._boundary = boundary
+        self._model_identity = model_identity
+
+    def end(self, *, end_time=None):
+        if self._span is not None:
+            self._span.end(end_time=end_time)
+            self._span = None
 
     def attributes(self, payload):
-        clean = _attributes(self._boundary, payload)
+        clean = _attributes(self._boundary, payload, model_identity=self._model_identity)
         if self._span is not None:
             self._span.set_attributes(clean)
 
     def event(self, payload):
-        clean = _attributes(self._boundary, payload)
+        clean = _attributes(self._boundary, payload, model_identity=self._model_identity)
         if self._span is not None:
             self._span.add_event('api_agent.event', attributes=clean)
 
 
 class TraceRuntime:
-    def __init__(self, config, *, boundary=None, factory=None):
-        self.boundary = boundary or EmissionBoundary(ContentPolicy.from_config(config))
+    def __init__(self, config, *, boundary=None, factory=None, model_identities=()):
+        self.bind_model_identities(model_identities)
+        policy = ContentPolicy.from_config(config, field_name="TRACELOOP_TRACE_CONTENT")
+        self.boundary = (boundary or EmissionBoundary()).for_policy(policy)
         self._provider = self._tracer = None
         self._closed = False
         self._factory = factory or _sdk_factory
@@ -147,6 +200,21 @@ class TraceRuntime:
             endpoint = endpoint.rstrip('/') + '/api/public/otel/v1/traces'
         self._plan = (endpoint, headers, _attributes(self.boundary, {}))
 
+    def bind_model_identities(self, model_identities):
+        """Replace the trusted catalog snapshot; span payloads cannot admit identities."""
+        # Only trusted model catalog/configuration owners supply explicit identities;
+        # the per-span payload never grants itself metadata admission.
+        if (type(model_identities) not in (tuple, list, set, frozenset)
+                or len(model_identities) > 256
+                or any(type(value) is not str or not 0 < len(value) <= 200
+                       or not value.isprintable() for value in model_identities)):
+            raise TraceError('Trace model identities must be a bounded collection of identifiers.')
+        self._model_identities = frozenset(model_identities)
+
+    def is_model_identity(self, value):
+        """Return whether the owner catalog currently admits this exact identity."""
+        return _model_identity(value, self._model_identities)
+
     async def astart(self):
         if self._plan is None or self._provider is not None or self._closed:
             return
@@ -155,13 +223,29 @@ class TraceRuntime:
         except Exception:
             raise TraceError('Tracing initialization failed.') from None
 
-    @contextmanager
-    def span(self, payload=None):
-        clean = _attributes(self.boundary, payload)
+    def begin(self, name, structural, *, payload=None, parent=None, kind="INTERNAL", start_time=None):
+        """Begin a manually admitted operation without installing process globals."""
+        clean = _attributes(self.boundary, payload or {}, model_identity=self.is_model_identity)
+        # Structural is supplied only by the admitted observation adapter. Scrub
+        # it unconditionally; content opt-in does not authorize resource labels.
+        clean.update(_structural(self.boundary, structural, self._model_identities))
         span = None
         if self._tracer is not None and not self._closed:
-            span = self._tracer.start_span('api_agent.span', attributes=clean)
-        safe = TraceSpan(span, self.boundary)
+            from opentelemetry.trace import SpanKind, set_span_in_context
+            from opentelemetry.context import Context
+            span = self._tracer.start_span(_span_name(self.boundary, name, self._model_identities), attributes=clean,
+                context=set_span_in_context(parent._span, Context()) if parent is not None and parent._span is not None else Context(),
+                kind=getattr(SpanKind, kind), start_time=start_time)
+        return TraceSpan(span, self.boundary, self.is_model_identity)
+
+    @contextmanager
+    def span(self, payload=None):
+        clean = _attributes(self.boundary, payload, model_identity=self.is_model_identity)
+        span = None
+        if self._tracer is not None and not self._closed:
+            from opentelemetry.context import Context
+            span = self._tracer.start_span('api_agent.span', attributes=clean, context=Context())
+        safe = TraceSpan(span, self.boundary, self.is_model_identity)
         try:
             yield safe
         except BaseException as error:

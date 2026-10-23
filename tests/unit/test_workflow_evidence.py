@@ -49,7 +49,7 @@ def test_runner_registered_credential_rejects_journal_before_attachment():
     selected = SimpleNamespace(graph_id='Example', definition_id='a' * 64,
         entry_root='base', layout=SimpleNamespace(steps=[step], tables={'Edges': []}),
         resources=[], replacements=[])
-    journal = WorkflowJournal(selected, log_content=True)
+    journal = WorkflowJournal(selected, log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='input', values={'question': 'needle'},
         schema={'type': 'object', 'properties': {'question': {'type': 'string'}}},
         plain_fields=('question',))

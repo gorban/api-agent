@@ -14,7 +14,8 @@ def test_log_selection_preserves_text_and_labels_each_line():
 
 
 @pytest.mark.parametrize('failure,expected', [(None, 7), (ValueError('failed'), 1), (asyncio.CancelledError(), 130)])
-def test_terminal_owns_same_loop_and_disposes_on_every_outcome(failure, expected):
+@pytest.mark.parametrize('kind', ['log', 'diagnostic'])
+def test_terminal_owns_same_loop_and_disposes_on_every_outcome(failure, expected, kind):
     actions, output, diagnostics = [], [], []
     class Owner:
         pending_cleanup = None
@@ -24,7 +25,7 @@ def test_terminal_owns_same_loop_and_disposes_on_every_outcome(failure, expected
         async def start(self):
             actions.append(('start', asyncio.get_running_loop()))
             self.event(NS(kind='status', snapshot=None))
-            self.event(NS(kind='log', source='agent', text='ready\n'))
+            self.event(NS(kind=kind, source='agent', text='ready\n'))
         async def wait(self):
             actions.append(('wait', asyncio.get_running_loop()))
             if failure is not None:

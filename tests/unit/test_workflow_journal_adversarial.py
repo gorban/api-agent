@@ -1,3 +1,4 @@
+from api_agent.telemetry.privacy import ContentPolicy
 """Mutation probes for causality and retention at the recording boundary."""
 from copy import deepcopy
 from hashlib import sha256
@@ -19,7 +20,7 @@ def _definition():
 
 
 def _complete():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     graph, visit, call = str(uuid4()), str(uuid4()), str(uuid4())
     journal.observe(dict(event='scope_start', scope_id=graph, parent_id=None,
                          kind='graph', owner='GRAPH', started_ms=1))
@@ -90,7 +91,7 @@ def test_finalization_detaches_and_closes_even_partial_journal():
 
 
 def test_analysis_alias_is_excluded_before_retention():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='input',
         values={'question': 'hello', 'analysis': 'hidden chain', 'auth_state': 'secret'},
         schema={'type': 'object', 'properties': {key: {'type': 'string'}
@@ -101,7 +102,7 @@ def test_analysis_alias_is_excluded_before_retention():
 
 
 def test_unclassified_native_state_is_withheld_even_when_content_enabled():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='output',
         values={'cot': 'hidden chain', 'answer': 'safe answer'},
         schema={'type': 'object', 'properties': {
@@ -115,7 +116,7 @@ def test_unclassified_native_state_is_withheld_even_when_content_enabled():
 
 
 def test_forged_capture_alias_rejected_at_runner_boundary():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='input', values={'question': 'hello'},
         schema={'type': 'object', 'properties': {'question': {'type': 'string'}}},
         plain_fields=('question',))
@@ -174,7 +175,7 @@ def test_structural_artifact_contract_rejects_forged_fields(tamper, message):
 
 
 def test_plain_capture_requires_owner_classification_and_scalar_schema():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     schema = {'type': 'object', 'properties': {
         'answer': {'type': 'string'}, 'count': {'type': 'integer'}}}
     with pytest.raises(ValueError, match='Unsafe plain'):
@@ -204,7 +205,7 @@ def test_plain_capture_requires_owner_classification_and_scalar_schema():
      ('answer',)),
 ))
 def test_plain_capture_rejects_undeclared_or_unbounded_values(values, schema, fields):
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     with pytest.raises(ValueError):
         journal.capture(visit_id='visit', direction='input', values=values,
                         schema=schema, plain_fields=fields)
@@ -241,7 +242,7 @@ def test_plain_capture_preserves_only_bounded_declared_scalar_types():
         'answer': {'type': 'string'}, 'ready': {'type': 'boolean'},
         'ratio': {'type': 'number'}, 'count': {'type': 'integer'},
         'empty': {'type': 'null'}}}
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='output', schema=schema,
         values={'answer': 'x' * 700, 'ready': True, 'ratio': 0.5,
                 'count': 3, 'empty': None, 'extra': 'excluded'},
@@ -254,7 +255,7 @@ def test_plain_capture_preserves_only_bounded_declared_scalar_types():
 def test_plain_string_capture_distinguishes_exact_limit_from_truncation():
     schema = {'type': 'object', 'properties': {
         'answer': {'type': 'string'}, 'note': {'type': 'string'}}}
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='output', schema=schema,
         values={'answer': 'x' * 512, 'note': 'y' * 513},
         plain_fields=('answer', 'note'))
@@ -264,7 +265,7 @@ def test_plain_string_capture_distinguishes_exact_limit_from_truncation():
     assert event['reason'] == 'truncated'
     assert event['truncated_fields'] == ['note']
     assert event['values'] == {'answer': 'x' * 512, 'note': 'y' * 512}
-    exact = WorkflowJournal(_definition(), log_content=True)
+    exact = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     exact.capture(visit_id='visit', direction='output', schema=schema,
         values={'answer': 'x' * 512}, plain_fields=('answer',))
     exact_event = exact.finalize()['events'][0]
@@ -272,7 +273,7 @@ def test_plain_string_capture_distinguishes_exact_limit_from_truncation():
 
 
 def test_forged_capture_truncation_status_is_rejected():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='output',
         values={'answer': 'plain'},
         schema={'type': 'object', 'properties': {'answer': {'type': 'string'}}},
@@ -283,7 +284,7 @@ def test_forged_capture_truncation_status_is_rejected():
     _rehash(packet)
     with pytest.raises(ValueError, match='Unclassified workflow capture'):
         validate_journal(packet)
-    truncated = WorkflowJournal(_definition(), log_content=True)
+    truncated = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     truncated.capture(visit_id='visit', direction='output',
         values={'answer': 'x' * 513},
         schema={'type': 'object', 'properties': {'answer': {'type': 'string'}}},
@@ -308,7 +309,7 @@ def test_forged_capture_truncation_status_is_rejected():
 def test_capture_bound_declares_gap_without_retaining_large_value(monkeypatch):
     import api_agent.workflows.journal as module
     monkeypatch.setattr(module, '_MAX_BYTES', 100)
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='input', values={'answer': 'plain'},
         schema={'type': 'object', 'properties': {'answer': {'type': 'string'}}},
         plain_fields=('answer',))
@@ -409,7 +410,7 @@ def test_leaf_call_retries_reuse_identity_only_for_same_open_visit():
 
 
 def test_capture_arguments_rejected_before_retention():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     with pytest.raises(ValueError, match='direction'):
         journal.capture(visit_id='visit', direction='internal', values={}, schema={})
     with pytest.raises(ValueError, match='node visit'):
@@ -476,7 +477,7 @@ def test_component_attempt_and_guard_are_required_for_complete_route():
 
 
 def test_plain_capture_omits_absent_field_and_rejects_bad_rule():
-    journal = WorkflowJournal(_definition(), log_content=True)
+    journal = WorkflowJournal(_definition(), log_content=True, content_policy=ContentPolicy(True))
     journal.capture(visit_id='visit', direction='input', values={},
         schema={'type': 'object', 'properties': {'answer': {'type': 'string'}}},
         plain_fields=('answer',))

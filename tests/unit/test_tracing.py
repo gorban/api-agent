@@ -10,8 +10,8 @@ from api_agent.telemetry.tracing import TraceError, TraceRuntime, _sdk_factory
 
 
 def config(mode='OTEL', content=None, **values):
-    fields={} if content is None else {'LOG_CONTENT':ResolvedValue(content,'cli',True)}
-    return ConfigResult({'TRACE_MODE':mode, **({} if content is None else {'LOG_CONTENT':content}), **values},fields,(),(),())
+    fields={} if content is None else {'TRACELOOP_TRACE_CONTENT':ResolvedValue(content,'cli',True)}
+    return ConfigResult({'TRACE_MODE':mode, **({} if content is None else {'TRACELOOP_TRACE_CONTENT':content}), **values},fields,(),(),())
 
 
 def fake():
@@ -278,3 +278,180 @@ def test_ambient_sdk_disabled_conflict_allocates_no_owned_resources():
         disabled=TraceRuntime(config(''))
         asyncio.run(disabled.astart())
         assert asyncio.run(disabled.aclose())
+
+
+def test_manual_signal_names_and_structural_payloads_are_bounded_and_scrubbed():
+    provider,tracer,_,factory = fake()
+    runtime = TraceRuntime(config(),factory=factory, model_identities=('synthetic-name-secret',))
+    runtime.boundary.register_secret('synthetic-name-secret')
+    asyncio.run(runtime.astart())
+    span = runtime.begin('chat synthetic-name-secret',{
+        'prompt':'withheld-payload', 'gen_ai.request.model':'synthetic-name-secret',
+        'gen_ai.usage.input_tokens':True,'api_agent.attempt':-1,
+        'api_agent.scope_id':'invalid whitespace', 'gen_ai.operation.name':'unknown'})
+    span.end()
+    assert 'synthetic-name-secret' not in repr(tracer.start_span.call_args)
+    assert 'withheld-payload' not in repr(tracer.start_span.call_args)
+    assert tracer.start_span.call_args.kwargs['attributes'] == {'gen_ai.request.model':'[REDACTED]'}
+    runtime.begin(object(),{}).end()
+    assert tracer.start_span.call_args.args[0] == 'api_agent.span'
+    runtime.begin('chat model',None).end()
+    runtime.shutdown()
+
+
+def test_owned_root_context_excludes_ambient_span_and_cancelled_leaf_remains_cancelled():
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from uuid import uuid4
+    from test_workflow_observations import definition
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    runtime = TraceRuntime(config(),factory=lambda *args:(provider,provider.get_tracer('synthetic')))
+    asyncio.run(runtime.astart())
+    with provider.get_tracer('ambient').start_as_current_span('unrelated'):
+        adapter = WorkflowObservationFactory(config(),boundary=EmissionBoundary(),trace=runtime).create(definition())
+        adapter.observe(dict(event='scope_start',scope_id='node',owner='Make',kind='node'))
+        adapter.record_call(visit_id='node',call_id=str(uuid4()),outcome='cancelled')
+        adapter.close()
+    spans = exporter.get_finished_spans()
+    root = next(span for span in spans if span.name=='node Make')
+    leaf = next(span for span in spans if span.kind.name=='CLIENT')
+    assert root.parent is None
+    assert leaf.parent.span_id == root.context.span_id
+    assert leaf.attributes['status'] == 'cancelled'
+    runtime.shutdown()
+
+
+@pytest.mark.parametrize('model',[123,'x'*201,'invalid\nmetadata'])
+def test_manual_model_metadata_omission_does_not_restrict_provider_operations(model):
+    _,tracer,_,factory = fake()
+    runtime = TraceRuntime(config(),factory=factory)
+    asyncio.run(runtime.astart())
+    runtime.begin('chat model',{'gen_ai.request.model':model}).end()
+    assert tracer.start_span.call_args.kwargs['attributes'] == {}
+    runtime.shutdown()
+
+
+def test_manual_span_events_and_attributes_exclude_hidden_serialized_carriers_before_sdk():
+    import json
+    _,tracer,span,factory = fake()
+    runtime = TraceRuntime(config(content=True),factory=factory)
+    asyncio.run(runtime.astart())
+    payload = {'hidden_reasoning':'excluded-hidden-sentinel','continuation_state':'excluded-hidden-sentinel',
+        'serialized':json.dumps({'nested':{'hiddenReasoning':'excluded-hidden-sentinel','text':'visible answer'}}),
+        'prompt':'visible question','reasoning_tokens':7,'reasoning_effort':'high'}
+    with runtime.span(payload) as capture:
+        capture.event(payload)
+        capture.attributes(payload)
+    assert 'excluded-hidden-sentinel' not in repr(tracer.mock_calls)
+    assert 'excluded-hidden-sentinel' not in repr(span.mock_calls)
+    attrs = tracer.start_span.call_args.kwargs['attributes']
+    assert attrs['prompt']=='visible question' and attrs['reasoning_tokens']==7
+    assert attrs['reasoning_effort']=='high'
+    assert json.loads(attrs['serialized'])=={'nested':{'text':'visible answer'}}
+    runtime.shutdown()
+
+
+@pytest.mark.parametrize('content', [False, True])
+def test_unclassified_model_prose_is_omitted_before_sdk_creation(content):
+    _, tracer, _, factory = fake()
+    runtime = TraceRuntime(config(content=content), factory=factory)
+    asyncio.run(runtime.astart())
+    model = 'customer_private_question'
+
+    runtime.begin('chat ' + model, {'gen_ai.request.model': model}).end()
+
+    assert tracer.start_span.call_args.args[0] == 'chat'
+    assert tracer.start_span.call_args.kwargs['attributes'] == {}
+    assert model not in repr(tracer.mock_calls)
+    runtime.shutdown()
+
+
+@pytest.mark.parametrize('content', [False, True])
+@pytest.mark.parametrize('model', ['public/model-v1@latest', 'model with spaces', '模型@v1'])
+def test_established_model_identities_remain_structural_without_content_capture(content, model):
+    _, tracer, _, factory = fake()
+    runtime = TraceRuntime(config(content=content), factory=factory,
+                           model_identities=(model,))
+    asyncio.run(runtime.astart())
+
+    runtime.begin('chat ' + model, {'gen_ai.request.model': model}).end()
+
+    assert tracer.start_span.call_args.args[0] == 'chat ' + model
+    assert tracer.start_span.call_args.kwargs['attributes'] == {'gen_ai.request.model': model}
+    runtime.shutdown()
+
+
+def test_protocol_model_identifier_remains_structural_and_credentials_are_scrubbed():
+    _, tracer, _, factory = fake()
+    runtime = TraceRuntime(config(content=False), factory=factory,
+                           model_identities=('provider/model@credential',))
+    runtime.boundary.register_secret('credential')
+    asyncio.run(runtime.astart())
+
+    runtime.begin('chat provider/model@credential',
+                  {'gen_ai.request.model': 'provider/model@credential'}).end()
+
+    assert tracer.start_span.call_args.args[0] == 'chat provider/model@[REDACTED]'
+    assert tracer.start_span.call_args.kwargs['attributes'] == {
+        'gen_ai.request.model': 'provider/model@[REDACTED]'}
+    runtime.shutdown()
+
+
+@pytest.mark.parametrize('identities', [None, 'model', {}, ['x'] * 257,
+    [None], [''], ['x' * 201], ['invalid\nidentity']])
+def test_invalid_explicit_identity_collection_fails_before_sdk_allocation(identities):
+    factory = Mock()
+    with pytest.raises(TraceError, match='^Trace model identities must be a bounded collection of identifiers\\.$'):
+        TraceRuntime(config(), factory=factory, model_identities=identities)
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize('content', [False, True])
+def test_explicit_model_identity_credentials_are_scrubbed_before_sdk(content):
+    _, tracer, _, factory = fake()
+    runtime = TraceRuntime(config(content=content), factory=factory,
+                           model_identities=('model identity credential',))
+    runtime.boundary.register_secret('credential')
+    asyncio.run(runtime.astart())
+
+    runtime.begin('chat model identity credential',
+                  {'gen_ai.request.model': 'model identity credential'}).end()
+
+    assert tracer.start_span.call_args.args[0] == 'chat model identity [REDACTED]'
+    assert tracer.start_span.call_args.kwargs['attributes'] == {
+        'gen_ai.request.model': 'model identity [REDACTED]'}
+    runtime.shutdown()
+
+
+@pytest.mark.parametrize('content', [False, True])
+@pytest.mark.parametrize('admitted', [False, True])
+@pytest.mark.parametrize('entry', ['begin', 'span', 'attributes', 'event', 'runtime_event'])
+def test_reserved_model_attribute_requires_catalog_admission_in_every_entry(content, admitted, entry):
+    _, tracer, sdk_span, factory = fake()
+    model = 'customer_private_question'
+    runtime = TraceRuntime(config(content=content), factory=factory,
+        model_identities=(model,) if admitted else ())
+    asyncio.run(runtime.astart())
+    payload = {'gen_ai.request.model': model}
+    if entry == 'begin':
+        runtime.begin('chat ' + model, {}, payload=payload).end()
+        actual = tracer.start_span.call_args.kwargs['attributes']
+    elif entry == 'runtime_event':
+        runtime.event(payload)
+        actual = sdk_span.add_event.call_args.kwargs['attributes']
+    else:
+        with runtime.span(payload if entry == 'span' else {}) as span:
+            if entry == 'attributes':
+                span.attributes(payload)
+                actual = sdk_span.set_attributes.call_args.args[0]
+            elif entry == 'event':
+                span.event(payload)
+                actual = sdk_span.add_event.call_args.kwargs['attributes']
+            else:
+                actual = tracer.start_span.call_args.kwargs['attributes']
+    assert actual == ({'gen_ai.request.model': model} if admitted else {})
+    assert runtime.shutdown()

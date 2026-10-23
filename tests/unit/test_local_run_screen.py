@@ -689,3 +689,45 @@ def test_selected_log_copy_failure_keeps_operation_and_selection(monkeypatch):
             assert not stop.is_set() and not screen.finished
             await screen.close_owned()
     asyncio.run(exercise())
+
+
+def test_diagnostic_display_limits_are_independent_of_full_output():
+    screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+    for index in range(1030):
+        screen.receive(LocalEvent('diagnostic', source='agent', text=f'event {index}\n',
+                                  diagnostic={'transient': 'not retained'}))
+    assert len(screen.events) == 1000
+    assert all(event.diagnostic is None for event in screen.events)
+    assert screen.events[0].text == 'event 30\n'
+    for _ in range(40):
+        screen.receive(LocalEvent('diagnostic', source='agent', text='😀' * 20000))
+    assert screen._event_bytes <= 1048576
+    assert len(screen.events) < 40
+    assert screen.events[-1].text.endswith('[TUI display truncated]\n')
+    assert screen._event_bytes == sum(len(event.text.encode()) for event in screen.events)
+
+
+def test_dashboard_credentials_are_literal_only_in_interactive_status():
+    async def exercise():
+        stop = asyncio.Event()
+        class Owner:
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+            def interactive_dashboard_credentials(self):
+                return 'admin@example.test', '[red]literal-password[/red]'
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            text = screen.query_one('#local-status').render().plain
+            assert 'admin@example.test' in text
+            assert '[red]literal-password[/red]' in text
+            assert not screen.events
+            assert 'literal-password' not in repr(screen.snapshot)
+            await screen.close_owned()
+    asyncio.run(exercise())

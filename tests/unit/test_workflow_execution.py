@@ -91,3 +91,37 @@ def test_coverage_and_calibration_fail_rather_than_skip_or_retry():
 @pytest.mark.parametrize('hits,trials,alpha',[(True,1,.05),(2,1,.05),(0,0,.05),(1,2,0),(1,2,1)])
 def test_invalid_probability_inputs_rejected(hits,trials,alpha):
     with pytest.raises(ValueError): lower_probability(hits,trials,alpha)
+
+
+from test_workflow_observations import recording_policy
+
+
+@pytest.mark.parametrize('authority',[False,True])
+def test_recorded_without_observation_factory_requires_resolved_content_authority(
+        recording_policy,tmp_path,monkeypatch,authority):
+    from types import SimpleNamespace
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.evidence import attachment
+    resolved,allowed = recording_policy
+    marker = 'recorded-private-sentinel'
+    async def complete(request):
+        return LLMResult(Message('assistant',(TextContent(json.dumps(dict(
+            original_input=marker,route='skip',ready=True,final_output=marker))),)))
+    events = tmp_path/'events.jsonl'
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING','1')
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(events))
+    monkeypatch.setattr('api_agent.workflows.provenance.verified_documents',lambda *a,**k:None)
+    workflow = build(ROOT,llm=complete,selection='example',trial='synthetic',config={'LOG_CONTENT':True})
+    workflow.services.update(emissions=EmissionBoundary(ContentPolicy(True)),
+        content_policy=ContentPolicy.from_config(resolved) if authority else None,
+        plain_io_fields={'first_draft':{'input':['user_input'],'output':['final_output']}})
+    result = asyncio.run(workflow.arun({'user_input':marker}))
+    assert result['first_draft']['final_output']==marker
+    payload = next(json.loads(line)['data'] for line in events.read_text().splitlines()
+        if json.loads(line)['kind']=='workflow_evidence')
+    _,data,_ = attachment(SimpleNamespace(text=json.dumps(payload)),None)
+    permitted = allowed and authority
+    assert (marker in data.decode()) is permitted
+    assert payload['content']==('permitted_scrubbed' if permitted else 'withheld')
+    captures = [row for row in payload['events'] if row['event']=='capture']
+    assert any(row.get('values') for row in captures) is permitted

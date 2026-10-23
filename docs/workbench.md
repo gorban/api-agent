@@ -30,9 +30,7 @@ services:
 The pack/API provider owns upstream provisioning and any database options;
 there is no separate shared `RUN_API` switch. See [local operations](development.md#running-locally)
 for readiness, logs and cleanup. Run local consumes enabled declared prerequisites;
-each pack owns its concrete upstream API and database implementation. The initial
-local runtime requires an empty `TRACE_MODE`; tracing dashboard login follows
-separately under [startup requirements](prds/implementation_plan_k2.md).
+each pack owns its concrete upstream API and database implementation. Run local supports optional tracing and dashboard login under [startup requirements](prds/implementation_plan_k2.md).
 
 ## Review and save settings
 
@@ -126,3 +124,17 @@ identified failure details to stderr even with `LOG_CONTENT=False`. It retains
 exception chains and command evidence while scrubbing known/configured credentials
 and recognizable credential syntax. It preserves paths, roles and operational
 reasons; tracing and inference attachments retain their existing policy.
+
+Local content controls are independent. `LOG_CONTENT=True` permits scrubbed logs,
+local diagnostics and Allure evidence. `TRACELOOP_TRACE_CONTENT=True` separately
+permits classified user-visible content in OTEL and LangFuse traces. Both default
+to False and always exclude credentials. For example, set `LOG_CONTENT=False`
+and `TRACELOOP_TRACE_CONTENT=True` for trace-only capture. SDK defaults and
+injected boundaries cannot elevate the resolved trace setting. The owned manual
+runtime does not install global automatic instrumentors.
+
+`RUN_LOG_FULL_CONTENT=True` asks local diagnostics to show the complete admitted
+log projection instead of a preview; it still requires `LOG_CONTENT=True`.
+Classified scalar capture is limited to 65,536 characters, while recorded workflow
+previews remain capped at 512 characters. Unsupported or unclassified values stay
+withheld. These settings change capture only, not inference inputs or outputs.
