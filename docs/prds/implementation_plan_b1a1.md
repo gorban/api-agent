@@ -51,3 +51,9 @@ The [scope-correct diagram and recursive discovery repair](implementation_plan_b
 ## Grouped declaration and control-flow follow-through
 
 The [grouped declaration, deadline and compact-inspection requirements](implementation_plan_b1a4.md) have technical review and fresh qualification closure. Earlier evidence remains historical; combined direct-file/repository-platform presentation acceptance is still unchecked.
+
+
+## Repeated browser bootstrap
+
+- [x] Repeated execution of the viewer bootstrap for the same inert source carrier must retain one rendered document, one title/diagram and stable heading anchors, without duplicate content or Markdown extension registration. Preserve the original rendered elements, navigation, sanitization, fallback and selected execution inputs. Verify deferred duplicate scripts and later script replay in real Firefox and Chromium for file and HTTP root/nested documents, with a causal control. Repeated dependency failures reuse one carrier-owned diagnostic; a later successful dependency load removes that diagnostic and renders once.
+- [ ] Human confirmation of the reported duplicate-render repair in the affected browser. Earlier static/managed interaction acceptance remains valid.
