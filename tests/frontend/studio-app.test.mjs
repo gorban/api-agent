@@ -213,7 +213,7 @@ test('reported metadata stays immutable after settings changes and reload; histo
     await page.locator('#prompt').fill('Saved request'); await page.locator('#send').click();
     await page.getByText('Saved reply',{exact:true}).waitFor();
     const metadata = await page.locator('.assistant .metadata-grid').textContent();
-    assert.match(metadata,/reported-model/); assert.match(metadata,/revision-1/); assert.match(metadata,/Not reported/);
+    assert.match(metadata,/reported-model/); assert.match(metadata,/revision-1/); assert.doesNotMatch(metadata,/Reported reasoning|Reported version|Reported family/);
     await page.locator('#prompt').fill('Unsent draft');
     await page.locator('#settings-nav').click(); await page.locator('#model').selectOption('sample');
     await page.locator('#version').selectOption('v1'); await page.locator('#reasoning').selectOption('low');
@@ -818,7 +818,7 @@ test('empty catalog communicates unavailable choices without inventing a default
 });
 test('unversioned provider model succeeds without manufacturing a version',async()=>{
   const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Unversioned response')}));
-  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[{...model,version:null}],default:'sample'}}));await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));await page.locator('#prompt').fill('Hello');await page.locator('#send').click();await page.getByText('Unversioned response',{exact:true}).waitFor();assert.match(await page.locator('.assistant .metadata-grid').textContent(),/Reported versionNot reported/);}finally{await closeBrowser(browser);}
+  try{await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[{...model,version:null}],default:'sample'}}));await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));await page.locator('#prompt').fill('Hello');await page.locator('#send').click();await page.getByText('Unversioned response',{exact:true}).waitFor();assert.doesNotMatch(await page.locator('.assistant .metadata-grid').textContent(),/Reported version/);}finally{await closeBrowser(browser);}
 });
 test('network connection failure is incomplete and retryable',async()=>{
   const {browser,page}=await openStudio(route=>route.abort('failed'));
@@ -1542,4 +1542,48 @@ test('pending catalog Send disables an older failed response retry and dispatche
     assert.equal(await page.getByText('Earlier partial response',{exact:true}).count(),1);
     assert.equal(await retry.isEnabled(),true);
   } finally { await closeBrowser(browser); }
+});
+
+test('response metadata records the sent default and captures exact reported catalog metadata', async () => {
+  let sent;
+  const {browser,page}=await openStudio(route=>{sent=route.request().postDataJSON();return fulfill(route,{json:result('Metadata reply',{actual_model:'reported'})});});
+  try {
+    const advertised={...model,selected_llm:'reported',display_name:'Friendly 6',family:'Friendly',version:'6'};
+    await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[model,advertised],default:'sample'}}));
+    await reloadPage(page);
+    await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
+    await page.locator('#prompt').fill('Hello');await page.locator('#send').click();await page.getByText('Metadata reply',{exact:true}).waitFor();
+    const rows=()=>page.locator('.assistant .metadata-grid > div').evaluateAll(nodes=>nodes.map(node=>[node.querySelector('dt').textContent,node.querySelector('dd').textContent]));
+    const expected=[['Requested model','sample'],['Resolved catalog model','sample'],['Reported model','reported'],['Requested version','Provider default'],['Reported family (catalog)','Friendly'],['Reported version (catalog)','6'],['Requested reasoning','Provider default'],['Status','Complete']];
+    assert.equal(sent.model,'sample');assert.deepEqual(await rows(),expected);
+    await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[model,{...advertised,family:'Changed',version:'7'}],default:'sample'}}));
+    await reloadPage(page);await page.getByText('Metadata reply',{exact:true}).waitFor();assert.deepEqual(await rows(),expected);
+  } finally {await closeBrowser(browser);}
+});
+
+for (const reported of ['unknown','unversioned','sample']) test(`family intent preserves omitted version and effort with reported ${reported}`,async()=>{
+  const {browser,page}=await openStudio(route=>fulfill(route,{json:result('Family metadata',{actual_model:reported,service_tier:'standard',serving_revision:'r1'})}),()=>{
+    localStorage.setItem('api-agent-studio-v2',JSON.stringify({session:'saved',draft:'',messages:[],settings:{model:'',family:'Example',version:'',reasoning:'low'}}));
+  });
+  try {
+    await page.route('**/app/agent/models',route=>fulfill(route,{json:{models:[{...model,family:'Example'},{...model,selected_llm:'unversioned',version:null}],default:'sample',family_defaults:{Example:'sample'}}}));
+    await reloadPage(page);await page.waitForFunction(()=>document.querySelector('#model-short-name').textContent.includes('low'));
+    await page.locator('#prompt').fill('Hello');await page.locator('#send').click();await page.getByText('Family metadata',{exact:true}).waitFor();
+    const rows=await page.locator('.assistant .metadata-grid > div').evaluateAll(nodes=>nodes.map(node=>[node.querySelector('dt').textContent,node.querySelector('dd').textContent]));
+    const expected=[['Requested model','Example'],['Resolved catalog model','sample'],['Reported model',reported],['Requested version','Provider default']];
+    if(reported==='sample')expected.push(['Reported family (catalog)','Example'],['Reported version (catalog)','v1']);
+    expected.push(['Requested reasoning','low'],['Reported serving revision','r1'],['Reported service tier','standard'],['Status','Complete']);
+    assert.deepEqual(rows,expected);
+  }finally{await closeBrowser(browser);}
+});
+
+test('closing a failure with a hidden opener restores Settings navigation focus',async()=>{
+  const {browser,page}=await openStudio(route=>fulfill(route,{status:503,body:'Unavailable'}));
+  try{
+    await page.locator('#prompt').fill('Hello');await page.locator('#send').click();await page.locator('#failure[open]').waitFor();
+    await page.locator('#prompt').evaluate(node=>node.style.display='none');
+    assert.equal(await page.locator('#prompt').evaluate(node=>node.getClientRects().length),0);
+    await page.evaluate(()=>new Promise(resolve=>{document.getElementById('failure').addEventListener('close',resolve,{once:true});document.getElementById('close-failure').click();}));
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'settings-nav');
+  }finally{await closeBrowser(browser);}
 });
