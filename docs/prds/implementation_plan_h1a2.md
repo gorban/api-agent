@@ -39,4 +39,12 @@ observations or broader provider qualification.
 
 ## Follow-up human findings
 
-- [ ] Close [selected log copying and action-driven model readiness](implementation_plan_h1a3.md) before renewing this checkpoint. Prior verification remains historical; the new findings and human acceptance remain open.
+- [x] Close [selected log copying and action-driven model readiness](implementation_plan_h1a3.md) before renewing this checkpoint. Prior verification remains historical; the reported findings are repaired, and human acceptance remains open.
+
+## Deferred human review
+
+The substantive repairs and independent/external reviews are complete. Human
+acceptance remains unchecked above and in the immediate follow-up child; broader
+tracing, product integration and full E2E are not completed by these repairs.
+
+- [Selected log copying and action-driven readiness](implementation_plan_h1a3.md)
