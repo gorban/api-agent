@@ -349,13 +349,11 @@ class ConfigSession:
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
         # Pack scope remains enforced except in the explicit cleanup inventory.
-        # Keep enablement predicates for empty-capable fields: review must not
-        # turn a deliberately disabled destination into a required path.
+        # Review inventory spans modes, but conditional requirements retain their
+        # effective controller predicates instead of becoming unconditional.
         if _cleanup or _review:
             schema = ConfigSchema({name: replace(field, applies_when={},
-                                                 pack_only=False if _cleanup else field.pack_only,
-                                                 required=(field.required or bool(field.required_when) and not field.allow_empty) if _review else field.required,
-                                                 required_when={} if _review and not field.allow_empty else field.required_when)
+                                                 pack_only=False if _cleanup else field.pack_only)
                                    for name, field in self.schema.fields.items()})
         if _cleanup and "HELP" in schema.fields:
             choices['HELP'] = 'False'

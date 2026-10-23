@@ -9,14 +9,28 @@ review exposes the applicable settings and validates their values before startup
 
 TRACE_TARGET identifies the collector's complete traces URL for OTEL, or the
 LangFuse server base URL. Conventional loopback targets select the existing
-managed local infrastructure profiles. A custom or remote target starts no local
-tracing stack. Remote HTTPS uses certificate verification and the configured
+managed local infrastructure profiles. Managed LangFuse recognizes exactly
+`http://localhost:3000` and `http://127.0.0.1:3000`, each with zero or one trailing
+slash. Other valid LangFuse spellings are custom and require explicit credentials.
+A custom or remote target starts no local tracing stack. Remote HTTPS uses certificate verification and the configured
 CLIENT_CA_FILE when supplied; credentials must never be embedded in URLs.
+
+When changing TRACE_MODE, also choose the matching TRACE_TARGET default in Review
+configuration. A previously saved target remains explicit: local LangFuse uses
+`http://localhost:3000`, while managed local OTEL uses
+`http://localhost:4318/v1/traces`. The application does not silently replace a
+saved custom collector.
 
 The local OTEL profile exposes a separate Jaeger browser interface on
 JAEGER_VIEWER_PORT, default 16686. TRACE_VIEWER_URL supplies an optional explicit
-OTEL dashboard address. A remote collector does not imply a browser address;
-without a verified viewer, no dashboard tab opens.
+OTEL dashboard address. Omitted and explicitly empty values both select the
+managed local viewer on JAEGER_VIEWER_PORT when TRACE_TARGET is the conventional
+loopback OTLP traces endpoint (port 4318, path /v1/traces). A custom collector,
+including a loopback target on another port, does not imply a browser address or
+start local infrastructure. Set TRACE_VIEWER_URL explicitly for that collector.
+Without a verified viewer, no dashboard tab opens and startup logs an actionable
+fixed diagnostic. Readiness requires HTTP 200 without redirects; a failed probe
+keeps the viewer unavailable. The collector target is preserved.
 
 For LangFuse, configure LANGFUSE_ADMIN_EMAIL and LANGFUSE_ADMIN_PASSWORD for Run
 local dashboard sign-in. These dashboard credentials are distinct from the
@@ -67,3 +81,11 @@ the observation factory or the engine's `content_policy` service (`ContentPolicy
 Raw configuration Booleans and credential scrubbers alone do not authorize
 recorded payloads; missing authority withholds them. Explicit denial cannot be
 raised by later adapter configuration.
+
+## UI-source activity
+
+The UI source reports bounded child-process output activity; arbitrary streamed
+stdout/stderr content remains withheld. The included Studio host normally emits
+no process output for browser clicks, so an empty UI source is expected. Opening
+Settings retrieves model metadata and sending a message invokes the agent API;
+those catalog/request diagnostics belong to the agent source.

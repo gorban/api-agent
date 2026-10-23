@@ -95,12 +95,15 @@ def selected_profiles(config):
     if mode:
         default = 'http://localhost:3000' if mode == 'LangFuse' else 'http://localhost:4318/v1/traces'
         target = config.get('TRACE_TARGET')
-        parsed, port = _endpoint(default if target is None else target)
-        path = '' if mode == 'LangFuse' else '/v1/traces'
-        if (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1'}
-                and port == (3000 if mode == 'LangFuse' else 4318)
-                and parsed.path.rstrip('/') == path and not parsed.query):
-            profiles.append('langfuse' if mode == 'LangFuse' else 'otel')
+        target = default if target is None else target
+        parsed, port = _endpoint(target)
+        if mode == 'LangFuse':
+            if target in {'http://localhost:3000', 'http://127.0.0.1:3000',
+                          'http://localhost:3000/', 'http://127.0.0.1:3000/'}:
+                profiles.append('langfuse')
+        elif (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1'}
+                and port == 4318 and parsed.path.rstrip('/') == '/v1/traces' and not parsed.query):
+            profiles.append('otel')
     localstack = config.get('ALLURE_S3_USE_LOCALSTACK', False)
     localstack_port = _localstack_port(config)
     if type(localstack) is not bool:

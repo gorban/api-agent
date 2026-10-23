@@ -224,6 +224,8 @@ class LocalRunOwner:
                     emissions=self._session.runtime.emissions)
                 self._stack.push(self._tracing_dashboard.aclose)
                 await self._tracing_dashboard.start()
+                if self._tracing_dashboard.diagnostic:
+                    self._log('agent', self._tracing_dashboard.diagnostic)
                 from api_agent.runtime.local_browser import LocalBrowserOwner
                 factory = self.browser_factory or LocalBrowserOwner
                 home = self._session.callback.origin + '/'
@@ -241,7 +243,7 @@ class LocalRunOwner:
                     destinations.insert(1, LocalDestination('tracing', self._tracing_dashboard.viewer_url))
                 if self._config.values.get('RUN_UI'):
                     components[-1] = LocalComponent('ui', 'ready')
-                    destinations.insert(1, LocalDestination('ui', self._config.values['UI_LISTENER_URL']))
+                    destinations.append(LocalDestination('ui', self._config.values['UI_LISTENER_URL']))
                 infrastructure = self._session.infrastructure
                 if infrastructure is not None:
                     from api_agent.runtime.tasks import offload

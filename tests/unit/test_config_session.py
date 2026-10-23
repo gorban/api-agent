@@ -418,3 +418,23 @@ def test_missing_shared_file_is_inert_and_environment_cli_choices_win(session, t
     session.argv = ('--value=4',)
     assert session.result().values['VALUE'] == 4
     assert session.set_value('VALUE', '5').values['VALUE'] == 5
+
+
+@pytest.mark.parametrize('mode, required', [('OTEL', False), ('', False), ('LangFuse', True)])
+def test_review_conditional_requirement_uses_effective_mode(session, mode, required):
+    session.schema = schema_from_dict({'version': 1, 'fields': {
+        'TRACE_MODE': {'type': 'str'},
+        'PASSWORD': {'type': 'str', 'required_when': {'TRACE_MODE': 'LangFuse'},
+                     'applies_when': {'TRACE_MODE': 'LangFuse'}},
+        'OTHER_DEFAULT': {'type': 'str', 'default': 'saved',
+                          'applies_when': {'TRACE_MODE': 'other'}},
+    }})
+    session.environ = {'TRACE_MODE': mode}
+
+    review = session.result(_review=True)
+
+    assert ('PASSWORD' in review.missing) is required
+    assert review.values['OTHER_DEFAULT'] == 'saved'
+    assert not session.dotenv_path.exists()
+    session.save_defaults(['OTHER_DEFAULT'])
+    assert read_dotenv(session.dotenv_path)['OTHER_DEFAULT'] == 'saved'

@@ -54,6 +54,8 @@ def test_readiness_failure_and_credential_cleanup():
     tracing=owner(ready=False)
     asyncio.run(tracing.start())
     assert tracing.state=='unavailable' and tracing.viewer_url is None
+    assert tracing.diagnostic == ('Tracing viewer readiness failed: check TRACE_TARGET and the LangFuse service; '
+                                  'no dashboard tab was opened.')
     assert tracing.interactive_credentials()==('operator@example.invalid','synthetic-password')
     assert tracing.emissions.register_secret.call_count==2
     asyncio.run(tracing.aclose())
@@ -342,3 +344,67 @@ def test_local_cleanup_retains_later_dependencies_until_probe_retry_completes():
             release.set()
             await tracing.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('host', ['localhost', '127.0.0.1'])
+@pytest.mark.parametrize('viewer_setting', [{}, {'TRACE_VIEWER_URL': ''}])
+@pytest.mark.parametrize('port', [16686, 17686])
+def test_local_otel_empty_or_omitted_viewer_derives_configured_port(host, viewer_setting, port):
+    values = {'TRACE_MODE': 'OTEL', 'TRACE_TARGET': f'http://{host}:4318/v1/traces',
+              'JAEGER_VIEWER_PORT': port, **viewer_setting}
+    tracing = owner(values)
+    asyncio.run(tracing.start())
+    assert tracing.viewer_url == f'http://localhost:{port}'
+    assert tracing.state == 'ready' and tracing.diagnostic is None
+    tracing.probe.assert_called_once_with(f'http://localhost:{port}/', None)
+    assert tracing.config['TRACE_TARGET'] == values['TRACE_TARGET']
+
+
+@pytest.mark.parametrize('target', ['https://collector.example.invalid/v1/traces',
+                                    'http://localhost:3000', 'http://127.0.0.1:14318/v1/traces'])
+@pytest.mark.parametrize('viewer_setting', [{}, {'TRACE_VIEWER_URL': ''}])
+def test_custom_collector_without_viewer_is_actionable_and_preserved(target, viewer_setting):
+    tracing = owner({'TRACE_MODE': 'OTEL', 'TRACE_TARGET': target, **viewer_setting})
+    asyncio.run(tracing.start())
+    assert tracing.state == 'unavailable' and tracing.viewer_url is None
+    assert tracing.diagnostic == ('Tracing viewer is unavailable: set TRACE_VIEWER_URL for the custom OTEL collector, '
+                                  'or use the managed local OTLP traces endpoint on port 4318.')
+    assert target not in tracing.diagnostic
+    assert tracing.config['TRACE_TARGET'] == target
+    tracing.probe.assert_not_called()
+
+
+def test_local_viewer_failed_probe_reports_fixed_action_without_ready_destination():
+    tracing = owner({'TRACE_MODE': 'OTEL', 'TRACE_TARGET': 'http://localhost:4318/v1/traces',
+                     'TRACE_VIEWER_URL': '', 'JAEGER_VIEWER_PORT': 17686}, ready=False)
+    asyncio.run(tracing.start())
+    assert tracing.state == 'unavailable' and tracing.viewer_url is None
+    assert tracing.diagnostic == ('Tracing viewer readiness failed: check TRACE_VIEWER_URL or the managed local '
+                                  'Jaeger service and JAEGER_VIEWER_PORT; no dashboard tab was opened.')
+
+
+@pytest.mark.parametrize('status', [200, 302, 503])
+def test_real_http_probe_requires_direct_success(status):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from api_agent.runtime.local_tracing import _probe
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(status)
+            if status == 302:
+                self.send_header('Location', '/search')
+            self.end_headers()
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        assert _probe(f'http://127.0.0.1:{server.server_port}/', None) is (status == 200)
+        assert requests == ['/']
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()

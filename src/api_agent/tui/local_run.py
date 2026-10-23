@@ -47,6 +47,7 @@ class LocalRunScreen(Screen):
         self.menu = None
         self.menu_choices = ()
         self.menu_generation = 0
+        self._pending_menu_focus = None
         self.failure = ''
         self.status = 0
         self.finished = False
@@ -162,18 +163,27 @@ class LocalRunScreen(Screen):
             self.open_menu(self.menu, choices, preserve_focus=True)
 
     def open_menu(self, kind, choices, *, preserve_focus=False):
+        choices = tuple(choices)
         selection = 0
+        # A rebuild removes focus before its replacement buttons receive it.
+        pending = self._pending_menu_focus if preserve_focus else None
         if preserve_focus and self.is_mounted:
             focused = self.app.focused
             if isinstance(focused, Button) and (focused.id or '').startswith(f'local-choice-{self.menu_generation}-'):
                 index_text = focused.id.rsplit('-', 1)[-1]
                 if index_text.isdigit():
                     old_index = int(index_text)
-                    previous = self.menu_choices[old_index]
-                    selection = (tuple(choices).index(previous) if previous in choices
-                                 else min(old_index, max(0, len(choices) - 1)))
+                    pending = (self.menu, self.menu_choices[old_index], old_index)
+                if index_text == 'all' and self.menu == 'logs':
+                    pending = (self.menu, None, len(self.menu_choices))
+        if pending is not None and pending[0] == kind:
+            _, previous, old_index = pending
+            selection = (len(choices) if previous is None and kind == 'logs'
+                         else choices.index(previous) if previous in choices
+                         else min(old_index, max(0, len(choices) - 1)))
+        self._pending_menu_focus = None
         self.menu = kind
-        self.menu_choices = tuple(choices)
+        self.menu_choices = choices
         self.menu_generation += 1
         if self.is_mounted:
             pane = self.query_one('#local-choices', VerticalScroll)
@@ -191,12 +201,22 @@ class LocalRunScreen(Screen):
             if buttons:
                 generation = self.menu_generation
                 target = buttons[min(selection, len(buttons) - 1)]
-                self.call_after_refresh(lambda: target.focus() if self.menu_generation == generation
-                                        and self.menu == kind else None)
+                self._pending_menu_focus = (
+                    kind, self.menu_choices[selection] if selection < len(self.menu_choices) else None, selection)
+
+                def apply_focus():
+                    if self.menu_generation != generation or self.menu != kind:
+                        return
+                    focused = self.app.focused
+                    if not (isinstance(focused, Button) and (focused.id or '').startswith(f'local-choice-{generation}-')):
+                        target.focus()
+                    self._pending_menu_focus = None
+                self.call_after_refresh(apply_focus)
         self.refresh_view()
 
     def action_view(self):
         self.menu = None
+        self._pending_menu_focus = None
         self.menu_choices = ()
         self.refresh_view()
         if self.is_mounted:
@@ -222,7 +242,8 @@ class LocalRunScreen(Screen):
                 return False
             index_text = identifier.removeprefix(prefix)
             return index_text.isdigit() and 0 <= int(index_text) < len(self.menu_choices)
-        if self.menu is not None and action in {'sources', 'browsers', 'all_logs'}:
+        if self.menu is not None and (action in {'sources', 'browsers'}
+                                      or (action == 'all_logs' and self.menu != 'logs')):
             return False
         return super().check_action(action, parameters)
 

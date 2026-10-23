@@ -114,6 +114,20 @@ def test_all_mode_review_inventory_does_not_make_inactive_bucket_required(demo_c
     session = ConfigSession(context, schema, environ={})
     session.set_value('TUI_MODE', 'unit')
 
-    assert 'ALLURE_S3_BUCKET' in session.result(_review=True).missing
+    assert 'ALLURE_S3_BUCKET' not in session.result(_review=True).missing
     assert 'ALLURE_S3_BUCKET' not in session.result().missing
     assert 'ALLURE_S3_BUCKET' not in session.result().values
+
+
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+def test_review_bucket_requirement_tracks_active_reporting_mode(demo_configuration, mode):
+    context, schema = demo_configuration
+    session = ConfigSession(context, schema, environ={'TUI_MODE': mode})
+
+    assert 'ALLURE_S3_BUCKET' in session.result(_review=True).missing
+    assert 'ALLURE_S3_BUCKET' in session.result().missing
+
+    session.set_value('SKIP_ALLURE_REPORTING', 'True')
+
+    assert 'ALLURE_S3_BUCKET' not in session.result(_review=True).missing
+    assert 'ALLURE_S3_BUCKET' not in session.result().missing
