@@ -72,7 +72,7 @@ help = "Trace exporter mode. Empty disables tracing; LangFuse and OTEL select an
 type = "str"
 review_optional = true
 conditional_defaults = [{when = {TRACE_MODE = "LangFuse"}, value = "http://localhost:3000"}, {when = {TRACE_MODE = "OTEL"}, value = "http://localhost:4318/v1/traces"}]
-help = "Optional trace destination. Defaults to the selected trace mode's local endpoint."
+help = "Optional trace destination. Defaults to the selected trace mode's local endpoint. Managed LangFuse recognizes exactly http://localhost:3000 or http://127.0.0.1:3000, each with zero or one trailing slash. Other valid LangFuse URL spellings are custom endpoints: supply explicit credentials; no local stack is started."
 
 [fields.JAEGER_VIEWER_PORT]
 type = "int"
@@ -99,11 +99,11 @@ help = "Show full permitted local diagnostic input/output within admitted payloa
 
 [fields.LANGFUSE_ADMIN_EMAIL]
 type = "str"
-conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "admin@api-agent.invalid"}]
-help = "Administrator email for Run local sign-in to the selected local or remote LangFuse dashboard."
+conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "admin@local.dev"}]
+help = "Administrator email for managed local LangFuse provisioning across Run local and test modes, and Run local dashboard sign-in."
 [fields.LANGFUSE_ADMIN_EMAIL.applies_when]
 TRACE_MODE = "LangFuse"
-TUI_MODE = "run-local"
+TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
 [fields.LANGFUSE_ADMIN_EMAIL.required_when]
 TRACE_MODE = "LangFuse"
@@ -112,10 +112,11 @@ COLLECT_ONLY = false
 
 [fields.LANGFUSE_ADMIN_PASSWORD]
 type = "str"
-help = "Administrator password for Run local sign-in to the selected local or remote LangFuse dashboard. Configure the actual existing account; initialization does not reset it."
+conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "password"}]
+help = "Administrator password for managed local LangFuse provisioning across Run local and test modes, and Run local dashboard sign-in. Configure the actual existing account; initialization does not reset it."
 [fields.LANGFUSE_ADMIN_PASSWORD.applies_when]
 TRACE_MODE = "LangFuse"
-TUI_MODE = "run-local"
+TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
 [fields.LANGFUSE_ADMIN_PASSWORD.required_when]
 TRACE_MODE = "LangFuse"
@@ -125,7 +126,7 @@ COLLECT_ONLY = false
 [fields.TRACE_VIEWER_URL]
 type = "str"
 review_optional = true
-help = "Optional OTEL trace viewer URL, separate from TRACE_TARGET ingestion. Local managed Jaeger derives its viewer URL from JAEGER_VIEWER_PORT when omitted."
+help = "Optional OTEL trace viewer URL, separate from TRACE_TARGET ingestion. Local managed Jaeger derives its viewer URL from JAEGER_VIEWER_PORT when omitted or explicitly empty."
 [fields.TRACE_VIEWER_URL.applies_when]
 TRACE_MODE = "OTEL"
 

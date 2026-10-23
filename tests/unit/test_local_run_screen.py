@@ -414,7 +414,7 @@ def test_status_reconciles_open_menu_and_preserves_focused_destination(monkeypat
             assert app.focused.id.endswith('-all')
             callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('new', 'next'))))
             await pilot.pause()
-            assert app.focused.id.endswith('-0')
+            assert app.focused.id.endswith('-all')
             await pilot.press('escape')
             assert screen.menu is None
             assert 'l Log sources' in str(screen.query_one('#local-hint').render())
@@ -730,4 +730,249 @@ def test_dashboard_credentials_are_literal_only_in_interactive_status():
             assert not screen.events
             assert 'literal-password' not in repr(screen.snapshot)
             await screen.close_owned()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('key', ['*', 'asterisk'])
+@pytest.mark.parametrize('location', ['source-menu', 'all-button', 'source-view', 'browser-menu'])
+def test_all_logs_hotkey_respects_active_menu(monkeypatch, key, location):
+    from textual.widgets import TextArea
+
+    async def exercise():
+        opened = []
+        async def open_url(url): opened.append(url)
+        monkeypatch.setattr('api_agent.runtime.local_terminal.open_host_url', open_url)
+        stop = asyncio.Event()
+        class Owner:
+            def __init__(self, *args, **kwargs): pass
+            async def start(self):
+                return LocalSnapshot('ready', log_sources=('agent', 'ui'),
+                                     destinations=(LocalDestination('Studio', 'http://localhost/'),))
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen.receive(LocalEvent('log', source='agent', text='agent event\n'))
+            screen.receive(LocalEvent('log', source='ui', text='ui event\n'))
+            await pilot.press('l')
+            await pilot.pause()
+            if location == 'all-button':
+                await pilot.press('down', 'down')
+                assert app.focused.id.endswith('-all')
+            elif location == 'source-view':
+                await pilot.press('2')
+                assert screen.source == 'ui'
+                assert isinstance(app.focused, TextArea)
+            elif location == 'browser-menu':
+                await pilot.press('escape', 'b')
+                await pilot.pause()
+                assert screen.menu == 'browsers'
+            else:
+                assert app.focused.id.endswith('-0')
+            focused = app.focused
+
+            await pilot.press(key)
+
+            assert opened == []
+            if location == 'browser-menu':
+                assert screen.menu == 'browsers'
+                assert screen.source == 'agent'
+                assert app.focused is focused
+            else:
+                assert screen.menu is None
+                assert screen.source == 'all'
+                assert app.focused is screen.query_one('#local-output', TextArea)
+                assert screen.query_one('#local-output', TextArea).text == '[agent] agent event\n[ui] ui event\n'
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('updated_sources', [('agent', 'ui', 'worker'), ('ui',), ()])
+def test_all_logs_focus_survives_source_reconciliation(updated_sources):
+    async def exercise():
+        stop = asyncio.Event()
+        class Owner:
+            def __init__(self, *args, **kwargs): pass
+            async def start(self):
+                return LocalSnapshot('ready', log_sources=('agent', 'ui'))
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press('l', 'down', 'down')
+            previous = app.focused
+            assert previous.id.endswith('-all')
+
+            screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=updated_sources)))
+            await pilot.pause()
+
+            assert screen.menu_choices == updated_sources
+            assert app.focused is not previous
+            assert app.focused.id == f'local-choice-{screen.menu_generation}-all'
+            assert screen.check_action('copy_choice', ()) is False
+            await pilot.press('enter')
+            assert screen.source == 'all'
+            assert screen.menu is None
+            assert app.focused is screen.query_one('#local-output')
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+@pytest.fixture
+def reconciling_screen():
+    stop = asyncio.Event()
+    class Owner:
+        def __init__(self, *args, **kwargs): pass
+        async def start(self):
+            return LocalSnapshot('ready', log_sources=('agent', 'ui'), destinations=(
+                LocalDestination('First', 'http://localhost/first'),
+                LocalDestination('Second', 'http://localhost/second')))
+        async def wait(self):
+            await stop.wait()
+            return 0
+        def request_stop(self): stop.set()
+        async def aclose(self): pass
+    return LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+
+
+@pytest.mark.parametrize('updates', [
+    (('agent', 'ui', 'worker'), ('ui', 'worker')),
+    (('ui',), (), ('worker', 'ui')),
+    (('ui', 'worker'), ()),
+])
+def test_all_logs_focus_survives_rapid_source_updates(reconciling_screen, updates):
+    async def exercise():
+        screen = reconciling_screen
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press('l', 'down', 'down')
+            stale = app.focused
+            for sources in updates:
+                screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=sources)))
+            await pilot.pause()
+            assert app.focused.id == f'local-choice-{screen.menu_generation}-all'
+            assert screen._pending_menu_focus is None
+            await screen.on_button_pressed(NS(button=stale, stop=lambda: None))
+            assert screen.menu == 'logs'
+            assert screen.source == 'agent'
+            await pilot.press('enter')
+            assert screen.source == 'all'
+            assert screen.menu is None
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_named_source_focus_survives_rapid_reordering(reconciling_screen):
+    async def exercise():
+        screen = reconciling_screen
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press('l', 'down')
+            for sources in (('ui', 'agent'), ('worker', 'agent', 'ui'), ('worker', 'ui')):
+                screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=sources)))
+            await pilot.pause()
+            assert app.focused.id == f'local-choice-{screen.menu_generation}-1'
+            await pilot.press('enter')
+            assert screen.source == 'ui'
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_browser_focus_survives_rapid_reordering_without_activation(monkeypatch, reconciling_screen):
+    async def exercise():
+        opened = []
+        async def open_url(url): opened.append(url)
+        monkeypatch.setattr('api_agent.runtime.local_terminal.open_host_url', open_url)
+        screen = reconciling_screen
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press('b', 'down')
+            first, second = screen.menu_choices
+            stale = app.focused
+            for destinations in ((second, first), (second,), (first, second)):
+                screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', destinations=destinations)))
+            await pilot.pause()
+            assert app.focused.id == f'local-choice-{screen.menu_generation}-1'
+            assert opened == []
+            await screen.on_button_pressed(NS(button=stale, stop=lambda: None))
+            assert opened == []
+            await pilot.press('enter')
+            assert opened == [second.url]
+            assert screen.menu == 'browsers'
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_user_focus_overrides_pending_menu_focus(monkeypatch, reconciling_screen):
+    async def exercise():
+        screen = reconciling_screen
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press('l', 'down', 'down')
+            callbacks = []
+            monkeypatch.setattr(screen, 'call_after_refresh', lambda callback: callbacks.append(callback))
+            screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('ui', 'agent'))))
+            await pilot.pause()
+            assert screen._pending_menu_focus is not None
+            await pilot.press('down')
+            assert app.focused.id.endswith('-1')
+            screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('worker', 'ui', 'agent'))))
+            await pilot.pause()
+            for callback in callbacks:
+                callback()
+            await pilot.pause()
+            assert app.focused.id == f'local-choice-{screen.menu_generation}-2'
+            assert screen._pending_menu_focus is None
+            await pilot.press('enter')
+            assert screen.source == 'agent'
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_pending_focus_callback_respects_user_navigation_and_closed_menu(monkeypatch, reconciling_screen):
+    async def exercise():
+        screen = reconciling_screen
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press('l', 'down', 'down')
+            callbacks = []
+            monkeypatch.setattr(screen, 'call_after_refresh', lambda callback: callbacks.append(callback))
+            screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('ui', 'agent'))))
+            await pilot.pause()
+            await pilot.press('down')
+            focused = app.focused
+            assert focused.id.endswith('-1')
+
+            for callback in callbacks:
+                callback()
+            callbacks.clear()
+
+            assert app.focused is focused
+            assert screen._pending_menu_focus is None
+            screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('agent', 'ui'))))
+            await pilot.press('escape')
+            for callback in callbacks:
+                callback()
+            callbacks.clear()
+            assert screen.menu is None
+            assert screen._pending_menu_focus is None
+            assert app.focused is screen.query_one('#local-output')
+            assert await screen.close_owned()
     asyncio.run(exercise())

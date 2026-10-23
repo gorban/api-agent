@@ -62,6 +62,13 @@ for prerequisites and connection instructions.
 
 ## Known issues
 
+- **Managed local LangFuse has known development credentials:**
+  `admin@local.dev` / `password`. Anyone who can reach that dashboard can try
+  these defaults; keep it local and override them for other use. Existing
+  accounts are not reset by changing initialization settings. The planned
+  [safe multi-stage runtime image](docs/prds/implementation_plan_k2a.md#deployment-dashboard-credential-defaults)
+  will clear both admin defaults to empty and require explicit configuration
+  when LangFuse is selected; that image work remains pending.
 - Automatic [Sign in with ChatGPT OAuth client registrations](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
   support recognized username, password and authenticator-app TOTP steps through
   the bundled Keeper and 1Password adapters. Hardware-key approval

@@ -71,3 +71,9 @@ also retains safe status on stderr. The TUI's display retention remains separate
 ## Direct finalization cancellation
 
 - [x] Every terminal finalization entry point must settle its existing close, manager and worker tasks before descriptor restoration or release, including direct and repeated cancellation of `finish()`. Preserve the original cancellation/cleanup error and any unresolved pre-close receipt. Verify blocked and healthy real-pipe delivery; a wrapper shield alone is insufficient. Direct descriptor-only retry must reject while any manager, close or registered worker task remains active, without awaiting an old event loop or touching descriptors.
+
+## Log-source menu follow-through
+
+- [x] The `*` shortcut must select All logs both from a viewed source and from the dedicated log-source menu; keep keyboard focus and button behavior consistent. Clarify that current UI logs expose child-process activity, while Settings/send requests produce agent catalog/request diagnostics; raw UI-process content remains behind its separate gate.
+
+- [x] If available sources change while All logs is focused in the source menu, rebuilding the menu must preserve that semantic choice; Enter must still open All logs. Verify source additions/removals, including an empty source list, while preserving ordinary source and browser focus behavior.

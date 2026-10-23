@@ -65,3 +65,7 @@ and combined human acceptance retain their open gates above.
 
 - [x] Retain the shared startup browser context; separate contexts or cookie hostnames are not required merely to prevent cookie sharing across local ports. Use distinct names for application-owned cookies where names could collide with dashboard cookies. Prefer HttpOnly for session cookies and Secure on HTTPS where the owning backend supports it; do not rewrite third-party cookies or force Secure onto supported HTTP-only development endpoints in a way that breaks login. No application-owned HTTP cookie is introduced by this tracing join. LLM provider authentication remains in its existing separate provider-owned session.
 - [x] Verify that shared-cookie behavior cannot bypass the credential exclusions for logs, traces, Allure, status snapshots or inspection descriptors. Dashboard credentials remain confined to the explicit interactive status exception. This policy permits browser cookie sharing, not exporting authentication state.
+
+## Startup and configuration follow-through
+
+[Dashboard defaults, applicability and viewer recovery](implementation_plan_k2a.md) records the technically verified corrections. Their human retest remains unchecked; production-image clearing and broader deployed tracing conformance remain separate.

@@ -49,6 +49,7 @@ class LocalTracing:
         self.viewer_url = None
         self.state = 'disabled'
         self.authentication = 'not_attempted'
+        self.diagnostic = None
         self._credentials = None
 
     @staticmethod
@@ -84,6 +85,8 @@ class LocalTracing:
             path = '/'
         self.state = 'unavailable'
         if not url:
+            self.diagnostic = ('Tracing viewer is unavailable: set TRACE_VIEWER_URL for the custom OTEL collector, '
+                               'or use the managed local OTLP traces endpoint on port 4318.')
             return self
         if safe_destination(url) is None:
             raise DashboardError('Tracing viewer requires an HTTP(S) URL without credentials, query or fragment.')
@@ -100,6 +103,12 @@ class LocalTracing:
                 raise DashboardError('Tracing dashboard readiness failed; check its configured address.') from None
         if ready and not self._closed:
             self.viewer_url, self.state = url.rstrip('/'), 'ready'
+        elif not self._closed:
+            self.diagnostic = (
+                'Tracing viewer readiness failed: check TRACE_VIEWER_URL or the managed local '
+                'Jaeger service and JAEGER_VIEWER_PORT; no dashboard tab was opened.' if mode == 'OTEL' else
+                'Tracing viewer readiness failed: check TRACE_TARGET and the LangFuse service; '
+                'no dashboard tab was opened.')
         return self
 
     def interactive_credentials(self):

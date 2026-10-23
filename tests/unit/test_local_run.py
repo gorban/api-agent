@@ -154,7 +154,7 @@ def test_optional_ui_uses_one_prepared_owner_and_then_llm(local, monkeypatch):
         llm.ensure_ready.assert_awaited_once()
         assert factory.call_args.kwargs['browser_owner'] is borrowed
         assert local.owner._status()['components']['ui'] == 'ready'
-        assert [row.name for row in local.owner.snapshot.destinations] == ['agent', 'ui', 'flow']
+        assert [row.name for row in local.owner.snapshot.destinations] == ['agent', 'flow', 'ui']
         await local.owner.aclose()
         prepared.aclose.assert_awaited_once()
     asyncio.run(run())
@@ -525,7 +525,7 @@ def test_enabled_tracing_joins_verified_dashboard_before_owned_browser(local, mo
     from api_agent.runtime import local_tracing
     local.config.values['TRACE_MODE'] = 'OTEL'
     local.config.values['TRACE_TARGET'] = 'https://collector.example/v1/traces'
-    dashboard = SimpleNamespace(state='ready', viewer_url='https://viewer.example',
+    dashboard = SimpleNamespace(state='ready', viewer_url='https://viewer.example', diagnostic=None,
         start=AsyncMock(), aclose=AsyncMock(), interactive_credentials=Mock(return_value=None))
     factory = Mock(return_value=dashboard)
     monkeypatch.setattr(local_tracing, 'LocalTracing', factory)
@@ -574,3 +574,34 @@ def test_local_workflow_projection_does_not_apply_process_log_tail_limit(local):
     assert local.owner.interactive_dashboard_credentials() == ('admin@example.test', 'literal-password')
     local.owner.on_event = None
     local.owner._workflow_event(row)
+
+
+@pytest.mark.parametrize('ready', [True, False])
+def test_managed_jaeger_startup_destination_matches_verified_nondefault_viewer(local, monkeypatch, ready):
+    from api_agent.runtime import local_tracing
+    local.config.values.update(TRACE_MODE='OTEL', TRACE_TARGET='http://127.0.0.1:4318/v1/traces',
+                               TRACE_VIEWER_URL='', JAEGER_VIEWER_PORT=17686, RUN_UI=True)
+    monkeypatch.setattr(local_tracing, '_probe', Mock(return_value=ready))
+    async def run():
+        snapshot = await local.owner.start()
+        names = [item.name for item in snapshot.destinations]
+        assert names == (['agent', 'tracing', 'flow', 'ui'] if ready else ['agent', 'flow', 'ui'])
+        assert next(item.state for item in snapshot.components if item.name == 'tracing') == ('ready' if ready else 'unavailable')
+        diagnostic_events = [event.text for event in local.events if 'Tracing viewer readiness failed' in event.text]
+        assert len(diagnostic_events) == (0 if ready else 1)
+        if ready:
+            assert snapshot.destinations[1].url == 'http://localhost:17686'
+        await local.owner.aclose()
+    asyncio.run(run())
+
+
+def test_custom_otel_missing_viewer_logs_action_and_has_no_destination(local):
+    local.config.values.update(TRACE_MODE='OTEL', TRACE_TARGET='http://localhost:3000', TRACE_VIEWER_URL='')
+    async def run():
+        snapshot = await local.owner.start()
+        assert [item.name for item in snapshot.destinations] == ['agent', 'flow']
+        assert any('set TRACE_VIEWER_URL' in event.text for event in local.events)
+        assert next(item.state for item in snapshot.components if item.name == 'tracing') == 'unavailable'
+        assert local.config.values['TRACE_TARGET'] == 'http://localhost:3000'
+        await local.owner.aclose()
+    asyncio.run(run())

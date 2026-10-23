@@ -479,7 +479,12 @@ def test_tracing_tab_between_home_and_actual_flow(run_ui,debug):
     session=SimpleNamespace(page=home,context=context,browser=browser,inspection_endpoint=None)
     ui_page.context=context;ui_page.is_closed=lambda:False;ui_page.url='http://localhost:9443';ui_page.bring_to_front=AsyncMock()
     owner_browser=SimpleNamespace(start=AsyncMock(return_value=session),aclose=AsyncMock())
-    tracing=SimpleNamespace(viewer_url='http://localhost:3000',login=AsyncMock())
+    from api_agent.runtime.local_tracing import LocalTracing
+    tracing = LocalTracing({'TRACE_MODE': 'OTEL', 'TRACE_TARGET': 'http://127.0.0.1:4318/v1/traces',
+                            'TRACE_VIEWER_URL': '', 'JAEGER_VIEWER_PORT': 17686},
+                           emissions=Mock(), probe=Mock(return_value=True))
+    tracing_page.url = 'http://localhost:17686'
+    tracing_page.route = AsyncMock()
     async def prepare_ui(*,browser_owner):
         return SimpleNamespace(session=await browser_owner.start(),aclose=AsyncMock())
     owner=LocalBrowserOwner(object(),{'RUN_UI':run_ui,'DEBUG':debug,'UI_LISTENER_URL':'http://localhost:9443'},'http://localhost:8443',
@@ -487,13 +492,15 @@ def test_tracing_tab_between_home_and_actual_flow(run_ui,debug):
         prepare_view=lambda context:(None,None,None,None,None),
         host_factory=AsyncMock(return_value=SimpleNamespace(entry_url='http://localhost:123/flow',aclose=AsyncMock())))
     async def exercise():
+        await tracing.start()
         await owner.start()
         if run_ui or debug:
-            tracing.login.assert_awaited_once_with(tracing_page)
+            tracing_page.goto.assert_awaited_once_with('http://localhost:17686', wait_until='domcontentloaded')
             assert owner._tab_prefix==[home,tracing_page,flow]
         else:
-            tracing.login.assert_not_awaited()
+            tracing_page.goto.assert_not_awaited()
         await owner.aclose()
+        await tracing.aclose()
     asyncio.run(exercise())
 
 
