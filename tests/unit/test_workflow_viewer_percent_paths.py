@@ -13,14 +13,14 @@ const location = new URL(input.base);
 const images = input.paths.map(path => ({removed:false, dataset:{}, getAttribute: () => path, remove() {this.removed=true;}}));
 const links = input.paths.map(path => ({href:input.prefix + path, getAttribute() {return this.href;}, getAttributeNS() {return this.href;}, setAttribute(name,value) {this.href=value;}, setAttributeNS(ns,name,value) {this.xlink=value;}}));
 const carrier = {textContent:'# Workflow v2\n', before() {}};
-const main = {append() {}, querySelector() {return null;}, querySelectorAll() {return [];}};
+const main = {setAttribute() {}, append() {}, querySelector() {return null;}, querySelectorAll() {return [];}};
 const content = {querySelectorAll(selector) {return selector === 'img' ? images : [];}};
 const script = {src:new URL('.private_resources/viewer/viewer.js', input.base).href, getAttribute(name) {return name === 'src' ? '.private_resources/viewer/viewer.js' : name === 'data-workflow-links' ? 'v1' : JSON.stringify({[input.prefix]: input.relative});}};
 const document = {baseURI:input.base, readyState:'complete', currentScript:script,
  querySelector(selector) {return selector.startsWith('plaintext') ? carrier : null;},
  querySelectorAll(selector) {return selector === 'a' ? links : selector.startsWith('script') ? [script] : [];},
  createElement(name) {return name === 'template' ? {content} : main;}, getElementById() {return null;}};
-const window = {marked:{lexer() {return [];}, parse() {return '';}}, DOMPurify:{sanitize() {return '';}}};
+const window = {marked:{Marked:class {lexer() {return [];} parse() {return '';}}}, DOMPurify:{sanitize() {return '';}}};
 window.top = window; window.self = window; window.parent = window;
 vm.runInNewContext(fs.readFileSync(input.asset, 'utf8'), {document,window,location,URL});
 process.stdout.write(JSON.stringify(input.mode === 'image' ? images.map(image => !image.removed) :

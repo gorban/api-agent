@@ -830,3 +830,114 @@ def test_replayed_missing_dependency_diagnostic_recovers_once(static_view, view_
             assert not page.locator('plaintext').is_visible()
         finally:
             browser.close()
+
+
+def _reload_viewer_asset(page, name='viewer.js'):
+    page.evaluate('''name => new Promise((resolve, reject) => {
+      const original = [...document.scripts].find(script => script.src.endsWith('/' + name));
+      const repeated = document.createElement('script');
+      repeated.src = original.getAttribute('src');
+      const timeout = setTimeout(() => reject(new Error('Viewer asset did not load')), 10000);
+      repeated.onload = () => { clearTimeout(timeout); resolve(); };
+      repeated.onerror = () => { clearTimeout(timeout); reject(new Error('Viewer asset failed')); };
+      document.body.append(repeated);
+    })''', name)
+
+
+@pytest.mark.parametrize('browser_name', ['chromium', 'firefox'])
+@pytest.mark.parametrize('path', ['flow.md.html', 'workflows/components/agent.md.html'])
+@pytest.mark.parametrize('replay', ['viewer', 'all'])
+def test_reconstructed_body_replaces_copied_document(static_view, view_url, browser_name, path, replay):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, browser_name).launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url(path))
+            page.locator('main.workflow-document').wait_for()
+            anchors = page.locator('main [id]').evaluate_all('nodes => nodes.map(node => node.id)')
+            for _ in range(2):
+                page.evaluate('''() => {
+                  window.oldWorkflowCarrier = document.querySelector('plaintext');
+                  document.body.replaceWith(document.body.cloneNode(true));
+                  window.copiedWorkflowDocument = document.querySelector('main.workflow-document');
+                }''')
+                assert not page.evaluate('window.oldWorkflowCarrier.isConnected')
+                assert page.locator('main.workflow-document').count() == 1
+                if replay == 'all':
+                    for asset in ('marked.js', 'heading-id.js', 'dompurify.js'):
+                        _reload_viewer_asset(page, asset)
+                _reload_viewer_asset(page)
+                if replay == 'all':
+                    _reload_viewer_asset(page, 'flow-modal.js')
+
+                assert page.locator('main.workflow-document').count() == 1
+                assert page.locator('main > h1').count() == 1
+                assert page.locator('main img[alt="Workflow diagram"]').count() == 1
+                assert page.locator('main [id]').evaluate_all('nodes => nodes.map(node => node.id)') == anchors
+                assert not page.evaluate('window.copiedWorkflowDocument.isConnected')
+                assert page.evaluate('''() => document.querySelector('plaintext')[
+                  Symbol.for('api-agent.workflow-viewer.document')].document ===
+                  document.querySelector('main.workflow-document')''')
+            if page.url.startswith('file:'):
+                page.locator('main > h1 + p > a').click()
+                assert page.locator('dialog.workflow-flow-modal').count() == 1
+                page.get_by_role('button', name='Close diagram', exact=True).click()
+                assert page.locator('dialog.workflow-flow-modal').count() == 0
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('browser_name', ['chromium', 'firefox'])
+@pytest.mark.parametrize('path', ['flow.md.html', 'workflows/components/agent.md.html'])
+def test_replaced_carrier_uses_current_source_and_preserves_unowned_dom(static_view, view_url, browser_name, path):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, browser_name).launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url(path))
+            page.locator('main.workflow-document').wait_for()
+            page.evaluate('''() => {
+              const carrier = document.querySelector('plaintext');
+              const replacement = carrier.cloneNode(true);
+              replacement.textContent += '\\n\\n## Updated source\\n\\nFresh content.\\n\\n' +
+                '<main data-workflow-document="v1" class="workflow-document"><p>Authored nested content.</p></main>\\n' +
+                '<img src="https://example.org/not-admitted.svg" onerror="window.injected=true">\\n';
+              carrier.replaceWith(replacement);
+              const unrelated = document.createElement('main');
+              unrelated.id = 'unrelated-main';
+              unrelated.className = 'workflow-document';
+              unrelated.setAttribute('data-workflow-document', 'v1');
+              unrelated.textContent = 'Keep this host content.';
+              document.body.append(unrelated);
+            }''')
+            _reload_viewer_asset(page)
+
+            assert page.locator('body > main.workflow-document:not(#unrelated-main)').count() == 1
+            assert page.locator('#updated-source').inner_text() == 'Updated source'
+            assert page.locator('body > main.workflow-document > main.workflow-document').inner_text() == 'Authored nested content.'
+            assert page.locator('#unrelated-main').inner_text() == 'Keep this host content.'
+            assert page.locator('main img[onerror], main img[src^="https:"]').count() == 0
+            assert page.evaluate('window.injected') is None
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('browser_name', ['chromium', 'firefox'])
+def test_viewer_keeps_global_markdown_parser_independent(view_url, browser_name):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, browser_name).launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(view_url('flow.md.html'))
+            page.locator('main #workflow-v2').wait_for()
+
+            assert page.evaluate("window.marked.parse('# Unrelated content')") == '<h1>Unrelated content</h1>\n'
+            assert page.locator('main #workflow-v2').inner_text() == 'Workflow v2'
+        finally:
+            browser.close()
