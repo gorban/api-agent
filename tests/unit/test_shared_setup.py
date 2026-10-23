@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 
 import pytest
@@ -440,27 +440,93 @@ def test_catalog_ttl_starts_at_validated_completion_and_refresh_failure_does_not
     asyncio.run(scenario())
 
 
-def test_valid_empty_catalog_is_cached_until_ttl_expires(monkeypatch):
-    from api_agent.providers import shared_setup
-    clock = SimpleNamespace(now=0.0)
-    monkeypatch.setattr(shared_setup, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+def test_empty_catalog_is_wire_valid_but_next_retrieval_retries_same_owner():
+    from api_agent.providers.catalog import catalog_to_wire
     async def scenario():
         calls = []
         async def call(callback):
             return await callback(auth=object())
         async def describe(*, auth):
             calls.append('describe')
-            return ()
+            return () if len(calls) == 1 else (AvailableSelection('sample'),)
         child = SimpleNamespace(call=call, aclose=AsyncMock())
-        owner = SharedSetupOwner('op', 'selected', lambda credentials: child,
-                                 describe=describe, catalog_ttl=2)
-        assert await owner.describe() == ()
-        clock.now = 1.999
-        assert await owner.describe() == ()
-        assert len(calls) == 1
-        clock.now = 2.0
-        assert await owner.describe() == ()
-        assert len(calls) == 2
+        factory = Mock(return_value=child)
+        owner = SharedSetupOwner('op', 'selected', factory, describe=describe)
+
+        assert catalog_to_wire(await owner.describe()) == []
+        assert owner._catalog is None
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert calls == ['describe', 'describe']
+        factory.assert_called_once_with(None)
+        await owner.aclose()
+        child.aclose.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_concurrent_empty_catalog_waiters_coalesce_and_late_settlement_keeps_replacement():
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                entered.set()
+                await release.wait()
+                return ()
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child, describe=describe)
+        await owner.ensure_ready()
+        first = asyncio.create_task(owner.describe())
+        second = asyncio.create_task(owner.describe())
+        await entered.wait()
+        old = owner._catalog
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not second.done()
+        release.set()
+        assert await asyncio.gather(first, second) == [(), ()]
+        assert calls == ['describe']
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        replacement = owner._catalog
+        owner._settle_catalog(old)
+        assert owner._catalog is replacement
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert calls == ['describe', 'describe']
+        await owner.aclose()
+    asyncio.run(scenario())
+
+
+def test_empty_catalog_settles_after_sole_waiter_cancels():
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                entered.set()
+                await release.wait()
+                return ()
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        owner = SharedSetupOwner('op', 'selected', lambda credentials: child, describe=describe)
+        waiter = asyncio.create_task(owner.describe())
+        await entered.wait()
+        retrieval = owner._catalog
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        release.set()
+        assert await retrieval == ()
+        await asyncio.sleep(0)
+        assert owner._catalog is None
+        assert (await owner.describe())[0].selected_llm == 'sample'
+        assert calls == ['describe', 'describe']
         await owner.aclose()
     asyncio.run(scenario())
 

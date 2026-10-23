@@ -132,9 +132,9 @@ function render() {
   nodes.forEach((n, i) => { if (c.children[i] !== n) c.insertBefore(n, c.children[i] || null); });
   if (!focused.isConnected && wasSummary) nodes.find(n => n.dataset.messageId === focusedId)?.querySelector('summary')?.focus({preventScroll: true});
   c.querySelectorAll('.suggestion').forEach(b => b.disabled = !!active);
-  $('send').disabled = !!active; $('new-chat').disabled = !!active;
+  $('send').disabled = !!active || !!pendingSend; $('new-chat').disabled = !!active;
   if (!active && document.activeElement === $('stop')) focusComposer();
-  $('stop').hidden = !active;
+  $('stop').hidden = !active && !pendingSend;
 }
 async function run(text, requested, retryMessage, reply) {
   if (active) return;
@@ -162,7 +162,7 @@ async function run(text, requested, retryMessage, reply) {
 
   const timer = setTimeout(() => { request.failure = 'The agent took too long to respond. Please try again.'; stopRequest(request); }, REQUEST_TIMEOUT_MS);
   try {
-    await configuration;
+    await loadConfiguration();
     if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
     request.dispatched = true;
     const response = reply ? await submitContinuation({session: request.sessionId, text, messages, requested: {...m.selectionSnapshot}, reply: structuredClone(m.requestReply)}, {signal: controller.signal}) : await fetch(apiOrigin + '/app/agent/chat/stream', {
@@ -191,6 +191,7 @@ async function run(text, requested, retryMessage, reply) {
     m.error = request.failure ? request.failure : request.stopped ? 'Response stopped. You can retry when you’re ready.' : error instanceof SyntaxError ? 'The agent returned an unreadable response. Please try again.' : error instanceof TypeError ? 'Couldn’t connect to api-agent. Please try again when the agent is available.' : error.name === 'AbortError' ? 'The connection was interrupted. Please try again.' : error.message;
     if (!request.stopped && request.dispatched) void controlRequest('cancel', request).catch(() => {});
     announce(m.error);
+    if (!request.stopped || request.failure) showFailure('The response could not be completed. Check the connection and provider, then try again. See the response record for details.', $('prompt'));
   } finally {
     clearTimeout(timer); clearInterval(request.heartbeat); m.pending = false; active = null;
     if (beginReply(state, m)) $('prompt').value = state.draft;
@@ -199,7 +200,7 @@ async function run(text, requested, retryMessage, reply) {
 }
 function fillSelect(id, entries, selected, placeholder = 'Provider default') {
   const select = $(id); select.replaceChildren();
-  if (id !== 'model') select.add(new Option(placeholder, ''));
+  if (id !== 'model' || !entries.length) select.add(new Option(id === 'model' ? 'Model choices unavailable' : placeholder, ''));
   for (const item of entries) {
     const option = new Option(item.name || item.id, item.id);
     option.disabled = !!item.disabled;
@@ -230,62 +231,93 @@ function syncSettings() {
   fillSelect('reasoning', availableEfforts.map(id => ({id})), state.settings.reasoning);
   $('reasoning').disabled = availableEfforts.length === 0;
   const label = selection.selection?.display_name || group?.name || state.settings.family || state.settings.model || 'Provider default';
-  $('backend-default').textContent = state.settings.model || state.settings.family ? 'Use backend default' : 'Keep selected model';
-  $('backend-default').disabled = !$('model').value;
+  $('backend-default').textContent = !catalog.length ? 'Model choices unavailable' : state.settings.model || state.settings.family ? 'Use backend default' : 'Keep selected model';
+  $('backend-default').disabled = !catalog.length || !$('model').value;
+  $('model').disabled = !catalog.length; $('version').disabled = !catalog.length;
   $('model-short-name').textContent = label + (state.settings.reasoning ? ': ' + state.settings.reasoning : '');
   $('model-status').textContent = catalogStatus || (selection.valid ? '' : selection.error);
 }
-const configSignal = AbortSignal.timeout(5000);
-const configuration = fetch('/config.json', {signal:configSignal}).then(r => readJSONResponse(r, {signal:configSignal})).then(c => {
-  if (!c || typeof c !== 'object' || Array.isArray(c) || Object.keys(c).some(key => !['apiOrigin', 'apiHeaders'].includes(key)) || typeof c.apiOrigin !== 'string') throw Error('Invalid API configuration.');
-  const url = new URL(c.apiOrigin);
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('Invalid API configuration.');
-  if (c.apiHeaders !== undefined) {
-    const headers = c.apiHeaders;
-    if (!headers || typeof headers !== 'object' || Array.isArray(headers) || Object.keys(headers).length !== 1 || !Object.hasOwn(headers, 'X-API-Agent-Session') || typeof headers['X-API-Agent-Session'] !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(headers['X-API-Agent-Session'])) throw Error('Invalid API configuration headers.');
-    apiHeaders = Object.freeze({...headers});
-  }
-  apiOrigin = url.origin;
+let configuration;
+function loadConfiguration() {
+  if (configuration) return configuration;
+  const configSignal = AbortSignal.timeout(5000);
+  configuration = fetch('/config.json', {signal:configSignal}).then(r => readJSONResponse(r, {signal:configSignal})).then(c => {
+    if (!c || typeof c !== 'object' || Array.isArray(c) || Object.keys(c).some(key => !['apiOrigin', 'apiHeaders'].includes(key)) || typeof c.apiOrigin !== 'string') throw Error('Invalid API configuration.');
+    const url = new URL(c.apiOrigin);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('Invalid API configuration.');
+    if (c.apiHeaders !== undefined) {
+      const headers = c.apiHeaders;
+      if (!headers || typeof headers !== 'object' || Array.isArray(headers) || Object.keys(headers).length !== 1 || !Object.hasOwn(headers, 'X-API-Agent-Session') || typeof headers['X-API-Agent-Session'] !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(headers['X-API-Agent-Session'])) throw Error('Invalid API configuration headers.');
+      apiHeaders = Object.freeze({...headers});
+    }
+    apiOrigin = url.origin;
+  }).catch(error => { configuration = null; throw error; });
+  return configuration;
+}
+let modelsPromise = null, pendingSend = null, failureOpener;
+function showFailure(message, opener) {
+  if ($('failure').open) return;
+  failureOpener = $('settings').open ? $('close-settings') : opener; $('failure-message').textContent = message; $('failure').showModal();
+}
+$('close-failure').addEventListener('click', () => $('failure').close());
+$('failure').addEventListener('close', () => {
+  const opener = failureOpener.getClientRects().length ? failureOpener : $('settings-nav');
+  opener.focus({preventScroll: true});
 });
-// Attach rejection handling immediately; sending still receives the configuration error.
-configuration.catch(() => { catalogStatus = 'The API configuration could not be loaded. Reload the page after checking the Studio host.'; $('model-status').textContent = catalogStatus; });
-let modelsLoading = false;
-async function loadModels() {
-  if (modelsLoading) return;
-  modelsLoading = true;
-  let response;
+function cancelPendingSend() { pendingSend = null; render(); }
+async function ensureModels(opener) {
+  if (catalog.length) return true;
+  const ready = await loadModels();
+  if (!ready) showFailure(catalogStatus, opener);
+  return ready;
+}
+function loadModels() {
+  if (modelsPromise) return modelsPromise;
   const status = $('model-status');
-  const retry = $('retry-models');
   status.dataset.catalogState = 'loading';
   catalogStatus = 'Loading model choices…';
   status.textContent = catalogStatus;
-  retry.hidden = true;
+  $('catalog-readiness').textContent = catalogStatus;
+  announce(catalogStatus);
   const slow = setTimeout(() => {
     catalogStatus = 'The model provider is still getting ready…';
     status.textContent = catalogStatus;
+    $('catalog-readiness').textContent = catalogStatus;
+    announce(catalogStatus);
   }, 5000);
-  try {
-    await configuration;
-    response = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal: AbortSignal.timeout(125000)});
-    const data = await readJSONResponse(response);
-    catalog = normalizeCatalog(data);
-    catalogStatus = catalog.length ? '' : 'No model choices are available. Retry after checking the provider.';
-    syncSettings();
-    retry.hidden = catalog.length > 0;
-  } catch {
-    catalogStatus = !apiOrigin ? 'The API configuration could not be loaded. Reload the page after checking the Studio host.' : response && !response.ok ? `Model list unavailable (HTTP ${response.status}). Retry after checking the provider.` : 'Model list unavailable. Retry after checking the provider.';
-    status.textContent = catalogStatus;
-    retry.hidden = !apiOrigin;
-  }
-  finally { clearTimeout(slow); status.dataset.catalogState = 'settled'; modelsLoading = false; }
+  modelsPromise = (async () => {
+    let response;
+    try {
+      await loadConfiguration();
+      const signal = AbortSignal.timeout(125000);
+      response = await fetch(apiOrigin + '/app/agent/models', {headers: apiHeaders, signal});
+      catalog = normalizeCatalog(await readJSONResponse(response, {signal}));
+      catalogStatus = catalog.length ? '' : 'No model choices are available. Open Settings or send again after checking the provider.';
+      syncSettings();
+      $('catalog-readiness').textContent = catalog.length ? 'Model choices ready.' : catalogStatus;
+      announce(catalog.length ? 'Model choices ready.' : catalogStatus);
+      return catalog.length > 0;
+    } catch {
+      catalogStatus = !apiOrigin ? 'The API configuration could not be loaded. Open Settings or send again after checking the Studio host.' : response && !response.ok ? `Model list unavailable (HTTP ${response.status}). Open Settings or send again after checking the provider.` : 'Model list unavailable. Open Settings or send again after checking the provider.';
+      status.textContent = catalogStatus;
+      $('catalog-readiness').textContent = catalogStatus;
+      announce(catalogStatus);
+      return false;
+    } finally { clearTimeout(slow); status.dataset.catalogState = 'settled'; modelsPromise = null; }
+  })();
+  return modelsPromise;
 }
-$('retry-models').addEventListener('click', loadModels);
 $('backend-default').addEventListener('click', () => {
+  cancelPendingSend();
   if (state.settings.model || state.settings.family) state.settings = defaults();
   else { const selected = resolveSelection(catalog, state.settings).selection; if (selected) state.settings.model = selected.selected_llm; }
   syncSettings(); save();
 });
-$('settings-nav').addEventListener('click', () => { settingsOpener = document.activeElement; $('settings').showModal(); });
+$('settings-nav').addEventListener('click', () => {
+  if ($('settings').open) return;
+  settingsOpener = $('settings-nav'); $('settings').showModal();
+  void ensureModels($('close-settings'));
+});
 $('close-settings').addEventListener('click', () => $('settings').close());
 let backdropStart = false;
 function outsideDialog(event) { const r = $('settings').getBoundingClientRect(); return event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom; }
@@ -293,6 +325,7 @@ $('settings').addEventListener('pointerdown', e => { backdropStart = outsideDial
 $('settings').addEventListener('click', e => { if (backdropStart && outsideDialog(e)) $('settings').close(); backdropStart = false; });
 $('settings').addEventListener('close', () => settingsOpener?.focus({preventScroll: true}));
 for (const id of ['model', 'version', 'reasoning']) $(id).addEventListener('change', () => {
+  cancelPendingSend();
   const groups = modelGroups(catalog);
   const current = groups.find(group => group.value === $('model').value);
   if (!current) { syncSettings(); return; }
@@ -310,11 +343,18 @@ for (const id of ['model', 'version', 'reasoning']) $(id).addEventListener('chan
   syncSettings(); save();
 });
 $('prompt').value = state.draft;
-$('prompt').addEventListener('input', () => { clearPromptError(); state.draft = $('prompt').value; save(); });
-$('composer').addEventListener('submit', e => {
-  e.preventDefault(); if (active) return;
+$('prompt').addEventListener('input', () => { cancelPendingSend(); clearPromptError(); state.draft = $('prompt').value; save(); });
+$('composer').addEventListener('submit', async e => {
+  e.preventDefault(); if (active || pendingSend) return;
   const text = $('prompt').value.trim();
   if (!text) { rejectPrompt('Write a message to get started.'); return; }
+  const intent = {draft: $('prompt').value};
+  pendingSend = intent; render();
+  const ready = catalog.length ? true : await loadModels();
+  if (pendingSend !== intent) return;
+  pendingSend = null; render();
+  if (!ready) { showFailure(catalogStatus, $('prompt')); return; }
+  if ($('prompt').value !== intent.draft) return;
   if (state.reply) { submitReply(text); return; }
   const selection = resolveSelection(catalog, state.settings);
   if (!selection.valid) { rejectPrompt(selection.error); return; }
@@ -336,10 +376,10 @@ function stopRequest(request, keepalive = false) {
   if (apiOrigin && request.dispatched) void controlRequest('cancel', request, keepalive).catch(() => {});
   request.controller.abort();
 }
-$('stop').addEventListener('click', () => { if (active) { stopRequest(active); focusComposer(); } });
-window.addEventListener('pagehide', () => { if (active) stopRequest(active, true); });
-$('new-chat').addEventListener('click', () => { if (active) return; clearPromptError(); const settings = state.settings; if (state.messages.length || state.draft) previousChat = structuredClone(state); savePrevious(); state = fresh(); state.settings = settings; $('prompt').value = ''; render(); $('conversation-scroll').scrollTop = 0; save(); focusComposer(); announce(previousChat ? 'A new conversation is ready. Undo new chat is available until you send a message.' : 'A new conversation is ready.'); });
-document.querySelectorAll('[data-prompt]').forEach(b => b.addEventListener('click', () => { clearPromptError(); $('prompt').value = b.dataset.prompt; state.draft = b.dataset.prompt; save(); focusComposer(); }));
+$('stop').addEventListener('click', () => { cancelPendingSend(); if (active) { stopRequest(active); focusComposer(); } });
+window.addEventListener('pagehide', () => { cancelPendingSend(); if (active) stopRequest(active, true); });
+$('new-chat').addEventListener('click', () => { if (active) return; cancelPendingSend(); clearPromptError(); const settings = state.settings; if (state.messages.length || state.draft) previousChat = structuredClone(state); savePrevious(); state = fresh(); state.settings = settings; $('prompt').value = ''; render(); $('conversation-scroll').scrollTop = 0; save(); focusComposer(); announce(previousChat ? 'A new conversation is ready. Undo new chat is available until you send a message.' : 'A new conversation is ready.'); });
+document.querySelectorAll('[data-prompt]').forEach(b => b.addEventListener('click', () => { cancelPendingSend(); clearPromptError(); $('prompt').value = b.dataset.prompt; state.draft = b.dataset.prompt; save(); focusComposer(); }));
 $('follow-latest').addEventListener('change', () => { if ($('follow-latest').checked) scrollLatest(); });
 $('latest-response').addEventListener('click', () => { $('follow-latest').checked = true; scrollLatest(); });
 const pauseFollow = () => { $('follow-latest').checked = false; };
@@ -352,6 +392,7 @@ syncSettings(); render(); loadModels();
 
 $('undo-new-chat').addEventListener('click', () => {
   if (active || !previousChat || state.messages.length) return;
+  cancelPendingSend();
   clearPromptError(); const draft = state.draft;
   state = previousChat; previousChat = null;
   if (draft) state.draft = draft;

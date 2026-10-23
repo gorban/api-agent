@@ -13,3 +13,8 @@ This is a follow-through requirement after the initial core Run local checkpoint
 not functionality delivered by its activity-only UI-process reader. Its durable
 command is `--no-std-in` with `tee`; settle content and backpressure details before
 dependent implementation.
+
+## Non-content readiness and request events
+
+- [ ] Include selected-provider setup/authentication needed, started, ready or failed; catalog acquisition/cache reuse/expiry/failure; and request accepted, executing, completed, cancelled or failed in the local agent log projection. These bounded lifecycle messages remain available with LOG_CONTENT=False, correlate with shared request/component identity where present, and never contain credentials, session state, account descriptors or raw provider errors. Use fixed safe categories and outcomes rather than arbitrary process text.
+- [ ] Keep the projection tied to the shared runtime/tracing event source. Verify useful progress during authentication/catalog waits and failures as well as successful requests; prevent duplicate console rows from nested exporters and preserve bounded elapsed/error reporting. No rich lifecycle logging is claimed by the current readiness-only agent source.

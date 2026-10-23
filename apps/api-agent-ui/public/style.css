@@ -50,8 +50,8 @@ h1 em{letter-spacing:inherit}
 .metadata-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;background:#eeece3;border-radius:14px;padding:8px 18px;margin:5px 0 0;font-size:12px}
 .metadata-grid>div{display:grid;grid-template-columns:minmax(105px,.9fr) minmax(0,1fr);gap:12px;align-items:baseline;padding:12px 0;border-bottom:1px solid #172d4410}
 .metadata-grid dt{color:var(--muted);font-weight:400}.metadata-grid dd{margin:0;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
-#settings{width:min(520px,calc(100% - 32px));max-height:calc(100dvh - 48px);overflow:auto;margin:auto;border:0;border-radius:26px;padding:30px;background:#fffdf7;color:var(--ink);box-shadow:0 24px 90px #172d4426}
-#settings::backdrop{background:#172d4466;backdrop-filter:blur(5px)}
+#settings,#failure{width:min(520px,calc(100% - 32px));max-height:calc(100dvh - 48px);overflow:auto;margin:auto;border:0;border-radius:26px;padding:30px;background:#fffdf7;color:var(--ink);box-shadow:0 24px 90px #172d4426}
+#settings::backdrop,#failure::backdrop{background:#172d4466;backdrop-filter:blur(5px)}
 .dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
 .dialog-head h2{font-weight:580;letter-spacing:-.8px;font-size:25px;margin:0}
 .dialog-head button{display:grid;place-items:center;min-width:44px;border-radius:50%;font-size:27px;background:#f0ece2}
@@ -117,3 +117,5 @@ main:not(.has-messages) .starters{margin-bottom:8px}
 #system-mode{font-weight:650;color:var(--ink)}
 
 .mascot .face i,.mascot .eyes{letter-spacing:0!important;word-spacing:0!important;line-height:1!important}
+
+#catalog-readiness{font-size:12px;line-height:1.5;color:var(--muted);margin:0 4px 8px;overflow-wrap:anywhere}

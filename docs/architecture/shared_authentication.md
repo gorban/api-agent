@@ -72,3 +72,5 @@ attempted user turns reach the suite's CSV/summary artifacts through content-fre
 worker events; missing token totals remain unknown. Tests do not log prompt or
 reply text for accounting. Both serial and parallel recorded checks exercise the
 real loaded factory and assert safe error propagation and credential exclusion.
+
+A completed empty catalog is not retained for its TTL, even though the generic metadata wire format accepts an empty tuple. Applications still validate usable choices and defaults; a later retrieval can ask the same authenticated owner again without replaying setup.

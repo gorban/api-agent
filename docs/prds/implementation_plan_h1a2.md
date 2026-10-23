@@ -37,8 +37,6 @@ Unrelated source, registry or settings drift still rejects before execution.
 This establishes source continuity for the bound profile, not new reliability
 observations or broader provider qualification.
 
-## Deferred human review
+## Follow-up human findings
 
-The substantive repairs, applicable verification and independent/external review
-are complete. Only the human acceptance item above remains unchecked. Tracing,
-product adapters and full application E2E retain their separate gates.
+- [ ] Close [selected log copying and action-driven model readiness](implementation_plan_h1a3.md) before renewing this checkpoint. Prior verification remains historical; the new findings and human acceptance remain open.
