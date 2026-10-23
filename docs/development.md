@@ -23,6 +23,11 @@ or log-source name. `RUN_LOG_SOURCE` selects the initial source
 by name. **Stop running containers** lists only eligible owned services and
 requires confirmation; it excludes unrelated containers and the hosting session.
 
+Model discovery caches validated successful metadata for
+`LLM_CATALOG_CACHE_TTL_SECONDS` (default 3600 seconds). Zero disables completed
+cache reuse. Failed discovery can be requested again; authentication/setup
+failures still require a new operation. This does not cache prompts or replies.
+
 The current core Run local checkpoint requires an empty `TRACE_MODE`; dashboard
 configuration and login follow separately. Other supported modes retain their
 existing tracing behavior. Local-run resources stop on exit after active requests

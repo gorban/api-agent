@@ -1,7 +1,7 @@
 """Authentication/catalog results share an owner; tokens stay in that owner."""
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -68,10 +68,15 @@ def test_registry_missing_capability_and_revoked_lease():
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('failure', [None, ProviderAccessError('authorization', 'Catalog permission denied', status=403, code='denied', request_id='req-1')])
-def test_real_ipc_catalog_and_safe_error_return_without_auth(failure):
+@pytest.mark.parametrize('failure, expected_calls', [(None, 1),
+    (ProviderAccessError('authorization', 'Catalog permission denied', status=403, code='denied', request_id='req-1'), 2)])
+def test_real_ipc_catalog_and_safe_error_return_without_auth(failure, expected_calls):
     async def scenario():
-        owner = SimpleNamespace(ensure_ready=AsyncMock(), describe=AsyncMock(return_value=VALUES, side_effect=failure), aclose=AsyncMock())
+        session = AsyncMock(return_value='synthetic-secret')
+        adapter = SimpleNamespace(asetup=AsyncMock(return_value=session))
+        describe = AsyncMock(return_value=VALUES, side_effect=failure)
+        owner = SharedSetupOwner('op', 'selected',
+            lambda credentials: LLMSessionOwner(adapter), describe=describe)
         registry = SetupRegistry('op', 'selected', lambda: owner)
         server = SetupServer(registry, CAP)
         endpoint = await server.start()
@@ -86,13 +91,14 @@ def test_real_ipc_catalog_and_safe_error_return_without_auth(failure):
                     with pytest.raises(ProviderAccessError, match='Catalog permission denied') as caught:
                         await asyncio.to_thread(client.describe)
                     assert caught.value.status == 403 and caught.value.code == 'denied' and caught.value.request_id == 'req-1'
-            owner.describe.assert_awaited_once()
+            assert describe.await_args_list == [call(auth='synthetic-secret')] * expected_calls
         finally:
             for client in clients:
                 await asyncio.to_thread(client.close)
             await server.aclose()
             await registry.aclose()
-        owner.aclose.assert_awaited_once()
+        adapter.asetup.assert_awaited_once()
+        session.aclose.assert_awaited_once()
     asyncio.run(scenario())
 
 

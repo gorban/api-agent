@@ -111,9 +111,11 @@ class SetupRegistry(_Owner):
         await self.ensure_ready(binding)
         if self._catalog is None:
             self._catalog = _spawn(self._describe())
+            self._catalog.add_done_callback(self._settle_catalog)
+        task = self._catalog
         lease = self._lease(binding)
         async def wait():
-            return await asyncio.shield(self._catalog)
+            return await asyncio.shield(task)
         waiter = _spawn(wait())
         lease['waiters'].add(waiter)
         try:
@@ -125,6 +127,10 @@ class SetupRegistry(_Owner):
         finally:
             await _drain([waiter], self._timeout, self._cancel_requested)
             lease['waiters'].discard(waiter)
+
+    def _settle_catalog(self, task):
+        if self._catalog is task:
+            self._catalog = None
 
     async def complete(self, binding, request):
         from .inference import request_to_wire, result_to_wire

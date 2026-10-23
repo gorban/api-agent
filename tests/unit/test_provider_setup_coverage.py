@@ -44,6 +44,21 @@ def retained(tmp_path, registry, *, windows=True, endpoint=None, cleanup=None):
     return worker
 
 
+@pytest.mark.parametrize('configured, expected', [(None, 3600), (0, 0), (12.5, 12.5)])
+def test_integration_shared_setup_receives_catalog_ttl(tmp_path, monkeypatch, configured, expected):
+    config = {'LLM_PROVIDER': 'synthetic'}
+    if configured is not None:
+        config['LLM_CATALOG_CACHE_TTL_SECONDS'] = configured
+    worker = p.IntegrationLLM(config, tmp_path)
+    loaded = SimpleNamespace(implementation=SimpleNamespace(asetup=AsyncMock()), aclose=AsyncMock())
+    monkeypatch.setattr(p, 'aload_provider', AsyncMock(return_value=loaded))
+    try:
+        worker.loop.run_until_complete(worker._prepare_setup())
+        assert worker._shared_setup._catalog_ttl == expected
+    finally:
+        worker.close()
+
+
 def test_no_inspections_requires_no_command_context(monkeypatch, registry):
     monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
     send = []

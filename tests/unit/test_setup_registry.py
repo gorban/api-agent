@@ -1,5 +1,7 @@
 """Generic backend owners; no provider login, config, or external traffic."""
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -177,6 +179,113 @@ def test_sticky_failure():
             with pytest.raises(ValueError, match='provider failure'):
                 await registry.ensure_ready(binding)
         assert owner.calls == 1
+        await registry.aclose()
+    run(body)
+
+
+@pytest.mark.parametrize('ttl', [5, 0])
+def test_registry_defers_failure_recovery_and_success_ttl_to_shared_owner(monkeypatch, ttl):
+    from api_agent.providers import shared_setup
+    from api_agent.providers.control import OperationalError
+    from api_agent.providers.llm import AvailableSelection
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(shared_setup, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+
+    async def body():
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            if len(calls) == 1:
+                raise OperationalError('unavailable')
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        shared = SharedSetupOwner('operation', 'selected', lambda credentials: child,
+                                  describe=describe, catalog_ttl=ttl)
+        registry = SetupRegistry('operation', 'selected', lambda: shared)
+        binding = registry.register('worker')
+        with pytest.raises(OperationalError, match='unavailable'):
+            await registry.describe(binding)
+        assert (await registry.describe(binding))[0].selected_llm == 'sample'
+        assert len(calls) == 2
+        clock.now = 4.999
+        assert (await registry.describe(binding))[0].selected_llm == 'sample'
+        assert len(calls) == (2 if ttl else 3)
+        clock.now = 5.0
+        assert (await registry.describe(binding))[0].selected_llm == 'sample'
+        assert len(calls) == (3 if ttl else 4)
+        await registry.aclose()
+        child.aclose.assert_awaited_once()
+    run(body)
+
+
+def test_registry_waiters_share_pending_catalog_and_cancellation_keeps_owner():
+    from api_agent.providers.llm import AvailableSelection
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    async def body():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def call(callback):
+            return await callback(auth=object())
+        async def describe(*, auth):
+            calls.append('describe')
+            entered.set()
+            await release.wait()
+            return (AvailableSelection('sample'),)
+        child = SimpleNamespace(call=call, aclose=AsyncMock())
+        shared = SharedSetupOwner('operation', 'selected', lambda credentials: child,
+                                  describe=describe, catalog_ttl=0)
+        registry = SetupRegistry('operation', 'selected', lambda: shared)
+        first, second = registry.register('first'), registry.register('second')
+        waiters = [asyncio.create_task(registry.describe(binding)) for binding in (first, second)]
+        await entered.wait()
+        waiters[0].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiters[0]
+        assert not registry._catalog.done()
+        release.set()
+        assert (await waiters[1])[0].selected_llm == 'sample'
+        assert len(calls) == 1
+        await asyncio.sleep(0)
+        assert registry._catalog is None
+        assert (await registry.describe(second))[0].selected_llm == 'sample'
+        assert len(calls) == 2
+        await registry.aclose()
+        child.aclose.assert_awaited_once()
+    run(body)
+
+
+def test_stale_catalog_completion_cannot_clear_new_pending_retrieval():
+    from api_agent.providers.llm import AvailableSelection
+    async def body():
+        entered = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        calls = []
+        class CatalogOwner(Owner):
+            async def describe(self):
+                index = len(calls)
+                calls.append('describe')
+                entered[index].set()
+                await release[index].wait()
+                return (AvailableSelection('sample'),)
+        owner = CatalogOwner()
+        registry = SetupRegistry('operation', 'selected', lambda: owner)
+        binding = registry.register('worker')
+        first = asyncio.create_task(registry.describe(binding))
+        await entered[0].wait()
+        old_task = registry._catalog
+        release[0].set()
+        assert (await first)[0].selected_llm == 'sample'
+        second = asyncio.create_task(registry.describe(binding))
+        await entered[1].wait()
+        current = registry._catalog
+        registry._settle_catalog(old_task)
+        assert registry._catalog is current and not current.done()
+        release[1].set()
+        assert (await second)[0].selected_llm == 'sample'
+        assert calls == ['describe', 'describe']
         await registry.aclose()
     run(body)
 

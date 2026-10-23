@@ -10,3 +10,29 @@
 - [ ] Prove focused-button activation, tenth/later choices, Vim/arrows, wrapping, refresh stability, explicit copy and failure handling through actual Textual events. Prove tab order/foreground with original and replacement UI pages. Reproduce delayed catalog setup and genuine errors with controlled HTTP/browser checks, including retry and request cancellation. Preserve privacy and no eager inference.
 - [ ] Complete meaningful causal controls, exact applicable coverage, source/installed artifacts, independent lane reviews, public-boundary checks and external joined review. Do not use live inference merely to test startup/catalog behavior.
 - [ ] Human review of menus, clipboard, reordered tabs and working Studio catalog/chat. Earlier accepted scopes retain their approvals; these reported findings remain open until fixed and reviewed.
+
+## Catalog cache status and age
+
+- [ ] Never reuse failed or cancelled catalog retrievals, including invalid provider catalog results. A later retrieval may try again and fail again; no automatic retry loop or exponential backoff is introduced. Preserve sticky authentication/setup failures and the original selected session/account owner.
+- [ ] Cache only validated successful catalogs. Set the visible `LLM_CATALOG_CACHE_TTL_SECONDS` default to 3600 seconds; accept finite nonnegative overrides, with zero disabling completed-result reuse. Measure age from successful validation using monotonic time. At expiry, coalesce refresh callers without serving expired metadata on failure.
+- [ ] Apply this cache policy through the shared owner in local operation and integration/E2E setup consumers. Pending concurrent calls share one retrieval; cancelling a waiter must not cancel that retrieval or replay authentication. Cleanup still owns pending work.
+- [ ] Prove repeated failure then recovery through the joined application HTTP model endpoint, successful reuse, exact expiry/completion-time behavior, zero TTL, malformed result rejection, concurrent refresh and cancellation/cleanup. Preserve unchanged sampled model/settings/requests through independently reviewed source equivalence before carrying forward existing workflow observations; otherwise retain the fresh-qualification gate.
+
+- [ ] Keep completed-result cache authority in the shared owner. The worker IPC registry only coalesces pending discovery and delegates later calls; it must not hide expiry or retain a failed result. Bind this transport source in sampling fingerprints and independently verify unchanged qualified requests before carrying forward observations.
+
+## Reviewed sampling source continuity
+
+Independently reviewed offline comparisons preserve all 31 requests across 12
+permanent-fixture route/retry/format scenarios through the worker registry and
+shared owner for GPT-6 Luna subscription Responses, medium cache and low
+reasoning. The 20 retained observations, minimum eight plus four margin and cap
+12 are unchanged; no new pilot ran. Two existing source hashes change, while
+the registry source is added to the guard, giving 44 bindings. All other source
+hashes and sampling fields remain unchanged. The previous packaged wrapper at
+`1672559bc0b7bc70d38471298a3709c15970c51d` has SHA-256
+`997fc75abe97b80720073883a885ee5a4afdd76ae271491388818b8eaa8255f2`.
+The reviewed current wrapper has SHA-256
+`a96849852bd5cf0711deb70af1d3fb82039d9b1ca373e5d547874de49713fa17`.
+Unrelated source, registry or settings drift still rejects before execution.
+This establishes source continuity for the bound profile, not new reliability
+observations or broader provider qualification.

@@ -8,10 +8,13 @@ import httpx
 import pytest
 
 
-@pytest.mark.parametrize('jobs', [0, 2])
+@pytest.mark.parametrize('jobs, failure_request_counts', [
+    pytest.param(0, (4,), id='sequential'),
+    pytest.param(2, (2, 4), id='parallel'),
+])
 @pytest.mark.parametrize('outcome', ['accepted', 'wrong-password', 'restricted', 'public-wrong-password', 'expired',
     'control-newline', 'control-nul', 'control-escape', 'bearer-space', 'bearer-tab', 'bearer-newline', 'bearer-crlf'])
-def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, monkeypatch, jobs, outcome):
+def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, monkeypatch, jobs, failure_request_counts, outcome):
     from api_agent.auth import credentials
     from api_agent.llm_providers.gpt import factory
     from api_agent.testing import provider_setup
@@ -85,8 +88,11 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     assert [test.status for test in result.execution.tests] == [expected, expected]
     assert result.exit_code == (0 if outcome == 'accepted' else 1)
     assert credential_reads == [('synthetic-vault', 'selected-entry')]
-    assert len(requests) == 2 and len(loaded) == 1
-    assert 'Authorization' not in requests[0].headers
+    expected_request_counts = (2,) if outcome == 'accepted' else failure_request_counts
+    assert len(requests) in expected_request_counts
+    assert len(loaded) == 1
+    assert all('Authorization' not in request.headers for request in requests[::2])
+    assert all(request.headers.get('Authorization') == 'Bearer ' + key for request in requests[1::2])
     assert loaded[0].closed and not loaded[0].implementation.sessions
     forbidden.assert_not_called()
     artifacts = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]

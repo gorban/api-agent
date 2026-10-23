@@ -160,6 +160,22 @@ def test_stale_settings_reject_before_graph_execution(monkeypatch, setting, valu
     graph.assert_not_called()
 
 
+def test_changed_worker_registry_rejects_retained_workflow_qualification(monkeypatch):
+    report = synthetic_current_report()
+    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+    original_digest = driver.sampling_digest
+
+    def changed_digest(path):
+        if path.name == 'setup_registry.py':
+            return sha256(b'changed worker registry').hexdigest()
+        return original_digest(path)
+
+    monkeypatch.setattr(driver, 'sampling_digest', changed_digest)
+
+    with pytest.raises(ValueError, match='stale'):
+        driver.baseline_limit('gpt-6-luna', CONFIG)
+
+
 @pytest.mark.parametrize('config', [{}, CONFIG | {'LLM_DEFAULT_MODEL': '^unknown$'},
                                     CONFIG | {'LLM_ALLOWED_MODELS': '^unknown$'}])
 def test_preflight_rejects_unreviewed_configured_selection(config):

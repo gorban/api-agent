@@ -5,6 +5,8 @@ Only readiness and bounded catalog metadata are consumer results. Provider
 sessions, credential readers and browsers remain inside the creating process.
 """
 import asyncio
+import math
+import time
 
 from .contracts import ContractError, SessionClosedError
 from .sessions import _Owner, _drain, _spawn
@@ -69,14 +71,22 @@ class SharedSetupOwner(_Owner):
     (or an equivalent owner with async call/aclose). It must not acquire resources
     before returning ownership. Concurrent checkpoints share a task, including
     the provider's cache/refresh path. A cancelled waiter never cancels setup.
-    Failed checkpoints remain failed for this operation: replay requires a new
-    operation owner. This is deliberately not a cross-process registry.
+    Failed authentication checkpoints remain failed for this operation. Catalog
+    failures can be retrieved again without replacing the provider or identity.
+    This is deliberately not a cross-process registry.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, validate_request=None, timeout=5):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, validate_request=None, timeout=5, catalog_ttl=3600):
         super().__init__(timeout)
+        if type(catalog_ttl) not in (int, float):
+            raise ContractError('Invalid shared setup binding')
+        try:
+            catalog_ttl = float(catalog_ttl)
+        except OverflowError:
+            raise ContractError('Invalid shared setup binding') from None
         if (not isinstance(operation_id, str) or not operation_id
                 or not isinstance(selected_identity, str) or not selected_identity
-                or not callable(owner_factory)):
+                or not callable(owner_factory)
+                or not math.isfinite(catalog_ttl) or catalog_ttl < 0):
             raise ContractError('Invalid shared setup binding')
         self.operation_id = operation_id
         self._selected_identity = selected_identity
@@ -88,6 +98,8 @@ class SharedSetupOwner(_Owner):
         self._disposal_started = False
         self._describe = describe
         self._catalog = None
+        self._catalog_expires_at = 0.0
+        self._catalog_ttl = catalog_ttl
         self._complete = complete
         self._validate_request = validate_request
         self._calls = set()
@@ -134,13 +146,24 @@ class SharedSetupOwner(_Owner):
         if not callable(self._describe):
             from .contracts import SetupPrerequisiteError
             raise SetupPrerequisiteError('The selected LLM provider has no catalog capability.')
-        if self._catalog is None:
+        if self._catalog is None or (self._catalog.done() and time.monotonic() >= self._catalog_expires_at):
             with independent_timeout_scope():
-                self._catalog = _spawn(self._owner.call(self._describe))
-        result = await asyncio.shield(self._catalog)
+                self._catalog = _spawn(self._validated_catalog())
+                self._catalog.add_done_callback(self._settle_catalog)
+        task = self._catalog
+        result = await asyncio.shield(task)
         self._check()
+        return result
+
+    def _settle_catalog(self, task):
+        if self._catalog is task and (task.cancelled() or task.exception() is not None):
+            self._catalog = None
+
+    async def _validated_catalog(self):
+        result = await self._owner.call(self._describe)
         from .catalog import catalog_to_wire
         catalog_to_wire(result)
+        self._catalog_expires_at = time.monotonic() + self._catalog_ttl
         return result
 
     async def complete(self, request, *, selected_identity=None):
