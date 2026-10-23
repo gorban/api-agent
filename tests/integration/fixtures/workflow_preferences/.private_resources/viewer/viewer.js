@@ -22,6 +22,7 @@
     if (!fallback) document.body.append(diagnostic);
     return;
   }
+  const markdown = new window.marked.Marked();
   const local = location.protocol === "file:" ||
     ((location.protocol === "http:" || location.protocol === "https:") &&
       ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname));
@@ -38,7 +39,7 @@
     `\\n\\n</details>\\n<!-- workflow-generated-diagram-v2:end -->`, "g");
   let tokenOffset = 0;
   const codeRanges = [];
-  for (const token of window.marked.lexer(source)) {
+  for (const token of markdown.lexer(source)) {
     if (token.type === "code") codeRanges.push([tokenOffset, tokenOffset + token.raw.length]);
     tokenOffset += token.raw.length;
   }
@@ -57,9 +58,9 @@
       const index = headingIds.push({ level: heading.level, id: heading.id }) - 1;
       return rendered.replace(/^<h([1-6]) id="[^"]*">/, `<h$1 ${headingMarker}="${index}">`);
     };
-    window.marked.use(extension);
+    markdown.use(extension);
   }
-  const html = window.marked.parse(presentation, { gfm: true, breaks: false });
+  const html = markdown.parse(presentation, { gfm: true, breaks: false });
   const clean = window.DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "link", "meta", "video", "audio", "source"],
@@ -67,6 +68,7 @@
   });
   const main = document.createElement("main");
   main.className = "workflow-document";
+  main.setAttribute("data-workflow-document", "v1");
   const template = document.createElement("template");
   template.innerHTML = clean;
   const scriptPath = document.currentScript?.getAttribute("src") || "";
@@ -142,6 +144,14 @@
   state.diagnostic?.remove();
   const documentHeading = main.querySelector("h1,h2,h3,h4,h5,h6");
   if (documentHeading) document.title = documentHeading.textContent.trim();
+  // Browser DOM reconstruction can preserve rendered HTML while replacing
+  // the source carrier and its JavaScript state. Replace only our old output.
+  let previous = carrier.previousElementSibling;
+  while (previous?.matches('main.workflow-document[data-workflow-document="v1"]')) {
+    const stale = previous;
+    previous = stale.previousElementSibling;
+    stale.remove();
+  }
   carrier.before(main);
   state.document = main;
   // IDs become available after parsing; resolve an initial fragment explicitly.
