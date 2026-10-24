@@ -54,11 +54,15 @@ interruption follow-through below has now closed its technical repair.
 
 - [x] Deliver [two-column source and destination menus](implementation_plan_k2b4.md), preserving previous acceptance and verification.
 
+## Tracing disposal and responsive Stop follow-through
+
+- [x] Close [responsive Stop and acknowledged tracing disposal](implementation_plan_k2b5.md). Earlier accepted behavior remains recorded.
+
 **Deferred human review**
 
 Substantive implementation and independent/external review are complete. The
 cleanup child is human-approved; combined, startup and default-engine/error-copy
-and menu-layout human retests remain unchecked in their owning details.
+and menu-layout/trace-disposal human retests remain unchecked in their owning details.
 
 - [Native terminal interruption](implementation_plan_k2b1.md)
 
@@ -67,3 +71,5 @@ and menu-layout human retests remain unchecked in their owning details.
 - [Default engine binding and copyable errors](implementation_plan_k2b3.md)
 
 - [Two-column menus](implementation_plan_k2b4.md)
+
+- [Responsive Stop and trace disposal](implementation_plan_k2b5.md)

@@ -46,3 +46,7 @@ technical verification and external review. [Independent controls](implementatio
 [startup dashboards](implementation_plan_k2.md) and [local output](implementation_plan_b1c4a.md)
 retain human acceptance and broader requirements. Automatic instrumentation,
 metrics, propagation and deployed parity remain open.
+
+## Delivery failure versus disposal
+
+- [x] Close the [acknowledged tracing disposal correction](implementation_plan_k2b5.md). Failed export remains observable; confirmed resource shutdown releases ownership. Actual incomplete or failed disposal stays retryable.

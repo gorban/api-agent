@@ -265,6 +265,36 @@ def post(url, payload, *, content_type='application/json'):
         return json.load(response)
 
 
+@pytest.mark.parametrize('path', ['/', '/graphql'])
+def test_browser_routes_describe_graphql_post_contract(target, path):
+    with urlopen(target + path, timeout=3) as response:
+        body = response.read()
+        assert response.status == 200
+        assert response.headers['Content-Type'] == 'text/html; charset=utf-8'
+        assert int(response.headers['Content-Length']) == len(body)
+
+    page = body.decode('utf-8')
+    assert '<title>Demo GraphQL API</title>' in page
+    assert 'read-only' in page
+    assert '<strong>POST</strong>' in page
+    assert 'href="/graphql"' in page
+    assert 'Content-Type: application/json' in page
+    assert '{"query":"{ items { id name category } }"}' in page
+    assert 'GET requests do not execute queries' in page
+    assert '32,768 bytes' in page
+    assert '16,000 characters' in page
+    assert 'Variables must be omitted' in page
+    assert 'operationName must be omitted' in page
+
+
+def test_graphql_get_with_query_does_not_execute(target):
+    with pytest.raises(HTTPError) as error:
+        urlopen(target + '/graphql?query=%7Bitems%7Bid%7D%7D', timeout=3)
+
+    assert error.value.code == 404
+    assert json.load(error.value) == {'error': 'not_found'}
+
+
 def test_readiness_and_full_introspection(target):
     from graphql import get_introspection_query
     with urlopen(target + '/ready', timeout=3) as response:

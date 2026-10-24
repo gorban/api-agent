@@ -21,6 +21,14 @@ class TraceError(RuntimeError):
     """Fixed diagnostics deliberately omit SDK messages and credentials."""
 
 
+class TraceDeliveryError(TraceError):
+    """Delivery failed, but this tracing owner's disposal was acknowledged."""
+    disposal_confirmed = True
+
+
+TRACE_DELIVERY_WARNING = 'Trace delivery failed; tracing resources were closed. Some traces may be missing.'
+
+
 def _attributes(boundary, payload, *, model_identity=None):
     clean = boundary.export(payload)
     clean.pop('gen_ai.request.model', None)
@@ -173,6 +181,8 @@ class TraceRuntime:
         self._done = Event()
         self._result = True
         self._shutdown_complete = False
+        self._shutdown_flush_attempted = False
+        self._delivery_failed = False
         if config.errors or config.missing:
             raise TraceError('Tracing requires valid complete configuration.')
         values = config.values
@@ -278,30 +288,46 @@ class TraceRuntime:
             if self._worker is None or self._done.is_set():
                 self._done.clear()
                 def run():
+                    with self._work_lock:
+                        flush = not self._closed or not self._shutdown_flush_attempted
+                        if self._closed:
+                            self._shutdown_flush_attempted = True
                     try:
-                        self._result = bool(self._provider.force_flush(timeout_millis=int(timeout * 1000)))
-                    except Exception:
-                        self._result = False
+                        if flush:
+                            try:
+                                delivered = bool(self._provider.force_flush(timeout_millis=int(timeout * 1000)))
+                            except BaseException:
+                                delivered = False
+                            self._delivery_failed = self._delivery_failed or not delivered
+                        self._result = not self._delivery_failed
                     finally:
                         with self._work_lock:
                             closing = self._closed
                             if not closing:
                                 self._done.set()
                         if closing:
+                            # A retry of failed disposal must not replay export.
+                            self._shutdown_flush_attempted = True
                             try:
                                 self._provider.shutdown()
-                            except Exception:
+                            except BaseException:
                                 self._result = False
-                            with self._work_lock:
+                            else:
                                 self._shutdown_complete = True
+                                self._result = not self._delivery_failed
+                            finally:
                                 self._done.set()
                 self._worker = Thread(target=run, daemon=True, name='api-agent-trace-cleanup')
                 self._worker.start()
-        return self._done.wait(timeout) and self._result
+        return (self._done.wait(timeout) and self._result
+                and (not self._closed or self._shutdown_complete))
 
     def flush(self, timeout=5):
-        if self._provider is None or self._closed:
+        if self._provider is None:
             return True
+        with self._work_lock:
+            if self._closed:
+                return self._shutdown_complete and not self._delivery_failed
         return self._bounded(timeout)
 
     def shutdown(self, timeout=5):
@@ -314,9 +340,19 @@ class TraceRuntime:
                 return self._result
         return self._bounded(timeout)
 
+    @property
+    def disposal_confirmed(self):
+        """True only after the provider acknowledged shutdown without an exception."""
+        with self._work_lock:
+            return self._shutdown_complete
+
     async def aclose(self, timeout=5):
         # Cancellation stops the awaiter; owned cleanup still completes in its
         # one worker and the caller receives the original cancellation.
         if not await asyncio.shield(asyncio.to_thread(self.shutdown, timeout)):
+            if self.disposal_confirmed:
+                if self._delivery_failed:
+                    raise TraceDeliveryError(TRACE_DELIVERY_WARNING)
+                return True
             raise TraceError('Tracing shutdown failed.')
         return True

@@ -23,7 +23,7 @@ class LocalRunScreen(Screen):
                 Binding('l', 'sources', 'Log sources'),
                 Binding('escape,c', 'view', 'Close menu'),
                 Binding('asterisk', 'all_logs', 'All logs'),
-                Binding('s', 'stop', 'Stop'), Binding('q', 'quit', 'Quit'),
+                Binding('s', 'request_stop', 'Stop'), Binding('q', 'quit', 'Quit'),
                 Binding('ctrl+c', 'copy_choice', 'Copy selection', priority=True)]
     DEFAULT_CSS = '''
     #local-output, #local-choices { height: 1fr; }
@@ -59,6 +59,11 @@ class LocalRunScreen(Screen):
         self.closing = False
         self.disposed = False
         self.pending_cleanup = None
+        self._stop_task = None
+        self._stop_error = None
+        self._stop_completed = False
+        self._quit_confirmed = False
+        self._close_task = None
         self._local_app = None
         self._local_unmounting = False
         self._startup_started = None
@@ -391,6 +396,20 @@ class LocalRunScreen(Screen):
             raise self.pending_cleanup
 
     async def close_owned(self):
+        # Stop, Quit and unmount can overlap while disposal is pending. Keep a
+        # single presentation close attempt and retain it across caller cancellation.
+        if self._close_task is None or self._close_task.done():
+            self._close_task = asyncio.create_task(self._close_owned())
+        close_task = self._close_task
+        try:
+            return await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            if close_task.cancelled():
+                # Preserve the owner's cancellation and its cleanup receipt.
+                close_task.result()
+            raise
+
+    async def _close_owned(self):
         if self.disposed:
             return True
         self.closing = True
@@ -428,13 +447,50 @@ class LocalRunScreen(Screen):
             app.operation_status = self.status
             app.local_run_screen = None
 
+    def action_request_stop(self):
+        # Textual awaits binding handlers on its message pump. Disposal may
+        # retain an owner indefinitely, so observe it outside that pump.
+        if self._stop_task is None or self._stop_task.done():
+            self._stop_task = asyncio.create_task(self._stop_from_binding())
+
+    async def _stop_from_binding(self):
+        self._stop_error = None
+        try:
+            await self.action_stop()
+        except Exception as error:
+            self._stop_error = error
+            self.failure = (self.owner.diagnostic(error) if self.owner is not None
+                            else 'Local presentation shutdown remains pending.')
+            self.refresh_view()
+
+    def _show_completed_stop(self):
+        if (self._stop_completed and not self._quit_confirmed and not self._local_unmounting
+                and self.is_mounted and self.app.screen is self):
+            self._stop_completed = False
+            self.app.show_menu()
+
     async def action_stop(self):
         if await self.close_owned():
-            self.app.show_menu()
+            self._stop_completed = True
+            self._show_completed_stop()
 
     async def action_quit(self):
         from .app import QuitDialog
-        self.app.push_screen(QuitDialog(), lambda yes: self.app.run_worker(self.app.confirm_quit()) if yes else None)
+        def after_confirmation(yes):
+            if yes:
+                self._quit_confirmed = True
+                self._stop_completed = False
+                self.app.run_worker(self._confirm_quit())
+            else:
+                self._show_completed_stop()
+        self.app.push_screen(QuitDialog(), after_confirmation)
+
+    async def _confirm_quit(self):
+        try:
+            await self.app.confirm_quit()
+        finally:
+            # A later Quit can retry downstream cleanup after a rejected exit.
+            self._quit_confirmed = False
 
     async def on_unmount(self):
         self._local_unmounting = True

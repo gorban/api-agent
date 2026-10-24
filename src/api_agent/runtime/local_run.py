@@ -113,6 +113,7 @@ class LocalRunOwner:
         self._session = None
         self._emissions = None
         self._tracing_dashboard = None
+        self._cleanup_warnings_published = set()
         self._diagnostic_projection = None
         self._requires_api = False
 
@@ -457,8 +458,9 @@ class LocalRunOwner:
         self._closed = True
         publication_error = None
         try:
-            self._publish('stopping', components=tuple(
-                LocalComponent(name, 'cleanup scope') for name in self._planned_components))
+            if self.snapshot.phase != 'cleanup-pending':
+                self._publish('stopping', components=tuple(
+                    LocalComponent(name, 'cleanup scope') for name in self._planned_components))
         except BaseException as error:
             publication_error = error
         with independent_timeout_scope():
@@ -477,6 +479,11 @@ class LocalRunOwner:
                         raise
                     raise self.pending_cleanup from None
         self.pending_cleanup = None
+        runtime = getattr(self._session, 'runtime', None)
+        for warning in getattr(runtime, 'cleanup_warnings', ()):
+            if warning not in self._cleanup_warnings_published:
+                self._cleanup_warnings_published.add(warning)
+                self._log('agent', warning + '\n')
         try:
             self._publish('stopped')
         except BaseException:
@@ -516,8 +523,9 @@ class LocalRunOwner:
             raise asyncio.CancelledError
 
     def _publish_cleanup_pending(self):
-        self._publish('cleanup-pending', components=tuple(
-            LocalComponent(name, 'cleanup scope') for name in self._planned_components))
+        if self.snapshot.phase != 'cleanup-pending':
+            self._publish('cleanup-pending', components=tuple(
+                LocalComponent(name, 'cleanup scope') for name in self._planned_components))
 
     async def finish_cleanup(self):
         """Keep the creating loop alive until retained disposal is acknowledged.

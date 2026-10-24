@@ -3,6 +3,7 @@ import asyncio
 from api_agent.runtime.tasks import settle
 import os
 import inspect
+import logging
 from io import BytesIO
 from django.core.handlers.asgi import ASGIHandler, ASGIRequest, get_script_prefix
 from django.urls import resolve, Resolver404
@@ -40,6 +41,7 @@ class Runtime:
     upstream_provider: object = field(default=None, repr=False)
     access_provider: object = field(default=None, repr=False)
     pending_cleanup: object = field(default=None, init=False, repr=False)
+    cleanup_warnings: tuple[str, ...] = field(default=(), init=False)
     ui_provider: object = field(default=None, repr=False)
     identity_plan: object = field(default=None, repr=False)
     factory_plan: object = field(default=None, repr=False)
@@ -216,7 +218,15 @@ class Runtime:
                 continue
             try:
                 task.result()
-            except BaseException:
+            except BaseException as error:
+                from api_agent.telemetry.tracing import TraceDeliveryError, TraceRuntime, TRACE_DELIVERY_WARNING
+                if (owner is self.tracing and isinstance(owner, TraceRuntime)
+                        and isinstance(error, TraceDeliveryError) and error.disposal_confirmed
+                        and owner.disposal_confirmed):
+                    self._cleaned.add(key)
+                    self.cleanup_warnings = (TRACE_DELIVERY_WARNING,)
+                    logging.getLogger(__name__).error(TRACE_DELIVERY_WARNING)
+                    continue
                 del self._cleanup_tasks[key]
                 pending.append(owner)
                 continue

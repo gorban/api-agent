@@ -370,7 +370,8 @@ def test_live_controls_stop_quit_and_cleanup_rejection():
                 raise AssertionError('cleanup must reject unmount')
             owner.reject = False
             await screen.action_stop()
-            assert app.menu_shown
+            assert screen.disposed
+            assert not app.menu_shown
             await screen.action_quit()
     # Default runtime is intentionally replaced by a deterministic failure.
     import sys
@@ -1638,6 +1639,63 @@ def test_real_controller_stop_keeps_screen_and_retries_visible_pending(action):
     asyncio.run(exercise())
 
 
+def test_pending_stop_keeps_log_bindings_responsive_without_duplicate_close():
+    from api_agent.runtime.local_run import LocalRunOwner
+
+    async def exercise():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def held():
+            calls.append('cleanup')
+            entered.set()
+            await release.wait()
+
+        class Owner(LocalRunOwner):
+            CLEANUP_ATTEMPT_SECONDS = .01
+            CLEANUP_RETRY_SECONDS = .01
+
+            async def start(self):
+                self._started = True
+                self._planned_components = ('agent',)
+                self._stack.push(held)
+                self._publish('ready')
+                return self.snapshot
+
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            try:
+                await asyncio.wait_for(pilot.press('s'), 2)
+                await entered.wait()
+                async with asyncio.timeout(2):
+                    while screen.snapshot.phase != 'cleanup-pending':
+                        await asyncio.sleep(.001)
+                stop_task, close_task = screen._stop_task, screen._close_task
+                await asyncio.wait_for(pilot.press('l'), 2)
+                assert screen.menu == 'logs'
+                await asyncio.wait_for(pilot.press('asterisk'), 2)
+                assert screen.menu is None
+                assert screen.source == 'all'
+                await asyncio.wait_for(pilot.press('s', 's'), 5)
+                assert screen._stop_task is stop_task
+                assert screen._close_task is close_task
+                assert not stop_task.done()
+                assert not screen.disposed
+                assert screen.owner.pending_cleanup is not None
+                assert calls == ['cleanup']
+            finally:
+                release.set()
+                if screen._stop_task is not None:
+                    await screen._stop_task
+            assert screen.disposed
+            assert app.menu_shown
+            assert calls == ['cleanup']
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize('automatic', [False, True])
 def test_start_failure_keeps_owned_cleanup_in_automatic_retry(automatic):
     from unittest.mock import AsyncMock
@@ -1730,4 +1788,202 @@ def test_browser_long_name_keeps_url_on_second_content_line(monkeypatch, reconci
             await pilot.press('ctrl+c')
             assert copied == [destination.url]
             assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_overlapping_close_waiters_retain_one_attempt_after_caller_cancellation():
+    from unittest.mock import AsyncMock
+
+    async def exercise():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def close():
+            entered.set()
+            await release.wait()
+
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+        screen.owner = NS(request_stop=lambda: None, aclose=AsyncMock(side_effect=close))
+        screen.retire = lambda: setattr(screen, 'disposed', True)
+        first = asyncio.create_task(screen.close_owned())
+        await entered.wait()
+        second = asyncio.create_task(screen.close_owned())
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert not screen._close_task.done()
+        assert not screen.disposed
+        release.set()
+        assert await second
+        assert screen.disposed
+        screen.owner.aclose.assert_awaited_once()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('response', ['escape', 'n', 'y'])
+@pytest.mark.parametrize('release_before_response', [False, True])
+def test_stop_completion_respects_quit_dialog(tmp_path, monkeypatch, response, release_before_response):
+    import sys
+    from unittest.mock import Mock
+    from api_agent.tui.app import QuitDialog
+    from textual.widgets import Input
+    from test_tui import fixture
+
+    async def exercise():
+        entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class Owner:
+            pending_cleanup = None
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self):
+                entered.set()
+                await release.wait()
+
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={
+            'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        exit_app = Mock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            local = app.screen
+            await pilot.press('s')
+            await entered.wait()
+            await pilot.press('q')
+            dialog = app.screen
+            assert isinstance(dialog, QuitDialog)
+            if release_before_response:
+                release.set()
+                await local._stop_task
+                await pilot.pause()
+                assert app.screen is dialog
+            app.exit = exit_app
+            if response == 'escape':
+                await pilot.press('escape')
+            else:
+                dialog.query_one('#quit-answer', Input).focus()
+                await pilot.press(response, 'enter')
+            release.set()
+            await local._stop_task
+            await pilot.pause()
+            if response == 'y':
+                exit_app.assert_called_once()
+                assert app.screen is local
+            else:
+                exit_app.assert_not_called()
+                assert app.screen.kind == 'menu'
+                assert local not in app.screen_stack
+            assert not any(isinstance(item, QuitDialog) for item in app.screen_stack)
+
+    asyncio.run(exercise())
+
+
+def test_background_stop_observes_failure_and_allows_retry():
+    from unittest.mock import AsyncMock
+
+    async def exercise():
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await screen.close_owned()
+            failure = RuntimeError('unavailable')
+            screen.action_stop = AsyncMock(side_effect=failure)
+            await pilot.press('s')
+            await screen._stop_task
+            assert screen._stop_error is failure
+            assert screen._stop_task.exception() is None
+            screen.action_stop = AsyncMock()
+            await pilot.press('s')
+            await screen._stop_task
+            assert screen._stop_error is None
+            screen.action_stop.assert_awaited_once()
+
+    asyncio.run(exercise())
+
+
+def test_stop_after_rejected_confirmed_quit_can_return_to_menu(tmp_path, monkeypatch):
+    import sys
+    from textual.widgets import Input
+    from test_tui import fixture
+
+    async def exercise():
+        entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class Owner:
+            pending_cleanup = None
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self):
+                entered.set()
+                await release.wait()
+
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={
+            'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        async def reject_reporting_close(): return False
+        app.close_reporting_sessions = reject_reporting_close
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            local = app.screen
+            await pilot.press('s')
+            await entered.wait()
+            await pilot.press('q')
+            app.screen.query_one('#quit-answer', Input).focus()
+            await pilot.press('y', 'enter')
+            release.set()
+            await local._stop_task
+            await pilot.pause()
+            assert app.screen is local
+            await pilot.press('s')
+            await local._stop_task
+            await pilot.pause()
+            assert app.screen.kind == 'menu'
+    asyncio.run(exercise())
+
+
+def test_old_stop_completion_does_not_replace_new_view(tmp_path, monkeypatch):
+    import sys
+    from test_tui import fixture
+
+    async def exercise():
+        entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class Owner:
+            pending_cleanup = None
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self):
+                entered.set()
+                await release.wait()
+
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={
+            'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            local = app.screen
+            await pilot.press('s')
+            await entered.wait()
+            app.show('replacement', 'New operation')
+            await asyncio.sleep(.01)
+            replacement = app.screen
+            assert replacement.kind == 'replacement'
+            release.set()
+            await local._stop_task
+            await pilot.pause()
+            assert app.screen is replacement
     asyncio.run(exercise())

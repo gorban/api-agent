@@ -18,6 +18,26 @@ ITEMS = (
     {'id': '2', 'name': 'Birch', 'category': 'tree'},
     {'id': '3', 'name': 'Cedar', 'category': 'tree'},
 )
+HOME = b'''<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo GraphQL API</title>
+<style>body{font:17px/1.6 system-ui,sans-serif;max-width:48rem;margin:4rem auto;padding:0 1.5rem;color:#243044}code,pre{background:#f1f4f8}pre{padding:1rem;overflow:auto}a{color:#215cc5}</style>
+<main>
+<h1>Demo GraphQL API</h1>
+<p>Welcome! This small, read-only API serves synthetic items for the demo agent.</p>
+<p>Send a <strong>POST</strong> request to <a href="/graphql">/graphql</a>
+with <code>Content-Type: application/json</code> and a JSON body like:</p>
+<pre>{"query":"{ items { id name category } }"}</pre>
+<p>Opening /graphql in your browser shows this guide; GET requests do not execute queries.</p>
+<p>Introspection is available. Mutations are unavailable. Requests are limited to
+32,768 bytes and query strings to 16,000 characters. Variables must be omitted,
+null or empty; operationName must be omitted, null or empty.</p>
+<p>See the <a href="/items">sample items</a> or check <a href="/ready">readiness</a>.</p>
+</main>
+</html>
+'''
 
 
 def _item(_root, _info, id):
@@ -45,7 +65,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == '/ready':
+        if self.path in ('/', '/graphql'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(HOME)))
+            self.end_headers()
+            self.wfile.write(HOME)
+        elif self.path == '/ready':
             self._json(200, {'service': 'demo-graphql'})
         elif self.path == '/items':
             self._json(200, {'items': ITEMS})
