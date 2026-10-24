@@ -73,6 +73,14 @@ instrumentation, broader metrics/propagation conformance and deployment-specific
 AI dashboard acceptance retain their separate requirements. A successful local
 trace is not evidence of deployed backend equivalence.
 
+In Jaeger, select the `node llm_call` span and expand **Events** to find
+`api_agent.event` entries. Their `direction` is input or output; `values` contains
+the admitted JSON fields, such as `messages_text` and `response_text`. The separate
+`chat` span currently carries model and usage metadata. Its GenAI panel does not
+yet display those node events as a conversation; that mapping remains part of
+the [tracing schema and AI-view work](prds/implementation_plan_k1a.md). This
+location describes supported manual capture, not an exact upstream wire payload.
+
 Manual trace model labels require exact identities established by their provider
 catalog or an explicit owner-controlled binding; identifier syntax alone is insufficient. Unclassified selection text is omitted
 from model attributes and uses a fixed chat span name. This affects telemetry

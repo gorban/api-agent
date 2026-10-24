@@ -1,6 +1,8 @@
 """Live local-run presentation; resource ownership stays in its controller."""
 import asyncio
 import time
+import ipaddress
+from urllib.parse import urlsplit
 from collections import deque
 from dataclasses import replace
 from rich.text import Text
@@ -11,7 +13,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Static, TextArea
 
 from api_agent.runtime.local_terminal import format_log
-from api_agent.runtime.local_contracts import LocalSnapshot
+from api_agent.runtime.local_contracts import LocalSnapshot, LocalDestination
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.progress import component_timeout, independent_timeout_scope
 from .clipboard import ClipboardError, copy_text
@@ -21,7 +23,8 @@ class LocalRunScreen(Screen):
     kind = "local-run"
     BINDINGS = [Binding('b', 'browsers', 'Browser destinations'),
                 Binding('l', 'sources', 'Log sources'),
-                Binding('escape,c', 'view', 'Close menu'),
+                Binding('escape', 'view', 'Close menu'),
+                Binding('c', 'close_view', 'Close'),
                 Binding('asterisk', 'all_logs', 'All logs'),
                 Binding('s', 'request_stop', 'Stop'), Binding('q', 'quit', 'Quit'),
                 Binding('ctrl+c', 'copy_choice', 'Copy selection', priority=True)]
@@ -31,7 +34,7 @@ class LocalRunScreen(Screen):
     .local-choice-grid { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     .local-choice-grid.browsers { grid-rows: 5; }
     #local-choices Button { width: 100%; height: 3; min-width: 0; text-wrap: nowrap; text-overflow: ellipsis; margin: 0 1 1 0; }
-    #local-choices .local-choice-grid.browsers Button { height: 4; }
+    #local-choices .local-choice-grid.browsers Button { height: 4; text-wrap: nowrap; text-align: left; content-align: left top; }
     #local-choices Button:focus { border: heavy $accent; }
     #local-error { display: none; height: auto; min-height: 1; color: $error; }
     '''
@@ -102,6 +105,8 @@ class LocalRunScreen(Screen):
             phase = 'failed'
         components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
         status = f'Run local: {phase} — logs: {self.source}\n{components}'
+        if self.inspection_endpoint():
+            status += f'\nBrowser CDP: {self.inspection_endpoint()}'
         if phase == 'starting':
             elapsed = (int(max(0, time.monotonic() - self._startup_started))
                        if self._startup_started is not None else 0)
@@ -158,7 +163,12 @@ class LocalRunScreen(Screen):
                 removed = self.events.popleft()
                 self._event_bytes -= len(removed.text.encode('utf-8'))
         elif event.kind == 'status':
-            self.snapshot = event.snapshot
+            snapshot = event.snapshot
+            if snapshot.phase in {'stopping', 'cleanup-pending', 'stopped'} and not snapshot.destinations:
+                snapshot = replace(snapshot, destinations=self.snapshot.destinations)
+            if snapshot.phase in {'stopping', 'cleanup-pending', 'stopped'} and not snapshot.inspection_endpoint:
+                snapshot = replace(snapshot, inspection_endpoint=self.snapshot.inspection_endpoint)
+            self.snapshot = snapshot
             if self._startup_timer is not None:
                 if self.snapshot.phase == 'starting':
                     self._startup_timer.resume()
@@ -171,7 +181,10 @@ class LocalRunScreen(Screen):
         if self._local_unmounting or not self.is_mounted or self not in self.app.screen_stack:
             return
         self.refresh_status()
-        self.query_one('#local-hint', Static).update(self.MENU_HINT if self.menu else self.VIEW_HINT)
+        hint = self.MENU_HINT if self.menu else self.VIEW_HINT
+        if self.disposed:
+            hint = hint.replace('s Stop', 'c Close') if self.menu is None else hint.replace('  s Stop', '')
+        self.query_one('#local-hint', Static).update(hint)
         text = ''.join(format_log(event, self.source) for event in self.events)
         area = self.query_one('#local-output', TextArea)
         previous = area.text
@@ -194,8 +207,24 @@ class LocalRunScreen(Screen):
     def sources(self):
         return self.snapshot.log_sources
 
+    def inspection_endpoint(self):
+        endpoint = self.snapshot.inspection_endpoint
+        if not isinstance(endpoint, str) or not endpoint or any(ord(char) < 33 or char.isspace() for char in endpoint):
+            return None
+        try:
+            parsed = urlsplit(endpoint)
+            if (parsed.scheme != 'http' or parsed.username is not None
+                    or parsed.password is not None or not parsed.port
+                    or parsed.path not in ('', '/') or parsed.query or parsed.fragment
+                    or not ipaddress.ip_address(parsed.hostname).is_loopback):
+                return None
+        except (ValueError, TypeError):
+            return None
+        return endpoint
+
     def destinations(self):
-        return self.snapshot.destinations
+        endpoint = self.inspection_endpoint()
+        return self.snapshot.destinations + ((LocalDestination('Browser CDP', endpoint),) if endpoint else ())
 
     def action_browsers(self):
         self.open_menu('browsers', self.destinations())
@@ -270,11 +299,19 @@ class LocalRunScreen(Screen):
         if self.is_mounted:
             self.query_one('#local-output', TextArea).focus()
 
+    def action_close_view(self):
+        if self.menu is not None:
+            self.action_view()
+        elif self.disposed and not self._local_unmounting and self.app.screen is self:
+            self.app.show_menu()
+
     def action_all_logs(self):
         self.source = 'all'
         self.action_view()
 
     def check_action(self, action, parameters):
+        if action == 'request_stop' and self.disposed:
+            return False
         if action == 'copy_choice':
             if not self.is_mounted or self.app.screen is not self:
                 return False
@@ -418,6 +455,11 @@ class LocalRunScreen(Screen):
                 if self.run_task is not None:
                     self.run_task.cancel()
                 await self.settle_run_task()
+                self.finished = True
+                if self.status in (0, 130):
+                    self.snapshot = replace(self.snapshot, phase='stopped', activity=None)
+                if self._startup_timer is not None:
+                    self._startup_timer.pause()
                 if self.is_mounted:
                     self.retire()
             else:
@@ -466,8 +508,7 @@ class LocalRunScreen(Screen):
     def _show_completed_stop(self):
         if (self._stop_completed and not self._quit_confirmed and not self._local_unmounting
                 and self.is_mounted and self.app.screen is self):
-            self._stop_completed = False
-            self.app.show_menu()
+            self.refresh_view()
 
     async def action_stop(self):
         if await self.close_owned():
@@ -491,6 +532,7 @@ class LocalRunScreen(Screen):
         finally:
             # A later Quit can retry downstream cleanup after a rejected exit.
             self._quit_confirmed = False
+            self.refresh_view()
 
     async def on_unmount(self):
         self._local_unmounting = True

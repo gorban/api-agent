@@ -944,7 +944,10 @@ def test_custom_otel_missing_viewer_logs_action_and_has_no_destination(local):
     async def run():
         snapshot = await local.owner.start()
         assert [item.name for item in snapshot.destinations] == ['agent', 'flow']
-        assert any('set TRACE_VIEWER_URL' in event.text for event in local.events)
+        warning = next(event for event in local.events if 'set TRACE_VIEWER_URL' in event.text)
+        assert warning.text.endswith('\n')
+        output = ''.join(event.text for event in local.events if event.kind == 'log')
+        assert warning.text + 'Local startup: browser.' in output
         assert next(item.state for item in snapshot.components if item.name == 'tracing') == 'unavailable'
         assert local.config.values['TRACE_TARGET'] == 'http://localhost:3000'
         await local.owner.aclose()

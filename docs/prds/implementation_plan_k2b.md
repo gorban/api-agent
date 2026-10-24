@@ -58,6 +58,14 @@ interruption follow-through below has now closed its technical repair.
 
 - [x] Close [responsive Stop and acknowledged tracing disposal](implementation_plan_k2b5.md). Earlier accepted behavior remains recorded.
 
+## Stopped inspection follow-through
+
+- [ ] Close [retained stopped inspection and output boundaries](implementation_plan_k2b6.md), including independent verification and human acceptance.
+
+## Model catalog startup follow-through
+
+- [ ] Close [bounded model catalog startup](implementation_plan_k2b7.md).
+
 **Deferred human review**
 
 Substantive implementation and independent/external review are complete. The
@@ -73,3 +81,7 @@ and menu-layout/trace-disposal human retests remain unchecked in their owning de
 - [Two-column menus](implementation_plan_k2b4.md)
 
 - [Responsive Stop and trace disposal](implementation_plan_k2b5.md)
+
+- [Stopped inspection and output boundaries](implementation_plan_k2b6.md)
+
+- [Bounded model catalog startup](implementation_plan_k2b7.md)

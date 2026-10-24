@@ -163,7 +163,13 @@ def _distribution_owns_documents(definition, owner):
         # Admit the physical metadata before asking importlib to read RECORD.
         # Editable/source inventories and filesystem aliases do not establish
         # installed ownership of documents outside their metadata directory.
-        provider = Path(distribution._path).absolute()
+        try:
+            provider = Path(distribution._path)
+        except TypeError:
+            # Archive-backed distributions expose traversable metadata rather
+            # than a filesystem inventory capable of owning physical documents.
+            continue
+        provider = provider.absolute()
         metadata_files = {provider / 'METADATA', provider / 'RECORD'}
         if (not provider.name.endswith('.dist-info') or provider.resolve() != provider
                 or not all(path.is_file() and path.resolve() == path for path in metadata_files)):

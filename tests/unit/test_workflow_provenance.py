@@ -966,3 +966,27 @@ def test_record_cannot_launder_staged_nested_source(tmp_path, monkeypatch, recor
     monkeypatch.syspath_prepend(str(file.parent))
     with pytest.raises(LayoutError, match='staged changes'):
         verified_documents(selected)
+
+
+@pytest.mark.parametrize('physical_owner', [False, True])
+def test_archive_distribution_cannot_claim_physical_documents(installed_distribution, tmp_path, monkeypatch, physical_owner):
+    from importlib import metadata
+    import zipfile
+    from api_agent.workflows.provenance import _distribution_owns_documents
+
+    selected, _, _, info, _ = installed_distribution
+    wheel = tmp_path / 'synthetic_dependency-1.0-py3-none-any.whl'
+    with zipfile.ZipFile(wheel, 'w') as package:
+        package.writestr(info.name + '/METADATA', (info / 'METADATA').read_bytes())
+        package.writestr(info.name + '/RECORD', (info / 'RECORD').read_bytes())
+    with zipfile.ZipFile(wheel) as package:
+        archive = metadata.PathDistribution(zipfile.Path(package, info.name + '/'))
+        original = metadata.PathDistribution.read_text
+        def read_text(distribution, name):
+            assert distribution is not archive, 'Archive metadata must be skipped before inventory reads'
+            return original(distribution, name)
+        monkeypatch.setattr(metadata.PathDistribution, 'read_text', read_text)
+        discovered = [archive] + ([metadata.PathDistribution(info)] if physical_owner else [])
+        monkeypatch.setattr(metadata, 'distributions', lambda: discovered)
+
+        assert _distribution_owns_documents(selected, 'base') is physical_owner
