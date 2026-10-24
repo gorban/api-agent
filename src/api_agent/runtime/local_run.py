@@ -63,6 +63,11 @@ class LocalRunOwner:
     """Creating-loop owner; consumers observe state and request cooperative stop."""
     CLEANUP_ATTEMPT_SECONDS = 15
     CLEANUP_RETRY_SECONDS = 1
+    _STARTUP_STAGES = frozenset({
+        'configuration', 'view preparation', 'application construction',
+        'infrastructure planning', 'dependencies', 'local HTTPS', 'operation plan',
+        'prerequisites', 'runtime', 'listener', 'listener ready', 'tracing', 'browser',
+    })
 
     def __init__(self, context, resolve, *, argv=(), on_event=None,
                  schema=None, engine_environment=None, plan_factory=None, operation_factory=local_operation, browser_factory=None,
@@ -101,16 +106,30 @@ class LocalRunOwner:
         self._diagnostic_projection = None
         self._requires_api = False
 
-    def _publish(self, phase, *, components=(), destinations=(), inspection=None):
+    def _publish(self, phase, *, components=(), destinations=(), inspection=None, activity=None):
         self.snapshot = LocalSnapshot(phase, tuple(components), tuple(destinations), self._available_sources,
-            self._prepared[0].definition_id if self._prepared else None, inspection)
+            self._prepared[0].definition_id if self._prepared else None, inspection, activity)
         self._sequence += 1
+        self._notify(LocalEvent('status', snapshot=self.snapshot, sequence=self._sequence))
+
+    def _notify(self, event):
+        """A presentation observer cannot take ownership of startup or cleanup."""
         if self.on_event is not None:
-            self.on_event(LocalEvent('status', snapshot=self.snapshot, sequence=self._sequence))
+            try:
+                self.on_event(event)
+            except Exception:
+                pass
 
     def _status(self):
         return {'components': {item.name: item.state for item in self.snapshot.components},
                 'destinations': {item.name: item.url for item in self.snapshot.destinations}}
+
+    def _startup_stage(self, name):
+        """Publish only fixed local stage names, never provider or config values."""
+        if not isinstance(name, str) or name not in self._STARTUP_STAGES:
+            raise ValueError('invalid_local_startup_stage')
+        self._publish('starting', components=self.snapshot.components, activity=name)
+        self._log('agent', 'Local startup: ' + name + '.\n')
 
     def request_stop(self):
         self._stop.set()
@@ -174,6 +193,9 @@ class LocalRunOwner:
         self._start_done.clear()
         try:
             async with component_timeout('Local application preparation', 120):
+                self._publish('starting', components=(LocalComponent('agent', 'starting'),))
+                self._startup_stage('configuration')
+                await asyncio.sleep(0)
                 self._config = self.resolve()
                 if self._config.errors or self._config.missing:
                     raise ValueError('invalid_runtime_configuration')
@@ -190,7 +212,12 @@ class LocalRunOwner:
                     # Translate the explicitly selected endpoint without guessing.
                     selected['DOCKER_HOST'] = selected['CONTAINER_HOST']
                 self._engine_environment = MappingProxyType(selected)
-                self._prepared = self.prepare_view(self.context)
+                self._startup_stage('view preparation')
+                await asyncio.sleep(0)
+                from api_agent.runtime.tasks import offload
+                self._prepared = await offload(self.prepare_view, self.context)
+                self._startup_stage('application construction')
+                await asyncio.sleep(0)
                 self._graph = self.application_factory(self._prepared[0], config=self._config.values)
                 self._requires_api = getattr(self._graph, 'requires_api', False) is True
                 bundled_demo = (getattr(self.context, 'pack_id', None) == 'demo'
@@ -203,7 +230,10 @@ class LocalRunOwner:
                 plan_options = {'engine_environment': self._engine_environment}
                 if self._requires_api:
                     plan_options['requires_api'] = True
-                plan = self.plan_factory(self._config, self.schema, self.context, scope, **plan_options)
+                self._startup_stage('infrastructure planning')
+                await asyncio.sleep(0)
+                plan = await offload(self.plan_factory, self._config, self.schema, self.context, scope,
+                                     **plan_options)
                 self._planned_sources = {item.compose_name: item.id for item in plan.conditional}
                 self._available_sources = ('agent', *(('ui',) if self._config.values.get('RUN_UI') else ()),
                     *(self._planned_sources.get(service, 'api-agent/' + service) for service in plan.services))
@@ -230,7 +260,8 @@ class LocalRunOwner:
                     required_kinds=required_kinds,
                     runtime_factory=self._runtime,
                     application_wrapper=lambda app: LocalStatusApplication(app, self._status),
-                    prepared_plan=plan, engine_environment=self._engine_environment, **operation_options)
+                    prepared_plan=plan, engine_environment=self._engine_environment,
+                    on_stage=self._startup_stage, **operation_options)
                 opening = self._operation.open(retain=False)
                 exited = False
                 async def close_operation():
@@ -249,6 +280,7 @@ class LocalRunOwner:
                     exited = True
                     raise
                 from api_agent.runtime.local_tracing import LocalTracing
+                self._startup_stage('tracing')
                 self._tracing_dashboard = LocalTracing(self._config.values,
                     emissions=self._session.runtime.emissions)
                 self._stack.push(self._tracing_dashboard.aclose)
@@ -262,6 +294,7 @@ class LocalRunOwner:
                     prepare_ui=self._ui, prepare_view=lambda context: self._prepared,
                     tracing=self._tracing_dashboard)
                 self._stack.push(self._browser.aclose)
+                self._startup_stage('browser')
                 await self._browser.start()
                 if self._stop.is_set():
                     raise asyncio.CancelledError
@@ -300,11 +333,19 @@ class LocalRunOwner:
         except BaseException as primary:
             self._starting = None
             self._start_done.set()
-            self._publish('failed', components=(LocalComponent('agent', 'unavailable'),))
+            try:
+                self._publish('failed', components=(LocalComponent('agent', 'unavailable'),))
+            except BaseException:
+                # Reporting cannot prevent disposal of an admitted owner.
+                pass
             try:
                 await self.aclose()
-            except BaseException:
-                primary.cleanup_pending = self.pending_cleanup or CleanupPendingError((self,), self.aclose)
+            except BaseException as cleanup_error:
+                pending = self.pending_cleanup or getattr(cleanup_error, 'cleanup_pending', None)
+                if pending is None and self._stack.callbacks:
+                    pending = CleanupPendingError((self,), self.aclose)
+                if pending is not None:
+                    primary.cleanup_pending = pending
             raise
 
     def _safe_text(self, text):
@@ -332,9 +373,8 @@ class LocalRunOwner:
             return
         text = self._diagnostic_projection.format(row)
         self._sequence += 1
-        if self.on_event is not None:
-            self.on_event(LocalEvent('diagnostic', source='agent', text=text,
-                                    diagnostic=row, sequence=self._sequence))
+        self._notify(LocalEvent('diagnostic', source='agent', text=text,
+                                diagnostic=row, sequence=self._sequence))
 
     def _log(self, source, text):
         # Scrub a complete snapshot before truncation or terminal escaping.
@@ -343,8 +383,7 @@ class LocalRunOwner:
         self._log_fingerprints[source] = sha256(text.encode()).hexdigest()
         self._logs[source] = safe
         self._sequence += 1
-        if self.on_event is not None:
-            self.on_event(LocalEvent('log', source=source, text=safe, sequence=self._sequence))
+        self._notify(LocalEvent('log', source=source, text=safe, sequence=self._sequence))
 
     async def _capture_logs(self):
         from api_agent.runtime.tasks import offload
@@ -368,9 +407,9 @@ class LocalRunOwner:
             from api_agent.runtime.tasks import settle
             try:
                 await settle(self._log_task)
-            except Exception:
-                # A finished collector owns no live resource; its failure must
-                # not prevent the listener or prerequisite lease from stopping.
+            except (Exception, asyncio.CancelledError):
+                # settle only raises after the collector has finished. A finished
+                # collector owns no live resource and cannot block later cleanup.
                 pass
 
     async def wait(self):
@@ -398,8 +437,12 @@ class LocalRunOwner:
 
     async def _close(self):
         self._closed = True
-        self._publish('stopping', components=tuple(
-            LocalComponent(name, 'cleanup scope') for name in self._planned_components))
+        publication_error = None
+        try:
+            self._publish('stopping', components=tuple(
+                LocalComponent(name, 'cleanup scope') for name in self._planned_components))
+        except BaseException as error:
+            publication_error = error
         with independent_timeout_scope():
             async with component_timeout('Local application cleanup', None):
                 try:
@@ -416,7 +459,13 @@ class LocalRunOwner:
                         raise
                     raise self.pending_cleanup from None
         self.pending_cleanup = None
-        self._publish('stopped')
+        try:
+            self._publish('stopped')
+        except BaseException:
+            if publication_error is None:
+                raise
+        if publication_error is not None:
+            raise publication_error
 
     async def aclose(self):
         self.request_stop()
@@ -435,7 +484,10 @@ class LocalRunOwner:
                 while not self._closing.done():
                     if budget.remaining <= 0:
                         self.pending_cleanup = CleanupPendingError((self,), self.aclose)
-                        self._publish_cleanup_pending()
+                        try:
+                            self._publish_cleanup_pending()
+                        except BaseException:
+                            pass
                         raise self.pending_cleanup
                     try:
                         await asyncio.wait({self._closing}, timeout=budget.remaining)
@@ -465,7 +517,11 @@ class LocalRunOwner:
             except Exception:
                 if self.pending_cleanup is None:
                     raise
-            self._publish_cleanup_pending()
+            try:
+                self._publish_cleanup_pending()
+            except BaseException:
+                # A retained cleanup receipt outlives presentation failure.
+                pass
             try:
                 await asyncio.sleep(self.CLEANUP_RETRY_SECONDS)
             except asyncio.CancelledError:

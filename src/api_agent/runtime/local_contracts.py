@@ -23,6 +23,7 @@ class LocalSnapshot:
     log_sources: tuple[str, ...] = ('agent',)
     definition_id: str | None = None
     inspection_endpoint: str | None = None
+    activity: str | None = None
 
 
 @dataclass(frozen=True)
