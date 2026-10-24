@@ -74,6 +74,7 @@ def test_configuration_tables_sort_names_alphabetically(tmp_path, mode):
             await pilot.pause()
             assert app.screen.kind == 'defaults'
             if mode:
+                app.session.save_defaults(['ALLURE_RESULTS_DIR', 'LLM_CACHE_POLICY', 'TRACE_MODE'])
                 await pilot.press('c')
                 await pilot.pause()
                 assert app.screen.kind == 'cleanup'
@@ -1031,7 +1032,8 @@ def test_cleanup_both_dotenvs_hidden_setting_and_default_review(tmp_path):
                 if name == 'UI_NX_APP':
                     for directory in (base, pack):
                         assert 'COUNT=' in (directory / '.env').read_text()
-                    assert name not in [table.get_row_at(i)[1] for i in range(table.row_count)]
+                    assert table.get_row_at(index)[0] == ''
+                    assert table.get_row_at(index)[1] == name
                 else:
                     assert not app.focused_cleanup_present()
                 for directory in (base, pack):
@@ -1074,7 +1076,7 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
             app.screen.query_one(Input).value = 'y'
             await pilot.press('enter')
             await pilot.pause()
-            assert 'UI_NX_APP' not in rows()
+            assert rows()['UI_NX_APP'][0] == ''
             dotenv.write_text('UI_NX_APP=shell\nCOUNT=7\n')
             await pilot.press('up')
             await pilot.pause()
@@ -1088,7 +1090,7 @@ def test_cleanup_refresh_restores_hidden_rows_after_external_edit(tmp_path):
             dotenv.write_text('COUNT=7\n')
             await pilot.press('up')
             await pilot.pause()
-            assert 'UI_NX_APP' not in rows()
+            assert rows()['UI_NX_APP'][0] == ''
     asyncio.run(scenario())
 
 

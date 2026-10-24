@@ -577,8 +577,13 @@ def test_cleanup_removed_last_hidden_setting_handles_empty_snapshot(tmp_path):
             assert table.row_count == 1
             app.session.delete_keys(['HIDDEN'])
             app.refresh_rows()
-            assert table.row_count == 0
+            assert table.row_count == 1
+            assert table.get_row_at(0)[0] == ''
             assert not app.focused_cleanup_present()
+            # A declaration removed by a provider refresh cannot retain a row.
+            app.session.schema = type(app.schema)({})
+            app.refresh_rows()
+            assert table.row_count == 0
             # An already-delivered inventory row event remains harmless after
             # the inventory snapshot has emptied.
             app.show('containers', 'Empty containers', rows=[('old', ('', 'old', 'name', 'image', 'running'))])

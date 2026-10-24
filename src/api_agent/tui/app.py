@@ -317,7 +317,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         yield Static(app.identity_text(), id="identity", markup=False)
         with VerticalScroll(id="workbench-content") as viewport:
             # Scroll-only content should not add an empty stop beside real controls.
-            viewport.can_focus = not (self.rows or self.actions or self.kind == "input")
+            viewport.can_focus = not (self.rows or self.actions or self.kind in {"input", "cleanup"})
             yield Static(self.heading, id="heading")
             if self.kind == "input":
                 field = app.schema.fields[app.prompt_name]
@@ -330,7 +330,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                         yield Static('', id='suite-elapsed', markup=False)
             else:
                 yield Static(self.body, id="body", markup=False)
-            if self.rows:
+            if self.rows or self.kind == "cleanup":
                 table_type = TestTable if self.kind in {'tests', 'test-results'} else DataTable
                 if self.kind == 'test-results':
                     yield table_type(id="choices", cursor_type="row", sticky_timing=True)
@@ -398,7 +398,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def on_mount(self):
         if self.kind == "defaults":
             self.set_class(self.size.height < 18, "compact-review")
-        if self.rows:
+        if self.rows or self.kind == "cleanup":
             table = self.query_one(DataTable)
             if self.kind == "defaults":
                 table.add_columns("Setting", "Effective value", "Source")
@@ -2139,7 +2139,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                             group='cost-history', exclusive=True)
 
     def show_cleanup(self):
-        rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+        saved = [row for row in self.session.cleanup_rows() if row.present]
+        self.cleanup_names = frozenset(row.name for row in saved)
+        rows = [(row.name, ("✓", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in saved]
         location = "all agent / resource pack .env files" if self.context.external_pack else "agent .env file"
         self.show("cleanup", "Clear .env configuration",
                   f"Select a row and delete it (with confirmation) from {location}.", rows=rows)
@@ -2151,7 +2153,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if not table.row_count:
             return False
         key = str(table.get_row_at(table.cursor_row)[1])
-        return any(row.name == key and row.present and str(row.source).endswith("/.env") for row in self.session.cleanup_rows())
+        return any(row.name == key and row.present for row in self.session.cleanup_rows())
 
     def toggle_row(self, key):
         if self.screen.kind == "test-results" and self.unit_result is not None:
@@ -2188,7 +2190,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if self.screen.kind == "tests":
             rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
         else:
-            rows = [(row.name, ("✓" if row.present and str(row.source).endswith("/.env") else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows()]
+            rows = [(row.name, ("✓" if row.present else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows(retained=self.cleanup_names) if row.name in self.cleanup_names]
         if self.screen.kind == "cleanup":
             # Rebuilding posts another highlight event; unchanged snapshots must
             # not rebuild again. Preserve the focused setting when rows change.
