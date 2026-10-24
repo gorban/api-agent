@@ -605,3 +605,298 @@ def test_custom_otel_missing_viewer_logs_action_and_has_no_destination(local):
         assert local.config.values['TRACE_TARGET'] == 'http://localhost:3000'
         await local.owner.aclose()
     asyncio.run(run())
+
+
+def test_admitted_components_are_visible_before_start_and_during_stop(local):
+    local.config.values['RUN_UI'] = True
+    local.owner.plan_factory.return_value = SimpleNamespace(
+        conditional=(SimpleNamespace(compose_name='extension-db', id='extension/database'),),
+        services=('cache', 'extension-db'), profiles=('cache-profile', 'extension-profile'))
+    def begin_operation(*args, **kwargs):
+        assert local.owner.snapshot.phase == 'starting'
+        assert 'profile:extension-profile' in tuple(item.name for item in local.owner.snapshot.components)
+        return local.operation
+    local.operation_factory.side_effect = begin_operation
+    async def run():
+        await local.owner.start()
+        starting = next(event.snapshot for event in local.events
+                        if event.snapshot is not None and event.snapshot.phase == 'starting')
+        assert tuple(item.name for item in starting.components) == (
+            'agent', 'api', 'ui', 'service:cache', 'service:extension/database',
+            'profile:cache-profile', 'profile:extension-profile')
+        assert all(item.state == 'starting' for item in starting.components)
+        ready = next(event.text for event in local.events if event.kind == 'log' and 'ready' in event.text)
+        assert ready.endswith('\n')
+        await local.owner.aclose()
+        stopping = next(event.snapshot for event in local.events
+                        if event.snapshot is not None and event.snapshot.phase == 'stopping')
+        assert tuple(item.name for item in stopping.components) == tuple(item.name for item in starting.components)
+        assert all(item.state == 'cleanup scope' for item in stopping.components)
+    asyncio.run(run())
+
+
+def test_repeated_cancellation_drains_active_operation_exit_before_return(local):
+    entered, released, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    @asynccontextmanager
+    async def opening(**options):
+        try:
+            yield local.session
+        finally:
+            entered.set()
+            await released.wait()
+            finished.set()
+    local.operation.open = opening
+    async def run():
+        await local.owner.start()
+        closing = asyncio.create_task(local.owner.aclose())
+        await entered.wait()
+        closing.cancel()
+        await asyncio.sleep(0)
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done()
+        assert not finished.is_set()
+        released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        assert finished.is_set()
+        assert local.owner._closing.done()
+        assert local.owner.pending_cleanup is None
+    asyncio.run(run())
+
+
+def test_cancelled_cleanup_wait_preserves_real_cleanup_failure(local):
+    entered, released = asyncio.Event(), asyncio.Event()
+    async def failing_close():
+        entered.set()
+        await released.wait()
+        raise RuntimeError('owned cleanup failed')
+    local.browser.aclose = failing_close
+    async def run():
+        await local.owner.start()
+        closing = asyncio.create_task(local.owner.aclose())
+        await entered.wait()
+        closing.cancel()
+        await asyncio.sleep(0)
+        released.set()
+        with pytest.raises(CleanupPendingError) as caught:
+            await closing
+        assert caught.value is local.owner.pending_cleanup
+        assert local.owner._closing.done()
+        local.browser.aclose = AsyncMock()
+        # The stack retained its original bound callback; replace the failed
+        # callback explicitly to model its successful next disposal attempt.
+        local.owner._stack.callbacks[0] = local.browser.aclose
+        await caught.value.retry()
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+def test_cleanup_task_allocation_rejection_retains_owner_and_closes_coroutine(local):
+    import inspect
+    async def run():
+        await local.owner.start()
+        loop = asyncio.get_running_loop()
+        original_factory = loop.get_task_factory()
+        rejected = []
+        def reject_close(loop, coroutine, **kwargs):
+            if coroutine.cr_code.co_qualname == 'LocalRunOwner._close':
+                rejected.append(coroutine)
+                raise RuntimeError('allocation rejected')
+            return asyncio.Task(coroutine, loop=loop, **kwargs)
+        loop.set_task_factory(reject_close)
+        try:
+            with pytest.raises(RuntimeError, match='allocation rejected') as caught:
+                await local.owner.aclose()
+            assert inspect.getcoroutinestate(rejected[0]) == inspect.CORO_CLOSED
+            assert caught.value.cleanup_pending is local.owner.pending_cleanup
+            assert local.owner._closing is None
+            assert local.calls == ['operation-start', 'browser-start']
+        finally:
+            loop.set_task_factory(original_factory)
+        await caught.value.cleanup_pending.retry()
+        assert local.calls[-1] == 'operation-stop'
+        assert local.owner.pending_cleanup is None
+    asyncio.run(run())
+
+
+def test_terminal_allocation_rejection_retries_retained_owner_until_acknowledged(local):
+    from api_agent.runtime.local_terminal import run_local_terminal
+    async def run():
+        loop = asyncio.get_running_loop()
+        original_factory = loop.get_task_factory()
+        start = local.owner.start
+        rejected = []
+        local.owner.CLEANUP_RETRY_SECONDS = .01
+        def reject_close(loop, coroutine, **kwargs):
+            if coroutine.cr_code.co_qualname == 'LocalRunOwner._close':
+                rejected.append(coroutine)
+                loop.call_soon(loop.set_task_factory, original_factory)
+                raise RuntimeError('allocation rejected')
+            return asyncio.Task(coroutine, loop=loop, **kwargs)
+        async def start_then_reject():
+            result = await start()
+            loop.set_task_factory(reject_close)
+            return result
+        local.owner.start = start_then_reject
+        local.owner.wait = AsyncMock(return_value=0)
+        try:
+            status = await run_local_terminal(None, lambda: SimpleNamespace(values={'RUN_LOG_SOURCE': 'agent'}),
+                owner_factory=lambda *args, **kwargs: local.owner,
+                output=lambda text: None, diagnostic=lambda text: None)
+            assert status == 0
+            assert len(rejected) == 1
+            assert rejected[0].cr_frame is None
+            assert local.owner.pending_cleanup is None
+        finally:
+            loop.set_task_factory(original_factory)
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+def test_failed_operation_entry_reports_selected_cleanup_scope_without_acquisition(local):
+    local.owner.plan_factory.return_value = SimpleNamespace(
+        conditional=(), services=('selected-database',), profiles=('selected-profile',))
+    local.operation_factory.side_effect = RuntimeError('operation not acquired')
+    async def run():
+        with pytest.raises(RuntimeError, match='operation not acquired'):
+            await local.owner.start()
+        stopping = next(event.snapshot for event in local.events
+                        if event.snapshot is not None and event.snapshot.phase == 'stopping')
+        assert tuple((item.name, item.state) for item in stopping.components) == (
+            ('agent', 'cleanup scope'), ('api', 'cleanup scope'),
+            ('service:selected-database', 'cleanup scope'), ('profile:selected-profile', 'cleanup scope'))
+        assert local.calls == []
+        assert local.owner.snapshot.phase == 'stopped'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_cleanup_attempt_retains_stalled_callback_and_retries_same_task(local, cancelled):
+    local.owner.CLEANUP_ATTEMPT_SECONDS = .01
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def stalled():
+        calls.append('close')
+        entered.set()
+        await release.wait()
+    async def run():
+        await local.owner.start()
+        local.owner._stack.push(stalled)
+        watchdog = asyncio.get_running_loop().call_later(.2, release.set)
+        try:
+            attempt = asyncio.create_task(local.owner.aclose())
+            await entered.wait()
+            if cancelled:
+                attempt.cancel()
+            with pytest.raises(CleanupPendingError) as caught:
+                await attempt
+            closing = local.owner._closing
+            assert entered.is_set() and not closing.done()
+            assert local.owner.snapshot.phase == 'cleanup-pending'
+            with pytest.raises(CleanupPendingError):
+                await caught.value.retry()
+            assert local.owner._closing is closing and calls == ['close']
+        finally:
+            watchdog.cancel()
+            release.set()
+            await local.owner.aclose()
+        assert local.owner.pending_cleanup is None
+        assert local.owner.snapshot.phase == 'stopped'
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+def test_finish_cleanup_retries_visible_pending_until_callback_acknowledges(local):
+    local.owner.CLEANUP_ATTEMPT_SECONDS = .01
+    local.owner.CLEANUP_RETRY_SECONDS = .01
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def stalled():
+        entered.set()
+        await release.wait()
+    async def run():
+        await local.owner.start()
+        local.owner._stack.push(stalled)
+        closing = asyncio.create_task(local.owner.finish_cleanup())
+        try:
+            await entered.wait()
+            while local.owner.snapshot.phase != 'cleanup-pending':
+                await asyncio.sleep(.001)
+            closing.cancel()
+            await asyncio.sleep(.02)
+            assert not closing.done()
+            assert local.owner.pending_cleanup is not None
+        finally:
+            release.set()
+            await closing
+        assert local.owner.snapshot.phase == 'stopped'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', [RuntimeError('failed disposal'), asyncio.CancelledError()])
+def test_finish_cleanup_retries_acknowledged_callback_failure(local, failure):
+    local.owner.CLEANUP_RETRY_SECONDS = .001
+    callback = AsyncMock(side_effect=[failure, None])
+    async def run():
+        await local.owner.start()
+        local.owner._stack.push(callback)
+        await local.owner.finish_cleanup()
+        assert callback.await_count == 2
+        assert any(event.snapshot is not None and event.snapshot.phase == 'cleanup-pending'
+                   for event in local.events)
+        assert local.owner.pending_cleanup is None
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', [RuntimeError('unowned failure'), asyncio.CancelledError()])
+def test_finish_cleanup_propagates_error_without_retained_ownership(local, failure):
+    local.owner.aclose = AsyncMock(side_effect=failure)
+    async def run():
+        with pytest.raises(type(failure)) as caught:
+            await local.owner.finish_cleanup()
+        assert caught.value is failure
+        local.owner.aclose.assert_awaited_once()
+    asyncio.run(run())
+
+
+def test_finish_cleanup_preserves_owner_when_cancelled_during_retry_delay(local, monkeypatch):
+    local.owner.CLEANUP_ATTEMPT_SECONDS = .01
+    local.owner.CLEANUP_RETRY_SECONDS = 10
+    retry_entered, release = asyncio.Event(), asyncio.Event()
+    real_sleep = asyncio.sleep
+    callbacks = []
+    closing = None
+    async def held_cleanup():
+        callbacks.append('entered')
+        await release.wait()
+    async def observed_sleep(delay, result=None):
+        if asyncio.current_task() is closing and delay == local.owner.CLEANUP_RETRY_SECONDS:
+            retry_entered.set()
+        return await real_sleep(delay, result=result)
+    async def exercise():
+        nonlocal closing
+        await local.owner.start()
+        local.owner._stack.push(held_cleanup)
+        monkeypatch.setattr(asyncio, 'sleep', observed_sleep)
+        closing = asyncio.create_task(local.owner.finish_cleanup())
+        try:
+            await asyncio.wait_for(retry_entered.wait(), timeout=1)
+            retained = local.owner._closing
+            assert local.owner.pending_cleanup is not None
+            closing.cancel()
+            await real_sleep(0)
+            assert not closing.done()
+            assert local.owner._closing is retained
+            assert not retained.done()
+            assert callbacks == ['entered']
+        finally:
+            release.set()
+            await asyncio.gather(closing, return_exceptions=True)
+            await local.owner.aclose()
+        assert closing.result() is None
+        assert local.owner.pending_cleanup is None
+        assert local.owner.snapshot.phase == 'stopped'
+        assert callbacks == ['entered']
+        assert local.calls[-1] == 'operation-stop'
+    asyncio.run(exercise())

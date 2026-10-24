@@ -778,7 +778,7 @@ def test_descriptor_receipt_repeated_error_has_bounded_ownership(monkeypatch, cy
         os.close(write)
 
 
-@pytest.mark.parametrize('site', ['_run', '_close', 'finish'])
+@pytest.mark.parametrize('site', ['_run', '_close', '_finish_terminal_writer'])
 @pytest.mark.parametrize('persistent', [False, True])
 @pytest.mark.parametrize('failed_operation', [False, True])
 def test_task_allocation_failure_rolls_back_real_wrapper(monkeypatch, site, persistent, failed_operation):
@@ -1048,7 +1048,7 @@ def test_partial_worker_allocation_and_wrapper_rejection_clear_settled_workers(m
             allocations += 1
             if allocations == 2:
                 raise fault
-        if coroutine.cr_code.co_name == 'finish':
+        if coroutine.cr_code.co_name == '_finish_terminal_writer':
             raise fault
         return original_task(coroutine, *args, **kwargs)
     def close(fd):
@@ -1237,6 +1237,77 @@ def test_direct_finish_allocation_failure_preserves_error_and_receipt(monkeypatc
             asyncio.run(scheduling.cleanup_pending.retry())
         assert os.get_blocking(write)
         assert not owner.owned
+    finally:
+        os.close(read)
+        os.close(write)
+
+
+@pytest.mark.parametrize('failure', ['dup', 'blocking', 'write'])
+def test_pending_cleanup_status_retains_only_acquired_nonblocking_stderr_duties(monkeypatch, failure):
+    import sys
+    from types import SimpleNamespace
+    read, write = os.pipe()
+    original_dup, original_blocking, original_write = os.dup, os.set_blocking, os.write
+    async def exercise():
+        writer = TerminalWriter((write,))
+        await writer.finish()
+        monkeypatch.setattr(sys, 'stderr', SimpleNamespace(fileno=lambda: write))
+        def rejected(*args): raise OSError('diagnostic unavailable')
+        monkeypatch.setattr(os, {'dup': 'dup', 'blocking': 'set_blocking', 'write': 'write'}[failure], rejected)
+        assert writer.cleanup_status('fixed cleanup pending status')
+        assert bool(writer.owned) == (failure != 'dup')
+        monkeypatch.setattr(os, 'dup', original_dup)
+        monkeypatch.setattr(os, 'set_blocking', original_blocking)
+        monkeypatch.setattr(os, 'write', original_write)
+        await writer.retry_descriptors()
+        assert os.get_blocking(write)
+    try:
+        asyncio.run(exercise())
+    finally:
+        os.close(read)
+        os.close(write)
+
+
+def test_pending_cleanup_status_does_not_route_to_unowned_stderr(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    read, write = os.pipe()
+    async def exercise():
+        writer = TerminalWriter((write,))
+        try:
+            monkeypatch.setattr(sys, 'stderr', SimpleNamespace(fileno=lambda: -1))
+            assert writer.cleanup_status('cleanup pending') is False
+        finally:
+            await writer.finish()
+    try:
+        asyncio.run(exercise())
+    finally:
+        os.close(read)
+        os.close(write)
+
+
+def test_pending_status_reuses_original_retained_stderr_descriptor(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    read, write = os.pipe()
+    original = os.set_blocking
+    async def exercise():
+        writer = TerminalWriter((write,))
+        owned = writer.owned[write]
+        def blocking(fd, enabled):
+            if enabled: raise OSError('retained restoration')
+            original(fd, enabled)
+        monkeypatch.setattr(os, 'set_blocking', blocking)
+        with pytest.raises(OSError):
+            await writer.finish()
+        monkeypatch.setattr(sys, 'stderr', SimpleNamespace(fileno=lambda: write))
+        assert writer.cleanup_status('fixed cleanup pending status')
+        assert writer.owned[write] == owned
+        monkeypatch.setattr(os, 'set_blocking', original)
+        await writer.retry_descriptors()
+        assert os.get_blocking(write)
+    try:
+        asyncio.run(exercise())
     finally:
         os.close(read)
         os.close(write)

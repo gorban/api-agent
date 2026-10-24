@@ -107,7 +107,8 @@ def test_launcher_dispatches_terminal_local_operation_without_stdin(monkeypatch,
         return handoff
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', prepare)
     monkeypatch.setattr('builtins.input', lambda *a: pytest.fail('terminal local operation read stdin'))
-    async def run(context, resolve, *, argv, schema):
+    async def run(context, resolve, *, argv, schema, retain_terminal_cleanup):
+        assert retain_terminal_cleanup
         calls.append(resolve().values)
         assert resolve().values['RUN_LOG_SOURCE'] == 'all'
         return 7
@@ -204,3 +205,315 @@ def test_clean_base_requirements_need_the_explicit_browser_extra():
     assert 'playwright-stealth' not in base_names
     assert {'playwright', 'playwright-stealth'} <= local_names
     assert base_names <= local_names
+
+
+@pytest.mark.parametrize('credentials', [None, ('dashboard@example.test', 'terminal-password')])
+def test_terminal_dashboard_credentials_use_only_literal_diagnostic(credentials):
+    diagnostics, output = [], []
+    class Owner:
+        pending_cleanup = None
+        def __init__(self, *args, **kwargs): pass
+        async def start(self): pass
+        def interactive_dashboard_credentials(self): return credentials
+        async def wait(self): return 0
+        async def aclose(self): pass
+    assert asyncio.run(run_local_terminal(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}),
+        owner_factory=Owner, output=output.append, diagnostic=diagnostics.append)) == 0
+    assert output == []
+    assert diagnostics == ([] if credentials is None else [
+        'LangFuse dashboard account: dashboard@example.test',
+        'LangFuse dashboard password: terminal-password'])
+
+
+@pytest.mark.parametrize('phase', ['starting', 'stopping'])
+def test_terminal_progress_displays_admitted_component_names(phase):
+    from api_agent.runtime.local_contracts import LocalComponent, LocalEvent, LocalSnapshot
+    diagnostics = []
+    class Owner:
+        pending_cleanup = None
+        def __init__(self, *args, on_event, **kwargs): self.event = on_event
+        async def start(self):
+            self.event(LocalEvent('status', LocalSnapshot(phase, components=(
+                LocalComponent('agent', phase), LocalComponent('service:extension/database', phase),
+                LocalComponent('profile:extension-profile', phase)))))
+        async def wait(self): return 0
+        async def aclose(self): pass
+    asyncio.run(run_local_terminal(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}),
+        owner_factory=Owner, output=lambda text: None, diagnostic=diagnostics.append))
+    assert diagnostics == [f'Run local: {phase}',
+        ('Cleanup scope: ' if phase == 'stopping' else 'Selected components: ') +
+        'agent, service:extension/database, profile:extension-profile']
+
+
+@pytest.mark.parametrize('stall', ['owner', 'writer', 'writer-only'])
+def test_repeated_process_sigint_keeps_owned_loop_until_cleanup_acknowledged(tmp_path, stall):
+    import os
+    from pathlib import Path
+    import signal
+    import subprocess
+    import sys
+    import time
+    script = tmp_path / 'owned_terminal.py'
+    release = tmp_path / 'release'
+    log = tmp_path / 'terminal.log'
+    script.write_text('''
+import asyncio
+from pathlib import Path
+import sys
+from types import SimpleNamespace as NS
+from api_agent.runtime.local_run import LocalRunOwner
+import api_agent.runtime.local_terminal as terminal
+release = Path(sys.argv[1])
+stall = sys.argv[2]
+async def held():
+    while not release.exists():
+        await asyncio.sleep(.005)
+class Owner(LocalRunOwner):
+    CLEANUP_ATTEMPT_SECONDS = .02
+    CLEANUP_RETRY_SECONDS = .01
+    async def start(self):
+        self._started = True
+        if stall == 'owner':
+            self._stack.push(held)
+        self._publish('ready')
+    async def wait(self):
+        if stall == 'writer-only':
+            await self.finish_cleanup()
+            return 0
+        return await super().wait()
+if stall in {'writer', 'writer-only'}:
+    original = terminal.TerminalWriter._close
+    async def close(self):
+        print('writer-cleanup-paused', file=sys.stderr, flush=True)
+        await held()
+        await original(self)
+    terminal.TerminalWriter._close = close
+status = asyncio.run(terminal.run_local_terminal(None,
+    lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner))
+raise SystemExit(status)
+''')
+    def wait_for_text(child, expected):
+        deadline = time.monotonic() + 8
+        while expected not in log.read_text() and time.monotonic() < deadline:
+            assert child.poll() is None, log.read_text()
+            time.sleep(.01)
+        assert expected in log.read_text(), log.read_text()
+    with log.open('w') as output:
+        child = subprocess.Popen([sys.executable, str(script), str(release), stall],
+            stdout=output, stderr=output, start_new_session=True)
+        try:
+            wait_for_text(child, 'Run local: ready')
+            if stall != 'writer-only':
+                os.kill(child.pid, signal.SIGINT)
+            wait_for_text(child, 'Run local: cleanup-pending' if stall == 'owner'
+                          else 'writer-cleanup-paused')
+            os.kill(child.pid, signal.SIGINT)
+            os.kill(child.pid, signal.SIGINT)
+            if stall == 'owner':
+                wait_for_text(child, 'Cleanup pending; waiting for owned components to stop.')
+            else:
+                time.sleep(.03)
+            assert child.poll() is None
+            release.write_text('acknowledge')
+            assert child.wait(timeout=8) == 130
+        finally:
+            release.touch()
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
+    text = log.read_text()
+    assert 'Run local: stopped' in text
+    assert 'asynchronous generator is already running' not in text
+    assert 'Traceback' not in text
+
+
+def test_terminal_signal_owner_cancels_once_reports_repeat_and_restores(monkeypatch):
+    from unittest.mock import Mock
+    from api_agent.runtime import local_terminal as module
+    installed, diagnostics = [], []
+    task = NS(cancel=Mock())
+    original = object()
+    monkeypatch.setattr(module.asyncio, 'current_task', lambda: task)
+    monkeypatch.setattr(module.signal, 'getsignal', lambda signum: original)
+    monkeypatch.setattr(module.signal, 'signal', lambda signum, handler: installed.append(handler))
+    with module._terminal_stop_signals(diagnostics.append) as state:
+        assert state == {'requested': False}
+        handler = installed[0]
+        handler(None, None)
+        handler(None, None)
+        assert state['requested']
+        task.cancel.assert_called_once_with()
+    assert diagnostics == ['Cleanup pending; waiting for owned components to stop.']
+    assert installed[-1] is original
+
+
+def test_terminal_signal_owner_leaves_worker_thread_handlers_alone(monkeypatch):
+    from api_agent.runtime import local_terminal as module
+    monkeypatch.setattr(module.threading, 'current_thread', lambda: object())
+    with module._terminal_stop_signals(lambda text: None) as state:
+        assert state == {'requested': False}
+
+
+def test_terminal_returns_interrupt_status_for_owned_signal_during_delivery_cleanup(monkeypatch):
+    from contextlib import contextmanager
+    from api_agent.runtime import local_terminal as module
+    @contextmanager
+    def signalled(diagnostic):
+        yield {'requested': True}
+    async def interrupted(*args, **kwargs):
+        raise asyncio.CancelledError
+    monkeypatch.setattr(module, '_terminal_stop_signals', signalled)
+    monkeypatch.setattr(module, '_run_local_terminal', interrupted)
+    assert asyncio.run(module.run_local_terminal(None, None, output=lambda text: None,
+        diagnostic=lambda text: None)) == 130
+
+
+@pytest.mark.parametrize('retained', ['cleanup_pending', 'terminal_cleanup_error'])
+def test_owned_signal_does_not_hide_terminal_cleanup_failure(monkeypatch, retained):
+    from contextlib import contextmanager
+    from api_agent.runtime import local_terminal as module
+    error = asyncio.CancelledError()
+    evidence = RuntimeError('retained terminal disposal failure')
+    setattr(error, retained, evidence)
+    @contextmanager
+    def signalled(diagnostic):
+        yield {'requested': True}
+    async def interrupted(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(module, '_terminal_stop_signals', signalled)
+    monkeypatch.setattr(module, '_run_local_terminal', interrupted)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        asyncio.run(module.run_local_terminal(None, None, output=lambda text: None,
+            diagnostic=lambda text: None))
+    assert caught.value is error
+    assert getattr(caught.value, retained) is evidence
+
+
+@pytest.mark.parametrize('interrupt', [False, True])
+@pytest.mark.parametrize('allocation_rejected', [False, True])
+def test_owning_terminal_keeps_real_descriptor_duty_until_restored(monkeypatch, interrupt, allocation_rejected):
+    import os
+    import signal
+    import sys
+    from api_agent.runtime import local_terminal as module
+    out_read, out_write = os.pipe()
+    err_read, err_write = os.pipe()
+    os.set_blocking(out_read, False)
+    os.set_blocking(err_read, False)
+    original = os.set_blocking
+    stdout_inode = os.fstat(out_write).st_ino
+    repaired = False
+    fault = RuntimeError('cleanup task allocation failed') if allocation_rejected else OSError('descriptor restoration failed')
+    restoration = OSError('descriptor restoration failed') if allocation_rejected else fault
+    original_task = asyncio.create_task
+    def create_task(coroutine, *args, **kwargs):
+        if allocation_rejected and coroutine.cr_code.co_name == '_finish_terminal_writer':
+            raise fault
+        return original_task(coroutine, *args, **kwargs)
+    def blocking(fd, enabled):
+        if enabled and os.fstat(fd).st_ino == stdout_inode and not repaired:
+            raise restoration
+        original(fd, enabled)
+    class Owner:
+        pending_cleanup = None
+        def __init__(self, *args, **kwargs): pass
+        async def start(self): pass
+        async def wait(self): return 0
+        async def aclose(self): pass
+    async def exercise():
+        nonlocal repaired
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'stdout', NS(fileno=lambda: out_write))
+            patch.setattr(sys, 'stderr', NS(fileno=lambda: err_write))
+            patch.setattr(os, 'set_blocking', blocking)
+            patch.setattr(asyncio, 'create_task', create_task)
+            task = asyncio.create_task(module.run_local_terminal(None,
+                lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner,
+                retain_terminal_cleanup=True))
+            text = b''
+            try:
+                deadline = asyncio.get_running_loop().time() + 2
+                while b'cleanup pending' not in text and asyncio.get_running_loop().time() < deadline:
+                    try:
+                        text += os.read(err_read, 4096)
+                    except BlockingIOError:
+                        pass
+                    await asyncio.sleep(.005)
+                assert b'Terminal output cleanup failed; cleanup pending' in text
+                assert not task.done()
+                assert not os.get_blocking(out_write)
+                with pytest.raises(BlockingIOError):
+                    os.read(out_read, 4096)
+                if interrupt:
+                    os.kill(os.getpid(), signal.SIGINT)
+                    await asyncio.sleep(0)
+                    os.kill(os.getpid(), signal.SIGINT)
+                assert not task.done()
+                repaired = True
+                with pytest.raises(type(fault)) as caught:
+                    await task
+                assert caught.value is fault
+                assert caught.value.terminal_cleanup_acknowledged
+                assert not hasattr(caught.value, 'cleanup_pending')
+                assert not hasattr(caught.value, 'terminal_cleanup_pending')
+                assert os.get_blocking(out_write)
+                assert os.get_blocking(err_write)
+            finally:
+                repaired = True
+                if not task.done():
+                    try:
+                        await task
+                    except type(fault):
+                        pass
+                if not task.cancelled():
+                    failure = task.exception()
+                    receipt = getattr(failure, 'terminal_cleanup_pending', None)
+                    if receipt is not None:
+                        await receipt.retry()
+    try:
+        asyncio.run(exercise())
+    finally:
+        for fd in (out_read, out_write, err_read, err_write):
+            os.close(fd)
+
+
+@pytest.mark.parametrize('chain', ['none', 'nested', 'cycle'])
+def test_terminal_descriptor_acknowledgement_preserves_other_cleanup_metadata(monkeypatch, chain):
+    from api_agent.runtime import local_terminal as module
+    receipt = object()
+    fault = OSError('restoration failed')
+    other = RuntimeError('other cleanup')
+    if chain == 'nested':
+        fault.cleanup_pending = other
+        other.cleanup_pending = receipt
+    elif chain == 'cycle':
+        fault.cleanup_pending = fault
+    diagnostics = []
+    class Writer:
+        owned = {1: 2}
+        descriptor_cleanup = receipt
+        attempts = 0
+        async def finish(self): raise fault
+        def cleanup_status(self, text): return False
+        async def retry_descriptors(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OSError('still pending')
+            self.owned = {}
+    writer = Writer()
+    with pytest.raises(OSError) as caught:
+        asyncio.run(module._finish_terminal_writer(writer, True, diagnostics.append))
+    assert caught.value is fault
+    assert writer.attempts == 2
+    assert writer.descriptor_cleanup is None
+    assert fault.terminal_cleanup_acknowledged
+    assert len(diagnostics) == 2
+    if chain == 'nested':
+        assert fault.cleanup_pending is other
+        assert not hasattr(other, 'cleanup_pending')
+    elif chain == 'cycle':
+        assert fault.cleanup_pending is fault

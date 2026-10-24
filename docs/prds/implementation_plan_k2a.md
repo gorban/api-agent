@@ -7,7 +7,8 @@
 - [x] Treat omitted and explicitly empty TRACE_VIEWER_URL identically: derive the managed local Jaeger URL from JAEGER_VIEWER_PORT. A custom collector never implies a viewer or starts local infrastructure. Explain a missing viewer with an actionable, non-content diagnostic; preserve explicit collector targets.
 - [x] Verify managed Jaeger appears in startup before the final UI and in browser destinations, including a nondefault viewer port. Test actual HTTP readiness and existing origin restrictions, not only mocks.
 - [x] Close causal regressions, applicable full coverage, installed checks and independent/external review. Keep deployment schema parity separate.
-- [ ] Human retest: automatic LangFuse credential filling/login and Jaeger startup, destination reopening and visible traces. Earlier core acceptance does not accept these corrections.
+- [x] Human accepted Jaeger startup and visible traces, and conditional LangFuse required settings with the requested effective values/defaults, on October 23, 2026.
+- [ ] Human retest: automatic LangFuse credential filling/login. Empty viewer default acceptance follows the new [local-output corrections](implementation_plan_k2b.md); earlier approval does not accept those corrections.
 
 ## Deployment dashboard credential defaults
 

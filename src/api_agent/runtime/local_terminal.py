@@ -4,6 +4,8 @@ import sys
 import os
 import errno
 import threading
+import signal
+from contextlib import contextmanager
 from collections import deque
 
 
@@ -210,6 +212,24 @@ class TerminalWriter:
             owners = (*getattr(error, 'retained_owners', ()), self)
             error.retained_owners = tuple({id(owner): owner for owner in owners}.values())
 
+    def cleanup_status(self, text):
+        """Best-effort nonblocking stderr after normal delivery has settled."""
+        fd = sys.stderr.fileno()
+        if fd not in self.flags:
+            return False
+        with self.descriptor_lock:
+            try:
+                if fd not in self.owned:
+                    self.owned[fd] = os.dup(fd)
+                    self.pending_flags[fd] = self.flags[fd]
+                owned = self.owned[fd]
+                os.set_blocking(owned, False)
+                os.write(owned, (text + '\n').encode())
+            except OSError:
+                # The same writer retains every acquired restoration duty.
+                pass
+        return True
+
     async def finish(self):
         """Settle delivery and give outstanding restoration one bounded retry."""
         try:
@@ -269,8 +289,73 @@ def format_log(event, source):
     return ''.join(f'[{event.source}] {line}' for line in event.text.splitlines(keepends=True))
 
 
+@contextmanager
+def _terminal_stop_signals(diagnostic):
+    """Own repeated terminal interrupts until same-loop cleanup is acknowledged."""
+    state = {'requested': False}
+    if threading.current_thread() is not threading.main_thread():
+        yield state
+        return
+    previous = signal.getsignal(signal.SIGINT)
+    task = asyncio.current_task()
+    def interrupted(signum, frame):
+        if not state['requested']:
+            state['requested'] = True
+            task.cancel()
+        else:
+            diagnostic('Cleanup pending; waiting for owned components to stop.')
+    signal.signal(signal.SIGINT, interrupted)
+    try:
+        yield state
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+async def _retry_terminal_descriptors(writer, error, diagnostic):
+    from api_agent.providers.progress import independent_timeout_scope, report_timeout
+    receipt = writer.descriptor_cleanup
+    while writer.owned:
+        text = 'Terminal output cleanup failed; cleanup pending, retrying descriptor restoration.'
+        if not writer.cleanup_status(text):
+            diagnostic(text)
+        try:
+            await asyncio.sleep(1)
+            with independent_timeout_scope():
+                async with report_timeout('Terminal descriptor cleanup attempt', 15):
+                    await writer.retry_descriptors()
+        except asyncio.CancelledError as interruption:
+            error.terminal_interruption = interruption
+        except Exception:
+            continue
+    writer.descriptor_cleanup = None
+    cursor, seen = error, set()
+    while id(cursor) not in seen:
+        seen.add(id(cursor))
+        following = getattr(cursor, 'cleanup_pending', None)
+        if following is receipt:
+            del cursor.cleanup_pending
+            break
+        if following is None:
+            break
+        cursor = following
+    if getattr(error, 'terminal_cleanup_pending', None) is receipt:
+        del error.terminal_cleanup_pending
+    error.retained_owners = tuple(owner for owner in getattr(error, 'retained_owners', ())
+                                  if owner is not writer)
+    error.terminal_cleanup_acknowledged = True
+
+
+async def _finish_terminal_writer(writer, retain_cleanup, diagnostic):
+    try:
+        await writer.finish()
+    except BaseException as error:
+        if retain_cleanup and writer.owned and writer.descriptor_cleanup is not None:
+            await _retry_terminal_descriptors(writer, error, diagnostic)
+        raise
+
+
 async def run_local_terminal(context, resolve, *, argv=(), schema=None, owner_factory=None,
-                             output=None, diagnostic=None):
+                             output=None, diagnostic=None, retain_terminal_cleanup=False):
     writer = None
     if output is None or diagnostic is None:
         descriptors = []
@@ -281,45 +366,59 @@ async def run_local_terminal(context, resolve, *, argv=(), schema=None, owner_fa
         writer = TerminalWriter(descriptors)
     output = output or (lambda text: writer.submit(sys.stdout.fileno(), text))
     diagnostic = diagnostic or (lambda text: writer.submit(sys.stderr.fileno(), text + '\n'))
-    primary = None
-    try:
-        return await _run_local_terminal(context, resolve, argv=argv, schema=schema,
-            owner_factory=owner_factory, output=output, diagnostic=diagnostic)
-    except BaseException as error:
-        primary = error
-        raise
-    finally:
-        if writer is not None:
+    with _terminal_stop_signals(diagnostic) as stop:
+        try:
+            primary = None
             try:
-                cleanup = _create_task(writer.finish())
+                return await _run_local_terminal(context, resolve, argv=argv, schema=schema,
+                    owner_factory=owner_factory, output=output, diagnostic=diagnostic)
             except BaseException as error:
-                await writer._settle_delivery()
-                writer._release_descriptors()
-                writer._release_descriptors()
-                if writer.owned:
-                    writer._retain_cleanup(error)
-                if primary is None:
-                    raise
-                if writer.owned:
-                    writer._retain_cleanup(primary)
-                primary.terminal_cleanup_error = error
-                raise primary
-            try:
-                while not cleanup.done():
+                primary = error
+                raise
+            finally:
+                if writer is not None:
                     try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError as error:
+                        cleanup = _create_task(_finish_terminal_writer(writer, retain_terminal_cleanup, diagnostic))
+                    except BaseException as error:
+                        await writer._settle_delivery()
+                        writer._release_descriptors()
+                        writer._release_descriptors()
+                        if writer.owned:
+                            writer._retain_cleanup(error)
+                            if retain_terminal_cleanup:
+                                await _retry_terminal_descriptors(writer, error, diagnostic)
                         if primary is None:
-                            primary = error
-                cleanup.result()
-            except BaseException as error:
-                if primary is None:
-                    raise
-                if writer.owned:
-                    writer._retain_cleanup(primary)
-                primary.terminal_cleanup_error = error
-            if primary is not None:
-                raise primary
+                            raise
+                        if writer.owned:
+                            writer._retain_cleanup(primary)
+                        primary.terminal_cleanup_error = error
+                        raise primary
+                    try:
+                        while not cleanup.done():
+                            try:
+                                await asyncio.shield(cleanup)
+                            except asyncio.CancelledError as error:
+                                if primary is None:
+                                    primary = error
+                        cleanup.result()
+                    except BaseException as error:
+                        if primary is None:
+                            raise
+                        if writer.owned:
+                            writer._retain_cleanup(primary)
+                        primary.terminal_cleanup_error = error
+                    if primary is not None:
+                        raise primary
+        except asyncio.CancelledError as error:
+            terminal_error = getattr(error, 'terminal_cleanup_error', None)
+            if (retain_terminal_cleanup and isinstance(terminal_error, Exception)
+                    and getattr(terminal_error, 'terminal_cleanup_acknowledged', False)):
+                terminal_error.terminal_interruption = error
+                raise terminal_error from None
+            if (stop['requested'] and getattr(error, 'cleanup_pending', None) is None
+                    and getattr(error, 'terminal_cleanup_error', None) is None):
+                return 130
+            raise
 
 
 async def _run_local_terminal(context, resolve, *, argv=(), schema=None, owner_factory=None,
@@ -332,6 +431,9 @@ async def _run_local_terminal(context, resolve, *, argv=(), schema=None, owner_f
         elif event.kind == 'status' and event.snapshot is not None:
             snapshot = event.snapshot
             diagnostic(f'Run local: {snapshot.phase}')
+            if snapshot.phase in {'starting', 'stopping', 'cleanup-pending'} and snapshot.components:
+                label = 'Cleanup scope: ' if snapshot.phase != 'starting' else 'Selected components: '
+                diagnostic(label + ', '.join(item.name for item in snapshot.components))
             for destination in snapshot.destinations:
                 diagnostic(f'{destination.name}: {destination.url}')
             if snapshot.inspection_endpoint:
@@ -345,6 +447,11 @@ async def _run_local_terminal(context, resolve, *, argv=(), schema=None, owner_f
             owner_factory = LocalRunOwner
         owner = owner_factory(context, resolve, argv=argv, on_event=event_received, **options)
         await owner.start()
+        credentials = getattr(owner, 'interactive_dashboard_credentials', lambda: None)()
+        if credentials is not None:
+            account, password = credentials
+            diagnostic(f'LangFuse dashboard account: {account}')
+            diagnostic(f'LangFuse dashboard password: {password}')
         status = await owner.wait()
     except (asyncio.CancelledError, KeyboardInterrupt):
         if owner is not None:
@@ -356,7 +463,7 @@ async def _run_local_terminal(context, resolve, *, argv=(), schema=None, owner_f
     finally:
         try:
             if owner is not None:
-                await owner.aclose()
+                await getattr(owner, 'finish_cleanup', owner.aclose)()
         except BaseException as error:
             pending = owner.pending_cleanup or getattr(error, 'cleanup_pending', None)
             if not isinstance(error, Exception):

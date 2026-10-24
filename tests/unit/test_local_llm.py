@@ -139,13 +139,15 @@ def test_admission_rejects_before_authentication(selected):
     asyncio.run(run())
 
 
-def test_failed_setup_is_sticky_without_fallback(selected):
-    owner, implementation, _, _, events = selected
+def test_failed_setup_retries_once_per_explicit_action_without_fallback(selected):
+    owner, implementation, _, loader, events = selected
     implementation.asetup = AsyncMock(side_effect=ProviderAccessError('authentication', 'Selected authentication failed.'))
     async def run():
         for _ in range(2):
             with pytest.raises(ProviderAccessError): await owner.ensure_ready()
-        implementation.asetup.assert_awaited_once()
+        assert implementation.asetup.await_count == 2
+        assert loader.await_count == 2
+        assert loader.await_args_list[0] == loader.await_args_list[1]
         assert events == []
         await owner.aclose()
     asyncio.run(run())

@@ -707,7 +707,9 @@ def test_diagnostic_display_limits_are_independent_of_full_output():
     assert screen._event_bytes == sum(len(event.text.encode()) for event in screen.events)
 
 
-def test_dashboard_credentials_are_literal_only_in_interactive_status():
+def test_dashboard_credentials_are_never_requested_or_shown_in_interactive_status():
+    from unittest.mock import Mock
+
     async def exercise():
         stop = asyncio.Event()
         class Owner:
@@ -718,15 +720,18 @@ def test_dashboard_credentials_are_literal_only_in_interactive_status():
                 return 0
             def request_stop(self): stop.set()
             async def aclose(self): pass
-            def interactive_dashboard_credentials(self):
-                return 'admin@example.test', '[red]literal-password[/red]'
+            interactive_dashboard_credentials = Mock(return_value=('admin@example.test', '[red]literal-password[/red]'))
         screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
         app = Harness(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
             text = screen.query_one('#local-status').render().plain
-            assert 'admin@example.test' in text
-            assert '[red]literal-password[/red]' in text
+            Owner.interactive_dashboard_credentials.assert_not_called()
+            assert screen.failure == ''
+            assert 'dashboard account' not in text
+            assert 'dashboard password' not in text
+            assert 'admin@example.test' not in text
+            assert 'literal-password' not in text
             assert not screen.events
             assert 'literal-password' not in repr(screen.snapshot)
             await screen.close_owned()
@@ -976,3 +981,123 @@ def test_pending_focus_callback_respects_user_navigation_and_closed_menu(monkeyp
             assert app.focused is screen.query_one('#local-output')
             assert await screen.close_owned()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('action', ['stop', 'quit'])
+def test_interactive_closing_renders_owned_component_progress(action):
+    from textual.widgets import Static
+    from api_agent.runtime.local_contracts import LocalComponent
+    async def exercise():
+        entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        class Owner:
+            pending_cleanup = None
+            def __init__(self, *args, on_event, **kwargs): self.event = on_event
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): pass
+            async def aclose(self):
+                self.event(LocalEvent('status', LocalSnapshot('stopping', components=(
+                    LocalComponent('agent', 'cleanup scope'),
+                    LocalComponent('profile:extension-profile', 'cleanup scope')))))
+                entered.set()
+                await release.wait()
+                stop.set()
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if action == 'stop':
+                close = asyncio.create_task(pilot.press('s'))
+            else:
+                await pilot.press('q')
+                await pilot.pause()
+                from textual.widgets import Input
+                app.screen.query_one('#quit-answer', Input).focus()
+                close = asyncio.create_task(pilot.press('y', 'enter'))
+            await entered.wait()
+            try:
+                assert screen.closing
+                rendered = str(screen.query_one('#local-status', Static).render())
+                assert 'Run local: stopping' in rendered
+                assert 'profile:extension-profile: cleanup scope' in rendered
+            finally:
+                release.set()
+                if close is not None:
+                    await close
+                else:
+                    await stop.wait()
+                    await pilot.pause()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('action', ['s', 'q'])
+def test_real_controller_stop_keeps_screen_and_retries_visible_pending(action):
+    from api_agent.runtime.local_run import LocalRunOwner
+    from textual.widgets import Static, Input
+    async def exercise():
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def held():
+            calls.append('cleanup')
+            entered.set()
+            await release.wait()
+        class Owner(LocalRunOwner):
+            CLEANUP_ATTEMPT_SECONDS = .01
+            CLEANUP_RETRY_SECONDS = .01
+            async def start(self):
+                self._started = True
+                self._planned_components = ('agent', 'profile:extension-profile')
+                self._stack.push(held)
+                self._publish('ready')
+                return self.snapshot
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if action == 'q':
+                await pilot.press('q')
+                app.screen.query_one('#quit-answer', Input).focus()
+                close = asyncio.create_task(pilot.press('y', 'enter'))
+            else:
+                close = asyncio.create_task(pilot.press('s'))
+            try:
+                await entered.wait()
+                while screen.snapshot.phase != 'cleanup-pending':
+                    await asyncio.sleep(.001)
+                assert not screen.disposed
+                assert screen.closing
+                assert not screen.run_task.done()
+                assert screen.owner.pending_cleanup is not None
+                assert calls == ['cleanup']
+                rendered = str(screen.query_one('#local-status', Static).render())
+                assert 'cleanup-pending' in rendered
+                assert 'profile:extension-profile: cleanup scope' in rendered
+            finally:
+                release.set()
+                await close
+                await screen.run_task
+            assert screen.disposed
+            assert screen.owner.pending_cleanup is None
+            assert screen.snapshot.phase == 'stopped'
+            assert calls == ['cleanup']
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('automatic', [False, True])
+def test_start_failure_keeps_owned_cleanup_in_automatic_retry(automatic):
+    from unittest.mock import AsyncMock
+    class Owner:
+        pending_cleanup = object()
+        def __init__(self, *args, **kwargs):
+            if automatic:
+                self.finish_cleanup = AsyncMock()
+        async def start(self): raise RuntimeError('startup failed')
+        def diagnostic(self, error): return 'safe startup failure'
+    screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+    asyncio.run(screen.run())
+    if automatic:
+        screen.owner.finish_cleanup.assert_awaited_once()
+    assert screen.finished and screen.status == 1
+    assert screen.failure == 'safe startup failure'

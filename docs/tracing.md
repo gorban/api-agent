@@ -38,8 +38,10 @@ LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY ingestion credentials. New local
 provisioning and browser login consume the same configured account. Changing
 initialization values does not reset an account in an existing database; use the
 installation's actual credentials. Dashboard account credentials appear as
-literal text only in the interactive local status, never in terminal output,
-home/status JSON, log events, trace payloads or inspection descriptors.
+literal text only in NO_STD_IN terminal status on stderr; the interactive TUI
+omits them. Redirecting stderr captures that literal status. Structured stdout,
+home/status JSON, log events, trace payloads and inspection descriptors exclude
+them independently of content settings.
 
 When RUN_UI or DEBUG opens the headed startup browser, tabs appear as home,
 ready tracing dashboard, actual selected workflow, and the optional prepared UI
@@ -89,3 +91,8 @@ stdout/stderr content remains withheld. The included Studio host normally emits
 no process output for browser clicks, so an empty UI source is expected. Opening
 Settings retrieves model metadata and sending a message invokes the agent API;
 those catalog/request diagnostics belong to the agent source.
+
+Stop, confirmed Quit and terminal Ctrl+C wait for owned cleanup. Each cleanup
+attempt has a 15-second budget. If work remains, Run local shows cleanup pending
+and retries while keeping its event loop alive. This bounds each attempt, not
+the time until process exit; repeated Ctrl+C does not abandon pending cleanup.

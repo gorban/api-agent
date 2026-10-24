@@ -89,6 +89,10 @@ class LocalRunScreen(Screen):
             self.failure = (self.owner.diagnostic(error) if self.owner is not None
                             else 'Local operation could not start.')
         finally:
+            if self.owner is not None and getattr(self.owner, 'pending_cleanup', None) is not None:
+                finish = getattr(self.owner, 'finish_cleanup', None)
+                if finish is not None:
+                    await finish()
             self.finished = True
             self.refresh_view()
 
@@ -111,16 +115,11 @@ class LocalRunScreen(Screen):
         self.refresh_view()
 
     def refresh_view(self):
-        if self._local_unmounting or not self.is_mounted or self.closing or self not in self.app.screen_stack:
+        if self._local_unmounting or not self.is_mounted or self not in self.app.screen_stack:
             return
         phase = self.snapshot.phase
         components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
         status = f'Run local: {phase} — logs: {self.source}\n{components}'
-        credentials = (self.owner.interactive_dashboard_credentials()
-                       if self.owner is not None and hasattr(self.owner, 'interactive_dashboard_credentials') else None)
-        if credentials is not None:
-            email, password = credentials
-            status += f'\nLangFuse dashboard account: {email}\nLangFuse dashboard password: {password}'
         self.query_one('#local-status', Static).update(status)
         self.query_one('#local-error', Static).update(self.failure)
         self.query_one('#local-hint', Static).update(self.MENU_HINT if self.menu else self.VIEW_HINT)
@@ -350,7 +349,7 @@ class LocalRunScreen(Screen):
                 self.owner.request_stop()
                 # The controller bounds startup settlement and retains late
                 # acquisitions before the presentation can acknowledge Stop.
-                await self.owner.aclose()
+                await getattr(self.owner, 'finish_cleanup', self.owner.aclose)()
                 await self.settle_run_task()
                 self.retire()
         except BaseException as error:
