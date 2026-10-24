@@ -56,7 +56,7 @@ def _structural(boundary, payload, model_identities=frozenset()):
         elif key in ('api_agent.attempt', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens'):
             if type(value) is int and 0 <= value <= (1 << 53) - 1:
                 clean[key] = value
-        elif key == 'gen_ai.operation.name' and value == 'chat':
+        elif key == 'gen_ai.operation.name' and value in ('chat', 'execute_tool'):
             clean[key] = value
     return _attributes(boundary.for_policy(ContentPolicy(True)), clean,
         model_identity=lambda value: _model_identity(value, model_identities))
@@ -67,6 +67,7 @@ def _span_name(boundary, name, model_identities=frozenset()):
         return 'chat'
     if type(name) is not str or not (
             re.fullmatch(r'(?:graph|component|node) [A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', name)
+            or name == 'execute_tool'
             or (name.startswith('chat ') and _model_identity(name[5:], model_identities))):
         return 'api_agent.span'
     return boundary.content_export({'name': name}).get('name', 'api_agent.span')
@@ -148,6 +149,9 @@ class TraceSpan:
         clean = _attributes(self._boundary, payload, model_identity=self._model_identity)
         if self._span is not None:
             self._span.set_attributes(clean)
+            if clean.get('status') in ('error', 'cancelled'):
+                from opentelemetry.trace import StatusCode
+                self._span.set_status(StatusCode.ERROR)
 
     def event(self, payload):
         clean = _attributes(self._boundary, payload, model_identity=self._model_identity)

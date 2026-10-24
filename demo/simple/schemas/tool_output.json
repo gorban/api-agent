@@ -1,0 +1,1 @@
+{"type":"object","properties":{"status":{"enum":["success","partial","failure"]},"data":{},"errors":{"type":"array"},"diagnostic":{"type":["string","null"]}},"required":["status","data","errors","diagnostic"],"additionalProperties":false}

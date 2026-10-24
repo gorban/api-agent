@@ -1,0 +1,10 @@
+{
+  "image": "docker.io/library/python@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
+  "command": ["python", "/opt/demo/server.py"],
+  "ports": ["127.0.0.1:58092:8090"],
+  "volumes": [
+    {"asset": "api/server.py", "target": "/opt/demo/server.py"},
+    {"asset": "api/graphql_core-3.2.13-py3-none-any.whl", "target": "/opt/demo/graphql_core-3.2.13-py3-none-any.whl"},
+    {"asset": "api/GRAPHQL_CORE_LICENSE.txt", "target": "/opt/demo/GRAPHQL_CORE_LICENSE.txt"}
+  ]
+}

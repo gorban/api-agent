@@ -229,22 +229,26 @@ def test_selected_workflow_uses_bundled_application_definition():
     definition = load_selected_definition(context)
     from api_agent.workflows.application import build
     joined = build(root, llm=None, selection='sample')
-    assert definition.entry == root / 'flow.md.html'
-    assert definition.graph_id
-    assert joined.definition.definition_id == definition.definition_id
+    assert definition.entry == root / 'demo/simple/flow.md.html'
+    assert definition.graph_id == 'useful_api_demo'
+    assert joined.definition.entry == root / 'flow.md.html'
+    assert joined.definition.graph_id == 'simple_chat'
     assert joined.layout.steps[0].id == 'agent'
+
+
+def selected_registry(definition):
+    from api_agent.workflows.definition import load_native_catalog
+    from api_agent.workflows.execution import NodeFunction
+    kinds = {'plan': 'llm', 'review': 'llm', 'execute_tool': 'deterministic', 'render': 'llm'}
+    return {step.id: NodeFunction(load_native_catalog(definition, step.source)[step.id], kinds[step.id])
+            for step in definition.layout.steps if step.id in kinds}
 
 
 def test_load_workflow_accepts_catalog_bound_to_exact_selected_definition():
     root = Path(__file__).resolve().parents[2]
     context = load_launch_context(root)
     definition = load_selected_definition(context)
-    source = next(step.source for step in definition.layout.steps if step.id == 'llm_call')
-    from api_agent.workflows.definition import load_native_catalog
-    from api_agent.workflows.execution import NodeFunction
-    catalog = load_native_catalog(definition, source)
-
-    joined = load_workflow(context, {'llm_call': NodeFunction(catalog['llm_call'], 'llm')},
+    joined = load_workflow(context, selected_registry(definition),
                            definition=definition, services={'llm': None, 'selection': 'sample'})
 
     assert joined.definition is definition
@@ -254,17 +258,14 @@ def test_load_workflow_implicitly_loads_matching_immutable_definition():
     root = Path(__file__).resolve().parents[2]
     context = load_launch_context(root)
     admitted = load_selected_definition(context)
-    source = next(step.source for step in admitted.layout.steps if step.id == 'llm_call')
-    from api_agent.workflows.definition import load_native_catalog
-    from api_agent.workflows.execution import NodeFunction
-    catalog = load_native_catalog(admitted, source)
+    source = next(step.source for step in admitted.layout.steps if step.id == 'plan')
 
-    joined = load_workflow(context, {'llm_call': NodeFunction(catalog['llm_call'], 'llm')},
+    joined = load_workflow(context, selected_registry(admitted),
                            services={'llm': None, 'selection': 'sample'})
 
     assert joined.definition is not admitted
     assert joined.definition.definition_id == admitted.definition_id
-    assert next(step.source for step in joined.layout.steps if step.id == 'llm_call') == source
+    assert next(step.source for step in joined.layout.steps if step.id == 'plan') == source
 
 
 def test_load_workflow_rejects_definition_from_other_selected_root(tmp_path):

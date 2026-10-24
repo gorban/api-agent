@@ -1,3 +1,15 @@
 # Preserve the pinned upstream notice and browser bundle's terminal whitespace.
 **/.private_resources/viewer/PlantUML-NOTICE.txt whitespace=-blank-at-eol,-blank-at-eof
 .private_resources/viewer/dompurify.js whitespace=-blank-at-eof
+# Retain the upstream license bytes, including its CRLF line endings.
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/color-name/LICENSE -text
+# Preserve whitespace in these unmodified upstream license notices.
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/ajv/LICENSE whitespace=-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/color-convert/LICENSE whitespace=-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/cookie/LICENSE whitespace=-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/debug/LICENSE whitespace=-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/function-bind/LICENSE whitespace=-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/iconv-lite/LICENSE whitespace=-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/inherits/LICENSE whitespace=-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/color-name/LICENSE whitespace=cr-at-eol,-blank-at-eof
+src/api_agent/api_providers/graphql_mcp/licenses/third-party/pkce-challenge/LICENSE whitespace=-blank-at-eol

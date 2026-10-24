@@ -1,0 +1,59 @@
+# Source-controlled demo configuration declarations and defaults.
+# Put your non-default values in ../../../.env (relative to this file; the
+# api-agent repository root for the bundled demo), environment variables,
+# or CLI options. api-agent .env values are the fallback; a selected
+# resource pack's root .env overrides only the values it provides, followed by
+# environment variables and finally CLI options.
+
+# Demo uses the shared configuration without product-specific extensions.
+version = 1
+
+[fields.API_ENDPOINT]
+type = "str"
+default = ""
+acknowledge_default = false
+help = "Optional upstream API endpoint for the bundled demo. Blank uses its local synthetic API during an API-capable run."
+
+[fields.API_PROVIDER]
+type = "str"
+override = true
+default = "src/api_agent/api_providers/graphql_mcp/factory.py:create"
+acknowledge_default = false
+help = "Bundled read-only GraphQL MCP provider; an explicit provider selection can replace it."
+
+[fields.DEMO_API_LOCAL]
+type = "bool"
+default = false
+acknowledge_default = false
+help = "Operation-owned synthetic API activation; resolved by the bundled demo runtime."
+
+[fields.WORKFLOW_LLM_TIMEOUT_SECONDS]
+type = "float"
+default = 120.0
+validation = "positive"
+acknowledge_default = false
+help = "Demo LLM inference timeout in seconds, clipped to enclosing deadlines."
+
+[fields.WORKFLOW_MAX_PASSES]
+type = "int"
+override = true
+default = 2
+validation = "positive"
+acknowledge_default = false
+help = "Maximum passes through a guarded demo component before rejection exhausts it."
+
+[fields.WORKFLOW_COMPONENT_TIMEOUT_SECONDS]
+type = "float"
+override = true
+default = 300.0
+validation = "positive"
+acknowledge_default = false
+help = "Component timeout in seconds across all passes, clipped to the graph deadline."
+
+[fields.WORKFLOW_GRAPH_TIMEOUT_SECONDS]
+type = "float"
+override = true
+default = 600.0
+validation = "positive"
+acknowledge_default = false
+help = "Whole-graph timeout in seconds; child scopes inherit its remaining budget."

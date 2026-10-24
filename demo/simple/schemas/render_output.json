@@ -1,0 +1,1 @@
+{"type":"object","properties":{"response_text":{"type":"string"},"selected_model":{"type":"string"}},"required":["response_text","selected_model"],"additionalProperties":false}

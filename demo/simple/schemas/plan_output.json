@@ -1,0 +1,1 @@
+{"type":"object","properties":{"use_tool":{"type":"boolean"},"answer":{"type":"string"},"arguments":{"type":"object"}},"required":["use_tool","arguments","answer"],"additionalProperties":false}

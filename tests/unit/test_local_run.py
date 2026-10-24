@@ -108,13 +108,16 @@ def test_wait_without_start_rejected(local):
     asyncio.run(run())
 
 
-def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local, monkeypatch):
+@pytest.mark.parametrize('requires_api', [False, True])
+def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local, monkeypatch, requires_api):
     from api_agent.runtime import local_run
     from api_agent.runtime import client_tls
     from api_agent.ui import process
     config, origin, material = local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca'))
     config.values['LLM_REASONING_EFFORT'] = ''
-    runtime = SimpleNamespace(services={}, emissions=EmissionBoundary(ContentPolicy()), tracing=None)
+    config.values['API_PROVIDER'] = 'adapter.py:create'
+    local.owner._requires_api = requires_api
+    runtime = SimpleNamespace(services={}, emissions=EmissionBoundary(ContentPolicy()), tracing=None, factory_plan=())
     compose = Mock(return_value=runtime)
     monkeypatch.setattr(local_run, 'compose_runtime', compose)
     monkeypatch.setattr(client_tls, 'verified_client_context', lambda value: 'verified')
@@ -128,6 +131,11 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
         compose.assert_called_once_with(local.owner.context, config, callback_origin=origin,
                                          tls_material=material, required_kinds=())
         assert local.owner.llm_factory.call_args.kwargs['trace'] is runtime.tracing
+        if requires_api:
+            assert runtime.factory_plan[0][:2] == ('api', 'adapter.py:create')
+            assert local.owner._graph.tool_owner.runtime is runtime
+        else:
+            assert runtime.factory_plan == ()
         assert result.services['ui_processes'] == 'process-owner'
         assert await result.services['studio_backend'].describe(auth=None) == ()
         context = object()
@@ -437,8 +445,10 @@ def test_close_during_start_waits_for_late_allocations_before_acknowledgement(lo
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('run_ui,expected', [(False, ('llm',)), (True, ('llm', 'ui'))])
-def test_pure_plan_reads_only_consumed_provider_declarations(local, monkeypatch, run_ui, expected):
+@pytest.mark.parametrize('run_ui,requires_api,expected', [
+    (False, False, ('llm',)), (True, False, ('llm', 'ui')),
+    (False, True, ('llm', 'unused')), (True, True, ('llm', 'ui', 'unused'))])
+def test_pure_plan_reads_only_consumed_provider_declarations(local, monkeypatch, run_ui, requires_api, expected):
     from api_agent.runtime.local_run import _plan
     from api_agent.runtime import infrastructure_contract, compose
     context = local.owner.context
@@ -447,8 +457,54 @@ def test_pure_plan_reads_only_consumed_provider_declarations(local, monkeypatch,
     capture = Mock(return_value=())
     monkeypatch.setattr(infrastructure_contract, 'load_infrastructure_contributions', capture)
     monkeypatch.setattr(compose, 'plan_compose', Mock(return_value='base'))
-    assert _plan(local.config, None, context, 'scope') == 'base'
+    assert _plan(local.config, None, context, 'scope', requires_api=requires_api) == 'base'
     capture.assert_called_once_with(context, selected_provider_locations=expected)
+
+
+@pytest.mark.parametrize('external,requires_api', [(False, True), (False, False), (True, True)])
+def test_api_graph_admission_preserves_external_pack_endpoint_policy(local, external, requires_api):
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    from api_agent.runtime.demo_api import bind_demo_api_endpoint
+    original_values = {**local.config.values, 'API_PROVIDER': 'adapter.py:create',
+        'DEMO_API_LOCAL': external}
+    original = ConfigResult(original_values, {}, (), (), ())
+    local.owner.context.pack_id = 'demo'
+    local.owner.context.external_pack = external
+    local.owner.resolve = lambda: original
+    local.application_factory.return_value.requires_api = requires_api
+
+    async def scenario():
+        await local.owner.start()
+        kwargs = local.operation_factory.call_args.kwargs
+        assert ('api' in kwargs['required_kinds']) is requires_api
+        assert kwargs['groups'] == ('browser',)
+        if not external and requires_api:
+            assert kwargs['bind_infrastructure'] is bind_demo_api_endpoint
+        else:
+            assert 'bind_infrastructure' not in kwargs
+        assert local.owner._config.values['DEMO_API_LOCAL'] is (external or requires_api)
+        if external:
+            assert local.owner._config is original
+        assert original.values == original_values
+        await local.owner.aclose()
+    asyncio.run(scenario())
+
+
+def test_simple_bundled_graph_rejects_explicit_api_activation_before_planning(local):
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    config = ConfigResult({**local.config.values, 'DEMO_API_LOCAL': True},
+        {'DEMO_API_LOCAL': ResolvedValue(True, 'environment', True)}, (), (), ())
+    local.owner.context.pack_id = 'demo'
+    local.owner.context.external_pack = False
+    local.owner.resolve = lambda: config
+    local.application_factory.return_value.requires_api = False
+
+    async def scenario():
+        with pytest.raises(ValueError, match='operation_owned'):
+            await local.owner.start()
+        local.owner.plan_factory.assert_not_called()
+        local.operation_factory.assert_not_called()
+    asyncio.run(scenario())
 
 
 def test_log_events_escape_terminal_control_sequences_after_secret_scrubbing(local):

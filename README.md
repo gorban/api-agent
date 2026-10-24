@@ -54,6 +54,7 @@ arbitrary child output, which may contain credentials even with `LOG_CONTENT=Tru
 - [Resource packs and providers](docs/resource-packs.md)
 - [Running, debugging and testing](docs/development.md)
 - [Workflow diagrams and browser inspection](docs/workflow_viewer.md)
+- [Bundled API demonstration](docs/api_demo.md)
 
 **Developing with a coding agent?** Start with Python 3.13+ and an agent with
 terminal access. For browser inspection, configure Chrome DevTools MCP (preferred)
@@ -152,8 +153,9 @@ The [workflow guide](docs/workflow_poc.md) covers the restricted Markdown gramma
 inference-free validation and the permanent mandatory node-coverage fixture.
 Model-specific bounds are packaged with the fixture; [calibration refresh](docs/workflow_calibration.md)
 is explicit maintenance outside normal test collection. Normal coverage needs no
-local pilot file and rejects unsupported provider/model/settings without substitution. The useful GraphQL demonstration remains
-the next phase.
+local pilot file and rejects unsupported provider/model/settings without substitution.
+The selected [API demonstration](docs/api_demo.md) uses its own declared flow;
+the root flow remains the small one-call chat example.
 
 Open [flow.md.html](flow.md.html) directly to view the saved declaration and SVG,
 or run `./launch.py --view-flow` for checked, managed browser inspection.

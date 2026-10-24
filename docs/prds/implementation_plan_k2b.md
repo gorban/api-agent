@@ -40,11 +40,11 @@ interruption follow-through below has now closed its technical repair.
 
 ## Terminal interruption follow-through
 
-- [x] Close the [native terminal interruption and cleanup-status repair](implementation_plan_k2b1.md) before the next human retest. Earlier evidence remains preserved and does not establish this new case.
+- [x] Close the [native terminal interruption and cleanup-status repair](implementation_plan_k2b1.md). The user confirmed clean Ctrl+C shutdown without repeated messages and approved this cleanup fix on October 23, 2026. Other combined human checks above remain separate.
 
 **Deferred human review**
 
-Substantive implementation and independent/external review are complete. Explicit
-human acceptance remains unchecked in this document and its immediate child.
+Substantive implementation and independent/external review are complete. The
+cleanup child is human-approved; the combined acceptance above remains unchecked.
 
 - [Native terminal interruption](implementation_plan_k2b1.md)
