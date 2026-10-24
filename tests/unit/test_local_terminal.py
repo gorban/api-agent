@@ -6,6 +6,49 @@ import pytest
 from api_agent.runtime.local_terminal import format_log, run_local_terminal
 
 
+def test_cleanup_status_coalesces_retries_and_reminds_after_interval():
+    from api_agent.runtime.local_contracts import LocalComponent, LocalSnapshot
+    from api_agent.runtime.local_terminal import _TerminalStatus
+    messages = []
+    now = [0]
+    present = _TerminalStatus(messages.append, lambda: now[0])
+    def snapshot(phase, name='agent'):
+        return LocalSnapshot(phase, components=(LocalComponent(name, phase),))
+
+    present(snapshot('stopping'))
+    for second in range(1, 15):
+        now[0] = second
+        present(snapshot('cleanup-pending' if second % 2 else 'stopping'))
+    assert messages == ['Run local: stopping', 'Cleanup scope: agent', 'Run local: cleanup-pending']
+
+    now[0] = 16
+    present(snapshot('stopping'))
+    assert messages == ['Run local: stopping', 'Cleanup scope: agent', 'Run local: cleanup-pending',
+                        'Run local: cleanup-pending (still waiting)']
+
+
+def test_cleanup_status_reports_scope_change_immediately_and_resets_for_new_operation():
+    from api_agent.runtime.local_contracts import LocalComponent, LocalSnapshot
+    from api_agent.runtime.local_terminal import _TerminalStatus
+    messages = []
+    now = [0]
+    def snapshot(phase, name):
+        return LocalSnapshot(phase, components=(LocalComponent(name, phase),))
+    present = _TerminalStatus(messages.append, lambda: now[0])
+
+    present(snapshot('stopping', 'agent'))
+    now[0] = 1
+    present(snapshot('cleanup-pending', 'agent'))
+    now[0] = 2
+    present(snapshot('stopping', 'browser'))
+    assert messages[-1] == 'Cleanup scope: browser'
+    assert messages.count('Run local: stopping') == 1
+
+    another_operation = _TerminalStatus(messages.append, lambda: now[0])
+    another_operation(snapshot('stopping', 'browser'))
+    assert messages[-2:] == ['Run local: stopping', 'Cleanup scope: browser']
+
+
 def test_log_selection_preserves_text_and_labels_each_line():
     event = NS(source='ui', text='first\nsecond\n')
     assert format_log(event, 'agent') == ''

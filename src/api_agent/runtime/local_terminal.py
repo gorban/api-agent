@@ -5,6 +5,7 @@ import os
 import errno
 import threading
 import signal
+import time
 from contextlib import contextmanager
 from collections import deque
 
@@ -289,6 +290,46 @@ def format_log(event, source):
     return ''.join(f'[{event.source}] {line}' for line in event.text.splitlines(keepends=True))
 
 
+class _TerminalStatus:
+    """Present cleanup progress without repeating every retry snapshot."""
+    REMINDER_SECONDS = 15
+
+    def __init__(self, diagnostic, clock=time.monotonic):
+        self.diagnostic = diagnostic
+        self.clock = clock
+        self.cleanup_phase = None
+        self.scope = None
+        self.last_notice = None
+
+    def __call__(self, snapshot):
+        phase = snapshot.phase
+        if phase in {'stopping', 'cleanup-pending'}:
+            scope = tuple(item.name for item in snapshot.components)
+            now = self.clock()
+            advanced = phase == 'cleanup-pending' and self.cleanup_phase != 'cleanup-pending'
+            first = self.cleanup_phase is None
+            changed = scope != self.scope
+            if first or advanced:
+                self.diagnostic(f'Run local: {phase}')
+            elif self.cleanup_phase == 'cleanup-pending' and now - self.last_notice >= self.REMINDER_SECONDS:
+                self.diagnostic('Run local: cleanup-pending (still waiting)')
+            if scope and changed:
+                self.diagnostic('Cleanup scope: ' + ', '.join(scope))
+            if first or advanced or changed or now - self.last_notice >= self.REMINDER_SECONDS:
+                self.last_notice = now
+            self.scope = scope
+            if first or advanced:
+                self.cleanup_phase = phase
+            return
+        self.diagnostic(f'Run local: {phase}')
+        if phase == 'starting' and snapshot.components:
+            self.diagnostic('Selected components: ' + ', '.join(item.name for item in snapshot.components))
+        for destination in snapshot.destinations:
+            self.diagnostic(f'{destination.name}: {destination.url}')
+        if snapshot.inspection_endpoint:
+            self.diagnostic(f'Browser CDP: {snapshot.inspection_endpoint}')
+
+
 @contextmanager
 def _terminal_stop_signals(diagnostic):
     """Own repeated terminal interrupts until same-loop cleanup is acknowledged."""
@@ -425,19 +466,12 @@ async def _run_local_terminal(context, resolve, *, argv=(), schema=None, owner_f
                              output=None, diagnostic=None):
     """Run without stdin; retain cleanup receipts when disposal cannot finish."""
     source = resolve().values['RUN_LOG_SOURCE']
+    present_status = _TerminalStatus(diagnostic)
     def event_received(event):
         if event.kind in {'log', 'diagnostic'}:
             output(format_log(event, source))
         elif event.kind == 'status' and event.snapshot is not None:
-            snapshot = event.snapshot
-            diagnostic(f'Run local: {snapshot.phase}')
-            if snapshot.phase in {'starting', 'stopping', 'cleanup-pending'} and snapshot.components:
-                label = 'Cleanup scope: ' if snapshot.phase != 'starting' else 'Selected components: '
-                diagnostic(label + ', '.join(item.name for item in snapshot.components))
-            for destination in snapshot.destinations:
-                diagnostic(f'{destination.name}: {destination.url}')
-            if snapshot.inspection_endpoint:
-                diagnostic(f'Browser CDP: {snapshot.inspection_endpoint}')
+            present_status(event.snapshot)
     options = {'schema': schema} if schema is not None else {}
     owner = None
     status = 0

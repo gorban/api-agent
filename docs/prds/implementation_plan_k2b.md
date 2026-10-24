@@ -23,7 +23,7 @@
 - [x] Retain the creating event loop while cleanup is pending. Interactive Stop/confirmed Quit and NO_STD_IN must show pending status and retry visibly until acknowledgement; do not discard an active asynchronous-context exit or silently force process exit. Repeated interruption and launcher handoff must preserve this ownership policy.
 - [x] Verify stalled and cancellation-resistant callbacks, real operation context-manager exit, ordered later retry and normal shutdown. Preserve failure receipts and prevent cleanup success from being reported before all owned work acknowledges completion. Human acceptance remains separate.
 
-## Verified checkpoint
+## Earlier verified checkpoint
 
 Independent source and causal reviews, external review, package/installed checks
 and public-boundary checks are complete. All 14,261 existing unit cases passed;
@@ -34,7 +34,17 @@ A genuine cached-provider Studio request returned the expected response with one
 inference call, retained accounting and clean shutdown. The historical initiating
 exception and original interruption cause remain unproven.
 
+The earlier checkpoint completed implementation and independent/external review.
+Explicit human acceptance remains unchecked above; the terminal
+interruption follow-through below has now closed its technical repair.
+
+## Terminal interruption follow-through
+
+- [x] Close the [native terminal interruption and cleanup-status repair](implementation_plan_k2b1.md) before the next human retest. Earlier evidence remains preserved and does not establish this new case.
+
 **Deferred human review**
 
 Substantive implementation and independent/external review are complete. Explicit
-human acceptance remains unchecked above; earlier partial acceptance is preserved.
+human acceptance remains unchecked in this document and its immediate child.
+
+- [Native terminal interruption](implementation_plan_k2b1.md)

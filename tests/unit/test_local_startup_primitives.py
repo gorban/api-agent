@@ -534,3 +534,51 @@ def test_debug_only_validates_original_pages_before_handoff(failure):
         browser_owner.aclose.assert_awaited_once()
         host.aclose.assert_awaited_once()
     asyncio.run(exercise())
+
+
+def test_local_browser_acknowledges_only_proven_terminated_inspection():
+    from api_agent.providers.control import CleanupPendingError
+    owner = LocalBrowserOwner(None, {}, 'http://localhost/')
+    pending = CleanupPendingError((owner.inspection,), owner.inspection.aclose)
+    inspection = SimpleNamespace(aclose=AsyncMock(side_effect=pending),
+        settle_terminated_inspection=AsyncMock(return_value=True))
+    host = SimpleNamespace(aclose=AsyncMock())
+    owner.inspection, owner.host = inspection, host
+    asyncio.run(owner.aclose())
+    inspection.aclose.assert_awaited_once()
+    inspection.settle_terminated_inspection.assert_awaited_once()
+    host.aclose.assert_awaited_once()
+    assert owner.inspection is owner.host is None
+
+
+def test_local_browser_keeps_unconfirmed_inspection_and_host_owned():
+    from api_agent.providers.control import CleanupPendingError
+    owner = LocalBrowserOwner(None, {}, 'http://localhost/')
+    pending = CleanupPendingError((owner.inspection,), owner.inspection.aclose)
+    inspection = SimpleNamespace(aclose=AsyncMock(side_effect=pending),
+        settle_terminated_inspection=AsyncMock(return_value=False))
+    host = SimpleNamespace(aclose=AsyncMock())
+    owner.inspection, owner.host = inspection, host
+    with pytest.raises(CleanupPendingError) as caught:
+        asyncio.run(owner.aclose())
+    assert caught.value is pending
+    inspection.settle_terminated_inspection.assert_awaited_once()
+    host.aclose.assert_not_awaited()
+    assert owner.inspection is inspection and owner.host is host
+
+
+@pytest.mark.parametrize('failed', ['ui', 'browser', 'host'])
+def test_other_local_browser_cleanup_failure_is_not_terminal_browser_proof(failed):
+    from api_agent.providers.control import CleanupPendingError
+    owner = LocalBrowserOwner(None, {}, 'http://localhost/')
+    inspection = SimpleNamespace(aclose=AsyncMock(), settle_terminated_inspection=AsyncMock(return_value=True))
+    owned = SimpleNamespace(aclose=AsyncMock())
+    pending = CleanupPendingError((owned,), owned.aclose)
+    owned.aclose.side_effect = pending
+    owner.inspection = inspection
+    setattr(owner, failed, owned)
+    with pytest.raises(CleanupPendingError) as caught:
+        asyncio.run(owner.aclose())
+    assert caught.value is pending
+    inspection.settle_terminated_inspection.assert_not_awaited()
+    assert getattr(owner, failed) is owned
