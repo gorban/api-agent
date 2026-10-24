@@ -880,6 +880,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     #skip-choice { width: 1fr; height: auto; }
     #remember-skip { width: 100%; height: auto; }
     Button { width: 100%; height: 3; min-height: 3; margin: 0 1 1 0; }
+    #local-choices .local-choice-grid.browsers Button { height: 4; padding: 0 1; }
     Button:focus, Input:focus { border: heavy $accent; }
     DataTable { height: 1fr; min-height: 8; max-height: 100vh; margin-bottom: 1; }
     .configuration-review DataTable { min-height: 3; }
