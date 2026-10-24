@@ -25,3 +25,7 @@ independent trace-content authority. Its existing inference evidence is LOG_CONT
 gated; it cannot supply trace-only content. Keep [worker/provider policy and
 identity propagation](implementation_plan_k1b.md) unchecked until qualified;
 caller-side raw capture must not bypass backend credential registrations.
+
+## Capture admission ordering
+
+- [ ] Reserve journal admission before reading capture permission or projecting JSON. A stricter policy cannot attach during an active first capture and receive data authorized only by the original policy. Verify the interleaving with two threads, inspect retained and live output, and use a causal control that removes only the capture-start guard.

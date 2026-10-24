@@ -529,6 +529,7 @@ class WorkflowJournal:
     def capture_json(self, *, visit_id, direction, values, schema, cause_id=None,
                      _observer_override=None):
         """Capture bounded JSON values admitted by a node or call schema."""
+        self._begin()
         from .capture import capture_reason, project_values
         if direction not in ('input', 'output'):
             raise ValueError('Invalid workflow capture direction')

@@ -13,6 +13,43 @@ from api_agent.workflows.observations import WorkflowObservationFactory
 from test_workflow_observations import config, definition
 
 
+def test_json_capture_excludes_policy_admission_before_projection(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from api_agent.workflows import capture
+    from api_agent.workflows.journal import WorkflowJournal
+
+    entered, resume = Event(), Event()
+    live = []
+    journal = WorkflowJournal(definition(), log_content=True, content_policy=ContentPolicy(True))
+    original = capture.project_values
+    def paused(*args, **kwargs):
+        entered.set()
+        assert resume.wait(5)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(capture, 'project_values', paused)
+    rejection = None
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        operation = executor.submit(journal.capture_json, visit_id='visit', direction='input',
+            values={'text': 'original-authority-visible'},
+            schema={'type': 'object', 'properties': {'text': {'type': 'string'}}})
+        try:
+            assert entered.wait(5)
+            WorkflowObservationFactory(config(False), boundary=EmissionBoundary(),
+                sink=live.append).create(definition(), journal=journal)
+        except ValueError as error:
+            rejection = str(error)
+        finally:
+            resume.set()
+        operation.result(timeout=5)
+
+    retained = journal.finalize()
+    assert live == [], 'A denied subscriber must not attach to an active capture'
+    assert retained['content'] == 'permitted_scrubbed'
+    assert 'original-authority-visible' in json.dumps(retained)
+    assert rejection == 'Journal policy must be admitted once before retention'
+
+
 SCHEMA = {'type': 'object', 'properties': {'text': {'type': 'string'}, 'parts': {
     'type': 'array', 'items': {'type': 'object', 'properties': {
         'text': {'type': 'string'}, 'hidden_reasoning': {'type': 'string'}}}}}}
