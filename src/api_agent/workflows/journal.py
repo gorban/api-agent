@@ -8,7 +8,7 @@ import time
 from threading import Lock
 from uuid import uuid4, UUID
 
-from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary, _COUNTS
 from .layout import MAX_COMPONENT_PASSES
 from .predicates import PredicateError, native_condition_id, parse_predicate
 
@@ -85,15 +85,21 @@ def _encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 
 
-def _capture_contract(value, depth=0):
-    if depth > 4:
+def _schema_field(key):
+    return (type(key) is str and _SAFE_LABEL.fullmatch(key)
+            and (not _UNSAFE_FIELD.search(key) or key in _COUNTS))
+
+
+def _capture_contract(value, depth=0, *, max_depth=4):
+    if depth > max_depth:
         return False
     if type(value) is dict:
         return (len(value) <= 32 and all(type(key) is str
-                and _SAFE_LABEL.fullmatch(key) and not _UNSAFE_FIELD.search(key)
-                and _capture_contract(item, depth + 1) for key, item in value.items()))
+                and (_schema_field(key) if max_depth == 8 else
+                     _SAFE_LABEL.fullmatch(key) and not _UNSAFE_FIELD.search(key))
+                and _capture_contract(item, depth + 1, max_depth=max_depth) for key, item in value.items()))
     if type(value) is list:
-        return len(value) <= 16 and all(_capture_contract(item, depth + 1) for item in value)
+        return len(value) <= 16 and all(_capture_contract(item, depth + 1, max_depth=max_depth) for item in value)
     return (value is None or type(value) is bool
             or type(value) is int and abs(value) <= (1 << 53) - 1
             or type(value) is float and math.isfinite(value)
@@ -317,10 +323,28 @@ class _JournalBoundary:
     def __init__(self, policy, *boundaries):
         self.policy, self._boundaries = policy, boundaries
 
-    def content_export(self, payload):
+    def include(self, boundary):
+        self._boundaries = (*self._boundaries, boundary)
+
+    def register_secret(self, secret):
         for boundary in self._boundaries:
-            payload = boundary.content_export(payload)
-        return payload
+            boundary.register_secret(secret)
+
+    def content_export(self, payload):
+        # One original projection must see the union: sequential scrubbing can
+        # destroy the evidence needed to recognize another registered container.
+        secrets, assigned_ids = set(), set()
+        def collect(boundary):
+            if isinstance(boundary, _JournalBoundary):
+                for child in boundary._boundaries:
+                    collect(child)
+            else:
+                secrets.update(boundary._secrets)
+                assigned_ids.update(boundary._assigned_ids)
+        for boundary in self._boundaries:
+            collect(boundary)
+        return EmissionBoundary(ContentPolicy(True), secrets=secrets,
+            assigned_ids=assigned_ids, preserve_json_text=True).export(payload)
 
 
 class WorkflowJournal:
@@ -502,6 +526,25 @@ class WorkflowJournal:
             event['truncated_fields'] = sorted(truncated_fields)
         return self._observe(event, allow_values=True, observer_override=_observer_override)
 
+    def capture_json(self, *, visit_id, direction, values, schema, cause_id=None,
+                     _observer_override=None):
+        """Capture bounded JSON values admitted by a node or call schema."""
+        from .capture import capture_reason, project_values
+        if direction not in ('input', 'output'):
+            raise ValueError('Invalid workflow capture direction')
+        if type(visit_id) is not str or not visit_id:
+            raise ValueError('Workflow capture requires a node visit')
+        event = dict(event='capture', visit_id=visit_id, direction=direction,
+                     reason='withheld')
+        if cause_id is not None:
+            event['cause_id'] = cause_id
+        if self._log_content:
+            report = set()
+            safe = project_values(values, schema, self._boundary, report=report)
+            event.update(values=safe, capture_class='schema_user_io',
+                         reason=capture_reason(safe, report))
+        return self._observe(event, allow_values=True, observer_override=_observer_override)
+
     def record_call(self, *, visit_id, attempt_id=None, usage=None, selection=None,
                     elapsed=None, outcome='completed', call_id=None):
         self._begin()
@@ -662,8 +705,14 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
         if event.get('event') == 'capture':
             if payload['content'] == 'withheld' and 'values' in event:
                 raise ValueError('Withheld workflow capture contains values')
-            if 'values' in event and not _capture_contract(event['values']):
+            if 'values' in event and not _capture_contract(event['values'],
+                    max_depth=8 if event.get('capture_class') == 'schema_user_io' else 4):
                 raise ValueError('Unsafe workflow capture values')
+            if 'values' in event and event.get('capture_class') == 'schema_user_io':
+                if (type(event['values']) is not dict
+                        or event.get('reason') not in ('captured', 'partial', 'truncated', 'unavailable')):
+                    raise ValueError('Invalid schema capture reason')
+                continue
             if 'values' in event:
                 fields = event.get('plain_fields')
                 truncated = event.get('truncated_fields', [])
@@ -691,6 +740,23 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
             if event.get('visit_id') not in node_visits or event.get('call_id') in call_ids:
                 raise ValueError('Leaf call lacks a unique node visit owner')
             call_ids.add(event['call_id'])
+    capture_pairs = {}
+    for event in events:
+        if event.get('event') == 'capture' and event.get('cause_id') is not None:
+            cause = event['cause_id']
+            try:
+                valid_cause = type(cause) is str and str(UUID(cause)) == cause
+            except ValueError:
+                valid_cause = False
+            owner = event.get('visit_id')
+            direction = event.get('direction')
+            if (not valid_cause or type(owner) is not str or owner not in node_visits
+                    or direction not in ('input', 'output')):
+                raise ValueError('Invalid workflow capture correlation')
+            previous_owner, directions = capture_pairs.setdefault(cause, (owner, set()))
+            if previous_owner != owner or direction in directions:
+                raise ValueError('Invalid workflow capture correlation')
+            directions.add(direction)
     routes_complete = _routes_complete(payload['projection'], events)
     complete = payload['gap'] is None and routes_complete
     if payload['completeness'] != ('complete' if complete else 'partial'):

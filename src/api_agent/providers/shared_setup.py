@@ -7,6 +7,7 @@ sessions, credential readers and browsers remain inside the creating process.
 import asyncio
 import math
 import time
+from uuid import uuid4
 
 from .contracts import ContractError, SessionClosedError
 from .sessions import _Owner, _drain, _spawn
@@ -184,7 +185,7 @@ class SharedSetupOwner(_Owner):
 
     async def _complete_request(self, request, *, selected_identity=None):
         from .inference import async_request_to_wire, result_to_wire
-        await async_request_to_wire(request)
+        request_wire = await async_request_to_wire(request)
         self._check()
         if self._validate_request is not None:
             self._validate_request(request)
@@ -201,11 +202,14 @@ class SharedSetupOwner(_Owner):
                 from .rich_inference import resolve_catalog_selection
                 selection = await resolve_catalog_selection(lambda: self.describe(selected_identity=selected_identity), request)
         async def invoke(*, auth):
+            from api_agent.workflows.inference_capture import capture_inference
+            cause_id = str(uuid4())
+            capture_inference('input', request_wire, cause_id, auth=auth)
             result = await self._complete(request, auth=auth)
             self._check()
             from .rich_inference import async_validate_result
             await async_validate_result(request, result, selection=selection)
-            result_to_wire(result)
+            capture_inference('output', result_to_wire(result), cause_id, auth=auth)
             return result
         return await self._owner.call(invoke)
 

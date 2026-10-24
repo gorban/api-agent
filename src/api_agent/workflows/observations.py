@@ -41,6 +41,8 @@ class WorkflowObservations:
     def __init__(self, journal, *, boundary, log_policy, sink=None, trace=None):
         log_policy, boundary = journal.admit_policy(log_policy, boundary,
             model_identity=trace.is_model_identity if trace is not None else None)
+        if trace is not None:
+            boundary.include(trace.boundary)
         self.journal, self.boundary = journal, boundary
         self.log_policy, self.sink, self.trace = log_policy, sink, trace
         self._spans = {}
@@ -166,7 +168,7 @@ class WorkflowObservations:
                                               self.boundary, limit=65536)
             if plain_fields and self.trace is not None and self.trace.boundary.policy.allow_content:
                 trace_values, _ = _plain_values(values, schema, plain_fields,
-                                                self.trace.boundary, limit=65536)
+                                                self.boundary, limit=65536)
                 # Credential authorities are shared across destinations; this
                 # content-only redaction does not import the log permission.
                 trace_values = self.boundary.content_export({'values': trace_values}).get('values', {})
@@ -194,6 +196,40 @@ class WorkflowObservations:
         return self.journal.capture(visit_id=visit_id, direction=direction,
             values=values if self.log_policy.allow_content else {}, schema=schema,
             plain_fields=plain_fields if self.log_policy.allow_content else None,
+            _observer_override=(self._journal_observer, admitted_capture))
+
+    def capture_json(self, *, visit_id, direction, values, schema, cause_id=None):
+        """Project log and trace content independently before either queues it."""
+        from .capture import capture_reason, project_values
+        report = set()
+        log_values = (project_values(values, schema, self.boundary, limit=65536, report=report)
+                      if self.log_policy.allow_content else None)
+        trace_values = None
+        if self.trace is not None and self.trace.boundary.policy.allow_content:
+            trace_report = set()
+            trace_values = project_values(values, schema, self.boundary, limit=65536, report=trace_report)
+        def admitted_capture(row):
+            live = dict(row)
+            if log_values is not None:
+                live.update(values=log_values, reason=capture_reason(log_values, report))
+            else:
+                live.pop('values', None)
+                live['reason'] = 'withheld'
+            self._emit(live)
+            if trace_values is not None:
+                span = self._spans.get(visit_id)
+                if span is not None:
+                    try:
+                        event = dict(event_id=row['event_id'], direction=direction, values=trace_values,
+                                     reason=capture_reason(trace_values, trace_report),
+                                     capture_class='schema_user_io')
+                        if cause_id is not None:
+                            event['cause_id'] = cause_id
+                        span.event(event)
+                    except (Exception, asyncio.CancelledError):
+                        pass
+        return self.journal.capture_json(visit_id=visit_id, direction=direction,
+            values=values, schema=schema, cause_id=cause_id,
             _observer_override=(self._journal_observer, admitted_capture))
 
     def close(self):

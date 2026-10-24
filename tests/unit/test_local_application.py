@@ -101,7 +101,7 @@ def test_graph_execution_cannot_bypass_or_replace_declared_call(application, mon
     asyncio.run(run())
 
 
-def test_observations_capture_only_plain_text_without_changing_provider_request(application):
+def test_observations_capture_shared_node_values_without_changing_provider_request(application):
     from api_agent.config.resolve import ConfigResult, ResolvedValue
     from api_agent.telemetry.privacy import EmissionBoundary
     from api_agent.workflows.observations import WorkflowObservationFactory
@@ -117,8 +117,12 @@ def test_observations_capture_only_plain_text_without_changing_provider_request(
         provider.complete.assert_awaited_once_with(request,context=context)
     asyncio.run(run())
     captures = [row for row in rows if row['event']=='capture' and row.get('values')]
-    assert [dict(row['values']) for row in captures] == [
-        {'messages_text':'user: visible question'}, {'response_text':'visible answer'}]
+    assert len(captures) == 2
+    assert captures[0]['values']['messages'][0]['content'] == 'visible question'
+    assert captures[1]['values']['response_text'] == 'visible answer'
+    assert captures[1]['values']['selected_model'] == 'synthetic'
+    assert captures[1]['values']['outcome'] == 'completed'
+    assert all(row['capture_class'] == 'schema_user_io' for row in captures)
     assert len({row['invocation_id'] for row in rows}) == 1
 
 
@@ -142,8 +146,8 @@ def test_privacy_unrepresentable_visible_response_preserves_actual_graph_result(
         assert await application.complete(request,llm=provider,context=context) is result
         provider.complete.assert_awaited_once_with(request,context=context)
     asyncio.run(run())
-    capture = next(row for row in rows if row['event']=='capture' and row['direction']=='output' and row.get('reason')=='privacy_withheld')
-    assert 'values' not in capture
+    capture = next(row for row in rows if row['event']=='capture' and row['direction']=='output')
+    assert visible not in repr(capture)
     assert visible not in repr(rows)
 
 
@@ -193,18 +197,17 @@ def test_local_chat_capture_scalar_limit_preserves_reason_and_execution(
         resolved, boundary=EmissionBoundary(), sink=rows.append)
     from api_agent.workflows.observations import WorkflowObservations
     capture_ids = []
-    original_capture = WorkflowObservations.capture
+    original_capture = WorkflowObservations.capture_json
     def observe_capture(adapter, **options):
         row = original_capture(adapter, **options)
-        if tuple(options.get('values', {})) in (('messages_text',), ('response_text',)):
-            capture_ids.append(row['event_id'])
+        capture_ids.append(row['event_id'])
         return row
-    monkeypatch.setattr(WorkflowObservations, 'capture', observe_capture)
-    # Two individually valid messages produce one scalar at the admission limit.
+    monkeypatch.setattr(WorkflowObservations, 'capture_json', observe_capture)
+    # Shared capture retains the structured messages and bounds total text.
     first = 'q' * 32760
     second = 'r' * (size - 13 - len(first))
-    captured_input = 'user: ' + first + '\nuser: ' + second
-    answer = 'a' * size
+    # The output also carries the completed outcome and selected model.
+    answer = 'a' * (size - len('completed') - len('synthetic'))
     request = LLMRequest('synthetic', CompletionRequest((
         Message('user', (TextContent(first),)), Message('user', (TextContent(second),)))))
     result = LLMResult(Message('assistant', (TextContent(answer),)), Usage(2, 3))
@@ -219,17 +222,19 @@ def test_local_chat_capture_scalar_limit_preserves_reason_and_execution(
     assert [row['direction'] for row in captures] == ['input', 'output']
     displayed = [json.loads(LocalDiagnosticProjection(full_content=full_content).format(row))
                  for row in captures]
-    if size > 65536:
-        assert [row['reason'] for row in captures] == ['payload_limit', 'payload_limit']
-        assert [row['content'] for row in displayed] == ['payload_limit', 'payload_limit']
-        assert all('values' not in row for row in captures + displayed)
-    elif log_content:
-        assert [row['reason'] for row in captures] == ['captured', 'captured']
-        assert dict(captures[0]['values']) == {'messages_text': captured_input}
-        assert dict(captures[1]['values']) == {'response_text': answer}
-        limit = size if full_content else 512
-        assert len(displayed[0]['values']['messages_text']) == limit
-        assert len(displayed[1]['values']['response_text']) == limit
+    if log_content:
+        assert captures[0]['values']['messages'][0]['content'] == first
+        assert captures[0]['values']['messages'][1]['content'] == second
+        assert captures[0]['reason'] == 'captured'
+        if size > 65536:
+            assert 'response_text' not in captures[1]['values']
+            assert captures[1]['reason'] == 'truncated'
+        else:
+            assert captures[1]['values']['response_text'] == answer
+            limit = len(answer) if full_content else 512
+            assert len(displayed[1]['values']['response_text']) == limit
+        limit = len(first) if full_content else 512
+        assert len(displayed[0]['values']['messages'][0]['content']) == limit
     else:
         assert [row['content'] for row in displayed] == ['withheld', 'withheld']
         assert all('values' not in row for row in captures + displayed)
