@@ -154,7 +154,11 @@ class LocalBrowserOwner:
             for name in ('ui', 'browser', 'inspection', 'host'):
                 owner = getattr(self, name)
                 if owner is not None:
-                    await owner.aclose()
+                    try:
+                        await owner.aclose()
+                    except CleanupPendingError:
+                        if name != 'inspection' or not await owner.settle_terminated_inspection():
+                            raise
                     setattr(self, name, None)
         async with self._cleanup_lock:
             await finish_cleanup(cleanup())
