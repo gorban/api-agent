@@ -366,7 +366,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 return status
             import asyncio
             from api_agent.runtime.local_terminal import run_local_terminal
-            return asyncio.run(run_local_terminal(context, lambda: result, argv=argv, schema=schema))
+            return asyncio.run(run_local_terminal(context, lambda: result, argv=argv, schema=schema,
+                                                 retain_terminal_cleanup=True))
         if result.values.get('NO_STD_IN'):
             if mode in {'run-local', 'e2e'}:
                 from api_agent.auth.extensions import validate_operation

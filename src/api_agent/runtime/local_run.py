@@ -8,7 +8,7 @@ from types import MappingProxyType
 from api_agent.api.composition import compose_runtime
 from api_agent.api.studio import StudioBackend
 from api_agent.providers.control import CleanupPendingError
-from api_agent.providers.progress import component_timeout, independent_timeout_scope
+from api_agent.providers.progress import component_timeout, independent_timeout_scope, report_timeout
 from api_agent.providers.selection import ModelSelectionPolicy
 from api_agent.runtime.local_contracts import LocalComponent, LocalDestination, LocalSnapshot, LocalEvent
 from api_agent.runtime.local_llm import LocalLLM
@@ -60,6 +60,9 @@ class LocalCleanup:
 
 class LocalRunOwner:
     """Creating-loop owner; consumers observe state and request cooperative stop."""
+    CLEANUP_ATTEMPT_SECONDS = 15
+    CLEANUP_RETRY_SECONDS = 1
+
     def __init__(self, context, resolve, *, argv=(), on_event=None,
                  schema=None, engine_environment=None, plan_factory=None, operation_factory=local_operation, browser_factory=None,
                  prepare_view=_prepare_view, application_factory=LocalChatApplication,
@@ -71,6 +74,7 @@ class LocalRunOwner:
         self.schema, self.plan_factory = schema, plan_factory or _plan
         self._available_sources = ('agent',)
         self._planned_sources = {}
+        self._planned_components = ()
         self.operation_factory, self.browser_factory = operation_factory, browser_factory
         self.prepare_view, self.application_factory = prepare_view, application_factory
         self.llm_factory = llm_factory
@@ -193,7 +197,12 @@ class LocalRunOwner:
                 source = self._config.values.get('RUN_LOG_SOURCE', 'agent')
                 if source != 'all' and source not in self._available_sources:
                     raise ValueError('Unknown RUN_LOG_SOURCE; choose all or an available named local source.')
-                self._publish('starting', components=(LocalComponent('agent', 'starting'),))
+                self._planned_components = tuple(dict.fromkeys((
+                    'agent', 'api', *(('ui',) if self._config.values.get('RUN_UI') else ()),
+                    *('service:' + self._planned_sources.get(service, service) for service in plan.services),
+                    *('profile:' + profile for profile in getattr(plan, 'profiles', ())))))
+                self._publish('starting', components=tuple(
+                    LocalComponent(name, 'starting') for name in self._planned_components))
                 from api_agent.runtime.local_status import LocalStatusApplication
                 self._operation = self.operation_factory(self.context, resolve=lambda: self._config,
                     argv=self.argv, scope=scope, groups=('browser',),
@@ -266,7 +275,7 @@ class LocalRunOwner:
                     inspection=session.inspection_endpoint if session is not None else None)
                 self._starting = None
                 self._start_done.set()
-                self._log('agent', 'Local application is ready.')
+                self._log('agent', 'Local application is ready.\n')
                 return self.snapshot
         except BaseException as primary:
             self._starting = None
@@ -293,7 +302,7 @@ class LocalRunOwner:
         return self._safe_text(str(error))
 
     def interactive_dashboard_credentials(self):
-        """Literal interactive status only; excluded from snapshots and events."""
+        """Literal terminal status only; excluded from snapshots and events."""
         return (self._tracing_dashboard.interactive_credentials()
                 if self._tracing_dashboard is not None else None)
 
@@ -364,11 +373,13 @@ class LocalRunOwner:
                     except TimeoutError:
                         pass
         finally:
-            await self.aclose()
+            await self.finish_cleanup()
         return status
 
     async def _close(self):
         self._closed = True
+        self._publish('stopping', components=tuple(
+            LocalComponent(name, 'cleanup scope') for name in self._planned_components))
         with independent_timeout_scope():
             async with component_timeout('Local application cleanup', None):
                 try:
@@ -390,5 +401,53 @@ class LocalRunOwner:
     async def aclose(self):
         self.request_stop()
         if self._closing is None or self._closing.done() and (self._closing.cancelled() or self._closing.exception() is not None):
-            self._closing = asyncio.create_task(self._close())
-        await asyncio.shield(self._closing)
+            closing = self._close()
+            try:
+                self._closing = asyncio.create_task(closing)
+            except BaseException as error:
+                closing.close()
+                self.pending_cleanup = CleanupPendingError((self,), self.aclose)
+                error.cleanup_pending = self.pending_cleanup
+                raise
+        cancelled = False
+        with independent_timeout_scope():
+            async with report_timeout('Local cleanup attempt', self.CLEANUP_ATTEMPT_SECONDS) as budget:
+                while not self._closing.done():
+                    if budget.remaining <= 0:
+                        self.pending_cleanup = CleanupPendingError((self,), self.aclose)
+                        self._publish_cleanup_pending()
+                        raise self.pending_cleanup
+                    try:
+                        await asyncio.wait({self._closing}, timeout=budget.remaining)
+                    except asyncio.CancelledError:
+                        cancelled = True
+        self._closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _publish_cleanup_pending(self):
+        self._publish('cleanup-pending', components=tuple(
+            LocalComponent(name, 'cleanup scope') for name in self._planned_components))
+
+    async def finish_cleanup(self):
+        """Keep the creating loop alive until retained disposal is acknowledged.
+
+        Each attempt is finite; the lifetime of an uncooperative owner is not.
+        Retry observes the existing close task instead of invoking it again.
+        """
+        while True:
+            try:
+                await self.aclose()
+                return
+            except asyncio.CancelledError:
+                if self.pending_cleanup is None:
+                    raise
+            except Exception:
+                if self.pending_cleanup is None:
+                    raise
+            self._publish_cleanup_pending()
+            try:
+                await asyncio.sleep(self.CLEANUP_RETRY_SECONDS)
+            except asyncio.CancelledError:
+                # Repeated stop requests do not discard retained same-loop work.
+                pass

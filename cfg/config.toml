@@ -125,6 +125,7 @@ COLLECT_ONLY = false
 
 [fields.TRACE_VIEWER_URL]
 type = "str"
+default = ""
 review_optional = true
 help = "Optional OTEL trace viewer URL, separate from TRACE_TARGET ingestion. Local managed Jaeger derives its viewer URL from JAEGER_VIEWER_PORT when omitted or explicitly empty."
 [fields.TRACE_VIEWER_URL.applies_when]
