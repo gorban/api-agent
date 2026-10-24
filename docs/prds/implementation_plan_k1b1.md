@@ -12,7 +12,7 @@ retries, fixture graphs and resource-pack selections.
 - [x] Apply LOG_CONTENT independently to retained journals, Allure and live diagnostics, and TRACELOOP_TRACE_CONTENT independently to OTEL and LangFuse. Project before retention or exporter queues; neither destination may retrieve raw payloads from the other. Missing or denied authority withholds content.
 - [x] Preserve unconditional credential, authentication/continuation-state and hidden-reasoning exclusions, including nested JSON text. Bound depth, field/item counts, payload sizes and previews; record unavailable/truncated evidence rather than silently suggesting complete capture. Keep structural execution and accounting available with both flags disabled.
 - [x] Verify every flag combination for both backends using serialized synthetic collector payloads and actual journal/evidence bytes. Exercise a parsed graph without capture declarations, the bundled planning/review/tool graph, stateful graphs, retries/concurrency, unsupported values, errors and cancellation. Include causal controls for missing shared capture and conflated flags.
-- [ ] Close exact applicable coverage, packaging/public-boundary checks, independent review and external review before human review. Preserve previously qualified sampling evidence only with an independently reviewed execution-equivalence proof; do not claim new live qualification.
+- [x] Close exact applicable coverage, packaging/public-boundary checks, independent review and external review before human review. Preserve previously qualified sampling evidence only with an independently reviewed execution-equivalence proof; do not claim new live qualification.
 - [ ] Human acceptance after restarting Run local: enabled trace content appears for the selected graph; disabled destinations remain withheld. Jaeger conversation-panel mapping and broader instrumentation/metrics retain their separate signal-conformance requirements.
 
 ## Separate backend processes
@@ -28,4 +28,4 @@ caller-side raw capture must not bypass backend credential registrations.
 
 ## Capture admission ordering
 
-- [ ] Reserve journal admission before reading capture permission or projecting JSON. A stricter policy cannot attach during an active first capture and receive data authorized only by the original policy. Verify the interleaving with two threads, inspect retained and live output, and use a causal control that removes only the capture-start guard.
+- [x] Reserve journal admission before reading capture permission or projecting JSON. A stricter policy cannot attach during an active first capture and receive data authorized only by the original policy. Verify the interleaving with two threads, inspect retained and live output, and use a causal control that removes only the capture-start guard.
