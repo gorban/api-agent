@@ -8,7 +8,7 @@
 - [x] Verify real widget geometry, constrained-height scrolling and existing selection/cleanup behavior; close independent and external review before delivery.
 - [ ] Human check both menus in an ordinary terminal and confirm the destination URL and copying.
 
-**Deferred human review**
+## Earlier delivery
 
 Implementation, layout regressions, full unit/coverage and package checks,
 independent review and external review are complete. The terminal check above
@@ -16,10 +16,16 @@ remains unchecked; earlier approvals remain accepted.
 
 ## Production stylesheet correction
 
-- [ ] Preserve two visible destination content rows in the production app,
+- [x] Preserve two visible destination content rows in the production app,
   including its global button styles. Reserve at least one character of left
   padding before the shortcut and name; retain the URL on the next row.
-- [ ] Verify ordinary and compact production-app layouts, rendered URL text,
+- [x] Verify ordinary and compact production-app layouts, rendered URL text,
   final CDP destination, scrolling and full-value Ctrl+C copying. Complete
   required unit coverage and independent external review.
 - [ ] Human acceptance confirms the corrected padding and visible URL row.
+
+**Deferred human review**
+
+The production stylesheet correction, regression checks, exact unit coverage and
+independent external review are complete. Explicit terminal acceptance remains
+unchecked above; earlier approvals remain recorded separately.
