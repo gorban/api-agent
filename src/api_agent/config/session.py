@@ -450,7 +450,7 @@ class ConfigSession:
             self._choices.pop(name, None)
         return self.result()
 
-    def cleanup_rows(self):
+    def cleanup_rows(self, *, retained=()):
         original = self.result()
         result = self.result(_cleanup=True)
         if "HELP" in original.fields:
@@ -462,5 +462,5 @@ class ConfigSession:
                            name in pack, name in persisted)
                 for name, field in sorted(self.schema.fields.items())
                 if name != 'UNATTENDED_AUTH'
-                and (field.acknowledge_default
+                and (field.acknowledge_default or name in retained
                      or name in persisted)]

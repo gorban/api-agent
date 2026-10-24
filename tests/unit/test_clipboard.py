@@ -85,8 +85,8 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
             'PATH': {'type': 'path', 'anchor': 'base_root', 'default': str(tmp_path / ('long-path-' * 20))},
             'OBJECT': {'type': 'jsonobject', 'default': {'synthetic': [1, 'π']}},
             'EMPTY': {'type': 'str', 'default': 'fallback'},
-            'MISSING': {'type': 'str', 'review_optional': True},
-            'REQUIRED': {'type': 'str', 'required': True},
+            'MISSING': {'type': 'int', 'review_optional': True},
+            'REQUIRED': {'type': 'int', 'required': True},
         }
         dotenv = tmp_path / '.env'
         dotenv.write_text('# synthetic\n' if mode is None else 'EMPTY=""\n')
@@ -98,6 +98,11 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
             await pilot.pause()
             assert app.screen.kind == 'defaults'
             if mode == 'config-cleanup':
+                from api_agent.config.editor import DotenvEditor
+                DotenvEditor(dotenv).update({
+                    'FLAG': 'False', 'COUNT': '0', 'TEXT': '[literal] π',
+                    'PATH': fields['PATH']['default'], 'OBJECT': '{"synthetic":[1,"π"]}',
+                    'MISSING': 'invalid', 'REQUIRED': 'invalid'})
                 await pilot.press('c')
                 await pilot.pause()
                 assert app.screen.kind == 'cleanup'

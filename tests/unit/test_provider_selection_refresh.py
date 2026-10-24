@@ -57,12 +57,14 @@ def test_open_configuration_table_rebuilds_after_provider_switch(tmp_path, clean
             await pilot.pause()
             assert app.screen.kind == 'defaults'
             if cleanup:
+                app.session.set_value('SHARED', '3', persist=True)
                 await pilot.press('c')
                 await pilot.pause()
                 assert app.screen.kind == 'cleanup'
             table = app.screen.query_one(DataTable)
             names = lambda: [row.key.value for row in table.ordered_rows]
-            assert 'FIRST_REQUIRED' in names() and 'SECOND_REQUIRED' not in names()
+            assert names() == ['SHARED'] if cleanup else (
+                'FIRST_REQUIRED' in names() and 'SECOND_REQUIRED' not in names())
             app.session.set_value('SHARED', '9', persist=True)
             # A provider change made through a saved setting must reload schemas.
             app.session.set_value('LLM_PROVIDER', second, persist=True)
@@ -71,7 +73,8 @@ def test_open_configuration_table_rebuilds_after_provider_switch(tmp_path, clean
             else:
                 app.refresh_configuration_rows(app.screen)
             await pilot.pause()
-            assert 'FIRST_REQUIRED' not in names() and 'SECOND_REQUIRED' in names()
+            assert names() == ['SHARED'] if cleanup else (
+                'FIRST_REQUIRED' not in names() and 'SECOND_REQUIRED' in names())
             assert app.schema.fields['SHARED'].help == 'second description'
             row = names().index('SHARED')
             table.move_cursor(row=row)
@@ -93,7 +96,8 @@ def test_open_configuration_table_rebuilds_after_provider_switch(tmp_path, clean
             else:
                 app.refresh_configuration_rows(app.screen)
             await pilot.pause()
-            assert 'FIRST_REQUIRED' in names() and 'SECOND_REQUIRED' not in names()
+            assert names() == ['SHARED'] if cleanup else (
+                'FIRST_REQUIRED' in names() and 'SECOND_REQUIRED' not in names())
             assert app.schema.fields['SHARED'].default == 3
     asyncio.run(scenario())
 

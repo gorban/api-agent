@@ -58,7 +58,7 @@ def test_bundled_provider_is_reviewable_and_switching_refreshes_tables(tmp_path)
             assert not any(name.startswith('GPT_') for name in app.session.schema.fields)
             app.show_cleanup()
             await pilot.pause()
-            assert 'LLM_PROVIDER' in names() and 'ALTERNATE_ENDPOINT' in names()
+            assert names() == ['LLM_PROVIDER']
             assert not any(name.startswith('GPT_') for name in names())
             app.session.delete_keys(['LLM_PROVIDER'])
             app.review_names.clear()
