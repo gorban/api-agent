@@ -1,5 +1,6 @@
 """Bundled API selection and synthetic target behavior."""
 import importlib.util
+from dataclasses import replace
 import json
 from pathlib import Path
 from threading import Thread
@@ -12,6 +13,8 @@ import pytest
 from api_agent.config.resolve import ConfigResult, ResolvedValue, resolve_config
 from api_agent.runtime.demo_api import bind_demo_api_endpoint, prepare_demo_api
 from api_agent.config.declarations import ConfigSchema, FieldDeclaration, compose_schema, load_declarations, load_shared_schema
+from api_agent.config.dotenv import read_dotenv
+from api_agent.config.session import ConfigSession
 from api_agent.providers.loading import provider_location
 from api_agent.runtime.infrastructure_contract import load_infrastructure_contributions
 from api_agent.runtime.infrastructure_plan import plan_infrastructure
@@ -20,6 +23,45 @@ from api_agent.runtime.resource_pack import load_launch_context
 
 
 DEMO = Path(__file__).resolve().parents[2] / 'demo'
+
+
+def test_bundled_endpoint_review_and_clear_env_switches_to_remote(tmp_path):
+    base, pack = tmp_path / 'base', tmp_path / 'base/demo'
+    base.mkdir()
+    pack.mkdir()
+    shared = load_shared_schema(DEMO.parent)
+    schema = compose_schema(shared, load_declarations(DEMO / 'simple/cfg/config.toml',
+        base_schema=shared, source='pack_default'))
+    context = replace(load_launch_context(DEMO.parent), base_root=base, pack_root=pack,
+        owner_root=base, launcher_root=base, shared_dotenv_paths=())
+    session = ConfigSession(context, schema, environ={})
+
+    assert session.result().values['API_ENDPOINT'] == ''
+    assert 'API_ENDPOINT' in {candidate.name for candidate in session.default_candidates()}
+    assert not next(row for row in session.cleanup_rows() if row.name == 'API_ENDPOINT').present
+    local_config, active = prepare_demo_api(session.result(), context, requires_api=True)
+    assert active and local_config.values['DEMO_API_LOCAL'] is True
+
+    session.save_defaults(['API_ENDPOINT'])
+    assert read_dotenv(base / '.env')['API_ENDPOINT'] == ''
+    blank_row = next(row for row in session.cleanup_rows() if row.name == 'API_ENDPOINT')
+    assert blank_row.present and blank_row.base_present
+
+    remote = 'https://example.test/graphql'
+    session.set_value('API_ENDPOINT', remote, persist=True)
+    assert read_dotenv(base / '.env')['API_ENDPOINT'] == remote
+    assert session.result().values['API_ENDPOINT'] == remote
+    row = next(row for row in session.cleanup_rows() if row.name == 'API_ENDPOINT')
+    assert row.present and row.base_present
+    remote_config, active = prepare_demo_api(session.result(), context, requires_api=True)
+    assert not active and remote_config.values['DEMO_API_LOCAL'] is False
+
+    session.delete_keys(['API_ENDPOINT'])
+    assert 'API_ENDPOINT' not in read_dotenv(base / '.env')
+    assert session.result().values['API_ENDPOINT'] == ''
+    assert 'API_ENDPOINT' in {candidate.name for candidate in session.default_candidates()}
+    local_config, active = prepare_demo_api(session.result(), context, requires_api=True)
+    assert active and local_config.values['DEMO_API_LOCAL'] is True
 
 
 def test_demo_api_provider_default_resolves_to_bundled_factory():

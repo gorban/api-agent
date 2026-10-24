@@ -11,8 +11,7 @@ version = 1
 [fields.API_ENDPOINT]
 type = "str"
 default = ""
-acknowledge_default = false
-help = "Optional upstream API endpoint for the bundled demo. Blank uses its local synthetic API during an API-capable run."
+help = "Optional upstream API endpoint for the bundled demo. Blank uses its local synthetic API during an API-capable run; a nonempty remote endpoint turns off the synthetic API."
 
 [fields.API_PROVIDER]
 type = "str"
