@@ -55,9 +55,9 @@ class UnixConnection(http.client.HTTPConnection):
             raise
 
 
-def engine_identity(environment=None, *, executable='docker', runner=run_command,
-                    connection=UnixConnection, cancelled=lambda: False):
-    """Refuse ambiguous transports; CLI and direct socket must identify one engine."""
+def verified_engine_binding(environment=None, *, executable='docker', runner=run_command,
+                            connection=UnixConnection, cancelled=lambda: False):
+    """Return identity and canonical Unix transport after one CLI/direct handshake."""
     environment = controlled_engine_environment(environment)
     selected = {environment[key] for key in ('DOCKER_HOST', 'CONTAINER_HOST') if environment.get(key)}
     if selected:
@@ -148,6 +148,14 @@ def engine_identity(environment=None, *, executable='docker', runner=run_command
                 or (physical.stat().st_dev, physical.stat().st_ino, physical.stat().st_uid) != generation):
             raise ValueError()
         value = json.dumps([stable_identity, str(physical), *generation])
-        return sha256(value.encode()).hexdigest()
+        return sha256(value.encode()).hexdigest(), 'unix://' + str(physical)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, http.client.HTTPException) as error:
         raise PrerequisiteError('Cannot verify shared reporting engine identity; no service was adopted.') from error
+
+
+def engine_identity(environment=None, *, executable='docker', runner=run_command,
+                    connection=UnixConnection, cancelled=lambda: False):
+    """Preserve the reporting identity contract over the shared verification."""
+    identity, _ = verified_engine_binding(environment, executable=executable, runner=runner,
+                                           connection=connection, cancelled=cancelled)
+    return identity

@@ -98,12 +98,14 @@ def test_actual_app_paints_starting_screen_before_owner_starts(tmp_path, monkeyp
         monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
         app = fixture(tmp_path, 'run-local', fields={
             'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(50, 14)) as pilot:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, DeferredScreen)
             assert screen.run_task is None and created == []
             assert 'Starting local operation' in str(screen.query_one('#local-status', Static).render())
+            assert screen.query_one('#local-error').region.height == 0
+            assert screen.query_one('#local-output').region.height >= 9
             screen.deferred_start()
             await pilot.pause()
             assert created == [True]
@@ -166,7 +168,7 @@ def test_startup_activity_and_elapsed_remain_visible_with_filtered_logs():
 
 
 def test_settled_startup_failure_renders_failed_with_safe_reason():
-    from textual.widgets import Static
+    from textual.widgets import Static, TextArea
 
     async def exercise():
         class Owner:
@@ -196,8 +198,8 @@ def test_settled_startup_failure_renders_failed_with_safe_reason():
             await pilot.pause()
             assert screen.finished and screen.status == 1
             assert 'Run local: failed' in str(screen.query_one('#local-status', Static).render())
-            assert str(screen.query_one('#local-error', Static).render()) == 'Local service did not become ready.'
-            assert 'raw secret' not in str(screen.query_one('#local-error', Static).render())
+            assert screen.query_one('#local-error', TextArea).text == 'Local service did not become ready.'
+            assert 'raw secret' not in screen.query_one('#local-error', TextArea).text
             assert await screen.close_owned()
 
     asyncio.run(exercise())
@@ -205,7 +207,7 @@ def test_settled_startup_failure_renders_failed_with_safe_reason():
 
 def test_unexpected_listener_exit_renders_failure_after_cleanup(tmp_path, monkeypatch):
     import sys
-    from textual.widgets import Static
+    from textual.widgets import Static, TextArea
     from test_tui import fixture
 
     async def exercise():
@@ -242,7 +244,7 @@ def test_unexpected_listener_exit_renders_failure_after_cleanup(tmp_path, monkey
             assert screen.status == 3 and screen.finished
             assert screen.snapshot.phase == 'stopped'
             assert 'Run local: failed' in str(screen.query_one('#local-status', Static).render())
-            assert str(screen.query_one('#local-error', Static).render()) == 'Local operation ended unexpectedly.'
+            assert screen.query_one('#local-error', TextArea).text == 'Local operation ended unexpectedly.'
             assert stop_requests == []
             assert await screen.close_owned()
 
@@ -915,6 +917,124 @@ def test_selected_log_copy_failure_keeps_operation_and_selection(monkeypatch):
             assert area.selected_text == 'copy this' and app.focused is area
             assert not stop.is_set() and not screen.finished
             await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_visible_error_selection_copies_only_current_diagnostic(monkeypatch):
+    from textual.widgets import TextArea
+
+    async def exercise():
+        copied = []
+
+        async def copy(app, value):
+            copied.append(value)
+            return True
+
+        monkeypatch.setattr('api_agent.tui.local_run.copy_text', copy)
+        stop = asyncio.Event()
+
+        class Owner:
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready')
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test(size=(50, 14)) as pilot:
+            await pilot.pause()
+            error = screen.query_one('#local-error', TextArea)
+            output = screen.query_one('#local-output', TextArea)
+            assert error.display is False
+            assert error.region.height == 0
+            assert output.region.height >= 9
+            screen.failure = 'First diagnostic\nSecond diagnostic'
+            screen.refresh_view()
+            await pilot.pause()
+            assert error.display is True
+            assert error.region.y > screen.query_one('#local-hint').region.y
+            error.focus()
+            error.action_select_all()
+            screen.refresh_status()
+            assert error.selected_text == 'First diagnostic\nSecond diagnostic'
+            await pilot.press('ctrl+c')
+            assert copied == ['First diagnostic\nSecond diagnostic']
+
+            screen.failure = 'Current diagnostic'
+            screen.refresh_view()
+            assert error.selected_text == ''
+            assert not screen.check_action('copy_choice', ())
+            await screen.action_copy_choice()
+            assert copied == ['First diagnostic\nSecond diagnostic']
+            error.action_select_all()
+            await pilot.press('ctrl+c')
+            assert copied[-1] == 'Current diagnostic'
+
+            screen.failure = ''
+            screen.refresh_view()
+            assert error.text == ''
+            assert error.display is False
+            assert not screen.check_action('copy_choice', ())
+            await screen.action_copy_choice()
+            assert copied[-1] == 'Current diagnostic'
+
+            screen.receive(LocalEvent('log', source='agent', text='log text'))
+            output.focus()
+            output.action_select_all()
+            await pilot.press('ctrl+c')
+            assert copied[-1] == 'log text'
+            assert await screen.close_owned()
+
+    asyncio.run(exercise())
+
+
+def test_error_selection_copies_while_menu_is_open(monkeypatch):
+    from textual.widgets import TextArea
+
+    async def exercise():
+        copied = []
+
+        async def copy(app, value):
+            copied.append(value)
+            return True
+
+        monkeypatch.setattr('api_agent.tui.local_run.copy_text', copy)
+        stop = asyncio.Event()
+
+        class Owner:
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): return LocalSnapshot('ready', log_sources=('agent',))
+            async def wait(self):
+                await stop.wait()
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test(size=(50, 14)) as pilot:
+            await pilot.pause()
+            screen.failure = 'Selectable diagnostic'
+            screen.refresh_view()
+            screen.action_sources()
+            await pilot.pause()
+            error = screen.query_one('#local-error', TextArea)
+            assert error.display is True
+            error.focus()
+            error.action_select_all()
+            assert screen.check_action('copy_choice', ())
+            await pilot.press('ctrl+c')
+            assert copied == ['Selectable diagnostic']
+            assert screen.menu == 'logs'
+            assert screen.query_one('#local-output', TextArea).display is False
+            screen.query_one('#local-choices Button').focus()
+            await pilot.press('ctrl+c')
+            assert copied == ['Selectable diagnostic', 'agent']
+            assert await screen.close_owned()
+
     asyncio.run(exercise())
 
 

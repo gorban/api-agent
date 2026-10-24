@@ -46,12 +46,18 @@ interruption follow-through below has now closed its technical repair.
 
 - [x] Close [visible startup and log navigation](implementation_plan_k2b2.md). Earlier cleanup approval remains accepted.
 
+## Default engine and error-copy follow-through
+
+- [x] Close [default engine binding and copyable errors](implementation_plan_k2b3.md). Earlier implementation and acceptance remain recorded.
+
 **Deferred human review**
 
 Substantive implementation and independent/external review are complete. The
-cleanup child is human-approved; the combined acceptance and new startup
-observability retest remain unchecked in their owning details.
+cleanup child is human-approved; combined, startup and default-engine/error-copy
+human retests remain unchecked in their owning details.
 
 - [Native terminal interruption](implementation_plan_k2b1.md)
 
 - [Visible startup and log navigation](implementation_plan_k2b2.md)
+
+- [Default engine binding and copyable errors](implementation_plan_k2b3.md)

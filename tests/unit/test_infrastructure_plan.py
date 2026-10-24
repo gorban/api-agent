@@ -12,7 +12,7 @@ from api_agent.runtime.compose import ComposeError, snapshot_compose
 from api_agent.runtime.infrastructure_contract import (
     Activation, CapturedAsset, EndpointOutput, InfrastructureService, Readiness, Seed,
 )
-from api_agent.runtime.infrastructure_plan import plan_infrastructure
+from api_agent.runtime.infrastructure_plan import MissingEngineTransport, plan_infrastructure
 import api_agent.runtime.infrastructure_plan as planner
 from api_agent.runtime.ownership import StackScope
 
@@ -80,6 +80,15 @@ def test_inactive_and_empty_preserve_fixed_plan():
 def test_active_plan_requires_one_explicit_unix_transport(transport):
     with pytest.raises(ComposeError, match='Unix engine transport'):
         plan(engine_environment=transport)
+
+
+def test_only_absent_active_transport_uses_typed_missing_signal():
+    with pytest.raises(MissingEngineTransport):
+        plan(engine_environment={})
+    with pytest.raises(ComposeError) as invalid:
+        plan(engine_environment={'DOCKER_HOST': 'tcp://127.0.0.1:2375'})
+    assert type(invalid.value) is ComposeError
+    assert not plan(values={'USE_DATA': False}, engine_environment={}).conditional
 
 
 @pytest.mark.parametrize('fragment', [

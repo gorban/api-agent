@@ -13,6 +13,10 @@ from .compose import ComposeError, ComposePlan, plan_compose
 from .infrastructure_contract import InfrastructureService, Readiness
 
 
+class MissingEngineTransport(ComposeError):
+    """An active conditional service needs a selected local engine endpoint."""
+
+
 @dataclass(frozen=True)
 class ResolvedCheck:
     kind: str
@@ -108,7 +112,9 @@ def _verify_capture(service: InfrastructureService) -> None:
 
 def _unix_transport(environment: Mapping[str, str]) -> None:
     endpoints = [environment[key] for key in ('DOCKER_HOST', 'CONTAINER_HOST') if key in environment]
-    if not endpoints or len(set(endpoints)) != 1:
+    if not endpoints:
+        raise MissingEngineTransport('Conditional infrastructure requires one explicit Unix engine transport.')
+    if len(set(endpoints)) != 1:
         raise ComposeError('Conditional infrastructure requires one explicit Unix engine transport.')
     value = endpoints[0]
     parsed = urlsplit(value)
