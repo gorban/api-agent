@@ -1,5 +1,6 @@
 """Controlled operation lifecycle; no actual listener, browser or infrastructure."""
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +64,241 @@ def test_start_freezes_selected_definition_and_stop_releases_reverse(local):
         assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
         assert local.owner.snapshot.phase == 'stopped'
         assert any(event.kind == 'log' and 'ready' in event.text for event in local.events)
+    asyncio.run(run())
+
+
+def test_start_reports_safe_stages_before_operation_entry(local):
+    local.config.values['LLM_TOKEN'] = 'hidden-token'
+
+    async def run():
+        await local.owner.start()
+        startup = [event.text for event in local.events if event.kind == 'log'
+                   and event.text.startswith('Local startup:')]
+        assert startup[:4] == [
+            'Local startup: configuration.\n',
+            'Local startup: view preparation.\n',
+            'Local startup: application construction.\n',
+            'Local startup: infrastructure planning.\n',
+        ]
+        assert startup[-2:] == ['Local startup: tracing.\n', 'Local startup: browser.\n']
+        assert all('hidden-token' not in text for text in startup)
+        assert local.events[0].snapshot.phase == 'starting'
+        await local.owner.aclose()
+
+    asyncio.run(run())
+
+
+def test_injected_operation_cannot_publish_unadmitted_activity(local):
+    local.config.values['LLM_TOKEN'] = 'hidden-token'
+    operation = local.operation
+    def injected(*args, **kwargs):
+        kwargs['on_stage']('hidden-token')
+        return operation
+    local.owner.operation_factory = injected
+
+    async def run():
+        with pytest.raises(ValueError, match='invalid_local_startup_stage'):
+            await local.owner.start()
+        activities = [event.snapshot.activity for event in local.events if event.snapshot is not None]
+        assert 'hidden-token' not in activities
+        assert local.owner.snapshot.phase == 'stopped'
+        assert local.calls == []
+
+    asyncio.run(run())
+
+
+def test_observer_fault_does_not_mask_startup_failure_or_skip_cleanup(local):
+    local.browser.start = AsyncMock(side_effect=ValueError('browser failed'))
+    observed = []
+    def faulty_observer(event):
+        observed.append(event)
+        if event.kind == 'status' and (event.snapshot.activity == 'browser'
+                                       or event.snapshot.phase == 'failed'):
+            raise RuntimeError('observer fault')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        with pytest.raises(ValueError, match='browser failed'):
+            await local.owner.start()
+        assert any(event.snapshot is not None and event.snapshot.phase == 'failed'
+                   for event in observed)
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+        assert local.owner.snapshot.phase == 'stopped'
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+def test_cancelled_observer_during_failure_reporting_still_closes_owner(local):
+    def faulty_observer(event):
+        if event.kind == 'status' and (event.snapshot.activity == 'browser'
+                                       or event.snapshot.phase == 'failed'):
+            raise asyncio.CancelledError('observer cancelled')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        with pytest.raises(asyncio.CancelledError, match='observer cancelled'):
+            await local.owner.start()
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+        assert local.owner.snapshot.phase == 'stopped'
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+def test_cancelled_observer_during_stopping_still_closes_owner(local):
+    def faulty_observer(event):
+        if event.kind == 'status' and event.snapshot.phase in {'stopping', 'stopped'}:
+            raise asyncio.CancelledError('observer cancelled')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        await local.owner.start()
+        with pytest.raises(asyncio.CancelledError, match='observer cancelled'):
+            await local.owner.aclose()
+        assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
+        assert local.owner.snapshot.phase == 'stopped'
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+def test_cancelled_observer_at_stopped_status_has_no_owned_resources(local):
+    def faulty_observer(event):
+        if event.kind == 'status' and event.snapshot.phase == 'stopped':
+            raise asyncio.CancelledError('stopped observer cancelled')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        await local.owner.start()
+        with pytest.raises(asyncio.CancelledError, match='stopped observer cancelled'):
+            await local.owner.aclose()
+        assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
+        assert local.owner.snapshot.phase == 'stopped'
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+def test_failed_start_retains_receipt_when_cleanup_reporting_fails(local, monkeypatch):
+    from api_agent.runtime import local_run as runtime
+    original = runtime.report_timeout
+    local.browser.start = AsyncMock(side_effect=ValueError('browser failed'))
+    attempts = []
+    @asynccontextmanager
+    async def failed_report(name, timeout=None):
+        if name == 'Local cleanup attempt' and not attempts:
+            attempts.append(name)
+            raise RuntimeError('cleanup reporting failed')
+        async with original(name, timeout) as budget:
+            yield budget
+    monkeypatch.setattr(runtime, 'report_timeout', failed_report)
+
+    async def run():
+        with pytest.raises(ValueError, match='browser failed') as caught:
+            await local.owner.start()
+        receipt = caught.value.cleanup_pending
+        assert isinstance(receipt, CleanupPendingError)
+        assert local.calls == ['operation-start']
+        await receipt.retry()
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+def test_failed_start_does_not_invent_receipt_after_stopped_publication_cancels(local):
+    local.browser.start = AsyncMock(side_effect=ValueError('browser failed'))
+    def faulty_observer(event):
+        if event.kind == 'status' and event.snapshot.phase == 'stopped':
+            raise asyncio.CancelledError('observer cancelled')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        with pytest.raises(ValueError, match='browser failed') as caught:
+            await local.owner.start()
+        assert getattr(caught.value, 'cleanup_pending', None) is None
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+        assert local.owner.snapshot.phase == 'stopped'
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('stage', ['view', 'plan'])
+def test_stop_during_read_only_preparation_drains_worker(local, stage):
+    entered, release = threading.Event(), threading.Event()
+    completed = []
+    if stage == 'view':
+        original = local.owner.prepare_view
+        def blocked(*args):
+            entered.set()
+            assert release.wait(2)
+            completed.append('view')
+            return original(*args)
+        local.owner.prepare_view = blocked
+    else:
+        original = local.owner.plan_factory
+        def blocked(*args, **kwargs):
+            entered.set()
+            assert release.wait(2)
+            completed.append('plan')
+            return original(*args, **kwargs)
+        local.owner.plan_factory = blocked
+
+    async def run():
+        starting = asyncio.create_task(local.owner.start())
+        while not entered.is_set():
+            await asyncio.sleep(.001)
+        loop_progress = asyncio.Event()
+        asyncio.get_running_loop().call_soon(loop_progress.set)
+        await asyncio.wait_for(loop_progress.wait(), .1)
+        local.owner.request_stop()
+        await asyncio.sleep(.01)
+        assert not starting.done()
+        assert local.operation_factory.call_count == 0
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        assert completed == [stage]
+        local.operation_factory.assert_not_called()
+        assert local.owner.snapshot.phase == 'stopped'
+
+    asyncio.run(run())
+
+
+def test_blocked_plan_keeps_cleanup_receipt_until_worker_settles(local, monkeypatch):
+    from api_agent.providers.progress import component_timeout
+    from api_agent.runtime import local_run as runtime
+    entered, release = threading.Event(), threading.Event()
+    original = local.owner.plan_factory
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        return original(*args, **kwargs)
+    local.owner.plan_factory = blocked
+    local.owner.CLEANUP_ATTEMPT_SECONDS = .02
+    @asynccontextmanager
+    async def short_settlement(name, timeout):
+        async with component_timeout(name, .02 if name == 'Local startup settlement' else timeout) as budget:
+            yield budget
+    monkeypatch.setattr(runtime, 'component_timeout', short_settlement)
+
+    async def run():
+        starting = asyncio.create_task(local.owner.start())
+        while not entered.is_set():
+            await asyncio.sleep(.001)
+        with pytest.raises(CleanupPendingError) as pending:
+            await local.owner.aclose()
+        assert local.owner.pending_cleanup is pending.value
+        assert not starting.done()
+        local.operation_factory.assert_not_called()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        await pending.value.retry()
+        assert local.owner.snapshot.phase == 'stopped'
+
     asyncio.run(run())
 
 
@@ -377,6 +613,58 @@ def test_finished_log_collector_failure_does_not_block_owned_cleanup(local):
     asyncio.run(run())
 
 
+def test_cancelled_log_collector_does_not_block_owned_cleanup(local):
+    def faulty_observer(event):
+        if event.kind == 'log' and event.source == 'synthetic/database':
+            raise asyncio.CancelledError('log observer cancelled')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        await local.owner.start()
+        local.session.infrastructure = SimpleNamespace(logs=Mock(return_value='synthetic output\n'))
+        local.owner._infra_sources = {'synthetic/database': 'owned-id'}
+        local.owner._log_task = asyncio.create_task(local.owner._capture_logs())
+        local.owner._stack.push(local.owner._close_logs)
+        await asyncio.wait({local.owner._log_task}, timeout=1)
+        assert local.owner._log_task.cancelled()
+        await local.owner.aclose()
+        assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+def test_active_log_collector_keeps_cleanup_receipt_until_thread_finishes(local):
+    entered, release = threading.Event(), threading.Event()
+    def blocked_logs(*args, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        return 'synthetic output\n'
+    local.owner.CLEANUP_ATTEMPT_SECONDS = .01
+
+    async def run():
+        await local.owner.start()
+        local.session.infrastructure = SimpleNamespace(logs=blocked_logs)
+        local.owner._infra_sources = {'synthetic/database': 'owned-id'}
+        local.owner._log_task = asyncio.create_task(local.owner._capture_logs())
+        local.owner._stack.push(local.owner._close_logs)
+        while not entered.is_set():
+            await asyncio.sleep(.001)
+        try:
+            with pytest.raises(CleanupPendingError) as caught:
+                await local.owner.aclose()
+            assert caught.value is local.owner.pending_cleanup
+            assert not local.owner._log_task.done()
+            assert local.calls == ['operation-start', 'browser-start']
+        finally:
+            release.set()
+        await caught.value.retry()
+        assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('source', ['1', 'missing-service', 'ui'])
 def test_unknown_or_unavailable_sources_rejected_before_preparation(local, source):
     local.config.values['RUN_LOG_SOURCE'] = source
@@ -675,7 +963,7 @@ def test_admitted_components_are_visible_before_start_and_during_stop(local):
     local.operation_factory.side_effect = begin_operation
     async def run():
         await local.owner.start()
-        starting = next(event.snapshot for event in local.events
+        starting = next(event.snapshot for event in reversed(local.events)
                         if event.snapshot is not None and event.snapshot.phase == 'starting')
         assert tuple(item.name for item in starting.components) == (
             'agent', 'api', 'ui', 'service:cache', 'service:extension/database',
@@ -860,6 +1148,67 @@ def test_cleanup_attempt_retains_stalled_callback_and_retries_same_task(local, c
         assert local.owner.pending_cleanup is None
         assert local.owner.snapshot.phase == 'stopped'
         assert local.calls[-1] == 'operation-stop'
+    asyncio.run(run())
+
+
+def test_cancelled_cleanup_pending_observer_cannot_mask_receipt(local):
+    local.owner.CLEANUP_ATTEMPT_SECONDS = .01
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def stalled():
+        entered.set()
+        await release.wait()
+    def faulty_observer(event):
+        if event.kind == 'status' and event.snapshot.phase == 'cleanup-pending':
+            raise asyncio.CancelledError('observer cancelled')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        await local.owner.start()
+        local.owner._stack.push(stalled)
+        attempt = asyncio.create_task(local.owner.aclose())
+        await entered.wait()
+        try:
+            with pytest.raises(CleanupPendingError) as caught:
+                await attempt
+            assert caught.value is local.owner.pending_cleanup
+            assert local.owner._closing is not None and not local.owner._closing.done()
+            assert local.calls == ['operation-start', 'browser-start']
+        finally:
+            release.set()
+        await caught.value.retry()
+        assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
+        assert local.owner.pending_cleanup is None
+
+    asyncio.run(run())
+
+
+def test_finish_cleanup_retries_after_cancelled_pending_observer(local):
+    local.owner.CLEANUP_ATTEMPT_SECONDS = .01
+    local.owner.CLEANUP_RETRY_SECONDS = .01
+    entered, release, reported = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def stalled():
+        entered.set()
+        await release.wait()
+    def faulty_observer(event):
+        if event.kind == 'status' and event.snapshot.phase == 'cleanup-pending':
+            reported.set()
+            raise asyncio.CancelledError('observer cancelled')
+    local.owner.on_event = faulty_observer
+
+    async def run():
+        await local.owner.start()
+        local.owner._stack.push(stalled)
+        finishing = asyncio.create_task(local.owner.finish_cleanup())
+        await entered.wait()
+        await asyncio.wait_for(reported.wait(), 1)
+        assert not finishing.done()
+        assert local.owner.pending_cleanup is not None
+        assert local.calls == ['operation-start', 'browser-start']
+        release.set()
+        await asyncio.wait_for(finishing, 1)
+        assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
+        assert local.owner.pending_cleanup is None
+
     asyncio.run(run())
 
 

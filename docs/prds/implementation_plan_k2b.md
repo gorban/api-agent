@@ -42,9 +42,16 @@ interruption follow-through below has now closed its technical repair.
 
 - [x] Close the [native terminal interruption and cleanup-status repair](implementation_plan_k2b1.md). The user confirmed clean Ctrl+C shutdown without repeated messages and approved this cleanup fix on October 23, 2026. Other combined human checks above remain separate.
 
+## Startup observability follow-through
+
+- [x] Close [visible startup and log navigation](implementation_plan_k2b2.md). Earlier cleanup approval remains accepted.
+
 **Deferred human review**
 
 Substantive implementation and independent/external review are complete. The
-cleanup child is human-approved; the combined acceptance above remains unchecked.
+cleanup child is human-approved; the combined acceptance and new startup
+observability retest remain unchecked in their owning details.
 
 - [Native terminal interruption](implementation_plan_k2b1.md)
+
+- [Visible startup and log navigation](implementation_plan_k2b2.md)

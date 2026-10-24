@@ -300,6 +300,8 @@ class _TerminalStatus:
         self.cleanup_phase = None
         self.scope = None
         self.last_notice = None
+        self.startup_activity = None
+        self.startup_scope = None
 
     def __call__(self, snapshot):
         phase = snapshot.phase
@@ -321,9 +323,18 @@ class _TerminalStatus:
             if first or advanced:
                 self.cleanup_phase = phase
             return
+        if phase == 'starting':
+            scope = tuple(item.name for item in snapshot.components)
+            if self.startup_scope is None:
+                self.diagnostic('Run local: starting')
+            if scope and scope != self.startup_scope:
+                self.diagnostic('Selected components: ' + ', '.join(scope))
+            if snapshot.activity and snapshot.activity != self.startup_activity:
+                self.diagnostic('Local startup: ' + snapshot.activity)
+            self.startup_scope = scope
+            self.startup_activity = snapshot.activity
+            return
         self.diagnostic(f'Run local: {phase}')
-        if phase == 'starting' and snapshot.components:
-            self.diagnostic('Selected components: ' + ', '.join(item.name for item in snapshot.components))
         for destination in snapshot.destinations:
             self.diagnostic(f'{destination.name}: {destination.url}')
         if snapshot.inspection_endpoint:

@@ -138,7 +138,7 @@ class OperationRunner:
 
     def __init__(self, *, resolve, prepare_dependencies, prepare_https, plan,
                  manager, compose_runtime, create_application, listener,
-                 timeout=120, bind_infrastructure=None):
+                 timeout=120, bind_infrastructure=None, on_stage=None):
         if timeout <= 0:
             raise ValueError('timeout must be positive')
         self.resolve = resolve
@@ -150,6 +150,7 @@ class OperationRunner:
         self.create_application = create_application
         self.listener = listener
         self.bind_infrastructure = bind_infrastructure
+        self.on_stage = on_stage
         self.timeout = timeout
         self.pending_cleanup = None
         self._active = False
@@ -171,14 +172,22 @@ class OperationRunner:
     @asynccontextmanager
     async def _open_owned(self, *, retain, validate):
         """Start in dependency order; release a test lease after the workload."""
+        def stage(name):
+            if self.on_stage is not None:
+                self.on_stage(name)
+
+        stage('configuration')
         config = self.resolve()
         if config.errors or config.missing:
             raise ValueError('invalid_runtime_configuration')
         if validate is not None:
             validate(config)
         endpoint = callback_endpoint(config)
+        stage('dependencies')
         await _offload(self.prepare_dependencies, config)
+        stage('local HTTPS')
         tls = await _offload(self.prepare_https, config, endpoint)
+        stage('operation plan')
         selected_plan = self.plan(config)
         cancelled = Event()
         owned_manager = self.manager(selected_plan, cancelled.is_set)
@@ -186,6 +195,7 @@ class OperationRunner:
         runtime = None
         owned_listener = None
         try:
+            stage('prerequisites')
             lease = await _offload(owned_manager.acquire, cancellation=cancelled)
             from .infrastructure_session import InfrastructureSession
             infrastructure = InfrastructureSession(owned_manager)
@@ -193,12 +203,15 @@ class OperationRunner:
                 config = self.bind_infrastructure(config, infrastructure)
                 if config.errors or config.missing or callback_endpoint(config) != endpoint:
                     raise ValueError('invalid_bound_runtime_configuration')
+            stage('runtime')
             runtime = self.compose_runtime(config, endpoint.origin, tls.material)
             await runtime.astart()
+            stage('listener')
             application = self.create_application(runtime, endpoint.hostname)
             owned_listener = self.listener()
             await owned_listener.start(application, tls.material, endpoint)
             await owned_listener.wait_ready(self.timeout)
+            stage('listener ready')
             yield OperationSession(config, tls, lease, runtime, application, owned_listener, endpoint,
                                    infrastructure)
         finally:
@@ -229,7 +242,7 @@ class OperationRunner:
 def local_operation(context, *, resolve, argv, scope, ownership_directory,
                     engine_environment=None, collect=False, groups=(), timeout=120,
                     runtime_factory=None, application_wrapper=None, required_kinds=None, prepared_plan=None,
-                    bind_infrastructure=None):
+                    bind_infrastructure=None, on_stage=None):
     """Wire the local engine/TLS/API owners after an explicit operation choice.
 
     The caller supplies fresh resolution and handles an interpreter handoff
@@ -298,4 +311,4 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
     return OperationRunner(resolve=resolved_for_operation, prepare_dependencies=dependencies,
         prepare_https=https, plan=plan, manager=manager, compose_runtime=runtime,
         create_application=application, listener=UvicornListener, timeout=timeout,
-        bind_infrastructure=bind_infrastructure)
+        bind_infrastructure=bind_infrastructure, on_stage=on_stage)

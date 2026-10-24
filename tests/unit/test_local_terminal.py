@@ -288,6 +288,28 @@ def test_terminal_progress_displays_admitted_component_names(phase):
         'agent, service:extension/database, profile:extension-profile']
 
 
+def test_terminal_startup_activity_is_visible_with_other_log_source():
+    from api_agent.runtime.local_contracts import LocalComponent, LocalEvent, LocalSnapshot
+    diagnostics, output = [], []
+    class Owner:
+        pending_cleanup = None
+        def __init__(self, *args, on_event, **kwargs): self.event = on_event
+        async def start(self):
+            snapshot = LocalSnapshot('starting', components=(LocalComponent('agent', 'starting'),),
+                                     activity='view preparation')
+            self.event(LocalEvent('status', snapshot))
+            self.event(LocalEvent('status', snapshot))
+            self.event(LocalEvent('log', source='agent', text='Local startup: view preparation.\n'))
+        async def wait(self): return 0
+        async def aclose(self): pass
+
+    asyncio.run(run_local_terminal(None, lambda: NS(values={'RUN_LOG_SOURCE': 'ui'}),
+        owner_factory=Owner, output=output.append, diagnostic=diagnostics.append))
+    assert diagnostics == ['Run local: starting', 'Selected components: agent',
+                           'Local startup: view preparation']
+    assert output == ['']
+
+
 @pytest.mark.parametrize('stall', ['owner', 'writer', 'writer-only'])
 def test_repeated_process_sigint_keeps_owned_loop_until_cleanup_acknowledged(tmp_path, stall):
     import os

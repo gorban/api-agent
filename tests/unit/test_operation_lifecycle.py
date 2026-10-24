@@ -129,6 +129,20 @@ def test_order_and_test_retention(rig):
     asyncio.run(scenario())
 
 
+def test_operation_reports_fixed_startup_stages(rig):
+    runner, _, _ = rig
+    stages = []
+    runner.on_stage = stages.append
+
+    async def scenario():
+        async with runner.open():
+            pass
+
+    asyncio.run(scenario())
+    assert stages == ['configuration', 'dependencies', 'local HTTPS', 'operation plan',
+                      'prerequisites', 'runtime', 'listener', 'listener ready']
+
+
 def test_infrastructure_binding_runs_after_acquire_and_before_runtime(rig):
     from dataclasses import replace
     from api_agent.runtime.infrastructure_session import InfrastructureSession

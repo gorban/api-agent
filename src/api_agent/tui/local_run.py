@@ -1,5 +1,6 @@
 """Live local-run presentation; resource ownership stays in its controller."""
 import asyncio
+import time
 from collections import deque
 from dataclasses import replace
 from rich.text import Text
@@ -29,6 +30,7 @@ class LocalRunScreen(Screen):
     #local-choices { display: none; }
     #local-choices Button { width: 100%; height: auto; min-height: 3; margin: 0 0 1 0; }
     #local-choices Button:focus { border: heavy $accent; }
+    #local-error { height: auto; color: $error; }
     '''
     VIEW_HINT = '^C Copy selected text  b Browser destinations  l Log sources  * All logs  s Stop  q Quit'
     MENU_HINT = 'Arrows/hjkl Move  1–9,0 or Enter Open\n^C Copy  Esc/c Back  s Stop  q Quit'
@@ -56,6 +58,8 @@ class LocalRunScreen(Screen):
         self.pending_cleanup = None
         self._local_app = None
         self._local_unmounting = False
+        self._startup_started = None
+        self._startup_timer = None
 
     def compose(self):
         yield Static('Starting local operation…', id='local-status', markup=False)
@@ -66,7 +70,36 @@ class LocalRunScreen(Screen):
 
     def on_mount(self):
         self._local_app = self.app
-        self.run_task = asyncio.create_task(self.run())
+        self._startup_started = time.monotonic()
+        self._startup_timer = self.set_interval(1, self._refresh_startup_status)
+
+        def start_after_paint():
+            if (self._local_unmounting or self.closing or self.disposed
+                    or not self.is_mounted or self not in self.app.screen_stack
+                    or self.run_task is not None):
+                return
+            self.run_task = asyncio.create_task(self.run())
+
+        self.call_after_refresh(start_after_paint)
+
+    def _refresh_startup_status(self):
+        if self.snapshot.phase == 'starting' and not self.finished:
+            self.refresh_status()
+
+    def refresh_status(self):
+        if self._local_unmounting or not self.is_mounted or self not in self.app.screen_stack:
+            return
+        phase = self.snapshot.phase
+        if self.finished and self.status not in (0, 130) and phase not in ('stopping', 'cleanup-pending'):
+            phase = 'failed'
+        components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
+        status = f'Run local: {phase} — logs: {self.source}\n{components}'
+        if phase == 'starting':
+            elapsed = (int(max(0, time.monotonic() - self._startup_started))
+                       if self._startup_started is not None else 0)
+            status += f'\n{self.snapshot.activity or "Starting local operation"} — {elapsed}s elapsed'
+        self.query_one('#local-status', Static).update(status)
+        self.query_one('#local-error', Static).update(self.failure)
 
     async def run(self):
         try:
@@ -80,6 +113,8 @@ class LocalRunScreen(Screen):
             self.reconcile_menu()
             self.refresh_view()
             self.status = await self.owner.wait()
+            if self.status not in (0, 130) and not self.failure:
+                self.failure = 'Local operation ended unexpectedly.'
         except asyncio.CancelledError:
             self.status = 130
             if self.owner is not None:
@@ -94,6 +129,8 @@ class LocalRunScreen(Screen):
                 if finish is not None:
                     await finish()
             self.finished = True
+            if self._startup_timer is not None:
+                self._startup_timer.pause()
             self.refresh_view()
 
     def receive(self, event):
@@ -111,17 +148,18 @@ class LocalRunScreen(Screen):
                 self._event_bytes -= len(removed.text.encode('utf-8'))
         elif event.kind == 'status':
             self.snapshot = event.snapshot
+            if self._startup_timer is not None:
+                if self.snapshot.phase == 'starting':
+                    self._startup_timer.resume()
+                else:
+                    self._startup_timer.pause()
             self.reconcile_menu()
         self.refresh_view()
 
     def refresh_view(self):
         if self._local_unmounting or not self.is_mounted or self not in self.app.screen_stack:
             return
-        phase = self.snapshot.phase
-        components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
-        status = f'Run local: {phase} — logs: {self.source}\n{components}'
-        self.query_one('#local-status', Static).update(status)
-        self.query_one('#local-error', Static).update(self.failure)
+        self.refresh_status()
         self.query_one('#local-hint', Static).update(self.MENU_HINT if self.menu else self.VIEW_HINT)
         text = ''.join(format_log(event, self.source) for event in self.events)
         area = self.query_one('#local-output', TextArea)
@@ -382,6 +420,8 @@ class LocalRunScreen(Screen):
 
     async def on_unmount(self):
         self._local_unmounting = True
+        if self._startup_timer is not None:
+            self._startup_timer.stop()
         app = self._local_app or self.app
         try:
             closed = await self.close_owned()

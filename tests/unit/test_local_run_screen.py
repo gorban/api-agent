@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace as NS
 
 import pytest
@@ -21,6 +22,231 @@ class Harness(App):
     def open_url(self, url): self.opened.append(url)
     async def confirm_quit(self): self.menu_shown = await self.local.close_owned()
     def shutdown_cleanup_receipt(self): return self.local.pending_cleanup
+
+
+def test_local_controller_starts_after_first_refresh_and_skips_late_start_after_close():
+    async def exercise():
+        created = []
+
+        class DeferredScreen(LocalRunScreen):
+            def call_after_refresh(self, callback, *args, **kwargs):
+                if self.run_task is None:
+                    self.deferred_start = callback
+                    return
+                return super().call_after_refresh(callback, *args, **kwargs)
+
+        def owner_factory(*args, **kwargs):
+            created.append(True)
+            raise AssertionError('late controller start')
+
+        screen = DeferredScreen(None,
+            lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=owner_factory)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert screen.run_task is None
+            assert created == []
+            screen._startup_timer.stop()
+            screen._startup_timer = None
+            await screen.on_unmount()
+            assert screen.disposed
+            screen.deferred_start()
+            await pilot.pause()
+            assert screen.run_task is None
+            assert created == []
+
+    asyncio.run(exercise())
+
+
+def test_actual_app_paints_starting_screen_before_owner_starts(tmp_path, monkeypatch):
+    import sys
+    from textual.widgets import Static
+    from test_tui import fixture
+    import api_agent.tui.local_run as local_run_module
+
+    async def exercise():
+        created = []
+        stop = asyncio.Event()
+
+        class DeferredScreen(LocalRunScreen):
+            def call_after_refresh(self, callback, *args, **kwargs):
+                if getattr(callback, '__name__', '') == 'start_after_paint':
+                    self.deferred_start = callback
+                    return
+                return super().call_after_refresh(callback, *args, **kwargs)
+
+        class Owner:
+            pending_cleanup = None
+
+            def __init__(self, *args, **kwargs):
+                created.append(True)
+
+            async def start(self):
+                return LocalSnapshot('ready')
+
+            async def wait(self):
+                await stop.wait()
+                return 0
+
+            def request_stop(self):
+                stop.set()
+
+            async def aclose(self):
+                pass
+
+        monkeypatch.setattr(local_run_module, 'LocalRunScreen', DeferredScreen)
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={
+            'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, DeferredScreen)
+            assert screen.run_task is None and created == []
+            assert 'Starting local operation' in str(screen.query_one('#local-status', Static).render())
+            screen.deferred_start()
+            await pilot.pause()
+            assert created == [True]
+            assert screen.run_task is not None
+            assert await screen.close_owned()
+
+    asyncio.run(exercise())
+
+
+def test_startup_activity_and_elapsed_remain_visible_with_filtered_logs():
+    from textual.widgets import Static
+
+    async def exercise():
+        entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class Owner:
+            pending_cleanup = None
+
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+
+            async def start(self):
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('starting',
+                    log_sources=('agent', 'api'), activity='Checking local services')))
+                self.emit(LocalEvent('log', source='api', text='private api log\n'))
+                entered.set()
+                await release.wait()
+                return LocalSnapshot('ready')
+
+            async def wait(self):
+                await stop.wait()
+                return 0
+
+            def request_stop(self):
+                stop.set()
+
+            async def aclose(self):
+                release.set()
+
+        screen = LocalRunScreen(None,
+            lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await entered.wait()
+            screen._startup_started = time.monotonic() - 65
+            screen._refresh_startup_status()
+            rendered = str(screen.query_one('#local-status', Static).render())
+            assert 'Checking local services — 65s elapsed' in rendered
+            assert screen.query_one('#local-output').text == ''
+            await pilot.press('asterisk')
+            assert 'Checking local services' in str(screen.query_one('#local-status', Static).render())
+            assert 'private api log' in screen.query_one('#local-output').text
+            release.set()
+            await pilot.pause()
+            assert screen.snapshot.phase == 'ready'
+            assert 'Checking local services' not in str(screen.query_one('#local-status', Static).render())
+            assert await screen.close_owned()
+
+    asyncio.run(exercise())
+
+
+def test_settled_startup_failure_renders_failed_with_safe_reason():
+    from textual.widgets import Static
+
+    async def exercise():
+        class Owner:
+            pending_cleanup = None
+
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+
+            async def start(self):
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('stopped')))
+                raise RuntimeError('raw secret')
+
+            def diagnostic(self, error):
+                return 'Local service did not become ready.'
+
+            def request_stop(self):
+                pass
+
+            async def aclose(self):
+                pass
+
+        screen = LocalRunScreen(None,
+            lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await screen.run_task
+            await pilot.pause()
+            assert screen.finished and screen.status == 1
+            assert 'Run local: failed' in str(screen.query_one('#local-status', Static).render())
+            assert str(screen.query_one('#local-error', Static).render()) == 'Local service did not become ready.'
+            assert 'raw secret' not in str(screen.query_one('#local-error', Static).render())
+            assert await screen.close_owned()
+
+    asyncio.run(exercise())
+
+
+def test_unexpected_listener_exit_renders_failure_after_cleanup(tmp_path, monkeypatch):
+    import sys
+    from textual.widgets import Static
+    from test_tui import fixture
+
+    async def exercise():
+        stop_requests = []
+
+        class Owner:
+            pending_cleanup = None
+
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+
+            async def start(self):
+                return LocalSnapshot('ready')
+
+            async def wait(self):
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('stopping')))
+                await asyncio.sleep(0)
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('stopped')))
+                return 3
+
+            def request_stop(self):
+                stop_requests.append(True)
+
+            async def aclose(self):
+                pass
+
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={
+            'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            await screen.run_task
+            assert screen.status == 3 and screen.finished
+            assert screen.snapshot.phase == 'stopped'
+            assert 'Run local: failed' in str(screen.query_one('#local-status', Static).render())
+            assert str(screen.query_one('#local-error', Static).render()) == 'Local operation ended unexpectedly.'
+            assert stop_requests == []
+            assert await screen.close_owned()
+
+    asyncio.run(exercise())
 
 
 def test_live_screen_keeps_capture_across_menus_and_retries_cleanup(monkeypatch):
@@ -72,6 +298,7 @@ def test_live_screen_keeps_capture_across_menus_and_retries_cleanup(monkeypatch)
 def test_unmounted_screen_ignores_events_and_close_without_owner():
     async def exercise():
         screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+        screen.refresh_status()
         screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=())))
         screen.receive(NS(kind='other'))
         assert screen.check_action('copy_choice', ()) is False
@@ -795,6 +1022,212 @@ def test_all_logs_hotkey_respects_active_menu(monkeypatch, key, location):
                 assert app.focused is screen.query_one('#local-output', TextArea)
                 assert screen.query_one('#local-output', TextArea).text == '[agent] agent event\n[ui] ui event\n'
             assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('location', ['text-area', 'logs-menu'])
+def test_all_logs_during_blocked_startup_does_not_stop_owned_run(location):
+    from textual.widgets import TextArea
+
+    async def exercise():
+        entered, release = asyncio.Event(), asyncio.Event()
+        stop_requests, phases = [], []
+
+        class Owner:
+            pending_cleanup = None
+
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+
+            async def start(self):
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('starting',
+                    log_sources=('agent', 'api'))))
+                phases.append('starting')
+                entered.set()
+                await release.wait()
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('ready',
+                    log_sources=('agent', 'api'))))
+                phases.append('ready')
+                return LocalSnapshot('ready', log_sources=('agent', 'api'))
+
+            async def wait(self):
+                await asyncio.Event().wait()
+
+            def request_stop(self):
+                stop_requests.append(True)
+
+            async def aclose(self):
+                pass
+
+        screen = LocalRunScreen(None,
+            lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await entered.wait()
+            await pilot.pause()
+            area = screen.query_one('#local-output', TextArea)
+            area.focus()
+            if location == 'logs-menu':
+                await pilot.press('l')
+                await pilot.pause()
+                assert screen.menu == 'logs'
+
+            before = screen.run_task
+            await pilot.press('asterisk')
+            await pilot.pause()
+
+            assert screen.source == 'all'
+            assert screen.menu is None
+            assert app.focused is area
+            assert screen.run_task is before and not before.done()
+            assert stop_requests == []
+            assert phases == ['starting']
+            assert screen.snapshot.phase == 'starting'
+            release.set()
+            await pilot.pause()
+            assert phases == ['starting', 'ready']
+            assert screen.snapshot.phase == 'ready'
+            before.cancel()
+            await before
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('location', ['text-area', 'logs-menu'])
+def test_actual_app_all_logs_during_blocked_startup_keeps_run_active(tmp_path, monkeypatch, location):
+    import sys
+    from textual.widgets import TextArea, Static
+    from test_tui import fixture
+
+    async def exercise():
+        entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        stop_requests, phases = [], []
+
+        class Owner:
+            pending_cleanup = None
+
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+
+            async def start(self):
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('starting',
+                    log_sources=('agent', 'api'), activity='Checking local services')))
+                self.emit(LocalEvent('log', source='api', text='api startup event\n'))
+                phases.append('starting')
+                entered.set()
+                await release.wait()
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('ready',
+                    log_sources=('agent', 'api'))))
+                phases.append('ready')
+                return LocalSnapshot('ready', log_sources=('agent', 'api'))
+
+            async def wait(self):
+                await stop.wait()
+                return 0
+
+            def request_stop(self):
+                stop_requests.append(True)
+                stop.set()
+
+            async def aclose(self):
+                release.set()
+
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={
+            'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        async with app.run_test() as pilot:
+            await entered.wait()
+            await pilot.pause()
+            screen = app.screen
+            area = screen.query_one('#local-output', TextArea)
+            area.focus()
+            if location == 'logs-menu':
+                await pilot.press('l')
+                await pilot.pause()
+                assert screen.menu == 'logs'
+
+            before = screen.run_task
+            await pilot.press('asterisk')
+            await pilot.pause()
+
+            assert screen.source == 'all'
+            assert screen.menu is None
+            assert app.focused is area
+            assert before is screen.run_task and not before.done()
+            assert stop_requests == []
+            assert phases == ['starting']
+            assert screen.snapshot.phase == 'starting'
+            assert 'Checking local services' in str(screen.query_one('#local-status', Static).render())
+            assert 'api startup event' in area.text
+            release.set()
+            await pilot.pause()
+            assert phases == ['starting', 'ready']
+            assert screen.snapshot.phase == 'ready'
+            assert await screen.close_owned()
+
+    asyncio.run(exercise())
+
+
+def test_all_logs_can_reveal_a_startup_failure_that_precedes_keypress(tmp_path, monkeypatch):
+    import sys
+    from test_tui import fixture
+
+    async def exercise():
+        entered, fail = asyncio.Event(), asyncio.Event()
+        stop_requests, phases = [], []
+
+        class Owner:
+            pending_cleanup = None
+
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+
+            async def start(self):
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('starting',
+                    log_sources=('agent', 'api'))))
+                phases.append('starting')
+                entered.set()
+                await fail.wait()
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('stopped',
+                    log_sources=('agent', 'api'))))
+                phases.append('stopped')
+                raise RuntimeError('Synthetic startup failure')
+
+            def diagnostic(self, error):
+                return str(error)
+
+            def request_stop(self):
+                stop_requests.append(True)
+
+            async def aclose(self):
+                pass
+
+        monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', NS(LocalRunOwner=Owner))
+        app = fixture(tmp_path, 'run-local', fields={
+            'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
+        async with app.run_test() as pilot:
+            await entered.wait()
+            screen = app.screen
+            fail.set()
+            await screen.run_task
+            assert screen.snapshot.phase == 'stopped'
+            assert screen.status == 1
+            assert stop_requests == []
+            assert phases == ['starting', 'stopped']
+
+            await pilot.press('asterisk')
+            await pilot.pause()
+
+            assert screen.source == 'all'
+            assert screen.snapshot.phase == 'stopped'
+            assert screen.status == 1
+            assert stop_requests == []
+            assert phases == ['starting', 'stopped']
+            assert screen.failure == 'Synthetic startup failure'
+            from textual.widgets import Static
+            assert 'Run local: failed' in str(screen.query_one('#local-status', Static).render())
+            assert await screen.close_owned()
+
     asyncio.run(exercise())
 
 
