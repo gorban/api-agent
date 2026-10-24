@@ -544,3 +544,75 @@ def test_catalog_trace_binding_is_bounded_and_cannot_change_catalog_behavior(sel
         finally:
             await llm.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('explicit_expired_request, expected_status, expected_body, catalog_calls', [
+    (False, 200, {'default': 'sample'}, 1),
+    (True, 408, {'code': 'deadline'}, 0),
+])
+def test_listener_catalog_uses_request_budget_after_startup_expires(
+        selected, monkeypatch, explicit_expired_request, expected_status, expected_body, catalog_calls):
+    import sys
+    import time
+    from contextlib import nullcontext
+    import httpx
+    from api_agent.api import Runtime, create_application
+    from api_agent.api.studio import StudioBackend
+    from api_agent.providers import progress
+    from api_agent.providers.selection import ModelSelectionPolicy
+    from api_agent.runtime.listener import UvicornListener
+
+    owner, _, _, loader, events = selected
+    clock = [time.monotonic()]
+    monkeypatch.setattr(progress, '_clock', lambda: clock[0])
+
+    async def describe(*, auth):
+        return await owner.describe()
+
+    backend = StudioBackend(owner=owner, describe=describe, complete=AsyncMock(),
+        policy=ModelSelectionPolicy({'LLM_DEFAULT_MODEL': 'sample'}),
+        origin='http://127.0.0.1:9443', nonce='s' * 32, scrub=lambda text: text)
+    application = create_application(Runtime('synthetic', services={'studio_backend': backend}))
+
+    async def delayed_application(scope, receive, send):
+        async def delayed_receive():
+            await asyncio.sleep(0)
+            return await receive()
+        await application(scope, delayed_receive, send)
+
+    async def run():
+        admitted = asyncio.Event()
+        responses = []
+        class Server:
+            def __init__(self, config):
+                self.started, self.should_exit = True, False
+            async def serve(self):
+                await admitted.wait()
+                # A request can still carry an explicit caller deadline after
+                # the listener has detached its unrelated startup deadline.
+                request_scope = progress.bind_timeout_budget(progress.TimeoutBudget(
+                    'request', None, clock[0] - 2, clock[0] - 1, 1)) if explicit_expired_request else nullcontext()
+                with request_scope:
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=delayed_application),
+                        base_url='http://127.0.0.1:8443', headers={
+                            'Origin': 'http://127.0.0.1:9443', 'X-API-Agent-Session': 's' * 32},
+                        trust_env=False) as client:
+                        responses.append(await client.get('/app/agent/models'))
+        monkeypatch.setitem(sys.modules, 'uvicorn', SimpleNamespace(Config=lambda *args, **kwargs: kwargs, Server=Server))
+        listener = UvicornListener()
+        async with progress.report_timeout('Local startup', 1):
+            await listener.start(delayed_application, SimpleNamespace(cert_file='cert', key_file='key'),
+                SimpleNamespace(port=8443))
+        clock[0] += 2
+        admitted.set()
+        try:
+            await listener.task
+            response = responses[0]
+            assert response.status_code == expected_status
+            assert expected_body.items() <= response.json().items()
+            assert events.count('describe') == catalog_calls
+            assert loader.await_count == catalog_calls
+        finally:
+            await listener.stop()
+            await backend.aclose()
+    asyncio.run(run())

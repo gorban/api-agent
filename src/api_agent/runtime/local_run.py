@@ -305,7 +305,7 @@ class LocalRunOwner:
                 self._stack.push(self._tracing_dashboard.aclose)
                 await self._tracing_dashboard.start()
                 if self._tracing_dashboard.diagnostic:
-                    self._log('agent', self._tracing_dashboard.diagnostic)
+                    self._log('agent', self._tracing_dashboard.diagnostic.rstrip('\n') + '\n')
                 from api_agent.runtime.local_browser import LocalBrowserOwner
                 factory = self.browser_factory or LocalBrowserOwner
                 home = self._session.callback.origin + '/'

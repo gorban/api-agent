@@ -52,7 +52,9 @@ def test_local_run_without_pack_dependency_dispatches_controller(tmp_path, monke
     calls = []
     class Owner:
         pending_cleanup = None
-        def __init__(self, *args, **kwargs): self.stop = asyncio.Event()
+        def __init__(self, *args, on_event, **kwargs):
+            self.stop = asyncio.Event()
+            self.emit = on_event
         async def start(self):
             calls.append('start')
             return LocalSnapshot('ready')
@@ -60,7 +62,9 @@ def test_local_run_without_pack_dependency_dispatches_controller(tmp_path, monke
             await self.stop.wait()
             return 0
         def request_stop(self): self.stop.set()
-        async def aclose(self): calls.append('close')
+        async def aclose(self):
+            calls.append('close')
+            self.emit(SimpleNamespace(kind='status', snapshot=LocalSnapshot('stopped')))
     monkeypatch.setitem(sys.modules, 'api_agent.runtime.local_run', SimpleNamespace(LocalRunOwner=Owner))
     async def scenario():
         app = fixture(tmp_path, 'run-local', fields={'RUN_LOG_SOURCE': {'type': 'str', 'default': 'agent', 'acknowledge_default': False}})
@@ -68,7 +72,14 @@ def test_local_run_without_pack_dependency_dispatches_controller(tmp_path, monke
             await pilot.pause()
             assert isinstance(app.screen, LocalRunScreen)
             assert calls == ['start']
-            await app.screen.action_stop()
+            local = app.screen
+            await pilot.press('s')
+            await local._stop_task
+            await pilot.pause()
+            assert app.screen is local
+            assert local.disposed and local.snapshot.phase == 'stopped'
+            assert calls == ['start', 'close']
+            await pilot.press('c')
             await pilot.pause()
             assert app.screen.kind == 'menu'
             assert calls == ['start', 'close']

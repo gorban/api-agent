@@ -712,6 +712,8 @@ def test_main_menu_run_local_selection_dispatches_once(tmp_path, monkeypatch):
             assert calls == ['start']
             await app.screen.action_stop()
             await pilot.pause()
+            assert isinstance(app.screen, LocalRunScreen)
+            await pilot.press('c')
             assert app.screen.kind == 'menu'
             assert calls == ['start', 'close']
     asyncio.run(exercise())
@@ -725,6 +727,9 @@ def test_screen_factory_failure_has_safe_fallback(failure, status):
         await screen.run()
         assert screen.status == status
         assert screen.owner is None
+        assert await screen.close_owned()
+        assert screen.finished and screen.status == status
+        assert screen.snapshot.phase == ('starting' if status == 1 else 'stopped')
         assert screen.failure == ('Local operation could not start.' if status == 1 else '')
     asyncio.run(exercise())
 
@@ -1641,10 +1646,13 @@ def test_real_controller_stop_keeps_screen_and_retries_visible_pending(action):
 
 def test_pending_stop_keeps_log_bindings_responsive_without_duplicate_close():
     from api_agent.runtime.local_run import LocalRunOwner
+    from textual.events import Key
 
     async def exercise():
         entered, release = asyncio.Event(), asyncio.Event()
         calls = []
+        handled = asyncio.Queue()
+        cleanup_pending = asyncio.Event()
 
         async def held():
             calls.append('cleanup')
@@ -1662,24 +1670,59 @@ def test_pending_stop_keeps_log_bindings_responsive_without_duplicate_close():
                 self._publish('ready')
                 return self.snapshot
 
-        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        class ObservedScreen(LocalRunScreen):
+            def action_request_stop(self):
+                super().action_request_stop()
+                handled.put_nowait('stop')
+
+            def action_sources(self):
+                super().action_sources()
+                handled.put_nowait('sources')
+
+            def action_all_logs(self):
+                super().action_all_logs()
+                handled.put_nowait('all_logs')
+
+            def action_close_view(self):
+                super().action_close_view()
+                handled.put_nowait('close')
+
+            def receive(self, event):
+                super().receive(event)
+                if event.kind == 'status' and event.snapshot.phase == 'cleanup-pending':
+                    cleanup_pending.set()
+
+        screen = ObservedScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
         app = Harness(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            try:
-                await asyncio.wait_for(pilot.press('s'), 2)
-                await entered.wait()
+            async def press_and_observe(key, action):
+                # Use the normal driver/message path, but await the action itself.
+                # Pilot.press also waits for global CPU idle and animations, which
+                # are unrelated to a live message pump during cleanup retries.
+                event = Key(key, key if len(key) == 1 else None)
+                event.set_sender(app)
+                app._driver.send_message(event)
                 async with asyncio.timeout(2):
-                    while screen.snapshot.phase != 'cleanup-pending':
-                        await asyncio.sleep(.001)
+                    assert await handled.get() == action
+
+            try:
+                async with asyncio.timeout(2):
+                    await press_and_observe('s', 'stop')
+                    await entered.wait()
+                    await cleanup_pending.wait()
                 stop_task, close_task = screen._stop_task, screen._close_task
-                await asyncio.wait_for(pilot.press('l'), 2)
+                await press_and_observe('l', 'sources')
                 assert screen.menu == 'logs'
-                await asyncio.wait_for(pilot.press('asterisk'), 2)
+                await press_and_observe('asterisk', 'all_logs')
                 assert screen.menu is None
                 assert screen.source == 'all'
-                await asyncio.wait_for(pilot.press('s', 's'), 5)
+                await press_and_observe('s', 'stop')
+                await press_and_observe('s', 'stop')
                 assert screen._stop_task is stop_task
+                assert screen._close_task is close_task
+                await press_and_observe('c', 'close')
+                assert not app.menu_shown
                 assert screen._close_task is close_task
                 assert not stop_task.done()
                 assert not screen.disposed
@@ -1690,7 +1733,7 @@ def test_pending_stop_keeps_log_bindings_responsive_without_duplicate_close():
                 if screen._stop_task is not None:
                     await screen._stop_task
             assert screen.disposed
-            assert app.menu_shown
+            assert not app.menu_shown
             assert calls == ['cleanup']
 
     asyncio.run(exercise())
@@ -1876,8 +1919,8 @@ def test_stop_completion_respects_quit_dialog(tmp_path, monkeypatch, response, r
                 assert app.screen is local
             else:
                 exit_app.assert_not_called()
-                assert app.screen.kind == 'menu'
-                assert local not in app.screen_stack
+                assert app.screen is local
+                assert local in app.screen_stack
             assert not any(isinstance(item, QuitDialog) for item in app.screen_stack)
 
     asyncio.run(exercise())
@@ -1892,6 +1935,7 @@ def test_background_stop_observes_failure_and_allows_retry():
         async with app.run_test() as pilot:
             await pilot.pause()
             await screen.close_owned()
+            screen.disposed = False
             failure = RuntimeError('unavailable')
             screen.action_stop = AsyncMock(side_effect=failure)
             await pilot.press('s')
@@ -1907,7 +1951,8 @@ def test_background_stop_observes_failure_and_allows_retry():
     asyncio.run(exercise())
 
 
-def test_stop_after_rejected_confirmed_quit_can_return_to_menu(tmp_path, monkeypatch):
+@pytest.mark.parametrize('preceding_stop', [False, True])
+def test_close_after_rejected_confirmed_quit_can_return_to_menu(tmp_path, monkeypatch, preceding_stop):
     import sys
     from textual.widgets import Input
     from test_tui import fixture
@@ -1935,17 +1980,23 @@ def test_stop_after_rejected_confirmed_quit_can_return_to_menu(tmp_path, monkeyp
         async with app.run_test() as pilot:
             await pilot.pause()
             local = app.screen
-            await pilot.press('s')
-            await entered.wait()
+            if preceding_stop:
+                await pilot.press('s')
+                await entered.wait()
             await pilot.press('q')
             app.screen.query_one('#quit-answer', Input).focus()
             await pilot.press('y', 'enter')
+            await entered.wait()
             release.set()
-            await local._stop_task
+            await local._close_task
+            if local._stop_task is not None:
+                await local._stop_task
             await pilot.pause()
             assert app.screen is local
-            await pilot.press('s')
-            await local._stop_task
+            from textual.widgets import Static
+            hint = str(local.query_one('#local-hint', Static).render())
+            assert 'c Close' in hint and 's Stop' not in hint
+            await pilot.press('c')
             await pilot.pause()
             assert app.screen.kind == 'menu'
     asyncio.run(exercise())
@@ -1986,4 +2037,175 @@ def test_old_stop_completion_does_not_replace_new_view(tmp_path, monkeypatch):
             await local._stop_task
             await pilot.pause()
             assert app.screen is replacement
+    asyncio.run(exercise())
+
+
+def test_stopped_page_keeps_logs_destinations_and_closes_without_confirmation(monkeypatch):
+    from unittest.mock import AsyncMock
+    from textual.widgets import Static
+    from api_agent.runtime.local_run import LocalRunOwner
+
+    async def exercise():
+        released = []
+        destination = LocalDestination('agent', 'http://localhost:8080/')
+
+        async def release_resource():
+            released.append('resource')
+
+        class Owner(LocalRunOwner):
+            async def start(self):
+                self._started = True
+                self._stack.push(release_resource)
+                self._log('agent', 'retained log\n')
+                self._publish('ready', destinations=(destination,))
+                return self.snapshot
+
+        opened = AsyncMock()
+        monkeypatch.setattr('api_agent.runtime.local_terminal.open_host_url', opened)
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            area = screen.query_one('#local-output')
+            area.focus()
+            area.action_select_all()
+            await pilot.press('s')
+            await screen._stop_task
+            await pilot.pause()
+            assert released == ['resource']
+            assert screen.disposed and screen.snapshot.phase == 'stopped'
+            assert app.screen is screen and not app.menu_shown
+            assert area.selected_text == 'retained log\n'
+            hint = str(screen.query_one('#local-hint', Static).render())
+            assert 'c Close' in hint and 's Stop' not in hint
+            stop_task = screen._stop_task
+            await pilot.press('s')
+            assert screen._stop_task is stop_task
+            assert screen.check_action('request_stop', ()) is False
+            assert released == ['resource']
+            await pilot.press('b', '1')
+            opened.assert_awaited_once_with(destination.url)
+            assert not app.menu_shown
+            await pilot.press('c')
+            assert screen.menu is None and not app.menu_shown
+            await pilot.press('l', 'asterisk')
+            assert screen.source == 'all' and 'retained log' in area.text
+            await pilot.press('c')
+            assert app.menu_shown
+            assert released == ['resource']
+
+    asyncio.run(exercise())
+
+
+
+def test_stop_before_deferred_start_settles_stopped_page_without_late_owner():
+    from textual.widgets import Static
+
+    async def exercise():
+        created = []
+
+        class DeferredScreen(LocalRunScreen):
+            def call_after_refresh(self, callback, *args, **kwargs):
+                if getattr(callback, '__name__', '') == 'start_after_paint':
+                    self.deferred_start = callback
+                    return
+                return super().call_after_refresh(callback, *args, **kwargs)
+
+        def owner_factory(*args, **kwargs):
+            created.append(True)
+            raise AssertionError('late controller start')
+
+        screen = DeferredScreen(None,
+            lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=owner_factory)
+        app = Harness(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert screen.run_task is None and created == []
+            await pilot.press('s')
+            await screen._stop_task
+            screen.deferred_start()
+            await pilot.pause()
+            assert screen.run_task is None and created == []
+            assert screen.disposed and screen.finished
+            assert screen.snapshot.phase == 'stopped'
+            status = str(screen.query_one('#local-status', Static).render())
+            assert 'Run local: stopped' in status
+            assert 'elapsed' not in status and 'Starting local operation' not in status
+            assert not app.menu_shown
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('endpoint,visible', [
+    ('http://127.0.0.1:38169', True), ('http://[::1]:38169/', True),
+    ('https://127.0.0.1:38169', False), ('http://192.0.2.1:38169', False),
+    ('http://user@127.0.0.1:38169', False), ('http://127.0.0.1', False),
+    ('http://127.0.0.1:99999', False), ('http://127.0.0.1:38169/path', False),
+    ('http://127.0.0.1:38169?token=value', False), ('not a URL', False), ('http://127.0.0.1:38169\n', False),
+    ('\x00http://127.0.0.1:38169', False), ('\x1bhttp://127.0.0.1:38169', False),
+    ('http://:38169', False), ('http://', False),
+])
+def test_local_cdp_destination_accepts_only_owned_snapshot_loopback_http(endpoint, visible):
+    screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}))
+    screen.snapshot = LocalSnapshot('ready', inspection_endpoint=endpoint)
+    assert screen.inspection_endpoint() == (endpoint if visible else None)
+    assert tuple(item.name for item in screen.destinations()) == (('Browser CDP',) if visible else ())
+
+
+def test_local_cdp_status_button_render_open_copy_and_stopped_retention(monkeypatch):
+    from unittest.mock import AsyncMock
+    from textual.widgets import Static
+
+    async def exercise():
+        endpoint = 'http://127.0.0.1:38169'
+        destination = LocalDestination('agent', 'http://localhost:8080/')
+        stop = asyncio.Event()
+
+        class Owner:
+            pending_cleanup = None
+            def __init__(self, *args, on_event, **kwargs): self.emit = on_event
+            async def start(self):
+                return LocalSnapshot('ready', destinations=(destination,), inspection_endpoint=endpoint)
+            async def wait(self):
+                await stop.wait()
+                self.emit(LocalEvent('status', snapshot=LocalSnapshot('stopped')))
+                return 0
+            def request_stop(self): stop.set()
+            async def aclose(self): pass
+
+        opened, copied = AsyncMock(), AsyncMock()
+        monkeypatch.setattr('api_agent.runtime.local_terminal.open_host_url', opened)
+        screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
+        screen.copy_value = copied
+        app = Harness(screen)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            status = screen.query_one('#local-status', Static)
+            assert f'Browser CDP: {endpoint}' in str(status.render())
+            status_lines = status.render_lines(status.content_region.translate((-status.region.x, -status.region.y)))
+            assert any(f'Browser CDP: {endpoint}' in line.text for line in status_lines)
+            await pilot.press('b')
+            buttons = list(screen.query('#local-choices Button'))
+            assert [item.name for item in screen.menu_choices] == ['agent', 'Browser CDP']
+            for button, url in zip(buttons, (destination.url, endpoint)):
+                lines = button.render_lines(button.content_region.translate((-button.region.x, -button.region.y)))
+                assert url in lines[1].text
+                assert button.region.height >= 4
+            buttons[-1].focus()
+            await pilot.press('ctrl+c', 'enter')
+            copied.assert_awaited_once_with(endpoint)
+            opened.assert_awaited_once_with(endpoint)
+            await pilot.press('c', 's')
+            await screen._stop_task
+            await pilot.pause()
+            assert screen.snapshot.phase == 'stopped'
+            assert screen.inspection_endpoint() == endpoint
+            assert f'Browser CDP: {endpoint}' in str(status.render())
+            await pilot.press('b')
+            assert screen.menu_choices[-1] == LocalDestination('Browser CDP', endpoint)
+            # Screen compositor output proves the second URL line reaches the visible frame.
+            frame = app.export_screenshot()
+            assert '127.0.0.1:38169' in frame
+            assert 'localhost:8080' in frame
+
     asyncio.run(exercise())

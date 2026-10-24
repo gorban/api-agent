@@ -3,6 +3,8 @@
 import asyncio
 import time
 
+from api_agent.providers.progress import independent_timeout_scope
+
 
 class ListenerError(RuntimeError):
     pass
@@ -31,7 +33,10 @@ class UvicornListener:
                 # Uvicorn exits on bind failures; an owned background task must
                 # report failure without terminating its coordinator's loop.
                 raise ListenerError('listener_start_failed') from None
-        self.task = asyncio.create_task(serve())
+        # Connections inherit this task context. Startup bounds acquisition,
+        # while later requests own fresh budgets and retain the progress sink.
+        with independent_timeout_scope():
+            self.task = asyncio.create_task(serve())
 
     async def wait_ready(self, timeout):
         if self.task is None:

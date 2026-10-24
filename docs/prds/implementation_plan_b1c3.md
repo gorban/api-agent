@@ -37,3 +37,15 @@ Bind historical execution overlays to the declaration documents actually consume
 - [x] Complete external code review of the consumed-document admission and installed provenance repairs.
 - [x] Complete final qualified-data and delivery review, including renewed installed artifacts.
 - [ ] Human acceptance of minimum source recording. Historical lookup/rendering and its combined acceptance above remain future work.
+
+## Archive metadata admission
+
+- [x] Ignore archive-backed package metadata when classifying physical installed-document ownership. Unsupported non-filesystem inventories must neither crash discovery nor establish ownership; preserve unique physical inventory, metadata-alias rejection and committed-source precedence.
+- [x] Complete renewed independent/external review and applicable exact coverage and public-boundary checks.
+
+A synthetic archive-backed distribution regression verifies that ambient archive
+metadata is skipped before inventory reads, both alone and alongside a legitimate
+physical installed owner. Without the filesystem-path admission guard, both cases
+raise TypeError before classifying ownership. Existing physical inventory and
+committed-source checks remain unchanged. Renewed regression, independent/external
+review, exact unit coverage, package and public-boundary checks pass.
