@@ -47,21 +47,7 @@ class LocalChatApplication:
             if called or value.selected_llm != request.selected_llm or value.payload != request.payload or value.request_id != request.request_id:
                 raise WorkflowError('Local chat changed the selected provider call.')
             called = True
-            from .attribution import current_workflow_visit
-            owner = current_workflow_visit()
-            def capture(direction, name, text):
-                if owner is not None and self.observations is not None:
-                    journal, visit_id, _ = owner
-                    # This application accepts validated plain text only. Large
-                    # values stay withheld without changing execution semantics.
-                    journal.capture(visit_id=visit_id, direction=direction,
-                        values={name: text}, schema={'type': 'object',
-                            'properties': {name: {'type': 'string'}}},
-                        plain_fields=[name])
-            capture('input', 'messages_text', '\n'.join(
-                message['role'] + ': ' + message['content'] for message in messages))
             result = await llm.complete(value, context=context)
-            capture('output', 'response_text', result_to_wire(result)['text'])
             results.append(result)
             return result
         observations = self.observations.create(self.definition) if self.observations is not None else None

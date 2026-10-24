@@ -548,6 +548,9 @@ class StatefulWorkflow:
                     raise LayoutError(f'unregistered state reducer: {key}')
         if any(key not in hints for key in reducers):
             raise LayoutError('reducer references undeclared state field')
+        from .capture import annotation_schema
+        self.capture_schema = {'type': 'object', 'properties': {
+            key: annotation_schema(hint) for key, hint in hints.items()}}
         self.schema = schema
         self._request = ContextVar('stateful_workflow_request', default=None)
         self._services = ContextVar('stateful_workflow_services', default=self.services)
@@ -640,6 +643,9 @@ class StatefulWorkflow:
                 if journal is not None and contract is not None:
                     journal.capture(visit_id=visit_id, direction=direction, values=values,
                         schema=contract['schema'], plain_fields=contract['plain_fields'])
+                elif journal is not None:
+                    journal.capture_json(visit_id=visit_id, direction=direction, values=values,
+                        schema=self.capture_schema)
             capture('input', state)
             with bind_workflow_visit(journal, budget.id):
                 result = (await function(state, context) if inspect.iscoroutinefunction(function)

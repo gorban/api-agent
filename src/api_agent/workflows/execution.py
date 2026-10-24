@@ -348,8 +348,12 @@ class Workflow:
             journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
             plain_fields = (self.services.get('plain_io_fields') or {}).get(step.id, {})
             if journal is not None:
-                journal.capture(visit_id=budget.id, direction='input', values=inputs,
-                                schema=row['Input schema'], plain_fields=plain_fields.get('input'))
+                if 'input' in plain_fields:
+                    journal.capture(visit_id=budget.id, direction='input', values=inputs,
+                                    schema=row['Input schema'], plain_fields=plain_fields['input'])
+                else:
+                    journal.capture_json(visit_id=budget.id, direction='input', values=inputs,
+                                         schema=row['Input schema'])
             started = time.monotonic()
             from .attribution import bind_workflow_visit
             with bind_workflow_visit(journal, budget.id, state.get('attempt_id')):
@@ -360,8 +364,12 @@ class Workflow:
             self._check_deadline(budget)
             self._validate(row['Output schema'], result, step.id, 'output')
             if journal is not None:
-                journal.capture(visit_id=budget.id, direction='output', values=result,
-                                schema=row['Output schema'], plain_fields=plain_fields.get('output'))
+                if 'output' in plain_fields:
+                    journal.capture(visit_id=budget.id, direction='output', values=result,
+                                    schema=row['Output schema'], plain_fields=plain_fields['output'])
+                else:
+                    journal.capture_json(visit_id=budget.id, direction='output', values=result,
+                                         schema=row['Output schema'])
             self._event('node', scope_id=budget.id, node=step.id, component=step.parent, attempt=context.attempt,
                         elapsed=time.monotonic() - started, kind=function.kind)
             return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)

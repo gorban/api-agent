@@ -39,15 +39,29 @@ class LocalDiagnosticProjection:
             if 'values' not in row:
                 result['content'] = row.get('reason', 'withheld')
             else:
-                # Source admission currently supports explicitly classified scalars.
-                # Unknown nested values are omitted instead of walking tool state.
+                # Nested presentation requires the shared schema capture class.
+                # Values have already crossed the destination privacy boundary.
                 values = row['values']
                 if not isinstance(values, Mapping):
                     result['content'] = 'unsupported_schema'
                 else:
                     permitted, omitted, truncated = {}, [], []
+                    def present(value, owner):
+                        if isinstance(value, Mapping):
+                            return {key: present(item, owner) for key, item in value.items()}
+                        if type(value) in (tuple, list):
+                            return [present(item, owner) for item in value]
+                        if type(value) is str and not self.full_content and len(value) > _PREVIEW_CHARACTERS:
+                            truncated.append(owner)
+                            return value[:_PREVIEW_CHARACTERS]
+                        return _plain(value)
                     for key, value in values.items():
-                        if type(value) not in (str, bool, int, float, type(None)):
+                        if row.get('capture_class') == 'schema_user_io':
+                            try:
+                                permitted[key] = present(value, key)
+                            except ValueError:
+                                omitted.append(key)
+                        elif type(value) not in (str, bool, int, float, type(None)):
                             omitted.append(key)
                         elif type(value) is str and not self.full_content and len(value) > _PREVIEW_CHARACTERS:
                             permitted[key] = value[:_PREVIEW_CHARACTERS]

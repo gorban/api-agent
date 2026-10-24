@@ -52,10 +52,12 @@ their owner-defined meanings, including fractional currency category values.
 issuer. Its synchronous fan-out projects classified values independently before
 retention: the journal keeps its existing 512-character log previews; the live
 log branch and trace branch permit at most 65,536 characters per declared scalar.
-Both branches retain the same event identity. The local plain-text application
-classifies message text and visible response text explicitly. Stateful providers
-can supply per-node `plain_io_contracts` with input/output schema and plain fields;
-unclassified state is never traversed for content.
+Both branches retain the same event identity. The [shared parsed-flow runtime](implementation_plan_k1b1.md)
+now admits bounded JSON values from node schemas or resolved state annotations,
+without application-specific capture wrappers. Existing explicit `plain_io_fields`
+and `plain_io_contracts` remain restrictive overrides. Unknown runtime objects
+are not serialized. In-process shared provider calls also capture actual visible
+messages; separate worker policy/identity propagation remains unchecked above.
 
 `test_workflow_observations.py` checks all four policy combinations for both
 backend routes against serialized loopback OTLP payloads, shared ancestry,
@@ -88,3 +90,7 @@ streaming qualification remain unchecked above.
 - [x] Apply identical schema admission to capture validation and unavailable-payload classification, including immutable nested mappings. Unsupported or oversized supported-state inputs must yield safe unavailable evidence without changing graph execution.
 
 - [x] Scope live-row suppression to its own capture operation. Concurrent capture/capture and capture/observe producers must retain and emit each event exactly once with shared identities under both log flags; no shared flag may suppress another producer.
+
+## Shared parsed-flow capture
+
+- [ ] Deliver [shared node and provider content capture](implementation_plan_k1b1.md) for all supported parsed flows, replacing application-specific wrappers. Prior manual-checkpoint evidence does not establish capture coverage for newly selected graphs.

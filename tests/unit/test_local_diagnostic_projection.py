@@ -67,3 +67,19 @@ def test_structural_event_does_not_invent_usage_or_retain_unadmitted_payload():
         effective_timeout=3, inputs='withheld input', outputs='withheld output'))
     assert result == dict(event='scope_start', attempt=1, max_passes=2, effective_timeout=3)
     assert 'usage' not in result
+
+
+@pytest.mark.parametrize('full,expected', [(False, 512), (True, 700)])
+def test_schema_capture_preserves_nested_json_and_clips_visible_strings(full, expected):
+    result = render(dict(event='capture', capture_class='schema_user_io', reason='captured',
+                         values=MappingProxyType({'messages': (MappingProxyType({'content': 'x' * 700}),)})), full)
+    assert len(result['values']['messages'][0]['content']) == expected
+    assert result['source_reason'] == 'captured'
+    assert ('messages' in result.get('truncated_fields', [])) is not full
+
+
+def test_schema_capture_omits_unsupported_presenter_values():
+    result = render(dict(event='capture', capture_class='schema_user_io',
+                         values=MappingProxyType({'runtime': object(), 'text': 'visible'})))
+    assert result['values'] == {'text': 'visible'}
+    assert result['omitted_fields'] == ['runtime']

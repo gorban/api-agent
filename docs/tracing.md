@@ -67,19 +67,39 @@ combinations. Timing, status and admitted usage metadata remain useful without
 payloads. Enabling content permission does not itself enable a tracing backend.
 
 The current join emits owned manual graph/component/node/client spans using
-shared workflow identities. It captures only declared supported plain user I/O;
-unsupported or oversized payloads remain explicitly unavailable. Automatic HTTP
+shared workflow identities. Both parsed-flow executors capture schema-admitted
+JSON inputs and outputs automatically, without application-specific wrappers.
+Stateful declarations use their admitted state annotations. Explicit restrictive
+capture contracts remain respected. Unsupported or oversized payloads carry
+unavailable, partial or truncated evidence. Automatic HTTP
 instrumentation, broader metrics/propagation conformance and deployment-specific
 AI dashboard acceptance retain their separate requirements. A successful local
 trace is not evidence of deployed backend equivalence.
 
-In Jaeger, select the `node llm_call` span and expand **Events** to find
+In Jaeger, select a node span and expand **Events** to find
 `api_agent.event` entries. Their `direction` is input or output; `values` contains
-the admitted JSON fields, such as `messages_text` and `response_text`. The separate
+the admitted node fields. In-process shared provider calls also capture visible messages,
+tool/format contracts and completions as `llm_request` and `llm_response` values.
+Their shared `cause_id` pairs capture observations within the owning node visit;
+it does not create another accounting call or charge. Capture depth, collection
+counts and aggregate text are bounded; retained journal strings have a
+512-character preview and live/trace capture permits up to 65,536 characters
+within its aggregate admission budget. Credentials, continuation and hidden
+reasoning carriers are removed before schema filtering or display clipping.
+The separate
 `chat` span currently carries model and usage metadata. Its GenAI panel does not
 yet display those node events as a conversation; that mapping remains part of
 the [tracing schema and AI-view work](prds/implementation_plan_k1a.md). This
 location describes supported manual capture, not an exact upstream wire payload.
+Restart the application to use changed capture code. Previously withheld traces
+and Allure artifacts cannot be populated retroactively.
+
+The separate integration-test backend does not yet propagate the active node
+visit or independent trace-content authority across its process boundary. Shared
+node I/O capture still applies in the calling executor, but actual remote LLM
+message pairs retain the [worker/provider propagation gate](prds/implementation_plan_k1b.md).
+Existing separate inference evidence follows LOG_CONTENT; it cannot authorize
+trace-only payloads or replace the backend's credential boundary.
 
 Manual trace model labels require exact identities established by their provider
 catalog or an explicit owner-controlled binding; identifier syntax alone is insufficient. Unclassified selection text is omitted

@@ -2251,7 +2251,9 @@ def test_stateful_plain_capture_requires_explicit_contract_and_retains_only_fiel
     assert result['visits'] == 1
     if with_journal:
         captures = [row for row in journal.finalize()['events'] if row['event']=='capture']
-        assert [row['values'] for row in captures] == [{'visits':0},{'visits':1}]
+        assert [row['values'] for row in captures[:2]] == [{'visits':0},{'visits':1}]
+        assert len(captures) == 4
+        assert all(row['capture_class'] == 'schema_user_io' for row in captures[2:])
         assert 'unclassified text' not in str(captures)
 
 
@@ -2337,8 +2339,10 @@ def test_recorded_stateful_frozen_capture_contract_is_observational(
     payload = next(json.loads(line)['data'] for line in events.read_text().splitlines()
         if json.loads(line)['kind']=='workflow_evidence')
     _,data,_ = attachment(SimpleNamespace(text=json.dumps(payload)),None)
-    captures = [row for row in payload['events'] if row['event']=='capture']
-    live = [row for row in rows if row['event']=='capture']
+    # The explicit intake contract remains restrictive; other nodes capture
+    # their own declared JSON state by default.
+    captures = [row for row in payload['events'] if row['event']=='capture'][:2]
+    live = [row for row in rows if row['event']=='capture'][:2]
     reason = ('unsupported' if isinstance(case,list) else 'payload_limit' if len(case)>65536
               else 'truncated' if log and len(case)>512 else 'captured' if log else 'withheld')
     assert [row['reason'] for row in captures]==[reason,reason]
@@ -2348,5 +2352,5 @@ def test_recorded_stateful_frozen_capture_contract_is_observational(
         assert [row['values']['text'] for row in live]==[case,case]
     else:
         assert all('values' not in row for row in captures+live)
-        assert 'unavailable-private-sentinel' not in data.decode()
+        assert 'unavailable-private-sentinel' not in json.dumps(captures)
         assert 'x'*65537 not in data.decode()
