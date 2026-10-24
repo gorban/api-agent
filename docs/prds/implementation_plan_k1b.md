@@ -93,4 +93,4 @@ streaming qualification remain unchecked above.
 
 ## Shared parsed-flow capture
 
-- [ ] Deliver [shared node and provider content capture](implementation_plan_k1b1.md) for all supported parsed flows, replacing application-specific wrappers. Prior manual-checkpoint evidence does not establish capture coverage for newly selected graphs.
+- [x] Deliver [shared node and provider content capture](implementation_plan_k1b1.md) for all supported parsed flows, replacing application-specific wrappers. Prior manual-checkpoint evidence does not establish capture coverage for newly selected graphs.
