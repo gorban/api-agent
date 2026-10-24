@@ -34,3 +34,7 @@ Variables are deliberately unsupported by this pinned adapter because its publis
 - [x] Reuse the exact verified installed MCP tree across provider instances without registry access; prepare only a missing or invalid installation.
 - [x] Preserve the public 200-character request-ID contract for tool and no-tool turns.
 - [x] Traverse actual JSON Schema subschemas when checking references. Reserved property names and literal data in `const`, `enum` or `default` remain valid; remote references in schema-valued positions remain rejected for tool inputs and outputs.
+
+## Demo service navigation follow-through
+
+- [x] Close the [friendly demo API landing page](implementation_plan_o3a.md), preserving the existing execution and readiness contract.

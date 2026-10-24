@@ -6,7 +6,7 @@ from threading import Event
 import pytest
 from api_agent.config.resolve import ConfigResult, ResolvedValue
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
-from api_agent.telemetry.tracing import TraceError, TraceRuntime, _sdk_factory
+from api_agent.telemetry.tracing import TraceDeliveryError, TraceError, TraceRuntime, TRACE_DELIVERY_WARNING, _sdk_factory
 
 
 def config(mode='OTEL', content=None, **values):
@@ -234,8 +234,9 @@ def test_async_close_reports_failed_shutdown_with_fixed_diagnostic():
     provider.force_flush.return_value=False
     async def scenario():
         await runtime.astart()
-        with pytest.raises(TraceError,match=r'^Tracing shutdown failed\.$') as caught:
+        with pytest.raises(TraceDeliveryError) as caught:
             await runtime.aclose()
+        assert str(caught.value) == TRACE_DELIVERY_WARNING
         assert caught.value.__cause__ is None
     asyncio.run(scenario())
     provider.shutdown.assert_called_once()
@@ -255,8 +256,9 @@ def test_real_sdk_export_failure_propagates_to_flush_and_async_close(failure):
             assert runtime.flush() is False
             # Failure is sticky even after the queue is fully drained.
             assert runtime.flush() is False
-            with pytest.raises(TraceError, match=r'^Tracing shutdown failed\.$'):
+            with pytest.raises(TraceDeliveryError) as caught:
                 await runtime.aclose()
+            assert str(caught.value) == TRACE_DELIVERY_WARNING
         asyncio.run(scenario())
         session.return_value.close.assert_called_once()
         if failure == 'http403':

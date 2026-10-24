@@ -22,3 +22,7 @@ These requirements precede image acceptance. The production artifact serves the 
 - [ ] Test actual no-push image builds and relocated containers without development mounts, using controlled external endpoints. Prove API readiness, workflow selection/overrides, streaming/cancellation, provider failures, shutdown, independent sidecar reachability and absence of local service/browser/terminal startup. Reject dirty/missing/stale inputs and altered graph identity. Require exact applicable coverage, meaningful mutations, packaging/licenses, image/index/metadata review and human acceptance before deployment claims.
 
 Multi-stage dependency/tool separation can ship with the correctness baseline. Replacing declarative execution with generated code follows the separate measured optimization decision.
+
+## Tracing failure during deployment shutdown
+
+- [ ] Qualify [runtime-image shutdown with failing trace delivery](implementation_plan_h4b.md); earlier export errors must not indefinitely block a pod stop after actual disposal is acknowledged.
