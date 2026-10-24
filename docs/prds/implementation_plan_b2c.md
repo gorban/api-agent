@@ -48,3 +48,5 @@ This is a separate engine behavior proof, not completion of the useful API demo.
 
 - [x] Before dependent implementation, resolve the [MCP package, tool boundary and endpoint-selection decisions](implementation_plan_o.md) with the user. Lock the agreed public npm package and dependency tree; distinguish the demo's synthetic target from a universal external-pack fallback.
 - [x] Acquire the synthetic API through [pack-declared prerequisites](implementation_plan_o1.md). Demonstrate the GraphQL tool against that target without requiring a particular database engine. Preserve query-verification, partial-error and lifecycle acceptance above.
+
+- [x] Show the bundled `API_ENDPOINT` default in configuration Review. Allow editing it to a nonempty remote endpoint and clearing its saved `.env` value to restore the blank local synthetic API default.
