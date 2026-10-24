@@ -44,6 +44,7 @@ class WorkflowObservations:
         self.journal, self.boundary = journal, boundary
         self.log_policy, self.sink, self.trace = log_policy, sink, trace
         self._spans = {}
+        self._visit_call_kinds = {}
         self._journal_observer = self._admitted
         journal.subscribe(self._journal_observer)
 
@@ -91,6 +92,8 @@ class WorkflowObservations:
                 return
             kind = row.get('kind', 'node')
             owner = row.get('owner', 'workflow')
+            if kind == 'node':
+                self._visit_call_kinds[row['scope_id']] = self.journal._node_call_kinds.get(owner)
             structural = {'api_agent.' + key: row[key] for key in (
                 'event_id', 'invocation_id', 'turn_id', 'scope_id', 'parent_id',
                 'visit_id', 'attempt_id', 'attempt') if row.get(key) is not None}
@@ -99,6 +102,7 @@ class WorkflowObservations:
                 parent=self._spans.get(row.get('parent_id')))
         elif event == 'scope_end':
             span = self._spans.pop(row['scope_id'], None)
+            self._visit_call_kinds.pop(row['scope_id'], None)
             if span is not None:
                 span.attributes({'status': 'error' if row.get('outcome') == 'failed' else
                                  'cancelled' if row.get('outcome') == 'cancelled' else 'ok',
@@ -107,21 +111,25 @@ class WorkflowObservations:
         elif event == 'call':
             # Central accounting supplies an id once; journal dedup runs before
             # this callback. Do not estimate or count the same usage at parents.
+            tool = (self._visit_call_kinds.get(row.get('visit_id')) == 'deterministic'
+                    and row.get('selection') is None and row.get('usage') is None)
             selection = row.get('selection') or 'unknown'
-            structural = {'gen_ai.operation.name': 'chat',
+            operation = 'execute_tool' if tool else 'chat'
+            structural = {'gen_ai.operation.name': operation,
                           'api_agent.call_id': row['call_id'],
                           'api_agent.event_id': row['event_id']}
-            structural['gen_ai.request.model'] = selection
+            if not tool:
+                structural['gen_ai.request.model'] = selection
             for source, target in (('input_tokens', 'input_tokens'),
                                    ('output_tokens', 'output_tokens')):
                 value = (row.get('usage') or {}).get(source)
                 if type(value) is int and value >= 0:
                     structural['gen_ai.usage.' + target] = value
-            span = self.trace.begin('chat ' + selection, structural,
+            span = self.trace.begin(operation if tool else 'chat ' + selection, structural,
                 parent=self._spans.get(row.get('visit_id')), kind='CLIENT',
                 start_time=int(row['started_ms'] * 1_000_000) if row.get('started_ms') is not None else None)
             span.attributes({'duration_seconds': row.get('elapsed'),
-                             'status': 'error' if row.get('outcome') == 'failed' else
+                             'status': 'error' if row.get('outcome') in ('failed', 'failure', 'partial') else
                                        'cancelled' if row.get('outcome') == 'cancelled' else 'ok'})
             span.end(end_time=int(row['stopped_ms'] * 1_000_000)
                 if row.get('stopped_ms') is not None else None)

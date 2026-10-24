@@ -1,0 +1,7 @@
+version = 1
+
+[fields.API_HEADERS]
+type = "jsonobject"
+default = {}
+acknowledge_default = false
+help = "Owner-supplied HTTP headers for the selected GraphQL endpoint. Values are registered for credential redaction; generated tool arguments cannot override them."

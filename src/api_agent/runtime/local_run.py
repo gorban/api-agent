@@ -16,16 +16,17 @@ from api_agent.runtime.operation import local_operation
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.view_flow import _prepare_view
 from api_agent.ui.session import PreparedUISession
-from api_agent.workflows.local_application import LocalChatApplication
+from api_agent.runtime.local_tools import selected_application, bind_local_tools
 
 
-def _plan(config, schema, context, scope, *, engine_environment=None):
+def _plan(config, schema, context, scope, *, engine_environment=None, requires_api=False):
     """Admit exact consumed declarations without importing provider factories."""
     from api_agent.runtime.compose import plan_compose
     from api_agent.runtime.infrastructure_contract import load_infrastructure_contributions
     from api_agent.runtime.infrastructure_plan import plan_infrastructure
-    locations = tuple(config.values[key] for key in ('LLM_PROVIDER', 'UI_PROVIDER')
-        if config.values.get(key) and (key != 'UI_PROVIDER' or config.values.get('RUN_UI')))
+    locations = tuple(config.values[key] for key in ('LLM_PROVIDER', 'UI_PROVIDER', 'API_PROVIDER')
+        if config.values.get(key) and (key != 'UI_PROVIDER' or config.values.get('RUN_UI'))
+        and (key != 'API_PROVIDER' or requires_api))
     contributions = ()
     if getattr(context, 'infrastructure_paths', ()) or locations:
         contributions = load_infrastructure_contributions(context, selected_provider_locations=locations)
@@ -65,7 +66,7 @@ class LocalRunOwner:
 
     def __init__(self, context, resolve, *, argv=(), on_event=None,
                  schema=None, engine_environment=None, plan_factory=None, operation_factory=local_operation, browser_factory=None,
-                 prepare_view=_prepare_view, application_factory=LocalChatApplication,
+                 prepare_view=_prepare_view, application_factory=selected_application,
                  llm_factory=LocalLLM):
         self.context, self.resolve, self.argv = context, resolve, tuple(argv)
         self.on_event = on_event
@@ -98,6 +99,7 @@ class LocalRunOwner:
         self._emissions = None
         self._tracing_dashboard = None
         self._diagnostic_projection = None
+        self._requires_api = False
 
     def _publish(self, phase, *, components=(), destinations=(), inspection=None):
         self.snapshot = LocalSnapshot(phase, tuple(components), tuple(destinations), self._available_sources,
@@ -122,6 +124,8 @@ class LocalRunOwner:
         runtime = compose_runtime(self.context, config, callback_origin=origin,
             tls_material=material, required_kinds=())
         self._emissions = runtime.emissions
+        if self._requires_api:
+            bind_local_tools(runtime, self._graph, config)
         self._llm = self.llm_factory(config.values, self.context.owner_root, emissions=runtime.emissions,
                                      on_status=self._workflow_event, trace=runtime.tracing)
         from api_agent.workflows.observations import WorkflowObservationFactory
@@ -188,9 +192,18 @@ class LocalRunOwner:
                 self._engine_environment = MappingProxyType(selected)
                 self._prepared = self.prepare_view(self.context)
                 self._graph = self.application_factory(self._prepared[0], config=self._config.values)
+                self._requires_api = getattr(self._graph, 'requires_api', False) is True
+                bundled_demo = (getattr(self.context, 'pack_id', None) == 'demo'
+                    and not getattr(self.context, 'external_pack', False))
+                if bundled_demo:
+                    from api_agent.runtime.demo_api import prepare_demo_api
+                    self._config, _ = prepare_demo_api(self._config, self.context,
+                        requires_api=self._requires_api)
                 scope = StackScope.from_roots(self.context.base_root, self.context.pack_root)
-                plan = self.plan_factory(self._config, self.schema, self.context, scope,
-                                         engine_environment=self._engine_environment)
+                plan_options = {'engine_environment': self._engine_environment}
+                if self._requires_api:
+                    plan_options['requires_api'] = True
+                plan = self.plan_factory(self._config, self.schema, self.context, scope, **plan_options)
                 self._planned_sources = {item.compose_name: item.id for item in plan.conditional}
                 self._available_sources = ('agent', *(('ui',) if self._config.values.get('RUN_UI') else ()),
                     *(self._planned_sources.get(service, 'api-agent/' + service) for service in plan.services))
@@ -204,13 +217,20 @@ class LocalRunOwner:
                 self._publish('starting', components=tuple(
                     LocalComponent(name, 'starting') for name in self._planned_components))
                 from api_agent.runtime.local_status import LocalStatusApplication
+                operation_options = {}
+                if self._requires_api and bundled_demo:
+                    from api_agent.runtime.demo_api import bind_demo_api_endpoint
+                    operation_options['bind_infrastructure'] = bind_demo_api_endpoint
+                required_kinds = {'llm', 'ui'} if self._config.values.get('RUN_UI') else {'llm'}
+                if self._requires_api:
+                    required_kinds.add('api')
                 self._operation = self.operation_factory(self.context, resolve=lambda: self._config,
                     argv=self.argv, scope=scope, groups=('browser',),
                     ownership_directory=self.context.owner_root / 'artifacts/prerequisites',
-                    required_kinds={'llm', 'ui'} if self._config.values.get('RUN_UI') else {'llm'},
+                    required_kinds=required_kinds,
                     runtime_factory=self._runtime,
                     application_wrapper=lambda app: LocalStatusApplication(app, self._status),
-                    prepared_plan=plan, engine_environment=self._engine_environment)
+                    prepared_plan=plan, engine_environment=self._engine_environment, **operation_options)
                 opening = self._operation.open(retain=False)
                 exited = False
                 async def close_operation():

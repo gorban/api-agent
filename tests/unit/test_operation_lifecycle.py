@@ -128,6 +128,55 @@ def test_order_and_test_retention(rig):
 
     asyncio.run(scenario())
 
+
+def test_infrastructure_binding_runs_after_acquire_and_before_runtime(rig):
+    from dataclasses import replace
+    from api_agent.runtime.infrastructure_session import InfrastructureSession
+    runner, events, original = rig
+    bound = replace(original, values={**original.values, 'API_ENDPOINT': 'http://127.0.0.1:58092/graphql'})
+    compose = runner.compose_runtime
+    def bind(value, infrastructure):
+        assert value is original
+        assert isinstance(infrastructure, InfrastructureSession)
+        assert events[-1] == 'acquire'
+        events.append('bind')
+        return bound
+    def runtime(value, origin, material):
+        assert value is bound
+        assert events[-1] == 'bind'
+        return compose(value, origin, material)
+    runner.bind_infrastructure = bind
+    runner.compose_runtime = runtime
+
+    async def scenario():
+        async with runner.open() as session:
+            assert session.config is bound
+            assert 'API_ENDPOINT' not in original.values
+    asyncio.run(scenario())
+    assert events.index('acquire') < events.index('bind') < events.index('compose')
+    assert events[-1] == 'release:False'
+
+
+@pytest.mark.parametrize('failure', ['errors', 'missing', 'listener', 'callback'])
+def test_invalid_infrastructure_binding_releases_acquired_lease(rig, failure):
+    from dataclasses import replace
+    runner, events, config = rig
+    def bind(value, infrastructure):
+        if failure == 'callback':
+            raise ValueError('binding_failed')
+        if failure == 'listener':
+            return replace(value, values={'AGENT_DJANGO_URL': 'https://other.example:8443'})
+        return replace(value, **{failure: ('not ready',)})
+    runner.bind_infrastructure = bind
+
+    async def scenario():
+        with pytest.raises(ValueError, match='binding_failed|invalid_bound_runtime_configuration'):
+            async with runner.open():
+                pytest.fail('invalid binding must not start the operation')
+    asyncio.run(scenario())
+    assert 'compose' not in events
+    assert events[-1] == 'release:False'
+
 def test_workload_failure_still_stops_run_local(rig):
     async def scenario():
         runner, events, _ = rig

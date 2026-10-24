@@ -27,3 +27,4 @@ coverage/
 **/.private_resources/viewer/dompurify.js
 /apps/api-agent-ui/public/dompurify.js
 **/.private_resources/viewer/heading-id.js
+.api-agent/

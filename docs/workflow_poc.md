@@ -3,12 +3,12 @@
 The runtime loads versioned nested declarations from a selected `flow.md.html`,
 captures their resources, and compiles registered LangGraph execution. The
 [declaration grammar](prds/implementation_plan_b1b2.md) defines the inert source
-format and resource bounds. The bundled application is a single chat component with one LLM call;
+format and resource bounds. The root example is a single chat component with one LLM call;
 the permanent synthetic qualification fixture remains separate under
 `demo/contrived/`. Layout v1 remains for focused compatibility units. Each of two components owns
 its producer, format check, guard and two-pass budget. The model selects the
 first route and readiness; deterministic code never manufactures those choices.
-The useful GraphQL/API demo is phase two and remains pending.
+The selected bundled pack uses the separate [verified API demonstration](api_demo.md).
 
 Requirements and acceptance gates are in
 [the B2 hierarchy](prds/implementation_plan_b2.md).
@@ -23,7 +23,9 @@ freshness, explicit generation and pre-commit checks.
 Use a Python environment installed with the project's development dependencies.
 Run focused deterministic tests before any live authentication or inference:
 
-`python -m api_agent.workflows validate` checks the bundled application graph.
+`python -m api_agent.workflows validate` checks the root one-call example.
+`python -m api_agent.workflows validate --resource-pack-dir demo` checks the
+selected bundled API demonstration.
 `python -m api_agent.workflows validate --demo contrived` checks the separate
 qualification fixture. Add `--base-root PATH` to select either from another
 checkout. For an external pack, use `validate --base-root PATH
@@ -109,12 +111,18 @@ on every pass. Unit replay is `tests/unit/test_controlled_workflow_preferences.p
 
 ## Typed execution timeouts
 
-The bundled layout links every graph, component and node timeout to
+The permanent qualification layout links graph, component and node timeouts to
 `demo/cfg/config.toml`. `WORKFLOW_LLM_TIMEOUT_SECONDS` defaults to 120 seconds;
 `WORKFLOW_GRAPH_TIMEOUT_SECONDS`, `WORKFLOW_COMPONENT_TIMEOUT_SECONDS` and
 `WORKFLOW_NODE_TIMEOUT_SECONDS` remain unset by default. Each accepts a positive
 finite float through ordinary configuration, environment or command-line options.
 These optional settings do not add default acknowledgement prompts.
+
+The selected API demonstration instead links its graph/component deadlines to
+`demo/simple/cfg/config.toml`: 600 seconds for the graph and 300 seconds for a
+component across its passes. Its LLM timeout is 120 seconds, and the guarded
+component defaults to two passes. Child execution is clipped to the enclosing
+deadline in both layouts.
 
 A component deadline covers all of its passes. Every child budget is clipped to
 the earliest enclosing deadline. The producer checks its LLM budget after the
@@ -131,7 +139,8 @@ unchanged. These are public package versions, without environment paths.
 
 ## Installed declaration check
 
-Validate the bundled application with `python -m api_agent.workflows validate`;
+Validate the root example with `python -m api_agent.workflows validate`, or the
+selected demo with `python -m api_agent.workflows validate --resource-pack-dir demo`;
 `diagram` prints declaration-derived topology without importing native bindings.
 Build a wheel and install it into a separate environment. From an unrelated
 working directory, run `python -m api_agent.workflows validate --demo contrived`

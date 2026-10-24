@@ -330,6 +330,11 @@ class WorkflowJournal:
                  source_manifest=None, boundary=None, turn_id=None, component_passes=None,
                  content_policy=None, model_identity=None):
         self.projection = projection(definition, component_passes=component_passes)
+        # Native callable kind is admitted by the definition compiler. Keep it
+        # private to trace classification; journal and projection stay generic.
+        self._node_call_kinds = {row['ID']: row['Kind'] for row in
+                                definition.layout.tables.get('Functions', ())
+                                if row.get('Kind') in ('llm', 'deterministic')}
         self._admitted_edges = {tuple(row[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                                 for row in self.projection['edges']}
         self.invocation_id = str(uuid4())

@@ -138,7 +138,7 @@ class OperationRunner:
 
     def __init__(self, *, resolve, prepare_dependencies, prepare_https, plan,
                  manager, compose_runtime, create_application, listener,
-                 timeout=120):
+                 timeout=120, bind_infrastructure=None):
         if timeout <= 0:
             raise ValueError('timeout must be positive')
         self.resolve = resolve
@@ -149,6 +149,7 @@ class OperationRunner:
         self.compose_runtime = compose_runtime
         self.create_application = create_application
         self.listener = listener
+        self.bind_infrastructure = bind_infrastructure
         self.timeout = timeout
         self.pending_cleanup = None
         self._active = False
@@ -186,15 +187,20 @@ class OperationRunner:
         owned_listener = None
         try:
             lease = await _offload(owned_manager.acquire, cancellation=cancelled)
+            from .infrastructure_session import InfrastructureSession
+            infrastructure = InfrastructureSession(owned_manager)
+            if self.bind_infrastructure is not None:
+                config = self.bind_infrastructure(config, infrastructure)
+                if config.errors or config.missing or callback_endpoint(config) != endpoint:
+                    raise ValueError('invalid_bound_runtime_configuration')
             runtime = self.compose_runtime(config, endpoint.origin, tls.material)
             await runtime.astart()
             application = self.create_application(runtime, endpoint.hostname)
             owned_listener = self.listener()
             await owned_listener.start(application, tls.material, endpoint)
             await owned_listener.wait_ready(self.timeout)
-            from .infrastructure_session import InfrastructureSession
             yield OperationSession(config, tls, lease, runtime, application, owned_listener, endpoint,
-                                   InfrastructureSession(owned_manager))
+                                   infrastructure)
         finally:
             primary = sys.exc_info()[1]
             if lease is None:
@@ -222,7 +228,8 @@ class OperationRunner:
 
 def local_operation(context, *, resolve, argv, scope, ownership_directory,
                     engine_environment=None, collect=False, groups=(), timeout=120,
-                    runtime_factory=None, application_wrapper=None, required_kinds=None, prepared_plan=None):
+                    runtime_factory=None, application_wrapper=None, required_kinds=None, prepared_plan=None,
+                    bind_infrastructure=None):
     """Wire the local engine/TLS/API owners after an explicit operation choice.
 
     The caller supplies fresh resolution and handles an interpreter handoff
@@ -290,4 +297,5 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
 
     return OperationRunner(resolve=resolved_for_operation, prepare_dependencies=dependencies,
         prepare_https=https, plan=plan, manager=manager, compose_runtime=runtime,
-        create_application=application, listener=UvicornListener, timeout=timeout)
+        create_application=application, listener=UvicornListener, timeout=timeout,
+        bind_infrastructure=bind_infrastructure)

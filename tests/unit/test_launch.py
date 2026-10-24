@@ -135,7 +135,10 @@ class LaunchTests(unittest.TestCase):
     def test_bootstrap_hint_only_when_pack_not_selected(self):
         with tempfile.TemporaryDirectory() as directory, patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
             resource_pack = Path(directory) / "pack"
-            shutil.copytree(ROOT / "demo", resource_pack)
+            resource_pack.mkdir()
+            (resource_pack / 'config.toml').write_text('version = 1\n')
+            (resource_pack / 'pack.toml').write_text(
+                'version = 1\nid = "external_fixture"\nconfig = "config.toml"\n')
             cases = [(['--help'], {}, True),
                      (['--help', '--resource-pack-dir', str(ROOT / 'demo')], {}, False),
                      (['--help', '--resource-pack-dir', str(resource_pack)], {}, False),
@@ -147,6 +150,18 @@ class LaunchTests(unittest.TestCase):
                     if expected:
                         self.assertIn('\n\nBootstrap:', output.getvalue())
                         self.assertNotIn('\n\n\nBootstrap:', output.getvalue())
+
+    def test_help_rejects_external_pack_with_missing_workflow_entry(self):
+        with tempfile.TemporaryDirectory() as directory, patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):
+            resource_pack = Path(directory) / 'pack'
+            resource_pack.mkdir()
+            (resource_pack / 'config.toml').write_text('version = 1\n')
+            (resource_pack / 'pack.toml').write_text(
+                'version = 1\nid = "external_fixture"\nconfig = "config.toml"\n'
+                '[workflow]\nversion = 2\nroot = "pack"\nentry = "missing.md.html"\n')
+            with patch('sys.stderr', new_callable=StringIO) as error:
+                self.assertEqual(main(['--help', '--resource-pack-dir', str(resource_pack)], base_root=ROOT), 2)
+            self.assertIn('workflow.entry must exist inside its declared root', error.getvalue())
 
     def test_configured_collection_shortcuts_interaction(self):
         with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True), patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), patch('api_agent.testing.collection.collect_tests', return_value=[type('Test', (), {'id': 'base::test_example.py::test_one'})()]):

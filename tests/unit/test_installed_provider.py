@@ -494,3 +494,37 @@ def test_hostile_installer_environment_cannot_redirect_installation(installed_wh
 
     assert output.strip() == 'isolated installation verified'
     assert not redirected.exists()
+
+
+def test_installed_bundled_demo_resolves_graphql_provider_default(installed_wheel, tmp_path):
+    python, environment, repository, _ = installed_wheel
+    consumer_cwd = tmp_path / 'unrelated-consumer'
+    consumer_cwd.mkdir()
+    consumer = '''
+from pathlib import Path
+import api_agent
+from api_agent.providers.distribution import inspect_relocated_pack, selected_manifests
+from api_agent.providers.loading import provider_location
+import sys
+
+installed, checkout = map(Path, sys.argv[1:])
+assert Path(api_agent.__file__).resolve().is_relative_to(installed)
+assert not Path.cwd().is_relative_to(checkout)
+base = Path(api_agent.__file__).resolve().parent
+context, schema = inspect_relocated_pack(base, base / 'demo')
+assert context.config_path == base / 'demo/simple/cfg/config.toml'
+assert schema.fields['API_ENDPOINT'].default == ''
+assert schema.fields['API_HEADERS'].default == {}
+selection = schema.fields['API_PROVIDER'].default
+path, name = provider_location(selection, owner_root=context.owner_root)
+assert path == base / 'api_providers/graphql_mcp/factory.py' and name == 'create'
+manifests = selected_manifests({'API_PROVIDER': selection}, owner_root=context.owner_root,
+                               active_kinds={'api'})
+assert len(manifests) == 1
+assert manifests[0].root == path.parent
+assert manifests[0].requirements() == ('graphql-core==3.2.13',)
+print('installed bundled GraphQL default resolved')
+'''
+    output = run([str(python), '-I', '-c', consumer, str(environment), str(repository)],
+                 cwd=consumer_cwd)
+    assert output.strip() == 'installed bundled GraphQL default resolved'

@@ -15,7 +15,8 @@ def _canonical_selection(context, definition, projection):
         return False
     owner = definition.entry_root
     return (not definition.replacements
-            and definition.entry == definition.roots[owner] / 'flow.md.html'
+            and definition.entry.name == 'flow.md.html'
+            and definition.entry.is_relative_to(definition.roots[owner])
             and all(document.logical_path.startswith(owner + '/')
                     for document in projection.documents)
             and all(resource.logical_path.startswith((owner + '/', 'inline/' + owner + '/'))

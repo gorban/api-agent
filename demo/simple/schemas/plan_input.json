@@ -1,0 +1,1 @@
+{"type":"object","properties":{"messages":{"type":"array","items":{"type":"object","properties":{"role":{"type":"string"},"content":{"type":"string"}},"required":["role","content"],"additionalProperties":false}},"feedback":{"type":["object","null"]}},"required":["messages","feedback"],"additionalProperties":false}

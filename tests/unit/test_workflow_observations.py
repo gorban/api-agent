@@ -25,7 +25,8 @@ def config(log=False, trace=False, mode='OTEL', **overrides):
 
 def definition():
     node = SimpleNamespace(id='Make', kind='node', parent=None)
-    layout = SimpleNamespace(steps=[node], tables={'Edges': []})
+    layout = SimpleNamespace(steps=[node], tables={'Edges': [],
+        'Functions': [{'ID': 'Make', 'Kind': 'deterministic'}]})
     resource = SimpleNamespace(kind='declaration', logical_path='flows/main.md.html',
         sha256='a' * 64, content_bytes=b'# Workflow v2')
     return SimpleNamespace(graph_id='Example', definition_id='b' * 64,
@@ -233,6 +234,81 @@ def test_trace_event_and_close_failures_are_observational():
         schema={'type':'object','properties':{'text':{'type':'string'}}},plain_fields=['text'])
     adapter.close()
     assert len(adapter.finalize()['events']) == 2
+
+
+@pytest.mark.parametrize('outcome,status', [('success', 'ok'), ('partial', 'error'), ('failure', 'error'), ('cancelled', 'cancelled')])
+def test_unpriced_tool_leaf_is_not_traced_as_an_unknown_chat(outcome, status):
+    from unittest.mock import Mock
+    runtime = Mock(boundary=EmissionBoundary(ContentPolicy(False)))
+    adapter = WorkflowObservationFactory(config(), boundary=EmissionBoundary(),
+        trace=runtime).create(definition())
+    call_id = str(uuid4())
+    adapter.observe(dict(event='scope_start', scope_id='tool-visit', kind='node', owner='Make'))
+
+    adapter.record_call(visit_id='tool-visit', call_id=call_id,
+        elapsed=.01, outcome=outcome)
+
+    name, attributes = runtime.begin.call_args.args
+    assert name == 'execute_tool'
+    assert attributes['gen_ai.operation.name'] == 'execute_tool'
+    assert attributes['api_agent.call_id'] == call_id
+    assert 'gen_ai.request.model' not in attributes
+    assert not any(key.startswith('gen_ai.usage.') for key in attributes)
+    assert runtime.begin.return_value.attributes.call_args.args[0]['status'] == status
+    retained = adapter.finalize()['events'][-1]
+    assert retained['usage'] is None and retained['selection'] is None
+
+
+@pytest.mark.parametrize('call_kind,expected_name', [
+    ('llm', 'chat unknown'), ('deterministic', 'execute_tool')])
+def test_withheld_failed_model_identity_does_not_change_callable_kind(call_kind, expected_name):
+    from unittest.mock import Mock
+    runtime = Mock(boundary=EmissionBoundary(ContentPolicy(False)))
+    source = definition()
+    source.layout.tables['Functions'][0]['Kind'] = call_kind
+    adapter = WorkflowObservationFactory(config(), boundary=EmissionBoundary(),
+        trace=runtime).create(source)
+    adapter.observe(dict(event='scope_start', scope_id='visit', kind='node', owner='Make'))
+
+    adapter.record_call(visit_id='visit', call_id=str(uuid4()),
+        selection='unadmitted-model' if call_kind == 'llm' else None,
+        usage=None, outcome='failed')
+
+    name, attributes = runtime.begin.call_args.args
+    assert name == expected_name
+    assert attributes['gen_ai.operation.name'] == ('chat' if call_kind == 'llm' else 'execute_tool')
+    assert ('gen_ai.request.model' in attributes) == (call_kind == 'llm')
+    if call_kind == 'llm':
+        assert attributes['gen_ai.request.model'] == 'unknown'
+    assert adapter.finalize()['events'][-1]['selection'] is None
+
+
+def test_real_serialized_tool_span_has_error_status_without_model_accounting():
+    with collector() as (endpoint, received):
+        resolved = config(TRACE_TARGET=endpoint)
+        runtime = TraceRuntime(resolved, model_identities=('example-model',))
+        asyncio.run(runtime.astart())
+        adapter = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(),
+            trace=runtime).create(definition())
+        adapter.observe(dict(event='scope_start', scope_id='tool-visit', kind='node', owner='Make'))
+        adapter.record_call(visit_id='tool-visit', call_id=str(uuid4()), elapsed=.01,
+            outcome='partial')
+        adapter.record_call(visit_id='tool-visit', call_id=str(uuid4()), elapsed=.01,
+            selection='example-model', usage={'input_tokens': 7, 'output_tokens': 2})
+        adapter.close()
+
+        assert runtime.shutdown()
+        wire = ExportTraceServiceRequest.FromString(received[0][1])
+        spans = [span for resource in wire.resource_spans for scope in resource.scope_spans for span in scope.spans]
+        tool = next(span for span in spans if span.name == 'execute_tool')
+        chat = next(span for span in spans if span.name == 'chat example-model')
+        attributes = {item.key: item.value for item in tool.attributes}
+        assert attributes['gen_ai.operation.name'].string_value == 'execute_tool'
+        assert 'gen_ai.request.model' not in attributes
+        assert not any(key.startswith('gen_ai.usage.') for key in attributes)
+        assert tool.kind == 3 and tool.status.code == 2
+        assert tool.parent_span_id == chat.parent_span_id
+        assert next(item.value.int_value for item in chat.attributes if item.key == 'gen_ai.usage.input_tokens') == 7
 
 
 def test_empty_classification_without_properties_remains_unclassified():

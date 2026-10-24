@@ -1,0 +1,11 @@
+version = 1
+owner = "demo"
+
+[[services]]
+id = "api"
+compose = "api/api.json"
+assets = ["api/server.py", "api/graphql_core-3.2.13-py3-none-any.whl", "api/GRAPHQL_CORE_LICENSE.txt"]
+when = {field = "DEMO_API_LOCAL", equals = true}
+dependencies = []
+readiness = {kind = "http", target = "graphql/ready", identity_field = "service", identity_value = "demo-graphql", timeout = 15}
+endpoints = [{name = "graphql", host = "http://127.0.0.1:58092", in_project = "http://self:8090"}]

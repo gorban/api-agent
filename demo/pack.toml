@@ -2,12 +2,16 @@ version = 1
 service_name = "api-agent"
 id = "demo"
 owner = ".."
-config = "cfg/config.toml"
+config = "simple/cfg/config.toml"
 
 [workflow]
 version = 2
 root = "base"
-entry = "flow.md.html"
+entry = "demo/simple/flow.md.html"
+
+[infrastructure]
+version = 1
+declarations = ["api/infrastructure.toml"]
 
 [tests]
 unit = ["tests/unit"]

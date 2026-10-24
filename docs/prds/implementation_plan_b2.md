@@ -2,7 +2,7 @@
 
 This grouping extends B/B1. Phase one implements a reusable Markdown workflow
 runtime and permanent contrived acceptance fixture. Phase two evolves the useful
-demo into verified API planning and rendering; it remains pending.
+demo into verified API planning and rendering; its technical delivery gates pass.
 
 The future `.md.html` resource/viewer format and migration gates are in
 [B1a](implementation_plan_b1a.md); completed phase-one checks remain completed.
@@ -18,7 +18,7 @@ acceptance before retiring the old Layout paths.
 - [x] [B2b — Permanent contrived fixture and statistical acceptance](implementation_plan_b2b.md):
   model-chosen independent route/readiness, verbatim input, repair, pilot,
   validated immutable calibration, bounded coverage and recorded evidence.
-- [ ] [B2c — Useful API demo, phase two](implementation_plan_b2c.md):
+- [x] [B2c — Useful API demo, phase two](implementation_plan_b2c.md):
   verified GraphQL planning, separate preference fallback, generic tool seam,
   synthetic API lifecycle and faithful rendering.
 
@@ -27,6 +27,17 @@ acceptance before retiring the old Layout paths.
 The earlier phase-one implementation and native pilot/coverage passed locally.
 The [manual-calibration and model-specific-bound follow-up](implementation_plan_b2b1.md)
 is complete: fresh evidence, joined units, installed loading and independent review
-pass. Human review stays open; phase two is unimplemented.
+pass. Phase two now has its selected declaration, controlled integration, installed
+artifacts, complete unit/coverage gate and closed independent/external reviews.
+Human acceptance remains tracked in B2c.
 
 See [workflow usage](../workflow_poc.md) for reproducible generic commands.
+
+**Deferred human review**
+
+Substantive work is complete. Explicit human acceptance remains unchecked in the
+child requirements; technical completion does not waive that acceptance.
+
+- [Layout/runtime contracts](implementation_plan_b2a.md)
+- [Permanent contrived fixture](implementation_plan_b2b.md)
+- [Useful API demonstration](implementation_plan_b2c.md)

@@ -25,6 +25,21 @@ def test_unmodified_owner_root_uses_static_freshness(tmp_path):
     assert _canonical_selection(context(tmp_path), definition, projection)
 
 
+def test_nested_selected_graph_uses_its_generated_static_diagram(tmp_path):
+    definition = SimpleNamespace(entry_root='base', entry=tmp_path / 'demo/simple/flow.md.html',
+                                 roots={'base': tmp_path}, replacements=())
+    projection = SimpleNamespace(documents=(SimpleNamespace(logical_path='base/demo/simple/flow.md.html'),), resources=())
+    assert _canonical_selection(context(tmp_path), definition, projection)
+
+
+@pytest.mark.parametrize('entry', ['example.md.html', '../outside/flow.md.html'])
+def test_unregistered_entry_shape_does_not_claim_generated_graph_freshness(tmp_path, entry):
+    definition = SimpleNamespace(entry_root='base', entry=(tmp_path / entry).resolve(),
+                                 roots={'base': tmp_path}, replacements=())
+    projection = SimpleNamespace(documents=(), resources=())
+    assert not _canonical_selection(context(tmp_path), definition, projection)
+
+
 def test_selected_replacement_uses_temporary_projection(tmp_path):
     definition = SimpleNamespace(entry_root='base', entry=tmp_path / 'flow.md.html',
                                  roots={'base': tmp_path}, replacements=(object(),))
