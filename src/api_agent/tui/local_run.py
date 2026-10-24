@@ -6,7 +6,7 @@ from dataclasses import replace
 from rich.text import Text
 
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Container, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Static, TextArea
 
@@ -28,7 +28,10 @@ class LocalRunScreen(Screen):
     DEFAULT_CSS = '''
     #local-output, #local-choices { height: 1fr; }
     #local-choices { display: none; }
-    #local-choices Button { width: 100%; height: auto; min-height: 3; margin: 0 0 1 0; }
+    .local-choice-grid { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
+    .local-choice-grid.browsers { grid-rows: 5; }
+    #local-choices Button { width: 100%; height: 3; min-width: 0; text-wrap: nowrap; text-overflow: ellipsis; margin: 0 1 1 0; }
+    #local-choices .local-choice-grid.browsers Button { height: 4; }
     #local-choices Button:focus { border: heavy $accent; }
     #local-error { display: none; height: auto; min-height: 1; color: $error; }
     '''
@@ -237,7 +240,7 @@ class LocalRunScreen(Screen):
                 buttons.append(Button(Text(label), id=f'local-choice-{self.menu_generation}-{index}'))
             if kind == 'logs':
                 buttons.append(Button(Text('*  All logs'), id=f'local-choice-{self.menu_generation}-all'))
-            pane.mount(*buttons)
+            pane.mount(Container(*buttons, classes=f'local-choice-grid {kind}'))
             if buttons:
                 generation = self.menu_generation
                 target = buttons[min(selection, len(buttons) - 1)]
@@ -355,15 +358,20 @@ class LocalRunScreen(Screen):
             await self.activate_choice(index)
             event.stop()
             return
-        directions = {'up': -1, 'k': -1, 'left': -1, 'h': -1,
-                      'down': 1, 'j': 1, 'right': 1, 'l': 1}
+        directions = {'up': -2, 'k': -2, 'left': -1, 'h': -1,
+                      'down': 2, 'j': 2, 'right': 1, 'l': 1}
         if key in directions:
             buttons = [button for button in self.query('#local-choices Button')
                        if (button.id or '').startswith(f'local-choice-{self.menu_generation}-')]
             focused = self.app.focused
             if buttons:
                 index = buttons.index(focused) if focused in buttons else 0
-                buttons[max(0, min(len(buttons) - 1, index + directions[key]))].focus()
+                target = max(0, min(len(buttons) - 1, index + directions[key]))
+                if ((key in {'left', 'h', 'right', 'l'} and target // 2 != index // 2)
+                        or (key in {'up', 'k'} and index < 2)
+                        or (key in {'down', 'j'} and index // 2 == (len(buttons) - 1) // 2)):
+                    target = index
+                buttons[target].focus()
             event.prevent_default()
             event.stop()
 

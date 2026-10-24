@@ -487,7 +487,7 @@ def test_live_menu_buttons_navigation_hotkeys_and_copy(monkeypatch):
             assert app.focused is first
             assert screen.query_one('#local-output').text == 'selected log textstill live\n'
             await pilot.press('j')
-            assert app.focused.id.endswith('-1')
+            assert app.focused.id.endswith('-2')
             await pilot.press('k')
             assert app.focused is first
             await pilot.press('l')
@@ -615,7 +615,7 @@ def test_status_reconciles_open_menu_and_preserves_focused_destination(monkeypat
             await pilot.pause()
             assert len(list(screen.query('#local-choices Button'))) == 2
             assert app.focused.id.endswith('-0')
-            await pilot.press('down')
+            await pilot.press('right')
             focused = app.focused
             assert focused.id.endswith('-1')
             callbacks[0](LocalEvent('log', source='agent', text='event\n'))
@@ -639,7 +639,7 @@ def test_status_reconciles_open_menu_and_preserves_focused_destination(monkeypat
             callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('new',))))
             await pilot.pause()
             assert screen.menu_choices == ('new',)
-            await pilot.press('down')
+            await pilot.press('right')
             assert app.focused.id.endswith('-all')
             callbacks[0](LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('new', 'next'))))
             await pilot.pause()
@@ -1439,7 +1439,7 @@ def test_named_source_focus_survives_rapid_reordering(reconciling_screen):
         app = Harness(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press('l', 'down')
+            await pilot.press('l', 'right')
             for sources in (('ui', 'agent'), ('worker', 'agent', 'ui'), ('worker', 'ui')):
                 screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=sources)))
             await pilot.pause()
@@ -1459,7 +1459,7 @@ def test_browser_focus_survives_rapid_reordering_without_activation(monkeypatch,
         app = Harness(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press('b', 'down')
+            await pilot.press('b', 'right')
             first, second = screen.menu_choices
             stale = app.focused
             for destinations in ((second, first), (second,), (first, second)):
@@ -1488,7 +1488,7 @@ def test_user_focus_overrides_pending_menu_focus(monkeypatch, reconciling_screen
             screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('ui', 'agent'))))
             await pilot.pause()
             assert screen._pending_menu_focus is not None
-            await pilot.press('down')
+            await pilot.press('right')
             assert app.focused.id.endswith('-1')
             screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('worker', 'ui', 'agent'))))
             await pilot.pause()
@@ -1514,7 +1514,7 @@ def test_pending_focus_callback_respects_user_navigation_and_closed_menu(monkeyp
             monkeypatch.setattr(screen, 'call_after_refresh', lambda callback: callbacks.append(callback))
             screen.receive(LocalEvent('status', snapshot=LocalSnapshot('ready', log_sources=('ui', 'agent'))))
             await pilot.pause()
-            await pilot.press('down')
+            await pilot.press('right')
             focused = app.focused
             assert focused.id.endswith('-1')
 
@@ -1654,3 +1654,80 @@ def test_start_failure_keeps_owned_cleanup_in_automatic_retry(automatic):
         screen.owner.finish_cleanup.assert_awaited_once()
     assert screen.finished and screen.status == 1
     assert screen.failure == 'safe startup failure'
+
+
+@pytest.mark.parametrize('kind,height', [('logs', 3), ('browsers', 4)])
+@pytest.mark.parametrize('size', [(100, 30), (44, 12)])
+def test_two_column_menus_render_and_scroll_unbounded_choices(reconciling_screen, kind, height, size):
+    async def exercise():
+        screen = reconciling_screen
+        app = Harness(screen)
+        names = tuple(f'Pack {index}' for index in range(25))
+        destinations = tuple(LocalDestination(name, f'http://localhost/{index}')
+                             for index, name in enumerate(names))
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen.open_menu(kind, names if kind == 'logs' else destinations)
+            await pilot.pause()
+            buttons = list(screen.query('#local-choices Button'))
+            assert len(buttons) == 25 + (kind == 'logs')
+            assert buttons[0].region.y == buttons[1].region.y
+            assert buttons[0].region.right <= buttons[1].region.x
+            assert buttons[2].region.x == buttons[0].region.x
+            assert buttons[2].region.y > buttons[0].region.y
+            assert buttons[0].region.height == height
+            if kind == 'browsers':
+                lines = buttons[0].render_lines(buttons[0].content_region.translate(
+                    (-buttons[0].region.x, -buttons[0].region.y)))
+                assert 'Pack 0' in lines[0].text
+                assert 'http://local' in lines[1].text
+                if size[0] == 100:
+                    assert destinations[0].url in lines[1].text
+                assert str(buttons[0].label).splitlines() == ['1  Pack 0', '   http://localhost/0']
+            await pilot.press('right', 'right', 'up')
+            assert app.focused is buttons[1]
+            await pilot.press('down')
+            assert app.focused is buttons[3]
+            await pilot.press('left', 'up')
+            assert app.focused is buttons[0]
+            await pilot.press('left', 'up')
+            assert app.focused is buttons[0]
+            buttons[-1].focus()
+            await pilot.pause(0.5)
+            pane = screen.query_one('#local-choices')
+            assert pane.scroll_y > 0
+            assert buttons[-1].region.y >= pane.content_region.y
+            assert buttons[-1].region.bottom <= pane.content_region.bottom
+            await pilot.press('down', 'right')
+            assert app.focused is buttons[-1]
+            buttons[23].focus()
+            await pilot.press('down')
+            assert app.focused is buttons[-1]
+            assert await screen.close_owned()
+    asyncio.run(exercise())
+
+
+def test_browser_long_name_keeps_url_on_second_content_line(monkeypatch, reconciling_screen):
+    async def exercise():
+        copied = []
+        async def copy_text(app, value):
+            copied.append(value)
+            return True
+        monkeypatch.setattr('api_agent.tui.local_run.copy_text', copy_text)
+        screen = reconciling_screen
+        destination = LocalDestination('Long browser destination name ' * 4,
+                                       'http://localhost/' + 'long-path/' * 12)
+        app = Harness(screen)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen.open_menu('browsers', (destination,))
+            await pilot.pause()
+            button = app.focused
+            lines = button.render_lines(button.content_region.translate(
+                (-button.region.x, -button.region.y)))
+            assert 'Long browser' in lines[0].text
+            assert 'http://localhost/' in lines[1].text
+            await pilot.press('ctrl+c')
+            assert copied == [destination.url]
+            assert await screen.close_owned()
+    asyncio.run(exercise())
