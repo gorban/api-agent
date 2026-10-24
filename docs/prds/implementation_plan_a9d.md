@@ -48,4 +48,4 @@ retain their review items; completion does not grant human acceptance.
 
 Current human acceptance covers the delivered terminal configuration, test selection/launch controls, results/navigation and timing presentation. Future operation consumers and unrelated technical gates remain separate.
 
-- [ ] Correct [Clear configuration visit membership](implementation_plan_a9j.md).
+- [x] Correct [Clear configuration visit membership](implementation_plan_a9j.md).
