@@ -30,7 +30,7 @@ class LocalRunScreen(Screen):
     #local-choices { display: none; }
     #local-choices Button { width: 100%; height: auto; min-height: 3; margin: 0 0 1 0; }
     #local-choices Button:focus { border: heavy $accent; }
-    #local-error { height: auto; color: $error; }
+    #local-error { display: none; height: auto; min-height: 1; color: $error; }
     '''
     VIEW_HINT = '^C Copy selected text  b Browser destinations  l Log sources  * All logs  s Stop  q Quit'
     MENU_HINT = 'Arrows/hjkl Move  1–9,0 or Enter Open\n^C Copy  Esc/c Back  s Stop  q Quit'
@@ -66,7 +66,7 @@ class LocalRunScreen(Screen):
         yield TextArea('', id='local-output', read_only=True, soft_wrap=False)
         yield VerticalScroll(id='local-choices')
         yield Static(self.VIEW_HINT, id='local-hint', markup=False)
-        yield Static('', id='local-error', markup=False)
+        yield TextArea('', id='local-error', read_only=True, soft_wrap=True)
 
     def on_mount(self):
         self._local_app = self.app
@@ -99,7 +99,10 @@ class LocalRunScreen(Screen):
                        if self._startup_started is not None else 0)
             status += f'\n{self.snapshot.activity or "Starting local operation"} — {elapsed}s elapsed'
         self.query_one('#local-status', Static).update(status)
-        self.query_one('#local-error', Static).update(self.failure)
+        error_area = self.query_one('#local-error', TextArea)
+        if error_area.text != self.failure:
+            error_area.load_text(self.failure)
+        error_area.display = bool(self.failure)
 
     async def run(self):
         try:
@@ -268,6 +271,9 @@ class LocalRunScreen(Screen):
             if not self.is_mounted or self.app.screen is not self:
                 return False
             focused = self.app.focused
+            if (isinstance(focused, TextArea) and focused.id == 'local-error'
+                    and focused.screen is self and focused.display):
+                return bool(focused.selected_text)
             if self.menu is None:
                 return (isinstance(focused, TextArea) and focused.id == 'local-output'
                         and focused.screen is self and focused.display and bool(focused.selected_text))
@@ -312,11 +318,15 @@ class LocalRunScreen(Screen):
                 self.refresh_view()
 
     async def action_copy_choice(self):
+        focused = self.app.focused
+        if isinstance(focused, TextArea) and focused.id == 'local-error':
+            if self.check_action('copy_choice', ()):
+                await self.copy_value(focused.selected_text)
+            return
         if self.menu is None:
             if self.check_action('copy_choice', ()):
-                await self.copy_value(self.query_one('#local-output', TextArea).selected_text)
+                await self.copy_value(focused.selected_text)
             return
-        focused = self.app.focused
         if not isinstance(focused, Button) or not (focused.id or '').startswith('local-choice-'):
             return
         suffix = focused.id.removeprefix('local-choice-').split('-')

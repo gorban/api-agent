@@ -1,6 +1,7 @@
 """One local application controller shared by terminal and workbench consumers."""
 import asyncio
 import os
+from threading import Event
 from copy import deepcopy
 from secrets import token_urlsafe
 from types import MappingProxyType
@@ -19,11 +20,12 @@ from api_agent.ui.session import PreparedUISession
 from api_agent.runtime.local_tools import selected_application, bind_local_tools
 
 
-def _plan(config, schema, context, scope, *, engine_environment=None, requires_api=False):
+def _plan(config, schema, context, scope, *, engine_environment=None, requires_api=False,
+          cancelled=lambda: False):
     """Admit exact consumed declarations without importing provider factories."""
     from api_agent.runtime.compose import plan_compose
     from api_agent.runtime.infrastructure_contract import load_infrastructure_contributions
-    from api_agent.runtime.infrastructure_plan import plan_infrastructure
+    from api_agent.runtime.infrastructure_plan import MissingEngineTransport, plan_infrastructure
     locations = tuple(config.values[key] for key in ('LLM_PROVIDER', 'UI_PROVIDER', 'API_PROVIDER')
         if config.values.get(key) and (key != 'UI_PROVIDER' or config.values.get('RUN_UI'))
         and (key != 'API_PROVIDER' or requires_api))
@@ -33,7 +35,15 @@ def _plan(config, schema, context, scope, *, engine_environment=None, requires_a
     if contributions:
         if schema is None:
             raise ValueError('Selected infrastructure requires the resolved configuration schema.')
-        return plan_infrastructure(config, schema, contributions, scope, engine_environment=engine_environment)
+        try:
+            return plan_infrastructure(config, schema, contributions, scope,
+                                       engine_environment=engine_environment)
+        except MissingEngineTransport:
+            from api_agent.runtime.reporting_engine import verified_engine_binding
+            _, transport = verified_engine_binding(engine_environment, cancelled=cancelled)
+            pinned = {**dict(engine_environment or {}), 'DOCKER_HOST': transport}
+            return plan_infrastructure(config, schema, contributions, scope,
+                                       engine_environment=pinned)
     return plan_compose(config.values, scope, engine_environment=engine_environment)
 
 
@@ -230,10 +240,18 @@ class LocalRunOwner:
                 plan_options = {'engine_environment': self._engine_environment}
                 if self._requires_api:
                     plan_options['requires_api'] = True
+                plan_cancelled = Event()
+                if self.plan_factory is _plan:
+                    plan_options['cancelled'] = plan_cancelled.is_set
                 self._startup_stage('infrastructure planning')
                 await asyncio.sleep(0)
                 plan = await offload(self.plan_factory, self._config, self.schema, self.context, scope,
-                                     **plan_options)
+                                     cancellation=plan_cancelled, **plan_options)
+                plan_environment = getattr(plan, 'environment', None)
+                if plan_environment is not None:
+                    selected = {key: plan_environment[key] for key in ENGINE_ENVIRONMENT_KEYS
+                                if key in plan_environment}
+                    self._engine_environment = MappingProxyType(selected)
                 self._planned_sources = {item.compose_name: item.id for item in plan.conditional}
                 self._available_sources = ('agent', *(('ui',) if self._config.values.get('RUN_UI') else ()),
                     *(self._planned_sources.get(service, 'api-agent/' + service) for service in plan.services))

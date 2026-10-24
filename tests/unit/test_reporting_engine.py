@@ -62,6 +62,14 @@ def test_matching_native_and_nonempty_podman_handshakes(engine):
     assert len(native) == len(fallback) == 64 and len(engine.closed) == 6
 
 
+def test_verified_binding_exposes_canonical_transport_without_changing_identity(engine):
+    environment = {'DOCKER_HOST': 'unix://' + str(engine.path)}
+    identity, transport = subject.verified_engine_binding(environment,
+        runner=engine.runner, connection=engine.connection)
+    assert identity == identify(engine)
+    assert transport == 'unix://' + str(engine.path.resolve())
+
+
 @pytest.mark.parametrize('kind', ['empty-podman', 'wrong-id', 'wrong-host', 'wrong-store',
     'wrong-inventory', 'bad-id', 'duplicate-cli', 'duplicate-direct', 'malformed-direct', 'status'])
 def test_ambiguous_or_mismatched_engine_is_refused(engine, kind):
