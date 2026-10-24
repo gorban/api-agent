@@ -863,15 +863,17 @@ class PrerequisiteManager:
                 if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
                         or info.st_mode & 0o022):
                     raise ValueError()
-            for name, expected in self.plan.assets.items():
-                path = parent / name
-                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                with os.fdopen(descriptor, 'rb') as stream:
-                    info = os.fstat(stream.fileno())
-                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                            or info.st_mode & 0o022 or info.st_size > len(expected)
-                            or stream.read(len(expected) + 1) != expected):
-                        raise ValueError()
+            # Compatibility is service-scoped: the fingerprint verifies Jaeger's
+            # declaration; only its mounted config belongs to this retained bind.
+            # Other snapshot assets may predate unrelated service additions.
+            expected = self.plan.assets['jaeger-config.json']
+            descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o022 or info.st_size > len(expected)
+                        or stream.read(len(expected) + 1) != expected):
+                    raise ValueError()
             volume, = [item for item in mounts if item['Destination'] == '/tmp']
             name = self.scope.project + '_jaeger-badger'
             if (volume['Type'] != 'volume' or volume.get('Name') != name

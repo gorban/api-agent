@@ -21,3 +21,13 @@ Technical implementation and independent/external review are complete. The final
 - [x] Require the active Jaeger storage exporter mapping to match the reviewed declaration exactly: `jaeger_storage_exporter` with `trace_storage: local_traces` and no extra exporter keys or options. In particular, reject an enabled storage-exporter queue, which changes when an accepted span reaches Badger. Cover this with a controlled config mutation and a check that disabling the exporter guard makes the rejection test fail.
 
 The user accepts the delivered reporting-management scope. This records approval without inventing additional manual/native observations or accepting unfinished broader lifecycle, migration or destructive-volume features.
+
+## Retained service compatibility
+
+- [x] Reuse an unchanged owned Jaeger container when unrelated services change the current Compose bundle or add assets absent from its retained snapshot. Verify the exact Jaeger service fingerprint and image, mounted configuration bytes, read-only bind, safe owned ancestors and file permissions, and writable scoped labelled Badger volume. Retain the original container, snapshot identity and data without migration.
+- [x] Cover absent unrelated assets and unrelated Compose declarations with reuse tests, retain rejection tests for relevant configuration and ownership drift, and prove the configuration-byte rejection is causal by disabling only its byte comparison.
+- [x] Independent review and joined integration gate for retained service compatibility.
+
+This service-scoped requirement supersedes the earlier whole-bundle compatibility policy only for an unchanged Jaeger service. It does not migrate the retained snapshot or data.
+
+- [ ] Human acceptance: review reuse of an existing unchanged Jaeger service after an unrelated service bundle update. Earlier acceptance does not cover this addition.

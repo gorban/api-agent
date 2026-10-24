@@ -1,5 +1,6 @@
 import base64
 from copy import deepcopy
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -151,9 +152,42 @@ def test_reuse_exact_existing_and_retained_tests(setup):
     assert engine.records[identifier]['State']['Running']
 
 
+@pytest.mark.parametrize('unrelated_change', ['missing_asset', 'changed_compose', 'both'])
+def test_jaeger_reuses_retained_snapshot_after_unrelated_asset_change(setup, unrelated_change):
+    create, engine, clock, scope, _ = setup
+    original = create()
+    identifier = engine.add('jaeger')
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    retained = {path.name: path.read_bytes() for path in source.parent.iterdir()}
+    first_lease = original.acquire()
+    assert first_lease.reused_ids == (identifier,)
+    original.release(retain=True)
+    assets = dict(original.plan.assets)
+    if unrelated_change in {'missing_asset', 'both'}:
+        assets['new-demo-config.json'] = b'{}'
+    if unrelated_change in {'changed_compose', 'both'}:
+        document = json.loads(assets['compose.json'])
+        document['services']['unrelated-demo'] = {'image': 'example.invalid/demo:1'}
+        assets['compose.json'] = json.dumps(document).encode()
+    manager = p.PrerequisiteManager(replace(original.plan, assets=assets), scope,
+        original.directory, command_runner=engine.run, readiness_probe=lambda *args: True,
+        now=clock.now, sleep=clock.sleep, identity=lambda pid: 'boot:start')
+    engine.owner = manager
+
+    lease = manager.acquire()
+
+    assert lease.reused_ids == (identifier,)
+    assert lease.owned_ids == ()
+    assert manager.fingerprints['jaeger'] == original.fingerprints['jaeger']
+    assert engine.records[identifier]['Mounts'][0]['Source'] == str(source)
+    assert {path.name: path.read_bytes() for path in source.parent.iterdir()} == retained
+    assert not any('up' in command or command[1] == 'stop' for command, _ in engine.commands)
+    manager.release(retain=True)
+
+
 @pytest.mark.parametrize('damage', ['writable_bind', 'foreign_bind', 'shadow_keys',
                                      'shadow_values', 'shadow_parent', 'wrong_volume',
-                                     'foreign_volume', 'changed_config', 'symlink_config'])
+                                     'foreign_volume', 'changed_config', 'missing_config', 'writable_config', 'symlink_config'])
 def test_jaeger_adoption_rejects_untrusted_storage(setup, damage, tmp_path):
     create, engine, _, _, _ = setup
     manager = create()
@@ -173,6 +207,10 @@ def test_jaeger_adoption_rejects_untrusted_storage(setup, damage, tmp_path):
         mounts[1]['Name'] = 'unrelated-volume'
     elif damage == 'foreign_volume':
         engine.volume_labels = {**manager.scope.labels('otel'), 'api-agent.scope': 'f' * 16}
+    elif damage == 'missing_config':
+        config.unlink()
+    elif damage == 'writable_config':
+        config.chmod(0o666)
     elif damage == 'changed_config':
         config.chmod(0o600)
         config.write_text('{}')
