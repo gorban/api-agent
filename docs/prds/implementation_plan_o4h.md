@@ -42,4 +42,4 @@
 
 ## Required shared inputs
 
-- [ ] Validate every active required secondary slot against its effective value after shared-primary derivation, including when the primary slot is optional and omitted. Reject a missing value before factory import or prerequisite acquisition; preserve conditional requiredness and independent-case configuration.
+- [x] Validate every active required secondary slot against its effective value after shared-primary derivation, including when the primary slot is optional and omitted. Reject a missing value before factory import or prerequisite acquisition; preserve conditional requiredness and independent-case configuration.
