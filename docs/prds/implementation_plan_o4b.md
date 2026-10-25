@@ -4,17 +4,17 @@
 
 ## Ordered delivery
 
-- [ ] Freeze the required authoring/compatibility decisions with implementer-facing examples before dependent runtime changes.
-- [ ] Extend pure D5 resource capture and parser output with explicit tool usages and inert descriptors. Add a static test-to-graph catalog, including integration fixtures independent of the selected application graph. Preserve existing v2/v3 semantics and selected replacement authority; reject unsupported versions.
-- [ ] Introduce the immutable operation tool plan and phased configuration composition. Bind implementation-local slots to named instance fields; recompute on controlling selections without stale requirements. Use existing presentation metadata for hidden selectors and visible endpoints.
-- [ ] Add a named operation-owned tool registry alongside the existing API route provider slot. Remove the assumption that every tool is `api_provider`; do not add repeated singleton API entries that overwrite ownership. Repeated factory paths are valid across distinct tool instances. Preserve start/cancel/rollback/retryable cleanup, borrowed invocation views and partial-start disposal.
-- [ ] Drive prerequisite roots and acquired endpoint handoff from selected tool instances through the delivered Compose planner. Replace demo-specific `requires_api`, graph-ID and endpoint wiring with declarations while preserving the application's existing behavioral contract.
-- [ ] Adapt the bundled GraphQL implementation to local configuration slots, retaining verification/schema/error/credential bounds. Migrate the useful demo and its controlled integration graph. Preserve API route consumers through an explicit legacy bridge until their supported migration is complete; ambiguous legacy/new combinations must reject.
-- [ ] Document how an implementer adds an instance, supplies defaults, overrides a Python implementation and binds configuration/prerequisites. Prove source, wheel and relocated external-pack use without relying on the development checkout.
+- [x] Freeze the required authoring/compatibility decisions with implementer-facing examples before dependent runtime changes.
+- [x] Extend pure D5 resource capture and parser output with explicit tool usages and inert descriptors. Add a static test-to-graph catalog, including integration fixtures independent of the selected application graph. Preserve existing v2/v3 semantics and selected replacement authority; reject unsupported versions.
+- [x] Introduce the immutable operation tool plan and phased configuration composition. Bind implementation-local slots to named instance fields; recompute on controlling selections without stale requirements. Use existing presentation metadata for hidden selectors and visible endpoints.
+- [x] Add a named operation-owned tool registry alongside the existing API route provider slot. Remove the assumption that every tool is `api_provider`; do not add repeated singleton API entries that overwrite ownership. Repeated factory paths are valid across distinct tool instances. Preserve start/cancel/rollback/retryable cleanup, borrowed invocation views and partial-start disposal.
+- [x] Drive prerequisite roots and acquired endpoint handoff from selected tool instances through the delivered Compose planner. Replace demo-specific `requires_api`, graph-ID and endpoint wiring with declarations while preserving the application's existing behavioral contract.
+- [x] Adapt the bundled GraphQL implementation to local configuration slots, retaining verification/schema/error/credential bounds. Migrate the useful demo and its controlled integration graph. Preserve API route consumers through an explicit legacy bridge until their supported migration is complete; ambiguous legacy/new combinations must reject.
+- [x] Document how an implementer adds an instance, supplies defaults, overrides a Python implementation and binds configuration/prerequisites. Prove source, wheel and relocated external-pack use without relying on the development checkout.
 
 ## Production consumer joins
 
-- [ ] Deliver the [operation selection, staged resolution and actual Review requirements](implementation_plan_o4d.md); a field-list projection does not close editor/default/persistence acceptance.
+- [x] Deliver the [operation selection, staged resolution and actual Review requirements](implementation_plan_o4d.md); a field-list projection does not close editor/default/persistence acceptance.
 - [ ] Deliver [executable admission, Runtime ownership, graph-port binding and acquired prerequisite handoff](implementation_plan_o4e.md) through normal application/test consumers and installed packs.
 
 ## Acceptance matrix
@@ -49,10 +49,12 @@ Use independently authored synthetic service fixtures for generic prerequisite p
 
 ## Delivery gates
 
-- [ ] Applicable units pass exact 100% measured line/branch coverage; focused rejection mutations prove intended guards.
-- [ ] Controlled integration and package/relocation checks preserve existing tool, workflow and lifecycle behavior.
-- [ ] Independent architecture/implementation review and required external review close reported issues.
-- [ ] Public index, changed artifacts, metadata, dependency/license and provenance checks pass before accepting public changes.
+Checked technical gates cover the delivered core. Unfinished matrix rows and linked transport, service-capability and platform requirements remain open.
+
+- [x] Applicable units pass exact 100% measured line/branch coverage; focused rejection mutations prove intended guards.
+- [x] Controlled integration and package/relocation checks preserve existing tool, workflow and lifecycle behavior.
+- [x] Independent architecture/implementation review and required external review close reported issues.
+- [x] Public index, changed artifacts, metadata, dependency/license and provenance checks pass before accepting public changes.
 - [ ] Human review the concrete format, two-instance configuration behavior and application/test Review contexts. Do not infer this acceptance from controlled evidence.
 
 ## Existing workflow qualification
