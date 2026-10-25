@@ -24,6 +24,14 @@ class DefinitionCache:
         self._bytes = 0
         self._lock = RLock()
 
+    def fork(self):
+        """Give a read-only UI resolver independent eviction and locking state."""
+        with self._lock:
+            other = DefinitionCache(max_bytes=self.max_bytes, max_entries=self.max_entries)
+            other._entries = self._entries.copy()
+            other._bytes = self._bytes
+            return other
+
     def __call__(self, context):
         base = getattr(context, 'workflow_base_root', None) or context.base_root
         entry = context.workflow_entry or base / 'flow.md.html'
@@ -36,6 +44,7 @@ class DefinitionCache:
                 definition, links, size = cached
                 self._bytes -= size
                 if self._current(definition, links):
+                    self._record_links(links)
                     self._entries[key] = cached
                     self._bytes += size
                     return definition
@@ -47,6 +56,7 @@ class DefinitionCache:
                 # never make a valid executable declaration fail admission.
                 return definition
             size = sum(len(body) for body in definition.contents.values())
+            self._record_links(links)
             if size <= self.max_bytes and self.max_entries > 0:
                 while self._entries and (self._bytes + size > self.max_bytes
                                          or len(self._entries) >= self.max_entries):
@@ -55,6 +65,12 @@ class DefinitionCache:
                 self._entries[key] = (definition, links, size)
                 self._bytes += size
             return definition
+
+    @staticmethod
+    def _record_links(links):
+        from api_agent.config.source_reads import record_link
+        for path, target in links:
+            record_link(path, target)
 
     @staticmethod
     def _current(definition, links):

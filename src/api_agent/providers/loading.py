@@ -297,9 +297,13 @@ def provider_location(location, *, owner_root=None):
     path = Path(path_text).expanduser()
     if not path.is_absolute() and owner_root is not None:
         path = Path(owner_root) / path
+    lexical = path.absolute()
     path = path.resolve()
     if not path.is_file() or path.suffix != '.py':
         raise ProviderError('provider_location_invalid')
+    from api_agent.config.source_reads import record_link, record_probe
+    record_link(lexical, path)
+    record_probe(('provider-factory', lexical), path.is_file, True)
     return path, factory
 
 
@@ -384,7 +388,10 @@ def provider_schema(location, base_schema, *, owner_root=None, deferred=None):
     """Resolve contributed declarations before creating executable adapters."""
     path, _ = provider_location(location, owner_root=owner_root)
     declaration = path.parent / 'cfg/config.toml'
-    if not declaration.exists():
+    present = declaration.exists()
+    from api_agent.config.source_reads import record_optional
+    record_optional(declaration, present)
+    if not present:
         return base_schema
     if not declaration.resolve().is_relative_to(path.parent):
         raise ProviderError('provider_configuration_escape')

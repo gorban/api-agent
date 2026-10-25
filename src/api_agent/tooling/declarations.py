@@ -51,6 +51,12 @@ class Capture:
             return executing.joinpath(*relative.parts[1:])
         distributions = list(metadata.distributions(name=distribution_name))
         from api_agent.runtime.resource_pack import _distribution_identity
+        from api_agent.config.source_reads import record_probe, capturing
+        owners = lambda: tuple(sorted(repr(_distribution_identity(item))
+            for item in metadata.distributions(name=distribution_name)))
+        if capturing():
+            record_probe(('tool-owners', distribution_name), owners,
+                         tuple(sorted(repr(_distribution_identity(item)) for item in distributions)))
         if len(distributions) > 1:
             identities = [_distribution_identity(item) for item in distributions]
             if identities[0] is not None and all(item == identities[0] for item in identities):
@@ -59,10 +65,16 @@ class Capture:
             raise ToolSelectionError('Package resource requires one installed distribution owner')
         distribution = distributions[0]
         normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()
-        if normalize(distribution.metadata['Name']) != normalize(distribution_name):
+        name = distribution.metadata['Name']
+        distribution_key = id(distribution)
+        record_probe(('tool-owner-name', distribution_key),
+                     lambda: distribution.metadata['Name'], name)
+        if normalize(name) != normalize(distribution_name):
             raise ToolSelectionError('Package distribution identity mismatch')
         inventory = distribution.files
-        if inventory is None or distribution.read_text('RECORD') is None:
+        receipt = distribution.read_text('RECORD') if inventory is not None else None
+        record_probe(('tool-owner-receipt', distribution_key), lambda: distribution.read_text('RECORD'), receipt)
+        if inventory is None or receipt is None:
             raise ToolSelectionError('Package resource requires an installed file receipt')
         located_root = Path(str(distribution.locate_file(relative.parts[0]))).absolute()
         package_root = located_root.resolve()

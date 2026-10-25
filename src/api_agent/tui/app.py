@@ -476,7 +476,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def on_resize(self, event):
         if self.kind == "defaults":
             self.set_class(event.size.height < 18, "compact-review")
-            self.body = self.app.configuration_review_text()
+            snapshot = getattr(self, 'configuration_snapshot', None)
+            self.body = self.app.configuration_review_text(
+                result=snapshot.execution if snapshot else None, snapshot=snapshot)
             self.query_one("#body", Static).update(self.body)
             self.call_after_refresh(self.query_one("#workbench-content", VerticalScroll).scroll_home,
                                     animate=False)
@@ -704,10 +706,14 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if isinstance(event.data_table, TestTable):
             event.data_table.reset_moved_range()
         if self.kind == "defaults" and self.app.screen is self:
-            self.app.refresh_configuration_rows(self)
+            from .configuration_refresh import ReviewRefresher
+            if not hasattr(self, 'configuration_refresher'):
+                self.configuration_refresher = ReviewRefresher(self.app, self)
+            self.configuration_refresher.request()
         elif self.kind == "cleanup" and self.app.screen is self:
             self.app.refresh_rows()
-        self.refresh_bindings()
+        if self.kind != 'tests':
+            self.refresh_bindings()
 
     async def on_data_table_row_selected(self, event):
         if self.kind == 'defaults':
@@ -769,7 +775,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def selected_setting_help(self):
         if self.kind not in {"defaults", "cleanup"} or not self.query(DataTable):
             return None
-        field = self.app.schema.fields.get(self.app.focused_setting())
+        snapshot = getattr(self, 'configuration_snapshot', None)
+        schema = snapshot.schema if snapshot else self.app.schema
+        field = schema.fields.get(self.app.focused_setting())
         return (field.name, field.help) if field and field.help.strip() else None
 
     def action_setting_help(self):
@@ -1088,17 +1096,23 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 raise
         return self.session.result()
 
-    def tool_review_fields(self):
+    def tool_review_fields(self, snapshot=None):
+        if snapshot is not None:
+            plan = snapshot.plan
+            return frozenset(snapshot.schema.fields) - (
+                set(plan.tool_fields) - set(plan.active_fields) if plan is not None else set())
         return (self.session.review_field_names() if hasattr(self.session, 'review_field_names')
                 else frozenset(self.schema.fields))
 
-    def configuration_pending(self, *, include_optional=True, review=None):
+    def configuration_pending(self, *, include_optional=True, review=None, snapshot=None):
         review = self.session.result(_review=True) if review is None else review
-        candidates = [item.name for item in self.session.default_candidates(result=review)]
+        schema = snapshot.schema if snapshot else self.schema
+        candidates = [name for name, value in review.fields.items()
+                      if not value.explicit and schema.fields[name].acknowledge_default]
         missing = [name for name in review.missing
-                   if self.schema.fields[name].acknowledge_default]
-        optional = [name for name, field in self.schema.fields.items()
-                    if name in self.tool_review_fields() and include_optional and field.review_optional and field.acknowledge_default
+                   if schema.fields[name].acknowledge_default]
+        optional = [name for name, field in schema.fields.items()
+                    if name in self.tool_review_fields(snapshot) and include_optional and field.review_optional and field.acknowledge_default
                     and (not field.pack_only or self.context.external_pack)
                     and (name not in review.fields or not review.fields[name].explicit)]
         return set(candidates + missing + optional)
@@ -1178,9 +1192,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                   "UNATTENDED_AUTH is required for this operation. Configure it through unattended authentication setup or provide it explicitly.",
                   (("setup", "View authentication setup"), ("menu", "Main menu")))
 
-    def show_configuration(self):
-        selected_row = None
-        if isinstance(self.screen, WorkbenchScreen):
+    def show_configuration(self, *, selected_row=None):
+        if selected_row is None and isinstance(self.screen, WorkbenchScreen):
             if self.screen.kind == "defaults":
                 selected_row = self.focused_setting()
             elif self.screen.kind == "input":
@@ -1200,7 +1213,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def review_operation(self):
         return self.mode or self.review_destination
 
-    def configuration_review_text(self, *, result=None):
+    def configuration_review_text(self, *, result=None, snapshot=None):
         result = self.session.result() if result is None else result
         missing = result.missing
         reason = ("Required settings: " + ", ".join(missing) if missing else
@@ -1213,7 +1226,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return reason + ("\na save; e edit; c close." if self.startup_review or self.review_destination else "\na save; e edit; c close / menu.")
         operation = self.review_operation()
         destination = f"continue {operation}" if self.review_destination else "open the main menu"
-        plan = getattr(self.session, 'tool_plan', None)
+        plan = snapshot.plan if snapshot else getattr(self.session, 'tool_plan', None)
         context = ''
         if plan is not None:
             context = ('\nTool context: application.' if plan.selection.mode == 'application' else
@@ -1233,36 +1246,43 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return f"{name} required for {context}."
         return ""
 
-    def configuration_rows(self, *, review=None):
+    def configuration_rows(self, *, review=None, snapshot=None):
         """Rebuild review membership from the current effective declaration set."""
         result = self.session.result(_review=True) if review is None else review
+        schema = snapshot.schema if snapshot else self.schema
         active = set(result.fields) | set(result.missing) | {
-            name for name, field in self.schema.fields.items() if field.review_optional}
+            name for name, field in schema.fields.items() if field.review_optional}
         review = result
-        default_names = {name for name, field in self.schema.fields.items()
+        default_names = {name for name, field in schema.fields.items()
                          if field.default is not UNSET or field.conditional_defaults}
-        self.review_names.intersection_update(self.schema.fields)
-        self.review_names.update(self.configuration_pending(review=review))
+        self.review_names.intersection_update(schema.fields)
+        self.review_names.update(self.configuration_pending(review=review, snapshot=snapshot))
         rows = []
-        for name in sorted(self.schema.fields):
-            if (name not in self.tool_review_fields() or not self.schema.fields[name].acknowledge_default or name not in self.review_names
+        for name in sorted(schema.fields):
+            if (name not in self.tool_review_fields(snapshot) or not schema.fields[name].acknowledge_default or name not in self.review_names
                     or (name not in active and name not in default_names)):
                 continue
             resolved = review.fields.get(name) if name in default_names else result.fields.get(name)
-            if name in default_names and resolved is None and name not in result.missing and not self.schema.fields[name].review_optional:
+            if name in default_names and resolved is None and name not in result.missing and not schema.fields[name].review_optional:
                 continue
             rows.append((name, (name,
-                        display_configuration(self.schema.fields[name], resolved.value) if resolved else Text("Required", justify="right") if name in result.missing else "",
+                        display_configuration(schema.fields[name], resolved.value) if resolved else Text("Required", justify="right") if name in result.missing else "",
                         resolved.source if resolved else "Not provided")))
         return rows
 
     def refresh_configuration_rows(self, screen):
         """Refresh displayed values and contextual actions as one UI snapshot."""
-        execution = self.session.result()
-        result = self.session.result(_review=True)
-        screen.query_one("#body", Static).update(self.configuration_review_text(result=execution))
+        refresher = getattr(screen, 'configuration_refresher', None)
+        if refresher is not None:
+            refresher.invalidate()
+        self.apply_configuration_snapshot(screen, self.session.review_snapshot())
+
+    def apply_configuration_snapshot(self, screen, snapshot):
+        execution, result = snapshot.execution, snapshot.review
+        screen.configuration_snapshot = snapshot
+        screen.query_one("#body", Static).update(self.configuration_review_text(result=execution, snapshot=snapshot))
         screen.query_one("#error", Static).update(self.configuration_review_blocker(result=execution))
-        rows = self.configuration_rows(review=result)
+        rows = self.configuration_rows(review=result, snapshot=snapshot)
         if not rows:
             self.finish_configuration_review()
             return
@@ -1281,8 +1301,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         for row in table.ordered_rows:
             name = row.key.value
             resolved = result.fields.get(name)
-            field = self.schema.fields[name]
-            if self.session.saved_path(name) is not None:
+            field = snapshot.schema.fields[name]
+            if name in snapshot.saved_names:
                 saved.add(name)
             if resolved and not resolved.explicit and field.acknowledge_default:
                 defaults.add(name)
@@ -1292,6 +1312,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             for column, value in zip(table.columns, cells):
                 table.update_cell(row.key, column, literal_cell(value))
         screen.config_saved, screen.config_defaults = saved, defaults
+        screen.refresh_bindings()
 
     def focused_setting(self):
         table = self.screen.query_one(DataTable)
@@ -1335,10 +1356,14 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.prompt_name = self.focused_setting()
         if not self.prompt_name:
             return
+        review = self.session.result(_review=True)
+        if self.prompt_name not in {name for name, _ in self.configuration_rows(review=review)}:
+            self.show_configuration()
+            return
+        resolved = review.fields.get(self.prompt_name)
         if self.schema.fields[self.prompt_name].sensitive:
             from .private_input import install_private_input_logging
             install_private_input_logging()
-        resolved = self.session.result(_review=True).fields.get(self.prompt_name)
         self.prompt_value = display(resolved.value) if resolved else ""
         self.show("input", f"Configure {self.prompt_name}",
                   self.setting_description(),
@@ -2211,6 +2236,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                             group='cost-history', exclusive=True)
 
     def show_cleanup(self):
+        self.cleanup_last_deleted = None
         saved = [row for row in self.session.cleanup_rows() if row.present]
         self.cleanup_names = frozenset(row.name for row in saved)
         rows = [(row.name, ("✓", row.name, display_configuration(row.field, row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in saved]
@@ -2308,6 +2334,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def delete_assignment(self, name):
         try:
             self.session.delete_keys([name])
+            self.cleanup_last_deleted = name
             self.operation_status = 0
             self.refresh_rows()
         except Exception as error:
@@ -2551,7 +2578,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         elif self.screen.kind == "test-results" and self.unit_result is None:
             return
         elif self.screen.kind == "cleanup" and self.configuration_pending():
-            self.show_configuration()
+            self.show_configuration(selected_row=self.cleanup_last_deleted)
         elif self.screen.kind == "acceptance":
             self.show_selection()
         else:

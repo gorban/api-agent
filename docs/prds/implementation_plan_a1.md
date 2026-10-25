@@ -11,3 +11,9 @@
 - [x] Keep cleanup interactive-only. Verify both-file deletion, confirmation cancellation, absence of batch marking, hidden-default cleanup (`UI_NX_APP`), preserved content, fallback values, excluded authentication JSON, and return to default review with temporary files.
 
 Current human acceptance covers the delivered terminal configuration, test selection/launch controls, results/navigation and timing presentation. Future operation consumers and unrelated technical gates remain separate.
+
+## Return selection after deletion
+
+- [x] When closing cleanup into Review configuration, initially select the last successfully deleted setting from that cleanup visit if it appears in the review. Otherwise select the normal first row. Cancelled or failed deletions must not replace the remembered setting; entering cleanup again resets the remembered selection.
+
+- [ ] Human acceptance of the last-deleted row selection on return to Review; earlier terminal configuration acceptance remains unchanged.

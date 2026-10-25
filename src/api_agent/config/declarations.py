@@ -162,7 +162,11 @@ def load_declarations(path: str | Path, *, base_schema: ConfigSchema | None = No
                       source: str = 'shared_default', predicate_context: ConfigSchema | None = None) -> ConfigSchema:
     location = Path(path).resolve()
     with location.open('rb') as handle:
-        data = tomllib.load(handle)
+        body = handle.read()
+    from .source_reads import record_file, record_link
+    record_link(Path(path).absolute(), location)
+    record_file(location, location.parent, body)
+    data = tomllib.loads(body.decode('utf-8'))
     return schema_from_dict(data, base_schema=base_schema, source=source,
                             predicate_context=predicate_context)
 

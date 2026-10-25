@@ -111,8 +111,9 @@ class StatefulDefinition:
 
 def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None):
     """Admit a fully declared v3 graph and immutable native source snapshot."""
-    entry = Path(entry).resolve()
-    roots = {'base': Path(base_root).resolve(), 'pack': Path(pack_root).resolve()}
+    from api_agent.config.source_reads import resolve_path
+    entry = resolve_path(entry)
+    roots = {'base': resolve_path(base_root), 'pack': resolve_path(pack_root)}
     if not any(entry.is_relative_to(root) for root in roots.values()):
         raise LayoutError(f'{entry}:1: declaration outside roots')
     if entry_root is None:
@@ -165,7 +166,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             target = roots['pack'] / name.removeprefix('<resource_pack>/')
         else:
             target = row.get('_owner', entry).parent / name
-        target = target.resolve() if resolve else Path(os.path.normpath(target))
+        target = resolve_path(target) if resolve else Path(os.path.normpath(target))
         if not any(target.is_relative_to(root) for root in roots.values()):
             raise LayoutError(f'{entry}:{row["line"]}: source outside declared roots')
         return target
@@ -208,7 +209,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             else:
                 if replacement.root_id not in roots or Path(replacement.entry).is_absolute() or '..' in Path(replacement.entry).parts:
                     raise LayoutError(f'{entry}:{row["line"]}: invalid resource replacement')
-                target = (roots[replacement.root_id] / replacement.entry).resolve()
+                target = resolve_path(roots[replacement.root_id] / replacement.entry)
             if target not in contents:
                 contents[target] = read(target)
             if target in kinds and kinds[target] != kind:
@@ -278,7 +279,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                             or '#' in decoded or any(ord(char) < 32 or ord(char) == 127 for char in decoded)):
                         raise LayoutError(f'{owner}:{number}: invalid declaration link')
                     try:
-                        original = (owner.parent / decoded).resolve(strict=False)
+                        original = resolve_path(owner.parent / decoded)
                     except (OSError, RuntimeError, ValueError) as error:
                         raise LayoutError(f'{owner}:{number}: invalid declaration link') from error
                     if (not any(original.is_relative_to(root) for root in roots.values())
@@ -286,13 +287,13 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                         raise LayoutError(f'{owner}:{number}: declaration link outside roots or wrong format')
                 if replacement.root_id not in roots or Path(replacement.entry).is_absolute() or '..' in Path(replacement.entry).parts:
                     raise LayoutError(f'{owner}:{number}: invalid replacement')
-                declaration = (roots[replacement.root_id] / replacement.entry).resolve()
+                declaration = resolve_path(roots[replacement.root_id] / replacement.entry)
             elif inline is not None:
                 declaration = owner
             else:
                 if Path(target).is_absolute() or '#' in target or '?' in target:
                     raise LayoutError(f'{owner}:{number}: invalid declaration link')
-                declaration = (owner.parent / target).resolve()
+                declaration = resolve_path(owner.parent / target)
             if declaration.suffixes[-2:] != ['.md', '.html']:
                 raise LayoutError(f'{owner}:{number}: declaration must end .md.html')
             if declaration not in contents:

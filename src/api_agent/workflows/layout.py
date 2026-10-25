@@ -77,7 +77,8 @@ def _link(token, path, pack_root, roots, *, prompt=False):
         source = path.parent / name
     if not name or Path(name).is_absolute() or '\\' in name or '<' in name.replace('<resource_pack>', ''):
         raise ValueError('invalid local path or unresolved variable')
-    source = source.resolve()
+    from api_agent.config.source_reads import resolve_path
+    source = resolve_path(source)
     if not any(source.is_relative_to(root) for root in roots) or not source.is_file():
         raise ValueError('linked file is missing or outside the declared roots')
     if prompt:
@@ -106,7 +107,8 @@ def _json(source):
 
 def load_layout(path, *, base_root, pack_root):
     """Validate all structural sections and links without importing functions."""
-    path, base_root, pack_root = map(lambda item: Path(item).resolve(), (path, base_root, pack_root))
+    from api_agent.config.source_reads import resolve_path
+    path, base_root, pack_root = map(resolve_path, (path, base_root, pack_root))
     roots = (base_root, pack_root)
     layout = Layout(path, (), {}, ())
     try:

@@ -44,6 +44,24 @@ class CleanupRow:
         return self.resolved.source if self.resolved else None
 
 
+@dataclass(frozen=True)
+class ReviewSnapshot:
+    """Read-only presentation data; never an operation's execution authority."""
+    schema: ConfigSchema
+    plan: object
+    execution: object
+    review: object
+    saved_names: frozenset
+    dotenv_inputs: tuple
+    source_reads: object
+
+    def sources_current(self):
+        """Content check at delivery; timestamps do not establish freshness."""
+        if not all(read_dotenv(path) == dict(entries) for path, entries in self.dotenv_inputs):
+            return False
+        return self.source_reads.current()
+
+
 class ConfigSession:
     @property
     def password_manager_registry(self):
@@ -342,14 +360,30 @@ class ConfigSession:
         return self._resolve(_review=True)[1]
 
     def _resolve(self, *, _cleanup=False, _review=False, operation_intents=()):
+        prepared = self._prepare_resolution(operation_intents)
+        return self._resolve_prepared(prepared, _cleanup=_cleanup, _review=_review)
+
+    def review_snapshot(self):
+        """Project both display views from one read of the configuration sources."""
+        from .source_reads import capture_reads
+        with capture_reads() as reads:
+            prepared = self._prepare_resolution(())
+            execution = self._resolve_prepared(prepared)[0]
+            review = self._resolve_prepared(prepared, _review=True)[0]
+        return ReviewSnapshot(self.schema, prepared[6], execution, review,
+                              frozenset(prepared[2]), prepared[-1], reads.snapshot())
+
+    def _prepare_resolution(self, operation_intents):
         operation_intents = tuple(dict.fromkeys((*self._tool_intents, *operation_intents)))
         registry = self.password_manager_registry
         dotenv, origins = {}, {}
+        dotenv_inputs = []
         auth_sources = {'password_manager': 'Not provided', 'roles': {}}
         explicit_manager = None
         auth_error = None
         for path in self.target_paths:
             entries = read_dotenv(path)
+            dotenv_inputs.append((path, tuple(entries.items())))
             if 'UNATTENDED_AUTH' in entries:
                 try:
                     raw_later = json.loads(entries['UNATTENDED_AUTH'])
@@ -380,22 +414,29 @@ class ConfigSession:
         if auth_error:
             dotenv['UNATTENDED_AUTH'] = json.dumps({'_auth_error': auth_error})
         # Re-evaluate UI choices without inventing duplicate CLI arguments.
-        argv = self.argv
         choices = dict(self._choices)
         choices.update(runtime_directory_overrides(self.context))
         self._schema = self._bootstrap_schema(self._provider_base_schema, dotenv, choices, operation_intents)
+        return registry, dotenv, origins, auth_sources, choices, operation_intents, self.tool_plan, tuple(dotenv_inputs)
+
+    def _resolve_prepared(self, prepared, *, _cleanup=False, _review=False):
+        registry, dotenv, origins, sources, choices, operation_intents, plan, _dotenv_inputs = prepared
+        auth_sources, choices = deepcopy(sources), dict(choices)
+        argv = self.argv
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
         # Pack scope remains enforced except in the explicit cleanup inventory.
         # Review inventory spans modes, but conditional requirements retain their
         # effective controller predicates instead of becoming unconditional.
-        if _cleanup and self.tool_plan is not None:
-            schema = self.tool_plan.option_schema
+        if _cleanup and plan is not None:
+            schema = plan.option_schema
         if _cleanup or _review:
+            review_names = frozenset(schema.fields) - (
+                set(plan.tool_fields) - set(plan.active_fields) if plan is not None else set())
             schema = ConfigSchema({name: replace(field, applies_when={},
                                                  pack_only=False if _cleanup else field.pack_only)
                                    for name, field in schema.fields.items()
-                                   if _cleanup or name in self.review_field_names()})
+                                   if _cleanup or name in review_names})
         if _cleanup and "HELP" in schema.fields:
             choices['HELP'] = 'False'
         result = resolve_config(schema, argv=argv, environ=self.environ,
@@ -417,9 +458,9 @@ class ConfigSession:
             except (TypeError, ValueError):
                 auth_sources = {'password_manager': 'Not provided', 'roles': {}}
         result = retain_runtime_directory(replace(result, fields=fields), self.context)
-        if self.tool_plan is not None:
+        if plan is not None:
             from .tool_resolution import bind_operation_tools
-            result = bind_operation_tools(self.tool_plan, result, argv=argv)
+            result = bind_operation_tools(plan, result, argv=argv)
             self.tool_plan = result.tool_plan
         return result, auth_sources
 

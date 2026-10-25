@@ -127,12 +127,16 @@ def _read_bounded(path, root):
                 if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
                         after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
                     raise ValueError('resource changed during read')
+                from api_agent.config.source_reads import record_file
+                record_file(path, root, data)
                 return data
             finally:
                 os.close(fd)
         finally:
             os.close(directory)
     except (OSError, ValueError) as error:
+        from api_agent.config.source_reads import record_unreadable
+        record_unreadable(path, root)
         raise LayoutError(f'{path}:1: unsafe or unavailable resource: {error}') from error
 
 
@@ -281,8 +285,9 @@ def _freeze(value):
 
 def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None):
     """Load exactly one graph and all its resources before any native import or call."""
-    entry = Path(entry).resolve()
-    roots = {'base': Path(base_root).resolve(), 'pack': Path(pack_root).resolve()}
+    from api_agent.config.source_reads import resolve_path
+    entry = resolve_path(entry)
+    roots = {'base': resolve_path(base_root), 'pack': resolve_path(pack_root)}
     if not any(entry.is_relative_to(root) for root in roots.values()):
         raise LayoutError(f'{entry}:1: entry outside declared roots')
     if entry_root is None:
@@ -294,7 +299,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     captured = {}
     origins = {}
     def capture(path, kind, root_id=None):
-        path = (Path(os.path.normpath(path)) if kind == 'tool_instance' else Path(path).resolve())
+        path = (Path(os.path.normpath(path)) if kind == 'tool_instance' else resolve_path(path))
         if not any(path.is_relative_to(root) for root in roots.values()):
             raise LayoutError(f'{path}:1: missing resource or outside declared roots')
         if root_id is None or not path.is_relative_to(roots[root_id]):

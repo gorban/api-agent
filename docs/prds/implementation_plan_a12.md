@@ -22,5 +22,14 @@ The bounded repair covers both the test picker and selected-test configuration
 review. Existing selection/conflict, account and configuration-refresh checks
 pass. Independent external review closed the replacement-link invalidation
 finding and reported no residual in the repaired scope. Broader performance
-sampling, an agreed latency budget, remaining commit gates and human acceptance
-stay open above.
+sampling, an agreed latency budget and human acceptance stay open above.
+
+## Rapid navigation follow-up
+
+- [x] After at least three seconds idle, measure queued up/up and down/down input in the collected test picker and all-selected test configuration review. Distinguish input delivery, cursor changes and actual display opportunities; do not treat a headless compositor callback as a captured terminal frame.
+- [x] Keep configuration discovery off the cursor event path. Use one isolated read-only display resolver with coalesced requests; discard obsolete results after later navigation, configuration changes or screen transitions. Display values, source and saved/default actions from one source snapshot. Explicit editing and Start retain fresh authoritative resolution.
+- [x] Verify external source changes during pending work, modal/screen transitions, failed refresh recovery, independent resolver ownership and burst navigation and complete independent/external review before requesting human acceptance.
+
+- [x] Before delivering a background review snapshot, recheck its captured persisted configuration and selected declaration content. Retry intervening edits or removals without requiring another navigation event; bound repeated unstable reads and offer a visible retry path. Keep stale values and saved/default actions from being applied together after a detected source change.
+
+- [x] Record read receipts in the existing declaration/workflow owners. Include contributed schemas, dormant inventory reads, lexical link targets, optional or unavailable inputs and package ownership/inventory observations used by review. Keep receipts context-local, immutable when delivered and separate from execution authority; preserve the ordinary readers and their errors outside display capture.
