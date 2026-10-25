@@ -37,6 +37,7 @@ class FieldDeclaration:
 class ConfigSchema:
     fields: Mapping[str, FieldDeclaration]
     version: int = 1
+    deferred_requirements: Mapping[str, FieldDeclaration] = field(default_factory=dict, repr=False)
 
 def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
                      base_schema: ConfigSchema | None = None,

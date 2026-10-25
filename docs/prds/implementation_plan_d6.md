@@ -8,3 +8,7 @@
 - [x] Verify the actual workflow driver's dual-publication path, multiple executions with retries, both packet orders and repeated packets. Independently replay a recorded normal run and use causal checks for missing deduplication and conflict validation.
 - [ ] Complete applicable exact unit coverage, installed-artifact and public-boundary checks, and verify the ordinary recorded integration report after the correction.
 - [ ] Complete external review and explicit human review of the corrected report. Existing execution qualification and prior human acceptance retain their original scope.
+
+## Ambiguous packet order
+
+- [ ] Preserve legacy provenance until invocation attribution is unambiguous. If multiple journal invocations claim the same scope, retain the legacy-only fields independently for every packet order, including legacy first, without moving them to an arbitrary invocation.

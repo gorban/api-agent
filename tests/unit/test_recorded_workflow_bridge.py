@@ -1,5 +1,6 @@
 """Journal/legacy recording joins use admitted execution identities, never names."""
 from copy import deepcopy
+from itertools import permutations
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,6 +91,87 @@ def test_distinct_invocations_and_ambiguous_legacy_are_not_silently_joined():
         bridge.add(packet(events, invocation))
     bridge.add(packet(events))
     assert len(bridge.steps) == 3
+
+
+@pytest.mark.parametrize('order', list(permutations(range(3))))
+def test_late_invocation_ambiguity_restores_legacy_provenance(order):
+    legacy = trace()
+    journal = [event for event in deepcopy(legacy) if event['event'] not in ('attempt', 'guard')]
+    packets = [packet(legacy), packet(journal, str(uuid4())), packet(journal, str(uuid4()))]
+    originals = deepcopy(packets)
+    bridge = _WorkflowStepBridge()
+    for index in order:
+        bridge.add(packets[index])
+    bridge.add(packets[0])
+    assert len(bridge.steps) == 3
+    for entry in bridge.entries:
+        parameters = entry['step']['steps'][0]['parameters']
+        assert ({'name': 'guard_rejections', 'value': '1'} in parameters) == (entry['invocation'] is None)
+        assert ({'name': 'attempts_reached', 'value': '2'} in parameters) == (entry['invocation'] is None)
+    assert packets == originals
+
+
+@pytest.mark.parametrize('journal_first', [True, False])
+def test_journal_values_win_over_legacy_overlap(journal_first):
+    legacy = trace()
+    journal = deepcopy(legacy)
+    journal.insert(4, deepcopy(journal[3]))
+    packets = [packet(journal, str(uuid4())), packet(legacy)]
+    bridge = _WorkflowStepBridge()
+    for item in packets if journal_first else reversed(packets):
+        bridge.add(item)
+    assert len(bridge.steps) == 1
+    assert {'name': 'guard_rejections', 'value': '2'} in bridge.steps[0]['steps'][0]['parameters']
+
+
+def test_failed_join_preserves_validated_originals_for_later_ambiguity():
+    legacy = trace()
+    journal = [event for event in deepcopy(legacy) if event['event'] not in ('attempt', 'guard')]
+    first = packet(journal, str(uuid4()))
+    bridge = _WorkflowStepBridge()
+    bridge.add(packet(legacy))
+    bridge.add(first)
+    before = deepcopy(bridge.steps)
+    conflicting = deepcopy(first)
+    conflicting['events'][-1]['outcome'] = 'failed'
+    with pytest.raises(ValueError, match='Conflicting workflow scope'):
+        bridge.add(conflicting)
+    assert bridge.steps == before
+    bridge.add(packet(journal, str(uuid4())))
+    assert len(bridge.steps) == 3
+    assert sum({'name': 'guard_rejections', 'value': '1'} in step['steps'][0]['parameters']
+               for step in bridge.steps) == 1
+
+
+@pytest.mark.parametrize('order', list(permutations(range(4))))
+def test_partial_journal_children_remain_independent_after_legacy_ambiguity(order):
+    legacy = trace()
+    journal = [event for event in deepcopy(legacy) if event['event'] not in ('attempt', 'guard')]
+    invocation_a, invocation_b = str(uuid4()), str(uuid4())
+    packets = [packet([journal[0], journal[-1]], invocation_a), packet(journal, invocation_a),
+               packet(legacy), packet(journal, invocation_b)]
+    originals = deepcopy(packets)
+    bridge = _WorkflowStepBridge()
+    for index in order:
+        bridge.add(packets[index])
+    assert len(bridge.steps) == 3
+    for entry in bridge.entries:
+        guards = [parameter['value'] for step in flatten(entry['step'])
+                  for parameter in step['parameters'] if parameter['name'] == 'guard_rejections']
+        assert guards == (['1'] if entry['invocation'] is None else [])
+    assert packets == originals
+
+
+def test_legacy_merge_does_not_mutate_retained_partial_journal_projections():
+    legacy = trace()
+    journal = [event for event in deepcopy(legacy) if event['event'] not in ('attempt', 'guard')]
+    invocation = str(uuid4())
+    bridge = _WorkflowStepBridge()
+    bridge.add(packet([journal[0], journal[-1]], invocation))
+    bridge.add(packet(journal, invocation))
+    before = deepcopy(bridge._projections)
+    bridge.add(packet(legacy))
+    assert bridge._projections[:2] == before
 
 
 def test_legacy_only_repeated_delivery_and_distinct_same_name_graphs():

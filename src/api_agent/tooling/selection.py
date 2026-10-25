@@ -457,6 +457,8 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
     # Derived aliases retain explicit source inputs but do not independently
     # require a secondary endpoint before the effective primary is acquired.
     tool_by_id = {tool.id: tool for tool in tools}
+    original_fields = dict(fields)
+    relaxed_aliases = set()
     for secondary in shared:
         for slot in ('ENDPOINT', 'HEADERS'):
             alias = tool_by_id[secondary].bindings.get(slot)
@@ -465,8 +467,10 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
                 and owner_slot in tool_by_id[shared[owner]].bindings
                 for owner, owner_slot, _ in alias_owners[alias])
             if derived_only and alias not in base_schema.fields:
+                relaxed_aliases.add(alias)
                 fields[alias] = replace(fields[alias], required=False, required_when={})
-    schema = ConfigSchema(fields)
+    schema = ConfigSchema(fields, deferred_requirements={
+        alias: original_fields[alias] for alias in original_fields if alias in relaxed_aliases})
     resolved = resolve_config(schema, argv=argv, environ=environ, dotenv=dotenv,
         overrides=overrides, anchors=context.anchors, interactive=True, pack_launcher=context.external_pack,
         operation_intents=operation_intents)

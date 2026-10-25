@@ -13,6 +13,10 @@ class ReadOwner:
 
     def __init__(self, config):
         self.endpoint = urljoin(config['ENDPOINT'], config['PATH'])
+        selected = httpx.URL(config['ENDPOINT'])
+        target = httpx.URL(self.endpoint)
+        if (target.scheme, target.host, target.port) != (selected.scheme, selected.host, selected.port):
+            raise ValueError('REST path must retain the selected origin')
         self.client = httpx.AsyncClient(headers=config['HEADERS'], timeout=15, trust_env=False)
         self.spec = ToolSpec('hello_read', 'Read hello with one GET request.',
             {'type': 'object', 'properties': {'method': {'const': 'GET'}},

@@ -142,6 +142,67 @@ def test_combined_case_selection_preserves_independent_secondary_inputs():
     assert plan.schema.fields['API_2_ENDPOINT'].required is True
 
 
+@pytest.fixture
+def rest_fixture():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location('rest_origin_fixture', FIXTURE / 'rest_tool.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize('path', [
+    'https://other.example/hello', '//other.example/hello',
+    '\n\t//other.example/hello', 'HTTP://OTHER.example/hello',
+    'http://selected.example:81/hello', 'https://selected.example/hello',
+    'http://selected.example@other.example/hello',
+])
+def test_rest_owner_rejects_changed_origin_before_client_creation(rest_fixture, monkeypatch, path):
+    from unittest.mock import Mock
+
+    client = Mock()
+    monkeypatch.setattr(rest_fixture.httpx, 'AsyncClient', client)
+
+    with pytest.raises(ValueError, match='selected origin'):
+        rest_fixture.create_tool({'ENDPOINT': 'http://selected.example/graphql',
+                                  'PATH': path, 'HEADERS': {'X-Instance': 'secondary'}}, {})
+
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('path', 'expected'), [
+    ('/hello', 'http://selected.example/hello'),
+    ('hello?label=one', 'http://selected.example/hello?label=one'),
+    ('?label=one', 'http://selected.example/graphql?label=one'),
+    ('///hello', 'http://selected.example/hello'),
+    ('http://SELECTED.example:80/hello', 'http://selected.example/hello'),
+])
+async def test_rest_owner_preserves_local_path_query_and_headers(rest_fixture, monkeypatch, path, expected):
+    import httpx
+    from api_agent.providers.tools import PreparedCall
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={'hello': 'synthetic'})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(rest_fixture.httpx, 'AsyncClient',
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs))
+    owner = rest_fixture.create_tool({'ENDPOINT': 'http://selected.example/graphql',
+        'PATH': path, 'HEADERS': {'X-Instance': 'secondary'}}, {})
+    try:
+        await owner.invoke(PreparedCall(await owner.describe(), {'method': 'GET'}, 'controlled', 'unused'))
+        request, = requests
+        assert str(request.url) == expected
+        assert request.headers['X-Instance'] == 'secondary'
+    finally:
+        await owner.aclose()
+
+
 def test_combined_selection_rejects_explicit_secondary_conflict():
     from api_agent.tooling.models import ToolSelectionError
 

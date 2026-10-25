@@ -60,3 +60,7 @@ The pending conjunctive verification requirement above retains compatible altern
 ## Managed synthetic fixture shutdown
 
 - [ ] The included API/backing fixtures must handle SIGTERM and close their HTTP server successfully within the existing bounded prerequisite cleanup budget. Verify actual subprocess readiness, timely successful signal shutdown and preserved seeded data; a causal handler-removal check must fail. Do not expand the global cleanup deadline or change ownership policy to hide a fixture that ignores normal termination.
+
+## Alternate target isolation
+
+- [ ] Validate the synthetic REST implementation's configured path before constructing its client. Reject absolute and authority-form paths that escape the selected endpoint origin, preserving origin-local paths and the selected headers. Verify rejection without sending a request to another origin.
