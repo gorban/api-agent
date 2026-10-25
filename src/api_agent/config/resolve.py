@@ -28,6 +28,7 @@ class ConfigResult:
     help_requested: bool = False
     tool_plan: object = field(default=None, repr=False, compare=False)
     active_fields: tuple[str, ...] = field(default=(), repr=False, compare=False)
+    deferred_required_fields: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     def raise_for_errors(self):
         if self.errors:
@@ -201,13 +202,17 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
               if (not declaration.pack_only or pack_launcher) and _matches(declaration.applies_when, values, operation_intents)}
     for name in active:
         errors.extend(deferred_errors.get(name, ()))
+    def required(declaration):
+        return declaration.required or bool(declaration.required_when) and _matches(declaration.required_when, values)
+    deferred_required = tuple(name for name, declaration in schema.deferred_requirements.items()
+                              if name in active and required(declaration))
     missing = tuple(name for name, declaration in schema.fields.items()
-                    if name in active and (declaration.required or bool(declaration.required_when)
-                    and _matches(declaration.required_when, values))
+                    if name in active and required(declaration)
                     and (name not in raw or declaration.type == 'path' and values.get(name) == ''))
     if not interactive:
         errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}' for name in missing)
     fields = {name: value for name, value in fields.items() if name in active}
     values = {name: value.value for name, value in fields.items()}
     return ConfigResult(values, fields, options.positionals, missing, tuple(errors),
-                        active_fields=tuple(name for name in schema.fields if name in active))
+                        active_fields=tuple(name for name in schema.fields if name in active),
+                        deferred_required_fields=deferred_required)

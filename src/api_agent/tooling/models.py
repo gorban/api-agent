@@ -133,12 +133,14 @@ class ToolPlan:
             object.__setattr__(self, name, freeze(getattr(self, name)))
         for name in ('tools', 'definitions', 'infrastructure_contributions', 'active_fields', 'tool_fields', 'known_fields', 'inactive_fields'):
             object.__setattr__(self, name, tuple(getattr(self, name)))
-        def snapshot(schema):
-            fields = {name: replace(declaration, default=freeze(declaration.default),
+        def snapshot_fields(declarations):
+            return {name: replace(declaration, default=freeze(declaration.default),
                 applies_when=freeze(declaration.applies_when), required_when=freeze(declaration.required_when),
                 conditional_defaults=freeze(declaration.conditional_defaults), enum=freeze(declaration.enum))
-                for name, declaration in schema.fields.items()}
-            return ConfigSchema(freeze(fields))
+                for name, declaration in declarations.items()}
+        def snapshot(schema):
+            return ConfigSchema(freeze(snapshot_fields(schema.fields)), schema.version,
+                                freeze(snapshot_fields(schema.deferred_requirements)))
         object.__setattr__(self, 'schema', snapshot(self.schema))
         if self.option_schema is not None:
             object.__setattr__(self, 'option_schema', snapshot(self.option_schema))
@@ -244,6 +246,13 @@ class ToolPlan:
                         pending.pop(slot, None)
             tools[secondary] = replace(target, local_values=values, pending=pending,
                                         value_sources=provenance, derived_from=derived)
+        for tool in tools.values():
+            for slot, alias in tool.bindings.items():
+                if alias not in result.deferred_required_fields:
+                    continue
+                declaration = self.schema.deferred_requirements[alias]
+                if slot not in tool.local_values or declaration.type == 'path' and tool.local_values[slot] == '':
+                    raise ToolSelectionError(f'{alias}: required effective tool input')
         # Implementations own this policy. Check after shared-primary derivation;
         # an admitted exact blank local output is provisionally symbolic.
         for tool in tools.values():

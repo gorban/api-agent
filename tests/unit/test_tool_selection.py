@@ -1270,3 +1270,210 @@ def test_nonempty_inactive_secondary_does_not_validate_a_derived_blank(selection
 
     assert 'API_2_ENDPOINT' not in bound.config.active_fields
     assert bound.tools[1].local_values['ENDPOINT'] == ''
+
+
+def shared_required_headers_plan(selection_fixture, primary_default='', requirement='required=true'):
+    context, _ = selection_fixture
+    write(context.base_root, 'optional.toml',
+        'version=1\ninterface="verified-read@1"\nfactory="package/factory.py:create_tool"\n'
+        '[inputs.ENDPOINT]\ntype="str"\nrequired=true\n'
+        '[inputs.HEADERS]\ntype="jsonobject"\n' + primary_default)
+    write(context.base_root, 'required.toml',
+        'version=1\ninterface="verified-read@1"\nfactory="package/factory.py:create_tool"\n'
+        '[inputs.ENDPOINT]\ntype="str"\nrequired=true\n'
+        '[inputs.HEADERS]\ntype="jsonobject"\n' + requirement + '\n')
+    for name, implementation in [('primary', 'optional.toml'), ('secondary', 'required.toml')]:
+        path = context.base_root / (name + '.toml')
+        path.write_text(path.read_text().replace('implementation="graphql.toml"', f'implementation="{implementation}"'))
+    context.tool_catalog_path.write_text(context.tool_catalog_path.read_text().replace(
+        'entry="dual_graph.md.html"', 'entry="dual_graph.md.html"\nprofile="shared"') +
+        '\n[profiles.shared]\nversion=1\nkind="shared-primary"\nprimary="sample/primary"\nsecondary=["sample/secondary"]\n')
+    return plan(selection_fixture, ('base::tests/test_flow.py::test_dual',))
+
+
+@pytest.mark.parametrize('requirement', ['required=true', 'required_when={SHARED="shared"}'])
+@pytest.mark.parametrize('worker_packet', [False, True])
+def test_shared_required_headers_need_effective_primary_value(selection_fixture, requirement, worker_packet):
+    from api_agent.tooling.models import ToolPlan
+    selected = shared_required_headers_plan(selection_fixture, requirement=requirement)
+    if worker_packet:
+        selected = ToolPlan.from_wire(selected.to_wire())
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+    assert not result.missing
+
+    with pytest.raises(ToolSelectionError, match='API_2_HEADERS: required effective tool input'):
+        selected.bind_values(result)
+
+
+def test_shared_required_headers_accept_primary_default(selection_fixture):
+    selected = shared_required_headers_plan(selection_fixture, 'default={}\nacknowledge_default=false\n')
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+
+    bound = selected.bind_values(result)
+
+    assert bound.tools[1].local_values['HEADERS'] == {}
+    assert bound.tools[1].derived_from['HEADERS'] == 'sample/primary'
+
+
+def test_shared_headers_allow_inactive_requirement(selection_fixture):
+    selected = shared_required_headers_plan(selection_fixture, requirement='required_when={SHARED="other"}')
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+
+    bound = selected.bind_values(result)
+
+    assert 'HEADERS' not in bound.tools[1].local_values
+
+
+def add_shared_header_owner(selection_fixture):
+    context, _ = selection_fixture
+    secondary = context.base_root / 'secondary.toml'
+    write(context.base_root, 'third.toml', secondary.read_text().replace('sample/secondary', 'sample/third')
+        .replace('SECONDARY_IMPLEMENTATION', 'THIRD_IMPLEMENTATION').replace('API_2_ENDPOINT', 'API_3_ENDPOINT'))
+    graph(context.base_root, 'third_graph', [('primary', 'primary.toml'), ('third', 'third.toml')])
+    catalog = context.tool_catalog_path.read_text().replace('[test_cases]',
+        '[graphs.third]\nroot="base"\nentry="third_graph.md.html"\nprofile="third"\n[test_cases]\n'
+        '"base::tests/test_flow.py::test_third"=["third"]')
+    context.tool_catalog_path.write_text(catalog +
+        '\n[profiles.third]\nversion=1\nkind="shared-primary"\nprimary="sample/primary"\nsecondary=["sample/third"]\n')
+    return plan(selection_fixture, ('base::tests/test_flow.py::test_dual', 'base::tests/test_flow.py::test_third'))
+
+
+
+def test_shared_required_headers_reject_absence_for_compatible_alias_owners(selection_fixture):
+    shared_required_headers_plan(selection_fixture)
+    selected = add_shared_header_owner(selection_fixture)
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+    assert not result.missing
+
+    with pytest.raises(ToolSelectionError, match='API_2_HEADERS: required effective tool input'):
+        selected.bind_values(result)
+
+
+def test_shared_required_headers_preserve_default_for_compatible_alias_owners(selection_fixture):
+    shared_required_headers_plan(selection_fixture, 'default={}\nacknowledge_default=false\n')
+    selected = add_shared_header_owner(selection_fixture)
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+
+    bound = selected.bind_values(result)
+
+    assert [tool.local_values['HEADERS'] for tool in bound.tools] == [{}, {}, {}]
+
+
+@pytest.mark.parametrize('controller', [
+    {'type': 'str', 'default': 'shared', 'applies_when': {'SHARED': 'other'}},
+    {'type': 'int', 'default': 1, 'applies_when': {'SHARED': 2}},
+])
+def test_shared_requirement_uses_inactive_typed_controller(selection_fixture, controller):
+    from api_agent.config.declarations import ConfigSchema
+    context, _ = selection_fixture
+    base = schema_from_dict({'version': 1, 'fields': {'SHARED': controller}})
+    fixture = context, base
+    condition = 'required_when={SHARED=' + ('"shared"' if controller['type'] == 'str' else '1') + '}'
+    selected = shared_required_headers_plan(fixture, requirement=condition)
+    overrides = {'API_ENDPOINT': 'https://one.invalid'}
+    unrelaxed = ConfigSchema({**selected.schema.fields, 'API_2_HEADERS': replace(
+        selected.schema.fields['API_2_HEADERS'], required_when={'SHARED': controller['default']})})
+    assert resolve_config(unrelaxed, environ={}, overrides=overrides).missing == ('API_2_HEADERS',)
+    result = resolve_config(selected.schema, environ={}, overrides=overrides)
+    assert 'SHARED' not in result.values
+    assert not result.missing
+
+    with pytest.raises(ToolSelectionError, match='API_2_HEADERS: required effective tool input'):
+        selected.bind_values(result)
+
+
+def test_shared_inactive_controller_requirement_accepts_primary_default(selection_fixture):
+    context, _ = selection_fixture
+    base = schema_from_dict({'version': 1, 'fields': {'SHARED': {
+        'type': 'int', 'default': 1, 'applies_when': {'SHARED': 2}}}})
+    selected = shared_required_headers_plan((context, base), 'default={}\nacknowledge_default=false\n',
+        requirement='required_when={SHARED=1}')
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+
+    bound = selected.bind_values(result)
+
+    assert bound.tools[1].local_values['HEADERS'] == {}
+    assert set(result.deferred_required_fields) == {'API_2_ENDPOINT', 'API_2_HEADERS'}
+
+
+def test_shared_requirement_does_not_accept_invalid_primary_value(selection_fixture):
+    selected = shared_required_headers_plan(selection_fixture)
+    result = resolve_config(selected.schema, environ={}, overrides={
+        'API_ENDPOINT': 'https://one.invalid', 'API_HEADERS': 'invalid'})
+    assert result.errors
+
+    with pytest.raises(ToolSelectionError, match='API_2_HEADERS: required effective tool input'):
+        selected.bind_values(result)
+
+
+def shared_path_headers_plan(selection_fixture, *, secondary_active=True, primary_default=''):
+    context, _ = selection_fixture
+    shared_required_headers_plan(selection_fixture)
+    for name in ('optional', 'required'):
+        path = context.base_root / (name + '.toml')
+        declaration = path.read_text().replace('type="jsonobject"', 'type="path"\nanchor="base_root"\nallow_empty=true')
+        if name == 'optional':
+            declaration += primary_default
+        if name == 'required' and not secondary_active:
+            declaration += 'applies_when={SHARED="other"}\n'
+        path.write_text(declaration)
+    return plan(selection_fixture, ('base::tests/test_flow.py::test_dual',))
+
+
+def test_shared_required_path_rejects_empty_effective_primary_default(selection_fixture):
+    selected = shared_path_headers_plan(selection_fixture, primary_default='default=""\n')
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+
+    with pytest.raises(ToolSelectionError, match='API_2_HEADERS: required effective tool input'):
+        selected.bind_values(result)
+
+
+def test_shared_required_path_accepts_nonempty_effective_primary_default(selection_fixture):
+    context, _ = selection_fixture
+    selected = shared_path_headers_plan(selection_fixture, primary_default='default="headers.json"\n')
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'},
+        anchors=context.anchors)
+
+    bound = selected.bind_values(result)
+
+    assert bound.tools[1].local_values['HEADERS'] == context.base_root / 'headers.json'
+
+
+def test_shared_inactive_required_alias_does_not_require_effective_value(selection_fixture):
+    selected = shared_path_headers_plan(selection_fixture, secondary_active=False)
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 'https://one.invalid'})
+
+    bound = selected.bind_values(result)
+
+    assert 'API_2_HEADERS' not in result.deferred_required_fields
+    assert 'HEADERS' not in bound.tools[1].local_values
+
+
+def test_session_recomputes_shared_requirement_after_review_and_value_edit(selection_fixture):
+    from test_tool_config_session import session_for
+    context, _ = selection_fixture
+    base = schema_from_dict({'version': 1, 'fields': {'SHARED': {
+        'type': 'int', 'default': 1, 'applies_when': {'SHARED': 2}}}})
+    fixture = context, base
+    shared_required_headers_plan(fixture, requirement='required_when={SHARED=1}')
+    session = session_for(fixture, environ={'API_ENDPOINT': 'https://one.invalid'})
+    session.select_operation(('base::tests/test_flow.py::test_dual',))
+    session.result(_review=True)
+
+    rejected = session.result()
+
+    assert 'API_2_HEADERS: required effective tool input' in rejected.errors
+    assert rejected.tool_plan is None
+    session.set_value('API_HEADERS', '{}')
+    accepted = session.result()
+    assert not accepted.errors
+    assert accepted.tool_plan.tools[1].local_values['HEADERS'] == {}
+
+
+def test_deferred_shared_requirement_snapshot_is_immutable(selection_fixture):
+    selected = shared_required_headers_plan(selection_fixture, requirement='required_when={SHARED="shared"}')
+
+    with pytest.raises(TypeError):
+        selected.schema.deferred_requirements['API_2_HEADERS'] = None
+    with pytest.raises(TypeError):
+        selected.schema.deferred_requirements['API_2_HEADERS'].required_when['SHARED'] = 'other'

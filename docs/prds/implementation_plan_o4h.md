@@ -39,3 +39,7 @@
 - [x] Extend the existing central accounting and local inference joins to carry each call's effective requested reasoning effort and catalog-admitted actual response model into an authenticated workflow observation owner alongside requested selection and actual usage. Keep unavailable actual model and usage distinct from zero or the requested selection. Preserve independent log/trace content permissions and credential exclusion.
 - [ ] Supply the normal integration Workflow with the existing observation factory and catalog authority before claiming ordinary shared-tool journal/trace attribution. Its plain reporting journal currently withholds model identities without that authority; per-call central accounting remains available. Do not create a parallel trace owner.
 - [ ] Qualify response-model identities absent from the admitted catalog and broader provider/backend trace conformance; retain the existing catalog admission boundary until an explicit authority is defined. Explicit artifact-destination safety and broader acceptance above remain open.
+
+## Required shared inputs
+
+- [ ] Validate every active required secondary slot against its effective value after shared-primary derivation, including when the primary slot is optional and omitted. Reject a missing value before factory import or prerequisite acquisition; preserve conditional requiredness and independent-case configuration.

@@ -5,6 +5,7 @@ allows a launch-owned noninteractive start. This adapter records execution and
 never supplies acceptance or starts services on its own.
 """
 from dataclasses import dataclass, replace
+from copy import deepcopy
 from contextlib import ExitStack
 import json
 import os
@@ -55,7 +56,7 @@ def _merge_step(previous, incoming, *, prefer_incoming):
     parameters = {item['name']: item for item in previous['parameters']}
     for item in incoming['parameters']:
         if prefer_incoming or item['name'] not in parameters:
-            parameters[item['name']] = item
+            parameters[item['name']] = deepcopy(item)
     previous['parameters'] = list(parameters.values())
     children = {_step_identity(child): child for child in previous['steps']}
     for child in incoming['steps']:
@@ -63,14 +64,16 @@ def _merge_step(previous, incoming, *, prefer_incoming):
         if key in children:
             _merge_step(children[key], child, prefer_incoming=prefer_incoming)
         else:
-            previous['steps'].append(child)
-            children[key] = child
+            # Merged output owns its subtree; source projections stay pristine.
+            children[key] = deepcopy(child)
+            previous['steps'].append(children[key])
 
 
 class _WorkflowStepBridge:
     """Join journal and legacy views without dropping additional admitted scopes."""
     def __init__(self):
         self.entries = []
+        self._projections = []
 
     @property
     def steps(self):
@@ -78,27 +81,38 @@ class _WorkflowStepBridge:
 
     def add(self, packet):
         from .workflow_steps import scope_steps
-        # Validate even duplicate packets before considering identity reuse.
+        # Keep validated originals: later invocation claims may make an earlier
+        # legacy attribution ambiguous. Never use an already merged projection
+        # as the source when rebuilding that attribution.
         steps = scope_steps(packet.get('events', []))
         authoritative = packet.get('version') == 1 and 'projection' in packet
         invocation = packet['invocation_id'] if authoritative else None
-        for step in steps:
-            identity = _step_identity(step)
-            candidates = [entry for entry in self.entries
-                if entry['identity'] == identity and
-                (invocation is None or entry['invocation'] in (None, invocation))]
-            # An unnamespaced legacy view cannot choose between invocations.
-            # Retain it independently rather than silently attributing its data.
-            if len(candidates) != 1:
-                self.entries.append(dict(identity=identity, invocation=invocation,
-                                         authoritative=authoritative, step=step))
+        projections = self._projections + [dict(identity=_step_identity(step),
+            invocation=invocation, authoritative=authoritative, step=step) for step in steps]
+        entries = []
+        # Merge each namespace independently before attaching unnamespaced data.
+        for source in projections:
+            previous = next((entry for entry in entries
+                if entry['identity'] == source['identity'] and
+                entry['invocation'] == source['invocation']), None)
+            if previous is None:
+                entries.append(deepcopy(source))
+            else:
+                _compatible_steps(previous['step'], source['step'])
+                _merge_step(previous['step'], source['step'], prefer_incoming=False)
+        for legacy in tuple(entries):
+            if legacy['authoritative']:
                 continue
-            previous = candidates[0]
-            _compatible_steps(previous['step'], step)
-            _merge_step(previous['step'], step,
-                        prefer_incoming=authoritative and not previous['authoritative'])
-            if authoritative:
-                previous.update(invocation=invocation, authoritative=True)
+            candidates = [entry for entry in entries
+                if entry['identity'] == legacy['identity'] and entry['authoritative']]
+            if len(candidates) == 1:
+                journal = candidates[0]
+                _compatible_steps(journal['step'], legacy['step'])
+                _merge_step(journal['step'], legacy['step'], prefer_incoming=False)
+                entries.remove(legacy)
+        # Failed conflict checks leave both provenance and rendered state intact.
+        self._projections = projections
+        self.entries = entries
 
 
 @dataclass(frozen=True)
