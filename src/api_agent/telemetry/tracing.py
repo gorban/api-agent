@@ -31,11 +31,12 @@ TRACE_DELIVERY_WARNING = 'Trace delivery failed; tracing resources were closed. 
 
 def _attributes(boundary, payload, *, model_identity=None):
     clean = boundary.export(payload)
-    clean.pop('gen_ai.request.model', None)
-    if type(payload) is dict and model_identity is not None:
-        model = payload.get('gen_ai.request.model')
-        if model_identity(model) is True:
-            clean.update(boundary.for_policy(ContentPolicy(True)).export({'gen_ai.request.model': model}))
+    for key in ('gen_ai.request.model', 'gen_ai.response.model'):
+        clean.pop(key, None)
+        if type(payload) is dict and model_identity is not None:
+            model = payload.get(key)
+            if model_identity(model) is True:
+                clean.update(boundary.for_policy(ContentPolicy(True)).export({key: model}))
     return {key: value if type(value) in (str, bool, int, float) else json.dumps(value)
             for key, value in clean.items()}
 
@@ -55,9 +56,11 @@ def _structural(boundary, payload, model_identities=frozenset()):
     identifiers = {'api_agent.' + key for key in ('event_id', 'invocation_id', 'turn_id',
         'scope_id', 'parent_id', 'visit_id', 'attempt_id', 'call_id')}
     for key, value in payload.items():
-        if key == 'gen_ai.request.model':
+        if key in ('gen_ai.request.model', 'gen_ai.response.model'):
             if _model_identity(value, model_identities):
                 clean[key] = value
+        elif key == 'api_agent.request.reasoning_effort' and value in ('off', 'low', 'medium', 'high'):
+            clean[key] = value
         elif key in identifiers:
             if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', value):
                 clean[key] = value

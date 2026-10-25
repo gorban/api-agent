@@ -122,6 +122,8 @@ class WorkflowObservations:
                           'api_agent.event_id': row['event_id']}
             if not tool:
                 structural['gen_ai.request.model'] = selection
+                structural['gen_ai.response.model'] = row.get('actual_model')
+                structural['api_agent.request.reasoning_effort'] = row.get('reasoning_effort')
             for source, target in (('input_tokens', 'input_tokens'),
                                    ('output_tokens', 'output_tokens')):
                 value = (row.get('usage') or {}).get(source)

@@ -59,4 +59,8 @@ Checked technical gates cover the delivered core. Unfinished matrix rows and lin
 
 ## Existing workflow qualification
 
-An existing workflow coverage qualification invalidated by generic parser or loader source changes remains pending an explicit refresh. Preserve its original pilot evidence, source fingerprint and 22-run limit; this migration does not fabricate renewed qualification or add an implicit source-compatibility exception. The independently admitted shared-target case has its own execution requirements.
+A source change invalidates the existing workflow coverage qualification until an explicit reviewed refresh. Preserve original observations and fingerprints; never replace source identities merely to retain a cap. The [fresh tool-runtime qualification](implementation_plan_b2b1a7.md) records the replacement measurements and remaining normal-run acceptance. Shared-target execution retains its separate requirements.
+
+## Independent alternate consumer
+
+- [ ] Run exact selected integration cases with independent primary and secondary targets, then select a compatible synthetic REST implementation for secondary through its hidden implementation selector. Preserve primary API_ENDPOINT/API_HEADERS and secondary API_2_ENDPOINT/API_2_HEADERS; add only the REST implementation's API_2_PATH setting. The same schema-driven conversation must use each selected ToolSpec without translating GraphQL arguments. Assert distinct values, headers and owners, content-bound grants and cleanup. Managed targets use the existing prerequisite session; explicit remote endpoints acquire no fixture services. This fixture does not deliver a general REST/OData provider.

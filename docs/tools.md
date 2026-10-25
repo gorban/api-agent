@@ -14,6 +14,11 @@ A root, component or node can contain a Tools table:
 | primary | [primary](cfg/tools/primary.toml) |
 ```
 
+See the actual [demo root Tools table](../demo/simple/flow.md.html#tools) and
+[integration conversation Tools table](../tests/integration/fixtures/tool_instances/shared_primary/conversation.md.html#tools).
+The repository's [default chat root](../flow.md.html) has no Tools table; tool
+requirements come from the selected graph.
+
 Ports resolve from the nearest lexical scope. A child cannot silently replace an inherited port with another instance. Replacements are applied before tool discovery. Discovery reads declarative resources without importing native nodes or tool factories.
 
 A node borrows the selected instance through its execution context:
@@ -47,6 +52,16 @@ HEADERS = "API_HEADERS"
 ```
 
 `selector` is optional. Its hidden string default selects the implementation descriptor; a normal typed configuration declaration can supply conditional defaults or explicitly expose that selector. Existing dotenv, environment, CLI and interactive precedence still applies. Another instance can use the same implementation with `ENDPOINT = "OTHER_API_URL"`; no configuration suffix is required.
+
+`ENDPOINT` and `HEADERS` are implementation-local slots; `API_ENDPOINT` and
+`API_HEADERS` are public configuration names chosen by this instance. The
+factory receives local slot names, not all global settings. To add another
+input, declare its type/default/help under `inputs` and bind that slot in every
+instance that consumes it. For example, an implementation-specific path can
+use `[inputs.PATH]` with `type = "str"` and `default = "/records"`, paired with
+`PATH = "SECONDARY_PATH"` inside the instance's `[bindings]`. Only the selected
+implementation's consumed slots contribute active configuration. Bindings for
+an alternative implementation may remain dormant until it is selected.
 
 The implementation declares only its local inputs:
 
@@ -98,32 +113,68 @@ A first launch prepares missing core parser dependencies through the normal mana
 
 ## Prerequisites and shared services
 
-See the [bundled instance](../demo/simple/cfg/tools/primary.toml) and [infrastructure declaration](../demo/api/infrastructure.toml). A local output can satisfy a blank input provisionally; the factory receives a ready address only after the existing infrastructure owner verifies readiness and seeds. An instance's explicit `local.activation` supplies typed operation-only activation values for that local branch. Conflicting explicit settings reject. Disabled transitive dependencies remain errors. Acquired addresses never replace saved configuration.
+See [optional infrastructure and cleanup](tool-infrastructure.md) for local output
+bindings, recursive dependencies, Docker profiles and shared-primary behavior.
+Infrastructure ownership is declared by the instance, separately from the
+implementation's input schema.
 
-Prerequisite closures use the shared planner and lifecycle, including compatible backing-service reuse and retryable cleanup. Configuration, in-process services and containers are independent: no endpoint, engine or object store is mandatory merely because an object is a tool. Factories receive only explicitly bound non-owning capability views of shared services, with disposal reserved for their parent.
+## Inspect the delivered examples
 
-The separately selected shared-primary fixture derives its secondary endpoint and headers from its primary and uses one acquired target. This is an explicit profile, not a global fallback. Ordinary independent targets remain independent; conflicting shared/independent use of the same instance in one selection rejects.
+The [independent graph](../tests/integration/fixtures/tool_instances/independent/flow.md.html)
+links its [conversation and Tools table](../tests/integration/fixtures/tool_instances/independent/conversation.md.html#tools)
+and [native implementation](../tests/integration/fixtures/tool_instances/independent_functions.py).
+Its [primary](../tests/integration/fixtures/tool_instances/primary.toml) binds
+`ENDPOINT`/`HEADERS` to `API_ENDPOINT`/`API_HEADERS`. Its
+[independent secondary](../tests/integration/fixtures/tool_instances/independent_secondary.toml)
+binds those slots to `API_2_ENDPOINT`/`API_2_HEADERS`, plus `PATH` to `API_2_PATH`.
+The hidden `SECONDARY_IMPLEMENTATION` selector defaults to
+[graphql.toml](../tests/integration/fixtures/tool_instances/graphql.toml).
+Selecting [rest.toml](../tests/integration/fixtures/tool_instances/rest.toml) activates
+`API_2_PATH`, defaulting to `/hello`; GraphQL leaves that setting inactive.
+Both implementations advertise their own real callable schemas.
 
-Agent-only deployments consume externally managed service addresses. Container isolation/platform qualification and deployment-image behavior retain their separate requirements; selecting a tool does not certify an isolation runtime or authorize deployment orchestration.
+The normal [demo catalog](../demo/tool_catalog.toml) maps
+[test_independent_tools](../tests/integration/test_tool_alternate.py) to
+`independent_tools`; the [fixture catalog](../tests/integration/fixtures/tool_instances/catalog.toml)
+maps the same exact case to `independent`. Rerun that one case with the REST
+selector for alternate coverage. There are no two incompatible always-selected
+GraphQL/REST cases.
 
-## Retained services and last-use cleanup
+The separate [test_shared_primary](../tests/integration/test_tool_instances.py)
+selects the [shared-primary conversation](../tests/integration/fixtures/tool_instances/shared_primary/conversation.md.html)
+and [secondary descriptor](../tests/integration/fixtures/tool_instances/secondary.toml),
+deriving its endpoint/headers from the primary. Two owners and two verification
+gates remain; this profile shares a target, not an owner. Default full test
+selection is valid: the independent and shared-secondary instance identities
+are distinct. An explicitly conflicting `API_2_ENDPOINT` or `API_2_HEADERS`
+still rejects shared-primary selection instead of silently overriding intent.
+Select the independent case alone when supplying different remote targets.
+The backend is a synthetic API plus backing HTTP service, not a database implementation.
 
-Application and test graphs can select different services in the same managed project. A pack may explicitly register additional identity-only sources in `pack.toml`:
+From a prepared source checkout, validate declarations without inference:
 
-```toml
-[infrastructure]
-version = 1
-declarations = ["infrastructure.toml"]
-inventory = [
-  { owner = "example", root = "pack", directory = "tests/fixtures", declarations = ["infrastructure.toml"] }
-]
+```bash
+python -m api_agent.workflows validate --base-root . --entry demo/simple/flow.md.html
+python -m api_agent.workflows validate --base-root . --entry tests/integration/fixtures/tool_instances/shared_primary/flow.md.html
+python -m api_agent.workflows validate --base-root . --entry tests/integration/fixtures/tool_instances/independent/flow.md.html
+./launch.py --tui-mode integration --collect-only --no-std-in api-agent::tests/integration/test_tool_alternate.py::test_independent_tools
 ```
 
-`root` selects the admitted base or pack anchor. Optional `directory` defaults to `.` and selects an existing canonical subdirectory of that anchor; declarations are relative to that owner directory. Symlinks, traversal and conflicting roots for the same owner reject.
+Validation checks workflow declarations; collection discovers test identities.
+These commands do not prove live tool execution or infrastructure readiness. Running
+the integration test without `--collect-only` requires the ordinary execution
+acceptance and configured LLM; it may launch the selected local closure and
+spend tokens. To exercise the same independent case with its REST implementation,
+use the normal integration execution gate explicitly:
 
-An inventory row reads the declaration's owner and service identities, without reading its Compose fragments/assets, importing its factory or activating its settings. The exact declared service/profile pairs allow recognized, unselected containers to remain untouched when switching operations. Unknown or mismatched ownership still rejects. Inventory recognition does not grant endpoints, leases, logs or cleanup access.
+```bash
+./launch.py --tui-mode integration --no-std-in --start=True --debug=False \
+  --secondary-implementation rest.toml \
+  api-agent::tests/integration/test_tool_alternate.py::test_independent_tools
+```
 
-Operations share compatible selected services through locked leases. If a creator finishes while another operation still uses its containers, eligible cleanup responsibility transfers to a remaining consumer. Cleanup runs after the last relevant lease releases, subject to explicit retention and volume-preservation policy. A failed cleanup remains owned for retry; unrelated retained services are never added to that responsibility.
+The delivered REST fixture is bounded; broader transport support, service-capability
+combinations, platform isolation and durable storage retain their [separate delivery gates](prds/implementation_plan_o4.md).
 
 ### Nonempty string input policy
 

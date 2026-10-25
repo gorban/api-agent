@@ -59,4 +59,15 @@ for test-local overrides and scenario isolation.
 
 ## Workflow-selected named tools
 
-Use [the named-tool integration guide](tools.md) to bind reusable local inputs to pack settings, declare workflow ports and exact test graph associations, and join managed outputs or borrowed service capabilities to the existing operation lifecycle.
+A named tool separates an interface, a reusable implementation and a configured instance.
+The [named-tool guide](tools.md) shows local input slots, public setting bindings,
+implementation selectors and actual root/component Tools tables. The
+[infrastructure guide](tool-infrastructure.md) covers optional Docker services,
+recursive prerequisites, remote endpoints, sharing and cleanup.
+
+The [independent-target fixture](../tests/integration/fixtures/tool_instances/independent/conversation.md.html)
+binds `ENDPOINT` to `API_ENDPOINT` and `API_2_ENDPOINT` in distinct instances;
+its secondary can select GraphQL or REST. The separate
+[shared-primary fixture](../tests/integration/fixtures/tool_instances/shared_primary/conversation.md.html)
+derives secondary values from the primary and acquires no second API stack.
+See [fixture selection and inference-free checks](tools.md#inspect-the-delivered-examples).

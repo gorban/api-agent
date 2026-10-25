@@ -21,7 +21,7 @@ _CALL = {'type': 'object', 'properties': {
 _INFERENCE = {'type': 'object', 'properties': {
     'request_id': _LABEL, 'kind': {'enum': ['conversation', 'relevance']},
     'outcome': {'enum': ['started', 'failed', 'completed', 'tool_calls', 'length', 'refused']},
-    'usage': _USAGE}, 'required': ['request_id', 'kind', 'outcome', 'usage'],
+    'usage': _USAGE, 'requested_effort': {'enum': [None, '', 'off', 'low', 'medium', 'high']}}, 'required': ['request_id', 'kind', 'outcome', 'usage'],
     'additionalProperties': False}
 _REJECTION = {'type': 'object', 'properties': {
     'reason': {'enum': ['unknown_tool', 'duplicate_call']},
@@ -72,6 +72,9 @@ def tool_evidence(journal, *, graph_id, instances, ownership=None, sharing=None)
                   for row in journal.get('inference', ())],
               'completed': journal.get('completed') is True,
               'ownership': {} if ownership is None else dict(ownership)}
+    for source, target in zip(journal.get('inference', ()), result['inference']):
+        if 'requested_effort' in source:
+            target['requested_effort'] = source['requested_effort']
     if 'rejections' in journal:
         result['rejections'] = [{key: row[key] for key in
             ('reason', 'model_round', 'call_index', 'request_id')} for row in journal['rejections']]

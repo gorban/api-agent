@@ -23,6 +23,7 @@ def serve(*, role, root, upstream='', port=8090, schema_path=None):
     schema = json.loads(Path(schema_path).read_text()) if schema_path is not None else None
     identity = secrets.token_hex(12)
     counts = {'reads': 0, 'introspection': 0}
+    observed_headers = []
 
     def value():
         if upstream:
@@ -47,9 +48,13 @@ def serve(*, role, root, upstream='', port=8090, schema_path=None):
                 self.respond({'service': role})
             elif self.path == '/seed':
                 self.respond({'seed': seed['seed'], 'runs': seed['runs']})
+            elif self.path == '/hello' and role == 'api':
+                counts['reads'] += 1
+                observed_headers.append(self.headers.get('X-Instance'))
+                self.respond({'hello': value()})
             elif self.path == '/control/value':
                 self.respond({'hello': value(), 'backend_id': identity,
-                              'seed_runs': seed['runs'], **counts})
+                              'seed_runs': seed['runs'], 'headers': observed_headers, **counts})
             else:
                 self.respond({'error': 'unknown route'}, 404)
 
@@ -65,6 +70,7 @@ def serve(*, role, root, upstream='', port=8090, schema_path=None):
                 self.respond({'data': schema})
             elif re.fullmatch(r'\s*(?:query(?:\s+[A-Za-z_][A-Za-z_0-9]*)?\s*)?\{\s*hello\s*\}\s*', query):
                 counts['reads'] += 1
+                observed_headers.append(self.headers.get('X-Instance'))
                 self.respond({'data': {'hello': value()}})
             else:
                 self.respond({'errors': [{'message': 'Only the literal hello read is supported'}]}, 400)

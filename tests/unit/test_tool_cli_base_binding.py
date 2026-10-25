@@ -45,7 +45,11 @@ def test_terminal_selection_reaches_runner_with_compatible_provider_headers(isol
         assert plan.selection.test_ids == identities
         if all_tests:
             assert len(identities) > 1
-            assert {tool.id for tool in plan.tools} == {'demo/primary', 'fixture/primary', 'fixture/shared-secondary'}
+            assert {tool.id for tool in plan.tools} == {'demo/primary', 'fixture/primary', 'fixture/shared-secondary', 'fixture/secondary'}
+            independent_case = 'api-agent::tests/integration/test_tool_alternate.py::test_independent_tools'
+            assert independent_case in identities
+            assert {tool.id for tool in plan.for_case(independent_case).tools} == {
+                'fixture/primary', 'fixture/secondary'}
             assert {tool.id for tool in plan.for_case(CASE).tools} == {'demo/primary'}
         else:
             assert identities == (CASE,)

@@ -10,9 +10,9 @@
         "first_draft": 0.7871199821209823,
         "first_format": 0.7871199821209823,
         "first_guard": 0.7871199821209823,
-        "second_draft": 0.6339019593532035,
-        "second_format": 0.6339019593532035,
-        "second_guard": 0.6339019593532035
+        "second_draft": 0.514032968581539,
+        "second_format": 0.514032968581539,
+        "second_guard": 0.514032968581539
       },
       "confidence": 0.95,
       "dependency_versions": {
@@ -45,14 +45,14 @@
         "first_draft": 20,
         "first_format": 20,
         "first_guard": 20,
-        "second_draft": 18,
-        "second_format": 18,
-        "second_guard": 18
+        "second_draft": 16,
+        "second_format": 16,
+        "second_guard": 16
       },
-      "max_runs": 12,
-      "minimum_missing_node_bound": 0.0009807092243226867,
-      "minimum_runs": 8,
-      "missing_node_bound": 1.7415606734067215e-05,
+      "max_runs": 16,
+      "minimum_missing_node_bound": 0.0005205046620743127,
+      "minimum_runs": 12,
+      "missing_node_bound": 2.9028926011799562e-05,
       "model": "gpt-6-luna",
       "provider_identity": {
         "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
@@ -70,19 +70,16 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 1
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 2
         },
         {
@@ -94,16 +91,19 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 3
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 4
         },
         {
@@ -115,7 +115,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 5
         },
         {
@@ -127,16 +127,19 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 6
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 7
         },
         {
@@ -155,12 +158,9 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 9
         },
         {
@@ -184,7 +184,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 11
         },
         {
@@ -196,7 +196,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 12
         },
         {
@@ -232,7 +232,7 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 15
         },
         {
@@ -256,19 +256,16 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 17
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 18
         },
         {
@@ -287,19 +284,16 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_a",
+          "route": "skip",
           "trial": 20
         }
       ],
       "routes": {
-        "next_a": 7,
-        "next_b": 11,
-        "skip": 2
+        "next_a": 6,
+        "next_b": 10,
+        "skip": 4
       },
       "safety_margin": 4,
       "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
@@ -331,7 +325,7 @@
         "src/api_agent/providers/control.py": "337262e4bd0a3d375ec99289ef206c96c6843236d481f1af9fbfd3ea8499b1e6",
         "src/api_agent/providers/inference.py": "132c97656d4df9ea3b4ca62a36df72031033cdede008fbfc3e2e355d4643765b",
         "src/api_agent/providers/llm.py": "a042829aa837934a09ef57d7bb507cd034c6408a90c8e92b98da5d6fd63367cf",
-        "src/api_agent/providers/loading.py": "e3cb3ea90135d622251bfc9161225ff71984da8f6c61ffc5c6f315d6a97480d5",
+        "src/api_agent/providers/loading.py": "de6a0d708f892f834f4da1936482b404fbf382b6a4dd7464f89d2d33356ad0c4",
         "src/api_agent/providers/progress.py": "4df268326944fbad2cef18a00b3b1aac29de64dd6096a0d3e1be0e4dc8ff33eb",
         "src/api_agent/providers/rich_inference.py": "7150f51c2ed9a155493978adcea31e28cc2224f0439483bc60508ac7443be49e",
         "src/api_agent/providers/schema_validation_worker.py": "22283bd59167e6b06a33b499db93c7b5ccc3db62cff663ef4b14b802c6138ab0",
@@ -339,12 +333,12 @@
         "src/api_agent/providers/setup_transport.py": "8f5169b86348be8dd15b97957d3d31389df9cc59d51c860b9a2cf501332dcfc2",
         "src/api_agent/providers/shared_setup.py": "1a79fba3f97940aeb7d598ce6d48f355075a0c2f512ba4467b27e804c7273c35",
         "src/api_agent/runtime/tasks.py": "9a2783e2eb15c302e98cacd84d16ebd96348627bc682b025ffc0042073cc4146",
-        "src/api_agent/testing/provider_setup.py": "88d427d8288c21f4c77cb9a04a4b8abea07299108f851d364988d18bf8e477fa",
+        "src/api_agent/testing/provider_setup.py": "45395502f57f7b47d7b54cd2b2aa7bd686ecc34679b3de5ef82905655628d525",
         "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
         "src/api_agent/workflows/contrived.py": "4e17710c9ecb291fbe70df3e9bd6c6afc284f30dcaff13d820383d98b7b53e0b",
-        "src/api_agent/workflows/definition.py": "869862c8bd11bbd176ec8028ca6d3d6fd127d0b742b05f7ed9f461eaa7eafd88",
+        "src/api_agent/workflows/definition.py": "49a8ae99ce1bb8665ce484a609a1c2b250ab87527a8b1d8be235b62b1fe56d64",
         "src/api_agent/workflows/document_format.py": "86b7f5895a3e159f7b387fecba2ecd812f9ce5b6f66a3aa34ba63b74f8d37b8d",
-        "src/api_agent/workflows/execution.py": "0af2c07ce76e6388edfa2e4b0017271ee8703ebd86f223299ba5a0fa7bd577f9",
+        "src/api_agent/workflows/execution.py": "824e35bea463b56a56856f3ee451c03e674b5643135ea008566007829c85e291",
         "src/api_agent/workflows/fixture_driver.py": "dba2357da44f1ed29c8c8c0c1a3c06c75796e475c71772ef21e3ef986107e87a",
         "src/api_agent/workflows/layout.py": "a7f4830897eb1f32a43beded0c9c280a8c3a2c3180dd449ac7b76aa4e66d97dc",
         "src/api_agent/workflows/predicates.py": "d7c9b82e06a36f6e2767765a1243d1471e899cb2666c17b6fa7ba92a25787474"

@@ -340,7 +340,9 @@ class LocalLLM(_Owner):
                     row = {'call_id': str(uuid4()), 'selection': request.selected_llm,
                            'outcome': result.outcome if result is not None else
                                'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
-                           'usage': None if usage is None else usage_to_wire(usage)}
+                           'usage': None if usage is None else usage_to_wire(usage),
+                           'actual_model': result.actual_model if result is not None else None,
+                           'reasoning_effort': request.payload.generation.reasoning_effort or None}
                     try:
                         if result is not None:
                             row['quote'] = validate_quote(self.emissions.content_export(quote_cost(provider.implementation, request, result)))
@@ -352,7 +354,8 @@ class LocalLLM(_Owner):
                         journal, visit_id, attempt_id = owner
                         journal.record_call(call_id=row['call_id'], elapsed=time.monotonic() - started, visit_id=visit_id,
                             attempt_id=attempt_id, usage=row['usage'],
-                            selection=row['selection'], outcome=row['outcome'])
+                            selection=row['selection'], outcome=row['outcome'],
+                            actual_model=row['actual_model'], reasoning_effort=row['reasoning_effort'])
                     # A central publisher may already have admitted terminal calls
                     # during this exact operation. Reuse those receipts; a separate
                     # local UUID would charge and instrument the same work twice.

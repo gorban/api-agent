@@ -436,7 +436,7 @@ class WorkflowJournal:
                    'attempt', 'max_passes', 'source', 'target', 'condition', 'implicit', 'elapsed',
                    'started_ms', 'stopped_ms', 'declared_timeout', 'effective_timeout',
                    'timeout_key', 'outcome', 'accepted', 'visit_id', 'attempt_id',
-                   'call_id', 'cause_id', 'usage', 'selection', 'direction',
+                   'call_id', 'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'direction',
                    'values', 'reason', 'accounting', 'plain_fields', 'capture_class',
                    'truncated_fields')
         for key in ('event', 'owner', 'kind', 'node', 'component', 'source',
@@ -449,6 +449,11 @@ class WorkflowJournal:
             raise ValueError('Unsafe workflow observation selection')
         if selection is not None and not self._selection_admitted(selection):
             row = {**row, 'selection': None, 'reason': 'selection_unavailable'}
+        actual_model = row.get('actual_model')
+        if actual_model is not None and not self._selection_admitted(actual_model):
+            row = {**row, 'actual_model': None}
+        if row.get('reasoning_effort') not in (None, 'off', 'low', 'medium', 'high'):
+            raise ValueError('Invalid workflow reasoning effort')
         if 'condition' in row and not _condition_label(row['condition']):
             raise ValueError('Unsafe workflow observation condition')
         if row['event'] == 'edge' and 'condition' in row and tuple(row.get(key) for key in (
@@ -547,7 +552,8 @@ class WorkflowJournal:
         return self._observe(event, allow_values=True, observer_override=_observer_override)
 
     def record_call(self, *, visit_id, attempt_id=None, usage=None, selection=None,
-                    elapsed=None, outcome='completed', call_id=None):
+                    elapsed=None, outcome='completed', call_id=None,
+                    actual_model=None, reasoning_effort=None):
         self._begin()
         if type(visit_id) is not str or not visit_id:
             raise ValueError('A leaf call requires a node visit owner')
@@ -579,6 +585,8 @@ class WorkflowJournal:
                           **({'reason': selection_reason} if selection_reason else {}), elapsed=elapsed, started_ms=started_ms,
                           stopped_ms=stopped_ms if started_ms is not None else None,
                           outcome=outcome,
+                          **({'actual_model': actual_model} if actual_model is not None else {}),
+                          **({'reasoning_effort': reasoning_effort} if reasoning_effort is not None else {}),
                           accounting='unverified_tool' if unverified_tool else 'central_call_id'))
         return call_id
 
@@ -684,12 +692,17 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                'started_ms', 'stopped_ms', 'declared_timeout', 'effective_timeout',
                'timeout_key', 'outcome', 'accepted', 'sequence', 'event_id',
                'invocation_id', 'turn_id', 'visit_id', 'attempt_id', 'call_id',
-               'cause_id', 'usage', 'selection', 'direction', 'values', 'reason', 'accounting',
+               'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'direction', 'values', 'reason', 'accounting',
                'plain_fields', 'capture_class', 'truncated_fields'}
     event_ids = set()
     for sequence, event in enumerate(events, 1):
         if type(event) is not dict or set(event) - allowed or event.get('sequence') != sequence:
             raise ValueError('Invalid workflow event sequence or field')
+        if event.get('reasoning_effort') not in (None, 'off', 'low', 'medium', 'high'):
+            raise ValueError('Invalid workflow reasoning effort')
+        actual_model = event.get('actual_model')
+        if actual_model is not None and (type(actual_model) is not str or not actual_model.isprintable() or not 0 < len(actual_model) <= 200):
+            raise ValueError('Invalid workflow actual model')
         event_id = event.get('event_id')
         try:
             valid_event_id = type(event_id) is str and str(UUID(event_id)) == event_id

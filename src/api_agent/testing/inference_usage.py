@@ -64,7 +64,9 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
             journal, visit_id, attempt_id = owner
             journal.record_call(call_id=call_id, visit_id=visit_id,
                                 attempt_id=attempt_id, usage=row['usage'],
-                                selection=selection, outcome=row['outcome'])
+                                selection=selection, outcome=row['outcome'],
+                                actual_model=row.get('actual_model'),
+                                reasoning_effort=row.get('reasoning_effort'))
             from api_agent.workflows.attribution import admit_terminal_call_receipt
             admit_terminal_call_receipt({**row, 'visit_id': visit_id, 'attempt_id': attempt_id}, journal)
     return call_id

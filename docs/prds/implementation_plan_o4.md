@@ -13,9 +13,13 @@ Workflow tool usage determines configuration and prerequisites for the applicati
 - [x] Derive required fields and recursive conditional service prerequisites from the selected operation's tool closure. Reuse the existing Compose planner, readiness, seed, lease and cleanup contracts; concrete services remain owner declarations.
 - [x] Show application requirements in application Review configuration. Test discovery may describe other graphs; only selected tests contribute execution requirements. Recompute when graph, test selection, implementation or controlling settings change. An unrelated tool must not make its settings required.
 - [x] Preserve independently verified tool execution, configuration precedence/provenance, privacy, immutable definitions, installed-pack behavior and all existing acceptance gates.
+- [x] Document bindings/selectors, ownership, declarative Tools tables, recursive local infrastructure, remote targets and sharing/cleanup in the [tool guide](../tools.md) and [infrastructure guide](../tool-infrastructure.md), with fixture links and inference-free checks; distinguish shared-primary selection and remaining gates.
+
+- [x] Independently review the documentation examples and linked contract claims before acceptance.
+
 ## Next delivery
 
 - [x] Agree the [bounded contract](implementation_plan_o4a.md) and establish the [ordered migration and acceptance matrix](implementation_plan_o4b.md).
-- [ ] Complete the matrix's remaining REST alternate, operation-service/four-shape, sidecar/platform, durable failure-evidence, evidence-destination, trace-attribution and human acceptance gates before expanding endpoint-dependent consumers.
+- [ ] Complete the matrix's remaining transport acceptance, operation-service/four-shape, sidecar/platform, durable failure-evidence, evidence-destination, trace-attribution and human acceptance gates before expanding endpoint-dependent consumers.
 
 The [selection/configuration requirements](implementation_plan_o4d.md) and [ownership/admission requirements](implementation_plan_o4e.md) specify production joins and remaining decisions. Apply [managed development/external sidecar policy](implementation_plan_o4f.md). Support [all configuration/prerequisite combinations](implementation_plan_o4g.md) and [shared-target dual-tool live acceptance](implementation_plan_o4h.md). Recording requirements claims no implementation or human acceptance.

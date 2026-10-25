@@ -62,7 +62,7 @@ def test_independent_projections_and_real_serialized_ancestry(log, trace, mode):
             LANGFUSE_PUBLIC_KEY='synthetic-public', LANGFUSE_SECRET_KEY='synthetic-secret')
         # Deliberately permissive injection cannot elevate resolved trace policy.
         credentials = EmissionBoundary(ContentPolicy(True))
-        runtime = TraceRuntime(resolved, boundary=credentials, model_identities=('example-model',))
+        runtime = TraceRuntime(resolved, boundary=credentials, model_identities=('example-model', 'actual-model'))
         asyncio.run(runtime.astart())
         rows = []
         adapter = WorkflowObservationFactory(resolved, boundary=credentials,
@@ -81,7 +81,8 @@ def test_independent_projections_and_real_serialized_ancestry(log, trace, mode):
             schema={'type':'object','properties':{'text':{'type':'string'}}},plain_fields=['text'])
         call = str(uuid4())
         for _ in range(2):
-            adapter.record_call(visit_id=visit,call_id=call,usage={'input_tokens':7,'output_tokens':2},selection='example-model',elapsed=.01)
+            adapter.record_call(visit_id=visit,call_id=call,usage={'input_tokens':7,'output_tokens':2},selection='example-model',elapsed=.01,
+                actual_model='actual-model', reasoning_effort='low')
         adapter.observe(dict(event='scope_end',scope_id=visit,owner='Make',kind='node',outcome='passed'))
         adapter.observe(dict(event='scope_end',scope_id=graph,owner='GRAPH',kind='graph',outcome='passed'))
         adapter.close()
@@ -108,6 +109,13 @@ def test_independent_projections_and_real_serialized_ancestry(log, trace, mode):
         assert leaf.parent_span_id == node.span_id
         assert leaf.kind == 3
         usage_attrs = {attribute.key:attribute.value.int_value for attribute in leaf.attributes}
+        strings = {attribute.key:attribute.value.string_value for attribute in leaf.attributes}
+        assert strings['gen_ai.request.model'] == 'example-model'
+        assert strings['gen_ai.response.model'] == 'actual-model'
+        assert strings['api_agent.request.reasoning_effort'] == 'low'
+        call_row = next(row for row in journal['events'] if row['event'] == 'call')
+        assert call_row['actual_model'] == 'actual-model'
+        assert call_row['reasoning_effort'] == 'low'
         assert usage_attrs['gen_ai.usage.input_tokens']==7
         assert usage_attrs['gen_ai.usage.output_tokens']==2
         assert 9_000_000 <= leaf.end_time_unix_nano - leaf.start_time_unix_nano <= 11_000_000
@@ -797,3 +805,80 @@ def test_capture_substitution_preserves_other_subscribers_and_synchronous_reentr
         assert rows[0]['values']['text']==text
     else:
         assert 'values' not in previews[0] and 'values' not in rows[0]
+
+
+@pytest.mark.parametrize('log,trace', [(False,False),(False,True),(True,False),(True,True)])
+def test_unadmitted_actual_model_cannot_become_structural_evidence(log, trace):
+    resolved = config(log, trace, mode='')
+    credentials = EmissionBoundary(ContentPolicy(True))
+    runtime = TraceRuntime(resolved, boundary=credentials, model_identities=('requested-model',))
+    adapter = WorkflowObservationFactory(resolved, boundary=credentials, trace=runtime).create(definition())
+    visit = str(uuid4())
+    adapter.observe(dict(event='scope_start', scope_id=visit, owner='Make', kind='node'))
+    adapter.record_call(visit_id=visit, call_id=str(uuid4()), selection='requested-model',
+        actual_model='unadmitted-sensitive-model', reasoning_effort='low')
+    call = next(row for row in adapter.finalize()['events'] if row['event'] == 'call')
+    assert call['selection'] == 'requested-model'
+    assert call['actual_model'] is None
+    assert call['reasoning_effort'] == 'low'
+    assert 'unadmitted-sensitive-model' not in json.dumps(call)
+    adapter.close()
+    assert runtime.shutdown()
+
+
+@pytest.mark.parametrize('trace_content', [False, True])
+def test_reserved_response_model_requires_catalog_admission_at_every_trace_entry(trace_content):
+    from unittest.mock import Mock
+    runtime = TraceRuntime(config(trace=trace_content), model_identities=('catalog-model',))
+    tracer = Mock()
+    runtime._tracer = tracer
+    unknown = {'gen_ai.response.model': 'unadmitted-sensitive-model'}
+    known = {'gen_ai.response.model': 'catalog-model'}
+    span = runtime.begin('chat catalog-model', {}, payload=unknown)
+    assert 'gen_ai.response.model' not in tracer.start_span.call_args.kwargs['attributes']
+    span.attributes(unknown)
+    assert 'gen_ai.response.model' not in tracer.start_span.return_value.set_attributes.call_args.args[0]
+    span.event(unknown)
+    assert 'gen_ai.response.model' not in tracer.start_span.return_value.add_event.call_args.kwargs['attributes']
+    span.attributes(known)
+    assert tracer.start_span.return_value.set_attributes.call_args.args[0]['gen_ai.response.model'] == 'catalog-model'
+    span.event(known)
+    assert tracer.start_span.return_value.add_event.call_args.kwargs['attributes']['gen_ai.response.model'] == 'catalog-model'
+    span.end()
+    with runtime.span(unknown):
+        assert 'gen_ai.response.model' not in tracer.start_span.call_args.kwargs['attributes']
+    assert 'unadmitted-sensitive-model' not in repr(tracer.mock_calls)
+    runtime._tracer = None
+    assert runtime.shutdown()
+
+
+def test_journal_rejects_unrecognized_reasoning_effort_without_retaining_content():
+    from api_agent.workflows.journal import WorkflowJournal
+
+    journal = WorkflowJournal(definition())
+    with pytest.raises(ValueError, match='Invalid workflow reasoning effort'):
+        journal.observe(dict(event='node', node='Make', reasoning_effort='sensitive-unknown-effort'))
+
+    payload = journal.finalize()
+    assert payload['events'] == []
+    assert 'sensitive-unknown-effort' not in json.dumps(payload)
+
+
+@pytest.mark.parametrize(('field', 'value', 'message'), [
+    ('reasoning_effort', 'sensitive-unknown-effort', 'Invalid workflow reasoning effort'),
+    ('actual_model', 'sensitive-model\nprivate', 'Invalid workflow actual model'),
+])
+def test_journal_admission_rejects_invalid_inference_metadata_with_valid_digest(field, value, message):
+    from hashlib import sha256
+    from api_agent.workflows.journal import WorkflowJournal, validate_journal
+
+    journal = WorkflowJournal(definition())
+    journal.observe(dict(event='scope_start', scope_id=str(uuid4()), owner='GRAPH', kind='graph'))
+    payload = journal.finalize()
+    assert validate_journal(payload) == payload
+    payload['events'][0][field] = value
+    unsigned = {key: item for key, item in payload.items() if key != 'sha256'}
+    payload['sha256'] = sha256(json.dumps(unsigned, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    with pytest.raises(ValueError, match=message):
+        validate_journal(payload)

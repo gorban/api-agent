@@ -51,7 +51,7 @@ arbitrary child output, which may contain credentials even with `LOG_CONTENT=Tru
 
 - [Settings and TUI controls](docs/workbench.md)
 - [Credentials and LLM connections](docs/connections.md)
-- [Resource packs and providers](docs/resource-packs.md)
+- [Resource packs, providers and named tools](docs/resource-packs.md#workflow-selected-named-tools)
 - [Running, debugging and testing](docs/development.md)
 - [Workflow diagrams and browser inspection](docs/workflow_viewer.md)
 - [Bundled API demonstration](docs/api_demo.md)

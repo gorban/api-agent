@@ -56,5 +56,5 @@ def test_full_bundled_selection_reuses_inputs_without_merging_cases(with_provide
     assert {tool.local_values['ENDPOINT'] for tool in fixture_ready.tools} == {'http://127.0.0.1:18002/graphql'}
     assert application_ready.tools[0].configured_values['ENDPOINT'] == ''
     assert fixture_ready.tools[0].configured_values['ENDPOINT'] == ''
-    assert 'ENDPOINT' not in fixture_ready.tools[1].configured_values
+    assert fixture_ready.tools[1].configured_values['ENDPOINT'] == ''
     assert fixture_ready.tools[1].derived_from['ENDPOINT'] == 'fixture/primary'

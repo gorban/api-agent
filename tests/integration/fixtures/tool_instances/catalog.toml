@@ -3,6 +3,8 @@ version = 1
 [test_cases]
 "api-agent::tests/integration/test_tool_instances.py::test_shared_primary" = {graphs = ["shared_primary"], profile = "shared_primary"}
 
+"api-agent::tests/integration/test_tool_alternate.py::test_independent_tools" = ["independent"]
+
 [graphs.shared_primary]
 root = "base"
 entry = "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"
@@ -13,3 +15,7 @@ version = 1
 kind = "shared-primary"
 primary = "fixture/primary"
 secondary = ["fixture/shared-secondary"]
+
+[graphs.independent]
+root = "base"
+entry = "tests/integration/fixtures/tool_instances/independent/flow.md.html"
