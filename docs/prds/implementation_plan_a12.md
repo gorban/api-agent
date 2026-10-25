@@ -40,3 +40,10 @@ sampling, an agreed latency budget and human acceptance stay open above.
 - [x] After the terminal display is restored, identify pending background work with fixed descriptive labels, flush the message immediately and report completion. Keep quick exits quiet and avoid repetitive status spam or raw storage diagnostics. Await owned readers without shutting down another caller's executor.
 - [x] Verify blocked reads, cancellation, late failures, fast exits, menu return/reentry and exception paths, with independent/external review before human acceptance. Record actual exit-phase timing separately from startup and navigation.
 - [ ] Human acceptance of visible shutdown feedback and return of shell control after leaving the integration/E2E picker without running tests.
+
+## Collection transitions and selected text
+
+- [x] Keep an open Quit confirmation visible from queueing through collection and inspection cleanup, preserving its typed response and focus when collection succeeds or fails. Cancel must reveal the collected picker or error; confirming Quit must cancel delivery and prevent automatic test startup.
+- [x] Keep mouse text selection, contextual copying and subsequent keyboard navigation responsive. Selection and focus changes must not repeatedly resolve selected-test configuration or rebuild unchanged shortcut hints; account actions and Start must still use current authoritative configuration.
+- [x] Verify collection success/error/cancellation, pending automatic start and repeated selection/copy/navigation, measure the warm selected-text path, and complete independent/external review.
+- [ ] Human acceptance of confirmation persistence and responsiveness after selecting picker text.

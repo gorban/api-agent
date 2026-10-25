@@ -193,7 +193,10 @@ class SelectedTextCopy:
 
     async def _watch_selections(self, old_selections, selections):
         await super()._watch_selections(old_selections, selections)
-        self.refresh_bindings()
+        available = self.get_selected_text() is not None
+        if available != getattr(self, '_selected_text_available', False):
+            self._selected_text_available = available
+            self.refresh_bindings()
 
     @property
     def active_bindings(self):
@@ -323,6 +326,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         self.test_search = None
         self.configuration_error = configuration_error
         self._pending_cost_refresh = None
+        self._quit_decision = None
 
     def compose(self) -> ComposeResult:
         app = self.app
@@ -484,10 +488,6 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                                     animate=False)
         if self.kind == "test-results":
             self.call_after_refresh(self.layout_test_results)
-
-    def watch_selections(self):
-        # Textual updates highlighted text without refreshing contextual bindings.
-        self.refresh_bindings()
 
     def refresh_suite_timer(self):
         run = self.app.test_run
@@ -748,7 +748,12 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if self.kind == 'menu':
             await self.app.confirm_quit()
             return
-        self.app.push_screen(QuitDialog(), lambda yes: self.app.confirm_quit() if yes else None)
+        decision = self._quit_decision = asyncio.get_running_loop().create_future()
+        def respond(yes):
+            self._quit_decision = None
+            decision.set_result(yes)
+            return self.app.confirm_quit() if yes else None
+        self.app.push_screen(QuitDialog(), respond)
 
     async def action_close_view(self):
         await self.app.close_view()
@@ -1547,14 +1552,29 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.active_test_selectors = self.pending_test_selectors
         self.pending_test_selectors = ()
         self.collection_cancel = threading.Event()
-        self.run_worker(self._collect_tests(self.collection_cancel), exclusive=True)
+        self.run_worker(self._collect_tests(self.collection_cancel, origin=self.screen), exclusive=True)
 
-    async def _collect_tests(self, cancel_event):
+    async def screen_delivery_allowed(self, owner):
+        # A collecting visit owns its confirmation, including the typed response.
+        # Deliver only after cancellation of that dialog has resumed the owner.
+        while (decision := getattr(owner, '_quit_decision', None)) is not None:
+            if await asyncio.shield(decision):
+                return False
+        return self.screen is owner
+
+    async def collection_delivery_allowed(self, owner, cancel_event):
+        return (await self.screen_delivery_allowed(owner) and not cancel_event.is_set()
+                and self.collection_cancel is cancel_event)
+
+    async def _collect_tests(self, cancel_event, *, origin=None):
+        if origin is not None and not await self.collection_delivery_allowed(origin, cancel_event):
+            return
         self.show("collecting", "Collecting tests", "Collecting pytest identities only; no application prerequisites or tests are executed.")
+        owner = self.screen
         try:
             from api_agent.testing.selection import SelectionModel
             tests = await self.discover_tests(cancel_event)
-            if cancel_event.is_set() or self.collection_cancel is not cancel_event:
+            if not await self.collection_delivery_allowed(owner, cancel_event):
                 return
             if self.session.result().values.get("COLLECT_ONLY"):
                 from api_agent.testing.collection import select_tests
@@ -1572,28 +1592,37 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 if not self.screen.configuration_error:
                     await self.choose('continue')
         except Exception as error:
-            if cancel_event.is_set() or self.collection_cancel is not cancel_event:
-                return
-            self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
+            if await self.collection_delivery_allowed(owner, cancel_event):
+                self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
 
-    async def back_to_selection(self):
+    def back_to_selection(self):
+        # Capture the visit before a caller can queue this coroutine behind Quit.
+        origin = self.screen_stack[-1] if self.screen_stack else None
+        return self._back_to_selection(origin)
+
+    async def _back_to_selection(self, origin):
         if self.test_run_active() or self.selection is None:
             return
+        if origin is not None and not await self.screen_delivery_allowed(origin):
+            return
         if not await self.end_inspection():
+            return
+        if origin is not None and not await self.screen_delivery_allowed(origin):
             return
         self.clear_allure_snapshots()
         cancel_event = threading.Event()
         selection = self.selection
         self.collection_cancel = cancel_event
         self.show("collecting", "Refreshing test selection", "Collecting current tests while preserving your selection.")
+        owner = self.screen
         try:
             tests = await self.discover_tests(cancel_event)
-            if cancel_event.is_set() or self.collection_cancel is not cancel_event or self.selection is not selection:
+            if not await self.collection_delivery_allowed(owner, cancel_event) or self.selection is not selection:
                 return
             selection.refresh_for_run(tests)
             self.show_selection()
         except Exception as error:
-            if (not cancel_event.is_set() and self.collection_cancel is cancel_event
+            if (await self.collection_delivery_allowed(owner, cancel_event)
                     and self.selection is selection):
                 self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
 
