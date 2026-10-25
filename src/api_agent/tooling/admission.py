@@ -363,6 +363,8 @@ def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path) -> 
     # these bytes rather than consulting the source directory during execution.
     sources, imported, total = {}, set(), 0
     paths = sorted(package.rglob('*.py'))
+    from api_agent.config.source_reads import record_probe, record_optional
+    record_probe(('tool-python', package), lambda: tuple(sorted(package.rglob('*.py'))), tuple(paths))
     if len(paths) > MAX_TOOL_FILES:
         raise ToolAdmissionError('Tool executable closure is too large')
     for path in paths:
@@ -395,14 +397,19 @@ def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path) -> 
         dependencies.append((name, None))
     assets = {}
     for directory in dict.fromkeys((owner_root, package)):
-        for path in sorted(directory.iterdir()):
-            if path.name.upper().startswith(('LICENSE', 'NOTICE', 'COPYING')) and path.is_file():
-                assets[path] = _read_bounded(path, owner_root)
-                total += len(assets[path])
-                if total > MAX_TOOL_BYTES:
-                    raise ToolAdmissionError('Tool executable closure is too large')
+        license_paths = lambda directory=directory: tuple(path for path in sorted(directory.iterdir())
+            if path.name.upper().startswith(('LICENSE', 'NOTICE', 'COPYING')) and path.is_file())
+        selected_licenses = license_paths()
+        record_probe(('tool-notices', directory), license_paths, selected_licenses)
+        for path in selected_licenses:
+            assets[path] = _read_bounded(path, owner_root)
+            total += len(assets[path])
+            if total > MAX_TOOL_BYTES:
+                raise ToolAdmissionError('Tool executable closure is too large')
     manifest = package / 'provider-dependencies.toml'
-    if manifest.exists():
+    present = manifest.exists()
+    record_optional(manifest, present)
+    if present:
         assets[manifest] = _read_bounded(manifest, owner_root)
     sources, dependencies, assets = MappingProxyType(sources), tuple(dependencies), MappingProxyType(assets)
     return FactoryAdmission(factory_name, factory.relative_to(package).as_posix(),

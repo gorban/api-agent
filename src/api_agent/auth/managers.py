@@ -37,7 +37,10 @@ def _implementation_source(path, *, nonregular_message='Password manager impleme
     with os.fdopen(descriptor, 'rb') as source:
         if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
             raise ManagerError(nonregular_message)
-        return source.read()
+        body = source.read()
+    from api_agent.config.source_reads import record_file
+    record_file(path, path.parent, body)
+    return body
 
 
 @dataclass(frozen=True)
@@ -128,7 +131,10 @@ class PasswordManagerRegistry:
 
 
 def _read_definitions(declaration: Path, *, owner_root: Path) -> tuple[ManagerDefinition, ...]:
+    lexical = declaration.absolute()
     declaration = declaration.resolve()
+    from api_agent.config.source_reads import record_link
+    record_link(lexical, declaration)
     owner_root = owner_root.resolve()
     if not declaration.is_relative_to(owner_root):
         raise ManagerError("Password manager declaration must remain inside its owning resource pack")
@@ -172,7 +178,10 @@ def load_manager_registry(*, pack_root=None) -> PasswordManagerRegistry:
     definitions = bundled_registry().definitions
     if pack_root is not None:
         declaration = Path(pack_root) / 'cfg/password_managers.toml'
-        if declaration.exists() or declaration.is_symlink():
+        present = declaration.exists()
+        from api_agent.config.source_reads import record_optional
+        record_optional(declaration, present)
+        if present or declaration.is_symlink():
             definitions += _read_definitions(declaration, owner_root=Path(pack_root))
     return PasswordManagerRegistry(definitions)
 

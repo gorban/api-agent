@@ -229,7 +229,7 @@ def test_changed_catalog_adds_graph_and_changed_implementation_updates_default(s
 
 
 @pytest.mark.asyncio
-async def test_review_refresh_resolves_each_view_once_and_sees_external_edits(selection_fixture, monkeypatch):
+async def test_review_refresh_composes_once_and_sees_external_edits(selection_fixture, monkeypatch):
     from api_agent.tui.app import ApiAgentApp
     from textual.widgets import DataTable
     from test_tool_config_session import session_for
@@ -240,17 +240,80 @@ async def test_review_refresh_resolves_each_view_once_and_sees_external_edits(se
         app.show_configuration()
         await pilot.pause()
         calls = []
-        original = session.result
-        def resolve(**kwargs):
-            calls.append(kwargs.get('_review', False))
-            return original(**kwargs)
-        monkeypatch.setattr(session, 'result', resolve)
+        original = session._bootstrap_schema
+        def resolve(*args, **kwargs):
+            calls.append(True)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(session, '_bootstrap_schema', resolve)
         session.dotenv_path.write_text('SHARED=updated\n')
 
         app.refresh_configuration_rows(app.screen)
 
-        assert calls == [False, True]
+        assert calls == [True]
         table = app.screen.query_one(DataTable)
         shared = next(table.get_row_at(i) for i, row in enumerate(table.ordered_rows)
                       if row.key.value == 'SHARED')
         assert shared[1] == 'updated'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['read', 'handoff'])
+async def test_pending_review_rechecks_captured_implementation_without_navigation(selection_fixture, monkeypatch, stage):
+    import asyncio
+    import os
+    import threading
+    from api_agent.tui.app import ApiAgentApp
+    import api_agent.tui.configuration_refresh as module
+    from textual.widgets import DataTable
+    from test_tool_config_session import session_for
+    session = session_for(selection_fixture)
+    path = session.context.base_root / 'graphql.toml'
+    # Make the sample field reviewable, with two same-length effective defaults.
+    body = path.read_text().replace('default={}', 'default={"X"="a"}').replace(
+        'acknowledge_default=false', 'acknowledge_default=true')
+    path.write_text(body)
+    app = ApiAgentApp(session.context, session.schema, session=session)
+    async with app.run_test(size=(110, 35)) as pilot:
+        app.review_names.update(session.schema.fields)
+        app.show_configuration()
+        await pilot.pause()
+        if getattr(app.screen, 'configuration_refresher', None) and app.screen.configuration_refresher.worker:
+            await app.screen.configuration_refresher.worker.wait()
+        entered, release = threading.Event(), threading.Event()
+        original = type(session).review_snapshot
+        snapshots = []
+
+        def paused(reader):
+            snapshot = original(reader)
+            snapshots.append(snapshot)
+            if len(snapshots) == 1 and stage == 'read':
+                entered.set()
+                assert release.wait(5)
+            return snapshot
+
+        monkeypatch.setattr(type(session), 'review_snapshot', paused)
+        if stage == 'handoff':
+            original_read = module.read_snapshot
+            def paused_handoff(reader):
+                result = original_read(reader)
+                if len(snapshots) == 1:
+                    entered.set()
+                    assert release.wait(5)
+                return result
+            monkeypatch.setattr(module, 'read_snapshot', paused_handoff)
+        app.screen.configuration_refresher.request()
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            stamp = path.stat()
+            path.write_text(body.replace('"X"="a"', '"X"="b"'))
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        finally:
+            release.set()
+        await app.screen.configuration_refresher.worker.wait()
+        assert len(snapshots) == 2
+        table = app.screen.query_one(DataTable)
+        cells = next(table.get_row_at(i) for i, row in enumerate(table.ordered_rows)
+                     if row.key.value == 'API_HEADERS')
+        assert 'b' in str(cells[1])
+        assert app.screen.configuration_snapshot.review.values['API_HEADERS'] == {'X': 'b'}
+        assert session.result(_review=True).values['API_HEADERS'] == {'X': 'b'}
