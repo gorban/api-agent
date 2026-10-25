@@ -23,6 +23,84 @@ from .storage import RunStorage
 from .suite_lock import suite_locked
 
 
+def _step_identity(step):
+    # scope_steps admits these identities; names alone never identify a visit.
+    scope = next((item['value'] for item in step['parameters'] if item['name'] == 'scope_id'), None)
+    return ('scope', scope) if scope is not None else ('call', step['name'])
+
+
+def _step_envelopes(step, *, parent=None):
+    identity = _step_identity(step)
+    fixed = {'attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key'}
+    envelope = ({key: step[key] for key in ('name', 'status', 'start', 'stop')}, parent,
+                {item['name']: item['value'] for item in step['parameters'] if item['name'] in fixed})
+    result = {identity: envelope}
+    for child in step['steps']:
+        for key, value in _step_envelopes(child, parent=identity).items():
+            result[key] = value
+    return result
+
+
+def _compatible_steps(previous, incoming):
+    first, second = _step_envelopes(previous), _step_envelopes(incoming)
+    for key in first.keys() & second.keys():
+        first_base, first_parent, first_fixed = first[key]
+        second_base, second_parent, second_fixed = second[key]
+        if (first_base != second_base or first_parent != second_parent or any(
+                first_fixed[name] != second_fixed[name] for name in first_fixed.keys() & second_fixed.keys())):
+            raise ValueError('Conflicting workflow scope projection')
+
+
+def _merge_step(previous, incoming, *, prefer_incoming):
+    parameters = {item['name']: item for item in previous['parameters']}
+    for item in incoming['parameters']:
+        if prefer_incoming or item['name'] not in parameters:
+            parameters[item['name']] = item
+    previous['parameters'] = list(parameters.values())
+    children = {_step_identity(child): child for child in previous['steps']}
+    for child in incoming['steps']:
+        key = _step_identity(child)
+        if key in children:
+            _merge_step(children[key], child, prefer_incoming=prefer_incoming)
+        else:
+            previous['steps'].append(child)
+            children[key] = child
+
+
+class _WorkflowStepBridge:
+    """Join journal and legacy views without dropping additional admitted scopes."""
+    def __init__(self):
+        self.entries = []
+
+    @property
+    def steps(self):
+        return [entry['step'] for entry in self.entries]
+
+    def add(self, packet):
+        from .workflow_steps import scope_steps
+        # Validate even duplicate packets before considering identity reuse.
+        steps = scope_steps(packet.get('events', []))
+        authoritative = packet.get('version') == 1 and 'projection' in packet
+        invocation = packet['invocation_id'] if authoritative else None
+        for step in steps:
+            identity = _step_identity(step)
+            candidates = [entry for entry in self.entries
+                if entry['identity'] == identity and
+                (invocation is None or entry['invocation'] in (None, invocation))]
+            # An unnamespaced legacy view cannot choose between invocations.
+            # Retain it independently rather than silently attributing its data.
+            if len(candidates) != 1:
+                self.entries.append(dict(identity=identity, invocation=invocation,
+                                         authoritative=authoritative, step=step))
+                continue
+            previous = candidates[0]
+            _compatible_steps(previous['step'], step)
+            _merge_step(previous['step'], step,
+                        prefer_incoming=authoritative and not previous['authoritative'])
+            if authoritative:
+                previous.update(invocation=invocation, authoritative=True)
+
+
 @dataclass(frozen=True)
 class RecordedIntegrationResult:
     execution: object
@@ -157,7 +235,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 attachments += (withheld_attachment(),)
             filename = recorder.record_test(replace(result, identity=test),
                                             attachments=attachments,
-                                            steps=workflow_steps.pop(result.identity.id, None))
+                                            steps=(workflow_steps.pop(result.identity.id).steps
+                                                   if result.identity.id in workflow_steps else None))
             recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)
             from .allure_preview import emit_snapshot
@@ -282,11 +361,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 from api_agent.workflows.evidence import attachment
                 frozen = attachment(row, evidence_boundary)
                 content.setdefault(row.identity.id, []).append(frozen)
-                from .workflow_steps import scope_steps
                 packet = json.loads(frozen[1])
                 row = replace(row, text=json.dumps(packet, ensure_ascii=False, allow_nan=False))
-                lifecycle = packet.get('events', [])
-                workflow_steps.setdefault(row.identity.id, []).extend(scope_steps(lifecycle))
+                workflow_steps.setdefault(row.identity.id, _WorkflowStepBridge()).add(packet)
                 if packet.get('version') == 1 and 'projection' in packet:
                     workflow_journals.setdefault(row.identity.id, []).append(packet)
             if row.kind == 'quota_snapshot':
