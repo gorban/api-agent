@@ -41,19 +41,22 @@ def _plan(config, schema, context, scope, *, engine_environment=None, requires_a
                 raise ValueError('Conflicting selected infrastructure identity')
             merged[item.id] = item
         contributions = tuple(merged.values())
+    from api_agent.runtime.inventory import capture_inventory
+    inventory = capture_inventory(context, tool_plan)
     if contributions:
         if schema is None:
             raise ValueError('Selected infrastructure requires the resolved configuration schema.')
         try:
             return plan_infrastructure(config, schema, contributions, scope,
-                                       engine_environment=engine_environment)
+                                       engine_environment=engine_environment, inventory=inventory)
         except MissingEngineTransport:
             from api_agent.runtime.reporting_engine import verified_engine_binding
             _, transport = verified_engine_binding(engine_environment, cancelled=cancelled)
             pinned = {**dict(engine_environment or {}), 'DOCKER_HOST': transport}
             return plan_infrastructure(config, schema, contributions, scope,
-                                       engine_environment=pinned)
-    return plan_compose(config.values, scope, engine_environment=engine_environment)
+                                       engine_environment=pinned, inventory=inventory)
+    from dataclasses import replace
+    return replace(plan_compose(config.values, scope, engine_environment=engine_environment), inventory=inventory)
 
 
 class LocalCleanup:

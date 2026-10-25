@@ -208,7 +208,8 @@ def test_additional_unregistered_service_in_registered_scope_refuses_final_relea
     lease = owner.acquire()
     extra = deepcopy(storage.engine.records[lease.container_ids[0]])
     extra['Id'] = 'f' * 64
-    extra['Config']['Labels']['com.docker.compose.service'] = 'unrelated'
+    extra['Config']['Labels']['com.docker.compose.service'] = 'jaeger'
+    extra['Config']['Labels']['api-agent.profile'] = 'otel'
     storage.engine.records[extra['Id']] = extra
     before = mutation_commands(storage.engine)
     with pytest.raises(p.PrerequisiteError, match='container changed'):
@@ -277,7 +278,8 @@ def test_changed_registered_service_refuses_without_compose_or_stop(storage, act
     lease = owner.acquire()
     if action == 'restart': owner.release(retain=True)
     record = storage.engine.records[lease.container_ids[0]]
-    record['Config']['Labels']['com.docker.compose.service'] = 'unrelated'
+    record['Config']['Labels']['com.docker.compose.service'] = 'jaeger'
+    record['Config']['Labels']['api-agent.profile'] = 'otel'
     if action == 'restart': record['State']['Running'] = False
     before = mutation_commands(storage.engine)
     operation = storage.create() if action == 'restart' else owner

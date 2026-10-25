@@ -605,7 +605,7 @@ def test_stale_duty_does_not_transfer_to_unrelated_live_lease(synthetic):
     path = manager.directory / f'{manager.scope.id}.json'
     journal = json.loads(path.read_text())
     journal['unrelated'] = {**journal[lease.invocation_id], 'identity': 'synthetic:process',
-        'ids': ['f' * 64], 'conditional_cleanup_ids': []}
+        'ids': ['f' * 64], 'owned_ids': [], 'conditional_cleanup_ids': []}
     path.write_text(json.dumps(journal))
     recovered = p._read_journal(manager.directory, manager.scope, manager.identity)
     assert recovered['unrelated']['conditional_cleanup_ids'] == []

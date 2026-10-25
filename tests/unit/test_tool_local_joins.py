@@ -13,7 +13,7 @@ from test_local_run import local
 
 @pytest.mark.parametrize('existing', [(), (SimpleNamespace(id='shared', value='same'),)])
 def test_local_plan_merges_selected_tool_contributions_once(local, monkeypatch, existing):
-    from api_agent.runtime import infrastructure_contract, infrastructure_plan
+    from api_agent.runtime import infrastructure_contract, infrastructure_plan, inventory
     from api_agent.tooling import services
     selected = SimpleNamespace(id='shared', value='same')
     extra = SimpleNamespace(id='tool-only', value='second')
@@ -26,15 +26,20 @@ def test_local_plan_merges_selected_tool_contributions_once(local, monkeypatch, 
     planner = Mock(return_value='admitted-plan')
     monkeypatch.setattr(infrastructure_plan, 'plan_infrastructure', planner)
     schema = object()
+    catalog = object()
+    inventory_capture = Mock(return_value=catalog)
+    monkeypatch.setattr(inventory, 'capture_inventory', inventory_capture)
 
     assert _plan(local.config, schema, local.owner.context, 'scope') == 'admitted-plan'
 
     capture.assert_called_once_with(plan)
-    planner.assert_called_once_with(local.config, schema, (selected, extra), 'scope', engine_environment=None)
+    inventory_capture.assert_called_once_with(local.owner.context, plan)
+    planner.assert_called_once_with(local.config, schema, (selected, extra), 'scope',
+                                    engine_environment=None, inventory=catalog)
 
 
 def test_local_plan_rejects_conflicting_selected_infrastructure_before_planning(local, monkeypatch):
-    from api_agent.runtime import infrastructure_contract, infrastructure_plan
+    from api_agent.runtime import infrastructure_contract, infrastructure_plan, inventory
     from api_agent.tooling import services
     local.config.tool_plan = SimpleNamespace(tools=('selected',))
     local.owner.context.infrastructure_paths = ('declared',)
@@ -44,11 +49,14 @@ def test_local_plan_rejects_conflicting_selected_infrastructure_before_planning(
                         Mock(return_value=(SimpleNamespace(id='shared', value='different'),)))
     planner = Mock()
     monkeypatch.setattr(infrastructure_plan, 'plan_infrastructure', planner)
+    inventory_capture = Mock()
+    monkeypatch.setattr(inventory, 'capture_inventory', inventory_capture)
 
     with pytest.raises(ValueError, match='^Conflicting selected infrastructure identity$'):
         _plan(local.config, object(), local.owner.context, 'scope')
 
     planner.assert_not_called()
+    inventory_capture.assert_not_called()
 
 
 def test_local_start_binds_selected_tool_outputs_in_operation_callback(local, monkeypatch):

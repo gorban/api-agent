@@ -12,6 +12,7 @@ entry = "demo/simple/flow.md.html"
 [infrastructure]
 version = 1
 declarations = ["api/infrastructure.toml"]
+inventory = [{owner = "fixture", root = "base", declarations = ["tests/integration/fixtures/tool_instances/infrastructure.toml"]}]
 
 [tests]
 unit = ["tests/unit"]

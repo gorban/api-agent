@@ -104,3 +104,20 @@ Prerequisite closures use the shared planner and lifecycle, including compatible
 The separately selected shared-primary fixture derives its secondary endpoint and headers from its primary and uses one acquired target. This is an explicit profile, not a global fallback. Ordinary independent targets remain independent; conflicting shared/independent use of the same instance in one selection rejects.
 
 Agent-only deployments consume externally managed service addresses. Container isolation/platform qualification and deployment-image behavior retain their separate requirements; selecting a tool does not certify an isolation runtime or authorize deployment orchestration.
+
+## Retained services and last-use cleanup
+
+Application and test graphs can select different services in the same managed project. A pack may explicitly register additional identity-only sources in `pack.toml`:
+
+```toml
+[infrastructure]
+version = 1
+declarations = ["infrastructure.toml"]
+inventory = [
+  { owner = "example", root = "pack", declarations = ["tests/fixtures/infrastructure.toml"] }
+]
+```
+
+An inventory row reads the declaration's owner and service identities, without reading its Compose fragments/assets, importing its factory or activating its settings. The exact declared service/profile pairs allow recognized, unselected containers to remain untouched when switching operations. Unknown or mismatched ownership still rejects. Inventory recognition does not grant endpoints, leases, logs or cleanup access.
+
+Operations share compatible selected services through locked leases. If a creator finishes while another operation still uses its containers, eligible cleanup responsibility transfers to a remaining consumer. Cleanup runs after the last relevant lease releases, subject to explicit retention and volume-preservation policy. A failed cleanup remains owned for retry; unrelated retained services are never added to that responsibility.

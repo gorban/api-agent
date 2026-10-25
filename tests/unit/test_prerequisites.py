@@ -490,8 +490,8 @@ def test_second_active_lease_protects_first_invocation_new_service(setup):
     second.acquire()
     assert first.release() == ()
     assert p.active_leased_ids(first.directory, scope, identity=lambda pid: 'boot:start') == set(lease.container_ids)
-    assert second.release() == ()
-    assert engine.records[lease.owned_ids[0]]['State']['Running']
+    assert second.release() == lease.owned_ids
+    assert not engine.records[lease.owned_ids[0]]['State']['Running']
 
 
 @pytest.mark.parametrize('change', ['fingerprint', 'image', 'duplicate', 'profile'])
@@ -502,7 +502,7 @@ def test_incompatible_existing_stack_is_never_replaced(setup, change):
               'stopped': {'running': False}, 'profile': {'profile': 'langfuse'}}
     engine.add('jaeger', **values.get(change, {}))
     if change == 'duplicate': engine.add('jaeger')
-    with pytest.raises(p.PrerequisiteError, match='incompatible'): manager.acquire()
+    with pytest.raises(p.PrerequisiteError, match='foreign ownership' if change == 'profile' else 'incompatible'): manager.acquire()
     assert not any('up' in command or command[1] == 'stop' for command, _ in engine.commands)
 
 
@@ -649,6 +649,7 @@ def test_unselected_owned_service_is_untouched(setup):
     identifier = engine.add('jaeger')
     record = engine.records[identifier]
     record['Config']['Labels']['com.docker.compose.service'] = 'localstack'
+    record['Config']['Labels']['api-agent.profile'] = 'localstack'
     manager.acquire()
     manager.release()
     assert record['State']['Running']
