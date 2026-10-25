@@ -1,5 +1,5 @@
 """Discover inert graph catalogs, then compose only selected named tool inputs."""
-from dataclasses import replace
+from dataclasses import fields as declaration_fields, replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -258,6 +258,23 @@ def _option_inventory(catalog, base_schema, argv, environ, dotenv, overrides):
                     fields[alias] = FieldDeclaration(alias, row['type'], enum=tuple(enum))
     return ConfigSchema(fields)
 
+def _binding_contract(declaration):
+    """Compare effective behavior while retaining the original owner's metadata."""
+    if declaration.type == 'float':
+        def normalized(value):
+            return convert_value(declaration, value, external=False, anchors=None)
+        declaration = replace(declaration,
+            default=UNSET if declaration.default is UNSET else normalized(declaration.default),
+            enum=tuple(normalized(value) for value in declaration.enum),
+            conditional_defaults=tuple(dict(item, value=normalized(item['value']))
+                                       for item in declaration.conditional_defaults))
+    descriptive = {'help', 'default_source', 'declared_keys', 'contribution_origin'}
+    return tuple((field.name, value is UNSET,
+                  None if value is UNSET else json.dumps(value, sort_keys=True, default=dict))
+                 for field in declaration_fields(declaration) if field.name not in descriptive
+                 for value in (getattr(declaration, field.name),))
+
+
 def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None, dotenv=None, overrides=None, operation_intents=()):
     """Compose declarative tool inputs before final explicit-input validation."""
     catalog = discover(context, selection)
@@ -309,6 +326,7 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
     preliminary = ConfigSchema(dict(base_fields, **selector_schema.fields))
     values = _selector_values(context, preliminary, selector_names, argv, environ, dotenv, overrides, operation_intents) if selector_names else {}
     rows, tools, admissions = dict(selectors), [], {}
+    input_rows, alias_owners = [], {}
     for identity, (path, data) in instances.items():
         implementation = capture.path(path, values[data['selector']] if 'selector' in data else data['implementation'])
         spec = implementation_declaration(capture.toml(implementation))
@@ -319,12 +337,14 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
             if slot not in aliases:
                 raise ToolSelectionError('Missing selected tool local input binding')
             alias = aliases[slot]
-            if alias in rows or alias in base_schema.fields:
-                raise ToolSelectionError('Conflicting configuration binding ownership')
+            if alias in selector_names or any(owner == identity for owner, _, _ in alias_owners.get(alias, ())):
+                raise ToolSelectionError(alias + ': Conflicting configuration binding ownership')
             projected = _project_input(row, aliases)
             if slot in data.get('defaults', {}):
                 projected['default'] = data['defaults'][slot]
-            rows[alias] = projected
+            rows.setdefault(alias, projected)
+            input_rows.append((alias, projected))
+            alias_owners.setdefault(alias, []).append((identity, slot, row.get('nonempty', False)))
         target, _, factory_name = spec['factory'].rpartition(':')
         factory = capture.path(implementation, target)
         body = capture.read(factory)
@@ -373,7 +393,39 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
         extension = schema_from_dict({'version': 1, 'fields': rows}, base_schema=base_schema)
     except ValueError:
         raise ToolSelectionError('Invalid selected tool input declaration') from None
-    fields = dict(base_schema.fields, **extension.fields)
+    for alias, projected in input_rows:
+        try:
+            candidate = schema_from_dict({'version': 1, 'fields': {alias: projected}},
+                base_schema=ConfigSchema(dict(base_schema.fields, **extension.fields))).fields[alias]
+        except ValueError:
+            raise ToolSelectionError(alias + ': Invalid selected tool input declaration') from None
+        if _binding_contract(extension.fields[alias]) != _binding_contract(candidate):
+            raise ToolSelectionError(alias + ': Conflicting configuration binding ownership')
+    case_tools = {}
+    covered_graphs = set()
+    for case, names in catalog.case_graphs.items():
+        definition_ids = {catalog.definitions[name].definition_id for name in names}
+        covered_graphs.update(names)
+        case_tools[case] = {paths[use.instance] for definition in definitions
+                            if definition.definition_id in definition_ids for use in definition.tool_usages}
+    unscoped_tools = {paths[use.instance] for name in catalog.selected_graphs if name not in covered_graphs
+                      for use in catalog.definitions[name].tool_usages}
+    for alias, owners in alias_owners.items():
+        if len(owners) < 2:
+            continue
+        identities = {owner for owner, _, _ in owners}
+        if (identities & unscoped_tools
+                or any(not any(owner in selected for selected in case_tools.values()) for owner in identities)
+                or any(len(identities & selected) > 1 for selected in case_tools.values())
+                or len({nonempty for _, _, nonempty in owners}) != 1):
+            raise ToolSelectionError(alias + ': Conflicting configuration binding ownership')
+    fields = dict(base_schema.fields)
+    for name, declaration in extension.fields.items():
+        if name in fields:
+            if _binding_contract(fields[name]) != _binding_contract(declaration):
+                raise ToolSelectionError(name + ': Conflicting configuration binding ownership')
+        else:
+            fields[name] = declaration
     shared = {}
     for name in catalog.selected_profiles:
         profile = catalog.profiles[name]
@@ -407,7 +459,9 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
     for secondary in shared:
         for slot in ('ENDPOINT', 'HEADERS'):
             alias = tool_by_id[secondary].bindings.get(slot)
-            if alias is not None:
+            if alias is not None and len(alias_owners[alias]) > 1:
+                raise ToolSelectionError(alias + ': Conflicting derived configuration binding ownership')
+            if alias is not None and alias not in base_schema.fields:
                 fields[alias] = replace(fields[alias], required=False, required_when={})
     schema = ConfigSchema(fields)
     resolved = resolve_config(schema, argv=argv, environ=environ, dotenv=dotenv,

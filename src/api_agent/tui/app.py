@@ -311,7 +311,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             return [widget for widget in chain if isinstance(widget, DataTable)]
         return chain
 
-    def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
+    def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error=""):
         super().__init__()
         self.kind, self.heading, self.body = kind, title, text
         self.actions, self.rows = actions, rows
@@ -321,6 +321,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         self.config_saved = set()
         self.config_defaults = set()
         self.test_search = None
+        self.configuration_error = configuration_error
         self._pending_cost_refresh = None
 
     def compose(self) -> ComposeResult:
@@ -381,7 +382,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                     else:
                         yield Button(label, id=key)
             if self.kind not in {"test-results", "defaults"}:
-                yield Static("", id="error", markup=False)
+                yield Static(self.configuration_error, id="error", markup=False)
         if self.kind == "defaults":
             yield Static(app.configuration_review_blocker(), id="error", markup=False)
         if self.kind in {'test-results', 'test-failure'}:
@@ -558,11 +559,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def toggle_test_rows(self, keys):
         if self.test_search is not None:
             self.test_search.toggle_many(keys)
-            self.render_search_rows()
-            self.app.refresh_cost_summary()
         else:
             self.app.selection.toggle_many(keys)
-            self.app.refresh_rows()
+        self.app.refresh_rows()
 
     def render_search_rows(self, *, reset_cursor=False):
         table = self.query_one(TestTable)
@@ -586,7 +585,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             else:
                 index = next((i for i, row in enumerate(rows) if row.id == previous), min(cursor, len(rows) - 1))
             table.move_cursor(row=index)
-        self.query_one('#error', Static).update(self.test_search.error or ('' if rows else NO_TEST_SELECTION_MESSAGE))
+        self.query_one('#error', Static).update(self.test_search.error or self.configuration_error
+                                               or ('' if rows else NO_TEST_SELECTION_MESSAGE))
         self.refresh_bindings()
 
     def on_input_changed(self, event):
@@ -641,7 +641,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         for row in rows:
             table.add_row(*(literal_cell(cell) for cell in self.app.selection_cells(row)), key=row.id)
         table.move_cursor(row=next((i for i, row in enumerate(rows) if row.id == selected), min(cursor, len(rows) - 1)))
-        self.query_one('#error', Static).update('')
+        self.query_one('#error', Static).update(self.configuration_error)
         table.focus()
         self.refresh_bindings()
 
@@ -1016,8 +1016,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         else:
             self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
 
-    def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None):
-        screen = WorkbenchScreen(kind, title, text, actions, rows, selected_row=selected_row)
+    def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error=""):
+        screen = WorkbenchScreen(kind, title, text, actions, rows, selected_row=selected_row,
+                                 configuration_error=configuration_error)
         if isinstance(self.screen, WorkbenchScreen) or getattr(self.screen, "kind", None) == "local-run":
             return self.switch_screen(screen)
         return self.push_screen(screen)
@@ -1078,7 +1079,13 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
 
     def select_tool_context(self, tests=None):
         if hasattr(self.session, 'select_operation'):
-            return self.session.select_operation(tests)
+            from api_agent.tooling.models import OperationSelection, ToolSelectionError
+            try:
+                return self.session.select_operation(tests)
+            except ToolSelectionError:
+                # UI bindings still resolve ordinary settings after a rejected union.
+                self.session.select_operation(OperationSelection('collection'))
+                raise
         return self.session.result()
 
     def tool_review_fields(self):
@@ -1530,7 +1537,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.show_selection()
             if self.auto_start_pending:
                 self.auto_start_pending = False
-                await self.choose('continue')
+                if not self.screen.configuration_error:
+                    await self.choose('continue')
         except Exception as error:
             if cancel_event.is_set() or self.collection_cancel is not cancel_event:
                 return
@@ -2166,10 +2174,20 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.run_worker(self.synchronize_cost_history(self.cost_estimator, selection),
                                 group='cost-history', exclusive=True)
 
+    def picker_configuration_error(self):
+        """Keep invalid test unions editable while execution still validates them."""
+        from api_agent.tooling.models import ToolSelectionError
+        try:
+            self.select_tool_context(self.selection.selected_tests)
+        except ToolSelectionError as error:
+            self.cost_estimator = None
+            return str(error)
+        return ""
+
     def show_selection(self):
-        self.select_tool_context(self.selection.selected_tests)
+        configuration_error = self.picker_configuration_error()
         self.cost_estimator = None
-        if self.mode in {'integration', 'e2e'}:
+        if not configuration_error and self.mode in {'integration', 'e2e'}:
             try:
                 self.cost_estimator = self.fresh_cost_estimator()
             except Exception:
@@ -2179,7 +2197,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         plan = getattr(self.session, 'tool_plan', None)
         if plan is not None and (plan.tool_fields or plan.inactive_fields):
             actions += (('review-config', 'Review selected-test configuration'),)
-        self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows)
+        self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows,
+                  configuration_error=configuration_error)
         if self.cost_estimator is not None:
             self.call_after_refresh(self.refresh_cost_summary)
             self.run_worker(self.synchronize_cost_history(self.cost_estimator, self.selection),
@@ -2222,7 +2241,6 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
         elif self.screen.kind == "tests":
             self.selection.toggle(key)
-            self.select_tool_context(self.selection.selected_tests)
             self.refresh_rows()
         elif self.screen.kind == "containers":
             self.toggle_managed_container(key)
@@ -2230,6 +2248,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def refresh_rows(self):
         if self.screen.kind == "tests" and self.selection is None:
             return
+        if self.screen.kind == 'tests':
+            self.screen.configuration_error = self.picker_configuration_error()
+            self.screen.query_one('#error', Static).update(self.screen.configuration_error)
         table = self.screen.query_one(DataTable)
         if self.screen.kind == 'tests' and self.screen.test_search is not None:
             self.screen.render_search_rows()
