@@ -633,3 +633,36 @@ def test_history_cache_collection_closes_connection_once(tmp_path, monkeypatch):
 
     assert cache_ref() is None
     assert_connection_closed_once(connection, closed)
+
+
+@pytest.mark.parametrize('where', ['before', 'during', 'after'])
+def test_stopped_history_preserves_cache_and_skips_rebuilding_predictions(tmp_path, where):
+    from api_agent.testing.cost_history import HistoricalEstimator
+    cache = HistoryCache(tmp_path / 'cache')
+    manifest, payload = fixture()
+    cache.ingest('origin', manifest, payload)
+    from unittest.mock import Mock
+    cache.ingest = Mock(wraps=cache.ingest)
+    remaining = []
+    class Storage:
+        calls = 0
+        def accounting_history(self, repo, *, budget):
+            self.calls += 1
+            assert budget.remaining > 0
+            snapshot.cancel_synchronization()
+            remaining.append(budget.remaining)
+            if where == 'during':
+                yield manifest, payload
+    storage = Storage()
+    snapshot = HistoricalEstimator([], {}, cache, 'origin', 'repo', bundled_rate_card(), storage)
+    try:
+        if where == 'before':
+            snapshot.cancel_synchronization()
+        assert snapshot.synchronize() is snapshot
+        assert storage.calls == (0 if where == 'before' else 1)
+        assert remaining == ([] if where == 'before' else [0])
+        cache.ingest.assert_not_called()
+        assert len(cache.records('origin')) == 1
+        assert not hasattr(snapshot, 'sync_unavailable')
+    finally:
+        cache.close()

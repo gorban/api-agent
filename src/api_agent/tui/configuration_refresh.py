@@ -1,5 +1,4 @@
 """Single-flight, read-only configuration refresh outside the UI event loop."""
-import asyncio
 from copy import copy, deepcopy
 
 
@@ -46,7 +45,8 @@ class ReviewRefresher:
                 inputs = controls(session)
                 fork = fork_session(session)
                 try:
-                    snapshot, current = await asyncio.to_thread(read_snapshot, fork)
+                    snapshot, current = await self.app.background_reads.run(
+                        'configuration review', read_snapshot, fork)
                     error = None
                 except Exception:
                     snapshot, error = None, 'Configuration refresh failed; move to retry.'

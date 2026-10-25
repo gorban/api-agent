@@ -2,6 +2,7 @@
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import json
+import threading
 from hashlib import sha256
 
 from api_agent.telemetry.estimation import EstimateSnapshot, predictions_for, calibration, key, payment_per_point, quota_allowed, calibration_key, quota_reset_observed, matching_compatibility
@@ -41,10 +42,20 @@ def allocation_scope(config):
     return sha256(json.dumps([fingerprints, settings, role, index, manager, selected], sort_keys=True).encode()).hexdigest()
 
 
+class _HistoryBudget:
+    def __init__(self, budget, stopped):
+        self.budget, self.stopped = budget, stopped
+
+    @property
+    def remaining(self):
+        return 0 if self.stopped.is_set() else self.budget.remaining
+
+
 class HistoricalEstimator(EstimateSnapshot):
     def __init__(self, tests, config, cache, origin, repo, card, storage=None, now=None, context=None):
         from api_agent.telemetry.accounting import compatibility, source_fingerprint
         self.context = context
+        self._sync_stopped = threading.Event()
         self.tests, self.config, self.cache = tuple(tests), dict(config), cache
         self._fixed_now = now is not None
         self.now = now if now is not None else datetime.now(timezone.utc)
@@ -112,18 +123,26 @@ class HistoricalEstimator(EstimateSnapshot):
         super().__init__(predictions, records=records, card=card, overlap_records=overlap_records, now=self.now,
                          ignored_settings=ignored_settings)
 
+    def cancel_synchronization(self):
+        self._sync_stopped.set()
+
     def synchronize(self):
-        if self.cache is None or self.storage is None:
+        if self.cache is None or self.storage is None or self._sync_stopped.is_set():
             return self
         error = False
         try:
             with report_timeout_sync('Cost history synchronization', 30) as budget:
+                budget = _HistoryBudget(budget, self._sync_stopped)
                 for manifest, payload in self.storage.accounting_history(self.repo, budget=budget):
+                    if self._sync_stopped.is_set():
+                        return self
                     if budget.remaining == 0:
                         raise TimeoutError()
                     self.cache.ingest(self.origin, manifest, payload)
         except Exception:
             error = True
+        if self._sync_stopped.is_set():
+            return self
         try:
             replacement = HistoricalEstimator(self.tests, self.config, self.cache, self.origin, self.repo, self.card, self.storage, self.now if self._fixed_now else None, context=self.context)
             replacement.sync_unavailable = error

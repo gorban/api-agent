@@ -954,6 +954,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.integration_exit_status = None
         self.recording_cleanup = None
         self.unit_result = None
+        from .background_reads import BackgroundReads
+        self.background_reads = BackgroundReads()
+        self._cost_history_generation = 0
         self.cost_estimator = None
         self.test_costs = {}
         self.suite_usage = {}
@@ -1424,6 +1427,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def show_menu(self):
         if self.inspection_cleanup_active():
             return
+        self.stop_picker_history()
         self.discard_finished_inspection()
         self.auto_start_pending = False
         self.review_destination = None
@@ -1532,8 +1536,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         from api_agent.testing.collection import collect_tests
         collector = self.collector or collect_tests
         arguments = (self.context, self.mode, ())
-        return await asyncio.to_thread(
-            collector, *arguments, **({} if self.collector else {"cancel_event": cancel_event,
+        return await self.background_reads.run(
+            'test collection', collector, *arguments, cancel=cancel_event.set,
+            **({} if self.collector else {"cancel_event": cancel_event,
                                                                "config": self.session.result().values}))
 
     async def collect_tests(self):
@@ -2167,7 +2172,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             if self.cost_estimator is not None:
                 from .cost_history import selected_summary
                 summary += '\n' + selected_summary(self.cost_estimator, self.selection.selected_ids)
-            self.screen.query_one('#body', Static).update(summary)
+            for body in self.screen.query('#body'):
+                body.update(summary)
 
     def refresh_picker_costs(self, screen, selection):
         # Refresh belongs to the picker which queued it, after its DOM mounts.
@@ -2181,14 +2187,30 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             # A modal may cover the picker between scheduling and execution.
             screen._pending_cost_refresh = selection
 
-    async def synchronize_cost_history(self, snapshot, selection):
+    def stop_picker_history(self):
+        self._cost_history_generation += 1
+        self.background_reads.cancel('cost history synchronization')
+
+    def cost_history_current(self, snapshot, selection, generation):
+        return (generation == self._cost_history_generation and self.mode in {'integration', 'e2e'}
+                and self.cost_estimator is snapshot and self.selection is selection and not self.test_run_active()
+                and not self._inspection_shutdown
+                and any(isinstance(screen, WorkbenchScreen) and screen.kind == 'tests' for screen in self.screen_stack))
+
+    def synchronize_cost_history(self, snapshot, selection):
+        # Capture the visit when queued, rather than when the worker starts.
+        return self._synchronize_cost_history(snapshot, selection, self._cost_history_generation)
+
+    async def _synchronize_cost_history(self, snapshot, selection, generation):
+        if not self.cost_history_current(snapshot, selection, generation):
+            return
         try:
-            replacement = await asyncio.to_thread(snapshot.synchronize)
+            replacement = await self.background_reads.run(
+                'cost history synchronization', snapshot.synchronize,
+                cancel=getattr(snapshot, 'cancel_synchronization', None))
         except Exception:
             return
-        if (self.cost_estimator is snapshot and self.selection is selection and not self.test_run_active()
-                and not self._inspection_shutdown
-                and any(isinstance(screen, WorkbenchScreen) and screen.kind == 'tests' for screen in self.screen_stack)):
+        if self.cost_history_current(snapshot, selection, generation):
             changed = self.refresh_cost_configuration()
             if not changed:
                 self.cost_estimator = replacement or snapshot
@@ -2473,6 +2495,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         local = getattr(self, "local_run_screen", None)
         if local is not None and not await local.close_owned():
             return
+        self.stop_picker_history()
         self.stop_allure_admission(shutdown=True)
         if self.mode in {"unit", "integration"} and self.unit_rows and self.unit_result is None:
             self.operation_status = 130
@@ -2487,6 +2510,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.exit(self.operation_status)
 
     async def on_unmount(self):
+        self.stop_picker_history()
+        self.background_reads.cancel()
         local = getattr(self, "local_run_screen", None)
         if local is not None and not await local.close_owned():
             self.pending_shutdown_cleanup = self.shutdown_cleanup_receipt()
@@ -2507,6 +2532,15 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.pending_shutdown_cleanup = self.shutdown_cleanup_receipt()
             else:
                 await self.close_reporting_sessions()
+
+    async def run_async(self, **kwargs):
+        from api_agent.providers.control import finish_cleanup
+        try:
+            return await super().run_async(**kwargs)
+        finally:
+            # Textual has restored the terminal before this owned-read drain.
+            await finish_cleanup(self.background_reads.close(
+                lambda message: print(message, file=sys.stderr, flush=True)))
 
     def test_run_active(self):
         return self.test_run is not None and self.test_run.active

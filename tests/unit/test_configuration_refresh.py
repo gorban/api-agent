@@ -49,7 +49,7 @@ def test_pending_refresh_coalesces_and_discards_stale_external_values(tmp_path, 
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
         screen = SimpleNamespace(query_one=Mock())
-        state = SimpleNamespace(screen=screen, session=app.session,
+        state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         refresher = ReviewRefresher(state, screen)
         entered, release = threading.Event(), threading.Event()
@@ -94,7 +94,7 @@ def test_late_or_failed_refresh_cannot_overwrite_newer_ui(tmp_path, monkeypatch,
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
         screen = SimpleNamespace(query_one=Mock())
-        state = SimpleNamespace(screen=screen, session=app.session,
+        state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         refresher = ReviewRefresher(state, screen)
 
@@ -109,7 +109,7 @@ def test_late_or_failed_refresh_cannot_overwrite_newer_ui(tmp_path, monkeypatch,
                 raise ValueError('private details')
             return object()
 
-        monkeypatch.setattr('api_agent.tui.configuration_refresh.asyncio.to_thread', complete)
+        monkeypatch.setattr(state.background_reads, 'run', complete)
         await refresher.run()
         state.apply_configuration_snapshot.assert_not_called()
         if change == 'error':
@@ -298,7 +298,7 @@ def test_continuously_changed_sources_stop_after_bounded_attempts(tmp_path, monk
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
         screen = SimpleNamespace(query_one=Mock())
-        state = SimpleNamespace(screen=screen, session=app.session,
+        state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         from api_agent.config.session import ReviewSnapshot
         current = Mock(return_value=False)
@@ -316,7 +316,7 @@ def test_newer_request_gets_its_own_source_retry_budget(tmp_path, monkeypatch):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
         screen = SimpleNamespace(query_one=Mock())
-        state = SimpleNamespace(screen=screen, session=app.session,
+        state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         refresher = ReviewRefresher(state, screen)
         from api_agent.config.session import ReviewSnapshot
@@ -340,7 +340,7 @@ def test_transient_source_read_failure_is_retried(tmp_path, monkeypatch, where):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
         screen = SimpleNamespace(query_one=Mock())
-        state = SimpleNamespace(screen=screen, session=app.session,
+        state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         from api_agent.config.session import ReviewSnapshot
         if where == 'resolution':
