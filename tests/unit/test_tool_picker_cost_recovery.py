@@ -168,3 +168,176 @@ async def test_late_preconflict_history_cannot_restore_retired_price(conflicting
             app.integration_runner.assert_not_called()
     finally:
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_account_cycle_replaces_estimate_after_effective_change(tmp_path, monkeypatch):
+    from api_agent.testing.cost_history import allocation_scope
+    from test_account_selection import make_app
+    app = make_app(tmp_path)
+    (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=0\n')
+    built, scopes = [], []
+
+    def estimate(context, tests, values):
+        scopes.append(allocation_scope({**values, 'LLM_CREDENTIAL_ROLE': 'LLM User',
+            '_COST_PROVIDER_IDENTITY': 'a' * 64, '_COST_PACK_IDENTITY': 'b' * 64,
+            '_COST_REQUEST_SETTINGS': {}}))
+        amount = .42 if values['UNATTENDED_USER_INDEX'] == 0 else .84
+        snapshot = EstimateSnapshot({test.id: {'estimated_cost_usd': amount if i == 0 else 0}
+                                     for i, test in enumerate(tests)})
+        snapshot.synchronize = Mock(return_value=snapshot)
+        built.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', estimate)
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert 'Selected estimate: $0.420000' in str(app.screen.query_one('#body', Static).render())
+        original = app.cost_estimator
+        selected = app.selection.selected_ids.copy()
+
+        await pilot.press('right_square_bracket')
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert app.session.result().values['UNATTENDED_USER_INDEX'] == 1
+        assert app.session.saved_path('UNATTENDED_USER_INDEX') == tmp_path / '.env'
+        assert 'second' in str(app.screen.query_one('#account-selection', Static).render())
+        assert app.cost_estimator is not original
+        assert len(built) == 2 and all(scopes) and scopes[0] != scopes[1]
+        assert app.cost_estimator is built[1]
+        assert built[1].picker_configuration['UNATTENDED_USER_INDEX'] == 1
+        built[1].synchronize.assert_called_once_with()
+        assert 'Selected estimate: $0.840000' in str(app.screen.query_one('#body', Static).render())
+        assert app.selection.selected_ids == selected
+        assert not app.test_run_active()
+
+
+@pytest.mark.asyncio
+async def test_cli_overridden_account_save_keeps_effective_estimate(tmp_path, monkeypatch):
+    from test_account_selection import make_app
+    app = make_app(tmp_path, argv=['--unattended-user-index=0'])
+    snapshot = EstimateSnapshot({})
+    snapshot.synchronize = Mock(return_value=snapshot)
+    build = Mock(return_value=snapshot)
+    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', build)
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.press('right_square_bracket')
+        await pilot.pause()
+
+        assert app.session.result().values['UNATTENDED_USER_INDEX'] == 0
+        assert 'UNATTENDED_USER_INDEX="1"' in (tmp_path / '.env').read_text()
+        assert 'cli overrides the saved choice' in str(app.screen.query_one('#error', Static).render())
+        assert app.cost_estimator is snapshot
+        build.assert_called_once()
+        snapshot.synchronize.assert_called_once_with()
+        assert not app.test_run_active()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('overridden', [False, True])
+async def test_account_cycle_preserves_invalid_plan_priority_without_history(conflicting_app, monkeypatch, overridden):
+    import json
+    from api_agent.config import schema_from_dict
+    from test_account_selection import descriptors
+    app = conflicting_app
+    base = app.session._provider_base_schema
+    additions = schema_from_dict({'version': 1, 'fields': {
+        'UNATTENDED_USER_INDEX': {'type': 'int', 'allow_empty': True,
+                                  'validation': 'nonnegative', 'acknowledge_default': False},
+        'UNATTENDED_AUTH': {'type': 'jsonobject', 'acknowledge_default': False}}})
+    app.session.schema = type(base)({**base.fields, **additions.fields})
+    app.session.environ['UNATTENDED_AUTH'] = json.dumps(descriptors())
+    (app.context.base_root / '.env').write_text('UNATTENDED_USER_INDEX=0\n')
+    if overridden:
+        app.session.argv += ('--unattended-user-index=0',)
+    build = Mock(side_effect=AssertionError('invalid plan touched cached history'))
+    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', build)
+    async with app.run_test(size=(110, 40)) as pilot:
+        app.mode = 'integration'
+        app.collection_cancel = threading.Event()
+        await app._collect_tests(app.collection_cancel)
+        await pilot.pause()
+        await pilot.press('right_square_bracket')
+        await pilot.pause()
+
+        assert app.session.result().values['UNATTENDED_USER_INDEX'] == (0 if overridden else 1)
+        assert 'Conflicting configuration binding ownership' in str(app.screen.query_one('#error', Static).render())
+        assert app.cost_estimator is None
+        build.assert_not_called()
+        assert not app.test_run_active()
+        app.integration_runner.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_account_change_clears_cost_when_new_estimate_unavailable(tmp_path, monkeypatch):
+    from test_account_selection import make_app
+    app = make_app(tmp_path)
+    (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=0\n')
+    snapshot = EstimateSnapshot({})
+    build = Mock(side_effect=[snapshot, OSError('synthetic account history unavailable')])
+    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', build)
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.press('right_square_bracket')
+        await pilot.pause()
+
+        assert app.session.result().values['UNATTENDED_USER_INDEX'] == 1
+        assert app.cost_estimator is None
+        assert len(app.screen.query_one(DataTable).columns) == 4
+        assert 'Selected estimate:' not in str(app.screen.query_one('#body', Static).render())
+        assert build.call_count == 2
+        assert not app.test_run_active()
+
+
+@pytest.mark.asyncio
+async def test_late_prior_account_history_cannot_restore_its_estimate(tmp_path, monkeypatch):
+    import asyncio
+    from test_account_selection import make_app
+    app = make_app(tmp_path)
+    (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=0\n')
+    built = []
+
+    def estimate(context, tests, values):
+        amount = .42 if values['UNATTENDED_USER_INDEX'] == 0 else .84
+        snapshot = EstimateSnapshot({test.id: {'estimated_cost_usd': amount if i == 0 else 0}
+                                     for i, test in enumerate(tests)})
+        built.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', estimate)
+    entered, release = threading.Event(), threading.Event()
+    try:
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            previous = app.cost_estimator
+
+            def previous_account_history():
+                entered.set()
+                assert release.wait(5)
+                return EstimateSnapshot({test.id: {'estimated_cost_usd': 9.99} for test in app.selection.tests})
+
+            previous.synchronize = previous_account_history
+            stale = asyncio.create_task(app.synchronize_cost_history(previous, app.selection))
+            assert await asyncio.to_thread(entered.wait, 5)
+            await pilot.press('right_square_bracket')
+            await app.workers.wait_for_complete()
+            release.set()
+            await stale
+            await pilot.pause()
+
+            assert app.cost_estimator is built[1] and app.cost_estimator is not previous
+            assert app.cost_estimator.picker_configuration['UNATTENDED_USER_INDEX'] == 1
+            assert 'Selected estimate: $0.840000' in str(app.screen.query_one('#body', Static).render())
+            assert not app.test_run_active()
+    finally:
+        release.set()
