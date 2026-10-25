@@ -695,6 +695,9 @@ def test_pure_infrastructure_planning_requires_authoritative_schema(local, monke
     from api_agent.runtime import infrastructure_contract, infrastructure_plan, compose
     context = local.owner.context
     context.infrastructure_paths = ('selected.toml',)
+    from api_agent.runtime import inventory
+    token = object()
+    monkeypatch.setattr(inventory, 'capture_inventory', Mock(return_value=token))
     capture = Mock(return_value=('captured',))
     monkeypatch.setattr(infrastructure_contract, 'load_infrastructure_contributions', capture)
     planner = Mock(return_value='frozen-plan')
@@ -702,12 +705,15 @@ def test_pure_infrastructure_planning_requires_authoritative_schema(local, monke
     with pytest.raises(ValueError, match='schema'): _plan(local.config, None, context, 'scope')
     schema = object()
     assert _plan(local.config, schema, context, 'scope') == 'frozen-plan'
-    planner.assert_called_once_with(local.config, schema, ('captured',), 'scope', engine_environment=None)
+    planner.assert_called_once_with(local.config, schema, ('captured',), 'scope', engine_environment=None, inventory=token)
     capture.return_value = ()
-    monkeypatch.setattr(compose, 'plan_compose', Mock(return_value='base-plan'))
-    assert _plan(local.config, None, context, 'scope') == 'base-plan'
+    from api_agent.runtime.ownership import StackScope
+    from dataclasses import replace
+    base = compose.plan_compose({}, StackScope('0' * 16))
+    monkeypatch.setattr(compose, 'plan_compose', Mock(return_value=base))
+    assert _plan(local.config, None, context, 'scope') == replace(base, inventory=token)
     context.infrastructure_paths = ()
-    assert _plan(local.config, None, context, 'scope') == 'base-plan'
+    assert _plan(local.config, None, context, 'scope') == replace(base, inventory=token)
 
 
 def test_close_during_start_waits_for_late_allocations_before_acknowledgement(local):
@@ -744,8 +750,14 @@ def test_pure_plan_reads_only_consumed_provider_declarations(local, monkeypatch,
     local.config.values.update(LLM_PROVIDER='llm', UI_PROVIDER='ui', API_PROVIDER='unused', RUN_UI=run_ui)
     capture = Mock(return_value=())
     monkeypatch.setattr(infrastructure_contract, 'load_infrastructure_contributions', capture)
-    monkeypatch.setattr(compose, 'plan_compose', Mock(return_value='base'))
-    assert _plan(local.config, None, context, 'scope', requires_api=requires_api) == 'base'
+    from api_agent.runtime import inventory
+    from api_agent.runtime.ownership import StackScope
+    from dataclasses import replace
+    token = object()
+    monkeypatch.setattr(inventory, 'capture_inventory', Mock(return_value=token))
+    base = compose.plan_compose({}, StackScope('0' * 16))
+    monkeypatch.setattr(compose, 'plan_compose', Mock(return_value=base))
+    assert _plan(local.config, None, context, 'scope', requires_api=requires_api) == replace(base, inventory=token)
     capture.assert_called_once_with(context, selected_provider_locations=expected)
 
 

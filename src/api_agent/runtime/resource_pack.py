@@ -43,6 +43,7 @@ class LaunchContext:
     workflow_library_files: frozenset[str] | None = None
     infrastructure_paths: tuple[Path, ...] = ()
     tool_catalog_path: Path | None = None
+    inventory_sources: tuple = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -118,7 +119,8 @@ def load_launch_context(
     if not config.is_file():
         raise ResourcePackError(f"Resource-pack configuration does not exist: {config}")
     infrastructure = data.get("infrastructure", {"version": 1, "declarations": []})
-    if (type(infrastructure) is not dict or set(infrastructure) != {"version", "declarations"}
+    if (type(infrastructure) is not dict or not {"version", "declarations"} <= set(infrastructure)
+            or set(infrastructure) - {"version", "declarations", "inventory"}
             or type(infrastructure["version"]) is not int or infrastructure["version"] != 1
             or type(infrastructure["declarations"]) is not list
             or len(infrastructure["declarations"]) > 16):
@@ -134,6 +136,31 @@ def load_launch_context(
                 or path in infrastructure_paths):
             raise ResourcePackError("infrastructure declaration is absent, duplicated or escapes pack")
         infrastructure_paths.append(path)
+    inventory_sources = []
+    rows = infrastructure.get('inventory', [])
+    if type(rows) is not list or len(rows) > 16:
+        raise ResourcePackError('infrastructure inventory must be bounded explicit sources')
+    from .infrastructure_contract import _identifier, _relative, _capture, MAX_DECLARATION_BYTES
+    for row in rows:
+        if (type(row) is not dict or set(row) != {'owner', 'root', 'declarations'}
+                or type(row['root']) is not str or row['root'] not in {'base', 'pack'}
+                or type(row['declarations']) is not list or not row['declarations']
+                or len(row['declarations']) > 16):
+            raise ResourcePackError('Invalid infrastructure inventory source')
+        try:
+            _identifier(row['owner'], 'inventory owner')
+            inventory_root = base if row['root'] == 'base' else pack
+            declarations = []
+            for relative in row['declarations']:
+                _relative(relative, 'inventory declaration')
+                if not relative.endswith('.toml') or relative in declarations:
+                    raise ValueError('Invalid inventory declaration path')
+                _capture(inventory_root, relative, MAX_DECLARATION_BYTES)
+                declarations.append(relative)
+        except ValueError:
+            raise ResourcePackError('Invalid infrastructure inventory declaration') from None
+        inventory_sources.append((row['owner'], inventory_root,
+                                  tuple(inventory_root / path for path in declarations)))
     tooling = data.get('tooling')
     tool_catalog_path = None
     if tooling is not None:
@@ -276,6 +303,7 @@ def load_launch_context(
         workflow_library_files=workflow_library_files,
         infrastructure_paths=tuple(infrastructure_paths),
         tool_catalog_path=tool_catalog_path,
+        inventory_sources=tuple(inventory_sources),
     )
 
 

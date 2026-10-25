@@ -361,11 +361,17 @@ def _read_journal(directory, scope, identity):
                 or any(not isinstance(item, str) or not _ID.fullmatch(item) for item in record['ids'])
                 or ('conditional_engine_id' in record and (not isinstance(record['conditional_engine_id'], str)
                     or not _ID.fullmatch(record['conditional_engine_id'])))
+                or not isinstance(record.get('owned_ids', []), list)
+                or any(item not in record['ids'] for item in record.get('owned_ids', []))
                 or type(record.get('cleanup_only', False)) is not bool
                 or (record.get('cleanup_only', False) and not record.get('conditional_cleanup_ids'))
                 or not isinstance(record.get('conditional_cleanup_ids', []), list)
                 or any(item not in record['ids'] for item in record.get('conditional_cleanup_ids', []))):
             raise PrerequisiteError('Invalid ownership lease record.')
+        record = dict(record)
+        if record.get('conditional_engine_id') and record.get('owned_ids'):
+            record['conditional_cleanup_ids'] = sorted(set(record.get('conditional_cleanup_ids', [])) |
+                                                       set(record['owned_ids']))
         if not record.get('cleanup_only', False) and identity(record['pid']) == record['identity']:
             active[key] = dict(record)
         elif record.get('conditional_cleanup_ids'):
@@ -384,7 +390,7 @@ def _read_journal(directory, scope, identity):
                 remaining -= transferred
         if remaining:
             active[key] = {**record, 'cleanup_only': True, 'ids': sorted(remaining),
-                           'conditional_cleanup_ids': sorted(remaining)}
+                           'conditional_cleanup_ids': sorted(remaining), 'owned_ids': []}
     return active
 
 
@@ -598,6 +604,18 @@ class PrerequisiteManager:
         self.timeout, self.now, self.sleep, self.identity = deadline_seconds, now, sleep, identity
         document = json.loads(plan.assets['compose.json'])
         self.document = document
+        self.inventory_pairs = frozenset((name, profile)
+            for name, spec in document['services'].items() for profile in spec.get('profiles', ()))
+        catalog = getattr(plan, 'inventory', None)
+        if catalog is not None:
+            from .inventory import InventoryCatalog
+            if type(catalog) is not InventoryCatalog or catalog.scope_id != scope.id:
+                raise PrerequisiteError('Inventory scope differs from prerequisite scope.')
+            pairs = catalog.verify(scope)
+            if any(name in document['services'] and profile not in document['services'][name].get('profiles', ())
+                   for name, profile in pairs):
+                raise PrerequisiteError('Inventory conflicts with selected service ownership.')
+            self.inventory_pairs |= frozenset(pairs)
         self.specs = {name: _interpolate(document['services'][name], self.environment) for name in plan.services}
         if 'jaeger' in plan.services and 'jaeger-config.json' not in plan.assets:
             raise PrerequisiteError('Selected Jaeger configuration is missing.')
@@ -655,7 +673,11 @@ class PrerequisiteManager:
                 labels = config.get('Labels', {})
                 if identifier not in ids or identifier in result:
                     raise ValueError()
-                if not self.scope.owns(labels, profiles=PROFILES | frozenset(self.plan.profiles)):
+                if (not isinstance(labels, dict) or
+                        (labels.get('com.docker.compose.service'), labels.get('api-agent.profile'))
+                        not in self.inventory_pairs or not self.scope.owns(labels,
+                            profiles=PROFILES | frozenset(self.plan.profiles) |
+                                frozenset(profile for _, profile in self.inventory_pairs))):
                     raise PrerequisiteError('Compose project includes a container with foreign ownership.')
                 result[identifier] = ManagedService(identifier, labels['com.docker.compose.service'],
                     config['Image'], record.get('Image'), labels.get(CONFIG_LABEL, ''), bool(state.get('Running')),
@@ -672,7 +694,7 @@ class PrerequisiteManager:
                 continue
             remaining = sorted(set(record['conditional_cleanup_ids']).intersection(inventory))
             if remaining:
-                journal[key] = {**record, 'ids': remaining, 'conditional_cleanup_ids': remaining}
+                journal[key] = {**record, 'ids': remaining, 'conditional_cleanup_ids': remaining, 'owned_ids': []}
             else:
                 journal.pop(key)
 
@@ -1117,6 +1139,8 @@ class PrerequisiteManager:
                 self._retire_disposed_duties(journal, self._inventory(deadline, cleanup=True))
             record = journal.pop(self.lease.invocation_id, {})
             cleanup_ids = set(record.get('conditional_cleanup_ids', []))
+            if record.get('conditional_engine_id') == self.engine_id:
+                cleanup_ids.update(record.get('owned_ids', []))
             if not retain:
                 for key in sorted(journal):
                     successor = dict(journal[key])

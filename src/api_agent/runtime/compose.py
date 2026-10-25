@@ -43,6 +43,7 @@ class ComposePlan:
     environment: Mapping[str, str] = field(repr=False)
     assets: Mapping[str, bytes] = field(repr=False)
     conditional: tuple = ()
+    inventory: object = None
 
     @property
     def enabled(self):

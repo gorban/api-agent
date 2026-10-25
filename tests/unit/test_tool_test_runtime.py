@@ -384,7 +384,7 @@ def test_packet_rejects_invalid_outer_contract_and_provenance_before_model_decod
 def test_helper_with_multi_graph_case_requires_explicit_graph_choice(packet):
     plan = replace(packet.plan, case_definitions={CASE: tuple(item.definition_id for item in packet.plan.definitions)})
     (packet.directory / 'tool-plan.json').unlink()
-    packet.data['tool_plan'] = worker.write_tool_packet(packet.directory, plan)
+    packet.data['tool_plan'] = worker.write_tool_packet(packet.directory, plan, context=packet.context)
     prepared = owner(packet)
     with pytest.raises(ContractError, match='choose one'):
         prepared.definition
@@ -441,7 +441,9 @@ def managed_packet(packet):
     plan = replace(packet.plan, tools=(one, packet.plan.tools[1]),
                    infrastructure_contributions=services, captured_assets=sources).bind_values(config)
     (packet.directory / 'tool-plan.json').unlink()
-    packet.data['tool_plan'] = worker.write_tool_packet(packet.directory, plan)
+    packet.data['tool_plan'] = worker.write_tool_packet(packet.directory, plan, context=packet.context)
+    from api_agent.runtime.inventory import inventory_authority
+    packet.data['inventory_authority'] = inventory_authority(packet.context, plan)
     packet.data['config'] = values
     packet.path.write_text(json.dumps(packet.data))
     return plan

@@ -37,3 +37,7 @@ The remaining choices to settle before dependent behavior are concrete declarati
 
 - [ ] Before importing any selected factory, validate all captured entries as direct, undecorated synchronous function definitions with exactly two positional parameters: `create_tool(local_config, services)`. Reject generators, dynamically assigned aliases and decorated entries in this version. Validate returned owner capabilities separately after creation.
 - [ ] Bind dependency admission to the executable origins actually used by cold imports and already loaded modules, including enabled dependency extras and their transitive requirements. An installed distribution receipt must not authorize a different module earlier on the import path.
+
+## Scope inventory and final-use cleanup
+
+- [ ] Deliver [declaration-bound inventory and final-use cleanup](implementation_plan_o4e1.md). Recognize declared neighbors without acquiring them; preserve locked leases and transfer eligible cleanup responsibility to the last active consumer.

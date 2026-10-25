@@ -19,11 +19,14 @@ MAX_PACKET_BYTES = 64 * 1024 * 1024
 _PACKET = 'tool-plan.json'
 
 
-def write_tool_packet(directory, plan):
+def write_tool_packet(directory, plan, *, context=None):
     """Write only the parent's captured closure into its private worker directory."""
     sources = {name: {'source': item.source, 'explicit': item.explicit}
                for name, item in getattr(plan.config, 'fields', {}).items()}
     packet = {'version': 1, 'plan': plan.to_wire(), 'sources': sources}
+    if context is not None:
+        from api_agent.runtime.inventory import capture_inventory
+        packet['inventory'] = capture_inventory(context, plan).to_wire()
     path = Path(directory) / _PACKET
     payload = json.dumps(packet, allow_nan=False, separators=(',', ':')).encode()
     if len(payload) > MAX_PACKET_BYTES:
@@ -34,7 +37,7 @@ def write_tool_packet(directory, plan):
     return {'file': _PACKET, 'sha256': sha256(payload).hexdigest()}
 
 
-def read_tool_packet(context_file, descriptor):
+def read_tool_packet(context_file, descriptor, *, inventory_context=None):
     """Restore a launch-owned snapshot without expanding its executable closure."""
     from api_agent.tooling.models import ToolPlan
     if (type(descriptor) is not dict or set(descriptor) != {'file', 'sha256'}
@@ -54,7 +57,7 @@ def read_tool_packet(context_file, descriptor):
             or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)):
         raise ContractError('Selected tool context changed after launch.')
     packet = json.loads(body)
-    if (type(packet) is not dict or set(packet) != {'version', 'plan', 'sources'}
+    if (type(packet) is not dict or set(packet) not in ({'version', 'plan', 'sources'}, {'version', 'plan', 'sources', 'inventory'})
             or type(packet['version']) is not int or packet['version'] != 1
             or type(packet['sources']) is not dict):
         raise ContractError('Invalid selected tool context.')
@@ -63,7 +66,16 @@ def read_tool_packet(context_file, descriptor):
                 or set(source) != {'source', 'explicit'} or type(source['source']) is not str
                 or type(source['explicit']) is not bool):
             raise ContractError('Invalid selected tool provenance.')
-    return ToolPlan.from_wire(packet['plan']), packet['sources']
+    plan = ToolPlan.from_wire(packet['plan'])
+    if inventory_context is not None:
+        from api_agent.runtime.inventory import InventoryCatalog
+        from api_agent.runtime.ownership import StackScope
+        scope = StackScope.from_roots(inventory_context['base_root'], inventory_context['pack_root'])
+        catalog = InventoryCatalog.from_wire(packet.get('inventory'), scope=scope,
+            authority=inventory_context.get('inventory_authority'))
+        catalog.verify_plan(plan)
+        return plan, packet['sources'], catalog
+    return plan, packet['sources']
 
 
 @dataclass
@@ -89,7 +101,8 @@ class PreparedTestTools:
         self.data = data
         if 'tool_plan' not in data or case not in data.get('tool_cases', {}):
             raise ContractError('Test has no launch-admitted tool context.')
-        plan, self.sources = read_tool_packet(os.environ['API_AGENT_INTEGRATION_CONTEXT'], data['tool_plan'])
+        plan, self.sources, self.inventory = read_tool_packet(
+            os.environ['API_AGENT_INTEGRATION_CONTEXT'], data['tool_plan'], inventory_context=data)
         self.plan = plan.for_case(data['tool_cases'][case])
         self.manager_factory, self.runtime_factory = manager_factory, runtime_factory
         self.engine_environment = engine_environment
@@ -150,13 +163,13 @@ class PreparedTestTools:
                                  if not name.startswith('ALLURE_') and name not in {'TRACE_MODE', 'TRACE_TARGET'}}
         try:
             selected = plan_infrastructure(infrastructure_values, plan.schema, contributions, scope,
-                                           engine_environment=environment)
+                                           engine_environment=environment, inventory=self.inventory)
         except MissingEngineTransport:
             from api_agent.runtime.reporting_engine import verified_engine_binding
             _, transport = await offload(verified_engine_binding, environment)
             environment = {**environment, 'DOCKER_HOST': transport}
             selected = plan_infrastructure(infrastructure_values, plan.schema, contributions, scope,
-                                           engine_environment=environment)
+                                           engine_environment=environment, inventory=self.inventory)
         cancelled = Event()
         factory = self.manager_factory or PrerequisiteManager
         manager = factory(selected, scope, Path(self.data['owner_root']) / 'artifacts' / 'prerequisites',
