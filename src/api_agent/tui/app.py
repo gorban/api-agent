@@ -1092,20 +1092,20 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return (self.session.review_field_names() if hasattr(self.session, 'review_field_names')
                 else frozenset(self.schema.fields))
 
-    def configuration_pending(self, *, include_optional=True):
-        candidates = [item.name for item in self.session.default_candidates()]
-        missing = [name for name in self.session.result(_review=True).missing
+    def configuration_pending(self, *, include_optional=True, review=None):
+        review = self.session.result(_review=True) if review is None else review
+        candidates = [item.name for item in self.session.default_candidates(result=review)]
+        missing = [name for name in review.missing
                    if self.schema.fields[name].acknowledge_default]
-        review = self.session.result(_review=True)
         optional = [name for name, field in self.schema.fields.items()
                     if name in self.tool_review_fields() and include_optional and field.review_optional and field.acknowledge_default
                     and (not field.pack_only or self.context.external_pack)
                     and (name not in review.fields or not review.fields[name].explicit)]
         return set(candidates + missing + optional)
 
-    def credential_roles(self):
+    def credential_roles(self, *, result=None):
         """Read generic pack-declared role labels from executable configuration."""
-        result = self.session.result(_review=True)
+        result = self.session.result(_review=True) if result is None else result
         primary = result.values.get('LLM_CREDENTIAL_ROLE', 'LLM User')
         roles = [primary] if primary else []
         for name in getattr(self.context, 'credential_role_fields', ()):
@@ -1200,8 +1200,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def review_operation(self):
         return self.mode or self.review_destination
 
-    def configuration_review_text(self):
-        missing = self.session.result().missing
+    def configuration_review_text(self, *, result=None):
+        result = self.session.result() if result is None else result
+        missing = result.missing
         reason = ("Required settings: " + ", ".join(missing) if missing else
                   "Unsaved defaults are available to review; save or edit values as needed.")
         if missing and len(reason) > max(24, self.size.width - 6):
@@ -1220,28 +1221,28 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return (reason + context + f"\na saves a default; e edits; c closes, then {destination}. "
                 "Required settings still block execution.")
 
-    def configuration_review_blocker(self):
+    def configuration_review_blocker(self, *, result=None):
         """Explain the current execution gate, separately from optional review."""
         operation = self.review_operation()
         if operation == "config-cleanup":
             return ""
-        result = self.session.result()
+        result = self.session.result() if result is None else result
         if result.missing:
             name = result.missing[-1]
             context = f"TUI_MODE={operation}" if operation else "the current configuration"
             return f"{name} required for {context}."
         return ""
 
-    def configuration_rows(self):
+    def configuration_rows(self, *, review=None):
         """Rebuild review membership from the current effective declaration set."""
-        result = self.session.result(_review=True)
+        result = self.session.result(_review=True) if review is None else review
         active = set(result.fields) | set(result.missing) | {
             name for name, field in self.schema.fields.items() if field.review_optional}
-        review = self.session.result(_review=True)
+        review = result
         default_names = {name for name, field in self.schema.fields.items()
                          if field.default is not UNSET or field.conditional_defaults}
         self.review_names.intersection_update(self.schema.fields)
-        self.review_names.update(self.configuration_pending())
+        self.review_names.update(self.configuration_pending(review=review))
         rows = []
         for name in sorted(self.schema.fields):
             if (name not in self.tool_review_fields() or not self.schema.fields[name].acknowledge_default or name not in self.review_names
@@ -1257,13 +1258,14 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
 
     def refresh_configuration_rows(self, screen):
         """Refresh displayed values and contextual actions as one UI snapshot."""
-        screen.query_one("#body", Static).update(self.configuration_review_text())
-        screen.query_one("#error", Static).update(self.configuration_review_blocker())
-        rows = self.configuration_rows()
+        execution = self.session.result()
+        result = self.session.result(_review=True)
+        screen.query_one("#body", Static).update(self.configuration_review_text(result=execution))
+        screen.query_one("#error", Static).update(self.configuration_review_blocker(result=execution))
+        rows = self.configuration_rows(review=result)
         if not rows:
             self.finish_configuration_review()
             return
-        result = self.session.result(_review=True)
         table = screen.query_one(DataTable)
         names = [row.key.value for row in table.ordered_rows]
         if names != [name for name, _ in rows]:
@@ -2064,8 +2066,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return ()
         from .accounts import account_options
         try:
-            roles = self.credential_roles()
-            return account_options(self.session.result(_review=True).values.get('UNATTENDED_AUTH') or {},
+            result = self.session.result(_review=True)
+            roles = self.credential_roles(result=result)
+            return account_options(result.values.get('UNATTENDED_AUTH') or {},
                                    roles, paired=self.mode == 'run-local',
                                    registry=self.session.password_manager_registry)
         except ValueError:
