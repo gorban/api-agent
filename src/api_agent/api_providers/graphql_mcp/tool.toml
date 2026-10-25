@@ -5,6 +5,7 @@ factory = "factory.py:create_tool"
 [inputs.ENDPOINT]
 type = "str"
 required = true
+nonempty = true
 help = "Endpoint for this named read-only GraphQL tool; blank uses its declared local output."
 
 [inputs.HEADERS]

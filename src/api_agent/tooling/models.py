@@ -95,6 +95,7 @@ class SelectedTool:
     configured_values: object = field(default_factory=dict, repr=False)
     value_sources: object = field(default_factory=dict, repr=False)
     derived_from: object = field(default_factory=dict)
+    nonempty_inputs: tuple[str, ...] = ()
 
     def __post_init__(self):
         for name in ('bindings', 'local_values', 'pending', 'service_bindings',
@@ -102,6 +103,7 @@ class SelectedTool:
                      'value_sources', 'derived_from'):
             object.__setattr__(self, name, freeze(getattr(self, name)))
         object.__setattr__(self, 'prerequisite_roots', tuple(self.prerequisite_roots))
+        object.__setattr__(self, 'nonempty_inputs', tuple(self.nonempty_inputs))
 
 
 @dataclass(frozen=True)
@@ -242,6 +244,17 @@ class ToolPlan:
                         pending.pop(slot, None)
             tools[secondary] = replace(target, local_values=values, pending=pending,
                                         value_sources=provenance, derived_from=derived)
+        # Implementations own this policy. Check after shared-primary derivation;
+        # an admitted exact blank local output is provisionally symbolic.
+        for tool in tools.values():
+            for slot in tool.nonempty_inputs:
+                if tool.bindings[slot] not in result.active_fields:
+                    continue
+                value = tool.local_values.get(slot)
+                if isinstance(value, str) and not value.strip():
+                    if value == '' and slot in tool.pending:
+                        continue
+                    raise ToolSelectionError(f'{tool.bindings[slot]}: selected tool input requires a nonempty string')
         return replace(self, tools=tuple(tools[tool.id] for tool in self.tools), config=result)
 
 

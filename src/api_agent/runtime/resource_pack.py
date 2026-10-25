@@ -142,14 +142,22 @@ def load_launch_context(
         raise ResourcePackError('infrastructure inventory must be bounded explicit sources')
     from .infrastructure_contract import _identifier, _relative, _capture, MAX_DECLARATION_BYTES
     for row in rows:
-        if (type(row) is not dict or set(row) != {'owner', 'root', 'declarations'}
+        if (type(row) is not dict or not {'owner', 'root', 'declarations'} <= set(row)
+                or set(row) - {'owner', 'root', 'declarations', 'directory'}
                 or type(row['root']) is not str or row['root'] not in {'base', 'pack'}
                 or type(row['declarations']) is not list or not row['declarations']
                 or len(row['declarations']) > 16):
             raise ResourcePackError('Invalid infrastructure inventory source')
         try:
             _identifier(row['owner'], 'inventory owner')
-            inventory_root = base if row['root'] == 'base' else pack
+            anchor = base if row['root'] == 'base' else pack
+            directory = row.get('directory', '.')
+            if directory != '.':
+                _relative(directory, 'inventory owner directory')
+            inventory_root = anchor / directory
+            if (not inventory_root.is_dir() or inventory_root.resolve(strict=True) != inventory_root
+                    or not inventory_root.is_relative_to(anchor)):
+                raise ValueError('Invalid inventory owner directory')
             declarations = []
             for relative in row['declarations']:
                 _relative(relative, 'inventory declaration')
@@ -157,7 +165,7 @@ def load_launch_context(
                     raise ValueError('Invalid inventory declaration path')
                 _capture(inventory_root, relative, MAX_DECLARATION_BYTES)
                 declarations.append(relative)
-        except ValueError:
+        except (ValueError, OSError):
             raise ResourcePackError('Invalid infrastructure inventory declaration') from None
         inventory_sources.append((row['owner'], inventory_root,
                                   tuple(inventory_root / path for path in declarations)))

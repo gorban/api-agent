@@ -80,3 +80,33 @@ def test_attachment_rejects_credential_boundary_change():
     boundary.register_secret('fixture/primary')
     with pytest.raises(ValueError, match='credential boundary'):
         attachment(SimpleNamespace(text=json.dumps(report)), boundary)
+
+
+def test_optional_rejections_preserve_v1_and_project_only_approved_fields():
+    previous = tool_evidence({}, graph_id='graph', instances={})
+    assert previous['version'] == 1 and 'rejections' not in previous
+    partial = {'calls':[{'tool':'read', 'invocation':'call', 'status':'rejected'}],
+        'rejections':[{'reason':'unknown_tool','model_round':2,'call_index':1000,'request_id':'safe-request',
+                       'tool':'secret-name','invocation':'secret-id','arguments':{'secret':'payload'}}]}
+    report = tool_evidence(partial, graph_id='graph', instances={'read':'fixture/read'})
+    assert report['calls'][0]['status'] == 'rejected'
+    assert report['rejections'] == [{'reason':'unknown_tool','model_round':2,'call_index':1000,'request_id':'safe-request'}]
+    assert 'secret' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('change', [
+    {'reason':'arbitrary'}, {'model_round':0}, {'call_index':0},
+    {'request_id':'invalid\nlabel'}, {'tool':'credential'},
+])
+def test_rejection_schema_rejects_unapproved_fields_or_invalid_structure(change):
+    report = tool_evidence({}, graph_id='graph', instances={})
+    marker = {'reason':'duplicate_call','model_round':1,'call_index':2,'request_id':'safe'}
+    marker.update(change)
+    report['rejections'] = [marker]
+    with pytest.raises(ValidationError): validate_tool_evidence(report)
+
+
+def test_rejection_array_has_finite_public_bound():
+    report = tool_evidence({}, graph_id='graph', instances={})
+    report['rejections'] = [{'reason':'unknown_tool','model_round':1,'call_index':1,'request_id':'safe'}] * 129
+    with pytest.raises(ValidationError): validate_tool_evidence(report)

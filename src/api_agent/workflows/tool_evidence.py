@@ -13,7 +13,7 @@ _USAGE = {'type': ['object', 'null'], 'properties': {
                              'reasoning_tokens', 'cache_write_tokens')}, 'additionalProperties': False}
 _CALL = {'type': 'object', 'properties': {
     'tool': _LABEL, 'instance': _LABEL, 'invocation': _LABEL,
-    'status': {'enum': ['preparing', 'verified', 'success', 'partial', 'failure']},
+    'status': {'enum': ['preparing', 'rejected', 'verified', 'success', 'partial', 'failure']},
     'verified_by_inference': {'type': 'boolean'}, 'result_received': {'type': 'boolean'},
     'result_matches': {'type': 'boolean'}},
     'required': ['tool', 'instance', 'invocation', 'status', 'verified_by_inference', 'result_received'],
@@ -23,10 +23,18 @@ _INFERENCE = {'type': 'object', 'properties': {
     'outcome': {'enum': ['started', 'failed', 'completed', 'tool_calls', 'length', 'refused']},
     'usage': _USAGE}, 'required': ['request_id', 'kind', 'outcome', 'usage'],
     'additionalProperties': False}
+_REJECTION = {'type': 'object', 'properties': {
+    'reason': {'enum': ['unknown_tool', 'duplicate_call']},
+    'model_round': {'type': 'integer', 'minimum': 1},
+    'call_index': {'type': 'integer', 'minimum': 1},
+    'request_id': _LABEL},
+    'required': ['reason', 'model_round', 'call_index', 'request_id'],
+    'additionalProperties': False}
 _SCHEMA = {'type': 'object', 'properties': {
     'version': {'const': 1}, 'kind': {'const': 'tool_execution'}, 'graph_id': _LABEL,
     'calls': {'type': 'array', 'items': _CALL, 'maxItems': 128},
     'inference': {'type': 'array', 'items': _INFERENCE, 'maxItems': 256},
+    'rejections': {'type': 'array', 'items': _REJECTION, 'maxItems': 128},
     'final_matches': {'type': 'boolean'}, 'completed': {'type': 'boolean'},
     'sharing': {'type': 'object', 'properties': {
         'primary': _LABEL, 'secondary': {'type': 'array', 'items': _LABEL, 'maxItems': 16},
@@ -64,6 +72,9 @@ def tool_evidence(journal, *, graph_id, instances, ownership=None, sharing=None)
                   for row in journal.get('inference', ())],
               'completed': journal.get('completed') is True,
               'ownership': {} if ownership is None else dict(ownership)}
+    if 'rejections' in journal:
+        result['rejections'] = [{key: row[key] for key in
+            ('reason', 'model_round', 'call_index', 'request_id')} for row in journal['rejections']]
     if 'final_matches' in journal:
         result['final_matches'] = journal['final_matches']
     if sharing is not None:

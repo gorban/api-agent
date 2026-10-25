@@ -289,3 +289,31 @@ async def test_recollected_integration_rejects_new_missing_configuration(tmp_pat
         assert 'Missing required configuration: SELECTED_REQUIRED' in app.screen.body
         assert app.operation_status == 3
         app.integration_runner.assert_not_called()
+
+
+def test_nonempty_tool_preflight_rejects_before_any_operation_effect(selection_fixture):
+    import asyncio
+    from api_agent.runtime.operation import OperationRunner
+    from test_tool_selection import declare_nonempty
+    declare_nonempty(selection_fixture)
+    session = session_for(selection_fixture, environ={'API_ENDPOINT': ''})
+    configured = session.result()
+    assert configured.errors == ('API_ENDPOINT: selected tool input requires a nonempty string',)
+    assert not configured.missing
+    effects = []
+
+    def effect(*args, **kwargs):
+        effects.append('operation effect')
+        raise AssertionError('Invalid tool configuration reached operation effects')
+
+    runner = OperationRunner(resolve=session.result, prepare_dependencies=effect,
+        prepare_https=effect, plan=effect, manager=effect, compose_runtime=effect,
+        create_application=effect, listener=effect)
+
+    async def scenario():
+        with pytest.raises(ValueError, match='invalid_runtime_configuration'):
+            async with runner.open():
+                pytest.fail('Invalid tool configuration entered operation')
+
+    asyncio.run(scenario())
+    assert effects == []

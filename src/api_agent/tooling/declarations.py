@@ -235,5 +235,11 @@ def implementation_declaration(data):
         raise ToolSelectionError('Tool factory must name create_tool')
     if type(data.get('inputs', {})) is not dict:
         raise ToolSelectionError('Tool implementation inputs must be a table')
+    for row in data.get('inputs', {}).values():
+        if type(row) is not dict:
+            raise ToolSelectionError('Tool implementation input must be a table')
+        if 'nonempty' in row:
+            if type(row['nonempty']) is not bool or row.get('type') != 'str':
+                raise ToolSelectionError('Tool nonempty policy requires a boolean on a string input')
     string_map(data.get('services', {}), 'Tool service capabilities')
     return data

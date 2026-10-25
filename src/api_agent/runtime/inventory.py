@@ -17,6 +17,9 @@ def inventory_authority(context, plan=None):
         root = Path(root).absolute()
         if root.resolve(strict=True) != root:
             raise ValueError('Inventory owner root is not canonical')
+        previous = owners.get(owner)
+        if previous is not None and previous[0] != root:
+            raise ValueError('Inventory owner has conflicting roots')
         new_paths = []
         for path in paths:
             absolute = Path(path).absolute()
@@ -30,8 +33,6 @@ def inventory_authority(context, plan=None):
         if not new_paths:
             return
         previous = owners.setdefault(owner, (root, set()))
-        if previous[0] != root:
-            raise ValueError('Inventory owner has conflicting roots')
         for path in new_paths:
             relative = Path(path).relative_to(root).as_posix()
             _relative(relative, 'inventory declaration')

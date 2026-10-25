@@ -67,6 +67,7 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
         messages = [Message('user', (TextContent(prompt),))]
         for round_number in range(max_rounds):
             reply = await infer(CompletionRequest(tuple(messages), tuple(tools), generation), 'conversation')
+            conversation_request_id = inference[-1]['request_id']
             # Keep provider continuation state on the exact assistant message.
             messages.append(reply.payload)
             journal['model_rounds'] = round_number + 1
@@ -83,8 +84,12 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
             if reply.outcome != 'tool_calls':
                 raise ValueError('Tool conversation call response has invalid outcome')
             outputs = []
-            for call in reply.payload.calls:
+            for call_index, call in enumerate(reply.payload.calls, 1):
                 if call.name not in gates or call.call_id in seen:
+                    journal.setdefault('rejections', []).append({
+                        'reason': 'unknown_tool' if call.name not in gates else 'duplicate_call',
+                        'model_round': round_number + 1, 'call_index': call_index,
+                        'request_id': conversation_request_id})
                     raise ValueError('Unknown or repeated model tool call')
                 seen.add(call.call_id)
                 gate = gates[call.name](call.call_id)
@@ -119,7 +124,10 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
                         'relevance')
                     if verdict.outcome != 'completed' or verdict.payload.calls:
                         raise ValueError('Tool relevance response did not complete')
-                    return object_json(''.join(part.text for part in verdict.payload.content))
+                    decision = object_json(''.join(part.text for part in verdict.payload.content))
+                    if decision.get('relevant') is not True or decision.get('grounded') is not True:
+                        entry['status'] = 'rejected'
+                    return decision
 
                 verified = await gate.verify(prepared, relevance=relevance)
                 entry.update(status='verified', verified_by_inference=True)

@@ -332,7 +332,99 @@ def test_second_schema_valid_rejection_keeps_first_result_without_retry(scenario
     assert scenario[0][ALIASES[1]].validations == ['read-record']
     assert not scenario[0][ALIASES[1]].invocations
     assert journal['calls'][0]['result'] == {'hello':'id-7'}
-    assert journal['calls'][1]['status'] == 'preparing'
+    assert journal['calls'][1]['status'] == 'rejected'
     assert len(calls) == len(journal['inference']) == 3
     assert all(row['usage']['input_tokens'] == 9 for row in journal['inference'])
     assert object_json(journal['inference'][-1]['content'][0]) == {'relevant':relevant,'grounded':grounded}
+
+
+@pytest.mark.parametrize('relevant,grounded', [(False, True), (True, False), (False, False)])
+def test_completed_negative_verdict_reports_rejected_before_original_gate_error(scenario, relevant, grounded):
+    from api_agent.workflows.tool_evidence import tool_evidence
+    script, journal = Script([tool_call(ALIASES[0]), verdict(relevant, grounded)]), {}
+    with pytest.raises(ToolGateError, match='Tool candidate failed relevance or grounding'):
+        run(scenario, script, journal)
+    report = tool_evidence(journal, graph_id='graph', instances=dict(zip(ALIASES, ('first','second'))))
+    assert report['calls'][0]['status'] == 'rejected'
+    assert not report['calls'][0]['verified_by_inference']
+    assert not report['calls'][0]['result_received']
+    assert len(report['inference']) == len(script.requests) == 2
+    assert all(row['usage']['input_tokens'] == 9 for row in report['inference'])
+    assert not scenario[0][ALIASES[0]].invocations
+    assert 'relevant' not in json.dumps(report) and 'grounded' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('kind', ['unknown', 'duplicate'])
+def test_rejected_model_call_has_safe_marker_and_keeps_conversation_request_identity(scenario, kind):
+    from api_agent.workflows.tool_evidence import tool_evidence
+    hostile = 'credential:token/secret\n' + 'x' * 220
+    rejected = ToolCall(hostile, hostile, '{"secret":"do not publish"}') if kind == 'unknown' else ToolCall('first', ALIASES[1], '{"secret":"do not publish"}')
+    batch = reply(calls=(ToolCall('first', ALIASES[0], '{"query":"hello"}'), rejected))
+    script, journal = Script([batch, verdict()]), {}
+    with pytest.raises(ValueError, match='^Unknown or repeated model tool call$'):
+        run(scenario, script, journal)
+    report = tool_evidence(journal, graph_id='graph', instances=dict(zip(ALIASES, ('first','second'))))
+    assert report['rejections'] == [{'reason':'unknown_tool' if kind == 'unknown' else 'duplicate_call',
+        'model_round':1, 'call_index':2, 'request_id':script.requests[0].request_id}]
+    assert report['rejections'][0]['request_id'] != script.requests[1].request_id
+    assert report['calls'][0]['status'] == 'success' and report['calls'][0]['result_received']
+    assert journal['calls'][0]['result'] == {'hello':'unknown-0'}
+    assert len(report['calls']) == 1 and len(report['inference']) == len(script.requests) == 2
+    assert all(row['usage']['input_tokens'] == 9 for row in report['inference'])
+    assert scenario[0][ALIASES[0]].invocations == ['first']
+    assert not scenario[0][ALIASES[1]].invocations
+    assert not any(value in json.dumps(report) for value in (hostile, 'secret', 'do not publish', 'unknown-0'))
+
+
+def test_hostile_label_shaped_unknown_call_is_not_published_as_identity(scenario):
+    from api_agent.workflows.tool_evidence import tool_evidence
+    sensitive = 'credential_token_secret'
+    script, journal = Script([reply(calls=(ToolCall(sensitive, sensitive, sensitive),))]), {}
+    with pytest.raises(ValueError, match='Unknown or repeated'):
+        run(scenario, script, journal)
+    report = tool_evidence(journal, graph_id='graph', instances={})
+    assert report['calls'] == []
+    assert report['rejections'][0]['reason'] == 'unknown_tool'
+    assert sensitive not in json.dumps(report)
+    assert len(script.requests) == 1
+
+
+def test_rejection_after_largest_existing_call_array_keeps_unbounded_numeric_position(scenario):
+    from api_agent.workflows.tool_evidence import tool_evidence
+    batch = reply(calls=tuple(ToolCall('call-' + str(i), ALIASES[0], '{"query":"hello"}') for i in range(128))
+                  + (ToolCall('rejected-secret', 'unknown-secret', 'invalid'),))
+    script, journal = Script([batch, *(verdict() for _ in range(128))]), {}
+    with pytest.raises(ValueError, match='Unknown or repeated'):
+        run(scenario, script, journal)
+    report = tool_evidence(journal, graph_id='graph', instances={ALIASES[0]:'first'})
+    assert len(report['calls']) == 128 and len(report['inference']) == 129
+    assert report['rejections'][0]['call_index'] == 129
+    assert report['rejections'][0]['request_id'] == script.requests[0].request_id
+    assert 'secret' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('outcome', ['length', 'refused'])
+def test_unfinished_negative_verdict_does_not_claim_completed_rejection(scenario, outcome):
+    from api_agent.workflows.tool_evidence import tool_evidence
+    script = Script([tool_call(ALIASES[0]), replace(verdict(False, False), outcome=outcome)])
+    journal = {}
+    with pytest.raises(ValueError, match='Tool relevance response did not complete'):
+        run(scenario, script, journal)
+    report = tool_evidence(journal, graph_id='graph', instances={ALIASES[0]:'first'})
+    assert report['calls'][0]['status'] == 'preparing'
+    assert report['inference'][-1]['outcome'] == outcome
+    assert 'rejections' not in report
+    assert not scenario[0][ALIASES[0]].invocations
+
+
+def test_rejection_marker_round_and_index_follow_the_conversation_not_relevance(scenario):
+    from api_agent.workflows.tool_evidence import tool_evidence
+    script = Script([tool_call(ALIASES[0]), verdict(), tool_call('unknown', 'next')])
+    journal = {}
+    with pytest.raises(ValueError, match='Unknown or repeated'):
+        run(scenario, script, journal)
+    report = tool_evidence(journal, graph_id='graph', instances={ALIASES[0]:'first'})
+    assert report['rejections'] == [{'reason':'unknown_tool','model_round':2,'call_index':1,
+                                    'request_id':script.requests[2].request_id}]
+    assert journal['calls'][0]['result'] == {'hello':'unknown-0'}
+    assert len(report['inference']) == len(script.requests) == 3
