@@ -115,6 +115,8 @@ def test_stale_back_to_selection_cannot_replace_new_operation(tmp_path, error, c
         new = TestIdentity('base::new.py::test_new','base','new.py','new.py::test_new')
         app.selection = SelectionModel([old])
         app.show = Mock(); app.show_selection = Mock()
+        from api_agent.tui.app import WorkbenchScreen
+        app._screen_stacks[app._current_mode] = [WorkbenchScreen('collecting', 'Collecting tests')]
         entered, release = asyncio.Event(), asyncio.Event()
         async def discover(cancel_event):
             entered.set(); await release.wait()
@@ -122,12 +124,12 @@ def test_stale_back_to_selection_cannot_replace_new_operation(tmp_path, error, c
             return [old]
         app.discover_tests = discover
         refresh = asyncio.create_task(app.back_to_selection())
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 3)
         if cancelled: app.collection_cancel.set()
         import threading
         app.collection_cancel = threading.Event()
         app.selection = SelectionModel([new])
-        release.set(); await refresh
+        release.set(); await asyncio.wait_for(refresh, 3)
         assert [test.id for test in app.selection.tests] == [new.id]
         app.show_selection.assert_not_called()
         assert app.show.call_count == 1  # Only the initial refreshing screen.
