@@ -4,9 +4,12 @@ factory = "package:api-agent:api_agent/api_providers/graphql_mcp/factory.py:crea
 
 [inputs.ENDPOINT]
 type = "str"
-default = ""
-help = "Use an external synthetic GraphQL target, or leave blank to acquire the selected fixture target."
+required = true
+nonempty = true
+help = "Endpoint for this named read-only GraphQL tool; blank uses its declared local output."
 
 [inputs.HEADERS]
 type = "jsonobject"
 default = {}
+acknowledge_default = false
+help = "Owner-supplied HTTP headers for this tool instance."
