@@ -35,7 +35,7 @@ def source(tmp_path):
 def test_identity_only_explicit_sources_survive_both_operation_directions(source):
     empty = SimpleNamespace(tools=(), captured_assets={})
     ordinary = capture_inventory(source.context, empty)
-    tool = SimpleNamespace(infrastructure={'owner': 'fixture', 'owner_root': source.fixture,
+    tool = SimpleNamespace(infrastructure={'owner': 'fixture', 'owner_root': source.base,
         'declarations': (source.fixture / 'inventory.toml',)})
     plan = SimpleNamespace(tools=(tool,), captured_assets={})
     selected = capture_inventory(source.context, plan)
@@ -318,3 +318,145 @@ def test_plan_only_packet_reader_does_not_consume_passive_authority(packet):
     assert [tool.id for tool in plan.tools] == [tool.id for tool in packet.plan.tools]
     assert len(plan.tools) == 2
     assert sources['ONE_LABEL'] == {'source':'shared_default','explicit':False}
+
+
+@pytest.mark.parametrize('tool_root', ['base', 'fixture'])
+def test_same_inventory_file_and_owner_reject_different_canonical_roots(source, tool_root):
+    declaration = source.fixture / 'inventory.toml'
+    root = getattr(source, tool_root)
+    other_root = source.fixture if root == source.base else source.base
+    context = SimpleNamespace(inventory_sources=(('fixture', other_root, (declaration,)),))
+    tool = SimpleNamespace(infrastructure={
+        'owner': 'fixture', 'owner_root': root, 'declarations': (declaration,),
+    })
+    plan = SimpleNamespace(tools=(tool,))
+
+    with pytest.raises(ValueError, match='Inventory owner has conflicting roots'):
+        inventory_authority(context, plan)
+
+
+def test_same_inventory_file_owner_and_canonical_root_deduplicate(source):
+    declaration = source.fixture / 'inventory.toml'
+    context = SimpleNamespace(inventory_sources=(('fixture', source.fixture, (declaration,)),))
+    tool = SimpleNamespace(infrastructure={
+        'owner': 'fixture', 'owner_root': source.fixture, 'declarations': (declaration,),
+    })
+
+    authority = inventory_authority(context, SimpleNamespace(tools=(tool,)))
+
+    assert authority == [{'owner': 'fixture', 'root': str(source.fixture), 'path': 'inventory.toml'}]
+
+
+@pytest.mark.parametrize('directory', [None, '.'])
+@pytest.mark.parametrize('anchor', ['base', 'pack'])
+def test_inventory_directory_omission_and_dot_preserve_anchor(source, directory, anchor):
+    root = source.base if anchor == 'base' else source.pack
+    declaration = source.fixture / 'inventory.toml' if anchor == 'base' else source.pack / 'normal.toml'
+    relative = declaration.relative_to(root).as_posix()
+    field = '' if directory is None else ',directory="."'
+    manifest = source.pack / 'pack.toml'
+    manifest.write_text(manifest.read_text().split('inventory=')[0] +
+        f'inventory=[{{owner="fixture",root="{anchor}"{field},declarations=["{relative}"]}}]\n')
+
+    context = load_launch_context(source.base, source.pack)
+
+    assert context.inventory_sources == (('fixture', root, (declaration,)),)
+
+
+@pytest.mark.parametrize('directory', [
+    '42', 'true', '[]', '""', '"../fixture"', '"/tmp"', '"fixture//nested"',
+    '"fixture/./nested"', '"fixture/"', '"missing"', '"fixture/inventory.toml"',
+    '"fixture\\\\nested"', '"' + 'a' * 513 + '"',
+])
+def test_inventory_owner_directory_rejects_invalid_values(source, directory):
+    manifest = source.pack / 'pack.toml'
+    manifest.write_text(manifest.read_text().split('inventory=')[0] +
+        'inventory=[{owner="fixture",root="base",directory=' + directory +
+        ',declarations=["inventory.toml"]}]\n')
+
+    with pytest.raises(ResourcePackError, match='inventory'):
+        load_launch_context(source.base, source.pack)
+
+
+@pytest.mark.parametrize('target', ['inside', 'outside'])
+def test_inventory_owner_directory_rejects_symlink_components(source, tmp_path, target):
+    destination = source.fixture if target == 'inside' else tmp_path / 'outside'
+    destination.mkdir(exist_ok=True)
+    (destination / 'inventory.toml').write_text('version=1\nowner="fixture"\nservices=[]\n')
+    alias = source.base / 'alias'
+    alias.symlink_to(destination, target_is_directory=True)
+    manifest = source.pack / 'pack.toml'
+    manifest.write_text(manifest.read_text().split('inventory=')[0] +
+        'inventory=[{owner="fixture",root="base",directory="alias",declarations=["inventory.toml"]}]\n')
+
+    with pytest.raises(ResourcePackError, match='inventory'):
+        load_launch_context(source.base, source.pack)
+
+
+def test_nested_inventory_owner_directory_matches_selected_owner(source):
+    manifest = source.pack / 'pack.toml'
+    manifest.write_text(manifest.read_text().split('inventory=')[0] +
+        'inventory=[{owner="fixture",root="base",directory="fixture",declarations=["inventory.toml"]}]\n')
+    context = load_launch_context(source.base, source.pack)
+    declaration = source.fixture / 'inventory.toml'
+    tool = SimpleNamespace(infrastructure={'owner':'fixture', 'owner_root':source.fixture,
+                                           'declarations':(declaration,)})
+
+    normal = capture_inventory(context)
+    selected = capture_inventory(context, SimpleNamespace(tools=(tool,), captured_assets={}))
+
+    assert normal.pairs == selected.pairs
+    assert context.inventory_sources == (('fixture', source.fixture, (declaration,)),)
+
+
+def test_actual_demo_default_shared_default_capture_keeps_fixture_identity_without_effects(monkeypatch):
+    from api_agent.runtime import inventory
+    from api_agent.tooling.models import OperationSelection
+    from api_agent.tooling.selection import compose_tools
+    from api_agent.config import load_declarations, load_shared_schema
+    root = Path(__file__).resolve().parents[2]
+    context = load_launch_context(root)
+    selected_case = 'api-agent::tests/integration/test_tool_instances.py::test_shared_primary'
+    schema = load_declarations(context.config_path, base_schema=load_shared_schema(root))
+    default_plan = compose_tools(context, schema, environ={}, dotenv={})
+    shared_plan = compose_tools(context, schema,
+        selection=OperationSelection('tests', test_ids=(selected_case,)), environ={}, dotenv={})
+    default_again = compose_tools(context, schema, environ={}, dotenv={})
+    fixture_root = root / 'tests/integration/fixtures/tool_instances'
+    assert len(shared_plan.tools) == 2
+    assert all(tool.infrastructure['owner_root'] == fixture_root for tool in shared_plan.tools)
+    declarations = set(context.infrastructure_paths) | {fixture_root / 'infrastructure.toml'}
+    captured = []
+    original = inventory._capture
+    def capture_declaration(owner_root, relative, limit):
+        path = owner_root / relative
+        assert path in declarations, 'Passive capture read an undeclared asset'
+        captured.append(path)
+        return original(owner_root, relative, limit)
+    def reject_acquisition(*args, **kwargs):
+        pytest.fail('Passive inventory acquired prerequisites')
+    monkeypatch.setattr(inventory, '_capture', capture_declaration)
+    monkeypatch.setattr(PrerequisiteManager, 'acquire', reject_acquisition)
+
+    first = capture_inventory(context, default_plan)
+    shared = capture_inventory(context, shared_plan)
+    last = capture_inventory(context, default_again)
+
+    assert first.pairs == shared.pairs == last.pairs
+    assert len(first.pairs) == 3
+    fixture_rows = [dict(row) for row in shared.authority if row['owner'] == 'fixture']
+    assert fixture_rows == [{'owner':'fixture', 'root':str(fixture_root), 'path':'infrastructure.toml'}]
+    assert set(captured) == declarations
+
+
+def test_inventory_owner_directory_rejects_symlinked_parent(source):
+    nested = source.fixture / 'nested'
+    nested.mkdir()
+    (nested / 'inventory.toml').write_text('version=1\nowner="fixture"\nservices=[]\n')
+    (source.base / 'alias').symlink_to(source.fixture, target_is_directory=True)
+    manifest = source.pack / 'pack.toml'
+    manifest.write_text(manifest.read_text().split('inventory=')[0] +
+        'inventory=[{owner="fixture",root="base",directory="alias/nested",declarations=["inventory.toml"]}]\n')
+
+    with pytest.raises(ResourcePackError, match='inventory'):
+        load_launch_context(source.base, source.pack)

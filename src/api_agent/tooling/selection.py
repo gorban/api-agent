@@ -188,6 +188,7 @@ def _project_predicate(predicate, aliases):
 
 def _project_input(row, aliases):
     result = dict(row)
+    result.pop('nonempty', None)
     for key in ('applies_when', 'required_when'):
         if key in result:
             result[key] = _project_predicate(result[key], aliases)
@@ -365,7 +366,9 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
             service_bindings={slot: services[slot] for slot in capabilities},
             service_capabilities=capabilities, prerequisite_roots=tuple(data.get('prerequisites', ())),
             infrastructure=infrastructure, descriptor_path=path,
-            implementation_path=implementation, admission=admission))
+            implementation_path=implementation, admission=admission,
+            nonempty_inputs=tuple(slot for slot, row in spec.get('inputs', {}).items()
+                                  if row.get('nonempty', False))))
     try:
         extension = schema_from_dict({'version': 1, 'fields': rows}, base_schema=base_schema)
     except ValueError:

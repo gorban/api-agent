@@ -42,3 +42,9 @@ These are pending production requirements. Declaration spelling/version and the 
 | Return to primary application | Any saved secondary settings | Primary membership restored; secondary values retained dormant |
 
 Defaults and other applicable non-tool settings retain their normal behavior. This table specifies tooling membership, not a replacement for the full configuration schema.
+
+## Owner-declared nonempty tool inputs
+
+- [ ] An implementation may opt a string input into `nonempty = true`; this metadata must be an exact boolean and is invalid on other types. Omission or false preserves existing empty-string behavior. Global required-string semantics remain unchanged, and no slot name is mandatory for every implementation.
+- [ ] Validate selected active effective inputs before prerequisite manager construction/acquisition or factory execution. Reject empty or whitespace-only remote values with field identities only; retain ordinary missing/type/inactive diagnostics. Optional absent inputs remain absent.
+- [ ] An exact empty string with an admitted effective local-output binding provisionally satisfies this policy. Whitespace cannot select local provisioning. Evaluate after explicit shared-primary derivation, preserving configured provenance and inherited pending outputs; retain policy through case narrowing and worker transport.

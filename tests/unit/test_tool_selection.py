@@ -1109,3 +1109,164 @@ def test_inline_prompt_stays_in_definition_without_becoming_a_filesystem_asset(s
     prompts = {key: body for key, body in selected.definitions[0].contents.items() if isinstance(key, InlinePromptRef)}
     assert list(prompts.values()) == [b'Hello.\n']
     assert not prompts.keys() & selected.captured_assets.keys()
+
+
+def declare_nonempty(selection_fixture, *, policy='true', kind='str'):
+    context, _ = selection_fixture
+    path = context.base_root / 'graphql.toml'
+    path.write_text(path.read_text().replace('type="str"\nrequired=true',
+        f'type="{kind}"\nrequired=true\nnonempty={policy}'))
+
+
+def test_tool_input_pair_array_is_rejected_before_factory_effects(selection_fixture):
+    context, _ = selection_fixture
+    declaration = context.base_root / 'graphql.toml'
+    declaration.write_text(declaration.read_text().replace(
+        '[inputs.ENDPOINT]\ntype="str"\nrequired=true',
+        '[inputs]\nENDPOINT=[["type","str"],["required",true]]'))
+
+    with pytest.raises(ToolSelectionError, match='Tool implementation input must be a table'):
+        plan(selection_fixture)
+
+
+@pytest.mark.parametrize('value', ['', ' \t\n'])
+def test_owner_nonempty_remote_policy_rejects_blank_before_effects(selection_fixture, value):
+    from api_agent.config.tool_resolution import bind_operation_tools
+    declare_nonempty(selection_fixture)
+    selected = plan(selection_fixture)
+    result = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': value})
+
+    configured = bind_operation_tools(selected, result)
+
+    assert configured.errors == ('API_ENDPOINT: selected tool input requires a nonempty string',)
+    assert not configured.missing
+    assert configured.tool_plan is None
+    assert value not in configured.errors
+
+
+def test_nonempty_policy_accepts_remote_and_survives_case_and_wire(selection_fixture):
+    from api_agent.tooling.models import ToolPlan
+    declare_nonempty(selection_fixture)
+    identity = 'base::tests/test_flow.py::test_primary'
+    selected = plan(selection_fixture, (identity,))
+    restored = ToolPlan.from_wire(selected.to_wire()).for_case(identity)
+
+    bound = restored.bind_values(resolve_config(restored.schema, environ={},
+        overrides={'API_ENDPOINT': 'https://one.invalid'}))
+
+    assert bound.tools[0].nonempty_inputs == ('ENDPOINT',)
+    assert bound.tools[0].local_values['ENDPOINT'] == 'https://one.invalid'
+
+
+@pytest.mark.parametrize('policy,kind', [('1', 'str'), ('"yes"', 'str'), ('true', 'int'), ('false', 'bool')])
+def test_nonempty_metadata_rejects_invalid_contract(selection_fixture, policy, kind):
+    declare_nonempty(selection_fixture, policy=policy, kind=kind)
+
+    with pytest.raises(ToolSelectionError, match='boolean on a string input'):
+        plan(selection_fixture)
+
+
+@pytest.mark.parametrize('policy', [None, 'false'])
+def test_tool_empty_strings_remain_valid_without_nonempty_policy(selection_fixture, policy):
+    if policy is not None:
+        declare_nonempty(selection_fixture, policy=policy)
+    selected = plan(selection_fixture)
+
+    bound = selected.bind_values(resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': ''}))
+
+    assert bound.tools[0].local_values['ENDPOINT'] == ''
+
+
+def test_nonempty_policy_is_not_tied_to_endpoint_slot(selection_fixture):
+    context, _ = selection_fixture
+    declaration = context.base_root / 'graphql.toml'
+    declaration.write_text(declaration.read_text().replace('[inputs.ENDPOINT]', '[inputs.QUERY]')
+        .replace('required=true', 'required=true\nnonempty=true'))
+    instance = context.base_root / 'primary.toml'
+    instance.write_text(instance.read_text().replace('ENDPOINT="API_ENDPOINT"', 'QUERY="API_QUERY"'))
+    selected = plan(selection_fixture)
+
+    with pytest.raises(ToolSelectionError, match='API_QUERY: selected tool input requires a nonempty string'):
+        selected.bind_values(resolve_config(selected.schema, environ={}, overrides={'API_QUERY': ''}))
+
+
+def test_nonempty_policy_preserves_missing_type_and_inactive_diagnostics(selection_fixture):
+    from api_agent.config.tool_resolution import bind_operation_tools
+    declare_nonempty(selection_fixture)
+    selected = plan(selection_fixture)
+    missing = resolve_config(selected.schema, environ={})
+    invalid = resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': 7})
+
+    assert bind_operation_tools(selected, missing).missing == ('API_ENDPOINT',)
+    assert bind_operation_tools(selected, invalid).errors == invalid.errors
+    assert invalid.errors
+    context, _ = selection_fixture
+    declaration = context.base_root / 'graphql.toml'
+    declaration.write_text(declaration.read_text().replace('nonempty=true',
+        'nonempty=true\napplies_when={SHARED="disabled"}'))
+    inactive = plan(selection_fixture)
+    result = resolve_config(inactive.schema, environ={}, overrides={'API_ENDPOINT': ''})
+    assert not bind_operation_tools(inactive, result).errors
+
+
+def test_nonempty_optional_absence_and_unrelated_required_blank_remain_valid(selection_fixture):
+    context, base = selection_fixture
+    declare_nonempty(selection_fixture)
+    declaration = context.base_root / 'graphql.toml'
+    declaration.write_text(declaration.read_text().replace('required=true', 'required=false'))
+    base = schema_from_dict({'version': 1, 'fields': {
+        'SHARED': {'type': 'str', 'required': True, 'default': ''}}})
+    selected = plan((context, base))
+
+    bound = selected.bind_values(resolve_config(selected.schema, environ={}))
+
+    assert 'ENDPOINT' not in bound.tools[0].local_values
+    assert bound.config.values['SHARED'] == ''
+    assert not bound.config.errors and not bound.config.missing
+
+
+def test_nonempty_policy_allows_exact_local_and_shared_pending_output(selection_fixture):
+    context, _ = selection_fixture
+    declare_nonempty(selection_fixture)
+    write(context.base_root, 'compose.json', '{"image":"example:1"}')
+    write(context.base_root, 'infrastructure.toml', 'version=1\nowner="sample"\n[[services]]\n'
+        'id="target"\ncompose="compose.json"\ndependencies=[]\n'
+        'readiness={kind="health",timeout=1}\n'
+        'endpoints=[{name="graphql",host="http://127.0.0.1:5000",in_project="http://self:5000"}]\n')
+    instance = context.base_root / 'primary.toml'
+    instance.write_text(instance.read_text() + '\n[defaults]\nENDPOINT=""\n'
+        '[local]\nslot="ENDPOINT"\noutput="sample/target/graphql"\npath="/graphql"\ndeclaration="infrastructure.toml"\n'
+        '[infrastructure]\nowner="sample"\nroot="."\ndeclarations=["infrastructure.toml"]\n')
+    context.tool_catalog_path.write_text(context.tool_catalog_path.read_text().replace(
+        'entry="dual_graph.md.html"', 'entry="dual_graph.md.html"\nprofile="shared"') +
+        '\n[profiles.shared]\nversion=1\nkind="shared-primary"\nprimary="sample/primary"\nsecondary=["sample/secondary"]\n')
+    selected = plan(selection_fixture, ('base::tests/test_flow.py::test_dual',))
+
+    bound = selected.bind_values(resolve_config(selected.schema, environ={}))
+
+    assert bound.tools[0].pending['ENDPOINT']['output'] == 'sample/target/graphql'
+    assert bound.tools[1].pending == bound.tools[0].pending
+    assert bound.tools[1].derived_from == {'ENDPOINT': 'sample/primary', 'HEADERS': 'sample/primary'}
+    assert bound.tools[1].local_values['ENDPOINT'] == ''
+    remote = selected.bind_values(resolve_config(selected.schema, environ={},
+        overrides={'API_ENDPOINT': 'https://one.invalid'}))
+    assert remote.tools[1].local_values['ENDPOINT'] == 'https://one.invalid'
+    assert not remote.tools[0].pending and not remote.tools[1].pending
+    with pytest.raises(ToolSelectionError, match='nonempty string'):
+        selected.bind_values(resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': '  '}))
+
+
+def test_nonempty_inactive_secondary_does_not_validate_a_derived_blank(selection_fixture):
+    context, _ = selection_fixture
+    declare_nonempty(selection_fixture)
+    declaration = context.base_root / 'graphql.toml'
+    declaration.write_text(declaration.read_text().replace('nonempty=true',
+        'nonempty=true\napplies_when={SHARED="disabled"}'))
+    selected = plan(selection_fixture, ('base::tests/test_flow.py::test_dual',),
+        overrides={'PRIMARY_IMPLEMENTATION': 'rest.toml'})
+    selected = replace(selected, shared_primary={'sample/secondary': 'sample/primary'})
+
+    bound = selected.bind_values(resolve_config(selected.schema, environ={}, overrides={'API_ENDPOINT': ''}))
+
+    assert 'API_2_ENDPOINT' not in bound.config.active_fields
+    assert bound.tools[1].local_values['ENDPOINT'] == ''

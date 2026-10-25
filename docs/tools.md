@@ -58,6 +58,7 @@ factory = "factory.py:create_tool"
 [inputs.ENDPOINT]
 type = "str"
 required = true
+nonempty = true
 help = "Address of the selected service."
 ```
 
@@ -114,10 +115,18 @@ Application and test graphs can select different services in the same managed pr
 version = 1
 declarations = ["infrastructure.toml"]
 inventory = [
-  { owner = "example", root = "pack", declarations = ["tests/fixtures/infrastructure.toml"] }
+  { owner = "example", root = "pack", directory = "tests/fixtures", declarations = ["infrastructure.toml"] }
 ]
 ```
+
+`root` selects the admitted base or pack anchor. Optional `directory` defaults to `.` and selects an existing canonical subdirectory of that anchor; declarations are relative to that owner directory. Symlinks, traversal and conflicting roots for the same owner reject.
 
 An inventory row reads the declaration's owner and service identities, without reading its Compose fragments/assets, importing its factory or activating its settings. The exact declared service/profile pairs allow recognized, unselected containers to remain untouched when switching operations. Unknown or mismatched ownership still rejects. Inventory recognition does not grant endpoints, leases, logs or cleanup access.
 
 Operations share compatible selected services through locked leases. If a creator finishes while another operation still uses its containers, eligible cleanup responsibility transfers to a remaining consumer. Cleanup runs after the last relevant lease releases, subject to explicit retention and volume-preservation policy. A failed cleanup remains owned for retry; unrelated retained services are never added to that responsibility.
+
+### Nonempty string input policy
+
+An implementation can declare `nonempty = true` on any string input. This rejects empty or whitespace-only effective remote values during configuration preflight, before prerequisites or factories start. The key must be a boolean and is invalid on non-string inputs. Omitting it or setting it false retains ordinary string semantics; `required` still controls presence independently.
+
+An exact empty string remains valid when the instance declares a local output for that input: preflight retains its symbolic pending binding until acquisition supplies the effective value. Whitespace does not request local provisioning. Explicit shared-primary profiles derive their effective values and pending outputs before this check. Neither this policy nor the slot name implies a default endpoint or an undeclared prerequisite.

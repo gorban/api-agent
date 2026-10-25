@@ -35,3 +35,11 @@ Version 1 pack infrastructure metadata may explicitly add passive sources throug
 - [ ] Prove sharing in both release orders, different selected subsets, creator-first handoff, final cleanup retry, cancellation and explicit retention. Verify selected services stop only after their last lease; passive neighbors remain untouched.
 - [ ] Retain applicable exact unit coverage, causal rejection checks, installed/relocated artifact checks, independent and external review, and normal live integration evidence.
 - [ ] Human acceptance of the resulting selected-tool lifecycle remains explicit and separate from automated verification.
+
+
+## Passive owner directory metadata
+
+- [ ] Permit an optional `directory` string in each version 1 explicit inventory row. Resolve it relative to the existing `root = "base" | "pack"` anchor; omission or exactly `"."` retains the anchor as the owner root. Interpret `declarations` relative to that resulting owner directory.
+- [ ] Require a bounded canonical relative directory path, with `"."` the sole special case. Reject non-string, empty, absolute, parent traversal, empty or dot components, backslash, missing, non-directory, symlinked and anchor-escaping paths. Keep bounded no-follow regular-file TOML capture for declarations.
+- [ ] Preserve selected tool owner roots and declaration-relative assets. An explicit passive directory must agree with an admitted owner's canonical root; duplicate declaration paths must not bypass root-conflict rejection.
+- [ ] Verify actual default, shared-fixture and default-again selections retain one exact passive identity set and canonical fixture owner root without inactive factory execution, inactive asset/configuration reads, prerequisite acquisition or changes to active owner fingerprints. Verify the actual metadata in installed and relocated package artifacts.
