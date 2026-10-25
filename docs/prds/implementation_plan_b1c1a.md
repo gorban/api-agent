@@ -32,3 +32,7 @@ Normal reporting-enabled installed execution verifies admitted source before nat
 ## Native projection follow-through
 
 Journal integrity and immutable accounting retain their verified scope. [Canonical native Allure scope projection](implementation_plan_b1c1a1.md) remains open: paired journal/runner evidence currently duplicates visible trees. Native step presentation and its human acceptance must not be inferred from journal or statistical qualification closure.
+
+## Complete payload follow-through
+
+- [ ] Deliver [complete flow-aligned test evidence](implementation_plan_b1c1a2.md) for logs and Allure. The existing bounded preview contract remains accepted within its scope; it does not establish complete durable inputs/outputs for historical overlays. Separate test-backend trace export is not required for this acceptance.
