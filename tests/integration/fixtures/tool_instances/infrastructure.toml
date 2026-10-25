@@ -1,0 +1,20 @@
+version = 1
+owner = "fixture"
+
+[[services]]
+id = "backing"
+compose = "backing.json"
+assets = ["server.py"]
+dependencies = []
+readiness = {kind = "http", target = "http/ready", identity_field = "service", identity_value = "backing", timeout = 30}
+endpoints = [{name = "http", host = "http://127.0.0.1:58121", in_project = "http://self:8090"}]
+seed = {asset = "server.py", completion = {kind = "http", target = "http/seed", identity_field = "seed", identity_value = "done", timeout = 30}}
+
+[[services]]
+id = "primary"
+compose = "primary.json"
+assets = ["server.py", "schema.json"]
+dependencies = ["fixture/backing"]
+readiness = {kind = "http", target = "http/ready", identity_field = "service", identity_value = "api", timeout = 30}
+endpoints = [{name = "http", host = "http://127.0.0.1:58120", in_project = "http://self:8090"}]
+seed = {asset = "server.py", completion = {kind = "http", target = "http/seed", identity_field = "seed", identity_value = "done", timeout = 30}}

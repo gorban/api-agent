@@ -20,3 +20,7 @@ e2e = ["tests/e2e"]
 
 [defaults]
 UI_NX_APP = "agent"
+
+[tooling]
+version = 1
+catalog = "tool_catalog.toml"

@@ -17,6 +17,7 @@ class UsefulDemoApplication:
     def __init__(self, definition, *, config=None, observations=None, tool_owner=None):
         self.definition, self.config = definition, dict(config or {})
         self.observations, self.tool_owner = observations, tool_owner
+        self.tools = None
         layout = definition.layout
         nodes = [step for step in layout.steps if step.kind == 'node']
         rows = {row['ID']: row for row in layout.tables['Functions']}
@@ -53,19 +54,22 @@ class UsefulDemoApplication:
                 or request.payload.generation.temperature is not None):
             raise ContractError('Useful demo does not accept caller tools or structured output')
         selected_owner = tool_owner or self.tool_owner
-        if selected_owner is None:
+        if selected_owner is None and self.tools is None:
             raise ContractError('Useful demo requires a selected tool owner')
         invocation_id = request.request_id or str(uuid4())
         factory = getattr(selected_owner, 'for_invocation', None)
         view = factory() if callable(factory) else selected_owner
         close_view = view is not selected_owner
+        if self.tools is not None:
+            view = self.tools.for_port(scope_kind='node', scope='execute_tool', port='primary')
+            close_view = True
         observations = None
         try:
             gate = ToolGate(view, invocation_id=invocation_id)
             observations = self.observations.create(self.definition) if self.observations is not None else None
             services = {'selection': request.selected_llm, 'generation': request.payload.generation,
                         'messages': messages, 'tool_gate': gate, 'journal': observations,
-                        'observation_factory': self.observations}
+                        'observation_factory': self.observations, 'tools': self.tools}
 
             async def selected(value):
                 if value.selected_llm != request.selected_llm:

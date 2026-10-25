@@ -215,9 +215,9 @@ def test_username_helper_is_drained_and_revoked_before_recorded_publication(tmp_
     try:
         assert settling.wait(timeout=10)
         assert draining == [(True, 1, 1)]
+        # Disposal runs on the backend loop before its submitting thread may
+        # store the publication future; assert the blocked behavior directly.
         assert entered.is_set() and not completed.is_set() and not observed and not outcome
-        assert owners[0]._publication_future is not None
-        assert not owners[0]._publication_future.done()
         release.set()
         runner.join(timeout=10)
         assert not runner.is_alive() and len(outcome) == 1

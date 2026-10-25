@@ -13,7 +13,7 @@ from .requirements import plan_integration_requirements
 
 @suite_locked
 def run_launched_integration(context, tests, config, *, accepted=False,
-                             no_std_in=False, prerequisites=None, reporting_session=None, **options):
+                             no_std_in=False, prerequisites=None, reporting_session=None, tool_plan=None, **options):
     """Acquire storage lazily; retain its cleanup handle through every outcome.
 
     Test recording finishes before the prerequisite lease is released. Only
@@ -30,6 +30,9 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
         plan = plan_integration_requirements(tests)
         plan.validate(context, config)
+        if tool_plan is not None:
+            from .prerequisites import prepare_selected_tool_dependencies
+            prepare_selected_tool_dependencies(context, tool_plan)
         started = monotonic()
         # No report installer, storage lease, recorder, attachment, manifest or
         # publication exists on this explicitly unrecorded path.
@@ -39,7 +42,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
             on_event=options.get('on_event'), output=options.get('output'),
             cancel_event=options.get('cancel_event'),
             unattended_index_source=options.get('unattended_index_source'),
-            interaction=options.get('interaction'))
+            interaction=options.get('interaction'),
+            **({'tool_plan': tool_plan} if tool_plan is not None else {}))
         return RecordedIntegrationResult(execution,
             RunIdentity.create(repository_label(context, context.owner_root), 'integration'),
             None, {}, None, False, monotonic() - started, reporting_skipped=True)
@@ -53,7 +57,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
             ownership_directory=context.owner_root / 'artifacts' / 'prerequisites',
             engine_environment={key: os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ},
             cancel_event=cancelled, provider_config=config,
-            provider_kinds=plan.provider_kinds, reporting_session=reporting_session)
+            provider_kinds=plan.provider_kinds, reporting_session=reporting_session, tool_plan=tool_plan)
     prepare = options.pop('prepare', None)
 
     def before(usage):
@@ -65,7 +69,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     execution = None
     try:
         execution = run_recorded_integration(context, tests, config, accepted=accepted,
-            no_std_in=no_std_in, prepare=before, **options)
+            no_std_in=no_std_in, prepare=before,
+            **({'tool_plan': tool_plan} if tool_plan is not None else {}), **options)
         return execution
     finally:
         primary = sys.exc_info()[1]

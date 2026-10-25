@@ -142,6 +142,24 @@ def _retains_cleanup(error):
     return recording is not None and recording.pending_cleanup is not None
 
 
+def _prepare_workflow_discovery(context, argv, **handoff_options):
+    """Prepare core parser packages before graph-aware configuration on a cold launch."""
+    from importlib import import_module
+    if (getattr(context, 'tool_catalog_path', None) is None
+            and getattr(context, 'workflow_entry', None) is None
+            and not (context.base_root / 'flow.md.html').is_file()):
+        return None
+    try:
+        import_module('api_agent.workflows.definition')
+    except ModuleNotFoundError:
+        from api_agent.runtime.dependencies import ensure_environment
+        status = ensure_environment(context, argv, groups=(), **handoff_options)
+        if status is not None:
+            return status
+        import_module('api_agent.workflows.definition')
+    return None
+
+
 def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None, _worktrees_verified=False, _replace_process=False):
     """Validate foundation contracts; later segments provide actual operations."""
     from api_agent.config import (compose_schema, load_declarations, load_shared_schema,
@@ -209,6 +227,23 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                 dotenv=dotenv, anchors=context.anchors,
                                 interactive=True, pack_launcher=context.external_pack,
                                 overrides=runtime_directory_overrides(context))
+        status = _prepare_workflow_discovery(context, argv, **handoff_options)
+        if status is not None:
+            return status
+        from api_agent.config.tool_resolution import compose_operation_tools, bind_operation_tools
+        from api_agent.config.options import parse_options
+        from api_agent.tooling.models import OperationSelection
+        preliminary = result.values
+        selected_tools = compose_operation_tools(context, schema,
+            selection=OperationSelection('collection') if preliminary.get('TUI_MODE') in {'unit', 'integration', 'e2e'} else None,
+            argv=argv, environ=os.environ, dotenv=dotenv,
+            overrides=runtime_directory_overrides(context))
+        if selected_tools is not None:
+            schema = selected_tools.schema
+            result = resolve_config(schema, argv=argv, environ=os.environ,
+                dotenv=dotenv, anchors=context.anchors, interactive=True,
+                pack_launcher=context.external_pack, overrides=runtime_directory_overrides(context))
+            result = bind_operation_tools(selected_tools, result, argv=argv)
         result = retain_runtime_directory(result, context)
         errors = list(result.errors)
         from api_agent.runtime.starting import start_configuration_errors, automatically_started
@@ -272,6 +307,19 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             from api_agent.testing.collection import collect_tests
             from api_agent.testing.runner import run_unit_tests, format_unit_summary, unit_parallel_jobs
             tests = collect_tests(context, 'unit', result.positionals)
+            selected_tools = compose_operation_tools(context, schema,
+                selection=OperationSelection('unit', tuple(test.id for test in tests)),
+                argv=argv, environ=os.environ, dotenv=dotenv,
+                overrides=runtime_directory_overrides(context))
+            if selected_tools is not None:
+                schema = selected_tools.schema
+                result = resolve_config(schema, argv=argv, environ=os.environ, dotenv=dotenv,
+                    anchors=context.anchors, interactive=True, pack_launcher=context.external_pack,
+                    overrides=runtime_directory_overrides(context))
+                result = retain_runtime_directory(bind_operation_tools(selected_tools, result, argv=argv), context)
+                result.raise_for_errors()
+                if result.missing:
+                    raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
             execution = run_unit_tests(context, tests, output=lambda chunk: print(chunk, end='', flush=True),
                                        parallel_jobs=unit_parallel_jobs(result.values),
                                        coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
@@ -306,6 +354,21 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 from api_agent.testing.terminal_progress import TerminalTestProgress
                 from api_agent.telemetry.privacy import ContentPolicy
                 tests = collect_tests(context, 'integration', result.positionals, config=result.values)
+                from api_agent.testing.requirements import plan_integration_requirements
+                tool_intents = ('ui_session',) if plan_integration_requirements(tests).requires_ui_session else ()
+                selected_tools = compose_operation_tools(context, schema, selection=tests,
+                    argv=argv, environ=os.environ, dotenv=dotenv,
+                    overrides=runtime_directory_overrides(context), operation_intents=tool_intents)
+                if selected_tools is not None:
+                    schema = selected_tools.schema
+                    result = resolve_config(schema, argv=argv, environ=os.environ,
+                        dotenv=dotenv, anchors=context.anchors, interactive=True,
+                        pack_launcher=context.external_pack, overrides=runtime_directory_overrides(context),
+                        operation_intents=tool_intents)
+                    result = retain_runtime_directory(bind_operation_tools(selected_tools, result, argv=argv), context)
+                    result.raise_for_errors()
+                    if result.missing:
+                        raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
                 from api_agent.testing.debug_confirmation import debug_warning, confirm_terminal_debug
                 warning = debug_warning('integration', result.values.get('DEBUG'), tests)
                 if not confirm_terminal_debug(warning):
@@ -317,6 +380,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         dotenv=dotenv, anchors=context.anchors, interactive=True,
                         pack_launcher=context.external_pack, overrides=runtime_directory_overrides(context),
                         operation_intents=('ui_session',))
+                    if selected_tools is not None:
+                        result = bind_operation_tools(selected_tools, result, argv=argv)
                     result = retain_runtime_directory(result, context).raise_for_errors()
                     if result.missing:
                         raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
@@ -326,6 +391,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 try:
                     execution = run_launched_integration(context, tests, result.values, accepted=True,
                         content_policy=ContentPolicy.from_config(result),
+                        **({'tool_plan': result.tool_plan} if result.tool_plan is not None else {}),
                         interaction=TerminalInteraction(),
                         usage_output=lambda line: print(scrubber(line), flush=True) if '\n' not in line else None,
                         unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),

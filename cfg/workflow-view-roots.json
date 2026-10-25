@@ -15,6 +15,11 @@
       "base_root": ".",
       "pack_root": "demo",
       "entry_root": "base"
+    },
+    "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html": {
+      "base_root": ".",
+      "pack_root": "tests/integration/fixtures/tool_instances",
+      "entry_root": "base"
     }
   }
 }

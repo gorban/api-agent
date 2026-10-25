@@ -103,6 +103,7 @@ def test_native_recovery_diagnostics_never_contain_secret_or_entry_events(tmp_pa
 @pytest.mark.parametrize('activation', ['--debug', '--start=True', '--start=E2E'])
 def test_non_recovery_terminal_dispatch_without_termios(monkeypatch, activation):
     from api_agent.runtime.bootstrap import main
+    from api_agent.testing.collection import TestIdentity
     original_import = builtins.__import__
     def import_without_termios(name, *args, **kwargs):
         if name == 'termios':
@@ -117,7 +118,8 @@ def test_non_recovery_terminal_dispatch_without_termios(monkeypatch, activation)
          patch('api_agent.config.dotenv.read_dotenv', return_value={}), \
          patch('api_agent.runtime.worktrees.verify_worktrees'), \
          patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
-         patch('api_agent.testing.collection.collect_tests', return_value=[SimpleNamespace(id='base::selected.py::test_case', tags=frozenset())]), \
+         patch('api_agent.testing.collection.collect_tests', return_value=[TestIdentity(
+             'base::selected.py::test_case', 'base', 'selected.py', 'selected.py::test_case')]), \
          patch('api_agent.testing.launched.run_launched_integration',
                return_value=SimpleNamespace(exit_code=0)) as runner, \
          patch('builtins.__import__', side_effect=import_without_termios):

@@ -5,7 +5,7 @@ from api_agent.workflows.local_application import LocalChatApplication
 
 def selected_application(definition, *, config=None):
     """Admit the useful demo explicitly; preserve the one-call chat policy."""
-    if definition.graph_id == 'useful_api_demo':
+    if getattr(definition, 'tool_usages', ()):
         from api_agent.workflows.demo_application import UsefulDemoApplication
         return UsefulDemoApplication(definition, config=config)
     return LocalChatApplication(definition, config=config)

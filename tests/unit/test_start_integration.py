@@ -8,6 +8,7 @@ import pytest
 
 from api_agent.runtime.bootstrap import main
 from api_agent.testing.recorded import validate_recorded_integration
+from api_agent.testing.collection import TestIdentity
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,7 +22,7 @@ def test_terminal_start_or_debug_dispatches_recorded_integration(activation, val
     dotenv = {activation: value} if source == 'dotenv' else {}
     if source == 'cli':
         args.append('--' + activation.lower() + '=' + value)
-    selected = [SimpleNamespace(id='base::selected.py::test_case', tags=frozenset())]
+    selected = [TestIdentity('base::selected.py::test_case', 'base', 'selected.py', 'selected.py::test_case')]
     def execute(context, tests, config, **options):
         assert tests is selected and config['START'] == (value if activation == 'START' else 'False')
         assert config['DEBUG'] is (activation == 'DEBUG') and config['NO_STD_IN']
@@ -42,7 +43,7 @@ def test_terminal_start_or_debug_dispatches_recorded_integration(activation, val
 
 def test_terminal_skip_reports_disabled_allure_after_selected_run():
     stdout, stderr = StringIO(), StringIO()
-    selected = [SimpleNamespace(id='base::selected.py::test_case', tags=frozenset())]
+    selected = [TestIdentity('base::selected.py::test_case', 'base', 'selected.py', 'selected.py::test_case')]
     def execute(context, tests, config, **options):
         assert config['SKIP_ALLURE_REPORTING'] is True and tests is selected
         return SimpleNamespace(exit_code=0, reporting_skipped=True)
@@ -108,7 +109,7 @@ def test_terminal_ui_intent_uses_declared_sources_and_rejects_missing_fields(tmp
     args=['--tui-mode=integration','--no-std-in','--start','--allure-s3-bucket=synthetic',
         '--ui-provider='+str(provider)+':create']
     if provided:args.append('--ui-required=ready')
-    selected=[SimpleNamespace(id='base::test_ui.py::test_ready', tags=frozenset({'requires_ui_session'}))]
+    selected=[TestIdentity('base::test_ui.py::test_ready', 'base', 'test_ui.py', 'test_ui.py::test_ready', frozenset({'requires_ui_session'}))]
     output,error=StringIO(),StringIO()
     def execute(context,tests,config,**options):
         assert config['TUI_MODE']=='integration' and config['UI_REQUIRED']=='ready'

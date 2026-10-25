@@ -450,3 +450,18 @@ def test_bad_owner_result_fails_closed_after_exactly_one_invoke(result):
             await gate.execute(checked)
     asyncio.run(run())
     assert owner.calls == ['describe', 'validate', 'invoke']
+
+
+@pytest.mark.asyncio
+async def test_identical_shared_spec_does_not_allow_prepared_call_replay_between_gates():
+    first_owner, second_owner = Owner('same'), Owner('same')
+    second_owner.spec = first_owner.spec
+    first = ToolGate(first_owner, invocation_id='same-operation')
+    second = ToolGate(second_owner, invocation_id='same-operation')
+    prepared = await first.prepare({'query': 'read'})
+    await second.describe()
+
+    with pytest.raises(ToolGateError, match='arguments changed'):
+        await second.verify(prepared, relevance=lambda _: pytest.fail('Foreign call reached relevance'))
+
+    assert second_owner.calls == ['describe']

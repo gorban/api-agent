@@ -1,0 +1,47 @@
+version = 1
+
+[graphs.useful_demo]
+root = "base"
+entry = "demo/simple/flow.md.html"
+
+[graphs.simple_chat]
+root = "base"
+entry = "flow.md.html"
+
+[graphs.contrived]
+root = "pack"
+entry = "contrived/flow.md.html"
+
+[graphs.preferences]
+root = "base"
+resource_root = "tests/integration/fixtures/workflow_preferences"
+entry = "flow.md.html"
+
+[graphs.shared_primary_tools]
+root = "base"
+entry = "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"
+profile = "shared_primary"
+
+[test_cases]
+"api-agent::tests/integration/test_application_graph.py::test_selected_application_flow_executes_llm_call" = ["simple_chat"]
+"api-agent::tests/integration/test_llm_discovery.py::test_llm_discovery" = []
+"api-agent::tests/integration/test_llm_request.py::test_llm_request" = []
+"api-agent::tests/integration/test_reasoning_contrast.py::test_reasoning_contrast" = []
+"api-agent::tests/integration/test_studio_request.py::test_studio_request" = []
+"api-agent::tests/integration/test_studio_selection.py::test_studio_selection" = []
+"api-agent::tests/integration/test_tool_instances.py::test_shared_primary" = ["shared_primary_tools"]
+"api-agent::tests/integration/test_ui_provider_session.py::test_ui_provider_session" = []
+"api-agent::tests/integration/test_useful_demo_graph.py::test_selected_graph_relaxes_preference_only_after_retry_and_renders_partial_evidence" = ["useful_demo"]
+"api-agent::tests/integration/test_useful_demo_graph.py::test_final_pass_still_blocks_correctness_and_grounding[correct]" = ["useful_demo"]
+"api-agent::tests/integration/test_useful_demo_graph.py::test_final_pass_still_blocks_correctness_and_grounding[grounded]" = ["useful_demo"]
+"api-agent::tests/integration/test_useful_demo_graph.py::test_selected_graph_rejects_removed_review_guard_before_execution" = ["useful_demo"]
+"api-agent::tests/integration/test_view_flow_cli.py::test_view_flow_rejects_test_mode_before_browser_setup" = []
+"api-agent::tests/integration/test_workflow.py::test_workflow_node_coverage" = ["contrived"]
+"api-agent::tests/integration/test_workflow_preferences.py::test_final_pass_relaxes_only_preference" = ["preferences"]
+"api-agent::tests/integration/test_workflow_preferences.py::test_truth_failure_stays_blocking_on_final_pass" = ["preferences"]
+
+[profiles.shared_primary]
+version = 1
+kind = "shared-primary"
+primary = "fixture/primary"
+secondary = ["fixture/shared-secondary"]

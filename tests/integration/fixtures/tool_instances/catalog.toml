@@ -1,0 +1,15 @@
+version = 1
+
+[test_cases]
+"api-agent::tests/integration/test_tool_instances.py::test_shared_primary" = {graphs = ["shared_primary"], profile = "shared_primary"}
+
+[graphs.shared_primary]
+root = "base"
+entry = "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"
+profile = "shared_primary"
+
+[profiles.shared_primary]
+version = 1
+kind = "shared-primary"
+primary = "fixture/primary"
+secondary = ["fixture/shared-secondary"]

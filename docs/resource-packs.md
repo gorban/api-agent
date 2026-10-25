@@ -56,3 +56,7 @@ Put generic integrations in api-agent, provider-specific assertions with their
 provider, and application-specific assertions with the pack. Test parameters
 should have readable IDs. See [configuration coverage](development.md#configuration-coverage)
 for test-local overrides and scenario isolation.
+
+## Workflow-selected named tools
+
+Use [the named-tool integration guide](tools.md) to bind reusable local inputs to pack settings, declare workflow ports and exact test graph associations, and join managed outputs or borrowed service capabilities to the existing operation lifecycle.

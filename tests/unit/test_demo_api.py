@@ -33,14 +33,16 @@ def test_bundled_endpoint_review_and_clear_env_switches_to_remote(tmp_path):
     schema = compose_schema(shared, load_declarations(DEMO / 'simple/cfg/config.toml',
         base_schema=shared, source='pack_default'))
     context = replace(load_launch_context(DEMO.parent), base_root=base, pack_root=pack,
-        owner_root=base, launcher_root=base, shared_dotenv_paths=())
+        owner_root=base, launcher_root=base, shared_dotenv_paths=(), workflow_base_root=DEMO.parent)
     session = ConfigSession(context, schema, environ={})
 
     assert session.result().values['API_ENDPOINT'] == ''
     assert 'API_ENDPOINT' in {candidate.name for candidate in session.default_candidates()}
     assert not next(row for row in session.cleanup_rows() if row.name == 'API_ENDPOINT').present
-    local_config, active = prepare_demo_api(session.result(), context, requires_api=True)
-    assert active and local_config.values['DEMO_API_LOCAL'] is True
+    from api_agent.tooling.services import selected_contributions, tool_operation_values
+    local_config = tool_operation_values(session.result().tool_plan, session.result())
+    assert local_config.values['DEMO_API_LOCAL'] is True
+    assert [service.id for service in selected_contributions(local_config.tool_plan)] == ['demo/api']
 
     session.save_defaults(['API_ENDPOINT'])
     assert read_dotenv(base / '.env')['API_ENDPOINT'] == ''
@@ -53,71 +55,89 @@ def test_bundled_endpoint_review_and_clear_env_switches_to_remote(tmp_path):
     assert session.result().values['API_ENDPOINT'] == remote
     row = next(row for row in session.cleanup_rows() if row.name == 'API_ENDPOINT')
     assert row.present and row.base_present
-    remote_config, active = prepare_demo_api(session.result(), context, requires_api=True)
-    assert not active and remote_config.values['DEMO_API_LOCAL'] is False
+    remote_config = tool_operation_values(session.result().tool_plan, session.result())
+    assert remote_config.values['DEMO_API_LOCAL'] is False
+    assert not selected_contributions(remote_config.tool_plan)
 
     session.delete_keys(['API_ENDPOINT'])
     assert 'API_ENDPOINT' not in read_dotenv(base / '.env')
     assert session.result().values['API_ENDPOINT'] == ''
     assert 'API_ENDPOINT' in {candidate.name for candidate in session.default_candidates()}
-    local_config, active = prepare_demo_api(session.result(), context, requires_api=True)
-    assert active and local_config.values['DEMO_API_LOCAL'] is True
+    local_config = tool_operation_values(session.result().tool_plan, session.result())
+    assert local_config.values['DEMO_API_LOCAL'] is True
 
 
-def test_demo_api_provider_default_resolves_to_bundled_factory():
+def test_demo_named_tool_resolves_to_captured_bundled_factory():
+    from api_agent.tooling.selection import compose_tools
     base = DEMO.parent
     shared = load_shared_schema(base)
-    schema = compose_schema(shared, load_declarations(DEMO / 'simple/cfg/config.toml', base_schema=shared,
-                                                      source='pack_default'))
+    schema = compose_schema(shared, load_declarations(DEMO / 'simple/cfg/config.toml',
+        base_schema=shared, source='pack_default'))
 
-    path, factory = provider_location(schema.fields['API_PROVIDER'].default, owner_root=base)
+    selected = compose_tools(load_launch_context(base), schema, environ={}).tools[0]
 
-    assert path == base / 'src/api_agent/api_providers/graphql_mcp/factory.py'
-    assert factory == 'create'
+    assert selected.factory == base / 'src/api_agent/api_providers/graphql_mcp/factory.py'
+    assert selected.factory_name == 'create_tool'
+    assert selected.id == 'demo/primary'
+    assert selected.admission.sources['factory.py'] == selected.factory_bytes
+    assert 'API_PROVIDER' not in selected.bindings.values()
 
 
-def test_external_copy_keeps_its_provider_default_and_explicit_selection(tmp_path):
+def test_external_copy_uses_its_explicit_local_implementation(tmp_path):
     import shutil
-
-    pack = tmp_path / 'pack'
-    declaration = pack / 'cfg/config.toml'
-    declaration.parent.mkdir(parents=True)
-    shutil.copy2(DEMO / 'simple/cfg/config.toml', declaration)
-    selected = pack / 'src/api_agent/api_providers/graphql_mcp/factory.py'
-    selected.parent.mkdir(parents=True)
-    selected.write_text('def create(config, services): pass\n')
+    from api_agent.tooling.selection import compose_tools
+    base, pack = tmp_path / 'base', tmp_path / 'base/demo'
+    shutil.copytree(DEMO, pack)
+    descriptor = pack / 'simple/cfg/tools/primary.toml'
+    descriptor.write_text(descriptor.read_text().replace(
+        'package:api-agent:api_agent/api_providers/graphql_mcp/tool.toml', 'implementation.toml'))
+    implementation = descriptor.parent / 'implementation.toml'
+    implementation.write_text('version=1\ninterface="verified-read@1"\nfactory="factory.py:create_tool"\n'
+        '[inputs.ENDPOINT]\ntype="str"\nrequired=true\n')
+    factory = descriptor.parent / 'factory.py'
+    factory.write_text('def create_tool(config, services): raise AssertionError("discovery imported factory")\n')
+    context = replace(load_launch_context(DEMO.parent), base_root=base, pack_root=pack,
+        owner_root=base, workflow_entry=pack / 'simple/flow.md.html', tool_catalog_path=None)
     shared = load_shared_schema(DEMO.parent)
-    schema = compose_schema(shared, load_declarations(declaration, base_schema=shared,
-                                                       source='pack_default'))
-    path, factory = provider_location(schema.fields['API_PROVIDER'].default, owner_root=pack)
-    assert (path, factory) == (selected, 'create')
+    schema = compose_schema(shared, load_declarations(pack / 'simple/cfg/config.toml',
+        base_schema=shared, source='pack_default'))
 
-    other = pack / 'custom.py'
-    other.write_text('def create(config, services): pass\n')
-    resolved = resolve_config(schema, argv=['--api-provider=' + str(other) + ':create'],
-                              environ={}, dotenv={}, anchors={'base_root': DEMO.parent,
-                                                                'pack_root': pack, 'owner_root': pack})
-    assert resolved.values['API_PROVIDER'] == str(other) + ':create'
-    assert resolved.fields['API_PROVIDER'].source == 'cli'
+    selected = compose_tools(context, schema, environ={}).tools[0]
+
+    assert selected.factory == factory
+    assert selected.factory_name == 'create_tool'
+    assert selected.admission.sources['factory.py'] == factory.read_bytes()
 
 
-@pytest.mark.parametrize('alternate', [False, True])
-def test_installed_demo_binds_only_the_declared_bundled_default(tmp_path, monkeypatch, alternate):
-    import api_agent.config.declarations as declarations
+@pytest.mark.parametrize('present', [False, True])
+def test_installed_tool_asset_requires_its_own_receipt_without_source_fallback(tmp_path, monkeypatch, present):
+    import base64
+    from hashlib import sha256
+    from importlib.metadata import FileHash, PackagePath
+    from api_agent.tooling.declarations import Capture
+    from api_agent.tooling.models import ToolSelectionError
+    from api_agent.tooling import declarations
+    site = tmp_path / 'site-packages'
+    selected = site / 'sample_tools/implementation.toml'
+    selected.parent.mkdir(parents=True)
+    body = b'version=1\n'
+    if present:
+        selected.write_bytes(body)
+    entry = PackagePath('sample_tools/implementation.toml')
+    entry.hash = FileHash('sha256=' + base64.urlsafe_b64encode(sha256(body).digest()).decode().rstrip('='))
+    entry.size = len(body)
+    distribution = SimpleNamespace(metadata={'Name': 'example-tools'}, files=[entry],
+        read_text=lambda name: 'controlled receipt', locate_file=lambda path: site / str(path))
+    monkeypatch.setattr(declarations.metadata, 'distributions', lambda **kwargs: [distribution])
+    capture = Capture({'base': tmp_path / 'base'})
+    target = capture.path(tmp_path / 'base/instance.toml',
+                          'package:example-tools:sample_tools/implementation.toml')
 
-    package = tmp_path / 'site-packages/api_agent'
-    declaration = package / 'demo/simple/cfg/config.toml'
-    declaration.parent.mkdir(parents=True)
-    content = (DEMO / 'simple/cfg/config.toml').read_text()
-    if alternate:
-        content = content.replace('src/api_agent/api_providers/graphql_mcp/factory.py:create',
-                                  'other/provider.py:create')
-    declaration.write_text(content)
-    monkeypatch.setattr(declarations, '__file__', str(package / 'config/declarations.py'))
-    schema = declarations.load_declarations(declaration)
-    expected = ('other/provider.py:create' if alternate else
-                str(package / 'api_providers/graphql_mcp/factory.py') + ':create')
-    assert schema.fields['API_PROVIDER'].default == expected
+    if present:
+        assert capture.read(target) == body
+    else:
+        with pytest.raises(ToolSelectionError, match='Cannot capture'):
+            capture.read(target)
 
 
 def config(endpoint='', *, source='pack_default', explicit=False, activation_explicit=False):

@@ -16,13 +16,15 @@ def entry(root, relative="flow.md.html", heading="# Workflow v2"):
 def test_repository_inventory_includes_permanent_and_integration_fixtures():
     root = Path(__file__).resolve().parents[2]
     expected = {"flow.md.html", "demo/simple/flow.md.html", "demo/contrived/flow.md.html",
-                "tests/integration/fixtures/workflow_preferences/flow.md.html"}
+                "tests/integration/fixtures/workflow_preferences/flow.md.html",
+                "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"}
     assert {p.relative_to(root).as_posix() for p in vb.discover_view_entries(root)} == expected
     assert {p.graph_id: p.entry_path for p in vb._projections(root)} == {
         "simple_chat": "base/flow.md.html",
         "useful_api_demo": "base/demo/simple/flow.md.html",
         "contrived_qualification": "pack/contrived/flow.md.html",
         "workflow_preferences": "base/flow.md.html",
+        "shared_primary_tools": "base/tests/integration/fixtures/tool_instances/shared_primary/flow.md.html",
     }
 
 

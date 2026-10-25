@@ -1,6 +1,7 @@
 """Typed resolution with explicit provenance and conditional requirements."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 import json
 import math
 import os
@@ -25,6 +26,8 @@ class ConfigResult:
     missing: tuple
     errors: tuple
     help_requested: bool = False
+    tool_plan: object = field(default=None, repr=False, compare=False)
+    active_fields: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     def raise_for_errors(self):
         if self.errors:
@@ -51,6 +54,14 @@ def format_enum_values(values):
 
 def convert_value(declaration, value, *, external, anchors):
     kind = declaration.type
+    if kind == 'jsonobject' and not external and isinstance(value, Mapping):
+        def thaw(item):
+            if isinstance(item, Mapping):
+                return {key: thaw(child) for key, child in item.items()}
+            if isinstance(item, (list, tuple)):
+                return [thaw(child) for child in item]
+            return item
+        value = thaw(value)
     if kind == 'int' and declaration.allow_empty and value == '':
         return None
     if external:
@@ -115,7 +126,7 @@ def _matches(predicate, values, operation_intents=()):
     return all(expected in operation_intents if name == 'operation' else
                any(_matches(branch, values, operation_intents) for branch in expected) if name == 'any'
                else (any(_expected_matches(values.get(name, UNSET), value) for value in expected)
-                     if isinstance(expected, list) else _expected_matches(values.get(name, UNSET), expected))
+                     if isinstance(expected, (list, tuple)) else _expected_matches(values.get(name, UNSET), expected))
                for name, expected in predicate.items())
 
 def _controllers(predicate):
@@ -198,4 +209,5 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
         errors.extend(f'{name}: required; provide {name} or --{name.lower().replace("_", "-")}' for name in missing)
     fields = {name: value for name, value in fields.items() if name in active}
     values = {name: value.value for name, value in fields.items()}
-    return ConfigResult(values, fields, options.positionals, missing, tuple(errors))
+    return ConfigResult(values, fields, options.positionals, missing, tuple(errors),
+                        active_fields=tuple(name for name in schema.fields if name in active))
