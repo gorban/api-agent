@@ -426,7 +426,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             else:
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
                 if self.kind == "tests" and self.app.cost_estimator is not None:
-                    table.add_column("Est. $", width=11)
+                    table.add_column("Est. $", width=11, key='estimated-cost')
             for key, cells in self.rows:
                 table.add_row(*(literal_cell(cell) for cell in cells), key=key)
             if self.kind == "defaults":
@@ -2131,12 +2131,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return cells
 
     def refresh_cost_summary(self):
-        if (self.cost_estimator is not None and isinstance(self.screen, WorkbenchScreen)
-                and self.screen.kind == "tests"):
-            from .cost_history import selected_summary
-            self.screen.query_one('#body', Static).update(
-                'Toggle groups or individual tests with Enter. Press s to start selected tests.\n' +
-                selected_summary(self.cost_estimator, self.selection.selected_ids))
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "tests":
+            summary = 'Toggle groups or individual tests with Enter. Press s to start selected tests.'
+            if self.cost_estimator is not None:
+                from .cost_history import selected_summary
+                summary += '\n' + selected_summary(self.cost_estimator, self.selection.selected_ids)
+            self.screen.query_one('#body', Static).update(summary)
 
     def refresh_picker_costs(self, screen, selection):
         # Refresh belongs to the picker which queued it, after its DOM mounts.
@@ -2251,7 +2251,22 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if self.screen.kind == 'tests':
             self.screen.configuration_error = self.picker_configuration_error()
             self.screen.query_one('#error', Static).update(self.screen.configuration_error)
+            if (not self.screen.configuration_error and self.cost_estimator is None
+                    and self.mode in {'integration', 'e2e'}):
+                try:
+                    self.cost_estimator = self.fresh_cost_estimator()
+                except Exception:
+                    pass
+                else:
+                    self.run_worker(self.synchronize_cost_history(self.cost_estimator, self.selection),
+                                    group='cost-history', exclusive=True)
         table = self.screen.query_one(DataTable)
+        if self.screen.kind == 'tests':
+            has_cost_column = 'estimated-cost' in table.columns
+            if has_cost_column and self.cost_estimator is None:
+                table.remove_column('estimated-cost')
+            elif not has_cost_column and self.cost_estimator is not None:
+                table.add_column('Est. $', width=11, key='estimated-cost')
         if self.screen.kind == 'tests' and self.screen.test_search is not None:
             self.screen.render_search_rows()
             self.refresh_cost_summary()

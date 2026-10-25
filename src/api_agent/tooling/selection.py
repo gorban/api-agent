@@ -268,10 +268,11 @@ def _binding_contract(declaration):
             enum=tuple(normalized(value) for value in declaration.enum),
             conditional_defaults=tuple(dict(item, value=normalized(item['value']))
                                        for item in declaration.conditional_defaults))
-    descriptive = {'help', 'default_source', 'declared_keys', 'contribution_origin'}
+    nonbehavioral = {'help', 'default_source', 'declared_keys', 'contribution_origin',
+                     'override', 'override_if_present'}
     return tuple((field.name, value is UNSET,
                   None if value is UNSET else json.dumps(value, sort_keys=True, default=dict))
-                 for field in declaration_fields(declaration) if field.name not in descriptive
+                 for field in declaration_fields(declaration) if field.name not in nonbehavioral
                  for value in (getattr(declaration, field.name),))
 
 
