@@ -33,3 +33,10 @@ sampling, an agreed latency budget and human acceptance stay open above.
 - [x] Before delivering a background review snapshot, recheck its captured persisted configuration and selected declaration content. Retry intervening edits or removals without requiring another navigation event; bound repeated unstable reads and offer a visible retry path. Keep stale values and saved/default actions from being applied together after a detected source change.
 
 - [x] Record read receipts in the existing declaration/workflow owners. Include contributed schemas, dormant inventory reads, lexical link targets, optional or unavailable inputs and package ownership/inventory observations used by review. Keep receipts context-local, immutable when delivered and separate from execution authority; preserve the ordinary readers and their errors outside display capture.
+
+## Picker exit feedback
+
+- [x] Retain actual background read completion after cancelling its UI waiter. Stop unnecessary cost-history synchronization when returning to the menu or quitting, preserving already cached records and existing transport timeout/retry limits. An in-flight SDK call may exceed the logical synchronization budget; do not promise immediate interruption or shell return. Preserve context-local execution metadata in threaded readers; never detach work still writing the history cache.
+- [x] After the terminal display is restored, identify pending background work with fixed descriptive labels, flush the message immediately and report completion. Keep quick exits quiet and avoid repetitive status spam or raw storage diagnostics. Await owned readers without shutting down another caller's executor.
+- [x] Verify blocked reads, cancellation, late failures, fast exits, menu return/reentry and exception paths, with independent/external review before human acceptance. Record actual exit-phase timing separately from startup and navigation.
+- [ ] Human acceptance of visible shutdown feedback and return of shell control after leaving the integration/E2E picker without running tests.

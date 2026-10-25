@@ -15,6 +15,7 @@ from test_tui import fixture
 @pytest.fixture
 def configured_picker(tmp_path, monkeypatch):
     app = fixture(tmp_path, 'integration')
+    app.mode = 'integration'
     app.selection = SimpleNamespace(tests=identities(2))
     values = {'TEST_COST_HISTORY_DAYS': 7}
     app.session = SimpleNamespace(result=lambda: SimpleNamespace(values=values))
