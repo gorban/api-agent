@@ -15,6 +15,7 @@ Workflow tool usage determines configuration and prerequisites for the applicati
 - [x] Preserve independently verified tool execution, configuration precedence/provenance, privacy, immutable definitions, installed-pack behavior and all existing acceptance gates.
 ## Next delivery
 
-- [ ] Agree the [bounded contract and remaining choices](implementation_plan_o4a.md), then deliver the [ordered migration and acceptance matrix](implementation_plan_o4b.md) before expanding endpoint-dependent consumers.
+- [x] Agree the [bounded contract](implementation_plan_o4a.md) and establish the [ordered migration and acceptance matrix](implementation_plan_o4b.md).
+- [ ] Complete the matrix's remaining REST alternate, operation-service/four-shape, sidecar/platform, durable failure-evidence, evidence-destination, trace-attribution and human acceptance gates before expanding endpoint-dependent consumers.
 
 The [selection/configuration requirements](implementation_plan_o4d.md) and [ownership/admission requirements](implementation_plan_o4e.md) specify production joins and remaining decisions. Apply [managed development/external sidecar policy](implementation_plan_o4f.md). Support [all configuration/prerequisite combinations](implementation_plan_o4g.md) and [shared-target dual-tool live acceptance](implementation_plan_o4h.md). Recording requirements claims no implementation or human acceptance.
