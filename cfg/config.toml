@@ -145,7 +145,7 @@ COLLECT_ONLY = false
 acknowledge_default = false
 type = "str"
 conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "pk-lf-local-dev-0000000000"}]
-help = "LangFuse public API key. The local Compose service provisions the local development pair; provide your project's keys for a remote target."
+help = "LangFuse project public API key for trace ingestion, paired with LANGFUSE_SECRET_KEY; obtain both from the target project settings. Required for an external LangFuse TRACE_TARGET; dashboard email/password do not replace API keys. Managed local LangFuse provisions development defaults automatically. No external default is supplied, so a missing key stops startup."
 [fields.LANGFUSE_PUBLIC_KEY.applies_when]
 TRACE_MODE = "LangFuse"
 TUI_MODE = ["run-local", "integration", "e2e"]
@@ -157,7 +157,7 @@ TRACE_MODE = "LangFuse"
 acknowledge_default = false
 type = "str"
 conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "sk-lf-local-dev-0000000000"}]
-help = "LangFuse secret API key. The local default is only a development credential; remote targets require an explicit project secret."
+help = "LangFuse project secret API key for trace ingestion, paired with LANGFUSE_PUBLIC_KEY; obtain both from the target project settings. Required for an external LangFuse TRACE_TARGET; dashboard email/password do not replace API keys. Managed local LangFuse provisions development defaults automatically. No external default is supplied, so a missing key stops startup. Keep the secret private."
 [fields.LANGFUSE_SECRET_KEY.applies_when]
 TRACE_MODE = "LangFuse"
 TUI_MODE = ["run-local", "integration", "e2e"]

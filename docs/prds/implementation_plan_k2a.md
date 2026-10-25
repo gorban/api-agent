@@ -21,3 +21,7 @@
 ## Conventional local target boundary
 
 - [x] Keep managed LangFuse startup and development-default eligibility aligned: recognize exactly http://localhost:3000 and http://127.0.0.1:3000, each with no trailing slash or one trailing slash. Omission uses the normal mode default. Other valid URL spellings remain custom endpoints, require explicit credentials and start no managed stack. Preserve explicit overrides and OTEL behavior; test the actual resolver, declared defaults and profile selection together.
+
+## External trace-ingestion credentials
+
+- [x] Explain LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY as the paired project API credentials used for trace ingestion, obtained from the selected project settings and distinct from dashboard login. Preserve managed-local development defaults. External targets have no key default: an empty string counts as provided under the generic resolver and would bypass its early missing-setting error, so do not add empty defaults solely for presentation.
