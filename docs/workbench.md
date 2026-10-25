@@ -39,6 +39,14 @@ settings. A new default appears automatically, giving you a chance to override
 it or preserve a reproducible configuration. Advanced/operation-only fields
 may be hidden here; their executable declarations and help remain available.
 
+Provider declarations may mark a text setting `sensitive = true` (without enum
+choices). Its editor masks input; Review/default descriptions and Clear .env
+configuration show `Configured` for a nonempty value. Resolution and `.env`
+persistence keep the original value. This presentation flag does not authorize
+content in logs or traces. Resource-pack overrides inherit sensitivity and cannot
+remove it; incompatible inherited enum choices are rejected. Sensitive editors
+also activate private keyboard/input diagnostic filtering before accepting values.
+
 - **a** accepts and saves a default immediately.
 - **e** edits a value; Enter saves. Enums and booleans use a picker.
 - **u** removes the saved assignment and restores its fallback.
