@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 
 import pytest
@@ -223,7 +224,7 @@ def _synthetic_git_environment():
 
 
 def _wheel_source_snapshot(repository, destination):
-    """Build from finite indexed paths and current, stable wheel input bytes."""
+    """Capture finite current wheel inputs without unrelated repository drafts."""
     helper = runpy.run_path(str(repository / 'tools/frontend_assets.py'))
     build = runpy.run_path(str(repository / 'hatch_build.py'))
     build['_validate_frontend_assets'](repository)
@@ -233,14 +234,21 @@ def _wheel_source_snapshot(repository, destination):
     assert len(listed) <= 4 * 1024 * 1024, 'Installed wheel index list exceeds limit'
     selected = set()
     observed = {}
-    prefixes = ('src/', 'demo/', 'cfg/', 'workflows/', '.private_resources/viewer/',
-                '.private_resources/diagrams/', 'apps/api-agent-ui/', 'infra/compose/',
-                'tests/integration/fixtures/workflow_preferences/')
+    configuration = tomllib.loads(helper['_read'](repository, 'pyproject.toml').decode())
+    wheel = configuration['tool']['hatch']['build']['targets']['wheel']
+    roots = set(wheel['packages'])
+    roots.update(path for path in wheel.get('force-include', {}) if (repository / path).is_dir())
+    owners = helper['owner_roots'](repository)
+    roots.update(owner for owner in owners if owner != '.')
+    for root in roots:
+        helper['_relative'](root)
+    prefixes = tuple(path + '/' for path in sorted(roots))
     individual = {'pyproject.toml', 'hatch_build.py', 'package.json', 'package-lock.json',
                   '.npmrc', 'launch.py', 'tools/frontend-assets.json',
                   'tools/frontend_assets.py', 'tools/prepare_frontend_assets.mjs',
                   'tools/checks.py', 'tools/pre_commit_dispatcher.py',
                   'tools/workflow_views.py', 'LICENSE', 'README.md', 'flow.md.html'}
+    individual.update(path for path in wheel.get('force-include', {}) if (repository / path).is_file())
 
     def copy(relative, mode):
         helper['_relative'](relative)
@@ -272,6 +280,29 @@ def _wheel_source_snapshot(repository, destination):
         selected.add(relative)
         assert len(selected) <= 10000, 'Installed wheel source list exceeds limit'
         copy(relative, int(mode, 8) & 0o777)
+    # A feature must pass before its implementation can be committed. Capture
+    # new public inputs only inside the build's explicitly declared roots;
+    # hidden/cache files and unrelated documentation remain outside this proof.
+    current = subprocess.run(['git', '-C', str(repository), 'ls-files', '--others',
+                              '--exclude-standard', '-z', '--', *sorted(roots)],
+                             check=True, capture_output=True, timeout=20,
+                             env=_synthetic_git_environment()).stdout
+    assert len(current) <= 4 * 1024 * 1024, 'Installed wheel new-input list exceeds limit'
+    for raw in current.split(b'\0'):
+        if not raw:
+            continue
+        relative = raw.decode('utf-8')
+        helper['_relative'](relative)
+        if relative in selected or not relative.startswith(prefixes):
+            continue
+        if any(part in helper['_EXCLUDED_OWNERS'] for part in Path(relative).parts):
+            continue
+        if any(part.startswith('.') for part in Path(relative).parts) and not build['_package_path'](
+                relative, owners, helper):
+            continue
+        selected.add(relative)
+        assert len(selected) <= 10000, 'Installed wheel source list exceeds limit'
+        copy(relative, 0o755 if (repository / relative).lstat().st_mode & 0o111 else 0o644)
     assert {'pyproject.toml', 'hatch_build.py', 'tools/frontend-assets.json',
             'src/api_agent/__init__.py'} <= selected
     manifest = helper['_json'](helper['_read'](repository, 'tools/frontend-assets.json'))
@@ -283,8 +314,8 @@ def _wheel_source_snapshot(repository, destination):
     # index yet; include only these exact paths in the synthetic wheel source.
     for name in ('flow-modal.js', 'flow-modal.css'):
         canonical = helper['_read'](repository, '.private_resources/viewer/' + name)
-        for owner in ('', 'demo/', 'tests/integration/fixtures/workflow_preferences/'):
-            relative = owner + '.private_resources/viewer/' + name
+        for owner in owners:
+            relative = ('' if owner == '.' else owner + '/') + '.private_resources/viewer/' + name
             assert helper['_read'](repository, relative) == canonical
             if relative not in selected:
                 selected.add(relative)
@@ -496,7 +527,7 @@ def test_hostile_installer_environment_cannot_redirect_installation(installed_wh
     assert not redirected.exists()
 
 
-def test_installed_bundled_demo_resolves_graphql_provider_default(installed_wheel, tmp_path):
+def test_installed_bundled_demo_declares_graphql_named_tool_default(installed_wheel, tmp_path):
     python, environment, repository, _ = installed_wheel
     consumer_cwd = tmp_path / 'unrelated-consumer'
     consumer_cwd.mkdir()
@@ -505,7 +536,9 @@ from pathlib import Path
 import api_agent
 from api_agent.providers.distribution import inspect_relocated_pack, selected_manifests
 from api_agent.providers.loading import provider_location
+from api_agent.config.declarations import UNSET
 import sys
+import tomllib
 
 installed, checkout = map(Path, sys.argv[1:])
 assert Path(api_agent.__file__).resolve().is_relative_to(installed)
@@ -513,18 +546,37 @@ assert not Path.cwd().is_relative_to(checkout)
 base = Path(api_agent.__file__).resolve().parent
 context, schema = inspect_relocated_pack(base, base / 'demo')
 assert context.config_path == base / 'demo/simple/cfg/config.toml'
-assert schema.fields['API_ENDPOINT'].default == ''
-assert schema.fields['API_HEADERS'].default == {}
-selection = schema.fields['API_PROVIDER'].default
-path, name = provider_location(selection, owner_root=context.owner_root)
-assert path == base / 'api_providers/graphql_mcp/factory.py' and name == 'create'
-manifests = selected_manifests({'API_PROVIDER': selection}, owner_root=context.owner_root,
+assert 'API_ENDPOINT' not in schema.fields and 'API_HEADERS' not in schema.fields
+assert schema.fields['API_PROVIDER'].default is UNSET
+assert context.workflow_entry == base / 'demo/simple/flow.md.html'
+from api_agent.testing.collection import repository_label
+assert repository_label(context, base) == 'api-agent'
+assert 'cfg/tools/primary.toml' in context.workflow_entry.read_text()
+instance = tomllib.loads((base / 'demo/simple/cfg/tools/primary.toml').read_text())
+assert instance['id'] == 'demo/primary'
+assert instance['implementation'] == 'package:api-agent:api_agent/api_providers/graphql_mcp/tool.toml'
+assert instance['bindings'] == {'ENDPOINT': 'API_ENDPOINT', 'HEADERS': 'API_HEADERS'}
+assert instance['defaults']['ENDPOINT'] == ''
+implementation = tomllib.loads((base / 'api_providers/graphql_mcp/tool.toml').read_text())
+assert implementation['factory'] == 'factory.py:create_tool'
+assert implementation['inputs']['HEADERS']['default'] == {}
+fixture = base / 'tests/integration/fixtures/tool_instances'
+assert (fixture / 'shared_primary/flow.md.html').is_file()
+assert (fixture / 'shared_primary/conversation.md.html').is_file()
+assert (fixture / 'server.py').is_file()
+assert (fixture / '.private_resources/viewer/marked-LICENSE.txt').is_file()
+fixture_implementation = tomllib.loads((fixture / 'graphql.toml').read_text())
+assert fixture_implementation['factory'] == 'package:api-agent:api_agent/api_providers/graphql_mcp/factory.py:create_tool'
+assert not (base / 'tests/integration/test_tool_instances.py').exists()
+
+path = base / 'api_providers/graphql_mcp/factory.py'
+manifests = selected_manifests({'API_PROVIDER': str(path) + ':create'}, owner_root=context.owner_root,
                                active_kinds={'api'})
 assert len(manifests) == 1
 assert manifests[0].root == path.parent
 assert manifests[0].requirements() == ('graphql-core==3.2.13',)
-print('installed bundled GraphQL default resolved')
+print('installed bundled GraphQL named tool default resolved')
 '''
     output = run([str(python), '-I', '-c', consumer, str(environment), str(repository)],
                  cwd=consumer_cwd)
-    assert output.strip() == 'installed bundled GraphQL default resolved'
+    assert output.strip() == 'installed bundled GraphQL named tool default resolved'

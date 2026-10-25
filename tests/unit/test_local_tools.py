@@ -16,7 +16,7 @@ def test_selected_application_preserves_explicit_admission(monkeypatch, graph_id
     chat, demo = Mock(), Mock()
     monkeypatch.setattr(local_tools, 'LocalChatApplication', chat)
     monkeypatch.setattr(demo_application, 'UsefulDemoApplication', demo)
-    definition = SimpleNamespace(graph_id=graph_id)
+    definition = SimpleNamespace(graph_id=graph_id, tool_usages=('declared',) if useful else ())
     config = {'WORKFLOW_MAX_PASSES': 2}
 
     actual = local_tools.selected_application(definition, config=config)

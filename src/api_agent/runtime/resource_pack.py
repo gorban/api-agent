@@ -42,6 +42,7 @@ class LaunchContext:
     workflow_base_root: Path | None = None
     workflow_library_files: frozenset[str] | None = None
     infrastructure_paths: tuple[Path, ...] = ()
+    tool_catalog_path: Path | None = None
 
     @property
     def dotenv_path(self) -> Path:
@@ -96,7 +97,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -133,6 +134,21 @@ def load_launch_context(
                 or path in infrastructure_paths):
             raise ResourcePackError("infrastructure declaration is absent, duplicated or escapes pack")
         infrastructure_paths.append(path)
+    tooling = data.get('tooling')
+    tool_catalog_path = None
+    if tooling is not None:
+        if (type(tooling) is not dict or set(tooling) != {'version', 'catalog'}
+                or type(tooling['version']) is not int or tooling['version'] != 1
+                or type(tooling['catalog']) is not str or not tooling['catalog']
+                or Path(tooling['catalog']).is_absolute() or '..' in Path(tooling['catalog']).parts
+                or '\\' in tooling['catalog'] or not tooling['catalog'].endswith('.toml')):
+            raise ResourcePackError('tooling requires version 1 and a pack-relative TOML catalog')
+        tool_catalog_path = pack / tooling['catalog']
+        from api_agent.runtime.infrastructure_contract import _capture
+        try:
+            _capture(pack, tooling['catalog'], 8 * 1024 * 1024)
+        except ValueError:
+            raise ResourcePackError('Tool catalog must be a regular file inside its pack') from None
     workflow = data.get('workflow')
     workflow_root = 'base'
     workflow_entry = None
@@ -259,6 +275,7 @@ def load_launch_context(
         workflow_base_root=workflow_base_root,
         workflow_library_files=workflow_library_files,
         infrastructure_paths=tuple(infrastructure_paths),
+        tool_catalog_path=tool_catalog_path,
     )
 
 

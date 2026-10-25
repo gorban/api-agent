@@ -1,0 +1,14 @@
+version = 1
+interface = "verified-read@1"
+factory = "factory.py:create_tool"
+
+[inputs.ENDPOINT]
+type = "str"
+required = true
+help = "Endpoint for this named read-only GraphQL tool; blank uses its declared local output."
+
+[inputs.HEADERS]
+type = "jsonobject"
+default = {}
+acknowledge_default = false
+help = "Owner-supplied HTTP headers for this tool instance."

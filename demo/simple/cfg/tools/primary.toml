@@ -1,0 +1,26 @@
+version = 1
+id = "demo/primary"
+interface = "verified-read@1"
+selector = "PRIMARY_TOOL_IMPLEMENTATION"
+implementation = "package:api-agent:api_agent/api_providers/graphql_mcp/tool.toml"
+
+[bindings]
+ENDPOINT = "API_ENDPOINT"
+HEADERS = "API_HEADERS"
+
+[defaults]
+ENDPOINT = ""
+
+[local]
+slot = "ENDPOINT"
+output = "demo/api/graphql"
+path = "/graphql"
+declaration = "../../../api/infrastructure.toml"
+
+[local.activation]
+DEMO_API_LOCAL = true
+
+[infrastructure]
+owner = "demo"
+root = "../../.."
+declarations = ["api/infrastructure.toml"]

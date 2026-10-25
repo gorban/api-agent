@@ -1,0 +1,3 @@
+version = 1
+repository_url = "//github.com/gorban/api-agent"
+path_prefix = "tests/integration/fixtures/tool_instances"

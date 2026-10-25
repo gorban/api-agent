@@ -207,3 +207,30 @@ def test_isolated_storage_port_survives_projection_without_tracing_or_api(tmp_pa
     assert client.call_args.kwargs['aws_secret_access_key']=='test'
     subject.finish()
     manager.release.assert_called_once_with(retain=True)
+
+
+def test_recording_prepares_captured_tool_dependencies_with_provider_dependencies(monkeypatch, tmp_path):
+    import api_agent.runtime.dependencies as dependencies
+    import api_agent.providers.distribution as distribution
+    context = SimpleNamespace(base_root=tmp_path, external_pack=False)
+    manifest_path = tmp_path / 'provider-dependencies.toml'
+    tool_plan = SimpleNamespace(tools=(SimpleNamespace(id='fixture/read', admission=SimpleNamespace(
+        assets={manifest_path: b'version=1\ndependencies=["example-package==1.0"]\n'})),))
+    provider_manifest = object()
+    monkeypatch.setattr(dependencies, 'active_environment', lambda path: True)
+    ensure = Mock(return_value=None)
+    monkeypatch.setattr(dependencies, 'ensure_environment', ensure)
+    monkeypatch.setattr(distribution, 'selected_manifests', Mock(return_value=(provider_manifest,)))
+    subject = local_recording_prerequisites(context, scope='scope', ownership_directory=tmp_path,
+        argv=('launch',), tool_plan=tool_plan)
+
+    ensure.assert_not_called()
+    subject.prepare_dependencies()
+
+    args, options = ensure.call_args
+    assert args == (context, ('launch',))
+    assert options['groups'] == ('reports',)
+    provider, captured = options['selected_provider_manifests']
+    assert provider is provider_manifest
+    assert captured.owner == 'fixture/read'
+    assert captured.requirements() == ('example-package==1.0',)

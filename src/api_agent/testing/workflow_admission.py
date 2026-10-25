@@ -3,7 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 
 
-def capture_workflow_admissions(context, supplied=None):
+def capture_workflow_admissions(context, supplied=None, *, tool_plan=None):
     """Bind the selected definition without importing or executing native code.
 
     Explicit admissions belong to the trusted caller, never a worker packet.
@@ -12,6 +12,10 @@ def capture_workflow_admissions(context, supplied=None):
     """
     if supplied is not None:
         return deepcopy(supplied)
+    if tool_plan is not None:
+        from api_agent.workflows.journal import projection
+        return {definition.definition_id: projection(definition)
+                for definition in tool_plan.definitions}
     entry = getattr(context, 'workflow_entry', None)
     if entry is None and not (Path(context.base_root) / 'flow.md.html').is_file():
         return {}

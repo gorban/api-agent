@@ -93,9 +93,24 @@ class RecordingPrerequisites:
         self._complete()
 
 
+def prepare_selected_tool_dependencies(context, tool_plan):
+    """Prepare selected tool packages without acquiring report dependencies."""
+    from api_agent.runtime.dependencies import active_environment, ensure_environment
+    from api_agent.tooling.services import selected_tool_manifests
+
+    manifests = selected_tool_manifests(tool_plan)
+    if not manifests:
+        return
+    owner = context.pack_root if getattr(context, 'external_pack', False) else context.base_root
+    if not active_environment(owner / '.venv'):
+        raise RuntimeError('interpreter_handoff_required')
+    if ensure_environment(context, (), groups=(), selected_provider_manifests=manifests) is not None:
+        raise RuntimeError('interpreter_handoff_required')
+
+
 def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(),
                                  engine_environment=None, cancel_event=None, timeout=120,
-                                 provider_config=None, provider_kinds=(), reporting_session=None):
+                                 provider_config=None, provider_kinds=(), reporting_session=None, tool_plan=None):
     """Build inert hooks using the shared reports installer and scoped manager."""
     from api_agent.runtime.dependencies import active_environment, ensure_environment
     from api_agent.runtime.compose import plan_compose
@@ -109,6 +124,9 @@ def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(
         from api_agent.providers.distribution import selected_manifests
         manifests = selected_manifests(provider_config or {}, owner_root=getattr(context, 'owner_root', context.base_root),
                                        active_kinds=provider_kinds)
+        if tool_plan is not None:
+            from api_agent.tooling.services import selected_tool_manifests
+            manifests = (*manifests, *selected_tool_manifests(tool_plan))
         options = {'selected_provider_manifests': manifests} if manifests else {}
         if ensure_environment(context, argv, groups=('reports',), **options) is not None:
             raise RuntimeError('interpreter_handoff_required')

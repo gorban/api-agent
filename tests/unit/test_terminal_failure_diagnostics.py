@@ -162,6 +162,7 @@ def test_unhandled_terminal_cleanup_traceback_never_reprints_original_credential
         from unittest.mock import patch
         from api_agent.runtime.bootstrap import main
         from api_agent.runtime.resource_pack import load_launch_context
+        from api_agent.testing.collection import TestIdentity
         root = Path({str(ROOT)!r})
         context = replace(load_launch_context(root), config_path=Path({str(declaration)!r}))
         arguments = {ARGS!r}
@@ -175,7 +176,8 @@ def test_unhandled_terminal_cleanup_traceback_never_reprints_original_credential
              patch('api_agent.config.dotenv.read_dotenv', return_value={{}}), \\
              patch('api_agent.runtime.worktrees.verify_worktrees'), \\
              patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \\
-             patch('api_agent.testing.collection.collect_tests', return_value=[SimpleNamespace(id='base::test.py::test_failure', tags=frozenset())]), \\
+             patch('api_agent.testing.collection.collect_tests', return_value=[TestIdentity(
+                 'base::test.py::test_failure', 'base', 'test.py', 'test.py::test_failure')]), \\
              patch('api_agent.testing.launched.run_launched_integration', side_effect=run):
             main(arguments, base_root=root)
     '''))

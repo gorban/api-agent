@@ -13,7 +13,7 @@ retries, fixture graphs and resource-pack selections.
 - [x] Preserve unconditional credential, authentication/continuation-state and hidden-reasoning exclusions, including nested JSON text. Bound depth, field/item counts, payload sizes and previews; record unavailable/truncated evidence rather than silently suggesting complete capture. Keep structural execution and accounting available with both flags disabled.
 - [x] Verify every flag combination for both backends using serialized synthetic collector payloads and actual journal/evidence bytes. Exercise a parsed graph without capture declarations, the bundled planning/review/tool graph, stateful graphs, retries/concurrency, unsupported values, errors and cancellation. Include causal controls for missing shared capture and conflated flags.
 - [x] Close exact applicable coverage, packaging/public-boundary checks, independent review and external review before human review. Preserve previously qualified sampling evidence only with an independently reviewed execution-equivalence proof; do not claim new live qualification.
-- [ ] Human acceptance after restarting Run local: enabled trace content appears for the selected graph; disabled destinations remain withheld. Jaeger conversation-panel mapping and broader instrumentation/metrics retain their separate signal-conformance requirements.
+- [x] Human approved the limited shared-runtime tracing scope on October 24, 2026. Jaeger conversation-panel mapping, native observation presentation, complete durable test evidence and broader instrumentation/metrics retain their separate requirements.
 
 ## Separate backend processes
 

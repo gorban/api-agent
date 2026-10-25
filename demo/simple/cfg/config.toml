@@ -8,18 +8,6 @@
 # Demo uses the shared configuration without product-specific extensions.
 version = 1
 
-[fields.API_ENDPOINT]
-type = "str"
-default = ""
-help = "Optional upstream API endpoint for the bundled demo. Blank uses its local synthetic API during an API-capable run; a nonempty remote endpoint turns off the synthetic API."
-
-[fields.API_PROVIDER]
-type = "str"
-override = true
-default = "src/api_agent/api_providers/graphql_mcp/factory.py:create"
-acknowledge_default = false
-help = "Bundled read-only GraphQL MCP provider; an explicit provider selection can replace it."
-
 [fields.DEMO_API_LOCAL]
 type = "bool"
 default = false

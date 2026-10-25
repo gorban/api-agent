@@ -30,7 +30,10 @@ def publish(data):
     path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
     node = os.environ.get('PYTEST_CURRENT_TEST')
     if path and node:
-        if type(data) is dict and data.get('version') == 1 and 'projection' in data:
+        if type(data) is dict and data.get('kind') == 'tool_execution':
+            from .tool_evidence import validate_tool_evidence
+            safe = validate_tool_evidence(data)
+        elif type(data) is dict and data.get('version') == 1 and 'projection' in data:
             from .journal import validate_journal
             safe = validate_journal(data)
         else:
@@ -44,7 +47,12 @@ def attachment(event, boundary):
     row = strict_json(event.text)
     if type(row) is not dict:
         raise ValueError('Workflow evidence must be an object')
-    if row.get('version') == 1 and 'projection' in row:
+    if row.get('kind') == 'tool_execution':
+        from .tool_evidence import validate_tool_evidence
+        clean = validate_tool_evidence(row)
+        if boundary.content_export(clean) != clean:
+            raise ValueError('Tool execution evidence violates the runner credential boundary')
+    elif row.get('version') == 1 and 'projection' in row:
         from .journal import validate_journal
         clean = validate_journal(row)
         if boundary.content_export(clean) != clean:

@@ -1,5 +1,8 @@
 """Collect pytest identities without running tests or starting prerequisites."""
 from dataclasses import dataclass
+import base64
+from hashlib import sha256
+from importlib import metadata
 import json
 import os
 from pathlib import Path
@@ -62,9 +65,39 @@ def repository_label(context, root):
     """Use the same repository identity for collection and recording."""
     base, owner, root = (Path(path).resolve() for path in
                          (context.base_root, context.owner_root, root))
+    if root == base and _installed_base_identity(base):
+        return 'api-agent'
     if base != owner and base.name == owner.name:
         return 'base' if root == base else 'pack'
     return root.name
+
+
+def _installed_base_identity(base):
+    """Canonicalize only the executing distribution's receipted bundled base."""
+    if Path(__file__).resolve().parents[1] != base:
+        return False
+    try:
+        distribution = metadata.distribution('api-agent')
+        if Path(distribution.locate_file('api_agent')).resolve() != base:
+            return False
+        inventory = distribution.files
+        if inventory is None or distribution.read_text('RECORD') is None:
+            return False
+        for relative in ('api_agent/testing/collection.py', 'api_agent/flow.md.html'):
+            rows = [item for item in inventory if str(item) == relative]
+            if len(rows) != 1 or rows[0].hash is None or rows[0].hash.mode != 'sha256':
+                return False
+            path = Path(distribution.locate_file(relative))
+            if path.is_symlink() or path.resolve() != base / Path(relative).relative_to('api_agent'):
+                return False
+            from api_agent.runtime.infrastructure_contract import _capture
+            body = _capture(base, Path(relative).relative_to('api_agent').as_posix(), 8 * 1024 * 1024).body
+            digest = base64.urlsafe_b64encode(sha256(body).digest()).decode().rstrip('=')
+            if len(body) != rows[0].size or digest != rows[0].hash.value:
+                return False
+        return True
+    except (OSError, AttributeError, TypeError, ValueError, metadata.PackageNotFoundError):
+        return False
 
 
 def select_tests(tests, selectors=()):

@@ -398,3 +398,21 @@ def test_existing_one_call_node_rejects_incomplete_or_empty_model_output(output,
         'generation': GenerationOptions(reasoning_effort='low'), 'llm': llm})
     with pytest.raises(WorkflowError, match=reason):
         asyncio.run(native({'messages': [{'role': 'user', 'content': 'Hello'}]}, context))
+
+
+def test_named_tool_binding_runs_selected_port_and_closes_borrowed_view():
+    owner = Owner()
+    graph = application(None)
+    calls = []
+    def for_port(**kwargs):
+        calls.append(kwargs)
+        return owner
+    graph.tools = SimpleNamespace(for_port=for_port)
+    llm = LLM([json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}),
+               verdict(), 'Ada'])
+
+    result = asyncio.run(graph.complete(request(), llm=llm, context=OperationContext('request')))
+
+    assert ''.join(part.text for part in result.payload.content) == 'Ada'
+    assert calls == [{'scope_kind': 'node', 'scope': 'execute_tool', 'port': 'primary'}]
+    assert owner.events == ['describe', 'validate', 'invoke', 'close']

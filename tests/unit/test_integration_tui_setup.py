@@ -310,7 +310,7 @@ def test_selected_ui_intent_reports_missing_configuration_before_execution(tmp_p
             assert app.screen.kind=='tests'
             await pilot.press('s')
             await pilot.pause(.3)
-            assert app.screen.kind=='error'
-            assert 'Missing required configuration: UI_REQUIRED' in str(app.screen.body)
+            assert app.screen.kind=='tests'
+            assert 'Missing required configuration: UI_REQUIRED' in str(app.screen.query_one('#error', Static).content)
             app.integration_runner.assert_not_called()
     asyncio.run(scenario())

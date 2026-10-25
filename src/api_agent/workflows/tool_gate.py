@@ -52,7 +52,7 @@ class ToolGate:
             encoded = canonical(arguments, MAX_ARGUMENT_BYTES)
             if not await async_isolated_valid_schema(spec.input_schema, arguments):
                 raise ToolGateError('Tool arguments do not match the selected schema')
-            digest = sha256((self.invocation_id + '\0' + spec.digest + '\0' + encoded).encode()).hexdigest()
+            digest = sha256((self._id + '\0' + self.invocation_id + '\0' + spec.digest + '\0' + encoded).encode()).hexdigest()
             return PreparedCall(spec, arguments, self.invocation_id, digest)
 
     def _check(self, prepared):
@@ -61,7 +61,7 @@ class ToolGate:
         if prepared.invocation_id != self.invocation_id:
             raise ToolGateError('Tool invocation changed')
         encoded = canonical(prepared.arguments, MAX_ARGUMENT_BYTES)
-        expected = sha256((self.invocation_id + '\0' + self._spec.digest + '\0' + encoded).encode()).hexdigest()
+        expected = sha256((self._id + '\0' + self.invocation_id + '\0' + self._spec.digest + '\0' + encoded).encode()).hexdigest()
         if prepared.digest != expected:
             raise ToolGateError('Tool arguments changed')
 

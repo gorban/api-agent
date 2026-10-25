@@ -28,7 +28,7 @@ from langgraph.graph.message import add_messages
 
 from api_agent.providers.progress import bind_timeout_budget, component_timeout
 from api_agent.runtime.tasks import offload, settle
-from .definition import Replacement, Resource, _declaration_parts, _inline_selection, _freeze, _read_bounded, _sections, _table as _shared_table
+from .definition import Replacement, Resource, ToolUsage, _MAX_SNAPSHOT_BYTES, _declaration_parts, _inline_selection, _freeze, _read_bounded, _sections, _table as _shared_table
 from .document_format import canonical_executable_bytes, validate_presentation_location
 from .layout import Layout, LayoutError, Step, _ID
 
@@ -100,6 +100,7 @@ class StatefulDefinition:
     layout: Layout
     selected_declarations: object = None
     declaration_fragments: object = None
+    tool_usages: tuple[ToolUsage, ...] = ()
 
     def verify_sources(self):
         for path, admitted in self.contents.items():
@@ -118,12 +119,16 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
         entry_root = 'pack' if entry.is_relative_to(roots['pack']) and roots['pack'] != roots['base'] else 'base'
     if entry_root not in roots or not entry.is_relative_to(roots[entry_root]):
         raise LayoutError(f'{entry}:1: invalid declared entry root')
+    captured_sizes = {}
     def read(path):
         roots_for_path = [root for root in roots.values() if path.is_relative_to(root)]
         if not roots_for_path:
             raise LayoutError(f'{entry}:1: source outside roots')
         owner = max(roots_for_path, key=lambda p: len(p.parts))
         data = _read_bounded(path, owner)
+        captured_sizes[path] = len(data)
+        if sum(captured_sizes.values()) > _MAX_SNAPSHOT_BYTES:
+            raise LayoutError(f'{path}:1: workflow snapshot exceeds 64 MiB')
         if path.suffixes[-2:] == ['.md', '.html']:
             validate_presentation_location(data, path=path, root=owner)
         return data
@@ -133,7 +138,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
         raise LayoutError(f'{entry}:1: expected Workflow v3 heading')
     _, sections = _sections(entry, contents[entry])
     required = {'Graph ID', 'State', 'Flow', 'Edges'}
-    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Resources', 'Timeouts'}:
+    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Resources', 'Timeouts', 'Tools'}:
         raise LayoutError(f'{entry}:1: missing required section')
     identity = _shared_table(entry, sections['Graph ID'], ('ID',))
     state = _shared_table(entry, sections['State'], ('Registry', 'Source'))
@@ -143,7 +148,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
     if any(not isinstance(item, Replacement) for item in replacements) or len({item.target_id for item in replacements}) != len(replacements):
         raise LayoutError(f'{entry}:1: invalid replacements')
     kinds = {entry: 'declaration'}
-    def linked(row):
+    def linked(row, *, resolve=True):
         match = _LINK.fullmatch(row['Source'])
         if match is None:
             raise LayoutError(f'{entry}:{row["line"]}: expected one source link')
@@ -157,9 +162,10 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
         if not name or name.startswith('/') or '\\' in name or '?' in name or '#' in name:
             raise LayoutError(f'{entry}:{row["line"]}: invalid source link')
         if name.startswith('<resource_pack>/'):
-            target = (roots['pack'] / name.removeprefix('<resource_pack>/')).resolve()
+            target = roots['pack'] / name.removeprefix('<resource_pack>/')
         else:
-            target = (row.get('_owner', entry).parent / name).resolve()
+            target = row.get('_owner', entry).parent / name
+        target = target.resolve() if resolve else Path(os.path.normpath(target))
         if not any(target.is_relative_to(root) for root in roots.values()):
             raise LayoutError(f'{entry}:{row["line"]}: source outside declared roots')
         return target
@@ -171,6 +177,24 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             contents[target] = read(target)
         kinds[target] = 'native_source'
         return target
+    tool_usages = []
+    def capture_tools(owner, scope_kind, scope, sections):
+        ports = set()
+        for row in _shared_table(owner, sections.get('Tools', []), ('Port', 'Instance')):
+            port = row['Port']
+            if not _ID.fullmatch(port) or port in ports:
+                raise LayoutError(f'{owner}:{row["line"]}: invalid or duplicate tool port')
+            ports.add(port)
+            target = linked(dict(row, Source=row['Instance'], _owner=owner), resolve=False)
+            if target.suffix != '.toml':
+                raise LayoutError(f'{owner}:{row["line"]}: tool instance must be TOML')
+            if target not in contents:
+                contents[target] = read(target)
+            if target in kinds and kinds[target] != 'tool_instance':
+                raise LayoutError(f'{owner}:{row["line"]}: tool instance has conflicting resource kind')
+            kinds[target] = 'tool_instance'
+            tool_usages.append(ToolUsage(scope, port, target, scope_kind, owner, row['line']))
+    capture_tools(entry, 'graph', identity[0]['ID'], sections)
     state_source = source(state[0])
     declared_resources = {}
     if 'Resources' in sections:
@@ -283,12 +307,13 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                 raise LayoutError(f'{declaration}:1: declaration identity mismatch')
             steps.append((identifier, kind, parent, declaration))
             selected_declarations[identifier] = (owner, number, declaration)
+            capture_tools(declaration, kind, identifier, child)
             if kind == 'component':
-                if set(child) != {'Flow'}:
+                if set(child) - {'Tools'} != {'Flow'}:
                     raise LayoutError(f'{declaration}:1: component requires only Flow')
                 visit(declaration, child['Flow'], identifier, depth + 1)
             else:
-                if set(child) != {'Native'}:
+                if set(child) - {'Tools'} != {'Native'}:
                     raise LayoutError(f'{declaration}:1: node requires only Native')
                 binding = _shared_table(declaration, child['Native'], ('Registry', 'Kind', 'Source'))
                 if len(binding) != 1 or not _ID.fullmatch(binding[0]['Registry']) or binding[0]['Kind'] not in ('deterministic', 'llm'):
@@ -340,8 +365,6 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             kinds[path] = 'configuration'
             timeouts.append(dict(row, Source=path))
     resources = []
-    if sum(map(len, contents.values())) > 64 * 1024 * 1024:
-        raise LayoutError(f'{entry}:1: workflow snapshot exceeds 64 MiB')
     for path, data in contents.items():
         root_id = max((key for key, root in roots.items() if path.is_relative_to(root)),
                       key=lambda key: (len(roots[key].parts), key == entry_root))
@@ -371,7 +394,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                                     state[0]['Registry'], state_source,
                                     tuple(_freeze(row) for row in nodes), tuple(_freeze(row) for row in edges),
                                     MappingProxyType(contents), definition_id, layout,
-                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments))
+                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages))
     _validated_timeouts(definition)
     return definition
 

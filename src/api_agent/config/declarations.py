@@ -162,16 +162,6 @@ def load_declarations(path: str | Path, *, base_schema: ConfigSchema | None = No
     location = Path(path).resolve()
     with location.open('rb') as handle:
         data = tomllib.load(handle)
-    package_root = Path(__file__).resolve().parents[1]
-    source_root = Path(__file__).resolve().parents[3]
-    source_demo = source_root / 'demo/simple/cfg/config.toml'
-    installed_demo = package_root / 'demo/simple/cfg/config.toml'
-    if (location == installed_demo or
-            (location == source_demo and source_root / 'src/api_agent' == package_root)):
-        bundled = data.get('fields', {}).get('API_PROVIDER')
-        if (isinstance(bundled, dict) and
-                bundled.get('default') == 'src/api_agent/api_providers/graphql_mcp/factory.py:create'):
-            bundled['default'] = str(package_root / 'api_providers/graphql_mcp/factory.py') + ':create'
     return schema_from_dict(data, base_schema=base_schema, source=source,
                             predicate_context=predicate_context)
 

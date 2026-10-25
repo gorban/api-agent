@@ -1,4 +1,4 @@
-"""Standard API_PROVIDER entrypoint for the read-only GraphQL MCP owner."""
+"""Local tool slots and the legacy API provider compatibility entrypoint."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,8 +15,8 @@ class GraphQLMcpAPIProvider:
     capabilities = ProviderCapabilities(kind="api", operations=("invoke",))
 
     def __init__(self, config: Mapping, services: Mapping):
-        endpoint = config.get("API_ENDPOINT")
-        headers = config.get("API_HEADERS")
+        endpoint = config.get("ENDPOINT")
+        headers = config.get("HEADERS")
         if headers is None:
             headers = {}
         if type(headers) is not dict:
@@ -29,7 +29,7 @@ class GraphQLMcpAPIProvider:
         owner_root = services.get("owner_root")
         if owner_root is None:
             raise GraphQLMcpError("owner_root_missing")
-        root_fields = config.get("API_ROOT_FIELDS")
+        root_fields = config.get("ROOT_FIELDS")
         if root_fields is not None:
             if (type(root_fields) not in (list, tuple, frozenset) or not root_fields or
                 any(type(field) is not str or not field for field in root_fields)):
@@ -75,5 +75,20 @@ class GraphQLMcpAPIProvider:
         await self._owner.aclose()
 
 
+_LOCAL_SLOTS = ("ENDPOINT", "HEADERS", "ROOT_FIELDS")
+
+
+def create_tool(local_config, services):
+    """Create one owner from its selected instance's local configuration."""
+    if any("API_" + slot in local_config for slot in _LOCAL_SLOTS):
+        raise GraphQLMcpError("legacy_tool_slots_invalid")
+    return GraphQLMcpAPIProvider(local_config, services)
+
+
 def create(config, services):
-    return GraphQLMcpAPIProvider(config, services)
+    """Translate legacy provider slots at the compatibility boundary only."""
+    if any(slot in config for slot in _LOCAL_SLOTS):
+        raise GraphQLMcpError("tool_slots_conflict")
+    local = {slot: config["API_" + slot] for slot in _LOCAL_SLOTS
+             if "API_" + slot in config}
+    return create_tool(local, services)

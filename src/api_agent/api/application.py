@@ -38,6 +38,9 @@ class Runtime:
     sessions: object = field(default=None, repr=False)
     llm_provider: object = field(default=None, repr=False)
     api_provider: object = field(default=None, repr=False)
+    tool_plan: object = field(default=None, repr=False)
+    tool_owners: dict = field(default_factory=dict, repr=False)
+    _tool_views: list = field(default_factory=list, init=False, repr=False)
     upstream_provider: object = field(default=None, repr=False)
     access_provider: object = field(default=None, repr=False)
     pending_cleanup: object = field(default=None, init=False, repr=False)
@@ -97,6 +100,27 @@ class Runtime:
             raise ProviderError("provider_location_required")
         return owner.require(kind, operation)
 
+    def borrow_tool(self, instance):
+        self._context()
+        if not self.ready or instance not in self.tool_owners:
+            raise RuntimeLifecycleError('runtime_tool_unavailable')
+        from api_agent.tooling.runtime import BorrowedTool
+        owner = self.tool_owners[instance].require_tool()
+        factory = getattr(owner, 'for_invocation', None)
+        if factory is not None and (not callable(factory) or inspect.iscoroutinefunction(factory)):
+            raise RuntimeLifecycleError('runtime_tool_view_invalid')
+        view = factory() if factory is not None else owner
+        borrowed = BorrowedTool(self, owner, view)
+        self._tool_views.append(borrowed)
+        if any(not inspect.iscoroutinefunction(getattr(view, name, None))
+               for name in ('describe', 'validate', 'invoke', 'aclose')):
+            raise RuntimeLifecycleError('runtime_tool_view_invalid')
+        return borrowed
+
+    def tools_for(self, definition, *, endpoints=None):
+        from api_agent.tooling.runtime import WorkflowTools
+        return WorkflowTools(self, definition, endpoints=endpoints)
+
     def require_llm_provider(self, operation="complete"):
         return self.require_provider("llm", operation)
 
@@ -111,6 +135,13 @@ class Runtime:
         self._started, self._draining = False, True
 
     async def _start_owned(self):
+        configurations = ()
+        if self.tool_plan is not None:
+            from api_agent.providers.loading import aload_tool
+            from api_agent.providers.progress import component_timeout
+            from api_agent.tooling.services import tool_configurations
+            async with component_timeout('Tool admission', 180):
+                configurations = tool_configurations(self.tool_plan, self.services or {})
         if self.factory_plan is not None:
             for kind, location, config, services in self.factory_plan:
                 from api_agent.providers.loading import aload_provider, provider_location
@@ -129,6 +160,21 @@ class Runtime:
                 if self._closed:
                     raise RuntimeLifecycleError('runtime_closed')
             self.factory_plan = None
+        if self.tool_plan is not None:
+            for tool, config, services in configurations:
+                if tool.id in self.tool_owners:
+                    raise RuntimeLifecycleError('runtime_tool_duplicate')
+                try:
+                    async with component_timeout('Tool acquisition', 180):
+                        owner = await aload_tool(tool.admission, config, services)
+                        self.tool_owners[tool.id] = owner
+                except BaseException as error:
+                    retained = getattr(error, 'retained_owners', ())
+                    self._retained_owners.extend(retained)
+                    self._retained_kinds.update((id(owner), 'tool') for owner in retained)
+                    raise
+                if self._closed:
+                    raise RuntimeLifecycleError('runtime_closed')
         if self.identity_plan is not None:
             self.identity_adapter = self.identity_plan()
             self.identity_plan = None
@@ -149,6 +195,12 @@ class Runtime:
             start = getattr(owner, 'astart', None)
             if start is not None:
                 await start()
+        for owner in self.tool_owners.values():
+            if self._closed:
+                raise RuntimeLifecycleError('runtime_closed')
+            from api_agent.providers.progress import component_timeout
+            async with component_timeout('Tool startup', 180):
+                await owner.astart()
         self.urlconf = self.routes.freeze()
         self.start()
 
@@ -169,6 +221,7 @@ class Runtime:
                 raise
             error = RuntimeLifecycleError('runtime_start_failed')
             error.cleanup_pending = self.pending_cleanup
+            error.primary_failure = primary
             raise error from None
 
     async def _close_owned(self):
@@ -179,12 +232,26 @@ class Runtime:
         except Exception:
             raise CleanupPendingError((self,), self.aclose) from None
         studio_backend = (self.services or {}).get('studio_backend')
-        owners = (studio_backend, *self._retained_owners, self.sessions, self.identity_adapter, self.ui_provider,
-                  self.llm_provider, self.access_provider, self.api_provider, self.upstream_provider, self.tracing)
+        service_registry = (self.services or {}).get('service_registry')
+        owners = (studio_backend, self.sessions, *reversed(self._tool_views), *self._retained_owners,
+                  self.identity_adapter, self.ui_provider, self.llm_provider, self.access_provider,
+                  *reversed(tuple(self.tool_owners.values())), self.api_provider, service_registry, self.upstream_provider, self.tracing)
         pending = []
         # API owners require upstream clients; every unresolved child retains tracing.
         for owner in owners:
             if owner is None:
+                continue
+            if any(any(child is view for view in self._tool_views) for child in pending) and any(owner is tool for tool in self.tool_owners.values()):
+                pending.append(owner)
+                continue
+            if any(any(child is tool for tool in self.tool_owners.values())
+                   or any(child is view for view in self._tool_views)
+                   or self._retained_kinds.get(id(child)) == 'tool'
+                   for child in pending) and (owner is service_registry or owner is self.upstream_provider):
+                pending.append(owner)
+                continue
+            if service_registry is not None and any(child is service_registry for child in pending) and owner is self.upstream_provider:
+                pending.append(owner)
                 continue
             if any(child is studio_backend for child in pending) and owner is not studio_backend:
                 pending.append(owner)

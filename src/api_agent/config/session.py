@@ -61,6 +61,10 @@ class ConfigSession:
 
     def __init__(self, context, schema, argv=(), environ=None):
         self.context = context
+        self._tool_selection = None
+        self._automatic_tool_selection = True
+        self._tool_intents = ()
+        self.tool_plan = None
         self.schema = schema
         self._provider_base_schema = schema
         self.argv = tuple(argv)
@@ -73,11 +77,41 @@ class ConfigSession:
             provider_dotenv.update(read_dotenv(path))
         self._schema = self._bootstrap_schema(schema, provider_dotenv)
 
-    def _bootstrap_schema(self, schema, dotenv, choices=None):
+    def _bootstrap_schema(self, schema, dotenv, choices=None, operation_intents=()):
         from api_agent.providers.loading import bootstrap_schema
-        return bootstrap_schema(schema, self.argv, self.environ, dotenv, choices,
+        provider_schema = bootstrap_schema(schema, self.argv, self.environ, dotenv, choices,
             owner_root=getattr(self.context, 'owner_root', self.context.pack_root),
             configuration_paths=getattr(self.context, 'provider_config_paths', ()))
+        if self._automatic_tool_selection:
+            from api_agent.tooling.models import OperationSelection
+            effective = resolve_config(provider_schema, argv=self.argv, environ=self.environ,
+                dotenv=dotenv, overrides=choices, anchors=self.context.anchors,
+                interactive=True, pack_launcher=self.context.external_pack,
+                operation_intents=operation_intents)
+            self._tool_selection = (OperationSelection('collection')
+                if effective.values.get('TUI_MODE') in {'unit', 'integration', 'e2e'} else None)
+        from .tool_resolution import compose_operation_tools
+        self.tool_plan = compose_operation_tools(self.context, provider_schema,
+            selection=self._tool_selection, argv=self.argv, environ=self.environ,
+            dotenv=dotenv, overrides=choices, operation_intents=operation_intents)
+        return self.tool_plan.schema if self.tool_plan is not None else provider_schema
+
+    def select_operation(self, tests=None):
+        """Select the application or an exact test union before resolving inputs."""
+        from api_agent.tooling.models import OperationSelection
+        self._tool_selection = tests if isinstance(tests, OperationSelection) else None if tests is None else tuple(tests)
+        self._automatic_tool_selection = False
+        items = () if tests is None or isinstance(tests, OperationSelection) else self._tool_selection
+        self._tool_intents = ('ui_session',) if any('requires_ui_session' in getattr(item, 'tags', ()) for item in items) else ()
+        self.tool_plan = None
+        return self.result()
+
+    def review_field_names(self):
+        """Keep tool applicability while ordinary review spans other modes."""
+        if self.tool_plan is None:
+            return frozenset(self.schema.fields)
+        return frozenset(self.schema.fields) - (
+            set(self.tool_plan.tool_fields) - set(self.tool_plan.active_fields))
 
     @property
     def dotenv_path(self):
@@ -305,6 +339,7 @@ class ConfigSession:
         return self._resolve(_review=True)[1]
 
     def _resolve(self, *, _cleanup=False, _review=False, operation_intents=()):
+        operation_intents = tuple(dict.fromkeys((*self._tool_intents, *operation_intents)))
         registry = self.password_manager_registry
         dotenv, origins = {}, {}
         auth_sources = {'password_manager': 'Not provided', 'roles': {}}
@@ -345,16 +380,19 @@ class ConfigSession:
         argv = self.argv
         choices = dict(self._choices)
         choices.update(runtime_directory_overrides(self.context))
-        self._schema = self._bootstrap_schema(self._provider_base_schema, dotenv, choices)
+        self._schema = self._bootstrap_schema(self._provider_base_schema, dotenv, choices, operation_intents)
         schema = self.schema
         # Default review spans modes; execution still uses ordinary applicability.
         # Pack scope remains enforced except in the explicit cleanup inventory.
         # Review inventory spans modes, but conditional requirements retain their
         # effective controller predicates instead of becoming unconditional.
+        if _cleanup and self.tool_plan is not None:
+            schema = self.tool_plan.option_schema
         if _cleanup or _review:
             schema = ConfigSchema({name: replace(field, applies_when={},
                                                  pack_only=False if _cleanup else field.pack_only)
-                                   for name, field in self.schema.fields.items()})
+                                   for name, field in schema.fields.items()
+                                   if _cleanup or name in self.review_field_names()})
         if _cleanup and "HELP" in schema.fields:
             choices['HELP'] = 'False'
         result = resolve_config(schema, argv=argv, environ=self.environ,
@@ -375,7 +413,12 @@ class ConfigSession:
                                 'roles': {role: source for role in normalized['roles']}}
             except (TypeError, ValueError):
                 auth_sources = {'password_manager': 'Not provided', 'roles': {}}
-        return retain_runtime_directory(replace(result, fields=fields), self.context), auth_sources
+        result = retain_runtime_directory(replace(result, fields=fields), self.context)
+        if self.tool_plan is not None:
+            from .tool_resolution import bind_operation_tools
+            result = bind_operation_tools(self.tool_plan, result, argv=argv)
+            self.tool_plan = result.tool_plan
+        return result, auth_sources
 
     def default_candidates(self):
         result = self.result(_review=True)
@@ -458,9 +501,10 @@ class ConfigSession:
         base = read_dotenv(self.context.base_root / '.env')
         pack = read_dotenv(self.context.pack_root / '.env') if self.context.external_pack else {}
         persisted = set().union(*(DotenvEditor(path).keys() for path in self.target_paths))
+        inventory = self.tool_plan.option_schema if self.tool_plan is not None else self.schema
         return [CleanupRow(name, result.fields.get(name), field, name in base,
                            name in pack, name in persisted)
-                for name, field in sorted(self.schema.fields.items())
+                for name, field in sorted(inventory.fields.items())
                 if name != 'UNATTENDED_AUTH'
                 and (field.acknowledge_default or name in retained
                      or name in persisted)]

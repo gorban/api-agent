@@ -118,7 +118,7 @@ def _complete_report(rows):
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None, config=None, unattended_index_source=None, interaction=None, quota_observer=None):
+                          after_run=None, config=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -140,6 +140,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     chunks, results = [], {}
     inspections = []
     backend = None
+    tool_plan_ready = False
     interaction_server = None
     interruption = None
     publication_error = None
@@ -302,6 +303,11 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
                     break
+                if tool_plan is not None and not tool_plan_ready:
+                    stage = 'Integration selected tool dependency admission'
+                    from api_agent.tooling.services import prepare_tool_plan
+                    tool_plan = prepare_tool_plan(tool_plan)
+                    tool_plan_ready = True
                 if config is not None and backend is None and plan_integration_requirements(tests).requires_llm:
                     stage = 'Integration shared setup backend startup'
                     from .setup_backend import SetupBackend
@@ -321,7 +327,10 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
                             unattended_index_source=unattended_index_source,
                             setup_backend=backend_descriptor, password_manager_registry=manager_registry,
-                            interaction_descriptor=interaction_descriptor))
+                            interaction_descriptor=interaction_descriptor,
+                            **({'tool_plan': tool_plan,
+                                'tool_cases': {identity.node_id: identity.id for identity in selected.values()}}
+                               if tool_plan is not None else {})))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)

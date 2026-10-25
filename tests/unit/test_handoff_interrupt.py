@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import signal
+import site
 import subprocess
 import sys
 import textwrap
@@ -52,8 +53,8 @@ def test_parser_bootstrap_handoff_preserves_completed_inspection_after_signal(
                     raise AssertionError('Acknowledged cleanup must not be aborted')
             dependencies.ensure_environment = lambda *a, **k: None
             api_agent.config.read_dotenv = lambda *a, **k: {}
-            api_agent.testing.collection.collect_tests = lambda *a, **k: []
             test = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
+            api_agent.testing.collection.collect_tests = lambda *a, **k: [test]
             code = int(os.environ['SUITE_EXIT_CODE'])
             run = IntegrationRunResult(code, (TestResult(test, 'passed'),), '', code == 130, (Inspection(),))
             api_agent.testing.launched.run_launched_integration = lambda *a, **k: SimpleNamespace(
@@ -84,7 +85,9 @@ def test_parser_bootstrap_handoff_preserves_completed_inspection_after_signal(
     ''')
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('API_AGENT', 'HANDOFF', 'TUI_', 'DEBUG', 'START', 'NO_STD_IN'))}
-    environment['PYTHONPATH'] = os.pathsep.join((str(tmp_path), str(base / 'src')))
+    dependency_paths = tuple(dict.fromkeys((*site.getsitepackages(),
+        *(path for path in sys.path if path.endswith(('site-packages', 'dist-packages'))))))
+    environment['PYTHONPATH'] = os.pathsep.join((str(tmp_path), str(base / 'src'), *dependency_paths))
     environment['SUITE_EXIT_CODE'] = str(exit_code)
     environment['READY_FILE'] = str(tmp_path / 'ready')
     process = subprocess.Popen([sys.executable, '-c', parent, str(base), str(pack)], env=environment,
@@ -94,7 +97,7 @@ def test_parser_bootstrap_handoff_preserves_completed_inspection_after_signal(
         import time
         deadline = time.monotonic() + 10
         while not (tmp_path / 'ready').exists():
-            assert process.poll() is None, process.communicate(timeout=1)
+            assert process.poll() is None, '\n'.join(process.communicate(timeout=1))
             assert time.monotonic() < deadline, 'Child never reached completed inspection'
             time.sleep(.01)
         assert (tmp_path / 'ready').read_text() == str(process.pid)

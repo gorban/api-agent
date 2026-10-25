@@ -37,8 +37,15 @@ NO_TEST_SELECTION_MESSAGE = "Select at least one test before continuing"
 
 
 def display(value):
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, separators=(",", ":"))
+    from collections.abc import Mapping
+    def plain(item):
+        if isinstance(item, Mapping):
+            return {key: plain(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [plain(child) for child in item]
+        return item
+    if isinstance(value, (Mapping, list, tuple)):
+        return json.dumps(plain(value), separators=(",", ":"))
     return str(value)
 
 
@@ -968,6 +975,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.review_destination = None
         self.startup_review = True
         self.review_names = set()
+        self._review_return_to_tests = False
         self.selection = None
         self.pending_test_selectors = tuple(self.session.result().positionals)
         self.active_test_selectors = ()
@@ -1068,13 +1076,22 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         else:
             await self.start_configuration()
 
+    def select_tool_context(self, tests=None):
+        if hasattr(self.session, 'select_operation'):
+            return self.session.select_operation(tests)
+        return self.session.result()
+
+    def tool_review_fields(self):
+        return (self.session.review_field_names() if hasattr(self.session, 'review_field_names')
+                else frozenset(self.schema.fields))
+
     def configuration_pending(self, *, include_optional=True):
         candidates = [item.name for item in self.session.default_candidates()]
         missing = [name for name in self.session.result(_review=True).missing
                    if self.schema.fields[name].acknowledge_default]
         review = self.session.result(_review=True)
         optional = [name for name, field in self.schema.fields.items()
-                    if include_optional and field.review_optional and field.acknowledge_default
+                    if name in self.tool_review_fields() and include_optional and field.review_optional and field.acknowledge_default
                     and (not field.pack_only or self.context.external_pack)
                     and (name not in review.fields or not review.fields[name].explicit)]
         return set(candidates + missing + optional)
@@ -1188,7 +1205,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return reason + ("\na save; e edit; c close." if self.startup_review or self.review_destination else "\na save; e edit; c close / menu.")
         operation = self.review_operation()
         destination = f"continue {operation}" if self.review_destination else "open the main menu"
-        return (reason + f"\na saves a default; e edits; c closes, then {destination}. "
+        plan = getattr(self.session, 'tool_plan', None)
+        context = ''
+        if plan is not None:
+            context = ('\nTool context: application.' if plan.selection.mode == 'application' else
+                       f'\nTool context: {len(plan.selection.test_ids)} selected tests.')
+        return (reason + context + f"\na saves a default; e edits; c closes, then {destination}. "
                 "Required settings still block execution.")
 
     def configuration_review_blocker(self):
@@ -1215,7 +1237,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.review_names.update(self.configuration_pending())
         rows = []
         for name in sorted(self.schema.fields):
-            if (not self.schema.fields[name].acknowledge_default or name not in self.review_names
+            if (name not in self.tool_review_fields() or not self.schema.fields[name].acknowledge_default or name not in self.review_names
                     or (name not in active and name not in default_names)):
                 continue
             resolved = review.fields.get(name) if name in default_names else result.fields.get(name)
@@ -1355,7 +1377,11 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             await self.configure_operation(skip_defaults=skip_defaults)
 
     def finish_configuration_review(self):
-        if self.review_destination:
+        if self._review_return_to_tests:
+            self._review_return_to_tests = False
+            self.review_destination = None
+            self.show_selection()
+        elif self.review_destination:
             self.mode = self.review_destination
             self.run_worker(self.enter_mode(skip_defaults=True), group='startup-mode', exclusive=True)
         else:
@@ -1367,6 +1393,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.discard_finished_inspection()
         self.auto_start_pending = False
         self.review_destination = None
+        self._review_return_to_tests = False
         self.startup_review = False
         # Keep acknowledged rows only for the current review, not later visits.
         self.review_names.clear()
@@ -1375,6 +1402,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if self.context.external_pack:
             self.session.switch_target(self.context.pack_root / ".env")
         self.mode = None
+        self.select_tool_context()
         actions = tuple(("mode-" + key, label) for key, label in MODES)
         if self.configuration_pending():
             actions += (('review-config', 'Review configuration'),)
@@ -1416,6 +1444,11 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.screen.query_one("#error", Static).update(message)
 
     async def configure_operation(self, *, skip_defaults=False):
+        if self.mode in {'unit', 'integration', 'e2e'}:
+            from api_agent.tooling.models import OperationSelection
+            self.select_tool_context(OperationSelection('collection'))
+        else:
+            self.select_tool_context()
         self.session.set_value("TUI_MODE", self.mode)
         result = self.session.result()
         if result.errors:
@@ -1596,6 +1629,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             if self.collection_cancel.is_set():
                 return
             self.selection.refresh_for_run(fresh)
+            self.select_tool_context(self.selection.selected_tests)
             if not self.selection.selected_tests:
                 raise ValueError("No selected tests remain after recollection")
             selected = frozenset(test.id for test in self.selection.selected_tests)
@@ -1626,6 +1660,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 try:
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
                         active, accepted=True, interaction=interaction,
+                        **({'tool_plan': resolved.tool_plan} if resolved.tool_plan is not None else {}),
                         content_policy=content_policy,
                         **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.reporting_runner_options(runner)),
                         **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.historical_runner_options(runner)),
@@ -2132,6 +2167,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                                 group='cost-history', exclusive=True)
 
     def show_selection(self):
+        self.select_tool_context(self.selection.selected_tests)
         self.cost_estimator = None
         if self.mode in {'integration', 'e2e'}:
             try:
@@ -2140,6 +2176,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 pass
         rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
         actions = (("continue", "(s) Start selected tests"),)
+        plan = getattr(self.session, 'tool_plan', None)
+        if plan is not None and (plan.tool_fields or plan.inactive_fields):
+            actions += (('review-config', 'Review selected-test configuration'),)
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows)
         if self.cost_estimator is not None:
             self.call_after_refresh(self.refresh_cost_summary)
@@ -2183,6 +2222,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
         elif self.screen.kind == "tests":
             self.selection.toggle(key)
+            self.select_tool_context(self.selection.selected_tests)
             self.refresh_rows()
         elif self.screen.kind == "containers":
             self.toggle_managed_container(key)
@@ -2263,6 +2303,10 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     self.session.set_value("SKIP_UNATTENDED_SETUP", "True", persist=True)
                 await self.start_configuration()
             elif key == 'review-config':
+                if self.screen.kind == 'tests':
+                    self.select_tool_context(self.selection.selected_tests)
+                    self._review_return_to_tests = True
+                    self.review_names.update(self.session.schema.fields)
                 self.show_configuration()
             elif key == "submit":
                 value = self.screen.config_value()
@@ -2300,6 +2344,15 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     return
                 await self.choose('confirmed-continue')
             elif key == 'confirmed-continue':
+                resolved = self.select_tool_context(self.selection.selected_tests)
+                resolved.raise_for_errors()
+                if resolved.missing:
+                    if any(not self.session.schema.fields[name].acknowledge_default for name in resolved.missing):
+                        raise ValueError('Missing required configuration: ' + ', '.join(resolved.missing))
+                    self._review_return_to_tests = True
+                    self.review_names.update(resolved.missing)
+                    self.show_configuration()
+                    return
                 if self.mode == "e2e":
                     from api_agent.runtime.starting import e2e_accepted
                     if e2e_accepted(self.session.result()):
@@ -2426,6 +2479,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 body.update(dialog.message)
 
     async def close_view(self):
+        if self.screen.kind == 'defaults' and self._review_return_to_tests:
+            self.finish_configuration_review()
+            return
         if self.screen.kind == 'test-failure':
             result, key, scroll_y = getattr(self.screen, 'result_return', (None, None, None))
             self.show_unit_results(selected_row=key if result is self.unit_result else None,

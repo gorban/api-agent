@@ -636,3 +636,128 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
                     if final_location != discovered[name]:
                         raise ProviderError('provider_selection_cycle')
             return schema
+
+
+class _AdmittedToolFinder:
+    """Load one captured package without exposing a source directory on sys.path."""
+    def __init__(self, namespace, admission):
+        self.namespace, self.admission = namespace, admission
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != self.namespace and not fullname.startswith(self.namespace + '.'):
+            from api_agent.tooling.admission import admitted_dependency_spec
+            return admitted_dependency_spec(self.admission, fullname, path)
+        relative = fullname[len(self.namespace):].lstrip('.').replace('.', '/')
+        sources = self.admission.sources
+        module = relative + '.py'
+        package = (relative + '/' if relative else '') + '__init__.py'
+        if package in sources:
+            selected, is_package = package, True
+        elif module in sources:
+            selected, is_package = module, False
+        elif not relative or any(name.startswith(relative + '/') for name in sources):
+            selected, is_package = None, True
+        else:
+            raise ImportError('Module is absent from the admitted tool closure')
+        spec = importlib.util.spec_from_loader(fullname, self, is_package=is_package)
+        spec.loader_state = selected
+        return spec
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        selected = module.__spec__.loader_state
+        if selected is not None:
+            module.__file__ = '<admitted-tool>/' + selected
+            exec(compile(self.admission.sources[selected], module.__file__, 'exec'), module.__dict__)
+
+
+class LoadedTool(LoadedProvider):
+    """Reuse provider disposal ownership while retaining captured import state."""
+    def __init__(self, implementation, module_name, finder, *, services):
+        super().__init__(implementation, module_name, services=services)
+        self.finder = finder
+
+    async def _dispose(self):
+        await super()._dispose()
+        if self.finder in sys.meta_path:
+            sys.meta_path.remove(self.finder)
+
+    def require_tool(self):
+        self._context()
+        if self.closed:
+            raise ProviderError('provider_closed')
+        return self.implementation
+
+
+def _validate_tool(adapter):
+    if adapter is None or type(getattr(adapter, 'version', None)) is not int or adapter.version != 1:
+        raise ProviderError('tool_version_invalid')
+    for name, args in (('describe', ()), ('validate', (object(),)),
+                       ('invoke', (object(),)), ('aclose', ())):
+        hook = getattr(adapter, name, None)
+        if not inspect.iscoroutinefunction(hook):
+            raise ProviderError('tool_callable_invalid')
+        try:
+            inspect.signature(hook).bind(*args)
+        except (TypeError, ValueError):
+            raise ProviderError('tool_callable_invalid') from None
+    start = getattr(adapter, 'astart', None)
+    if start is not None:
+        if not inspect.iscoroutinefunction(start):
+            raise ProviderError('tool_callable_invalid')
+        try:
+            inspect.signature(start).bind()
+        except (TypeError, ValueError):
+            raise ProviderError('tool_callable_invalid') from None
+
+
+async def aload_tool(admission, config, services):
+    """Create a captured tool with the same retained rollback receipt as providers."""
+    from api_agent.tooling.admission import verify_tool_dependencies
+    import importlib
+    verify_tool_dependencies(admission)
+    namespace = '_api_agent_tool_' + uuid.uuid4().hex
+    finder = _AdmittedToolFinder(namespace, admission)
+    sys.meta_path.insert(0, finder)
+    owner = None
+    try:
+        module_name = admission.entry.removesuffix('.py').replace('/', '.')
+        if module_name == '__init__':
+            module_name = ''
+        elif module_name.endswith('.__init__'):
+            module_name = module_name.removesuffix('.__init__')
+        module = importlib.import_module(namespace + ('.' + module_name if module_name else ''))
+        factory = getattr(module, admission.factory, None)
+        if not callable(factory):
+            raise ProviderError('tool_factory_invalid')
+        try:
+            inspect.signature(factory).bind(MappingProxyType(dict(config)), services)
+        except (TypeError, ValueError):
+            raise ProviderError('tool_factory_invalid') from None
+        adapter = factory(MappingProxyType(dict(config)), services)
+        if inspect.isawaitable(adapter):
+            if inspect.iscoroutine(adapter):
+                adapter.close()
+                raise ProviderError('tool_factory_must_be_synchronous')
+            adapter = _ReturnedAwaitable(adapter, namespace)
+            owner = LoadedTool(adapter, namespace, finder, services=services)
+            raise ProviderError('tool_factory_must_be_synchronous')
+        owner = LoadedTool(adapter, namespace, finder, services=services)
+        _validate_tool(adapter)
+        owner.admission = admission
+        return owner
+    except BaseException as primary:
+        if owner is not None:
+            try:
+                await owner.aclose()
+            except BaseException as cleanup:
+                primary.retained_owners = (owner,)
+                primary.cleanup_error = cleanup
+                raise primary
+        else:
+            release_modules(namespace)
+            if finder in sys.meta_path:
+                sys.meta_path.remove(finder)
+        raise

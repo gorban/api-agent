@@ -69,7 +69,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
                              unattended_index_source=None, interaction=None, content_policy=None, historical_estimator=None,
-                             workflow_admissions=None):
+                             workflow_admissions=None, tool_plan=None):
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
@@ -81,7 +81,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
     from .workflow_admission import capture_workflow_admissions
-    workflow_admissions = capture_workflow_admissions(context, workflow_admissions)
+    workflow_admissions = capture_workflow_admissions(context, workflow_admissions, tool_plan=tool_plan)
     started_at = monotonic()
     from api_agent.providers.rates import freeze_pricing
     from .cost_history import estimator_for
@@ -316,7 +316,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                            on_event=event, output=output, cancel_event=cancel_event,
                            unattended_index_source=unattended_index_source,
                            **({'quota_observer': observe_quota} if runner is run_integration_tests and quota_fetcher is None else {}),
-                           **({'interaction': interaction} if interaction is not None else {}))
+                           **({'interaction': interaction} if interaction is not None else {}),
+                           **({'tool_plan': tool_plan} if tool_plan is not None else {}))
         return RecordedIntegrationResult(execution, identity, directory if local_directory else None,
                                          usage_summary if usage_summary is not None else usage.report(), manifest, persisted,
                                          monotonic() - started_at)

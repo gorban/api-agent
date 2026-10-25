@@ -40,6 +40,18 @@ class InlinePromptRef:
 
 
 @dataclass(frozen=True)
+class ToolUsage:
+    """One declared port binding in a selected graph scope."""
+
+    scope: str
+    port: str
+    instance: Path
+    scope_kind: str
+    declaration: Path
+    line: int
+
+
+@dataclass(frozen=True)
 class WorkflowDefinition:
     graph_id: str
     entry: Path
@@ -52,6 +64,7 @@ class WorkflowDefinition:
     contents: object
     selected_declarations: object = None
     declaration_fragments: object = None
+    tool_usages: tuple[ToolUsage, ...] = ()
 
     def verify_native_sources(self):
         """Reject a source change before importing its admitted native binding."""
@@ -281,11 +294,14 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     captured = {}
     origins = {}
     def capture(path, kind, root_id=None):
-        path = Path(path).resolve()
+        path = (Path(os.path.normpath(path)) if kind == 'tool_instance' else Path(path).resolve())
         if not any(path.is_relative_to(root) for root in roots.values()):
             raise LayoutError(f'{path}:1: missing resource or outside declared roots')
         if root_id is None or not path.is_relative_to(roots[root_id]):
             root_id = 'base' if path.is_relative_to(roots['base']) else 'pack'
+        if (path in captured and 'tool_instance' in (kind, captured[path][0])
+                and kind != captured[path][0]):
+            raise LayoutError(f'{path}:1: tool instance has conflicting resource kind')
         if path not in captured:
             data = _read_bounded(path, roots[root_id])
             if kind == 'declaration':
@@ -325,7 +341,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     title, root_sections = _sections(entry, captured[entry][1])
     if title not in ('# Workflow v2', '# LangGraph flow'):
         raise LayoutError(f'{entry}:1: expected Workflow v2 heading')
-    allowed = {'Graph ID', 'Flow', *_COLUMNS, 'Notes'}
+    allowed = {'Graph ID', 'Flow', 'Tools', *_COLUMNS, 'Notes'}
     if set(root_sections) - allowed or 'Graph ID' not in root_sections or 'Flow' not in root_sections:
         raise LayoutError(f'{entry}:1: unknown or missing root section')
     identity = _table(entry, root_sections['Graph ID'], ('ID',))
@@ -416,7 +432,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     inline_prompts = {}
     for step in resolved:
         sections = declarations[step.id]
-        allowed = {*_COLUMNS, 'Native', 'Notes', 'Flow'}
+        allowed = {*_COLUMNS, 'Native', 'Notes', 'Flow', 'Tools'}
         if set(sections) - allowed - {key for key in sections if key.startswith('Prompt: ')}:
             raise LayoutError(f'{step.source}:1: unknown declaration section')
         if step.kind == 'node':
@@ -444,6 +460,20 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             if not _ID.fullmatch(prompt_id) or len(raw) < 2 or raw[0] != '```text' or raw[-1] != '```' or prompt_id in inline_prompts:
                 raise LayoutError(f'{step.source}:1: invalid inline prompt')
             inline_prompts[prompt_id] = (step.id, ('\n'.join(raw[1:-1]) + '\n').encode())
+    tool_usages = []
+    scopes = [('graph', graph_id, entry, root_sections)]
+    scopes.extend((step.kind, step.id, step.source, declarations[step.id]) for step in resolved)
+    for scope_kind, scope, owner, sections in scopes:
+        ports = set()
+        for row in _table(owner, sections.get('Tools', []), ('Port', 'Instance')):
+            port = row['Port']
+            if not _ID.fullmatch(port) or port in ports:
+                raise LayoutError(f'{owner}:{row["line"]}: invalid or duplicate tool port')
+            ports.add(port)
+            instance = link(owner, row['Instance'], 'tool_instance')
+            if instance.suffix != '.toml':
+                raise LayoutError(f'{owner}:{row["line"]}: tool instance must be TOML')
+            tool_usages.append(ToolUsage(scope, port, instance, scope_kind, owner, row['line']))
     execution_steps = []
     for step in resolved:
         if step.kind == 'node':
@@ -525,4 +555,4 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
                               layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
-                              MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments))
+                              MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages))

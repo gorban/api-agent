@@ -1,0 +1,19 @@
+version = 1
+id = "fixture/primary"
+interface = "verified-read@1"
+implementation = "graphql.toml"
+
+[local]
+slot = "ENDPOINT"
+output = "fixture/primary/http"
+path = "/graphql"
+declaration = "infrastructure.toml"
+
+[infrastructure]
+owner = "fixture"
+root = "."
+declarations = ["infrastructure.toml"]
+
+[bindings]
+ENDPOINT = "API_ENDPOINT"
+HEADERS = "API_HEADERS"

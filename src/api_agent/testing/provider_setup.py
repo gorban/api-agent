@@ -25,7 +25,7 @@ def _configured_request(request, config):
 
 
 def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None,
-                          password_manager_registry=None, interaction_descriptor=None):
+                          password_manager_registry=None, interaction_descriptor=None, tool_plan=None, tool_cases=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     from api_agent.auth.managers import registry_for_context
@@ -43,6 +43,11 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
     if interaction_descriptor is not None:
         from api_agent.auth.interaction_transport import validate_descriptor
         data['interaction'] = validate_descriptor(interaction_descriptor)
+    if tool_plan is not None:
+        from .tool_runtime import write_tool_packet
+        data['tool_plan'] = write_tool_packet(directory, tool_plan)
+        data['tool_cases'] = dict(tool_cases or {})
+        data['base_root'], data['pack_root'] = str(context.base_root), str(context.pack_root)
     payload = json.dumps(data, default=str, allow_nan=False).encode()
     if len(payload) > 1048576:
         raise ContractError('Integration configuration is too large.')
@@ -66,7 +71,7 @@ def _read_snapshot():
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
@@ -76,6 +81,15 @@ def _read_snapshot():
         if ('password_manager_pack_root' in data and
                 (not isinstance(data['password_manager_pack_root'], str)
                  or not Path(data['password_manager_pack_root']).is_absolute())):
+            raise ValueError
+        if 'tool_plan' in data:
+            if (type(data.get('tool_cases')) is not dict
+                    or any(type(key) is not str or type(value) is not str
+                           for key, value in data['tool_cases'].items())
+                    or any(type(data.get(key)) is not str or not Path(data[key]).is_absolute()
+                           for key in ('base_root', 'pack_root'))):
+                raise ValueError
+        elif any(key in data for key in ('tool_cases', 'base_root', 'pack_root')):
             raise ValueError
         if 'setup_backend' in data:
             from api_agent.providers.setup_transport import validate_descriptor
@@ -695,6 +709,17 @@ class IntegrationRequirements:
     def require_combination(self, valid, reason):
         if not valid:
             pytest.skip(reason)
+
+
+@pytest.fixture
+def workflow_tools(request, ui_provider_loop):
+    """Use only the parent's exact-case captured tooling on its retained loop."""
+    from .tool_runtime import PreparedTestTools
+    owner = PreparedTestTools(_read_snapshot(), request.node.nodeid, ui_provider_loop)
+    try:
+        yield owner
+    finally:
+        finish_ui_browser_inspection(ui_provider_loop, None, owners=(owner,))
 
 
 @pytest.fixture(scope='session')

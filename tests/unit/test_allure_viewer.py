@@ -1,11 +1,19 @@
 """Controlled CLI and HTTP proof for immutable viewer bindings."""
 import asyncio
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+import fcntl
 from functools import wraps
 import hashlib
 import io
 import json
 from pathlib import Path
 import socket
+import os
+import tempfile
+import subprocess
+import sys
+from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -61,11 +69,130 @@ else:
     return path
 
 
+def _port_candidates():
+    """Avoid Linux automatic socket allocation, using its configured range.
+
+    Other Unix platforms use the IANA dynamic range as a bounded fallback;
+    customized ephemeral ranges there are outside this helper's guarantee.
+    """
+    try:
+        first, last = map(int, Path('/proc/sys/net/ipv4/ip_local_port_range').read_text().split())
+        if not 1 <= first <= last <= 65535:
+            raise ValueError('invalid ephemeral range')
+    except (OSError, ValueError):
+        first, last = 49152, 65535
+    return (number for number in range(10000, 65536) if not first <= number <= last)
+
+
+@contextmanager
+def _claim_port(candidates=None, *, directory=None, probe_factory=socket.socket):
+    """Lease a port across pytest processes until the fixture finishes.
+
+    Persistent lock files must never be unlinked: replacing a locked inode
+    would let another worker claim the same port. The bind probe excludes
+    existing listeners. An unrelated process explicitly binding this port
+    after the probe is outside the lease protocol and still fails normally.
+    """
+    if directory is None:
+        directory = Path(tempfile.gettempdir()) / f'api-agent-test-ports-{os.getuid()}'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    for number in _port_candidates() if candidates is None else candidates:
+        with (directory / str(number)).open('a') as claim:
+            try:
+                fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            with probe_factory() as probe:
+                try:
+                    probe.bind(('127.0.0.1', number))
+                except OSError:
+                    continue
+            yield number
+            return
+    raise RuntimeError('No unoccupied test port available outside the ephemeral range')
+
+
 @pytest.fixture
 def port():
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        return sock.getsockname()[1]
+    with _claim_port() as number:
+        yield number
+
+
+@pytest.mark.parametrize('configured', ['12000 61000', 'invalid', '70000 80000', None])
+def test_port_candidates_exclude_configured_ephemeral_range(monkeypatch, configured):
+    def read_range(_):
+        if configured is None:
+            raise OSError('no proc filesystem')
+        return configured
+
+    monkeypatch.setattr(Path, 'read_text', read_range)
+    candidates = set(_port_candidates())
+    first, last = (12000, 61000) if configured == '12000 61000' else (49152, 65535)
+    assert candidates
+    assert not candidates.intersection(range(first, last + 1))
+    assert candidates == set(range(10000, first)) | set(range(last + 1, 65536))
+
+
+@contextmanager
+def _controlled_port_probe():
+    # Algorithm tests isolate file-lock ownership from real socket allocation.
+    yield SimpleNamespace(bind=lambda address: None)
+
+
+def _assert_port_lock_released(directory, number):
+    with (directory / str(number)).open('a') as claim:
+        fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_port_claims_are_exclusive_and_released_across_concurrent_workers(tmp_path):
+    barrier = Barrier(8)
+
+    def worker(_):
+        with _claim_port(range(10000, 10008), directory=tmp_path,
+                         probe_factory=_controlled_port_probe) as number:
+            barrier.wait(timeout=10)
+            return number
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        numbers = list(pool.map(worker, range(8)))
+    assert len(set(numbers)) == 8
+    for number in numbers:
+        _assert_port_lock_released(tmp_path, number)
+
+
+def test_port_claim_is_visible_to_another_process(tmp_path):
+    script = """import fcntl, sys
+with open(sys.argv[1], 'a') as claim:
+    try:
+        fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(23)
+"""
+    with _claim_port(directory=tmp_path) as number:
+        path = tmp_path / str(number)
+        held = subprocess.run([sys.executable, '-c', script, str(path)], timeout=10)
+        assert held.returncode == 23
+    released = subprocess.run([sys.executable, '-c', script, str(path)], timeout=10)
+    assert released.returncode == 0
+
+
+def test_port_claim_skips_busy_listener_and_releases_failed_probe(tmp_path):
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen()
+        number = listener.getsockname()[1]
+        with pytest.raises(RuntimeError, match='No unoccupied test port'):
+            with _claim_port([number], directory=tmp_path):
+                pytest.fail('occupied listener was accepted')
+        _assert_port_lock_released(tmp_path, number)
+
+
+def test_port_claim_released_when_test_body_raises(tmp_path):
+    with pytest.raises(ValueError, match='body failure'):
+        with _claim_port([10000], directory=tmp_path,
+                         probe_factory=_controlled_port_probe) as number:
+            raise ValueError('body failure')
+    _assert_port_lock_released(tmp_path, number)
 
 
 class Browser:

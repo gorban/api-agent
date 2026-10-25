@@ -32,6 +32,15 @@ def _plan(config, schema, context, scope, *, engine_environment=None, requires_a
     contributions = ()
     if getattr(context, 'infrastructure_paths', ()) or locations:
         contributions = load_infrastructure_contributions(context, selected_provider_locations=locations)
+    tool_plan = getattr(config, 'tool_plan', None)
+    if tool_plan is not None and tool_plan.tools:
+        from api_agent.tooling.services import selected_contributions
+        merged = {item.id: item for item in contributions}
+        for item in selected_contributions(tool_plan):
+            if item.id in merged and merged[item.id] != item:
+                raise ValueError('Conflicting selected infrastructure identity')
+            merged[item.id] = item
+        contributions = tuple(merged.values())
     if contributions:
         if schema is None:
             raise ValueError('Selected infrastructure requires the resolved configuration schema.')
@@ -154,7 +163,11 @@ class LocalRunOwner:
         runtime = compose_runtime(self.context, config, callback_origin=origin,
             tls_material=material, required_kinds=())
         self._emissions = runtime.emissions
-        if self._requires_api:
+        tool_plan = getattr(config, 'tool_plan', None)
+        if tool_plan is not None and tool_plan.tools:
+            runtime.tool_plan = tool_plan
+            self._graph.tools = runtime.tools_for(self._graph.definition)
+        elif self._requires_api:
             bind_local_tools(runtime, self._graph, config)
         self._llm = self.llm_factory(config.values, self.context.owner_root, emissions=runtime.emissions,
                                      on_status=self._workflow_event, trace=runtime.tracing)
@@ -230,10 +243,15 @@ class LocalRunOwner:
                 self._startup_stage('application construction')
                 await asyncio.sleep(0)
                 self._graph = self.application_factory(self._prepared[0], config=self._config.values)
-                self._requires_api = getattr(self._graph, 'requires_api', False) is True
+                selected_tools = getattr(self._config, 'tool_plan', None)
+                self._requires_api = (not (selected_tools is not None and selected_tools.tools)
+                    and getattr(self._graph, 'requires_api', False) is True)
                 bundled_demo = (getattr(self.context, 'pack_id', None) == 'demo'
                     and not getattr(self.context, 'external_pack', False))
-                if bundled_demo:
+                if selected_tools is not None and selected_tools.tools:
+                    from api_agent.tooling.services import tool_operation_values
+                    self._config = tool_operation_values(selected_tools, self._config)
+                elif bundled_demo:
                     from api_agent.runtime.demo_api import prepare_demo_api
                     self._config, _ = prepare_demo_api(self._config, self.context,
                         requires_api=self._requires_api)
@@ -267,6 +285,12 @@ class LocalRunOwner:
                     LocalComponent(name, 'starting') for name in self._planned_components))
                 from api_agent.runtime.local_status import LocalStatusApplication
                 operation_options = {}
+                if selected_tools is not None and selected_tools.tools:
+                    from dataclasses import replace
+                    from api_agent.tooling.services import bind_tool_outputs
+                    def bind_tools(config, infrastructure):
+                        return replace(config, tool_plan=bind_tool_outputs(config.tool_plan, infrastructure))
+                    operation_options['bind_infrastructure'] = bind_tools
                 if self._requires_api and bundled_demo:
                     from api_agent.runtime.demo_api import bind_demo_api_endpoint
                     operation_options['bind_infrastructure'] = bind_demo_api_endpoint

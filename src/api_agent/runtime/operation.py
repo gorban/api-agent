@@ -280,6 +280,10 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
         active = activation_kinds(config.values, required_kinds)
         manifests = selected_manifests(config.values, owner_root=getattr(context, 'owner_root', context.base_root),
                                        active_kinds=active)
+        tool_plan = getattr(config, 'tool_plan', None)
+        if tool_plan is not None and tool_plan.tools:
+            from api_agent.tooling.services import selected_tool_manifests
+            manifests = (*manifests, *selected_tool_manifests(tool_plan))
         options = {'selected_provider_manifests': manifests} if manifests else {}
         status = ensure_environment(context, argv, collect=collect,
                                     groups=tuple(dict.fromkeys(selected_groups)), **options)

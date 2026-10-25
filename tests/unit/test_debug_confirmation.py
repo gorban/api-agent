@@ -69,7 +69,8 @@ def test_terminal_unavailable_input_cancels():
 
 @pytest.mark.parametrize('answer,expected_status', [('y\n', 0), ('n\n', 3), ('', 3)])
 def test_terminal_dispatch_confirms_before_runner(answer, expected_status):
-    selected = [SimpleNamespace(id=identity, tags=frozenset()) for identity in ('a', 'b', 'b')]
+    selected = [TestIdentity(f'base::test.py::{name}', 'base', 'test.py', f'test.py::{name}')
+                for name in ('one', 'two')]
     output, error = StringIO(), StringIO()
     with patch.dict('os.environ', {}, clear=True), patch('sys.stdin', StringIO(answer)), \
          patch('sys.stdout', output), patch('sys.stderr', error), \
@@ -88,7 +89,7 @@ def test_terminal_dispatch_confirms_before_runner(answer, expected_status):
 
     assert status == expected_status, error.getvalue()
     assert 'up to 2' in output.getvalue()
-    assert requirements.called is (expected_status == 0)
+    assert requirements.called  # Inert selection planning precedes confirmation.
     assert runner.called is (expected_status == 0)
     if expected_status == 3:
         assert 'confirmation declined' in error.getvalue()

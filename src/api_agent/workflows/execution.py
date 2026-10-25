@@ -59,6 +59,16 @@ class NodeContext:
     visit_id: str | None = None
     attempt_id: str | None = None
 
+    @property
+    def tools(self):
+        resolver = self.services.get('tools')
+        if resolver is None:
+            raise WorkflowError('Workflow has no admitted tool bindings')
+        return resolver
+
+    def tool(self, port):
+        return self.tools.for_port(scope_kind='node', scope=self.node_id, port=port)
+
     def record_call(self, *, usage=None, selection=None, elapsed=None, outcome='completed', call_id=None):
         """Attribute one completed provider/tool leaf call to this node visit."""
         journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
