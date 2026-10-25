@@ -1,0 +1,50 @@
+<!-- -*- mode: markdown -*- -->
+
+<meta charset="utf-8">
+<meta name="workflow-view" content="v2">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-hashes' 'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=' 'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='; img-src 'self'; frame-src 'self'; connect-src 'none'">
+
+[workflow-hidden-text]: <html style="font-size:0">
+[workflow-styles]: <link rel="stylesheet" href="../../../../../.private_resources/viewer/viewer.css">
+[workflow-markdown]: <script defer src="../../../../../.private_resources/viewer/marked.js"> "</script>"
+[workflow-headings]: <script defer src="../../../../../.private_resources/viewer/heading-id.js"> "</script>"
+[workflow-sanitize]: <script defer src="../../../../../.private_resources/viewer/dompurify.js"> "</script>"
+[workflow-viewer]: <script defer src="../../../../../.private_resources/viewer/viewer.js"> "</script>"
+[workflow-modal-styles]: <link rel="stylesheet" href="../../../../../.private_resources/viewer/flow-modal.css">
+[workflow-modal-script]: <script defer src="../../../../../.private_resources/viewer/flow-modal.js"> "</script>"
+
+[workflow-source]: <plaintext id="workflow-source" hidden>
+
+# Node v2: conversation
+
+<!-- workflow-generated-diagram-v2:start -->
+[![Workflow diagram](../../../../../.private_resources/diagrams/tests/integration/fixtures/tool_instances/independent/conversation.svg)](../../../../../.private_resources/diagrams/tests/integration/fixtures/tool_instances/independent/conversation.svg)
+
+<details open>
+<summary>Diagram links</summary>
+
+[Open standalone diagram](../../../../../.private_resources/diagrams/tests/integration/fixtures/tool_instances/independent/conversation.svg)
+
+- [independent_tools](flow.md.html)
+
+</details>
+<!-- workflow-generated-diagram-v2:end -->
+
+## Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| converse | llm | [source](../independent_functions.py) |
+
+## Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| conversation | converse | [input](../input.json) | [output](../output.json) |
+
+## Tools
+
+| Port | Instance |
+| --- | --- |
+| primary | [primary](../primary.toml) |
+| secondary | [secondary](../independent_secondary.toml) |

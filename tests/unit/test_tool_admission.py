@@ -767,3 +767,118 @@ def test_installed_inventory_metadata_and_bytecode_are_not_executable_receipts(i
     owned = next(row[1] for row in receipt if len(row) == 2 and row[0] == 'owned-import-files')
     assert tuple(dict(owned)['sample_owned_dependency']) == (
         (str(root / 'sample_owned_dependency.py'), sha256((root / 'sample_owned_dependency.py').read_bytes()).hexdigest()),)
+
+
+@pytest.fixture
+def inferred_cache_receipt(installed_receipts):
+    root, add = installed_receipts
+    add('sample_cache_dependency')
+    distribution = admission.metadata.distribution('sample-cache-dependency')
+    cache = root / '__pycache__/sample_cache_dependency.cpython-313.pyc'
+    cache.parent.mkdir()
+    cache.write_bytes(b'generated cache')
+    distribution.files.append(SimpleNamespace(as_posix=lambda: '__pycache__/sample_cache_dependency.cpython-313.pyc',
+                                             hash=None, path=cache))
+    distribution.read_text = lambda name: None if name == 'top_level.txt' else 'controlled receipt'
+    admission.metadata.packages_distributions()['__pycache__'] = ['sample-cache-dependency']
+    return root, distribution
+
+
+def test_generated_cache_inference_does_not_block_dependency_receipt(inferred_cache_receipt):
+    _, distribution = inferred_cache_receipt
+
+    identity = admission._dependency('sample_cache_dependency')
+
+    owned = dict(next(row[1] for row in identity if row[0] == 'owned-import-files'))
+    assert set(owned) == {'sample_cache_dependency'}
+    assert any(path.endswith('sample_cache_dependency.py') for path, _ in owned['sample_cache_dependency'])
+
+
+def test_manifest_imports_omit_only_inferred_generated_cache(inferred_cache_receipt):
+    from packaging.requirements import Requirement
+
+    imports = admission._manifest_imports((Requirement('sample-cache-dependency==1.0'),))
+
+    assert imports == ('sample_cache_dependency',)
+
+
+def test_direct_cache_import_is_still_rejected(inferred_cache_receipt):
+    with pytest.raises(admission.ToolAdmissionError, match='no owned executable'):
+        admission._dependency('__pycache__')
+
+
+@pytest.mark.parametrize('cache_entry', ['__pycache__/unowned.txt', '__pycache__/unowned.py',
+                                        '__pycache__/unowned.so', '__pycache__/unowned.pyd'])
+def test_non_generated_cache_root_is_not_exempt(inferred_cache_receipt, cache_entry):
+    _, distribution = inferred_cache_receipt
+    distribution.files.append(SimpleNamespace(as_posix=lambda: cache_entry, hash=None))
+
+    with pytest.raises(admission.ToolAdmissionError, match='unhashed file'):
+        admission._dependency('sample_cache_dependency')
+
+
+def test_receipted_cache_bytecode_is_not_treated_as_generated(inferred_cache_receipt):
+    _, distribution = inferred_cache_receipt
+    distribution.files[-1].hash = SimpleNamespace(mode='sha256', value='receipt')
+
+    with pytest.raises(admission.ToolAdmissionError, match='no owned executable'):
+        admission._dependency('sample_cache_dependency')
+
+
+def test_explicit_cache_root_metadata_remains_strict(inferred_cache_receipt):
+    _, distribution = inferred_cache_receipt
+    distribution.read_text = lambda name: 'sample_cache_dependency\n__pycache__\n' if name == 'top_level.txt' else 'controlled receipt'
+
+    with pytest.raises(admission.ToolAdmissionError, match='no owned executable'):
+        admission._dependency('sample_cache_dependency')
+
+
+def test_unbacked_cache_inference_remains_strict(inferred_cache_receipt):
+    _, distribution = inferred_cache_receipt
+    distribution.files.pop()
+
+    with pytest.raises(admission.ToolAdmissionError, match='no owned executable'):
+        admission._dependency('sample_cache_dependency')
+
+
+def test_unbacked_ordinary_import_root_remains_strict(inferred_cache_receipt):
+    admission.metadata.packages_distributions()['sample_missing_executable'] = ['sample-cache-dependency']
+
+    with pytest.raises(admission.ToolAdmissionError, match='no owned executable'):
+        admission._dependency('sample_cache_dependency')
+
+
+def test_transitive_generated_cache_inference_keeps_real_module_receipts(installed_receipts, inferred_cache_receipt):
+    _, add = installed_receipts
+    add('sample_cache_parent', requires=('sample-cache-dependency==1.0',))
+
+    identity = admission._dependency('sample_cache_parent')
+
+    owned = dict(next(row[1] for row in identity if row[0] == 'owned-import-files'))
+    assert set(owned) == {'sample_cache_parent', 'sample_cache_dependency'}
+
+
+@pytest.mark.parametrize('logical', ['__pycache__.py', '__pycache__.so'])
+def test_generated_cache_does_not_hide_cache_named_executable(inferred_cache_receipt, logical):
+    root, distribution = inferred_cache_receipt
+    executable = root / logical
+    executable.write_bytes(b'MARKER = "owned executable"\n')
+    digest = base64.urlsafe_b64encode(sha256(executable.read_bytes()).digest()).decode().rstrip('=')
+    distribution.files.append(SimpleNamespace(as_posix=lambda: logical,
+        hash=SimpleNamespace(mode='sha256', value=digest), path=executable))
+
+    identity = admission._dependency('sample_cache_dependency')
+
+    owned = dict(next(row[1] for row in identity if row[0] == 'owned-import-files'))
+    assert '__pycache__' in owned
+    assert str(executable.resolve()) in dict(owned['__pycache__'])
+
+
+def test_generated_cache_does_not_hide_top_level_sourceless_bytecode(inferred_cache_receipt):
+    root, distribution = inferred_cache_receipt
+    bytecode = root / '__pycache__.pyc'
+    bytecode.write_bytes(b'sourceless bytecode')
+    distribution.files.append(SimpleNamespace(as_posix=lambda: '__pycache__.pyc', hash=None, path=bytecode))
+
+    with pytest.raises(admission.ToolAdmissionError, match='no owned executable'):
+        admission._dependency('sample_cache_dependency')

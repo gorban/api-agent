@@ -460,9 +460,11 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
     for secondary in shared:
         for slot in ('ENDPOINT', 'HEADERS'):
             alias = tool_by_id[secondary].bindings.get(slot)
-            if alias is not None and len(alias_owners[alias]) > 1:
-                raise ToolSelectionError(alias + ': Conflicting derived configuration binding ownership')
-            if alias is not None and alias not in base_schema.fields:
+            derived_only = alias is not None and all(
+                owner in shared and owner_slot in ('ENDPOINT', 'HEADERS')
+                and owner_slot in tool_by_id[shared[owner]].bindings
+                for owner, owner_slot, _ in alias_owners[alias])
+            if derived_only and alias not in base_schema.fields:
                 fields[alias] = replace(fields[alias], required=False, required_when={})
     schema = ConfigSchema(fields)
     resolved = resolve_config(schema, argv=argv, environ=environ, dotenv=dotenv,

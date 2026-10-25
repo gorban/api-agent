@@ -18,7 +18,7 @@ _VERDICT = {'type': 'object', 'properties': {
 
 async def run_tool_conversation(*, prompt, gates, complete, selection,
                                 generation=None, max_rounds=4, timeout=300,
-                                required_tools=(), verify_final=None, journal=None):
+                                required_tools=(), verify_final=None, result_proof=None, journal=None):
     """Borrow gates and inference; retain partial content privately in ``journal``.
 
     ``gates`` maps callable aliases to factories accepting a fresh invocation ID.
@@ -26,7 +26,9 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
     journal contains actual results and final text; it is never an attachment by
     itself. An optional synchronous ``verify_final(text, results)`` can enforce a
     fixture's exact per-tool answer contract without revealing expected values
-    to the model. ``results`` maps each alias to all its completed result data.
+    to the model. ``result_proof(alias, status, data)`` optionally returns a
+    boolean synthetic match proof immediately after each completed execution; it
+    never authorizes a call or replaces final validation. ``results`` maps each alias to all its completed result data.
     """
     if (type(max_rounds) is not int or max_rounds < 1 or not gates
             or not set(required_tools) <= set(gates)):
@@ -40,7 +42,8 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
     async def infer(payload, kind):
         request = LLMRequest(selection, payload, request_id=str(uuid4()))
         entry = {'request_id': request.request_id, 'kind': kind,
-                 'selection': selection, 'usage': None, 'outcome': 'started'}
+                 'selection': selection, 'requested_effort': payload.generation.reasoning_effort,
+                 'usage': None, 'outcome': 'started'}
         inference.append(entry)
         try:
             result = await complete(request)
@@ -134,6 +137,11 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
                 answer = await gate.execute(verified)
                 entry.update(status=answer.status, result=answer.data)
                 results.setdefault(call.name, []).append(answer.data)
+                if result_proof is not None:
+                    proof = result_proof(call.name, answer.status, answer.data)
+                    if type(proof) is not bool:
+                        raise ValueError('Tool result proof must be boolean')
+                    entry['result_matches'] = proof
                 outputs.append(ToolResult(call.call_id, (TextContent(canonical(
                     {'status': answer.status, 'data': answer.data}, 524288)),)))
             messages.append(Message('tool', results=tuple(outputs)))

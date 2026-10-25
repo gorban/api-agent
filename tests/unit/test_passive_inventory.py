@@ -443,7 +443,11 @@ def test_actual_demo_default_shared_default_capture_keeps_fixture_identity_witho
     last = capture_inventory(context, default_again)
 
     assert first.pairs == shared.pairs == last.pairs
-    assert len(first.pairs) == 3
+    from api_agent.runtime.infrastructure_plan import _name
+    expected_services = {('demo/api', 'demo'), ('fixture/backing', 'fixture'),
+                         ('fixture/primary', 'fixture'), ('fixture/secondary', 'fixture')}
+    assert set(first.pairs) == {(_name('infra-', service), _name('infra-', owner))
+                                for service, owner in expected_services}
     fixture_rows = [dict(row) for row in shared.authority if row['owner'] == 'fixture']
     assert fixture_rows == [{'owner':'fixture', 'root':str(fixture_root), 'path':'infrastructure.toml'}]
     assert set(captured) == declarations

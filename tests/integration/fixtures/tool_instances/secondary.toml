@@ -3,6 +3,9 @@ id = "fixture/shared-secondary"
 interface = "verified-read@1"
 implementation = "graphql.toml"
 
+[defaults]
+ENDPOINT = ""
+
 [local]
 slot = "ENDPOINT"
 output = "fixture/primary/http"

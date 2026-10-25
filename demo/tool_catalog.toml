@@ -22,7 +22,12 @@ root = "base"
 entry = "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"
 profile = "shared_primary"
 
+[graphs.independent_tools]
+root = "base"
+entry = "tests/integration/fixtures/tool_instances/independent/flow.md.html"
+
 [test_cases]
+"api-agent::tests/integration/test_tool_alternate.py::test_independent_tools" = ["independent_tools"]
 "api-agent::tests/integration/test_application_graph.py::test_selected_application_flow_executes_llm_call" = ["simple_chat"]
 "api-agent::tests/integration/test_llm_discovery.py::test_llm_discovery" = []
 "api-agent::tests/integration/test_llm_request.py::test_llm_request" = []

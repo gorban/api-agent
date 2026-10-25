@@ -195,8 +195,11 @@ def test_shared_derived_alias_cannot_weaken_an_independent_case(selection_fixtur
         '\n[profiles.shared]\nversion=1\nkind="shared-primary"\n'
         'primary="sample/primary"\nsecondary=["sample/secondary"]\n')
 
-    with pytest.raises(ToolSelectionError, match='API_2_ENDPOINT: Conflicting derived'):
-        selected((context, schema), (DUAL, third))
+    plan = selected((context, schema), (DUAL, third))
+
+    assert plan.schema.fields['API_2_ENDPOINT'].required is True
+    assert plan.shared_primary == {'sample/secondary': 'sample/primary'}
+    assert plan.for_case(third).tools[0].derived_from == {}
 
 
 def test_unscoped_variant_reusing_covered_definition_still_rejects(separate_cases):
@@ -217,3 +220,48 @@ def test_inherited_graph_and_node_owners_cannot_share_config_aliases(separate_ca
 
     with pytest.raises(ToolSelectionError, match='API_ENDPOINT'):
         selected(separate_cases, (PRIMARY,))
+
+
+def test_shared_endpoint_alias_cannot_weaken_another_shared_tools_path(selection_fixture):
+    context, schema = selection_fixture
+    write(context.base_root, 'path.toml',
+        'version=1\ninterface="verified-read@1"\nfactory="package/factory.py:create_tool"\n'
+        '[inputs.ENDPOINT]\ntype="str"\nrequired=true\n'
+        '[inputs.PATH]\ntype="str"\nrequired=true\n')
+    write(context.base_root, 'third.toml',
+        'version=1\nid="sample/third"\ninterface="verified-read@1"\nimplementation="path.toml"\n'
+        '[bindings]\nENDPOINT="API_3_ENDPOINT"\nPATH="API_2_ENDPOINT"\n')
+    graph(context.base_root, 'third_graph', [('primary', 'primary.toml'), ('third', 'third.toml')])
+    third_case = 'base::tests/test_flow.py::test_third'
+    catalog = context.tool_catalog_path
+    catalog.write_text(catalog.read_text().replace('entry="dual_graph.md.html"',
+        'entry="dual_graph.md.html"\nprofile="shared"').replace('[test_cases]',
+        '[graphs.third]\nroot="base"\nentry="third_graph.md.html"\nprofile="third_shared"\n[test_cases]') +
+        '\n"' + third_case + '"=["third"]\n'
+        '[profiles.shared]\nversion=1\nkind="shared-primary"\nprimary="sample/primary"\nsecondary=["sample/secondary"]\n'
+        '[profiles.third_shared]\nversion=1\nkind="shared-primary"\nprimary="sample/primary"\nsecondary=["sample/third"]\n')
+    plan = selected((context, schema), (DUAL, third_case))
+
+    result = resolve_config(plan.schema, environ={}, overrides={'API_ENDPOINT': 'https://example.invalid'})
+    third = next(tool for tool in plan.bind_values(result).for_case(third_case).tools if tool.id == 'sample/third')
+
+    assert plan.schema.fields['API_2_ENDPOINT'].required is True
+    assert 'API_2_ENDPOINT' in result.missing
+    assert 'PATH' not in third.local_values
+    assert third.derived_from == {'ENDPOINT': 'sample/primary'}
+
+
+def test_shared_endpoint_without_matching_primary_slot_stays_required(selection_fixture):
+    context, schema = selection_fixture
+    write(context.base_root, 'noinput.toml',
+          'version=1\ninterface="verified-read@1"\nfactory="package/factory.py:create_tool"\n')
+    catalog = context.tool_catalog_path
+    catalog.write_text(catalog.read_text().replace('entry="dual_graph.md.html"',
+        'entry="dual_graph.md.html"\nprofile="shared"') +
+        '\n[profiles.shared]\nversion=1\nkind="shared-primary"\nprimary="sample/primary"\nsecondary=["sample/secondary"]\n')
+
+    plan = selected((context, schema), (DUAL,), overrides={'PRIMARY_IMPLEMENTATION': 'noinput.toml'})
+    result = resolve_config(plan.schema, environ={}, overrides={'PRIMARY_IMPLEMENTATION': 'noinput.toml'})
+
+    assert plan.schema.fields['API_2_ENDPOINT'].required is True
+    assert 'API_2_ENDPOINT' in result.missing

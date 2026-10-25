@@ -110,3 +110,75 @@ def test_rejection_array_has_finite_public_bound():
     report = tool_evidence({}, graph_id='graph', instances={})
     report['rejections'] = [{'reason':'unknown_tool','model_round':1,'call_index':1,'request_id':'safe'}] * 129
     with pytest.raises(ValidationError): validate_tool_evidence(report)
+
+
+@pytest.mark.parametrize('later', ['provider', 'cleanup'])
+def test_actual_shared_integration_publishes_immediate_proof_after_failure(tmp_path, monkeypatch, later):
+    import asyncio
+    from contextlib import asynccontextmanager
+    import importlib.util
+    from pathlib import Path
+    from api_agent.api.application import Runtime
+    from api_agent.providers.llm import LLMResult, Message, TextContent, ToolCall, Usage
+    from test_tool_fixture import ROOT, external_plan, get, server
+
+    path = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test_tools.py::test_failure (call)')
+    module_path = ROOT / 'tests/integration/test_tool_instances.py'
+    spec = importlib.util.spec_from_file_location('shared_reporting_trial', module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with server(tmp_path / 'backend') as endpoint:
+        get(endpoint, '/seed')
+        expected = get(endpoint, '/control/value')['hello']
+        plan = external_plan(endpoint, endpoint)
+        definition, = plan.definitions
+        operation = SimpleNamespace(plan=SimpleNamespace(shared_primary=True, tools=[
+            SimpleNamespace(id='fixture/primary'), SimpleNamespace(id='fixture/shared-secondary',
+                derived_from={'ENDPOINT': 'fixture/primary', 'HEADERS': 'fixture/primary'})]),
+            endpoint_for=lambda identity: endpoint + '/graphql', receipt={})
+
+        @asynccontextmanager
+        async def open_operation(selected):
+            runtime = Runtime('fixture', tool_plan=plan, services={'owner_root': ROOT})
+            await runtime.astart()
+            operation.tools = runtime.tools_for(selected)
+            try:
+                yield operation
+            finally:
+                await runtime.aclose()
+                operation.receipt.update(tool_count=2, remaining_owners=0, service_count=0,
+                    closed_tools=2, released=True)
+                if later == 'cleanup':
+                    raise RuntimeError('Synthetic cleanup failure')
+
+        responses = iter([
+            LLMResult(Message('assistant', calls=(
+                ToolCall('primary-call', 'primary_read', '{"query":"{ hello }"}'),
+                ToolCall('secondary-call', 'secondary_read', '{"query":"{ hello }"}'))),
+                Usage(5, 2), outcome='tool_calls'),
+            LLMResult(Message('assistant', (TextContent('{"relevant":true,"grounded":true}'),)), Usage(3, 1)),
+            LLMResult(Message('assistant', (TextContent('{"relevant":true,"grounded":true}'),)), Usage(3, 1)),
+            RuntimeError('Synthetic later provider failure') if later == 'provider' else
+                LLMResult(Message('assistant', (TextContent(json.dumps(dict.fromkeys(
+                    ('primary_read', 'secondary_read'), expected))),)), Usage(5, 2)),
+        ])
+
+        def complete(request):
+            response = next(responses)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+
+        tools = SimpleNamespace(definition_for_case=lambda case: definition,
+            open=open_operation, run=asyncio.run)
+        with pytest.raises(RuntimeError, match='Synthetic'):
+            module.test_shared_primary(tools, SimpleNamespace(complete=complete), 'synthetic',
+                SimpleNamespace(values={}))
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    report = next(event['data'] for event in events if event['data'].get('kind') == 'tool_execution')
+    assert len(report['calls']) == 2
+    assert all(call['result_matches'] and call['result_received'] for call in report['calls'])
+    assert report['ownership']['owners_remaining'] == 0
+    assert expected not in path.read_text()

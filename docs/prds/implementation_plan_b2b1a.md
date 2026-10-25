@@ -60,3 +60,8 @@ The [presentation-only source-equivalence carry-forward](implementation_plan_b2b
 ## Grouped-workflow runtime renewal
 
 The validation/retry and deadline changes require [fresh grouped-workflow qualification](implementation_plan_b2b1a6.md). Earlier carry-forward evidence remains historical.
+
+
+## Tool-runtime source renewal
+
+Fresh [qualification after tool-runtime integration](implementation_plan_b2b1a7.md) is required for the changed current source bindings. Earlier records and acceptance apply only to their original qualified sources.

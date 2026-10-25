@@ -104,3 +104,23 @@ def test_failed_provider_call_keeps_reported_tokens_and_terminal_status(tmp_path
     else:
         assert tracker.rows() == [] and report['unmeasured_calls'] == {'test-id':1}
     assert 'Safe rejection' not in path.read_text() and 'Ok' not in path.read_text()
+
+
+def test_central_terminal_receipt_passes_actual_model_and_effective_effort_to_visit(monkeypatch, tmp_path):
+    from dataclasses import replace
+    from api_agent.providers.llm import GenerationOptions
+    from api_agent.workflows.attribution import bind_workflow_visit
+    request = replace(REQUEST, payload=replace(REQUEST.payload,
+        generation=GenerationOptions(reasoning_effort='high')))
+    result = replace(RESULT, actual_model='actual-catalog-model')
+    owner = Mock()
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(tmp_path / 'events'))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test_request (call)')
+    with bind_workflow_visit(owner, 'visit', 'attempt'):
+        identifier = publish(request)
+        publish(request, result, call_id=identifier)
+    owner.record_call.assert_called_once_with(call_id=identifier, visit_id='visit',
+        attempt_id='attempt', usage={'input_tokens': 2, 'output_tokens': 1,
+            'cached_input_tokens': None, 'reasoning_tokens': None},
+        selection=request.selected_llm, outcome=result.outcome,
+        actual_model='actual-catalog-model', reasoning_effort='high')

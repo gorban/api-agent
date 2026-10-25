@@ -1,0 +1,18 @@
+version = 1
+interface = "verified-read@1"
+factory = "rest_tool.py:create_tool"
+
+[inputs.ENDPOINT]
+type = "str"
+required = true
+nonempty = true
+
+[inputs.HEADERS]
+type = "jsonobject"
+default = {}
+acknowledge_default = false
+
+[inputs.PATH]
+type = "str"
+default = "/hello"
+acknowledge_default = false

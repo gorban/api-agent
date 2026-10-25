@@ -428,3 +428,60 @@ def test_rejection_marker_round_and_index_follow_the_conversation_not_relevance(
                                     'request_id':script.requests[2].request_id}]
     assert journal['calls'][0]['result'] == {'hello':'unknown-0'}
     assert len(report['inference']) == len(script.requests) == 3
+
+
+@pytest.mark.parametrize('later', ['provider', 'cancelled', 'cleanup', 'final'])
+def test_completed_synthetic_proof_is_published_after_later_failure(scenario, later, monkeypatch, tmp_path):
+    from api_agent.workflows.evidence import publish
+    from api_agent.workflows.tool_evidence import tool_evidence
+    path = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test_tools.py::test_failure (call)')
+    error = asyncio.CancelledError() if later == 'cancelled' else RuntimeError('provider failed')
+    error.usage = Usage(4, 1)
+    script = Script([tool_call(ALIASES[0]), verdict(),
+                     reply('incorrect') if later in ('cleanup', 'final') else error])
+    journal = {}
+
+    def final_check(text, results):
+        if later == 'final':
+            raise ValueError('final mismatch')
+
+    def execute_and_publish():
+        try:
+            run(scenario, script, journal, verify_final=final_check,
+                result_proof=lambda alias, status, data: status == 'success' and data == {'hello': 'unknown-0'})
+        finally:
+            try:
+                if later == 'cleanup':
+                    raise RuntimeError('cleanup failed')
+            finally:
+                publish(tool_evidence(journal, graph_id='tools', instances={ALIASES[0]: 'first'}))
+
+    with pytest.raises((RuntimeError, ValueError, asyncio.CancelledError)):
+        execute_and_publish()
+    report = json.loads(path.read_text())['data']
+    assert report['calls'][0]['result_matches'] is True
+    assert report['calls'][0]['result_received'] is True
+    assert report['completed'] is False
+    if later in ('provider', 'cancelled'):
+        assert report['inference'][-1]['usage']['input_tokens'] == 4
+        assert report['inference'][-1]['outcome'] == 'failed'
+    assert 'unknown-0' not in path.read_text()
+
+
+def test_result_proof_is_immediate_and_does_not_weaken_final_gate(scenario):
+    journal = {}
+    with pytest.raises(ValueError, match='Required tools'):
+        run(scenario, Script([tool_call(ALIASES[0]), verdict(), reply('done')]), journal,
+            required_tools=ALIASES, result_proof=lambda alias, status, data: False)
+    assert journal['calls'][0]['result_matches'] is False
+
+
+def test_result_proof_rejects_non_boolean_without_losing_actual_result(scenario):
+    journal = {}
+    with pytest.raises(ValueError, match='proof must be boolean'):
+        run(scenario, Script([tool_call(ALIASES[0]), verdict()]), journal,
+            result_proof=lambda alias, status, data: 'yes')
+    assert journal['calls'][0]['result'] == {'hello': 'unknown-0'}
+    assert 'result_matches' not in journal['calls'][0]

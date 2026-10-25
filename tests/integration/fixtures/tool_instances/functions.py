@@ -18,9 +18,6 @@ async def converse(inputs, context):
 
     def verify_final(final, results):
         journal['final_matches'] = False
-        for call in journal['calls']:
-            call['result_matches'] = (call['status'] == 'success'
-                                      and call.get('result') == {'hello': expected})
         if (set(results) != set(ALIASES)
                 or any(len(records) != 1 for records in results.values())
                 or any(not call['result_matches'] for call in journal['calls'])):
@@ -37,6 +34,7 @@ async def converse(inputs, context):
     await run_tool_conversation(prompt=PROMPT, gates=gates,
         complete=services['complete'], selection=services['selection'],
         generation=services.get('generation'), required_tools=tuple(ALIASES),
-        verify_final=verify_final, journal=journal)
+        verify_final=verify_final, journal=journal,
+        result_proof=lambda alias, status, data: status == 'success' and data == {'hello': expected})
     journal['completed'] = True
     return {'verified': True}
