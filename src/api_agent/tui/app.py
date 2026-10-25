@@ -42,6 +42,10 @@ def display(value):
     return str(value)
 
 
+def display_configuration(field, value):
+    return 'Configured' if field.sensitive and value else display(value)
+
+
 class ButtonFooter(GroupedUserFooter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -348,7 +352,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                     yield AdvancingSelect(options, value=current, allow_blank=current is Select.NULL,
                                  prompt='-', id='config-value')
                 else:
-                    yield Input(id="config-value")
+                    yield Input(id="config-value", password=field.sensitive)
             if self.kind not in {"cleanup", "test-results"}:
                 if self.kind == 'tests' and app.mode == 'integration' and 'UNATTENDED_USER_INDEX' in app.schema.fields:
                     yield Static(app.account_summary(), id='account-selection', markup=False)
@@ -1218,7 +1222,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             if name in default_names and resolved is None and name not in result.missing and not self.schema.fields[name].review_optional:
                 continue
             rows.append((name, (name,
-                        display(resolved.value) if resolved else Text("Required", justify="right") if name in result.missing else "",
+                        display_configuration(self.schema.fields[name], resolved.value) if resolved else Text("Required", justify="right") if name in result.missing else "",
                         resolved.source if resolved else "Not provided")))
         return rows
 
@@ -1251,7 +1255,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 saved.add(name)
             if resolved and not resolved.explicit and field.acknowledge_default:
                 defaults.add(name)
-            cells = (name, display(resolved.value) if resolved else
+            cells = (name, display_configuration(field, resolved.value) if resolved else
                      Text("Required", justify="right") if name in result.missing else "",
                      resolved.source if resolved else "Not provided")
             for column, value in zip(table.columns, cells):
@@ -1291,7 +1295,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 break
         description = f"Declared type: {field.type}."
         if default is not UNSET:
-            description += f" Default: {display(default)}."
+            description += f" Default: {display_configuration(field, default)}."
         return description + " Use Tab to focus actions; s switches the target outside the value input."
 
     def edit_setting(self):
@@ -1300,6 +1304,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.prompt_name = self.focused_setting()
         if not self.prompt_name:
             return
+        if self.schema.fields[self.prompt_name].sensitive:
+            from .private_input import install_private_input_logging
+            install_private_input_logging()
         resolved = self.session.result(_review=True).fields.get(self.prompt_name)
         self.prompt_value = display(resolved.value) if resolved else ""
         self.show("input", f"Configure {self.prompt_name}",
@@ -2142,7 +2149,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def show_cleanup(self):
         saved = [row for row in self.session.cleanup_rows() if row.present]
         self.cleanup_names = frozenset(row.name for row in saved)
-        rows = [(row.name, ("✓", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in saved]
+        rows = [(row.name, ("✓", row.name, display_configuration(row.field, row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in saved]
         location = "all agent / resource pack .env files" if self.context.external_pack else "agent .env file"
         self.show("cleanup", "Clear .env configuration",
                   f"Select a row and delete it (with confirmation) from {location}.", rows=rows)
@@ -2191,7 +2198,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if self.screen.kind == "tests":
             rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
         else:
-            rows = [(row.name, ("✓" if row.present else "", row.name, display(row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows(retained=self.cleanup_names) if row.name in self.cleanup_names]
+            rows = [(row.name, ("✓" if row.present else "", row.name, display_configuration(row.field, row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows(retained=self.cleanup_names) if row.name in self.cleanup_names]
         if self.screen.kind == "cleanup":
             # Rebuilding posts another highlight event; unchanged snapshots must
             # not rebuild again. Preserve the focused setting when rows change.

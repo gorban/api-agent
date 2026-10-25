@@ -25,6 +25,7 @@ class FieldDeclaration:
     anchor: str | None = None
     help: str = ''
     acknowledge_default: bool = True
+    sensitive: bool = False
     pack_only: bool = False
     validation: str | None = None
     cost_affecting: bool = False
@@ -53,7 +54,7 @@ def schema_from_dict(data: Mapping[str, Any], *, source: str = 'shared_default',
             raise ValueError(f'{name}: unknown metadata or missing/invalid type')
         spec = dict(spec)
         declared_keys = frozenset(spec)
-        for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only', 'cost_affecting'):
+        for flag in ('override', 'override_if_present', 'required', 'review_optional', 'allow_empty', 'acknowledge_default', 'pack_only', 'cost_affecting', 'sensitive'):
             if flag in spec and type(spec[flag]) is not bool:
                 raise ValueError(f'{name}: {flag} must be boolean')
         if spec.get('override_if_present') and not spec.get('override'):
@@ -107,13 +108,15 @@ def _inherit_constraints(previous, declaration):
     if declaration.type != previous.type:
         raise ValueError(f'{declaration.name}: override must preserve the shared type')
     inherited = ('required', 'required_when', 'allow_empty', 'validation',
-                 'enum', 'pack_only', 'cost_affecting')
+                 'enum', 'pack_only', 'cost_affecting', 'sensitive')
     return replace(declaration, **{key: getattr(previous, key) for key in inherited
                                   if key not in declaration.declared_keys})
 
 def _validate_values(declaration, fields, *, deferred=False, pending_controllers=()):
     """Check structure now; late overrides need their target's value rules."""
     from .resolve import convert_value
+    if declaration.sensitive and (declaration.type != 'str' or declaration.enum):
+        raise ValueError(f'{declaration.name}: sensitive requires str type without enum choices')
     if not deferred:
         for enum_value in declaration.enum:
             convert_value(replace(declaration, enum=()), enum_value, external=False, anchors=None)
@@ -213,7 +216,8 @@ def _compose_fields(shared: ConfigSchema, extension: ConfigSchema | None = None)
                         or previous.enum and (not declaration.enum or
                                               any(value not in previous.enum for value in declaration.enum))
                         or previous.pack_only and not declaration.pack_only
-                        or previous.cost_affecting and not declaration.cost_affecting):
+                        or previous.cost_affecting and not declaration.cost_affecting
+                        or previous.sensitive and not declaration.sensitive):
                     raise ValueError(f'{name}: override weakens an existing field constraint')
             elif declaration.override:
                 raise ValueError(f'{name}: override has no shared field')

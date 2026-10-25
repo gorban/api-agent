@@ -25,3 +25,11 @@
 ## External trace-ingestion credentials
 
 - [x] Explain LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY as the paired project API credentials used for trace ingestion, obtained from the selected project settings and distinct from dashboard login. Preserve managed-local development defaults. External targets have no key default: an empty string counts as provided under the generic resolver and would bypass its early missing-setting error, so do not add empty defaults solely for presentation.
+
+## Reviewable trace-ingestion keys
+
+- [x] Show LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY in Review configuration so missing external keys use the ordinary required-setting review and editing path, including their project-key help. Preserve managed-local defaults, explicit precedence, noninteractive missing-setting validation and startup blocking until required keys are supplied. Keep unrelated hidden settings hidden.
+- [ ] Human confirm that an external or mismatched LangFuse target exposes both missing key rows in Review configuration and their help when edited. Existing tracing/dashboard approvals remain unchanged.
+
+- [x] Keep the newly reviewable secret key confidential in terminal presentation: mask its value input and render only Configured for nonempty values in Review, default descriptions and Clear .env configuration, including refresh/reopen. Use generic strict Boolean sensitive metadata for text settings without enum choices; preserve exact resolution, persistence and execution values. Resource-pack overrides must inherit sensitivity, cannot remove it, and must reject incompatible effective enum choices. Verify default, entered and reopened synthetic secrets and rejection controls before independent/external recheck.
+- [x] Before accepting input in a sensitive configuration editor, activate the existing private-input diagnostic guard. Protect existing/future native parsers and typed/pasted/changed/submitted events before debug files or devtools can retain them; keep ordinary diagnostics available and queued events safe after closing. Verify the real editor-to-guard join in a fresh process with synthetic keys.
