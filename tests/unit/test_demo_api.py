@@ -1,10 +1,12 @@
 """Bundled API selection and synthetic target behavior."""
 import importlib.util
+from contextlib import contextmanager
 from dataclasses import replace
 import json
 from pathlib import Path
+import sys
 from threading import Thread
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -23,6 +25,57 @@ from api_agent.runtime.resource_pack import load_launch_context
 
 
 DEMO = Path(__file__).resolve().parents[2] / 'demo'
+
+
+@contextmanager
+def isolated_demo_imports():
+    """Keep the standalone server's bundled imports inside its owning test."""
+    paths = sys.path[:]
+    modules = {name: module for name, module in sys.modules.items()
+               if name == 'graphql' or name.startswith('graphql.')}
+    try:
+        yield
+    finally:
+        sys.path[:] = paths
+        for name in tuple(sys.modules):
+            if name == 'graphql' or name.startswith('graphql.'):
+                del sys.modules[name]
+        sys.modules.update(modules)
+
+
+@pytest.fixture(autouse=True)
+def restore_demo_import_state():
+    with isolated_demo_imports():
+        yield
+
+
+@pytest.mark.parametrize('warm', [False, True])
+def test_demo_import_isolation_restores_paths_and_graphql_modules(monkeypatch, warm):
+    for name in tuple(sys.modules):
+        if name == 'graphql' or name.startswith('graphql.'):
+            monkeypatch.delitem(sys.modules, name)
+    if warm:
+        importlib.import_module('graphql')
+    paths, path_object = sys.path[:], sys.path
+    modules = {name: module for name, module in sys.modules.items()
+               if name == 'graphql' or name.startswith('graphql.')}
+    neighbor = ModuleType('graphql_isolation_neighbor')
+
+    with isolated_demo_imports():
+        spec = importlib.util.spec_from_file_location('demo_isolation_probe', DEMO / 'api/server.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert str(DEMO / 'api/graphql_core-3.2.13-py3-none-any.whl') in sys.path
+        assert 'graphql' in sys.modules
+        sys.modules['graphql'] = ModuleType('graphql')
+        sys.modules['graphql.isolation_probe'] = ModuleType('graphql.isolation_probe')
+        monkeypatch.setitem(sys.modules, neighbor.__name__, neighbor)
+
+    assert sys.path is path_object and sys.path == paths
+    assert {name: module for name, module in sys.modules.items()
+            if name == 'graphql' or name.startswith('graphql.')} == modules
+    assert all(sys.modules[name] is module for name, module in modules.items())
+    assert sys.modules[neighbor.__name__] is neighbor
 
 
 def test_bundled_endpoint_review_and_clear_env_switches_to_remote(tmp_path):

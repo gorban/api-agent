@@ -2090,9 +2090,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.screen.query_one('#account-selection', Static).update(self.account_summary())
             self.screen.refresh_bindings()
             actual = self.session.result().fields['UNATTENDED_USER_INDEX']
+            if self.screen.kind == 'tests' and actual.value != current:
+                self.cost_estimator = None
+                self.refresh_rows()
             message = (f'Saved to {self.session._source(self.session.dotenv_path)}, but {actual.source} overrides the saved choice.'
                        if actual.value != selected else '')
-            self.screen.query_one('#error', Static).update(message)
+            self.screen.query_one('#error', Static).update(self.screen.configuration_error or message)
         except (ValueError, OSError) as error:
             self.screen.query_one('#error', Static).update(str(error))
 
