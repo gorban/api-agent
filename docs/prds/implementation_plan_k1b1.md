@@ -26,6 +26,15 @@ gated; it cannot supply trace-only content. Keep [worker/provider policy and
 identity propagation](implementation_plan_k1b.md) unchecked until qualified;
 caller-side raw capture must not bypass backend credential registrations.
 
+Integration/E2E acceptance does not require the separate test backend to export
+OTEL or LangFuse traces. Its required destinations are logs and Allure, using
+the same flow-aligned execution data. This does not waive separate application
+tracing requirements or authorize trace-only data to enter log/evidence stores.
+
 ## Capture admission ordering
 
 - [x] Reserve journal admission before reading capture permission or projecting JSON. A stricter policy cannot attach during an active first capture and receive data authorized only by the original policy. Verify the interleaving with two threads, inspect retained and live output, and use a causal control that removes only the capture-start guard.
+
+## Complete test evidence follow-through
+
+- [ ] Deliver [complete flow-aligned test evidence](implementation_plan_b1c1a2.md) for logs and Allure before accepting historical input/output overlays. Shared node capture and its current 512-character retained previews establish a capture seam, not full durable payload storage. Keep this requirement separate from remote tracing export and preserve the shared destination gates.
