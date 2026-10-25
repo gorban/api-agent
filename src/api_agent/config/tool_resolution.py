@@ -3,7 +3,7 @@ from dataclasses import replace
 
 
 def compose_operation_tools(context, schema, *, selection=None, argv=(), environ=None,
-                            dotenv=None, overrides=None, operation_intents=()):
+                            dotenv=None, overrides=None, operation_intents=(), definition_loader=None):
     """Legacy packs keep their schema; declaring tooling enables selected projection."""
     if (getattr(context, 'tool_catalog_path', None) is None
             and getattr(context, 'workflow_entry', None) is None
@@ -11,7 +11,8 @@ def compose_operation_tools(context, schema, *, selection=None, argv=(), environ
         return None
     from api_agent.tooling.selection import compose_tools
     return compose_tools(context, schema, selection=selection, argv=argv,
-                         environ=environ, dotenv=dotenv, overrides=overrides, operation_intents=operation_intents)
+                         environ=environ, dotenv=dotenv, overrides=overrides, operation_intents=operation_intents,
+                         definition_loader=definition_loader)
 
 
 def bind_operation_tools(plan, result, *, argv=()):

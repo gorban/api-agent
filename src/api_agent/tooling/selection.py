@@ -18,9 +18,10 @@ MAX_INDEX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_INDEX_CAPTURE_FILES = 4096
 
 
-def discover(context, selection=None):
+def discover(context, selection=None, *, definition_loader=None):
     """Capture available declarations separately from the selected graph closure."""
     operation = operation_selection(selection)
+    load = definition_loader or load_selected_definition
     roots = {'base': getattr(context, 'workflow_base_root', None) or context.base_root,
              'pack': context.pack_root}
     capture = Capture(roots, library_files=getattr(context, 'workflow_library_files', None))
@@ -48,7 +49,7 @@ def discover(context, selection=None):
         entry = getattr(context, 'workflow_entry', None) or roots['base'] / 'flow.md.html'
         if entry.is_file():
             try:
-                definitions['@application'] = retain(load_selected_definition(context))
+                definitions['@application'] = retain(load(context))
             except ValueError:
                 diagnostics['@application'] = 'Cannot admit selected application graph'
     if path is not None:
@@ -81,7 +82,7 @@ def discover(context, selection=None):
                     workflow_library_files=library_files,
                     workflow_replacements=tuple((row['target_id'], Path(row['entry']), row['root_id'])
                         for row in spec.get('replacements', ())))
-                definitions[name] = retain(load_selected_definition(graph_context))
+                definitions[name] = retain(load(graph_context))
             except ValueError:
                 diagnostics[name] = 'Cannot admit catalog graph: ' + name
         case_profiles = {identity: tuple(dict.fromkeys(
@@ -276,9 +277,9 @@ def _binding_contract(declaration):
                  for value in (getattr(declaration, field.name),))
 
 
-def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None, dotenv=None, overrides=None, operation_intents=()):
+def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None, dotenv=None, overrides=None, operation_intents=(), definition_loader=None):
     """Compose declarative tool inputs before final explicit-input validation."""
-    catalog = discover(context, selection)
+    catalog = discover(context, selection, definition_loader=definition_loader)
     capture = Capture(catalog.roots, library_files=getattr(context, 'workflow_library_files', None))
     for path, body in catalog.assets.items():
         capture.add(path, body)

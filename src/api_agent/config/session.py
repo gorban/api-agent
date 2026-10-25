@@ -61,6 +61,8 @@ class ConfigSession:
 
     def __init__(self, context, schema, argv=(), environ=None):
         self.context = context
+        from api_agent.tooling.discovery_cache import DefinitionCache
+        self._definition_cache = DefinitionCache()
         self._tool_selection = None
         self._automatic_tool_selection = True
         self._tool_intents = ()
@@ -93,7 +95,8 @@ class ConfigSession:
         from .tool_resolution import compose_operation_tools
         self.tool_plan = compose_operation_tools(self.context, provider_schema,
             selection=self._tool_selection, argv=self.argv, environ=self.environ,
-            dotenv=dotenv, overrides=choices, operation_intents=operation_intents)
+            dotenv=dotenv, overrides=choices, operation_intents=operation_intents,
+            definition_loader=self._definition_cache)
         return self.tool_plan.schema if self.tool_plan is not None else provider_schema
 
     def select_operation(self, tests=None):
@@ -420,8 +423,8 @@ class ConfigSession:
             self.tool_plan = result.tool_plan
         return result, auth_sources
 
-    def default_candidates(self):
-        result = self.result(_review=True)
+    def default_candidates(self, *, result=None):
+        result = self.result(_review=True) if result is None else result
         return [DefaultCandidate(name, value, self.schema.fields[name])
                 for name, value in result.fields.items()
                 if not value.explicit

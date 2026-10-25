@@ -223,3 +223,7 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
   empty inheritance from TEST_PARALLEL_JOBS (global default remains 8).
   Share effective-count resolution across TUI/terminal routes; verify default,
   explicit override, empty fallback, serial zero and invalid negative settings.
+
+## Picker responsiveness
+
+- [ ] Profile and improve [test-picker responsiveness](implementation_plan_a12.md), preserving selected-test configuration freshness, account controls and estimates.
