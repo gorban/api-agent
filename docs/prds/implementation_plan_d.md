@@ -51,3 +51,5 @@ Planned exception to mandatory integration/E2E reporting: [explicit reporting sk
 
 - [x] Rebuild the local SQLite prediction cache from finalized S3 manifests/accounting without requiring another inference call. Returning to selection uses refreshed compatible history; SQLite is a disposable index, not the source of immutable results.
 - [x] Human-review empty-history behavior and restoration: verify secondary copies against S3 bytes and manifest hashes before a requested reset, preserve the backup, restore original run identities/content, and exclude the temporary review run from S3 and cached estimates. This was a manual acceptance exercise, not an implemented reset/restore TUI mode.
+
+[Workflow journal and legacy-view projection](implementation_plan_d6.md) prevents duplicate graph display without changing immutable accounting.

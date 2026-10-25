@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 from urllib.request import urlopen
 
 
@@ -78,7 +79,18 @@ def serve(*, role, root, upstream='', port=8090, schema_path=None):
     return ThreadingHTTPServer(('0.0.0.0', port), Handler)
 
 
+def run(server):
+    def terminate(signum, frame):
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, terminate)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
 if __name__ == '__main__':
     server = serve(role=os.environ['ROLE'], root='/data', upstream=os.environ.get('UPSTREAM', ''),
                    schema_path='/opt/fixture/schema.json' if os.environ['ROLE'] == 'api' else None)
-    server.serve_forever()
+    run(server)
