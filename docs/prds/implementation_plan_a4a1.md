@@ -32,7 +32,7 @@ rendering that response.
   inference is required.
 - [x] Complete applicable exact unit coverage, installed/package and boundary
   checks, independent reviews and external review before committing.
-- [ ] Human review confirms snapshots show each response before the next prompt
+- [x] Human review confirms snapshots show each response before the next prompt
   and remain under their correct User turn in newly recorded Allure results.
 
 ## Final-context ownership refinement
@@ -47,9 +47,7 @@ rendering that response.
 - [x] Verify normal recording placement, multiple pages, original pixels,
   publication failure and independent content permissions; finish exact
   applicable coverage, package/boundary and independent/external reviews.
-- [ ] Human review newly recorded turn-based and UI-only screenshots.
+- [x] Human review newly recorded turn-based and UI-only screenshots.
 
-**Deferred human review**
-
-Implementation and required verification/reviews are complete. Explicit human
-acceptance above remains unchecked, including newly recorded screenshot placement.
+Human acceptance of screenshot placement and selected/all-test viewing was
+explicitly recorded on October 26, 2026.
