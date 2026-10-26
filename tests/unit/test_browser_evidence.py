@@ -159,3 +159,13 @@ def test_submission_precedes_async_progress_scope_exit():
             await evidence.capture_ui_evidence((context,), boundary, submit, capture_policy=policy)
     asyncio.run(run())
     assert order == ['policy','submit','scope-exit']
+
+
+def test_excluded_pages_preserve_context_and_page_numbers():
+    covered, other, second_context = object(), object(), object()
+    policy = AsyncMock(return_value=PNG)
+    rows = capture([SimpleNamespace(pages=[covered, other]),
+                    SimpleNamespace(pages=[second_context])],
+                   capture_policy=policy, phase='success', exclude_pages=(covered,))
+    assert [call.args[0] for call in policy.await_args_list] == [other, second_context]
+    assert [row[0] for row in rows] == ['UI success context 1 page 2', 'UI success context 2 page 1']

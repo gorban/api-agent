@@ -62,7 +62,7 @@ else:
  (output/'index.html').write_text('Allure')
  cases=output/'data'/'test-cases'; cases.mkdir(parents=True)
  for n, result in enumerate(source.glob('*-result.json')):
-  (cases/f'case{n}.json').write_text(json.dumps({'uid':f'case{n}'}))
+  (cases/f'case{n}.json').write_text(json.dumps({'uid':f'case{n}', 'labels':json.loads(result.read_bytes()).get('labels',[])}))
 ''')
     path.chmod(0o700)
     monkeypatch.setattr(viewer.shutil, 'which', lambda _: str(path))
@@ -540,7 +540,7 @@ async def test_server_directory_listing_disabled(cli, port):
 @async_test
 async def test_generation_rejects_invalid_output(run, cli, port, mode):
     suffix = {'missing-index':"(output/'index.html').unlink()", 'missing-case':"[p.unlink() for p in cases.glob('*.json')]",
-        'invalid-uid':"(cases/'case0.json').write_text('{\"uid\":\"../bad\"}')", 'invalid-json':"(cases/'case0.json').write_text('bad')"}[mode]
+        'invalid-uid':"case=cases/'case0.json'; row=json.loads(case.read_bytes()); row['uid']='../bad'; case.write_text(json.dumps(row))", 'invalid-json':"(cases/'case0.json').write_text('bad')"}[mode]
     cli.write_text(cli.read_text()+'\n '+suffix+'\n')
     manifest, files, name = run
     owner = viewer.ManagedAllureViewer(port, browser_factory=Browser)

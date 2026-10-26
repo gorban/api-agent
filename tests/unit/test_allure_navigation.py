@@ -316,7 +316,7 @@ def test_empty_result_screen_and_missing_attempt_have_clear_availability(tmp_pat
             await app.show('test-results','Results',rows=list(app.unit_rows.items()))
             assert app.selected_allure_result(app.screen)==(None,None)
             await app.open_selected_allure()
-            assert 'unavailable for this test attempt' in notices[-1]
+            assert 'unavailable for every selected test attempt' in notices[-1]
             assert app.allure_viewer is None
     asyncio.run(scenario())
 

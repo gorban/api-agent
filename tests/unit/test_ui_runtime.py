@@ -528,3 +528,115 @@ def test_byte_crossing_exhaustion_stops_following_capture_and_duplicate_marker(o
     asyncio.run(exercise())
     policy.assert_awaited_once()
     publish.assert_called_once()
+
+
+@pytest.fixture
+def terminal_capture(operation, monkeypatch):
+    from api_agent.testing import browser_attachments
+    from api_agent.testing.browser_evidence import PNG_SIGNATURE
+    owner = operation.create(LOG_CONTENT=True)
+    page = object()
+    policy = AsyncMock(return_value=PNG_SIGNATURE + b'original pixels')
+    provider = SimpleNamespace(
+        implementation=SimpleNamespace(capabilities=ProviderCapabilities('ui', ('capture_evidence',))),
+        require=Mock(return_value=SimpleNamespace(acapture_evidence=policy)))
+    owner.prepared = SimpleNamespace(provider=provider, session=SimpleNamespace(page=page))
+    operation.browser.session = SimpleNamespace(context=SimpleNamespace(pages=[page]))
+    publish = Mock(return_value=True)
+    monkeypatch.setattr(browser_attachments, 'publish_attachment', publish)
+    return SimpleNamespace(owner=owner, policy=policy, publish=publish)
+
+
+def test_successful_turn_replaces_final_success_capture(terminal_capture):
+    r = terminal_capture
+    async def exercise():
+        await r.owner.capture('success', owner=turn_owner())
+        await r.owner.capture('success')
+    asyncio.run(exercise())
+    r.policy.assert_awaited_once()
+    r.publish.assert_called_once()
+    assert r.publish.call_args.kwargs == {'owner': turn_owner()}
+
+
+def test_ui_only_success_keeps_top_level_picture(terminal_capture):
+    r = terminal_capture
+    asyncio.run(r.owner.capture('success'))
+    r.policy.assert_awaited_once()
+    r.publish.assert_called_once()
+    assert r.publish.call_args.kwargs == {}
+    assert r.publish.call_args.args[0][2] == 'image/png'
+
+
+@pytest.mark.parametrize('unavailable', [None, RuntimeError('unavailable')])
+def test_latest_unavailable_turn_keeps_final_success_fallback(terminal_capture, unavailable):
+    r = terminal_capture
+    pixels = r.policy.return_value
+    r.policy.side_effect = [pixels, unavailable, pixels]
+    async def exercise():
+        await r.owner.capture('success', owner=turn_owner())
+        await r.owner.capture('success', owner=dict(turn_owner(), turn_id='33333333-3333-4333-8333-333333333333'))
+        await r.owner.capture('success')
+    asyncio.run(exercise())
+    assert r.policy.await_count == 3
+    assert r.publish.call_args.kwargs == {}
+    assert r.publish.call_args.args[0][2] == 'image/png'
+
+
+def test_failed_turn_publication_keeps_final_success_fallback(terminal_capture):
+    r = terminal_capture
+    r.publish.side_effect = [OSError('unavailable'), True]
+    async def exercise():
+        await r.owner.capture('success', owner=turn_owner())
+        await r.owner.capture('success')
+    asyncio.run(exercise())
+    assert r.policy.await_count == 2
+    assert r.publish.call_args.kwargs == {}
+
+
+def test_terminal_failure_keeps_current_context_after_turn_success(terminal_capture):
+    r = terminal_capture
+    async def exercise():
+        await r.owner.capture('success', owner=turn_owner())
+        await r.owner.capture('failure')
+    asyncio.run(exercise())
+    assert r.policy.await_count == 2
+    assert r.publish.call_args.kwargs == {}
+    assert r.publish.call_args.args[0][0] == 'UI failure context 1 page 1'
+
+
+def test_identical_pixels_on_distinct_turns_remain_separate(terminal_capture):
+    r = terminal_capture
+    owners = [turn_owner(), dict(turn_owner(), turn_id='33333333-3333-4333-8333-333333333333')]
+    async def exercise():
+        for binding in owners:
+            await r.owner.capture('success', owner=binding)
+        await r.owner.capture('success')
+    asyncio.run(exercise())
+    assert r.policy.await_count == 2
+    assert [call.kwargs['owner'] for call in r.publish.call_args_list] == owners
+    assert r.publish.call_args_list[0].args == r.publish.call_args_list[1].args
+
+
+def test_final_success_retains_other_page_with_original_number(terminal_capture):
+    r = terminal_capture
+    extra_page = object()
+    r.owner.browser_owner.session.context.pages.append(extra_page)
+    async def exercise():
+        await r.owner.capture('success', owner=turn_owner())
+        await r.owner.capture('success')
+    asyncio.run(exercise())
+    assert r.policy.await_count == 2
+    assert r.policy.await_args.kwargs['page'] is extra_page
+    assert r.publish.call_args.kwargs == {}
+    assert r.publish.call_args.args[0][0] == 'UI success context 1 page 2'
+
+
+def test_rejected_turn_publication_keeps_final_success_fallback(terminal_capture):
+    r = terminal_capture
+    r.publish.side_effect = [False, True]
+    async def exercise():
+        await r.owner.capture('success', owner=turn_owner())
+        await r.owner.capture('success')
+    asyncio.run(exercise())
+    assert r.policy.await_count == 2
+    assert r.publish.call_args.kwargs == {}

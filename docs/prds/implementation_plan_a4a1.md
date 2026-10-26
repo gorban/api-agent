@@ -35,6 +35,21 @@ rendering that response.
 - [ ] Human review confirms snapshots show each response before the next prompt
   and remain under their correct User turn in newly recorded Allure results.
 
+## Final-context ownership refinement
+
+- [x] After an accepted turn PNG, omit the redundant final success capture of
+  that same prepared page. Preserve other owned pages and their context/page
+  numbering. UI-only tests without a captured conversation keep their top-level
+  success context. Missing, rejected or unavailable latest turn capture keeps
+  the final fallback; terminal failure context remains available.
+- [x] Preserve genuine snapshots from different turns even when pixels match;
+  deduplication follows capture ownership, not image-byte equality.
+- [x] Verify normal recording placement, multiple pages, original pixels,
+  publication failure and independent content permissions; finish exact
+  applicable coverage, package/boundary and independent/external reviews.
+- [ ] Human review newly recorded turn-based and UI-only screenshots.
+
 **Deferred human review**
 
-Implementation and required automated, independent and external reviews are complete. Only explicit human acceptance above remains unchecked.
+Implementation and required verification/reviews are complete. Explicit human
+acceptance above remains unchecked, including newly recorded screenshot placement.
