@@ -59,7 +59,10 @@ def test_journal_crosses_runner_and_allure_with_manifest_hash(tmp_path):
     files = record.manifest['files']
     result = json.loads(next(record.directory.glob('*-result.json')).read_text())
     assert result['steps'][0]['name'] == 'graph GRAPH'
-    attachment = result['attachments'][0]['source']
+    graph = result['steps'][0]
+    assert next(item['value'] for item in graph['parameters'] if item['name'] == 'invocation_id') == payload['invocation_id']
+    assert not any(item['name'] == 'Workflow execution evidence' for item in result['attachments'])
+    attachment = next(item['source'] for item in graph['attachments'] if item['name'] == 'Execution evidence')
     retained = json.loads((record.directory / attachment).read_text())
     from api_agent.testing.payloads import hydrate_journal, PayloadResolver
     resolver = PayloadResolver.local(record.directory, record.manifest)

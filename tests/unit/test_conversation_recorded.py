@@ -111,8 +111,13 @@ def test_finalized_conversation_costs_turns_and_canonical_payloads(tmp_path):
     with PayloadResolver.local(result.directory, result.manifest) as resolver:
         index = resolver.index(index_attachment['source'])
         assert len(index['entries']) == 20
-        durable = [json.loads((result.directory / item['source']).read_bytes()) for item in row['attachments']
-                   if item['name'] == 'Workflow execution evidence']
+        assert not any(item['name'] == 'Workflow execution evidence' for item in row['attachments'])
+        graphs = [graph for chat in conversations.values() for turn in chat['steps']
+                  for graph in turn['steps'] if graph['name'] == 'graph GRAPH']
+        durable = [json.loads((result.directory / item['source']).read_bytes()) for graph in graphs
+                   for item in graph['attachments'] if item['name'] == 'Execution evidence']
+        assert all(parameters(graph)['invocation_id'] == journal['invocation_id']
+                   for graph, journal in zip(graphs, durable))
         hydrated = {item['invocation_id']: hydrate_journal(item, resolver) for item in durable}
     assert hydrated == {item[0]['invocation_id']: item[0] for item in packets}
     joined = json.loads((result.directory / 'workflow-accounting-join.json').read_bytes())

@@ -129,7 +129,10 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
         resolver = PayloadResolver.local(published.directory, published.manifest)
         index_name = next(row['source'] for row in rendered['attachments'] if row['name'] == 'Payload index')
         index = resolver.index(index_name)
-        journal_name = next(row['source'] for row in rendered['attachments'] if row['name'] == 'Workflow execution evidence')
+        assert not any(row['name'] == 'Workflow execution evidence' for row in rendered['attachments'])
+        graph = rendered['steps'][0]
+        assert next(row['value'] for row in graph['parameters'] if row['name'] == 'invocation_id') == retained['invocation_id']
+        journal_name = next(row['source'] for row in graph['attachments'] if row['name'] == 'Execution evidence')
         envelope = json.loads((published.directory / journal_name).read_text())
         assert hydrate_journal(envelope, resolver) == retained
         payload_bodies = [(published.directory / name).read_text() for name in published.manifest['files'] if name.startswith('payload-') and not name.startswith('payload-index-')]
@@ -366,7 +369,10 @@ def test_separate_backend_unicode_and_omitted_phases_finalize_exactly(tmp_path, 
         rendered = json.loads(next(published.directory.glob('*-result.json')).read_text())
         resolver = PayloadResolver.local(published.directory, published.manifest)
         resolver.index(next(row['source'] for row in rendered['attachments'] if row['name'] == 'Payload index'))
-        name = next(row['source'] for row in rendered['attachments'] if row['name'] == 'Workflow execution evidence')
+        assert not any(row['name'] == 'Workflow execution evidence' for row in rendered['attachments'])
+        graph = rendered['steps'][0]
+        assert next(row['value'] for row in graph['parameters'] if row['name'] == 'invocation_id') == retained['invocation_id']
+        name = next(row['source'] for row in graph['attachments'] if row['name'] == 'Execution evidence')
         envelope = json.loads((published.directory / name).read_text())
         assert hydrate_journal(envelope, resolver) == retained
         payload_names = [name for name in published.manifest['files'] if name.startswith('payload-') and not name.startswith('payload-index-')]

@@ -246,13 +246,23 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
     assert sum(step['name'].startswith('node ') for graph in rendered['steps']
         for step in flatten(graph)) == graphs * (12 if retry else 6)
     # Durable journals hydrate exactly; accounting still receives original packets.
+    assert not any(item['name'] == 'Workflow execution evidence' for item in rendered['attachments'])
     attachments = [json.loads((recorded.directory / item['source']).read_text())
-        for item in rendered['attachments'] if item['name'] == 'Workflow execution evidence']
+        for wrapper in rendered['steps'] for item in wrapper['steps'][0]['attachments']
+        if item['name'] == 'Execution evidence']
+    diagnostics = [json.loads((recorded.directory / item['source']).read_text())
+        for wrapper in rendered['steps'] for item in wrapper['steps'][0]['attachments']
+        if item['name'] == 'Execution diagnostics']
+    assert diagnostics == legacy
+    for wrapper, evidence in zip(rendered['steps'], attachments):
+        invocation = next(item['value'] for item in wrapper['steps'][0]['parameters']
+                          if item['name'] == 'invocation_id')
+        assert invocation == evidence['invocation_id']
     from api_agent.testing.payloads import hydrate_journal, PayloadResolver
     resolver = PayloadResolver.local(recorded.directory, recorded.manifest)
     resolver.index(next(item['source'] for item in rendered['attachments'] if item['name'] == 'Payload index'))
     restored = [hydrate_journal(item, resolver) if item.get('version') == 2 else item for item in attachments]
-    assert restored == legacy + journals
+    assert restored == journals
 
 
 @pytest.mark.parametrize('journal_first', [True, False])
