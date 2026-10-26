@@ -32,10 +32,18 @@ def _step_identity(step):
 
 def _step_envelopes(step, *, parent=None):
     identity = _step_identity(step)
-    fixed = {'attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key'}
-    envelope = ({key: step[key] for key in ('name', 'status', 'start', 'stop')}, parent,
+    fixed = {'attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key', 'outcome'}
+    envelope = ({key: step[key] for key in ('name', 'start', 'stop')}, parent,
                 {item['name']: item['value'] for item in step['parameters'] if item['name'] in fixed})
     result = {identity: envelope}
+    # Untimed calls remain parameters in the rendered tree, but keep the same
+    # compatibility identity and owner as timed call steps. Missing timing is
+    # enrichment, never permission to change an observed outcome or visit.
+    for item in step['parameters']:
+        name = item['name']
+        if name.startswith('call ') and name.endswith(' outcome'):
+            call_name = name.removesuffix(' outcome')
+            result[('call', call_name)] = ({'name': call_name}, identity, {'outcome': item['value']})
     for child in step['steps']:
         for key, value in _step_envelopes(child, parent=identity).items():
             result[key] = value
@@ -47,12 +55,15 @@ def _compatible_steps(previous, incoming):
     for key in first.keys() & second.keys():
         first_base, first_parent, first_fixed = first[key]
         second_base, second_parent, second_fixed = second[key]
-        if (first_base != second_base or first_parent != second_parent or any(
+        if (any(first_base[name] != second_base[name] for name in first_base.keys() & second_base.keys())
+                or first_parent != second_parent or any(
                 first_fixed[name] != second_fixed[name] for name in first_fixed.keys() & second_fixed.keys())):
             raise ValueError('Conflicting workflow scope projection')
 
 
 def _merge_step(previous, incoming, *, prefer_incoming):
+    from .workflow_steps import attention_status
+    previous['status'] = attention_status(previous['status'], incoming['status'])
     parameters = {item['name']: item for item in previous['parameters']}
     for item in incoming['parameters']:
         if prefer_incoming or item['name'] not in parameters:
@@ -110,6 +121,9 @@ class _WorkflowStepBridge:
                 _compatible_steps(journal['step'], legacy['step'])
                 _merge_step(journal['step'], legacy['step'], prefer_incoming=False)
                 entries.remove(legacy)
+        from .workflow_steps import bubble_attention
+        for entry in entries:
+            bubble_attention(entry['step'])
         # Failed conflict checks leave both provenance and rendered state intact.
         self._projections = projections
         self.entries = entries
