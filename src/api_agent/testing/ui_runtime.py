@@ -38,6 +38,7 @@ class UIIntegrationOwner:
         self.ui_turn_lock = asyncio.Lock()
         self._turn_images = self._turn_bytes = self._turn_attempts = 0
         self._turn_exhausted = False
+        self._latest_turn_page = None
         self.extra_services = dict(services or {})
         self.backend_factory, self.backend = backend, None
         self._backend_cleanup = None
@@ -125,6 +126,7 @@ class UIIntegrationOwner:
                 binding = UITurn(self.emissions)
                 binding.bind(conversation_id=owner['conversation_id'], turn_id=owner['turn_id'])
                 owner = binding.owner
+                self._latest_turn_page = None
                 if (self._turn_exhausted or self._turn_attempts >= 64 or self._turn_images >= 64
                         or self._turn_bytes >= 16 * 1024 * 1024):
                     if not self._turn_exhausted:
@@ -168,10 +170,15 @@ class UIIntegrationOwner:
                         self._turn_bytes += len(content)
                 # Credential registration may change while provider capture awaits.
                 if self.emissions.content_export(owner) == owner:
-                    publish_attachment(attachment, owner=dict(owner))
+                    accepted = publish_attachment(attachment, owner=dict(owner))
+                    if accepted is True and phase == 'success' and attachment[2] == 'image/png':
+                        self._latest_turn_page = page
         with independent_timeout_scope():
             if owner is None:
-                await capture_ui_evidence(contexts, self.emissions, submit, capture_policy=policy, phase=phase)
+                # Retain other windows and their original context/page numbers.
+                excluded = (self._latest_turn_page,) if phase == 'success' and self._latest_turn_page is not None else ()
+                await capture_ui_evidence(contexts, self.emissions, submit, capture_policy=policy,
+                    phase=phase, exclude_pages=excluded)
                 return
             try:
                 async with component_timeout('UI turn evidence', 6):

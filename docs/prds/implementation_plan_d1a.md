@@ -89,3 +89,9 @@ budget accounting and unavailable reasons.
 ## Controlled error display
 
 - [x] Main-menu history opening/refresh and selected-report preparation display only approved public diagnostics. Never trust arbitrary text merely because an exception has a recognized type. Preserve actionable configured-port and missing-CLI guidance through validated, bounded message forms; unexpected adapter/setup failures use fixed messages. Restore uses the same policy through its [bounded requirements](implementation_plan_h2a2c.md). Do not retain callback exception notes or raw chains when normalizing ordinary errors. Preserve cancellation, owned task settlement and stale-generation isolation.
+
+## Selected ranges and whole-suite follow-up
+
+The later [selected-range contract](implementation_plan_d1i.md) supersedes the
+original multi-selection restriction above. Existing single-attempt deep links,
+preview/final identity and history guarantees remain in force.

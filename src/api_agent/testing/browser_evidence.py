@@ -19,7 +19,7 @@ PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 
 async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None,
-                              phase='failure'):
+                              phase='failure', exclude_pages=()):
     """Submit immutable attachments before caller-owned browser teardown.
 
     ``capture_policy(page, boundary)`` is async and returns safely masked PNG
@@ -30,6 +30,8 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
 
     ``submit((title, bytes, MIME))`` is synchronous, bounded and nonblocking;
     the caller binds it to the current test/attempt's immutable recording path.
+    ``exclude_pages`` contains already recorded page objects; identity exclusion
+    preserves context/page numbering and the traversal budget for other pages.
     Ordinary capture/submission failures never replace the primary outcome.
     Cancellation and other BaseExceptions propagate. No raw browser strings or
     exception messages become metadata. Returned tuples contain successful
@@ -74,6 +76,8 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
                 emit(context_index, 0)
                 return tuple(submitted)
             pages_seen += 1
+            if any(page is excluded for excluded in exclude_pages):
+                continue
             emitted = False
             if capture_policy is not None:
                 try:

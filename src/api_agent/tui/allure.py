@@ -165,7 +165,7 @@ class AllureNavigation:
                 self.receive_allure_snapshot, snapshot, generation)}
         return {}
 
-    def selected_allure_key(self, screen):
+    def selected_allure_keys(self, screen):
         if (self.mode not in {'integration', 'e2e'} or getattr(screen, 'kind', None) not in {'test-results', 'test-failure'}
                 or self.screen is not screen or isinstance(self.focused, Input)
                 or self._allure_opening):
@@ -179,20 +179,36 @@ class AllureNavigation:
             if not screen.query(DataTable):
                 return None
             keys = screen.query_one(DataTable).selected_row_keys
-            if len(keys) != 1:
+            if not keys:
                 return None
-            key = keys[0]
-        if self.unit_rows.get(key, ('PENDING',))[0] not in {
-                'PASSED', 'FAILED', 'ERROR', 'BROKEN', 'SKIPPED', 'CANCELLED', 'INTERRUPTED'}:
+            keys = tuple(keys)
+        if screen.kind == 'test-failure':
+            keys = (key,)
+        if any(self.unit_rows.get(key, ('PENDING',))[0] not in {
+                'PASSED', 'FAILED', 'ERROR', 'BROKEN', 'SKIPPED', 'CANCELLED', 'INTERRUPTED'}
+                for key in keys):
             return None
-        return key
+        return keys
+
+    def selected_allure_key(self, screen):
+        keys = self.selected_allure_keys(screen)
+        return keys[0] if keys and len(keys) == 1 else None
 
     def selected_allure_result(self, screen):
-        key = self.selected_allure_key(screen)
-        if key is None:
+        keys = self.selected_allure_keys(screen)
+        if keys is None:
             return None
-        snapshot = self.allure_snapshots.get(key)
-        return (snapshot, snapshot.result_files[key]) if snapshot is not None else (None, None)
+        snapshots = [self.allure_snapshots.get(key) for key in keys]
+        if any(snapshot is None or key not in snapshot.result_files
+               for key, snapshot in zip(keys, snapshots)):
+            return (None, None)
+        if len(keys) == 1:
+            return (snapshots[0], snapshots[0].result_files[keys[0]])
+        from api_agent.testing.allure_selection import bind_selection
+        try:
+            return bind_selection(tuple(zip(keys, snapshots)))
+        except ValueError:
+            return (None, None)
 
     def _allure(self):
         if self.allure_viewer is None:
@@ -209,10 +225,10 @@ class AllureNavigation:
         if selected is None:
             return
         if selected[0] is None:
-            key = self.selected_allure_key(self.screen)
-            message = ('Allure live preview is unavailable for this test attempt: the retained preview memory budget was reached. If this run finalizes and publishes, browse it from Allure history.'
-                       if key in self._allure_budget_unavailable else
-                       'Allure evidence is unavailable for this test attempt; check publication details.')
+            keys = self.selected_allure_keys(self.screen) or ()
+            message = ('Allure live preview is unavailable for this selection: the retained preview memory budget was reached. If this run finalizes and publishes, browse it from Allure history.'
+                       if any(key in self._allure_budget_unavailable for key in keys) else
+                       'Allure evidence is unavailable for every selected test attempt; select completed tests from the same retained run and check publication details.')
             self.notify(message,
                         severity='error', timeout=10)
             return

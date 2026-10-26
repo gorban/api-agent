@@ -256,9 +256,14 @@ class ManagedAllureViewer:
 
     async def _report(self, manifest, files, *, preview=False, result_file=None, history=None, archive=True):
         digest = validate_manifest(manifest, preview=preview)
-        if result_file is not None and (result_file not in files or not result_file.endswith('-result.json')):
+        selected = None if result_file is None else ((result_file,) if isinstance(result_file, str) else tuple(sorted(result_file)))
+        if selected is not None and (not selected or len(set(selected)) != len(selected) or any(
+                name not in files or not name.endswith('-result.json') for name in selected)):
             raise ViewerError('The exact selected Allure result is unavailable')
-        selector = hashlib.sha256(result_file.encode()).hexdigest() if result_file else 'suite'
+        single = selected[0] if selected is not None and len(selected) == 1 else None
+        selector = ('suite' if selected is None else
+                    hashlib.sha256(single.encode()).hexdigest() if single else
+                    'subset-' + hashlib.sha256(json.dumps(selected).encode()).hexdigest())
         if history is not None and self.history_count != HISTORY_LAUNCHES:
             from .allure_history_window import prepare_history
             history = await offload(prepare_history, history, self.history_count)
@@ -272,11 +277,17 @@ class ManagedAllureViewer:
         root = Path(self._temporary.name)
         url = f'http://127.0.0.1:{self.port}/{route}/index.html'
         with tempfile.TemporaryDirectory(prefix='input-', dir=root) as staging:
+            markers = []
             for name, body in files.items():
-                if result_file and name.endswith('-result.json') and name != result_file:
+                if selected is not None and name.endswith('-result.json') and name not in selected:
                     continue
+                original = body
                 if history is not None and name.endswith('-result.json'):
                     body = _history_result(body, manifest)
+                if selected is not None and name.endswith('-result.json'):
+                    from .allure_selection import marked_result
+                    body, marker = marked_result(name, body, original=original)
+                    markers.append(marker)
                 (Path(staging) / name).write_bytes(body)
             if 'environment.properties' not in files:
                 (Path(staging) / 'environment.properties').write_text(
@@ -308,10 +319,11 @@ class ManagedAllureViewer:
                     from .allure_history_window import extend_history
                     await offload(extend_history, output, history, self.history_count)
                 suffix = ''
-                if result_file:
+                if selected is not None:
                     cases = list((output / 'data' / 'test-cases').glob('*.json'))
-                    if len(cases) != 1:
-                        raise ViewerError('Allure did not preserve the exact selected attempt')
+                    from .allure_selection import verify_selected_cases
+                    verify_selected_cases(cases, markers)
+                if single:
                     try:
                         case = json.loads(cases[0].read_bytes())
                         uid = case['uid']
@@ -350,6 +362,12 @@ class ManagedAllureViewer:
     async def show_preview(self, snapshot, result_file, *, source=None):
         async with self._operation(), self._lock:
             async with component_timeout('Allure selected-test viewer', self.timeout):
+                from .allure_selection import PreviewSelection, selected_snapshot
+                if isinstance(snapshot, PreviewSelection):
+                    try:
+                        snapshot = await offload(selected_snapshot, snapshot.selection)
+                    except ValueError:
+                        raise ViewerError('The exact selected Allure result is unavailable') from None
                 manifest = json.loads(json.dumps(snapshot.manifest))
                 validate_manifest(manifest, preview=snapshot.preview)
                 files = verified_files(manifest, snapshot.files.__getitem__)

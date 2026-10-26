@@ -21,7 +21,7 @@ def channel(tmp_path, monkeypatch):
 def test_round_trip_preserves_original_immutable_bytes(channel, monkeypatch):
     monkeypatch.setenv("PYTEST_CURRENT_TEST","tests/test_ui.py::test_ui (teardown)")
     supplied = ('UI success context 1 page 1', PNG_SIGNATURE+b'controlled','image/png')
-    attachments.publish_attachment(supplied)
+    assert attachments.publish_attachment(supplied) is True
     event = json.loads(channel.read_text())
     assert event['node'] == 'tests/test_ui.py::test_ui'
     assert attachments.read_attachment(event['data'],channel.parent) == supplied
@@ -31,7 +31,7 @@ def test_round_trip_preserves_original_immutable_bytes(channel, monkeypatch):
 @pytest.mark.parametrize('missing',['API_AGENT_INTEGRATION_EVENTS','PYTEST_CURRENT_TEST'])
 def test_outside_launch_does_not_create_files(channel,monkeypatch,missing):
     monkeypatch.delenv(missing)
-    attachments.publish_attachment(None)
+    assert attachments.publish_attachment(None) is False
     assert not channel.exists()
 
 

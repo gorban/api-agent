@@ -35,11 +35,11 @@ def validate_owner(owner, boundary=None):
 
 
 def publish_attachment(attachment, *, owner=None):
-    """Freeze safe provider bytes before temporary browser/test teardown."""
+    """Freeze safe provider bytes; return whether the event was accepted."""
     event_path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
     node = os.environ.get('PYTEST_CURRENT_TEST')
     if not event_path or not node:
-        return
+        return False
     title, content, mime = attachment
     if not _valid(title, content, mime):
         raise ValueError('Invalid browser attachment')
@@ -56,6 +56,7 @@ def publish_attachment(attachment, *, owner=None):
         row['data']['owner'] = owner
     with open(event_path, 'a', encoding='utf-8') as stream:
         stream.write(json.dumps(row, allow_nan=False) + '\n')
+    return True
 
 
 def _valid(title, content, mime):
