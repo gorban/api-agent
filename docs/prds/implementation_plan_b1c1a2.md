@@ -32,3 +32,5 @@ The bounded [canonical GRAPH storage contract](implementation_plan_b1c1a2a.md) d
 ## Conversation and turn reporting
 
 - [x] Deliver [conversation/turn hierarchy and exact-once cost rollups](implementation_plan_b1c1a2b.md), preserving independent trials, legacy evidence and canonical payloads.
+
+- [x] Deliver [scoped execution evidence and custom diagnostics](implementation_plan_b1c1a2c.md), placing attachments beneath verified owners while retaining test-wide summaries and unattached evidence.

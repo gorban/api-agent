@@ -23,6 +23,7 @@ from .recording import RunIdentity, RunRecorder
 from .storage import RunStorage
 from .workflow_accounting import group_execution_steps
 from .suite_lock import suite_locked
+from .evidence_placement import legacy_owner, observed_call_scopes, place_evidence
 
 
 def _step_identity(step):
@@ -242,6 +243,16 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         pending_journals = {}
         payload_calls = {}
         finalized_payload_calls = {}
+        scoped_attachments = {}
+        custom_attachment_sizes = {}
+        call_scope_owners = {}
+
+        def queue_attachment(test_id, owner, frozen):
+            from uuid import uuid4
+            name, data, mime = frozen
+            source = str(uuid4()) + '-attachment'
+            recorder.record_artifact(source, data)
+            scoped_attachments.setdefault(test_id, []).append((owner, dict(name=name, source=source, type=mime)))
 
         def payload_store(test_id):
             from .payloads import PayloadStore
@@ -279,6 +290,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             attachments = list(content.pop(test_id, ()))
             bridge = workflow_steps.pop(test_id, None)
             steps = deepcopy(bridge.steps) if bridge is not None else []
+            call_scope_owners[test_id] = observed_call_scopes(steps)
             store = payload_stores.get(test_id)
             if store is not None:
                 from .workflow_steps import attach_payloads
@@ -290,8 +302,13 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     recorder.record_artifact(journal_name,
                         json.dumps(envelope, ensure_ascii=False, allow_nan=False).encode())
                     # record_artifact persists the requested filename.
-                    attachments.append(recorder.existing_attachment('Workflow execution evidence',
-                        journal_name))
+                    graph_scopes = [event['scope_id'] for event in packet['events']
+                        if event.get('event') == 'scope_start' and event.get('kind') == 'graph'
+                        and event.get('parent_id') is None]
+                    owner = (dict(kind='scope', invocation_id=packet['invocation_id'], scope_id=graph_scopes[0])
+                        if len(graph_scopes) == 1 else dict(kind='unattached'))
+                    scoped_attachments.setdefault(test_id, []).append((owner,
+                        dict(name='Execution evidence', source=journal_name, type='application/json')))
                     captures = [(event, dict(name='Input' if event['direction'] == 'input' else 'Output',
                         source=event['payload']['source'], type='application/json'))
                         for event in envelope['events'] if event.get('event') == 'capture' and 'source' in event.get('payload', {})]
@@ -304,12 +321,16 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 index_name = 'payload-index-' + str(list(recording_ids).index(test_id)) + '.json'
                 recorder.record_artifact(index_name, json.dumps(store.index(), allow_nan=False).encode())
                 attachments.append(recorder.existing_attachment('Payload index', index_name))
+            steps = group_execution_steps(steps)
+            attachments.extend(recorder.existing_attachment(item['name'], item['source'], item['type'])
+                for item in place_evidence(steps, scoped_attachments.get(test_id, ()),
+                    call_scopes=call_scope_owners[test_id]))
             attachments = tuple(attachments)
             if config.get('LOG_CONTENT') is not True and result.identity.id in ui_test_ids:
                 from .withheld_screenshot import withheld_attachment
                 attachments += (withheld_attachment(),)
             recorder.update_test_evidence(recording_ids[test_id], attachments=attachments,
-                                          steps=group_execution_steps(steps))
+                                          steps=steps)
 
         def record(result):
             test = result.identity
@@ -391,10 +412,15 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             artifact = validate_accounting(evidence_boundary.content_export(artifact))
             recorder.record_artifact('accounting.json', json.dumps(artifact, allow_nan=False).encode())
             has_workflow_accounting = bool(workflow_journals) or any(
+                owner['kind'] == 'call' for rows in scoped_attachments.values() for owner, _ in rows) or any(
                 call.get('conversation_id') is not None for test in artifact['tests'] for call in test['calls'])
             if has_workflow_accounting:
                 from .workflow_accounting import join_workflow_accounting, apply_frozen_steps, include_unowned_calls
-                joined, facts = join_workflow_accounting(workflow_journals, artifact,
+                join_journals = dict(workflow_journals)
+                for test_id, rows in scoped_attachments.items():
+                    if any(owner['kind'] == 'call' for owner, _ in rows):
+                        join_journals.setdefault(test_id, [])
+                joined, facts = join_workflow_accounting(join_journals, artifact,
                                                          admissions=workflow_admissions)
                 recorder.record_artifact('workflow-accounting-join.json',
                     json.dumps(evidence_boundary.content_export(joined), sort_keys=True, allow_nan=False).encode())
@@ -413,9 +439,14 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     moved = {(item['source'], item['type']) for items in phases.values()
                              for item in items.values()} - retained
                     settled = apply_frozen_steps(steps, test_id, facts)
+                    evidence = scoped_attachments.get(test_id, ())
+                    scoped_sources = {reference['source'] for _, reference in evidence}
+                    remaining_evidence = place_evidence(settled, evidence,
+                        call_scopes=call_scope_owners.get(test_id, {}))
                     recorder.update_test_evidence(filename, steps=settled, attachments=tuple(
                         recorder.existing_attachment(item['name'], item['source'], item['type'])
-                        for item in row.get('attachments', [])
+                        for item in [*[item for item in row.get('attachments', [])
+                            if item['source'] not in scoped_sources], *remaining_evidence]
                         if (item['source'], item['type']) not in moved))
                     updates[filename] = settled
                 recorder.update_workflow_steps(updates)
@@ -461,6 +492,21 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if row.kind == 'workflow_evidence':
                 from api_agent.workflows.evidence import attachment
                 raw_packet = json.loads(row.text)
+                if type(raw_packet) is dict and raw_packet.get('kind') == 'scoped_attachment':
+                    from .evidence import validate_attachment
+                    owner, frozen = validate_attachment(raw_packet, evidence_boundary,
+                        allow_content=config.get('LOG_CONTENT') is True)
+                    packet_size = len(json.dumps(raw_packet, ensure_ascii=False, allow_nan=False,
+                        separators=(',', ':')).encode())
+                    count, size = custom_attachment_sizes.get(row.identity.id, (0, 0))
+                    if count >= 256 or size + packet_size > 4 * 1024 * 1024:
+                        raise ValueError('Scoped attachment recording limit exceeded')
+                    custom_attachment_sizes[row.identity.id] = (count + 1, size + packet_size)
+                    queue_attachment(row.identity.id, owner, frozen)
+                    row = replace(row, text=frozen[1].decode())
+                    if on_event is not None:
+                        on_event(row)
+                    return
                 if config.get('LOG_CONTENT') is not True and type(raw_packet) is dict and (
                         raw_packet.get('content') == 'permitted_scrubbed' or
                         any(type(event) is dict and 'values' in event for event in raw_packet.get('events', []))):
@@ -480,7 +526,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     payload_store(row.identity.id)
                 else:
                     workflow_steps.setdefault(row.identity.id, _WorkflowStepBridge()).add(packet)
-                    content.setdefault(row.identity.id, []).append(frozen)
+                    owner, label = legacy_owner(packet)
+                    queue_attachment(row.identity.id, owner, (label, frozen[1], frozen[2]))
             if row.kind == 'quota_snapshot':
                 from .quota_events import capture
                 capture(row, observe_quota)

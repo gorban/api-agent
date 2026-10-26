@@ -112,9 +112,13 @@ def test_recording_uses_one_wire_file_for_native_node_and_llm_attachments(tmp_pa
     assert len(json.loads((result.directory/index['source']).read_bytes())['entries']) == 9
     resolver = PayloadResolver.local(result.directory, result.manifest)
     resolver.index(index['source'])
-    durable = [json.loads((result.directory/item['source']).read_bytes()) for item in row['attachments']
-               if item['name'] == 'Workflow execution evidence']
-    assert [hydrate_journal(item, resolver) for item in durable] == [item[0] for item in packets]
+    assert not any(item['name'] == 'Workflow execution evidence' for item in row['attachments'])
+    durable = [json.loads((result.directory/item['source']).read_bytes()) for graph in row['steps']
+               for item in graph['attachments'] if item['name'] == 'Execution evidence']
+    assert all(next(item['value'] for item in graph['parameters'] if item['name'] == 'invocation_id')
+               == durable[index]['invocation_id'] for index, graph in enumerate(row['steps']))
+    assert {item['invocation_id']: hydrate_journal(item, resolver) for item in durable} == {
+        item[0]['invocation_id']: item[0] for item in packets}
     assert all(source in snapshots[-1].files for source in sources)
     assert not any(source in snapshots[0].files for source in sources)
     early = json.loads(next(body for name, body in snapshots[0].files.items() if name.endswith('-result.json')))
@@ -371,7 +375,8 @@ def _record_omitted_journal(tmp_path, phase, reason, *, legacy_wrapper, enabled)
                    for path in result.directory.iterdir())
     resolver = PayloadResolver.local(result.directory, result.manifest)
     resolver.index(index['source'])
-    durable = next(item for item in row['attachments'] if item['name'] == 'Workflow execution evidence')
+    assert not any(item['name'] == 'Workflow execution evidence' for item in row['attachments'])
+    durable = next(item for item in row['steps'][0]['attachments'] if item['name'] == 'Execution evidence')
     assert hydrate_journal(json.loads((result.directory/durable['source']).read_bytes()), resolver) == journal
     accounting = json.loads((result.directory/'accounting.json').read_bytes())
     recorded_call = accounting['tests'][0]['calls'][0]
