@@ -226,6 +226,9 @@ class LocalRunOwner:
                 self._config = self.resolve()
                 if self._config.errors or self._config.missing:
                     raise ValueError('invalid_runtime_configuration')
+                if self.prepare_view is _prepare_view:
+                    from api_agent.runtime.frontend import prepare_source_frontend
+                    await prepare_source_frontend()
                 from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
                 self._diagnostic_projection = LocalDiagnosticProjection(
                     full_content=self._config.values.get('RUN_LOG_FULL_CONTENT') is True)

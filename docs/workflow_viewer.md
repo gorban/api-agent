@@ -23,16 +23,21 @@ declarations have changed since generation. The commands below check freshness.
 
 ## Source dependency preparation
 
-For a source checkout, use Node.js 24 or newer and run `npm ci` once from the
-repository root. The committed npm lockfile verifies exact packages; postinstall
-copies unchanged official browser builds and notices into ignored runtime files.
-No frontend asset CDN or network request occurs during later static or managed viewing. Python
-graph execution does not require Node, npm or these optional viewing assets.
+For a source checkout, install Node.js 24 or newer with npm. The launcher verifies
+frontend dependencies before managed viewing and automatically runs the root
+locked `npm ci` when preparation is needed. It reports preparation and missing
+tools; it does not install Node or npm. The first install needs package access or
+an npm cache. Postinstall copies unchanged official browser builds and notices
+into ignored runtime files. Ready launches verify and reuse those files without
+another install. Python graph execution does not require Node, npm or these
+optional viewing assets.
 
-Fresh root and nested pages show `npm ci` guidance if those dependencies are
-missing. The source `--view-flow` preflight fails before browser startup and never
-installs them silently. Explicitly disabled browser scripts instead retain the
-generic no-script fallback; that alone does not prove dependencies are missing.
+Direct file opening cannot run launcher setup: run `npm ci` from the repository
+root first, or launch managed viewing once. Fresh root and nested pages show
+`npm ci` guidance if dependencies are missing. Unexpected existing generated
+asset bytes require explicit inspection and preservation/removal before setup
+can continue. Explicitly disabled browser scripts instead retain the generic
+no-script fallback; that alone does not prove dependencies are missing.
 Installed Python distributions already include the prepared files: do not run
 npm in an installed package. Reinstall a complete distribution if its assets are
 missing or damaged.

@@ -1,4 +1,4 @@
-/** Copy only reviewed official npm assets; runtime and Python builds never fetch. */
+/** Copy reviewed official npm assets; this helper and Python builds never fetch. */
 import * as fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';

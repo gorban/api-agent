@@ -145,7 +145,11 @@ def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_
         (root / 'cfg/workflow-view-roots.json').write_text(json.dumps(context))
     configuration = tomllib.loads((ROOT / 'pyproject.toml').read_text())
     explicit = configuration['tool']['hatch']['build']['targets']['sdist']['force-include']
-    for relative in (*explicit, 'pyproject.toml', 'hatch_build.py'):
+    nested_notices = tuple(
+        'src/api_agent/api_providers/graphql_mcp/licenses/third-party/' + parent +
+        '/node_modules/content-type/LICENSE'
+        for parent in ('body-parser', 'express', 'negotiator', 'type-is'))
+    for relative in dict.fromkeys((*explicit, *nested_notices, 'pyproject.toml', 'hatch_build.py')):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
@@ -184,6 +188,9 @@ def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_
     with tarfile.open(archive) as source:
         members = {name.split('/', 1)[1] for name in source.getnames() if '/' in name}
         assert 'workflow-package-files.json' in members
+        archive_root = source.getnames()[0].split('/', 1)[0]
+        for relative in nested_notices:
+            assert source.extractfile(archive_root + '/' + relative).read() == (ROOT / relative).read_bytes()
         assert owner + '/private-sentinel.txt' not in members
         if owner == 'demo/nested':
             assert 'demo/ancestor-private.txt' not in members
@@ -196,6 +203,8 @@ def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_
                     '--outdir', str(output), str(rebuilt)], check=True, capture_output=True)
     wheel, = output.glob('*.whl')
     with zipfile.ZipFile(wheel) as installed:
+        for relative in nested_notices:
+            assert installed.read(relative.removeprefix('src/')) == (ROOT / relative).read_bytes()
         assert 'api_agent/' + owner + '/private-sentinel.txt' not in installed.namelist()
         assert 'api_agent/demo/ancestor-private.txt' not in installed.namelist()
         assert installed.read('api_agent/demo/placeholder.txt') == b'Public example fixture.\n'

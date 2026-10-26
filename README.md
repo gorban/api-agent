@@ -13,10 +13,15 @@ Build and run API-connected agents from one guided terminal interface.
 
 ## Get started
 
-Use Python 3.13 or newer. Source-checkout browser viewing and the included Studio
-also need one explicit preparation with Node.js 24 or newer: run `npm ci` from
-the repository root. They work offline afterward; installed Python distributions
-include those assets, and graph execution alone does not require npm.
+Use Python 3.13 or newer. For source-checkout browser viewing, the included Studio
+and unit tests, also install Node.js 24 or newer with npm. The launcher checks
+the frontend dependencies and automatically runs the locked `npm ci` when they
+need preparation, showing progress or guidance if Node/npm is unavailable.
+The first install needs access to the packages or an npm cache; prepared assets
+work offline afterward. You can also run `npm ci` from the repository root
+yourself, including before opening workflow files directly in a browser.
+Installed Python distributions include the viewer assets; graph execution alone
+does not require npm.
 
 Then run from this repository directory:
 ```bash

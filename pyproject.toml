@@ -25,6 +25,10 @@ only-include = ["LICENSE", "README.md", "pyproject.toml", "hatch_build.py", "lau
 exclude = [".*", "**/.*", "**/__pycache__/**", "**/node_modules/**", "**/*.pyc"]
 
 [tool.hatch.build.targets.sdist.force-include]
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/body-parser/node_modules/content-type/LICENSE" = "src/api_agent/api_providers/graphql_mcp/licenses/third-party/body-parser/node_modules/content-type/LICENSE"
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/express/node_modules/content-type/LICENSE" = "src/api_agent/api_providers/graphql_mcp/licenses/third-party/express/node_modules/content-type/LICENSE"
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/negotiator/node_modules/content-type/LICENSE" = "src/api_agent/api_providers/graphql_mcp/licenses/third-party/negotiator/node_modules/content-type/LICENSE"
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/type-is/node_modules/content-type/LICENSE" = "src/api_agent/api_providers/graphql_mcp/licenses/third-party/type-is/node_modules/content-type/LICENSE"
 ".npmrc" = ".npmrc"
 "apps/api-agent-ui/public/marked.js" = "apps/api-agent-ui/public/marked.js"
 "apps/api-agent-ui/public/dompurify.js" = "apps/api-agent-ui/public/dompurify.js"
@@ -52,6 +56,10 @@ packages = ["src/api_agent"]
 exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/body-parser/node_modules/content-type/LICENSE" = "api_agent/api_providers/graphql_mcp/licenses/third-party/body-parser/node_modules/content-type/LICENSE"
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/express/node_modules/content-type/LICENSE" = "api_agent/api_providers/graphql_mcp/licenses/third-party/express/node_modules/content-type/LICENSE"
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/negotiator/node_modules/content-type/LICENSE" = "api_agent/api_providers/graphql_mcp/licenses/third-party/negotiator/node_modules/content-type/LICENSE"
+"src/api_agent/api_providers/graphql_mcp/licenses/third-party/type-is/node_modules/content-type/LICENSE" = "api_agent/api_providers/graphql_mcp/licenses/third-party/type-is/node_modules/content-type/LICENSE"
 ".private_resources/diagrams/flow.svg" = "api_agent/.private_resources/diagrams/flow.svg"
 ".private_resources/diagrams/flow.md" = "api_agent/.private_resources/diagrams/flow.md"
 ".private_resources/diagrams/workflows/components/agent.svg" = "api_agent/.private_resources/diagrams/workflows/components/agent.svg"

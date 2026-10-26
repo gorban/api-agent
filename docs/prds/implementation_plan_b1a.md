@@ -67,3 +67,7 @@ Select **Run local** to start the app and open a managed browser with the Agent 
 ## Shared interactive diagrams
 
 - [x] Deliver the [fitted, zoomable interactive SVG overlay](implementation_plan_b1a7.md) for saved files and managed viewing, with interactive resource navigation; human acceptance remains unchecked in the detail.
+
+## Source frontend setup
+
+- [x] Deliver [automatic locked source frontend preparation](implementation_plan_b1a9.md) at launcher operation boundaries, preserving installed-package and verification-only behavior.
