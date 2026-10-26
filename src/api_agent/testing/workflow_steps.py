@@ -1,4 +1,4 @@
-"""Translate explicit workflow scope outcomes into nested Allure steps."""
+"""Translate explicit workflow outcomes and observed attention into Allure steps."""
 import math
 import re
 from uuid import UUID
@@ -13,6 +13,21 @@ def _identifier(value):
 
 def _time(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def attention_status(*statuses):
+    """Native attention is monotonic: terminal failure outranks retry/cancellation."""
+    return max(statuses, key={"passed": 0, "broken": 1, "failed": 2}.__getitem__)
+
+
+def bubble_attention(step):
+    """Propagate attention upward while preserving each successful child."""
+    for child in step["steps"]:
+        bubble_attention(child)
+        step["status"] = attention_status(step["status"], child["status"])
+        if any(item == dict(name='retry_observed', value='true') for item in child['parameters']):
+            if not any(item['name'] == 'retry_observed' for item in step['parameters']):
+                step['parameters'].append(dict(name='retry_observed', value='true'))
 
 
 def scope_steps(events):
@@ -56,16 +71,20 @@ def scope_steps(events):
         end = scope['end']
         if end is None:
             raise ValueError('Workflow scope has no explicit completion')
-        parameters = [dict(name='scope_id', value=identifier)]
+        parameters = [dict(name='scope_id', value=identifier),
+                      dict(name='outcome', value=end['outcome'])]
         for name in ('attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key'):
             if scope.get(name) is not None:
                 parameters.append(dict(name=name, value=str(scope[name])))
         if identifier in attempts:
             parameters.append(dict(name='attempts_reached', value=str(attempts[identifier])))
+        if attempts.get(identifier, 0) > 1:
+            parameters.append(dict(name='retry_observed', value='true'))
         if identifier in rejections:
             parameters.append(dict(name='guard_rejections', value=str(rejections[identifier])))
         rows[identifier] = dict(name=scope['kind'] + ' ' + scope['owner'],
-            status='broken' if end['outcome'] == 'cancelled' else end['outcome'],
+            status=('failed' if end['outcome'] == 'failed' else 'broken'
+                    if end['outcome'] == 'cancelled' or attempts.get(identifier, 0) > 1 else 'passed'),
             start=int(scope['started_ms']), stop=int(end['stopped_ms']), steps=[], parameters=parameters)
     for identifier, scope in scopes.items():
         ancestors = {identifier}
@@ -112,9 +131,16 @@ def scope_steps(events):
         if event.get('selection') is not None:
             parameters.append(dict(name='selection', value=str(event['selection'])))
         parent = rows[visit_id]
+        outcome = event.get('outcome')
+        if outcome not in ('completed', 'tool_calls', 'failed', 'cancelled', 'length', 'refused'):
+            outcome = 'unknown'
+        parameters.append(dict(name='outcome', value=str(outcome)))
+        status = ('passed' if outcome in ('completed', 'tool_calls') else
+                  'failed' if outcome == 'failed' else 'broken')
+        parent['status'] = attention_status(parent['status'], status)
         start, stop = event.get('started_ms'), event.get('stopped_ms')
         if _time(start) and _time(stop) and parent['start'] <= start <= stop <= parent['stop']:
-            parent['steps'].append(dict(name='call ' + call_id, status='passed' if event.get('outcome') == 'completed' else 'broken',
+            parent['steps'].append(dict(name='call ' + call_id, status=status,
                                         start=int(start), stop=int(stop), steps=[], parameters=parameters))
         else:
             parent['parameters'].extend(dict(name='call ' + call_id + ' ' + item['name'], value=item['value'])
@@ -130,4 +156,6 @@ def scope_steps(events):
                                              and value >= 0 for value in values) else None
             rows[identifier]['parameters'].append(dict(name='inclusive_' + name,
                                                        value=str(amount) if amount is not None else 'unknown'))
+    for root in roots:
+        bubble_attention(root)
     return roots

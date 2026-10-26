@@ -36,3 +36,7 @@ Journal integrity and immutable accounting retain their verified scope. [Canonic
 ## Complete payload follow-through
 
 - [ ] Deliver [complete flow-aligned test evidence](implementation_plan_b1c1a2.md) for logs and Allure. The existing bounded preview contract remains accepted within its scope; it does not establish complete durable inputs/outputs for historical overlays. Separate test-backend trace export is not required for this acceptance.
+
+## Native attention colors
+
+- [x] Deliver [native workflow retry/error colors](implementation_plan_b1c1a3.md), preserving actual scope/test outcomes and canonical evidence.

@@ -159,6 +159,9 @@ def test_partial_journal_children_remain_independent_after_legacy_ambiguity(orde
         guards = [parameter['value'] for step in flatten(entry['step'])
                   for parameter in step['parameters'] if parameter['name'] == 'guard_rejections']
         assert guards == (['1'] if entry['invocation'] is None else [])
+        retry = {'name': 'retry_observed', 'value': 'true'}
+        assert (retry in entry['step']['parameters']) == (entry['invocation'] is None)
+        assert (retry in entry['step']['steps'][0]['parameters']) == (entry['invocation'] is None)
     assert packets == originals
 
 
@@ -228,6 +231,10 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
     assert len(journals) == len(legacy) == graphs
     rendered = json.loads(next(recorded.directory.glob('*-result.json')).read_text())
     assert len(rendered['steps']) == graphs
+    assert rendered['status'] == 'passed'
+    assert all(graph['status'] == ('broken' if retry else 'passed') for graph in rendered['steps'])
+    assert all(step['status'] == 'passed' for graph in rendered['steps']
+               for step in flatten(graph) if step['name'].startswith(('node ', 'call ')))
     scope_ids = [parameter['value'] for graph in rendered['steps'] for step in flatten(graph)
         for parameter in step['parameters'] if parameter['name'] == 'scope_id']
     expected_ids = {event['scope_id'] for item in journals for event in item['events']
@@ -240,3 +247,133 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
     attachments = [json.loads((recorded.directory / item['source']).read_text())
         for item in rendered['attachments'] if item['name'] == 'Workflow execution evidence']
     assert attachments == packets
+
+
+@pytest.mark.parametrize('journal_first', [True, False])
+def test_attention_enrichment_merges_without_outcome_conflict(journal_first):
+    legacy = trace()
+    journal = [event for event in deepcopy(legacy) if event['event'] not in ('attempt', 'guard')]
+    packets = [packet(journal, str(uuid4())), packet(legacy)]
+    bridge = _WorkflowStepBridge()
+    for item in packets if journal_first else reversed(packets):
+        bridge.add(item)
+    assert len(bridge.steps) == 1
+    assert bridge.steps[0]['status'] == bridge.steps[0]['steps'][0]['status'] == 'broken'
+    assert {'name': 'outcome', 'value': 'passed'} in bridge.steps[0]['parameters']
+
+
+@pytest.mark.parametrize('order', list(permutations(range(3))))
+def test_partial_enrichment_bubbles_failure_and_preserves_original_outcome(order):
+    from test_workflow_steps import visit_events
+    complete = visit_events(trace(), outcome='failed')
+    invocation = str(uuid4())
+    packets = [packet([complete[0], complete[-1]], invocation),
+               packet(complete, invocation), packet(trace())]
+    bridge = _WorkflowStepBridge()
+    for index in order:
+        bridge.add(packets[index])
+    enriched = next(step for step in bridge.steps if step['steps'][0]['steps'])
+    assert enriched['status'] == 'failed'
+    assert {'name': 'outcome', 'value': 'passed'} in enriched['parameters']
+
+
+def test_successful_call_outcome_conflict_remains_visible():
+    from test_workflow_steps import visit_events
+    original = visit_events(trace(), call_outcome='completed')
+    changed = deepcopy(original)
+    next(event for event in changed if event['event'] == 'call')['outcome'] = 'tool_calls'
+    bridge = _WorkflowStepBridge()
+    bridge.add(packet(original))
+    with pytest.raises(ValueError, match='Conflicting workflow scope'):
+        bridge.add(packet(changed))
+
+
+@pytest.mark.parametrize('authoritative', [False, True])
+@pytest.mark.parametrize('failed_first', [False, True])
+@pytest.mark.parametrize('timing', [(False, False), (True, False), (False, True)])
+def test_untimed_call_outcome_conflict_preserves_retained_state(authoritative, failed_first, timing):
+    from test_workflow_steps import visit_events
+    original = visit_events(trace(), call_outcome='completed', timed=False)
+    changed = deepcopy(original)
+    next(event for event in changed if event['event'] == 'call')['outcome'] = 'failed'
+    calls = [next(event for event in rows if event['event'] == 'call') for rows in (original, changed)]
+    node = next(event for event in original if event.get('kind') == 'node')
+    for call, timed in zip(calls, timing):
+        if timed:
+            call.update(started_ms=node['started_ms'], stopped_ms=node['started_ms'] + 1)
+    invocation = str(uuid4()) if authoritative else None
+    first, second = (changed, original) if failed_first else (original, changed)
+    bridge = _WorkflowStepBridge()
+    bridge.add(packet(first, invocation))
+    retained_steps = deepcopy(bridge.steps)
+    retained_projections = deepcopy(bridge._projections)
+    with pytest.raises(ValueError, match='Conflicting workflow scope'):
+        bridge.add(packet(second, invocation))
+    assert bridge.steps == retained_steps
+    assert bridge._projections == retained_projections
+    bridge.add(packet(first, invocation))
+    assert bridge.steps == retained_steps
+
+
+@pytest.mark.parametrize('authoritative', [False, True])
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('timing', [(False, False), (True, False), (False, True)])
+def test_call_cannot_move_between_visits_with_missing_timing(authoritative, reverse, timing):
+    from test_workflow_steps import visit_events
+    original = visit_events(visit_events(trace(), call_outcome='completed', timed=False))
+    nodes = [event for event in original if event['event'] == 'scope_start' and event['kind'] == 'node']
+    changed = deepcopy(original)
+    call = next(event for event in changed if event['event'] == 'call')
+    call['visit_id'] = nodes[0]['scope_id']
+    for rows, timed in zip((original, changed), timing):
+        if timed:
+            next(event for event in rows if event['event'] == 'call').update(
+                started_ms=nodes[0]['started_ms'], stopped_ms=nodes[0]['started_ms'] + 1)
+    packets = [packet(rows, 'same-invocation' if authoritative else None) for rows in (original, changed)]
+    bridge = _WorkflowStepBridge()
+    first, second = reversed(packets) if reverse else packets
+    bridge.add(first)
+    retained = deepcopy((bridge.steps, bridge._projections))
+    with pytest.raises(ValueError, match='Conflicting workflow scope'):
+        bridge.add(second)
+    assert (bridge.steps, bridge._projections) == retained
+
+
+@pytest.mark.parametrize('journal_timed', [False, True])
+@pytest.mark.parametrize('journal_first', [False, True])
+def test_call_timing_enrichment_keeps_compatible_outcome_and_owner(journal_timed, journal_first):
+    from test_workflow_steps import visit_events
+    legacy = visit_events(trace(), call_outcome='completed', timed=False)
+    journal = deepcopy(legacy)
+    timed = journal if journal_timed else legacy
+    node = next(event for event in timed if event.get('kind') == 'node')
+    next(event for event in timed if event['event'] == 'call').update(
+        started_ms=node['started_ms'], stopped_ms=node['started_ms'] + 1)
+    packets = [packet(journal, str(uuid4())), packet(legacy)]
+    bridge = _WorkflowStepBridge()
+    for item in packets if journal_first else reversed(packets):
+        bridge.add(item)
+    calls = [step for step in flatten(bridge.steps[0]) if step['name'].startswith('call ')]
+    assert len(bridge.steps) == len(calls) == 1
+    assert calls[0]['status'] == 'passed'
+    assert {'name': 'outcome', 'value': 'completed'} in calls[0]['parameters']
+
+
+@pytest.mark.parametrize('journal_first', [False, True])
+def test_richer_legacy_retry_remains_explained_with_authoritative_first_attempt(journal_first):
+    from test_workflow_steps import visit_events
+    legacy = visit_events([event for event in trace() if event['event'] != 'guard'])
+    journal = [event for event in deepcopy(legacy)
+               if not (event['event'] == 'attempt' and event['attempt'] > 1)]
+    packets = [packet(journal, str(uuid4())), packet(legacy)]
+    bridge = _WorkflowStepBridge()
+    for item in packets if journal_first else reversed(packets):
+        bridge.add(item)
+    graph = bridge.steps[0]
+    component = graph['steps'][0]
+    assert graph['status'] == component['status'] == 'broken'
+    assert {'name': 'attempts_reached', 'value': '1'} in component['parameters']
+    for step in (graph, component):
+        assert {'name': 'retry_observed', 'value': 'true'} in step['parameters']
+        assert {'name': 'outcome', 'value': 'passed'} in step['parameters']
+    assert not any(item['name'] == 'retry_observed' for item in component['steps'][0]['parameters'])
