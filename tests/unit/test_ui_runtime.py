@@ -352,3 +352,179 @@ def test_ui_test_visibility_and_retention_matrix(operation,mode,run_ui,debug,leg
     assert operation.browser_factory.call_args.kwargs['headless'] is not headed
     assert (owner.inspection is not None) is headed
     assert operation.browser_factory.call_args.kwargs['inspection'] is owner.inspection
+
+
+@pytest.mark.parametrize('trace',[False,True])
+def test_turn_capture_only_current_page_and_explicit_owner(operation,monkeypatch,trace):
+    from api_agent.testing import browser_attachments
+    from api_agent.testing.browser_evidence import PNG_SIGNATURE
+    from api_agent.testing.ui_turn import UITurn
+    owner=operation.create(LOG_CONTENT=True,TRACELOOP_TRACE_CONTENT=trace)
+    page=object()
+    policy=AsyncMock(return_value=PNG_SIGNATURE+b'pixels')
+    provider=SimpleNamespace(implementation=SimpleNamespace(capabilities=ProviderCapabilities('ui',('capture_evidence',))),
+        require=Mock(return_value=SimpleNamespace(acapture_evidence=policy)))
+    owner.prepared=SimpleNamespace(provider=provider,session=SimpleNamespace(page=page))
+    operation.browser.session=SimpleNamespace(context=SimpleNamespace(pages=[object(),object()]))
+    publish=Mock()
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    turn=UITurn(owner.emissions)
+    turn.bind(conversation_id='11111111-1111-4111-8111-111111111111',turn_id='22222222-2222-4222-8222-222222222222')
+    asyncio.run(owner.capture('success',owner=turn.owner))
+    policy.assert_awaited_once_with(page=page,boundary=owner.emissions)
+    assert publish.call_args.kwargs == {'owner':turn.owner}
+    assert publish.call_args.args[0][2]=='image/png'
+
+
+@pytest.mark.parametrize('images,size',[(64,0),(0,16*1024*1024)])
+def test_turn_capture_budget_emits_unavailable_without_provider_capture(operation,monkeypatch,images,size):
+    from api_agent.testing import browser_attachments
+    owner=operation.create(LOG_CONTENT=True)
+    owner._turn_images,owner._turn_bytes=images,size
+    policy=AsyncMock()
+    provider=SimpleNamespace(implementation=SimpleNamespace(capabilities=ProviderCapabilities('ui',('capture_evidence',))),
+        require=Mock(return_value=SimpleNamespace(acapture_evidence=policy)))
+    owner.prepared=SimpleNamespace(provider=provider,session=SimpleNamespace(page=object()))
+    publish=Mock()
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    asyncio.run(owner.capture('success',owner={'kind':'turn','conversation_id':'11111111-1111-4111-8111-111111111111','turn_id':'22222222-2222-4222-8222-222222222222'}))
+    policy.assert_not_awaited()
+    assert publish.call_args.args[0][2]=='application/json'
+
+
+def turn_owner():
+    return {'kind':'turn','conversation_id':'11111111-1111-4111-8111-111111111111',
+        'turn_id':'22222222-2222-4222-8222-222222222222'}
+
+
+@pytest.mark.parametrize('binding',[{}, {'kind':'other','conversation_id':'a','turn_id':'b'},
+    dict(turn_owner(),turn_id='invalid')])
+def test_invalid_turn_owner_never_inspects_browser(operation,binding):
+    owner=operation.create(LOG_CONTENT=True)
+    class Forbidden:
+        @property
+        def session(self):raise AssertionError('invalid owner inspected browser')
+    owner.browser_owner=Forbidden()
+    asyncio.run(owner.capture('success',owner=binding))
+
+
+def test_missing_turn_page_emits_unavailable(operation,monkeypatch):
+    from api_agent.testing import browser_attachments
+    owner=operation.create(LOG_CONTENT=True)
+    publish=Mock()
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    asyncio.run(owner.capture('failure',owner=turn_owner()))
+    assert publish.call_args.args[0][2]=='application/json'
+
+
+@pytest.mark.parametrize('collision',[False,True])
+def test_turn_capture_rechecks_live_credentials_and_remaining_bytes(operation,monkeypatch,collision):
+    from api_agent.testing import browser_attachments
+    from api_agent.testing.browser_evidence import PNG_SIGNATURE
+    owner=operation.create(LOG_CONTENT=True)
+    owner._turn_bytes=0 if collision else 16*1024*1024-1
+    async def capture(page,boundary):
+        if collision:boundary.register_secret(turn_owner()['turn_id'])
+        return PNG_SIGNATURE+b'pixels'
+    provider=SimpleNamespace(implementation=SimpleNamespace(capabilities=ProviderCapabilities('ui',('capture_evidence',))),
+        require=Mock(return_value=SimpleNamespace(acapture_evidence=capture)))
+    owner.prepared=SimpleNamespace(provider=provider,session=SimpleNamespace(page=object()))
+    publish=Mock()
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    asyncio.run(owner.capture('success',owner=turn_owner()))
+    if collision: publish.assert_not_called()
+    else:assert publish.call_args.args[0][2]=='application/json'
+
+
+def test_whole_capture_deadline_publishes_unavailable(operation,monkeypatch):
+    from api_agent.testing import browser_attachments,browser_evidence
+    owner=operation.create(LOG_CONTENT=True)
+    original=ui_runtime.component_timeout
+    monkeypatch.setattr(ui_runtime,'component_timeout',lambda name,seconds:original(name,.01))
+    async def blocked(*args,**kwargs):await asyncio.Event().wait()
+    monkeypatch.setattr(browser_evidence,'capture_ui_evidence',blocked)
+    publish=Mock()
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    asyncio.run(owner.capture('failure',owner=turn_owner()))
+    assert publish.call_args.args[0][2]=='application/json'
+
+
+
+
+def test_unavailable_publication_failure_remains_best_effort(operation,monkeypatch):
+    from api_agent.testing import browser_evidence,browser_attachments
+    owner=operation.create(LOG_CONTENT=True)
+    monkeypatch.setattr(browser_evidence,'capture_ui_evidence',AsyncMock(side_effect=RuntimeError('capture failed')))
+    monkeypatch.setattr(browser_attachments,'publish_attachment',Mock(side_effect=OSError('closed')))
+    asyncio.run(owner.capture('failure',owner=turn_owner()))
+
+
+
+def test_turn_attempt_budget_emits_one_marker_and_stops_inspection(operation,monkeypatch):
+    from api_agent.testing import browser_attachments
+    owner=operation.create(LOG_CONTENT=True)
+    publish=Mock()
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    async def exercise():
+        for _ in range(64): await owner.capture('failure',owner=turn_owner())
+        assert publish.call_count==64
+        class Forbidden:
+            @property
+            def session(self):raise AssertionError('exhausted budget inspected browser')
+        owner.browser_owner=Forbidden()
+        await owner.capture('failure',owner=turn_owner())
+        await owner.capture('failure',owner=turn_owner())
+        assert publish.call_count==65
+        import json
+        assert json.loads(publish.call_args.args[0][1])['reason']=='budget_exceeded'
+    asyncio.run(exercise())
+
+
+def test_trace_consent_does_not_enable_turn_capture(operation):
+    owner=operation.create(LOG_CONTENT=False,TRACELOOP_TRACE_CONTENT=True)
+    class Forbidden:
+        @property
+        def session(self):raise AssertionError('trace enabled capture')
+    owner.browser_owner=Forbidden()
+    asyncio.run(owner.capture('success',owner=turn_owner()))
+
+
+
+def test_budget_marker_publication_failure_is_bounded_best_effort(operation,monkeypatch):
+    from api_agent.testing import browser_attachments
+    owner=operation.create(LOG_CONTENT=True)
+    owner._turn_attempts=64
+    publish=Mock(side_effect=OSError('closed'))
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    async def exercise():
+        await owner.capture('success',owner=turn_owner())
+        await owner.capture('success',owner=turn_owner())
+    asyncio.run(exercise())
+    publish.assert_called_once()
+
+
+
+def test_byte_crossing_exhaustion_stops_following_capture_and_duplicate_marker(operation,monkeypatch):
+    import json
+    from api_agent.testing import browser_attachments
+    from api_agent.testing.browser_evidence import PNG_SIGNATURE
+    owner=operation.create(LOG_CONTENT=True)
+    owner._turn_bytes=16*1024*1024-1
+    policy=AsyncMock(return_value=PNG_SIGNATURE+b'pixels')
+    provider=SimpleNamespace(implementation=SimpleNamespace(capabilities=ProviderCapabilities('ui',('capture_evidence',))),
+        require=Mock(return_value=SimpleNamespace(acapture_evidence=policy)))
+    owner.prepared=SimpleNamespace(provider=provider,session=SimpleNamespace(page=object()))
+    publish=Mock()
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    async def exercise():
+        await owner.capture('success',owner=turn_owner())
+        assert json.loads(publish.call_args.args[0][1])['reason']=='budget_exceeded'
+        class Forbidden:
+            @property
+            def session(self):raise AssertionError('byte-exhausted capture inspected browser')
+        owner.browser_owner=Forbidden()
+        await owner.capture('success',owner=turn_owner())
+        await owner.capture('success',owner=turn_owner())
+    asyncio.run(exercise())
+    policy.assert_awaited_once()
+    publish.assert_called_once()

@@ -54,6 +54,7 @@ def test_recording_uses_one_wire_file_for_native_node_and_llm_attachments(tmp_pa
     packets = [packet(call, str(uuid4()), test.node_id) for call in calls]
     orphan = str(uuid4())
     snapshots = []
+    browser_body = {'status': 'unavailable', 'phase': 'success', 'context': 1, 'page': 1}
 
     def runner(context, tests, **hooks):
         hooks['before_run']()
@@ -74,7 +75,7 @@ def test_recording_uses_one_wire_file_for_native_node_and_llm_attachments(tmp_pa
         hooks['on_event'](RunnerEvent('inference_content', 'base', test, text=json.dumps(
             dict(call_id=orphan, phase='request', content=packets[0][1], reason='captured'))))
         hooks['on_event'](RunnerEvent('browser_attachment', 'base', test,
-            attachment=('Browser evidence', b'{"visible":true}', 'application/json')))
+            attachment=('UI success context 1 page 1', json.dumps(browser_body).encode(), 'application/json')))
         if not reported:
             hooks['on_result'](outcome)
         result = IntegrationRunResult(0, (outcome,), '')
@@ -88,8 +89,8 @@ def test_recording_uses_one_wire_file_for_native_node_and_llm_attachments(tmp_pa
         on_snapshot=snapshots.append)
     row = json.loads(next(result.directory.glob('*-result.json')).read_bytes())
     assert row['status'] == 'passed'
-    browser = next(item for item in row['attachments'] if item['name'] == 'Browser evidence')
-    assert json.loads((result.directory/browser['source']).read_bytes()) == {'visible': True}
+    browser = next(item for item in row['attachments'] if item['name'] == 'UI success context 1 page 1')
+    assert json.loads((result.directory/browser['source']).read_bytes()) == browser_body
     assert len(row['steps']) == 2
     sources = []
     for graph in row['steps']:

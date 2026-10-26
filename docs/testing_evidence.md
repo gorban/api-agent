@@ -55,3 +55,47 @@ Recording also limits custom attachments per selected test to 256 packets and
 4 MiB of serialized packet data in total. Exceeding either aggregate limit
 raises `ValueError`; these budgets apply to custom attachments independently of
 other workflow evidence.
+
+## UI responses before the next prompt
+
+UI tests using the prepared UI fixture can wrap each prompt and its rendered
+response in the shared `api_agent.testing.ui_turn.ui_turn` async context manager.
+The included Studio prompt helper already does this. Other interfaces supply
+their own submission and rendered-response checks inside the same scope:
+
+```python
+from api_agent.testing.ui_turn import ui_turn
+
+async with ui_turn(prepared) as turn:
+    request = await submit_prompt()
+    turn.bind(conversation_id=request.conversation_id, turn_id=request.turn_id)
+    await wait_for_rendered_response()
+# The bounded screenshot attempt has finished before another scoped prompt starts.
+```
+
+Use the actual submitted request's canonical UUIDs. For the included HTTP API,
+`conversation_id` identifies the conversation and `session_id` identifies the
+user turn. The scope serializes on the prepared test session, including capture;
+tests must keep prompt submission inside it. It is not an interception mechanism
+for arbitrary clicks outside the scope. A session without the fixture's capture
+service retains ordinary context-manager behavior without claiming a screenshot.
+
+The selected UI provider supplies the existing original-viewport safety policy.
+With LOG_CONTENT=True, each admitted turn captures only the prepared application's
+current page, after the caller's rendering check, with the same credential masking
+and live safety checks as final UI evidence. TRACELOOP_TRACE_CONTENT has no effect
+on screenshot permission. Disabled content never inspects the browser and retains
+the existing test-level withholding notice.
+
+Each turn capture uses a cooperative six-second deadline; cancellation cleanup
+may take longer. Capture remains best effort. Unavailable or rejected pixels
+produce fixed metadata; capture errors do not replace the test's outcome.
+Cancellation propagates. The fixture permits 64 turn attempts, at most 64 PNGs
+and 16 MiB total turn-image bytes, followed by one explicit budget-exhausted marker.
+The transport and recorder also bound aggregate screenshot packets and bytes.
+Final UI context retains its separate capture path for tests without turns and
+for end-of-test inspection.
+
+Allure stores the screenshot once and places its reference beneath the uniquely
+matching User turn, even after final accounting regrouping. Missing or ambiguous
+owners remain explicitly Unattached. Existing finalized reports are unchanged.

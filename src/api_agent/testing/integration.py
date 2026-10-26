@@ -333,6 +333,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                if tool_plan is not None else {})))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
+                    browser_sizes = {}
+                    browser_budget_reported = set()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
                     env['API_AGENT_COMPONENT_EVENTS'] = str(event_file)
                     stdout_marker = f'[api-agent-stdout-{uuid4().hex}]\n'
@@ -449,11 +451,29 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         emit(RunnerEvent('inference_content', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'browser_attachment' and (config or {}).get('LOG_CONTENT') is True:
                                         from .browser_attachments import read_attachment
+                                        count, size = browser_sizes.get(identity.id, (0, 0))
+                                        if count >= 64 or size >= 16 * 1024 * 1024:
+                                            if identity.id not in browser_budget_reported:
+                                                browser_budget_reported.add(identity.id)
+                                                marker = json.dumps({'status': 'unavailable', 'phase': 'failure',
+                                                    'context': 0, 'page': 0, 'reason': 'budget_exceeded'}).encode()
+                                                emit(RunnerEvent('browser_attachment', repo, identity, attachment=(
+                                                    'UI failure context 0 page 0', marker, 'application/json')))
+                                            continue
                                         try:
                                             attachment = read_attachment(row['data'], event_file.parent)
                                         except (OSError, ValueError, TypeError):
                                             continue
-                                        emit(RunnerEvent('browser_attachment', repo, identity, attachment=attachment))
+                                        browser_sizes[identity.id] = (count + 1, size + len(attachment[1]))
+                                        if size + len(attachment[1]) > 16 * 1024 * 1024:
+                                            browser_sizes[identity.id] = (64, size)
+                                            marker = json.dumps({'status': 'unavailable', 'phase': 'failure',
+                                                'context': 0, 'page': 0, 'reason': 'budget_exceeded'}).encode()
+                                            attachment = ('UI failure context 0 page 0', marker, 'application/json')
+                                            browser_budget_reported.add(identity.id)
+                                            emit(RunnerEvent('browser_attachment', repo, identity, attachment=attachment))
+                                            continue
+                                        emit(RunnerEvent('browser_attachment', repo, identity, text=json.dumps(row['data']), attachment=attachment))
                                     elif row['kind'] == 'workflow_evidence':
                                         emit(RunnerEvent('workflow_evidence', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'component_progress':
