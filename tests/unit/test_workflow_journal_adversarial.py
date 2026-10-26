@@ -641,3 +641,39 @@ def test_component_terminal_edge_rejects_wrong_active_owner():
     _rehash(packet)
     with pytest.raises(ValueError, match='completeness'):
         validate_journal(packet)
+
+
+def test_invalid_upstream_capture_reason_is_rejected_before_retention():
+    journal, _, visit, _ = _complete()
+    before = len(journal._events)
+    with pytest.raises(ValueError, match='Invalid provider capture reason'):
+        journal.capture_json(visit_id=visit, direction='input', values={'text': 'safe'},
+            schema={'type': 'object'}, capture_reason='fabricated_complete')
+    assert len(journal._events) == before
+
+
+def test_schema_capture_encoded_size_rejection_is_independent_of_string_length():
+    journal, _, visit, _ = _complete()
+    journal.capture_json(visit_id=visit, direction='input', values={'text': 'safe'}, schema={'type': 'object'})
+    packet = journal.finalize()
+    capture = next(event for event in packet['events'] if event['event'] == 'capture')
+    capture['values'] = {'text': 'é' * 33000}
+    _rehash(packet)
+    with pytest.raises(ValueError, match='Workflow capture exceeds byte limit'):
+        validate_journal(packet)
+
+
+@pytest.mark.parametrize('value,diagnostic', [
+    ({'text': chr(0xD800)}, 'Workflow capture contains invalid UTF-8'),
+    ({chr(0xDFFF): 'ordinary'}, 'Unsafe workflow capture values'),
+], ids=['text', 'key'])
+def test_hostile_non_utf8_capture_has_fixed_validation_error(value, diagnostic):
+    journal, _, visit, _ = _complete()
+    journal.capture_json(visit_id=visit, direction='output', values={'text': 'ordinary'}, schema={'type': 'object'})
+    packet = journal.finalize()
+    event = next(row for row in packet['events'] if row['event'] == 'capture')
+    event['values'] = value
+    _rehash(packet)
+    with pytest.raises(ValueError, match=diagnostic) as error:
+        validate_journal(packet)
+    assert not isinstance(error.value, UnicodeError)

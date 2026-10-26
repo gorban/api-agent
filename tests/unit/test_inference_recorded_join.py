@@ -127,8 +127,8 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
     artifacts = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
     for path in result.directory.glob('*-result.json'):
         outcome = json.loads(path.read_text())
-        requests_saved = [row for row in outcome['attachments'] if row['name'].startswith('LLM request')]
-        responses_saved = [row for row in outcome['attachments'] if row['name'].startswith('LLM response')]
+        requests_saved = [row for row in outcome['attachments'] if row['name'].startswith('Unattached LLM request')]
+        responses_saved = [row for row in outcome['attachments'] if row['name'].startswith('Unattached LLM response')]
         assert len(requests_saved) == int(log_content)
         assert len(responses_saved) == int(log_content and status == 200)
         if requests_saved:

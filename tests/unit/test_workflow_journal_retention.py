@@ -61,5 +61,8 @@ def test_journal_crosses_runner_and_allure_with_manifest_hash(tmp_path):
     assert result['steps'][0]['name'] == 'graph GRAPH'
     attachment = result['attachments'][0]['source']
     retained = json.loads((record.directory / attachment).read_text())
-    assert retained == payload and 'needle' not in json.dumps(retained)
+    from api_agent.testing.payloads import hydrate_journal, PayloadResolver
+    resolver = PayloadResolver.local(record.directory, record.manifest)
+    resolver.index(next(row['source'] for row in result['attachments'] if row['name'] == 'Payload index'))
+    assert hydrate_journal(retained, resolver) == payload and 'needle' not in json.dumps(retained)
     assert hashlib.sha256((record.directory / attachment).read_bytes()).hexdigest() == files[attachment]

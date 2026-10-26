@@ -223,18 +223,37 @@ def test_local_chat_capture_scalar_limit_preserves_reason_and_execution(
     displayed = [json.loads(LocalDiagnosticProjection(full_content=full_content).format(row))
                  for row in captures]
     if log_content:
-        assert captures[0]['values']['messages'][0]['content'] == first
-        assert captures[0]['values']['messages'][1]['content'] == second
-        assert captures[0]['reason'] == 'captured'
-        if size > 65536:
-            assert 'response_text' not in captures[1]['values']
-            assert captures[1]['reason'] == 'truncated'
-        else:
-            assert captures[1]['values']['response_text'] == answer
-            limit = len(answer) if full_content else 512
-            assert len(displayed[1]['values']['response_text']) == limit
-        limit = len(first) if full_content else 512
-        assert len(displayed[0]['values']['messages'][0]['content']) == limit
+        # The admitted limit covers encoded JSON including keys and containers;
+        # these near-limit scalars exceed it once wrapped as node I/O.
+        assert [row['values'] for row in captures] == [{}, {}]
+        assert [row['reason'] for row in captures] == ['truncated', 'truncated']
+        assert [row['values'] for row in displayed] == [{}, {}]
     else:
         assert [row['content'] for row in displayed] == ['withheld', 'withheld']
         assert all('values' not in row for row in captures + displayed)
+
+
+@pytest.mark.parametrize('full_content', [False, True])
+def test_local_chat_below_encoded_bound_retains_full_values_and_optional_preview(application, full_content):
+    import json
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    resolved = ConfigResult({'LOG_CONTENT': True},
+        {'LOG_CONTENT': ResolvedValue(True, 'cli', True)}, (), (), ())
+    rows = []
+    application.observations = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(), sink=rows.append)
+    prompt, answer = 'q' * 800, 'a' * 900
+    request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent(prompt),)),)))
+    result = LLMResult(Message('assistant', (TextContent(answer),)), Usage(2, 3))
+    provider = SimpleNamespace(complete=AsyncMock(return_value=result))
+    actual = asyncio.run(application.complete(request, llm=provider, context=OperationContext('request')))
+    assert actual is result
+    captures = [row for row in rows if row['event'] == 'capture']
+    assert [row['reason'] for row in captures] == ['captured', 'captured']
+    assert captures[0]['values']['messages'][0]['content'] == prompt
+    assert captures[1]['values']['response_text'] == answer
+    displayed = [json.loads(LocalDiagnosticProjection(full_content=full_content).format(row)) for row in captures]
+    assert displayed[0]['values']['messages'][0]['content'] == (prompt if full_content else prompt[:512])
+    assert displayed[1]['values']['response_text'] == (answer if full_content else answer[:512])

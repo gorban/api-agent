@@ -31,11 +31,9 @@ class _SetupOwner:
         return await self.provider._describe()
 
     async def complete(self, request):
+        from api_agent.workflows.inference_capture import bind_boundary
+        bind_boundary(self.provider.emissions)
         return await self.provider._complete(request)
-
-    def export_content(self, request, result=None):
-        from .inference_content import export_content
-        return export_content(self.provider.emissions, request, result)
 
     def quote_cost(self, request, result):
         from api_agent.providers.costs import quote_cost

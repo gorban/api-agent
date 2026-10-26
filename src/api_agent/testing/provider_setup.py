@@ -315,10 +315,16 @@ class IntegrationLLM:
             raise ContractError('Integration provider setup is closed.')
         request = _configured_request(request, self.config)
         from .inference_usage import publish
-        call_id = publish(request)
+        call_id = publish(request) or str(uuid4())
+        from api_agent.workflows.inference_capture import collect_inference, capture_rows
         result = None
+        collector = None
+        async def captured_complete():
+            nonlocal collector
+            with collect_inference(self.emissions, call_id) as collector:
+                return await self._complete(request)
         try:
-            result = self._run_private(self._complete(request))
+            result = self._run_private(captured_complete())
             from api_agent.providers.costs import quote_cost
             publish(request, result, call_id=call_id, quote=self.emissions.content_export(quote_cost(self.provider.implementation, request, result)))
             return result
@@ -331,8 +337,10 @@ class IntegrationLLM:
             publish(request, result, call_id=call_id, failed=True, error=error)
             raise
         finally:
-            from .inference_content import export_content, publish_content
-            publish_content(export_content(self.emissions, request, result), call_id)
+            from .inference_content import publish_content
+            rows = () if collector is None else collector['rows']
+            capture_rows(rows, call_id)
+            publish_content(rows, call_id)
 
     def describe(self):
         if self.closed:
@@ -447,7 +455,7 @@ class RemoteIntegrationLLM:
     def complete(self, request):
         request = _configured_request(request, self.config)
         from .inference_usage import publish
-        call_id = publish(request)
+        call_id = publish(request) or str(uuid4())
         result = None
         try:
             result = self._request(lambda: self.client.complete(request))
@@ -458,7 +466,10 @@ class RemoteIntegrationLLM:
             raise
         finally:
             from .inference_content import publish_content
-            publish_content(getattr(self.client, 'evidence', ()), call_id)
+            from api_agent.workflows.inference_capture import capture_rows
+            rows = getattr(self.client, 'evidence', ())
+            capture_rows(rows, call_id)
+            publish_content(rows, call_id)
 
     def describe(self):
         return self._request(self.client.describe)

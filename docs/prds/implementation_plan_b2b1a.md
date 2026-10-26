@@ -69,3 +69,7 @@ Fresh [qualification after tool-runtime integration](implementation_plan_b2b1a7.
 ## Current source renewal
 
 - [x] [Renew current source qualification](implementation_plan_b2b1a8.md) after strict source-stale rejection; preserve all earlier observations.
+
+## Payload-capture source renewal
+
+- [x] [Renew capture/transport source qualification](implementation_plan_b2b1a9.md) alongside canonical GRAPH payload storage; preserve earlier measurements.

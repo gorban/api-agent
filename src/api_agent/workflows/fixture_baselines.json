@@ -10,9 +10,9 @@
         "first_draft": 0.7871199821209823,
         "first_format": 0.7871199821209823,
         "first_guard": 0.7871199821209823,
-        "second_draft": 0.316747562312412,
-        "second_format": 0.316747562312412,
-        "second_guard": 0.316747562312412
+        "second_draft": 0.36204651348821093,
+        "second_format": 0.36204651348821093,
+        "second_guard": 0.36204651348821093
       },
       "confidence": 0.95,
       "dependency_versions": {
@@ -45,14 +45,14 @@
         "first_draft": 20,
         "first_format": 20,
         "first_guard": 20,
-        "second_draft": 12,
-        "second_format": 12,
-        "second_guard": 12
+        "second_draft": 13,
+        "second_format": 13,
+        "second_guard": 13
       },
-      "max_runs": 26,
-      "minimum_missing_node_bound": 0.0006885055271108673,
-      "minimum_runs": 22,
-      "missing_node_bound": 0.00015004868382870193,
+      "max_runs": 22,
+      "minimum_missing_node_bound": 0.0009190169693321882,
+      "minimum_runs": 18,
+      "missing_node_bound": 0.00015222275946124523,
       "model": "gpt-6-luna",
       "provider_identity": {
         "entrypoint": "api_agent.llm_providers.gpt.factory:factory",
@@ -65,18 +65,24 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 1
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 2
         },
         {
@@ -88,19 +94,16 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 3
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_b",
+          "route": "skip",
           "trial": 4
         },
         {
@@ -131,34 +134,10 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
-          ],
-          "route": "next_a",
-          "trial": 7
-        },
-        {
-          "nodes": [
-            "first_draft",
-            "first_format",
             "first_guard"
           ],
           "route": "skip",
-          "trial": 8
-        },
-        {
-          "nodes": [
-            "first_draft",
-            "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
-          ],
-          "route": "next_a",
-          "trial": 9
+          "trial": 7
         },
         {
           "nodes": [
@@ -170,7 +149,7 @@
             "second_guard"
           ],
           "route": "next_b",
-          "trial": 10
+          "trial": 8
         },
         {
           "nodes": [
@@ -179,6 +158,27 @@
             "first_guard"
           ],
           "route": "skip",
+          "trial": 9
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
+          "trial": 10
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
+          ],
+          "route": "next_a",
           "trial": 11
         },
         {
@@ -190,16 +190,19 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_b",
+          "route": "next_a",
           "trial": 12
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_b",
           "trial": 13
         },
         {
@@ -211,17 +214,8 @@
             "second_format",
             "second_guard"
           ],
-          "route": "next_a",
+          "route": "next_b",
           "trial": 14
-        },
-        {
-          "nodes": [
-            "first_draft",
-            "first_format",
-            "first_guard"
-          ],
-          "route": "skip",
-          "trial": 15
         },
         {
           "nodes": [
@@ -233,6 +227,15 @@
             "second_guard"
           ],
           "route": "next_a",
+          "trial": 15
+        },
+        {
+          "nodes": [
+            "first_draft",
+            "first_format",
+            "first_guard"
+          ],
+          "route": "skip",
           "trial": 16
         },
         {
@@ -248,21 +251,21 @@
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard",
-            "second_draft",
-            "second_format",
-            "second_guard"
+            "first_guard"
           ],
-          "route": "next_a",
+          "route": "skip",
           "trial": 18
         },
         {
           "nodes": [
             "first_draft",
             "first_format",
-            "first_guard"
+            "first_guard",
+            "second_draft",
+            "second_format",
+            "second_guard"
           ],
-          "route": "skip",
+          "route": "next_a",
           "trial": 19
         },
         {
@@ -279,9 +282,9 @@
         }
       ],
       "routes": {
-        "next_a": 5,
-        "next_b": 7,
-        "skip": 8
+        "next_a": 7,
+        "next_b": 6,
+        "skip": 7
       },
       "safety_margin": 4,
       "sampling_method": "simultaneous_exact_binomial_independent_uuid_v1",
@@ -318,11 +321,11 @@
         "src/api_agent/providers/rich_inference.py": "7150f51c2ed9a155493978adcea31e28cc2224f0439483bc60508ac7443be49e",
         "src/api_agent/providers/schema_validation_worker.py": "22283bd59167e6b06a33b499db93c7b5ccc3db62cff663ef4b14b802c6138ab0",
         "src/api_agent/providers/setup_registry.py": "33118547d94080ba370531a1e3006fe53b647469ca9113f0420adfb5a0ba84bd",
-        "src/api_agent/providers/setup_transport.py": "8f5169b86348be8dd15b97957d3d31389df9cc59d51c860b9a2cf501332dcfc2",
+        "src/api_agent/providers/setup_transport.py": "394cadb02f7bdc77b3bf180d8ce922c340a5a53a99e1af1364b3e34c330fe02c",
         "src/api_agent/providers/shared_setup.py": "1a79fba3f97940aeb7d598ce6d48f355075a0c2f512ba4467b27e804c7273c35",
         "src/api_agent/runtime/tasks.py": "9a2783e2eb15c302e98cacd84d16ebd96348627bc682b025ffc0042073cc4146",
-        "src/api_agent/testing/provider_setup.py": "45395502f57f7b47d7b54cd2b2aa7bd686ecc34679b3de5ef82905655628d525",
-        "src/api_agent/testing/setup_backend.py": "935584e273e1144d402c7b9b2f8b09b90ac450f8fefb28fd615103c7895b598a",
+        "src/api_agent/testing/provider_setup.py": "a232f56ebe5425b74bf62a580b9cd2d2b39e60423133629036a77e5c51104a1f",
+        "src/api_agent/testing/setup_backend.py": "f68952a9836bc5ebf57cae46bf653477034f1f82255d809695ac72416dcc53ea",
         "src/api_agent/workflows/contrived.py": "4e17710c9ecb291fbe70df3e9bd6c6afc284f30dcaff13d820383d98b7b53e0b",
         "src/api_agent/workflows/definition.py": "f4e4b89ed22544c7adaa6037fbe6a2aebb426957e6dbd9c5ae959496ccb77d30",
         "src/api_agent/workflows/document_format.py": "86b7f5895a3e159f7b387fecba2ecd812f9ce5b6f66a3aa34ba63b74f8d37b8d",

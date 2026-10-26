@@ -363,7 +363,11 @@ def test_post_inference_accounting_failure_retains_result_usage(tmp_path, monkey
     tracker = SuiteUsage('run')
     for line in path.read_text().splitlines():
         frame = json.loads(line)
-        capture(SimpleNamespace(text=json.dumps(frame['data']), identity=SimpleNamespace(id='test-id')), tracker)
+        if frame['kind'] == 'inference_usage':
+            capture(SimpleNamespace(text=json.dumps(frame['data']), identity=SimpleNamespace(id='test-id')), tracker)
+        elif frame['kind'] == 'inference_content':
+            assert frame['data']['reason'] == 'withheld'
+            assert frame['data']['content'] == {}
     assert tracker.rows()[0]['total_tokens'] == 3
     assert tracker.rows()[0]['llm_calls'] == 1
     assert next(iter(tracker.inference_calls.values()))['outcome'] == 'failed'

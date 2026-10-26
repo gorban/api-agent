@@ -243,10 +243,14 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
     assert set(scope_ids) == expected_ids
     assert sum(step['name'].startswith('node ') for graph in rendered['steps']
         for step in flatten(graph)) == graphs * (12 if retry else 6)
-    # Both original packet forms remain available; accounting receives journals unchanged.
+    # Durable journals hydrate exactly; accounting still receives original packets.
     attachments = [json.loads((recorded.directory / item['source']).read_text())
         for item in rendered['attachments'] if item['name'] == 'Workflow execution evidence']
-    assert attachments == packets
+    from api_agent.testing.payloads import hydrate_journal, PayloadResolver
+    resolver = PayloadResolver.local(recorded.directory, recorded.manifest)
+    resolver.index(next(item['source'] for item in rendered['attachments'] if item['name'] == 'Payload index'))
+    restored = [hydrate_journal(item, resolver) if item.get('version') == 2 else item for item in attachments]
+    assert restored == legacy + journals
 
 
 @pytest.mark.parametrize('journal_first', [True, False])

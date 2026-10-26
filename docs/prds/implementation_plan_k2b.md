@@ -85,3 +85,5 @@ and menu-layout/trace-disposal human retests remain unchecked in their owning de
 - [Stopped inspection and output boundaries](implementation_plan_k2b6.md)
 
 - [Bounded model catalog startup](implementation_plan_k2b7.md)
+
+- [Concurrent cleanup acknowledgement](implementation_plan_k2b8.md)
