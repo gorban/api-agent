@@ -468,6 +468,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             self.refresh_suite_timer()
             self.call_after_refresh(self.layout_test_results)
         if self.kind == 'test-failure':
+            self._bindings.key_to_bindings['b'] = [Binding('b', 'back_to_selection', 'Back to results')]
             self._bindings.key_to_bindings['c'] = [Binding('c', 'close_view', 'Close')]
             self._bindings.key_to_bindings['a'] = [Binding('a', 'view_allure', 'View in Allure')]
         if self.kind == "defaults":
@@ -517,6 +518,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             table.action_select_cursor()
 
     async def action_back_to_selection(self):
+        if self.kind == 'test-failure':
+            await self.app.close_view()
+            return
         self.app.run_worker(self.app.back_to_selection(), group="collection", exclusive=True)
 
     async def action_view_allure(self):
@@ -668,7 +672,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if action == "view_allure":
             return self.app.selected_allure_result(self) is not None
         if action == "back_to_selection":
-            return self.kind == "test-results" and self.test_run_complete and not self.app.test_run_active()
+            return (self.kind == 'test-failure' or
+                    self.kind == "test-results" and self.test_run_complete and not self.app.test_run_active())
         if action.startswith("failure_"):
             return self.kind == "test-failure"
         if action == "back_to_configuration":
@@ -959,6 +964,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.integration_exit_status = None
         self.recording_cleanup = None
         self.unit_result = None
+        self.finished_test_results = {}
         from .background_reads import BackgroundReads
         self.background_reads = BackgroundReads()
         self._cost_history_generation = 0
@@ -1634,6 +1640,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.test_run = TestRunLifecycle()
         self.collection_cancel = self.test_run.cancel_event
         self.unit_result = None
+        self.finished_test_results.clear()
         self.test_costs = {}
         self.suite_usage = {}
         self.starting_quota = None
@@ -1683,6 +1690,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.refresh_bindings()
 
     async def _run_integrations(self):
+        self.finished_test_results.clear()
         from api_agent.testing.launched import run_launched_integration
         runner = self.integration_runner or run_launched_integration
         self.discard_finished_inspection()
@@ -2016,6 +2024,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return
         if event.identity is not None and event.kind in {"test_started", "test_finished", "component_progress"}:
             key = event.identity.id
+            if event.kind == 'test_finished':
+                from api_agent.testing.contracts import TestResult
+                self.finished_test_results[key] = TestResult(
+                    event.identity, (event.status or 'error').lower(), event.duration, event.traceback)
+            elif event.kind == 'test_started':
+                self.finished_test_results.pop(key, None)
             if event.kind == 'component_progress':
                 if event.component is None or self.unit_rows.get(key, ('',))[0] != 'RUNNING':
                     return
@@ -2037,7 +2051,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 if event.kind != 'component_progress':
                     self.screen.refresh_bindings()
 
-    def show_unit_results(self, summary=None, *, selected_row=None, scroll_y=None):
+    def show_unit_results(self, summary=None, *, selected_row=None, scroll_y=None, preserve_details=True):
+        from .test_results import details_belong_to_run
+        if (preserve_details and self.screen_stack and getattr(self.screen, 'kind', None) == 'test-failure'
+                and details_belong_to_run(self.screen, self.unit_result, self.test_run)):
+            self.screen.refresh_bindings()
+            return
         if summary is None:
             if self.mode in {'integration', 'e2e'}:
                 from api_agent.testing.contracts import format_test_summary
@@ -2305,8 +2324,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return any(row.name == key and row.present for row in self.session.cleanup_rows())
 
     def toggle_row(self, key):
-        if self.screen.kind == "test-results" and self.unit_result is not None:
-            result = next((test for test in self.unit_result.tests if test.identity.id == key), None)
+        if self.screen.kind == "test-results":
+            result = (next((test for test in self.unit_result.tests if test.identity.id == key), None)
+                      if self.unit_result is not None else self.finished_test_results.get(key))
+            if self.unit_result is None and self.unit_rows.get(key, ('PENDING',))[0] not in {
+                    'PASSED', 'FAILED', 'ERROR', 'BROKEN', 'SKIPPED', 'CANCELLED', 'INTERRUPTED'}:
+                result = None
             from api_agent.telemetry.usage_output import has_tokens
             historical = (self.cost_estimator.predictions.get(key, {}).get('has_token_history', False)
                           if self.cost_estimator is not None else False)
@@ -2318,9 +2341,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 from .test_results import test_details
                 table = self.screen.query_one(DataTable)
                 return_scroll_y = table.scroll_y
-                self.show("test-failure", title, test_details(result, self.suite_usage,
-                    self.test_costs.get(key, {}), historical_tokens=historical))
+                details = test_details(result, self.suite_usage,
+                    self.test_costs.get(key, {}), historical_tokens=historical,
+                    accounting_pending=self.unit_result is None)
+                self.show("test-failure", title, details)
                 self.screen.result_return = (self.unit_result, key, return_scroll_y)
+                self.screen.result_lifecycle = self.test_run
                 self.call_after_refresh(lambda: self.screen.query_one(VerticalScroll).focus())
         elif self.screen.kind == "tests":
             self.selection.toggle(key)
@@ -2492,6 +2518,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     self.test_run = TestRunLifecycle()
                     self.collection_cancel = self.test_run.cancel_event
                     self.unit_result = None
+                    self.finished_test_results.clear()
                     self.clear_allure_snapshots()
                     self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
                     self.show_unit_results(self.unit_progress())
@@ -2616,8 +2643,11 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return
         if self.screen.kind == 'test-failure':
             result, key, scroll_y = getattr(self.screen, 'result_return', (None, None, None))
-            self.show_unit_results(selected_row=key if result is self.unit_result else None,
-                                   scroll_y=scroll_y if result is self.unit_result else None)
+            from .test_results import details_belong_to_run
+            current = details_belong_to_run(self.screen, self.unit_result, self.test_run)
+            self.show_unit_results(self.unit_progress() if self.unit_result is None else None,
+                                   selected_row=key if current else None,
+                                   scroll_y=scroll_y if current else None, preserve_details=False)
             return
         if self.screen.kind == 'allure':
             if await self.close_allure():

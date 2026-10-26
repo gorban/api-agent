@@ -25,7 +25,7 @@ def compact_cost(value):
     return f'{value:.6f}' if value < 100 else f'{value:.2f}'
 
 
-def test_details(result, usage, cost, *, historical_tokens=False):
+def test_details(result, usage, cost, *, historical_tokens=False, accounting_pending=False):
     from api_agent.telemetry.usage_output import tokens_text, displayed_cost, historical_average, QUOTA_RESET_NOTE
     from api_agent.telemetry.estimation import quota_reset_observed
     local_diagnostic = getattr(result, 'local_diagnostic', '')
@@ -36,16 +36,19 @@ def test_details(result, usage, cost, *, historical_tokens=False):
     lines = [result.identity.id, '']
     if failure:
         lines.extend((details, ''))
-    lines.extend([f'Execution time: {result.duration:.3f}s',
-             f"This test cost: {displayed_cost(cost.get('estimated_cost_usd'), usage)}",
+    lines.append(f'Execution time: {result.duration:.3f}s')
+    if accounting_pending:
+        lines.append('Accounting is pending suite finalization; reopen details after completion for final costs and tokens.')
+    else:
+        lines.extend([f"This test cost: {displayed_cost(cost.get('estimated_cost_usd'), usage)}",
              f"  Historical average: {displayed_cost(historical_average((cost,)), usage)}"])
-    if historical_tokens:
-        lines.append('Earlier compatible runs have recorded token usage.')
-    if quota_reset_observed(usage):
-        lines.append(QUOTA_RESET_NOTE)
-    if cost.get('basis') and cost['basis'] != 'unavailable':
-        lines.append(f"Cost basis: {cost['basis']}")
-    lines.append(tokens_text(usage, result.identity.id))
+        if historical_tokens:
+            lines.append('Earlier compatible runs have recorded token usage.')
+        if quota_reset_observed(usage):
+            lines.append(QUOTA_RESET_NOTE)
+        if cost.get('basis') and cost['basis'] != 'unavailable':
+            lines.append(f"Cost basis: {cost['basis']}")
+        lines.append(tokens_text(usage, result.identity.id))
     if not failure:
         lines.extend(('', details))
     text = Text('\n'.join(lines))
@@ -147,3 +150,10 @@ def styled_summary(content, *, failed, skipped=False, neutral_details=False, gre
                  else 'red' if failed else 'dark_orange' if skipped else 'green')
         append_usage_line(summary, line, style=style)
     return summary
+
+
+def details_belong_to_run(screen, result, lifecycle):
+    previous, _, _ = getattr(screen, 'result_return', (None, None, None))
+    return (previous is not None and previous is result or
+            previous is None and lifecycle is not None
+            and getattr(screen, 'result_lifecycle', None) is lifecycle)
