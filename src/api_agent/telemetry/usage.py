@@ -150,8 +150,9 @@ class SuiteUsage:
             if prior is not None:
                 if (prior['test_id'] != session_id
                         or ('reasoning_effort' in prior) != ('reasoning_effort' in value)
+                        or ('conversation_id' in prior) != ('conversation_id' in value)
                         or any(prior.get(key) != value.get(key)
-                        for key in ('call_id', 'selection', 'started_at', 'attempt', 'turn_id', 'turn_kind', 'reasoning_effort'))):
+                        for key in ('call_id', 'selection', 'started_at', 'attempt', 'turn_id', 'turn_kind', 'reasoning_effort', 'conversation_id'))):
                     raise ValueError('Conflicting inference identity')
                 if (prior.get('usage') is not None or prior.get('finished_at') is not None) and prior != value:
                     raise ValueError('Conflicting inference evidence')

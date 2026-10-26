@@ -405,11 +405,20 @@ class Workflow:
             raise WorkflowError(f'Node {node} returned non-JSON {direction}') from None
 
     async def arun(self, inputs, *, turn_id=None, turn_kind='initial'):
+        from .run_context import canonical_uuid, current_execution_context, current_turn_id, execution_context, turn
+        if turn_id is not None:
+            canonical_uuid(turn_id)
+        turn_id = turn_id if turn_id is not None else current_turn_id()
         journal = self.services.get('journal')
+        if turn_id is not None and journal is not None and turn_id != journal.turn_id:
+            raise ValueError('explicit turn identity disagrees with the active journal')
         if journal is not None and self.definition is not None:
             from .journal import projection
             if journal.projection != projection(self.definition, component_passes=self.component_passes):
                 raise WorkflowError('Workflow journal uses a different effective component pass limit')
+        selected_context = current_execution_context()
+        if journal is not None:
+            selected_context = journal.admit_execution_context(selected_context)
         if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1':
             if self.definition is None:
                 raise WorkflowError('Reporting requires an admitted workflow definition')
@@ -425,15 +434,17 @@ class Workflow:
                 content_policy=self.services.get('content_policy'),
                 turn_id=turn_id,
                 test_id=os.environ.get('PYTEST_CURRENT_TEST', '').rsplit(' ', 1)[0] or None)
+            journal.admit_execution_context(selected_context)
             factory = self.services.get('observation_factory')
             if factory is not None:
                 journal = factory.create(self.definition, journal=journal)
         token = _CURRENT_JOURNAL.set(journal)
         try:
-            active_turn = turn_id or (journal.turn_id if journal is not None else None)
+            active_turn = turn_id if turn_id is not None else (journal.turn_id if journal is not None else None)
             if active_turn is not None:
                 from api_agent.testing.inference_usage import user_turn
-            with user_turn(active_turn, kind=turn_kind) if active_turn is not None else nullcontext():
+            with execution_context(selected_context), (turn(active_turn) if active_turn is not None else nullcontext()), (
+                    user_turn(active_turn, kind=turn_kind) if active_turn is not None else nullcontext()):
                 async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1):
                     self._validate({'type': 'object'}, inputs, 'START', 'input')
                     prompts = {path: (self.definition.contents[path].decode('utf-8') if self.definition is not None

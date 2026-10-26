@@ -13,21 +13,28 @@ const questionValid = q => !q || (field(q.id) && typeof q.question === 'string' 
 const settingsValid = x => x && ['model', 'version', 'reasoning'].every(k => field(x[k])) && (x.family === undefined || (field(x.family) && [...x.family].length <= 200 && !/[\p{C}\p{Z}]/u.test(x.family.replaceAll(' ','')) && !(x.family && x.model)));
 const snapshotValid = x => settingsValid(x) && !!x.model;
 const valid = x => x && field(x.session) && typeof x.draft === 'string' && settingsValid(x.settings) && Array.isArray(x.messages) && x.messages.every(m => m && field(m.id) && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string' && settingsValid(m.requested) && (!m.selectionSnapshot || snapshotValid(m.selectionSnapshot)) && (!m.requested.family || !!m.selectionSnapshot) && questionValid(m.question));
+const canonicalSession = value => value.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+let sessionMigrated = false;
+function migrateSession(chat) {
+  if (!canonicalSession(chat.session)) { chat.session = crypto.randomUUID(); sessionMigrated = true; }
+  return chat;
+}
 function storageFailure() { $('storage-note').textContent = 'Not saved in this browser'; $('storage-warning').textContent = 'Browser storage is unavailable. Your conversation is kept until this page closes.'; $('storage-warning').hidden = false; }
 try {
   const raw = localStorage.getItem(KEY);
   if (raw) {
     const loaded = JSON.parse(raw);
     if (!valid(loaded)) throw Error('invalid');
-    state = loaded;
+    state = migrateSession(loaded);
     for (const m of state.messages) if (m.pending) { m.pending = false; m.error = 'The response was interrupted when this page closed. You can retry.'; }
   }
 } catch { storageFailure(); }
 if (state.reply && (!state.messages.some(m => m.id === state.reply.messageId && m.question && !m.resolved) || typeof state.reply.savedDraft !== 'string')) state.reply = null;
 let previousChat = null;
-try { const raw = localStorage.getItem(KEY + ':previous'); if (raw) { const prior = JSON.parse(raw); if (valid(prior) && !state.messages.length) previousChat = prior; } } catch {}
+try { const raw = localStorage.getItem(KEY + ':previous'); if (raw) { const prior = JSON.parse(raw); if (valid(prior) && !state.messages.length) previousChat = migrateSession(prior); } } catch {}
 function savePrevious() { try { if (previousChat) localStorage.setItem(KEY + ':previous', JSON.stringify(previousChat)); else localStorage.removeItem(KEY + ':previous'); } catch {} }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { storageFailure(); } }
+if (sessionMigrated) { save(); savePrevious(); }
 function announce(text) { $('status').textContent = text; }
 function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
 function clearPromptError() { $('prompt-error').hidden = true; $('prompt-error').textContent = ''; $('prompt').removeAttribute('aria-invalid'); }
@@ -171,7 +178,7 @@ async function run(text, requested, retryMessage, reply) {
     request.dispatched = true;
     const response = reply ? await submitContinuation({session: request.sessionId, text, messages, requested: {...m.selectionSnapshot}, reply: structuredClone(m.requestReply)}, {signal: controller.signal}) : await fetch(apiOrigin + '/app/agent/chat/stream', {
       method: 'POST', headers: {'Content-Type': 'application/json', Accept: 'text/event-stream, application/json', ...apiHeaders},
-      body: JSON.stringify(requestPayload({session: request.sessionId, text, messages, requested: {...requested, model: selection.selection.selected_llm}, reply})), signal: controller.signal
+      body: JSON.stringify(requestPayload({session: request.sessionId, conversation: state.session, text, messages, requested: {...requested, model: selection.selection.selected_llm}, reply})), signal: controller.signal
     });
     await readResponse(response, {
       sessionId: request.sessionId,

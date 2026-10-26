@@ -72,8 +72,14 @@ identifier so later policy changes do not alter retries or historical messages.
 
 Use a fresh canonical UUID for every operation, including retries; null asks the
 server to allocate one. This identifies an operation, not persisted conversation
-history. Supply the desired conversation messages with each request. Omitted
-`model` selects the backend's exact default. Optional `reasoning_effort` accepts
+history. Supply the desired conversation messages with each request. Optional
+`conversation_id` is a canonical UUID retained across turns of one conversation
+and replaced for a new chat. It groups execution evidence and costs; it does not
+store messages, prove conversation isolation or change authentication. Legacy
+clients may omit it. The bundled Studio preserves it across reload and Undo,
+while each operation still receives a fresh `session_id`.
+
+Omitted `model` selects the backend's exact default. Optional `reasoning_effort` accepts
 `off`, `low`, `medium`, `high`; omission uses configured/provider defaults.
 Empty or null effort is invalid. Optional `cache_policy` accepts `off`, `medium`,
 `high`; omitted cache/output controls retain normal provider semantics.

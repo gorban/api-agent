@@ -65,10 +65,16 @@ def _family_defaults(selections, default):
 
 def completion(row, default, reasoning_default):
     required = {'session_id', 'messages'}
-    optional = {'model', 'reasoning_effort', 'max_output_tokens', 'cache_policy'}
+    optional = {'conversation_id', 'model', 'reasoning_effort', 'max_output_tokens', 'cache_policy'}
     if type(row) is not dict or not required <= set(row) or set(row) - required - optional:
         raise ContractError('Invalid application request')
     session_id = session_identifier(row['session_id'])
+    if 'conversation_id' in row:
+        from ..workflows.run_context import canonical_uuid
+        try:
+            canonical_uuid(row['conversation_id'])
+        except ValueError:
+            raise ContractError('Invalid conversation identifier') from None
     if 'reasoning_effort' in row and (type(row['reasoning_effort']) is not str or row['reasoning_effort'] not in EFFORTS):
         raise ContractError('Invalid reasoning effort')
     if 'max_output_tokens' in row and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 4096):

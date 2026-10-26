@@ -263,31 +263,35 @@ class StudioBackend:
                 selection.validate(value)
                 queue = asyncio.Queue(maxsize=16)
                 async def invoke(context):
-                    async with report_timeout('Studio completion', self.timeout):
-                        if capability == 'chat_stream' and self.stream is not None:
+                    from contextlib import nullcontext
+                    from ..workflows.run_context import conversation, turn
+                    grouping = conversation(row['conversation_id']) if 'conversation_id' in row else nullcontext()
+                    with grouping, turn(session_id):
+                        async with report_timeout('Studio completion', self.timeout):
+                            if capability == 'chat_stream' and self.stream is not None:
+                                async def operation(*, auth):
+                                    return self.stream(value, auth=auth, context=context)
+                                final = None
+                                chunks = []
+                                chunk_bytes = 0
+                                async with self.owner.stream(operation, context=context) as events:
+                                    async for event in events:
+                                        if event.kind == 'text':
+                                            chunks.append(event.payload.text)
+                                            chunk_bytes += len(event.payload.text.encode())
+                                            if chunk_bytes > 131072 or len(chunks) > 4096:
+                                                raise ContractError('Application stream exceeds byte limit')
+                                            await queue.put(event.payload.text)
+                                        elif event.kind == 'completed':
+                                            final = chat_contract.result(session_id, event.payload)
+                                        else:
+                                            raise ContractError('Unsupported application stream event')
+                                if final is None or ''.join(chunks) != final['response_text']:
+                                    raise ContractError('Invalid stream completion')
+                                return final
                             async def operation(*, auth):
-                                return self.stream(value, auth=auth, context=context)
-                            final = None
-                            chunks = []
-                            chunk_bytes = 0
-                            async with self.owner.stream(operation, context=context) as events:
-                                async for event in events:
-                                    if event.kind == 'text':
-                                        chunks.append(event.payload.text)
-                                        chunk_bytes += len(event.payload.text.encode())
-                                        if chunk_bytes > 131072 or len(chunks) > 4096:
-                                            raise ContractError('Application stream exceeds byte limit')
-                                        await queue.put(event.payload.text)
-                                    elif event.kind == 'completed':
-                                        final = chat_contract.result(session_id, event.payload)
-                                    else:
-                                        raise ContractError('Unsupported application stream event')
-                            if final is None or ''.join(chunks) != final['response_text']:
-                                raise ContractError('Invalid stream completion')
-                            return final
-                        async def operation(*, auth):
-                            return await self.complete(value, auth=auth, context=context)
-                        return chat_contract.result(session_id, await self.owner.call(operation, context=context))
+                                return await self.complete(value, auth=auth, context=context)
+                            return chat_contract.result(session_id, await self.owner.call(operation, context=context))
                 response_owner = ResponseCleanup(self, session_id) if capability == 'chat_stream' else None
                 if session_id in self._responses or len(self._responses) >= self.lifecycle.max_active + self.lifecycle.max_terminal:
                     return self._response({'code': 'session_unavailable'}, 409)

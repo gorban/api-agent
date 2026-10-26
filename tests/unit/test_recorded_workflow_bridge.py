@@ -20,7 +20,7 @@ from test_workflow_steps import trace
 def packet(events, invocation=None):
     value = {'events': events}
     if invocation is not None:
-        value.update(version=1, projection={}, invocation_id=invocation)
+        value.update(version=1, projection={}, invocation_id=invocation, turn_id=invocation)
     return value
 
 
@@ -210,7 +210,7 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
         monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
         monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(event_path))
         monkeypatch.setenv('PYTEST_CURRENT_TEST', selected.node_id + ' (call)')
-        for trial in range(graphs):
+        for trial in range(1, graphs + 1):
             fixture_driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', trial,
                 config, root=root, owner_root=root)
         for line in event_path.read_text().splitlines():
@@ -231,6 +231,8 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
     assert len(journals) == len(legacy) == graphs
     rendered = json.loads(next(recorded.directory.glob('*-result.json')).read_text())
     assert len(rendered['steps']) == graphs
+    assert [step['name'] for step in rendered['steps']] == ['Trial ' + str(index + 1) for index in range(graphs)]
+    assert all(step['steps'][0]['name'] == 'graph GRAPH' for step in rendered['steps'])
     assert rendered['status'] == 'passed'
     assert all(graph['status'] == ('broken' if retry else 'passed') for graph in rendered['steps'])
     assert all(step['status'] == 'passed' for graph in rendered['steps']

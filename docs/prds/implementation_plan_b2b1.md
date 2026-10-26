@@ -2,7 +2,7 @@
 
 [Permanent fixture](implementation_plan_b2b.md) · [Refresh procedure](../workflow_calibration.md).
 
-## Requirements
+## Original node-only requirements
 
 - [x] Remove calibration from normal integration collection entirely; never hide it behind a skip, deselection or automatic prerequisite. Keep node coverage an ordinary required integration test.
 - [x] Store reviewed model-specific bounds with the permanent fixture. Recompute statistical claims from contiguous measurements and version the methodology; preserve observed settings and qualified compatibility limits rather than pretending an old pilot ran with new settings.
@@ -16,7 +16,7 @@
 
 Implementation, qualification and delivery verification are complete; human acceptance remains below. Keep measurements and final verification in [qualification evidence](implementation_plan_b2b1a.md).
 
-## Acceptance
+## Original node-only acceptance
 
 - [x] Unit tests reject stale/unknown/tampered evidence, unsafe candidate destinations and failed-prefix promotion; meaningful isolated mutations fail.
 - [x] Synthetic maintenance transport/cancellation/cleanup proofs and installed baseline loading pass.
@@ -38,4 +38,17 @@ Earlier finalized pilot records, signed receipts and source/dependency identitie
 - [x] Execute the separately approved ordinary mandatory coverage check: one test passes, publication succeeds, and coverage completes in three turns. Historical prior reports remain unchanged evidence for their original fingerprints.
 - [x] Complete final public artifact/index/metadata renewal and external review of this delivery. Existing human acceptance above remains valid; new shared/product human acceptance is separate.
 
-The live coverage join retains three unverified definition-binding entries despite complete routes and no missing, unowned, duplicate or mismatched calls. Coverage success does not establish fully verified attribution for that live fixture; that attribution limitation remains explicit.
+The earlier node-only live coverage join retains three unverified definition-binding entries despite complete routes and no missing, unowned, duplicate or mismatched calls. Coverage success does not establish fully verified attribution for that live fixture; that attribution limitation remains explicit.
+
+## Expanded execution coverage
+
+- [x] Require [observed retries and every root route](implementation_plan_b2b1a10.md) in addition to declared node coverage. The earlier node-only stopping and qualification records above remain historical.
+
+The expanded contract’s substantive gates are complete. Its explicit human acceptance remains unchecked in the linked detail.
+
+**Deferred human review**
+
+All substantive implementation and required verification/review are complete. Only the expanded contract’s explicit human acceptance remains unchecked in its detail; earlier human acceptance is preserved.
+
+- [Qualification evidence](implementation_plan_b2b1a.md)
+- [Expanded workflow coverage](implementation_plan_b2b1a10.md)

@@ -242,3 +242,18 @@ test('family labels remove an exact advertised separated version suffix as one v
   assert.equal(resolveSelection(rows,{model:'m'}).selection.selected_llm,'m');
  }
 });
+
+test('request optionally carries only canonical conversation identity',()=>{
+ const input={session:id,text:'next',messages:[],requested:{model:'m'}};
+ const legacy={session_id:id,model:'m',messages:[{role:'user',content:'next'}]};
+ assert.deepEqual(requestPayload(input),legacy);
+ assert.deepEqual(requestPayload({...input,conversation:undefined}),legacy);
+ assert.deepEqual(requestPayload({...input,conversation:id}),{...legacy,conversation_id:id});
+});
+for(const conversation of [null,0,true,{},[], '', 'legacy-session', id.toUpperCase(),
+ id.replaceAll('-',''),`{${id}}`,`${id} `,` ${id}`,`${id}\n`,id.replace('a4e3','z4e3')]) {
+ test('request rejects malformed conversation identity '+JSON.stringify(conversation),()=>{
+  const input={session:id,text:'next',messages:[],requested:{model:'m'},conversation};
+  assert.throws(()=>requestPayload(input),/Invalid conversation identifier/);
+ });
+}

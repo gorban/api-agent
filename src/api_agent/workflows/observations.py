@@ -62,6 +62,9 @@ class WorkflowObservations:
     def invocation_id(self):
         return self.journal.invocation_id
 
+    def admit_execution_context(self, value):
+        return self.journal.admit_execution_context(value)
+
     def observe(self, row):
         return self.journal.observe(row)
 

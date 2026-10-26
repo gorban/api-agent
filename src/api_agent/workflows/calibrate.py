@@ -13,7 +13,7 @@ from api_agent.testing.diagnostics import CredentialScrubber, format_exception, 
 from api_agent.testing.suite_lock import suite_locked
 from .evidence import reserve_calibration, sanitize, store_calibration
 from .fixture_driver import fingerprint, provider_identity, run_graph
-from .sampling import DECLARED, measured_calibration
+from .sampling import DECLARED, measured_calibration, measurement
 
 
 def source_checkout(selected=None):
@@ -194,9 +194,13 @@ def pilot(context, result, destination, count, *, output=print):
                         stage = 'Calibration graph execution'
                         for trial in range(1, count + 1):
                             output(f'Calibration graph {trial}/{count} starting.')
+                            events = []
+                            def trial_observer(event):
+                                events.append(event)
+                                observe(event)
                             values, nodes = run_graph(provider, selection, trial, result.values,
-                                                     root=context.base_root, owner_root=context.owner_root, observe=observe)
-                            records.append(dict(trial=trial, route=values['first_draft']['route'], nodes=sorted(nodes)))
+                                                     root=context.base_root, owner_root=context.owner_root, observe=trial_observer)
+                            records.append(measurement(trial, values, nodes, events))
                             emit(dict(records=records))
                     finally:
                         register_runtime_secrets()
@@ -229,7 +233,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-root', type=Path)
     parser.add_argument('--candidate', type=Path, required=True, help='New immutable candidate path; never promoted automatically.')
-    parser.add_argument('--graphs', type=int, default=20, help='Explicit pilot graph count (1..60); default 20.')
+    parser.add_argument('--graphs', type=int, default=60, help='Preselected pilot graph count (1..60); default 60.')
     args, options = parser.parse_known_args(argv)
     scrubber = CredentialScrubber()
     try:

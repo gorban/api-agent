@@ -7,11 +7,15 @@ function bounded(value) {
   if (wireBytes(value) > LIMIT) throw Error('Response or request exceeds its byte limit');
   return value;
 }
-export function requestPayload({session = '', messages = [], text, requested, reply}) {
+export function requestPayload({session = '', conversation, messages = [], text, requested, reply}) {
   if (reply) throw Error('Structured continuation is not implemented by the agent HTTP API.');
   const rows = [...messages.map(({role,text}) => ({role,content:text})), {role:'user',content:text}];
   if (!requested || typeof requested.model !== 'string' || !requested.model || codepoints(requested.model) > 200 || !printable(requested.model) || typeof session !== 'string' || codepoints(session) > 200 || !printable(session) || rows.length > 64 || rows.some(x => !['system','user','assistant'].includes(x.role) || typeof x.content !== 'string' || codepoints(x.content) > 32768)) throw Error('Invalid text inference request');
   const row = {model:requested.model,messages:rows,session_id:session};
+  if (conversation !== undefined) {
+    if (typeof conversation !== 'string' || conversation.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(conversation)) throw Error('Invalid conversation identifier');
+    row.conversation_id = conversation;
+  }
   if (requested.reasoning !== undefined && requested.reasoning !== '') {
     if (!['off','low','medium','high'].includes(requested.reasoning)) throw Error('Invalid reasoning effort');
     row.reasoning_effort = requested.reasoning;

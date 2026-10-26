@@ -179,8 +179,8 @@ def test_sampling_binds_reasoning_setting_and_new_provider_module(monkeypatch):
 def test_changed_sampling_cannot_reuse_old_reviewed_cap(monkeypatch):
     from api_agent.workflows import fixture_driver
     from api_agent.workflows.sampling import measured_calibration, DECLARED
-    from test_workflow_sampling import FACTORY_CONFIG
-    report = measured_calibration([{'trial': trial, 'route': 'next_a', 'nodes': sorted(DECLARED)} for trial in range(1, 61)], DECLARED)
+    from test_workflow_sampling import FACTORY_CONFIG, records
+    report = measured_calibration(records(), DECLARED)
     report.update(fixture_driver.fingerprint('gpt-6-luna', FACTORY_CONFIG))
     report['effective_settings']['reasoning_effort'] = 'high'
     monkeypatch.setattr(fixture_driver, '_baselines', lambda: [report])

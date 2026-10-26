@@ -124,3 +124,41 @@ def test_central_terminal_receipt_passes_actual_model_and_effective_effort_to_vi
             'cached_input_tokens': None, 'reasoning_tokens': None},
         selection=request.selected_llm, outcome=result.outcome,
         actual_model='actual-catalog-model', reasoning_effort='high')
+
+
+def test_explicit_conversation_evidence_retains_turn_and_rejects_identity_changes(tmp_path, monkeypatch):
+    from api_agent.workflows.run_context import conversation, turn
+    conversation_id, turn_id = str(uuid4()), str(uuid4())
+    path = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test_request (call)')
+    with conversation(conversation_id), turn(turn_id):
+        identifier = publish(REQUEST)
+        publish(REQUEST, RESULT, call_id=identifier)
+    rows = [json.loads(line)['data'] for line in path.read_text().splitlines()]
+    assert all(data['conversation_id'] == conversation_id and data['turn_id'] == turn_id for data in rows)
+    tracker = SuiteUsage('run')
+    capture(event(rows[0]), tracker)
+    with pytest.raises(ValueError, match='Conflicting inference identity'):
+        capture(event(rows[0] | {'conversation_id': str(uuid4())}), tracker)
+    with pytest.raises(ValueError, match='Conflicting inference identity'):
+        capture(event({k: v for k, v in rows[0].items() if k != 'conversation_id'}), tracker)
+    capture(event(rows[1]), tracker)
+    capture(event(rows[1]), tracker)
+    assert tracker.rows()[0]['llm_calls'] == 1
+
+
+@pytest.mark.parametrize('conversation_id', [None, 'invalid', 1])
+def test_optional_conversation_identity_is_strict(conversation_id):
+    with pytest.raises(ValueError):
+        capture(event(row() | {'conversation_id': conversation_id}), SuiteUsage('run'))
+
+
+def test_trial_evidence_has_no_conversation_identity(tmp_path, monkeypatch):
+    from api_agent.workflows.run_context import trial
+    path = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test_request (call)')
+    with trial(2):
+        publish(REQUEST, RESULT)
+    assert 'conversation_id' not in json.loads(path.read_text())['data']

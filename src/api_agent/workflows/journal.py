@@ -363,6 +363,9 @@ class WorkflowJournal:
                                 if row.get('Kind') in ('llm', 'deterministic')}
         self._admitted_edges = {tuple(row[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                                 for row in self.projection['edges']}
+        from .run_context import current_execution_context, current_turn_id
+        self.execution_context = current_execution_context()
+        turn_id = turn_id if turn_id is not None else current_turn_id()
         self.invocation_id = str(uuid4())
         self.turn_id = str(uuid4()) if turn_id is None else turn_id
         try:
@@ -392,6 +395,21 @@ class WorkflowJournal:
                                    (content_policy is None or content_policy.allow_content is True))
         self._log_content = (self._requested_content and content_policy is not None
                              and content_policy.allow_content is True)
+
+    def admit_execution_context(self, value):
+        """Bind a fresh unlabelled journal; never relabel retained execution data."""
+        from .run_context import validate_execution_context
+        value = validate_execution_context(value) if value is not None else None
+        with self._lock:
+            existing = self.execution_context
+            if existing is not None:
+                existing = validate_execution_context(existing)
+            if value is not None and existing != value:
+                if existing is not None or self._started or self._events or self._finalized or self._gap is not None:
+                    raise ValueError('Workflow execution context disagrees with the active journal')
+                self.execution_context = dict(value)
+                existing = value
+            return dict(existing) if existing is not None else None
 
     def admit_policy(self, policy, boundary, *, model_identity=None):
         """Constrain a fresh journal before retention; never reinterpret history."""
@@ -608,6 +626,8 @@ class WorkflowJournal:
                            test_id=self.test_id, events=events,
                            completeness='complete' if complete else 'partial',
                            gap=self._gap, content='permitted_scrubbed' if self._log_content else 'withheld')
+            if self.execution_context is not None:
+                payload['execution_context'] = dict(self.execution_context)
             payload['sha256'] = sha256(_encoded(payload)).hexdigest()
             return payload
 
@@ -622,7 +642,10 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
     unsigned = {key: value for key, value in payload.items() if key != 'sha256'}
     if type(expected) is not str or sha256(_encoded(unsigned)).hexdigest() != expected:
         raise ValueError('Workflow journal digest mismatch')
-    if set(payload) != {'version', 'projection', 'source_manifest', 'invocation_id', 'turn_id', 'test_id',
+    if 'execution_context' in payload:
+        from .run_context import validate_execution_context
+        validate_execution_context(payload['execution_context'])
+    if set(payload) - {'execution_context'} != {'version', 'projection', 'source_manifest', 'invocation_id', 'turn_id', 'test_id',
                         'events', 'completeness', 'gap', 'content', 'sha256'}:
         raise ValueError('Unexpected workflow journal field')
     projection_data = payload['projection']

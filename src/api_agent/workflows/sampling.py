@@ -48,24 +48,180 @@ def calibration(observations, required, *, ceiling=60):
 
 FIRST = frozenset({'first_draft', 'first_format', 'first_guard'})
 DECLARED = FIRST | frozenset({'second_draft', 'second_format', 'second_guard'})
+ROUTES = frozenset({'skip', 'next_a', 'next_b'})
+TARGETS = DECLARED | ROUTES | {'internal_retry'}
+COVERAGE_POLICY = 'nodes_routes_internal_retry_v2'
+
+
+PROOF_FIELDS = {
+    'scope_start': ('scope_id', 'parent_id', 'owner', 'kind', 'component', 'node', 'attempt', 'max_passes', 'attempt_id'),
+    'scope_end': ('scope_id', 'parent_id', 'owner', 'kind', 'component', 'node', 'attempt', 'max_passes', 'attempt_id', 'outcome'),
+    'attempt': ('scope_id', 'component', 'attempt', 'max_passes', 'attempt_id'),
+    'node': ('scope_id', 'node', 'component', 'attempt'),
+    'edge': ('owner', 'source', 'target', 'condition', 'implicit', 'visit_id', 'attempt_id'),
+}
+
+
+def measurement(trial, values, nodes, events):
+    """Retain emitted structural proof; no scopes or edges are reconstructed."""
+    proof = [dict(event=event['event'], **{key: event[key] for key in PROOF_FIELDS[event['event']] if key in event})
+             for event in events if event['event'] in PROOF_FIELDS
+             and (event['event'] != 'edge' or event.get('owner') == 'GRAPH')]
+    attempts = [{key: event[key] for key in ('scope_id', 'component', 'attempt', 'max_passes')}
+                for event in proof if event['event'] == 'attempt']
+    return dict(trial=trial, route=values['first_draft']['route'], nodes=sorted(nodes), attempts=attempts, proof=proof)
+
+
+def structural_targets(row):
+    """Check successful lifecycles and bind attempts, nodes and root edges."""
+    proof = row['proof']
+    if type(proof) is not list or not proof:
+        raise ValueError('Missing executed structural proof')
+    scopes, active, attempts, nodes, edges, attempt_ids = {}, [], {}, set(), [], set()
+    graph_id = None
+    node_hits = {}
+    for event in proof:
+        if type(event) is not dict or event.get('event') not in PROOF_FIELDS:
+            raise ValueError('Invalid executed structural event')
+        kind = event['event']
+        if set(event) - {'event', *PROOF_FIELDS[kind]}:
+            raise ValueError('Unexpected executed structural fields')
+        if kind == 'scope_start':
+            scope = event.get('scope_id')
+            if type(scope) is not str or not scope or scope in scopes:
+                raise ValueError('Duplicate or invalid executed scope')
+            owner, category = event.get('owner'), event.get('kind')
+            if category == 'graph':
+                if graph_id is not None or active or owner != 'GRAPH':
+                    raise ValueError('Invalid executed graph scope')
+                graph_id = scope
+            elif (not active or event.get('parent_id') != active[-1]
+                  or (category == 'component' and (owner not in {'first', 'second'} or active[-1] != graph_id))
+                  or (category == 'node' and (owner not in DECLARED or scopes[active[-1]].get('kind') != 'component'))
+                  or category not in {'component', 'node'}):
+                raise ValueError('Executed scope ownership disagrees')
+            if category == 'component' and event.get('component') != owner:
+                raise ValueError('Executed component scope metadata disagrees with owner')
+            scopes[scope] = event
+            active.append(scope)
+        elif kind == 'scope_end':
+            scope = event.get('scope_id')
+            start = scopes.get(scope)
+            if (not active or active[-1] != scope or start is None or event.get('outcome') != 'passed'
+                    or {key: value for key, value in event.items() if key not in {'event', 'outcome'}}
+                    != {key: value for key, value in start.items() if key != 'event'}):
+                raise ValueError('Executed scope did not complete successfully')
+            active.pop()
+        elif kind == 'attempt':
+            scope = event.get('scope_id')
+            start = scopes.get(scope, {})
+            identity = event.get('attempt_id')
+            previous = attempts.get(scope, [])
+            if (not active or active[-1] != scope or start.get('kind') != 'component'
+                    or event.get('component') != start.get('owner')
+                    or event.get('max_passes') != start.get('max_passes')
+                    or type(event.get('attempt')) is not int or event['attempt'] != len(previous) + 1
+                    or type(identity) is not str or not identity or identity in attempt_ids):
+                raise ValueError('Attempt is not bound to its executed component scope')
+            attempt_ids.add(identity)
+            attempts.setdefault(scope, []).append(event)
+        elif kind == 'node':
+            scope = event.get('scope_id')
+            start = scopes.get(scope, {})
+            parent = start.get('parent_id')
+            current = attempts.get(parent, [])
+            if (not active or active[-1] != scope or start.get('kind') != 'node'
+                    or event.get('node') != start.get('owner') or event.get('component') != scopes.get(parent, {}).get('owner')
+                    or not current or event.get('attempt') != current[-1]['attempt']
+                    or start.get('attempt_id') != current[-1]['attempt_id']
+                    or start.get('node') != event.get('node') or start.get('component') != event.get('component')
+                    or start.get('attempt') != event.get('attempt')
+                    or not event['node'].startswith(event['component'] + '_')):
+                raise ValueError('Successful node is not bound to its executed attempt')
+            if type(start.get('max_passes')) is not int or start['max_passes'] != current[-1]['max_passes']:
+                raise ValueError('Executed node pass limit disagrees with its component attempt')
+            key = parent, event['attempt']
+            if event['node'] in node_hits.get(key, set()):
+                raise ValueError('Duplicate successful node within executed attempt')
+            node_hits.setdefault(key, set()).add(event['node'])
+            nodes.add(event['node'])
+        else:
+            if active != [graph_id] or event.get('owner') != 'GRAPH' or event.get('attempt_id') is not None:
+                raise ValueError('Root edge is not bound to its executed graph')
+            source = event.get('source')
+            if source != 'START' and (event.get('visit_id') not in scopes or scopes[event['visit_id']].get('owner') != source):
+                raise ValueError('Root edge source disagrees with executed component')
+            edges.append((source, event.get('target'), event.get('condition'), event.get('implicit')))
+    expected_edges = [('START', 'first', None, True), ('first', 'END', 'first_draft.route == "skip"', False)] if row['route'] == 'skip' else [
+        ('START', 'first', None, True), ('first', 'second', 'otherwise', False), ('second', 'END', 'always', True)]
+    if graph_id is None or active or edges != expected_edges:
+        raise ValueError('Executed root edges disagree with route or graph completion')
+    components = [event['owner'] for event in scopes.values() if event['kind'] == 'component']
+    if sorted(components) != (['first'] if row['route'] == 'skip' else ['first', 'second']):
+        raise ValueError('Executed components disagree with route')
+    for scope, visits in attempts.items():
+        expected = {scopes[scope]['owner'] + '_' + suffix for suffix in ('draft', 'format', 'guard')}
+        if any(node_hits.get((scope, visit['attempt'])) != expected for visit in visits):
+            raise ValueError('Executed attempt lacks its successful node visits')
+    if nodes != set(row['nodes']):
+        raise ValueError('Executed successful nodes disagree with measurement')
+    actual_attempts = [{key: event[key] for key in ('scope_id', 'component', 'attempt', 'max_passes')}
+                       for event in proof if event['event'] == 'attempt']
+    if actual_attempts != row['attempts']:
+        raise ValueError('Observed attempts disagree with executed proof')
+    return graph_id, set(scopes)
+
+
+def observed_targets(row):
+    """Validate contiguous component attempts before recognizing a retry."""
+    if type(row) is not dict or set(row) != {'trial', 'route', 'nodes', 'attempts', 'proof'}:
+        raise ValueError('Invalid pilot measurement schema')
+    if type(row['trial']) is not int or not 1 <= row['trial'] <= 60 or type(row['route']) is not str or row['route'] not in ROUTES:
+        raise ValueError('Invalid pilot trial identity or route')
+    expected = FIRST if row['route'] == 'skip' else DECLARED
+    if type(row['nodes']) is not list or row['nodes'] != sorted(expected):
+        raise ValueError('Pilot route disagrees with successful declared nodes')
+    if type(row['attempts']) is not list:
+        raise ValueError('Invalid observed component attempts')
+    scopes = {}
+    retry = False
+    for item in row['attempts']:
+        if type(item) is not dict or set(item) != {'scope_id', 'component', 'attempt', 'max_passes'}:
+            raise ValueError('Invalid observed component attempt')
+        scope, component, attempt, maximum = (item[key] for key in ('scope_id', 'component', 'attempt', 'max_passes'))
+        if (type(scope) is not str or not scope or type(component) is not str or component not in {'first', 'second'}
+                or (component == 'second' and row['route'] == 'skip')
+                or type(attempt) is not int or type(maximum) is not int or not 1 <= attempt <= maximum):
+            raise ValueError('Invalid observed component attempt')
+        previous = scopes.get(scope, (component, maximum, 0))
+        if previous != (component, maximum, attempt - 1):
+            raise ValueError('Component attempts must be contiguous within their observed scope')
+        scopes[scope] = (component, maximum, attempt)
+        retry |= attempt > 1
+    if {value[0] for value in scopes.values()} != ({'first'} if row['route'] == 'skip' else {'first', 'second'}):
+        raise ValueError('Missing observed component attempts')
+    structural_targets(row)
+    return set(row['nodes']) | {row['route']} | ({'internal_retry'} if retry else set())
 
 
 def measured_calibration(records, required, *, ceiling=60):
     """Derive all statistics from contiguous successful per-trial measurements."""
     if set(required) != DECLARED or type(records) is not list or not 1 <= len(records) <= 60:
         raise ValueError('Invalid pilot measurements or fixture declaration')
-    observations, routes = [], {'skip': 0, 'next_a': 0, 'next_b': 0}
+    observations, routes = [], {route: 0 for route in sorted(ROUTES)}
+    identities = set()
     for index, row in enumerate(records, 1):
-        if type(row) is not dict or set(row) != {'trial', 'route', 'nodes'} or type(row['trial']) is not int or row['trial'] != index or type(row['route']) is not str or row['route'] not in routes:
+        targets = observed_targets(row)
+        _, scopes = structural_targets(row)
+        if identities & scopes:
+            raise ValueError('Independent trials reuse executed scope identities')
+        identities.update(scopes)
+        if row['trial'] != index:
             raise ValueError('Invalid pilot trial identity or route')
-        nodes = row['nodes']
-        expected = FIRST if row['route'] == 'skip' else DECLARED
-        if type(nodes) is not list or any(type(node) is not str for node in nodes) or nodes != sorted(expected):
-            raise ValueError('Pilot route disagrees with successful declared nodes')
         routes[row['route']] += 1
-        observations.append(set(nodes))
-    result = calibration(observations, required, ceiling=ceiling)
-    return dict(result, records=records, routes=routes)
+        observations.append(targets)
+    result = calibration(observations, TARGETS, ceiling=ceiling)
+    return dict(result, coverage_policy=COVERAGE_POLICY, records=records, routes=routes)
 
 
 def validate_calibration(report, required, fingerprint):
@@ -73,7 +229,7 @@ def validate_calibration(report, required, fingerprint):
     if type(report) is not dict or any(report.get(key) != value for key, value in fingerprint.items()):
         # Emit fixed category names only: neither saved evidence nor configured
         # values belong in a prerequisite diagnostic.
-        categories = ('fingerprint_version', 'sampling_method', 'model', 'dependency_versions',
+        categories = ('fingerprint_version', 'sampling_method', 'coverage_policy', 'model', 'dependency_versions',
                       'python_version', 'backend', 'provider_identity', 'user_input_hash',
                       'effective_settings', 'sources')
         changed = [name for name in categories if type(report) is dict and name in fingerprint
@@ -100,5 +256,9 @@ async def cover(run_graph, required, maximum, observe=None):
         if observe is not None:
             observe(dict(trial=trial, seen=sorted(seen), complete=required <= seen))
         if required <= seen:
-            return dict(runs=trial, nodes=sorted(seen), stopping_reason='all_nodes_hit'), result
-    raise AssertionError('Incomplete node coverage at calibrated cap')
+            summary = dict(runs=trial, nodes=sorted(seen & DECLARED if required == TARGETS else seen),
+                           stopping_reason='all_targets_hit' if required == TARGETS else 'all_nodes_hit')
+            if required == TARGETS:
+                summary['targets'] = sorted(seen)
+            return summary, result
+    raise AssertionError('Incomplete coverage at calibrated cap; missing targets: ' + ', '.join(sorted(required - seen)))

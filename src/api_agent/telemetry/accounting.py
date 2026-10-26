@@ -110,8 +110,9 @@ def validate_metadata(value):
 
 
 def validate_evidence(value):
-    if (type(value) is not dict or set(value) - {'reasoning_effort'} != {'call_id', 'selection', 'actual_model', 'usage', 'quote', 'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision'}
+    if (type(value) is not dict or set(value) - {'reasoning_effort', 'conversation_id'} != {'call_id', 'selection', 'actual_model', 'usage', 'quote', 'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision'}
             or (value.get('reasoning_effort') is not None and (type(value['reasoning_effort']) is not str or value['reasoning_effort'] not in ('off', 'low', 'medium', 'high')))
+            or ('conversation_id' in value and not _uuid(value['conversation_id']))
             or not _uuid(value['call_id']) or not _identifier(value['selection'])
             or any(not _identifier(value[key], nullable=True) for key in ('actual_model', 'service_tier', 'serving_revision'))):
         raise ContractError('Invalid inference evidence')

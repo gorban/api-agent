@@ -28,3 +28,7 @@ execution-setting snapshots and historical overlays remain unchecked here.
 - [ ] Verify that nested content, call identity, settings, observed routes, timing and frozen token/cost attribution survive the single-copy representation and reopen correctly under the matching historical definition. Verify red-over-yellow ancestor precedence and unaffected siblings, plus both content flags independently, without paid inference. Keep canonical payload reuse, native hierarchy and later overlay consumers under independent/external and human review.
 
 The bounded [canonical GRAPH storage contract](implementation_plan_b1c1a2a.md) delivers this canonical Allure payload slice; the broader log, settings, definition and overlay requirements above retain their own gates.
+
+## Conversation and turn reporting
+
+- [x] Deliver [conversation/turn hierarchy and exact-once cost rollups](implementation_plan_b1c1a2b.md), preserving independent trials, legacy evidence and canonical payloads.

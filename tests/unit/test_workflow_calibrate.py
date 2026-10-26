@@ -14,7 +14,42 @@ from api_agent.providers.control import CleanupPendingError
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 from api_agent.testing.diagnostics import CredentialScrubber
 from api_agent.workflows import calibrate
-from api_agent.workflows.sampling import DECLARED
+from api_agent.workflows.sampling import DECLARED, FIRST
+
+def structural_events(trial, route, *, retry=True):
+    """Synthetic emitted lifecycles with independent scope and attempt identities."""
+    events = []
+    graph = f'graph-{trial}'
+    def start(scope, parent, owner, kind, **values):
+        row = dict(event='scope_start', scope_id=scope, parent_id=parent, owner=owner, kind=kind, **values)
+        events.append(row)
+        return row
+    def end(row):
+        events.append(dict(row, event='scope_end', outcome='passed'))
+    graph_scope = start(graph, None, 'GRAPH', 'graph', attempt=1, max_passes=1)
+    events.append(dict(event='edge', owner='GRAPH', source='START', target='first', implicit=True, attempt_id=None))
+    for component in (['first'] if route == 'skip' else ['first', 'second']):
+        scope = f'{graph}-{component}'
+        component_scope = start(scope, graph, component, 'component', component=component, attempt=1, max_passes=2, attempt_id=None)
+        for attempt in ((1, 2) if retry else (1,)):
+            attempt_id = f'{scope}-attempt-{attempt}'
+            events.append(dict(event='attempt', scope_id=scope, component=component, attempt=attempt, max_passes=2, attempt_id=attempt_id))
+            for suffix in ('draft', 'format', 'guard'):
+                node = f'{component}_{suffix}'
+                node_scope = start(f'{attempt_id}-{node}', scope, node, 'node', component=component, node=node,
+                                   attempt=attempt, max_passes=2, attempt_id=attempt_id)
+                events.append(dict(event='node', scope_id=node_scope['scope_id'], node=node, component=component, attempt=attempt))
+                end(node_scope)
+        end(component_scope)
+        target = ('END' if route == 'skip' else 'second') if component == 'first' else 'END'
+        condition = ('first_draft.route == "skip"' if route == 'skip' else 'otherwise') if component == 'first' else 'always'
+        events.append(dict(event='edge', owner='GRAPH', source=component, target=target, condition=condition,
+                           implicit=component == 'second', visit_id=scope, attempt_id=None))
+    end(graph_scope)
+    return events
+
+
+
 
 ROOT = Path(calibrate.__file__).resolve().parents[3]
 
@@ -48,7 +83,10 @@ def setup(tmp_path, monkeypatch):
         assert (tmp_path / 'candidate.json.reservation').exists()
         calls.append(f'graph {trial}')
         kwargs['observe']({'event': 'llm', 'node': 'first_draft', 'usage': {'input_tokens': 1}})
-        return {'first_draft': {'route': 'next_a'}}, DECLARED
+        route = ('skip', 'next_a', 'next_b')[(trial - 1) % 3]
+        for event in structural_events(trial, route):
+            kwargs['observe'](event)
+        return {'first_draft': {'route': route}}, FIRST if route == 'skip' else DECLARED
     monkeypatch.setattr(calibrate, 'run_graph', graph)
     state = SimpleNamespace(context=context, result=result, calls=calls, instances=instances,
         destination=tmp_path / 'candidate.json', fingerprint=fingerprint)
@@ -57,14 +95,14 @@ def setup(tmp_path, monkeypatch):
 
 def test_pilot_reserves_before_setup_observes_calls_and_finalizes_after_cleanup(setup):
     lines = []
-    report = calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lines.append)
+    report = calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lines.append)
     assert setup.calls[0] == 'setup' and setup.calls[-1] == 'close'
-    assert report['trials'] == 20 and report['model'] == 'synthetic-model'
+    assert report['trials'] == 60 and report['model'] == 'synthetic-model'
     assert setup.destination.is_file() and setup.instances[0].closed
     assert not setup.destination.with_name('candidate.json.reservation').exists()
     events = [json.loads(line) for line in setup.destination.with_name('candidate.json.progress.jsonl').read_text().splitlines()]
     assert any(row.get('events', [{}])[0].get('event') == 'llm' for row in events)
-    assert 'Calibration graph 20/20: LLM call 20 completed.' in lines
+    assert 'Calibration graph 60/60: LLM call 60 completed.' in lines
     assert 'manually updating' in lines[-1]
     assert stat.S_IMODE(setup.destination.with_name('candidate.json.progress.jsonl').stat().st_mode) == 0o600
 
@@ -75,7 +113,7 @@ def test_graph_defect_keeps_incremental_safe_evidence_without_bounds(setup, monk
         raise RuntimeError('runtime-secret synthetic-secret private prompt')
     monkeypatch.setattr(calibrate, 'run_graph', fail)
     with pytest.raises(RuntimeError) as caught:
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lambda line: None)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda line: None)
     assert setup.instances[0].closed and not setup.destination.exists()
     text = setup.destination.with_name('candidate.json.progress.jsonl').read_text()
     assert 'private prompt' not in text and 'runtime-secret' not in text and 'synthetic-secret' not in text
@@ -96,7 +134,7 @@ def test_existing_or_linked_candidate_sidecar_stops_before_setup(setup, suffix):
     occupied = setup.destination.with_name(setup.destination.name + suffix)
     occupied.symlink_to(occupied.parent / 'absent-target')
     with pytest.raises(ValueError, match='symlinks'):
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60)
     assert occupied.is_symlink() and setup.instances == []
 
 
@@ -116,7 +154,7 @@ def test_source_change_during_pilot_prevents_finalization(setup, monkeypatch):
     values = iter([setup.fingerprint, dict(setup.fingerprint, model='changed')])
     monkeypatch.setattr(calibrate, 'fingerprint', lambda *a, **k: next(values))
     with pytest.raises(ValueError, match='changed during'):
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lambda text: None)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
     assert not setup.destination.exists() and setup.instances[0].closed
 
 
@@ -130,7 +168,7 @@ def test_provider_setup_or_cleanup_failure_never_finalizes_candidate(setup, monk
         monkeypatch.setattr(provider_type, 'close', Mock(side_effect=RuntimeError('cleanup unavailable')))
         expected = CleanupPendingError
     with pytest.raises(expected) as caught:
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lambda text: None)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
     assert not setup.destination.exists()
     if mode == 'cleanup':
         provider = setup.instances[0]
@@ -151,7 +189,7 @@ def test_combined_failure_preserves_primary_and_both_cleanup_duties(setup, monke
     provider_type = __import__('api_agent.testing.provider_setup', fromlist=['IntegrationLLM']).IntegrationLLM
     monkeypatch.setattr(provider_type, 'close', Mock(side_effect=[second, None]))
     with pytest.raises(RuntimeError) as caught:
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lambda text: None)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
     assert caught.value is primary and primary.cleanup_pending is first
     outer = first.cleanup_pending
     assert outer.cleanup_pending is second
@@ -226,12 +264,12 @@ def test_source_checkout_rejects_unrelated_and_installed_paths(tmp_path, monkeyp
         calibrate.source_checkout()
 
 
-def test_main_uses_explicit_candidate_and_default_twenty_graphs(setup, monkeypatch):
+def test_main_uses_explicit_candidate_and_default_sixty_graphs(setup, monkeypatch):
     monkeypatch.setattr(calibrate, 'configuration', lambda *a: (setup.context, setup.result))
     run = Mock()
     monkeypatch.setattr(calibrate, 'pilot', run)
     assert calibrate.main(['--candidate', str(setup.destination), '--no-std-in']) == 0
-    assert run.call_args.args[3] == 20
+    assert run.call_args.args[3] == 60
     run.call_args.kwargs['output']('synthetic-secret')
 
 
@@ -279,7 +317,7 @@ def test_progress_descriptor_validation_closes_rejected_file_before_setup(setup,
     monkeypatch.setattr(calibrate.os, 'open', opened_progress)
     monkeypatch.setattr(calibrate.os, 'fstat', metadata)
     with pytest.raises(ValueError, match='regular file owned'):
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60)
     assert setup.instances == []
     with pytest.raises(OSError): original_stat(opened[0])
 
@@ -287,18 +325,20 @@ def test_progress_descriptor_validation_closes_rejected_file_before_setup(setup,
 def test_constructor_failure_retains_structural_failure_evidence(setup, monkeypatch):
     monkeypatch.setattr('api_agent.testing.provider_setup.IntegrationLLM', Mock(side_effect=RuntimeError('constructor failed')))
     with pytest.raises(RuntimeError):
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60)
     rows = [json.loads(line) for line in setup.destination.with_name('candidate.json.progress.jsonl').read_text().splitlines()]
     assert rows[-1]['status'] == 'failed' and not setup.destination.exists()
 
 
 def test_node_observation_preserves_structural_events_without_claiming_llm_call(setup, monkeypatch):
     def graph(provider, selection, trial, config, **kwargs):
-        kwargs['observe']({'event': 'node', 'node': 'first_draft'})
-        return {'first_draft': {'route': 'next_a'}}, DECLARED
+        route = ('skip', 'next_a', 'next_b')[(trial - 1) % 3]
+        for event in structural_events(trial, route):
+            kwargs['observe'](event)
+        return {'first_draft': {'route': route}}, FIRST if route == 'skip' else DECLARED
     monkeypatch.setattr(calibrate, 'run_graph', graph)
     lines = []
-    calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lines.append)
+    calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lines.append)
     assert not any('LLM call' in line for line in lines)
     assert 'first_draft' in setup.destination.with_name('candidate.json.progress.jsonl').read_text()
 
@@ -316,7 +356,7 @@ def test_progress_write_failure_keeps_primary_and_cleanup_runs(setup, monkeypatc
         return BrokenProgress(stream) if mode == 'w' else stream
     monkeypatch.setattr(calibrate.os, 'fdopen', fdopen)
     with pytest.raises(OSError) as caught:
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lambda line: None)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda line: None)
     assert setup.instances[0].closed and not setup.destination.exists()
     assert any('Calibration progress artifact failure category: unavailable' in note for note in caught.value.__notes__)
 
@@ -383,7 +423,7 @@ def test_noncanonical_provider_is_rejected_before_setup(setup, tmp_path):
     factory.write_text('def factory(): pass\n')
     setup.result.values['LLM_PROVIDER'] = str(factory) + ':factory'
     with pytest.raises(ValueError):
-        calibrate.pilot(setup.context, setup.result, setup.destination, 20)
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60)
     assert setup.instances == [] and not setup.destination.exists()
 
 
@@ -442,11 +482,14 @@ def test_relative_builtin_factory_is_forwarded_with_operation_owner_root(setup, 
     def graph(provider, selection, trial, config, **kwargs):
         assert kwargs['owner_root'] == ROOT
         observed.append(provider_identity(config, owner_root=kwargs['owner_root']))
-        return {'first_draft': {'route': 'next_a'}}, DECLARED
+        route = ('skip', 'next_a', 'next_b')[(trial - 1) % 3]
+        for event in structural_events(trial, route):
+            kwargs['observe'](event)
+        return {'first_draft': {'route': route}}, FIRST if route == 'skip' else DECLARED
     monkeypatch.setattr(calibrate, 'run_graph', graph)
-    report = calibrate.pilot(setup.context, setup.result, setup.destination, 20, output=lambda line: None)
-    assert len(observed) == 20 and all(row['kind'] == 'bundled_gpt' for row in observed)
-    assert report['trials'] == 20
+    report = calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda line: None)
+    assert len(observed) == 60 and all(row['kind'] == 'bundled_gpt' for row in observed)
+    assert report['trials'] == 60
 
 
 def test_failed_outer_retry_retains_successor_completion_until_acknowledgement():
