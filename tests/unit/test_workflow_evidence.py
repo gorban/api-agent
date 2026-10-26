@@ -74,7 +74,8 @@ def test_sanitize_finite_number():
 @pytest.fixture
 def measured_report():
     from api_agent.workflows.sampling import measured_calibration, DECLARED
-    return measured_calibration([{'trial':trial,'route':'next_a','nodes':sorted(DECLARED)} for trial in range(1,61)],DECLARED)
+    from test_workflow_sampling import records
+    return measured_calibration(records(), DECLARED)
 
 
 def test_calibration_receipt_rejects_record_fabrication(tmp_path,measured_report):

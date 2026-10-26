@@ -21,6 +21,7 @@ from .contracts import TestResult
 from .integration import run_integration_tests
 from .recording import RunIdentity, RunRecorder
 from .storage import RunStorage
+from .workflow_accounting import group_execution_steps
 from .suite_lock import suite_locked
 
 
@@ -32,7 +33,7 @@ def _step_identity(step):
 
 def _step_envelopes(step, *, parent=None):
     identity = _step_identity(step)
-    fixed = {'attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key', 'outcome'}
+    fixed = {'attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key', 'outcome', 'conversation_id', 'trial_index', 'turn_id', 'invocation_id', 'recorded_started_ms'}
     envelope = ({key: step[key] for key in ('name', 'start', 'stop')}, parent,
                 {item['name']: item['value'] for item in step['parameters'] if item['name'] in fixed})
     result = {identity: envelope}
@@ -98,6 +99,18 @@ class _WorkflowStepBridge:
         steps = scope_steps(packet.get('events', []))
         authoritative = packet.get('version') == 1 and 'projection' in packet
         invocation = packet['invocation_id'] if authoritative else None
+        if authoritative:
+            for step in steps:
+                step['parameters'].append(dict(name='invocation_id', value=invocation))
+                step['parameters'].append(dict(name='turn_id', value=packet['turn_id']))
+                scope_id = next(item['value'] for item in step['parameters'] if item['name'] == 'scope_id')
+                started = next(event['started_ms'] for event in packet['events']
+                               if event.get('event') == 'scope_start' and event['scope_id'] == scope_id)
+                step['parameters'].append(dict(name='recorded_started_ms', value=str(started)))
+                execution = packet.get('execution_context')
+                if execution is not None:
+                    key = 'conversation_id' if execution['kind'] == 'conversation' else 'trial_index'
+                    step['parameters'].append(dict(name=key, value=str(execution[key])))
         projections = self._projections + [dict(identity=_step_identity(step),
             invocation=invocation, authoritative=authoritative, step=step) for step in steps]
         entries = []
@@ -228,6 +241,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         payload_stores = {}
         pending_journals = {}
         payload_calls = {}
+        finalized_payload_calls = {}
 
         def payload_store(test_id):
             from .payloads import PayloadStore
@@ -284,8 +298,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     targets = [steps[index] for index, entry in enumerate(bridge.entries)
                                if entry['invocation'] == packet['invocation_id']] if bridge is not None else []
                     attach_payloads(targets, captures, {})
+                finalized_payload_calls[test_id] = payload_calls.pop(test_id, {})
                 attachments.extend(recorder.existing_attachment(item['name'], item['source'], item['type'])
-                    for item in attach_payloads(steps, [], payload_calls.pop(test_id, {})))
+                    for item in attach_payloads(steps, [], finalized_payload_calls[test_id]))
                 index_name = 'payload-index-' + str(list(recording_ids).index(test_id)) + '.json'
                 recorder.record_artifact(index_name, json.dumps(store.index(), allow_nan=False).encode())
                 attachments.append(recorder.existing_attachment('Payload index', index_name))
@@ -294,7 +309,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 from .withheld_screenshot import withheld_attachment
                 attachments += (withheld_attachment(),)
             recorder.update_test_evidence(recording_ids[test_id], attachments=attachments,
-                                          steps=steps)
+                                          steps=group_execution_steps(steps))
 
         def record(result):
             test = result.identity
@@ -304,7 +319,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
             bridge = workflow_steps.get(result.identity.id)
             filename = recorder.record_test(replace(result, identity=test),
-                                            steps=deepcopy(bridge.steps) if bridge is not None else None)
+                                            steps=group_execution_steps(deepcopy(bridge.steps)) if bridge is not None else None)
             recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)
             from .allure_preview import emit_snapshot
@@ -375,17 +390,34 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             from api_agent.telemetry.accounting import validate_accounting
             artifact = validate_accounting(evidence_boundary.content_export(artifact))
             recorder.record_artifact('accounting.json', json.dumps(artifact, allow_nan=False).encode())
-            if workflow_journals:
-                from .workflow_accounting import join_workflow_accounting, apply_frozen_steps
+            has_workflow_accounting = bool(workflow_journals) or any(
+                call.get('conversation_id') is not None for test in artifact['tests'] for call in test['calls'])
+            if has_workflow_accounting:
+                from .workflow_accounting import join_workflow_accounting, apply_frozen_steps, include_unowned_calls
                 joined, facts = join_workflow_accounting(workflow_journals, artifact,
                                                          admissions=workflow_admissions)
                 recorder.record_artifact('workflow-accounting-join.json',
                     json.dumps(evidence_boundary.content_export(joined), sort_keys=True, allow_nan=False).encode())
                 updates = {}
-                for test_id in workflow_journals:
+                for joined_test in joined['tests']:
+                    test_id = joined_test['test_id']
                     filename = recording_ids[test_id]
                     row = json.loads((recorder.directory / filename).read_bytes())
-                    updates[filename] = apply_frozen_steps(row.get('steps', []), test_id, facts)
+                    calls = next(test['calls'] for test in artifact['tests'] if test['test_id'] == test_id)
+                    steps = include_unowned_calls(row.get('steps', []), calls,
+                                                  joined_test['unowned_accounting_call_ids'])
+                    from .workflow_steps import attach_payloads
+                    phases = finalized_payload_calls.get(test_id, {})
+                    remaining = attach_payloads(steps, [], phases)
+                    retained = {(item['source'], item['type']) for item in remaining}
+                    moved = {(item['source'], item['type']) for items in phases.values()
+                             for item in items.values()} - retained
+                    settled = apply_frozen_steps(steps, test_id, facts)
+                    recorder.update_test_evidence(filename, steps=settled, attachments=tuple(
+                        recorder.existing_attachment(item['name'], item['source'], item['type'])
+                        for item in row.get('attachments', [])
+                        if (item['source'], item['type']) not in moved))
+                    updates[filename] = settled
                 recorder.update_workflow_steps(updates)
             recorder.attach_test_artifacts({recording_ids[key]: value for key, value in usage_summary.get('test_costs', {}).items()
                                             if key in recording_ids})
@@ -404,7 +436,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             shared = [
                 ('Suite usage', 'usage-summary.json', 'application/json'),
                 ('Immutable accounting', 'accounting.json', 'application/json')]
-            if workflow_journals:
+            if has_workflow_accounting:
                 shared.append(('Workflow accounting join', 'workflow-accounting-join.json', 'application/json'))
             manifest = recorder.finalize(status=status, shared_artifacts=tuple(shared))
             from .allure_preview import emit_snapshot

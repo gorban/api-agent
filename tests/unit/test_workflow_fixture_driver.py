@@ -10,7 +10,42 @@ from unittest.mock import Mock
 import pytest
 
 from api_agent.workflows import fixture_driver as driver
-from api_agent.workflows.sampling import DECLARED, FIRST, measured_calibration, validate_calibration
+from api_agent.workflows.sampling import DECLARED, FIRST, TARGETS, measurement, measured_calibration, validate_calibration
+
+def structural_events(trial, route, *, retry=True):
+    """Synthetic emitted lifecycles with independent scope and attempt identities."""
+    events = []
+    graph = f'graph-{trial}'
+    def start(scope, parent, owner, kind, **values):
+        row = dict(event='scope_start', scope_id=scope, parent_id=parent, owner=owner, kind=kind, **values)
+        events.append(row)
+        return row
+    def end(row):
+        events.append(dict(row, event='scope_end', outcome='passed'))
+    graph_scope = start(graph, None, 'GRAPH', 'graph', attempt=1, max_passes=1)
+    events.append(dict(event='edge', owner='GRAPH', source='START', target='first', implicit=True, attempt_id=None))
+    for component in (['first'] if route == 'skip' else ['first', 'second']):
+        scope = f'{graph}-{component}'
+        component_scope = start(scope, graph, component, 'component', component=component, attempt=1, max_passes=2, attempt_id=None)
+        for attempt in ((1, 2) if retry else (1,)):
+            attempt_id = f'{scope}-attempt-{attempt}'
+            events.append(dict(event='attempt', scope_id=scope, component=component, attempt=attempt, max_passes=2, attempt_id=attempt_id))
+            for suffix in ('draft', 'format', 'guard'):
+                node = f'{component}_{suffix}'
+                node_scope = start(f'{attempt_id}-{node}', scope, node, 'node', component=component, node=node,
+                                   attempt=attempt, max_passes=2, attempt_id=attempt_id)
+                events.append(dict(event='node', scope_id=node_scope['scope_id'], node=node, component=component, attempt=attempt))
+                end(node_scope)
+        end(component_scope)
+        target = ('END' if route == 'skip' else 'second') if component == 'first' else 'END'
+        condition = ('first_draft.route == "skip"' if route == 'skip' else 'otherwise') if component == 'first' else 'always'
+        events.append(dict(event='edge', owner='GRAPH', source=component, target=target, condition=condition,
+                           implicit=component == 'second', visit_id=scope, attempt_id=None))
+    end(graph_scope)
+    return events
+
+
+
 
 FACTORY = str(Path(driver.__file__).parent.parent / 'llm_providers/gpt/factory.py') + ':factory'
 CONFIG = {'LLM_PROVIDER': FACTORY, 'GPT_AUTH_MODE': 'subscription', 'GPT_API_MODE': 'responses',
@@ -28,10 +63,10 @@ def legacy_report():
 
 def synthetic_current_report(config=CONFIG):
     records = []
-    for trial in range(1, 21):
-        route = 'next_a' if trial <= 5 else 'next_b' if trial <= 13 else 'skip'
+    for trial in range(1, 61):
+        route = ('skip', 'next_a', 'next_b')[(trial - 1) % 3]
         nodes = DECLARED if route != 'skip' else FIRST
-        records.append({'trial': trial, 'route': route, 'nodes': sorted(nodes)})
+        records.append(measurement(trial, {'first_draft': {'route': route}}, nodes, structural_events(trial, route)))
     return measured_calibration(records, DECLARED) | driver.fingerprint('gpt-6-luna', config)
 
 
@@ -54,8 +89,7 @@ def historical_fingerprint(report):
 
 def test_reviewed_baseline_is_recomputed_without_local_calibration_file(monkeypatch):
     from api_agent.workflows.sampling import measured_calibration
-    report = measured_calibration([{'trial': trial, 'route': 'next_a',
-        'nodes': sorted(DECLARED)} for trial in range(1, 61)], DECLARED)
+    report = synthetic_current_report()
     report.update(driver.fingerprint('gpt-6-luna', CONFIG))
     monkeypatch.setattr(driver, '_baselines', lambda: [report])
     maximum = driver.baseline_limit('gpt-6-luna', CONFIG)
@@ -64,10 +98,11 @@ def test_reviewed_baseline_is_recomputed_without_local_calibration_file(monkeypa
     assert 'receipt' not in report
 
 
-def test_packaged_reviewed_measurements_recompute_for_current_report():
+def test_legacy_node_only_measurements_cannot_qualify_expanded_targets(legacy_report):
     from api_agent.workflows.sampling import validate_calibration
-    report = driver._baselines()[0]
-    assert validate_calibration(report, DECLARED, {}) == report['max_runs']
+    report = legacy_report
+    with pytest.raises(ValueError, match='schema'):
+        validate_calibration(legacy_report, DECLARED, {})
     assert report['trials'] == len(report['records'])
     assert sum(report['routes'].values()) == report['trials']
     assert 'receipt' not in report
@@ -92,8 +127,10 @@ def test_reviewed_reasoning_equivalence_keeps_original_observations_and_exact_gu
     assert report['sources'][source] == receipt['current_source_sha256']
     assert report['trials'] == 20 and report['max_runs'] == 22
     assert report['records'][0]['trial'] == 1 and report['records'][-1]['trial'] == 20
-    assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
-    assert validate_calibration(report, DECLARED, historical_fingerprint(report)) == 22
+    with pytest.raises(ValueError, match='schema'):
+        measured_calibration(report['records'], DECLARED)
+    with pytest.raises(ValueError, match='schema'):
+        validate_calibration(report, DECLARED, historical_fingerprint(report))
     changed = deepcopy(report)
     changed['sources'][source] = receipt['original_source_sha256']
     with pytest.raises(ValueError, match='stale'):
@@ -104,7 +141,8 @@ def test_provenance_receipt_cannot_admit_the_old_or_an_unrelated_source(legacy_r
     source = 'src/api_agent/llm_providers/gpt/reasoning.py'
     report = deepcopy(legacy_report)
     fingerprint = historical_fingerprint(report)
-    assert validate_calibration(report, DECLARED, fingerprint) == 22
+    with pytest.raises(ValueError, match='schema'):
+        validate_calibration(report, DECLARED, fingerprint)
     report['sources'][source] = report['carry_forward']['original_source_sha256']
     with pytest.raises(ValueError, match='stale'):
         validate_calibration(report, DECLARED, fingerprint)
@@ -137,9 +175,11 @@ def test_browser_visibility_binding_retains_prior_receipt_measurements_and_stric
         'a09434887a4366296bd5ea3c819a5519a9c12f255d35325c9654168021e0aa2d')
     assert report['trials'] == 20 and report['routes'] == {'next_a': 5, 'next_b': 8, 'skip': 7}
     assert report['minimum_runs'] == 18 and report['safety_margin'] == 4 and report['max_runs'] == 22
-    assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
+    with pytest.raises(ValueError, match='schema'):
+        measured_calibration(report['records'], DECLARED)
     fingerprint = historical_fingerprint(report)
-    assert validate_calibration(report, DECLARED, fingerprint) == 22
+    with pytest.raises(ValueError, match='schema'):
+        validate_calibration(report, DECLARED, fingerprint)
 
     report['sources'][source] = receipt['original_source_sha256']
     report['provider_identity']['source_sha256'] = receipt['original_source_sha256']
@@ -268,7 +308,7 @@ def test_schema_acceptance_helper_change_rejects_calibration_before_graph(
 
     key = 'src/api_agent/providers/' + helper
     assert current['sources'][key] != report['sources'][key]
-    assert current['fingerprint_version'] == report['fingerprint_version'] == 3
+    assert current['fingerprint_version'] == report['fingerprint_version'] == 4
     with pytest.raises(ValueError, match='stale'):
         driver.node_coverage(provider, 'gpt-6-luna', config)
     graph.assert_not_called()
@@ -293,7 +333,7 @@ def test_graph_uses_independent_seed_and_publishes_observations(monkeypatch, fai
         seeds.append(options['trial'])
         assert options['selection'] == 'synthetic'
 
-        async def arun(inputs):
+        async def arun(inputs, *, turn_id):
             assert inputs == {'user_input': driver.USER_INPUT}
             assert await options['llm']('request') == 'completed'
             options['observe']({'event': 'llm', 'node': 'first_draft'})
@@ -318,7 +358,7 @@ def test_graph_uses_independent_seed_and_publishes_observations(monkeypatch, fai
 
 def test_graph_observer_is_optional(monkeypatch):
     def build(root, **options):
-        async def arun(inputs):
+        async def arun(inputs, *, turn_id):
             options['observe']({'event': 'node', 'node': 'first_draft'})
             return {}
         return SimpleNamespace(arun=arun)
@@ -328,20 +368,23 @@ def test_graph_observer_is_optional(monkeypatch):
     assert driver.run_graph(object(), 'synthetic', 1, CONFIG) == ({}, {'first_draft'})
 
 
-def test_node_coverage_stops_when_all_nodes_hit(monkeypatch):
+def test_node_coverage_stops_when_all_targets_hit(monkeypatch):
     calls, published = [], []
     synthetic_report = synthetic_current_report()
     monkeypatch.setattr(driver, '_baselines', lambda: [synthetic_report])
 
     def graph(provider, selection, trial, config, **options):
         calls.append(trial)
-        return {}, FIRST if trial == 1 else DECLARED
+        route = ('skip', 'next_a', 'next_b')[trial - 1]
+        for event in structural_events(trial, route):
+            options['observe'](event)
+        return {'first_draft': {'route': route}}, FIRST if trial == 1 else DECLARED
 
     monkeypatch.setattr(driver, 'run_graph', graph)
     monkeypatch.setattr(driver, 'publish', published.append)
     result = driver.node_coverage(object(), 'gpt-6-luna', CONFIG)
-    assert calls == [1, 2]
-    assert result == {'runs': 2, 'nodes': sorted(DECLARED), 'stopping_reason': 'all_nodes_hit'}
+    assert calls == [1, 2, 3]
+    assert result == {'runs': 3, 'nodes': sorted(DECLARED), 'targets': sorted(TARGETS), 'stopping_reason': 'all_targets_hit'}
     assert published[-1] == {'coverage': result}
 
 
@@ -398,7 +441,7 @@ def test_reported_different_model_rejects_graph_measurement(monkeypatch):
     provider = SimpleNamespace(complete=Mock(return_value=SimpleNamespace(actual_model='different')))
 
     def build(root, **options):
-        async def arun(inputs):
+        async def arun(inputs, *, turn_id):
             await options['llm']('request')
             raise AssertionError('Different model must not reach graph success')
         return SimpleNamespace(arun=arun)
@@ -413,7 +456,7 @@ def test_reported_matching_model_allows_graph_measurement(monkeypatch):
     provider = SimpleNamespace(complete=Mock(return_value=SimpleNamespace(actual_model='synthetic')))
 
     def build(root, **options):
-        async def arun(inputs):
+        async def arun(inputs, *, turn_id):
             assert (await options['llm']('request')).actual_model == 'synthetic'
             return {}
         return SimpleNamespace(arun=arun)
@@ -500,7 +543,8 @@ def test_source_identity_equivalence_retains_historical_measurements(legacy_repo
         'a09434887a4366296bd5ea3c819a5519a9c12f255d35325c9654168021e0aa2d')
     assert report['trials'] == 20 and report['max_runs'] == 22
     assert report['carry_forward_browser_policy']['prior_receipt_kind'] == report['carry_forward']['kind']
-    assert all(report[key] == value for key, value in measured_calibration(report['records'], DECLARED).items())
+    with pytest.raises(ValueError, match='schema'):
+        measured_calibration(report['records'], DECLARED)
     config = CONFIG | {'LLM_CACHE_POLICY': 'medium', 'LLM_REASONING_EFFORT': 'low'}
     assert report['sources'][source] == receipt['current_source_sha256']
     assert driver.fingerprint('gpt-6-luna', config)['sources'] != report['sources']
@@ -518,7 +562,8 @@ def test_source_identity_equivalence_retains_historical_measurements(legacy_repo
 def test_source_identity_receipt_cannot_admit_old_or_unrelated_drift(source, source_hash, legacy_report):
     report = deepcopy(legacy_report)
     fingerprint = historical_fingerprint(report)
-    assert validate_calibration(report, DECLARED, fingerprint) == 22
+    with pytest.raises(ValueError, match='schema'):
+        validate_calibration(report, DECLARED, fingerprint)
     report['sources'][source] = source_hash
     with pytest.raises(ValueError, match='stale'):
         validate_calibration(report, DECLARED, fingerprint)

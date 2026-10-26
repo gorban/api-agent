@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 _STARTS = {}
-_TIMING = {'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision', 'reasoning_effort'}
+_TIMING = {'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision', 'reasoning_effort', 'conversation_id'}
 _TURN = ContextVar('inference_user_turn', default=None)
 
 
@@ -49,6 +49,11 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
         from api_agent.providers.costs import validate_quote
         row['quote'] = validate_quote(quote)
     turn_id, turn_kind = _TURN.get() or (call_id, 'initial')
+    from api_agent.workflows.run_context import current_execution_context, current_turn_id
+    execution = current_execution_context()
+    turn_id = current_turn_id() or turn_id
+    if execution is not None and execution['kind'] == 'conversation':
+        row['conversation_id'] = execution['conversation_id']
     row.update(started_at=started, finished_at=now if result is not None or failed else None, attempt=int(os.environ.get('API_AGENT_TEST_ATTEMPT', '1')) if attempt is None else attempt, turn_id=turn_id, turn_kind=turn_kind, outcome='failed' if failed else 'unknown' if result is None else result.outcome)
     from api_agent.telemetry.accounting import validate_evidence
     validate_evidence({**row, 'actual_model': row.get('actual_model'), 'quote': row.get('quote'), 'service_tier': row.get('service_tier'), 'serving_revision': row.get('serving_revision')})
@@ -85,6 +90,8 @@ def capture(event, tracker):
     usage = row['usage']
     from api_agent.telemetry.accounting import validate_evidence
     evidence = dict(call_id=identifier, selection=selection, actual_model=row.get('actual_model'), service_tier=row.get('service_tier'), serving_revision=row.get('serving_revision'), usage=usage, quote=row.get('quote'), started_at=row.get('started_at'), finished_at=row.get('finished_at'), attempt=row.get('attempt', 1), turn_id=row.get('turn_id', identifier), turn_kind=row.get('turn_kind', 'initial'), outcome=row.get('outcome', 'unknown' if usage is None else 'completed'))
+    if 'conversation_id' in row:
+        evidence['conversation_id'] = row['conversation_id']
     if 'reasoning_effort' in row:
         evidence['reasoning_effort'] = row['reasoning_effort']
     validate_evidence(evidence)

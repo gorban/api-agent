@@ -23,8 +23,8 @@ Store permitted node inputs/outputs and actual visible LLM requests/responses on
 
 - [x] Deterministic separate-backend producer/IPC/finalized-artifact proof covers nested values longer than 512 characters, multiple turns/retries, failure/cancellation, both flags independently, same-source reuse and immutable accounting.
 - [x] Legacy and version 2 reopen tests, causal corruption/attribution/privacy controls, exact unit coverage, installed/relocated artifact checks, independent implementation review and external review close all reported issues.
-- [ ] Human acceptance of GRAPH inputs/outputs and LLM payload inspection. No paid inference is required for this deterministic qualification.
+- [x] Human acceptance of GRAPH inputs/outputs and LLM payload inspection. Correct native GRAPH placement and unattached-call inspection were confirmed. No paid inference is required for this deterministic qualification.
 
-**Deferred human review**
+## Human review
 
-Canonical payload storage, native rendering, exact unit coverage, relocated packaging and required independent/external source reviews are complete. Only the human inspection above remains unchecked; the broader overlay and durable-log requirements retain their own gates.
+Canonical payload storage and native rendering are human accepted. Exact unit coverage, relocated packaging and required independent/external source reviews are complete; the broader overlay and durable-log requirements retain their own gates. Conversation grouping and readable turn labels are separate from occurrence-preserving payload storage.

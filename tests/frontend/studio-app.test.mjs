@@ -1587,3 +1587,70 @@ test('closing a failure with a hidden opener restores Settings navigation focus'
     assert.equal(await page.evaluate(()=>document.activeElement.id),'settings-nav');
   }finally{await closeBrowser(browser);}
 });
+
+test('conversation identity spans turns, reload and undo while New chat sends fresh history', async () => {
+  const requests = [];
+  const {browser,page} = await openStudio(route => {
+    requests.push(route.request().postDataJSON());
+    return fulfill(route,{json:result('Saved reply')});
+  });
+  const stored = () => page.evaluate(() => JSON.parse(localStorage.getItem('api-agent-studio-v2')));
+  const send = async text => {
+    const count = requests.length;
+    await page.locator('#prompt').fill(text);
+    await page.locator('#send').click();
+    await page.waitForFunction(() => !document.querySelector('#send').disabled);
+    assert.equal(requests.length,count + 1);
+  };
+  try {
+    await send('First turn');
+    const first = requests[0];
+    await send('Followup');
+    assert.equal(requests[1].conversation_id,first.conversation_id);
+    assert.notEqual(requests[1].session_id,first.session_id);
+    assert.deepEqual(requests[1].messages.map(row=>row.content),['First turn','Saved reply','Followup']);
+    await reloadPage(page);
+    assert.equal((await stored()).session,first.conversation_id);
+    await page.locator('#new-chat').click();
+    const fresh = (await stored()).session;
+    assert.notEqual(fresh,first.conversation_id);
+    await page.locator('#undo-new-chat').click();
+    assert.equal((await stored()).session,first.conversation_id);
+    assert.equal((await stored()).messages.length,4);
+    await page.locator('#new-chat').click();
+    await send('Fresh turn');
+    assert.notEqual(requests[2].conversation_id,first.conversation_id);
+    assert.deepEqual(requests[2].messages,[{role:'user',content:'Fresh turn'}]);
+  } finally { await closeBrowser(browser); }
+});
+
+for (const location of ['current','previous']) test('legacy '+location+' identity migrates while preserving stored chat', async () => {
+  const requests = [];
+  const {browser,page} = await openStudio(route => {
+    requests.push(route.request().postDataJSON());
+    return fulfill(route,{json:result('Migrated reply')});
+  });
+  try {
+    await page.evaluate(location => {
+      const settings = {model:'sample',version:'v1',reasoning:''};
+      const chat = {session:'legacy-session',draft:'Saved draft',settings,messages:[
+        {id:'prior',role:'user',text:'Prior message',requested:settings}]};
+      const empty = {session:crypto.randomUUID(),draft:'',settings,messages:[]};
+      localStorage.setItem('api-agent-studio-v2',JSON.stringify(location==='current'?chat:empty));
+      localStorage.setItem('api-agent-studio-v2:previous',JSON.stringify(chat));
+    },location);
+    await reloadPage(page);
+    if (location==='previous') await page.locator('#undo-new-chat').click();
+    const migrated = await page.evaluate(() => JSON.parse(localStorage.getItem('api-agent-studio-v2')));
+    assert.match(migrated.session,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.equal(migrated.draft,'Saved draft');
+    assert.equal(migrated.messages[0].text,'Prior message');
+    assert.deepEqual(migrated.settings,{model:'sample',version:'v1',reasoning:''});
+    await reloadPage(page);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('api-agent-studio-v2')).session),migrated.session);
+    await page.locator('#send').click();
+    await page.waitForFunction(() => !document.querySelector('#send').disabled);
+    assert.equal(requests[0].conversation_id,migrated.session);
+    assert.deepEqual(requests[0].messages.map(row=>row.content),['Prior message','Saved draft']);
+  } finally { await closeBrowser(browser); }
+});

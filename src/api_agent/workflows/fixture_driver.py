@@ -17,16 +17,17 @@ from .contrived import build
 from .definition import load_definition
 from .evidence import publish
 from .execution import resolve_component_passes, resolve_timeouts
-from .sampling import DECLARED, cover, validate_calibration
+from .sampling import DECLARED, TARGETS, COVERAGE_POLICY, cover, validate_calibration, measurement, observed_targets
+from .run_context import trial as trial_context, turn
 
 USER_INPUT = 'Repeat this demo request verbatim: hello Markdown graph.'
 DEPENDENCIES = ('langgraph', 'langchain-core', 'jsonschema', 'markdown-it-py', 'httpx')
 # Only code that can change requests, graph execution or observed node hits belongs
 # here. Reporting, TUI, pricing and test collection do not change sampling.
 SAMPLING_SOURCES = (
-    'workflows/fixture_driver.py', 'workflows/contrived.py', 'workflows/execution.py',
+    'workflows/fixture_driver.py', 'workflows/contrived.py', 'workflows/execution.py', 'workflows/sampling.py',
     'workflows/layout.py', 'workflows/definition.py', 'workflows/document_format.py',
-    'workflows/predicates.py',
+    'workflows/predicates.py', 'workflows/run_context.py',
     'llm_providers/gpt/inference.py', 'llm_providers/gpt/rich.py',
     'llm_providers/gpt/cache_policy.py', 'llm_providers/gpt/reasoning.py', 'llm_providers/gpt/discovery.py',
     'llm_providers/gpt/endpoint.py', 'providers/llm.py', 'providers/contracts.py',
@@ -95,7 +96,7 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
     sources.update({resource.logical_path: resource.sha256 for resource in definition.resources})
     backend = {'auth_mode': config.get('GPT_AUTH_MODE', 'subscription'),
                'backend_identity': sha256(str(config.get('GPT_BASE_URL', 'https://api.openai.com/v1')).encode()).hexdigest()}
-    return dict(fingerprint_version=3, sampling_method='simultaneous_exact_binomial_independent_uuid_v1', model=selection,
+    return dict(fingerprint_version=4, sampling_method='simultaneous_exact_binomial_independent_uuid_v2', coverage_policy=COVERAGE_POLICY, model=selection,
         dependency_versions={name: version(name) for name in DEPENDENCIES},
         python_version=platform.python_version(), backend=backend,
         provider_identity=provider_identity(config, owner_root=owner_root),
@@ -156,10 +157,11 @@ def run_graph(provider, selection, trial, config=None, *, root=None, owner_root=
         return result
 
     async def execute():
-        with user_turn(str(uuid4())):
+        turn_id = str(uuid4())
+        with trial_context(trial), turn(turn_id), user_turn(turn_id):
             workflow = build(fixture_root(root), llm=complete, selection=selection,
                              trial=str(uuid4()), observe=observed, config=config)
-            result = await workflow.arun({'user_input': USER_INPUT})
+            result = await workflow.arun({'user_input': USER_INPUT}, turn_id=turn_id)
         return result, {event['node'] for event in events if event['event'] == 'node'}
 
     try:
@@ -173,8 +175,10 @@ def node_coverage(provider, selection, config, *, root=None, owner_root=None):
     maximum = baseline_limit(selection, config, root=root, owner_root=owner_root)
 
     async def execute(trial):
-        return await offload(run_graph, provider, selection, trial, config, root=root, owner_root=owner_root)
+        events = []
+        values, nodes = await offload(run_graph, provider, selection, trial, config, root=root, owner_root=owner_root, observe=events.append)
+        return values, observed_targets(measurement(trial, values, nodes, events))
 
-    result, _ = asyncio.run(cover(execute, DECLARED, maximum, publish))
+    result, _ = asyncio.run(cover(execute, TARGETS, maximum, publish))
     publish(dict(coverage=result))
     return result
