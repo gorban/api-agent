@@ -245,6 +245,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         finalized_payload_calls = {}
         scoped_attachments = {}
         custom_attachment_sizes = {}
+        browser_attachment_sizes = {}
+        browser_budget_reported = set()
+        browser_receipts = set()
         call_scope_owners = {}
 
         def queue_attachment(test_id, owner, frozen):
@@ -488,7 +491,41 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 if config.get('LOG_CONTENT') is not True:
                     return
                 if row.attachment is not None:
-                    content.setdefault(row.identity.id, []).append(row.attachment)
+                    from .browser_attachments import _valid, validate_owner, validate_descriptor
+                    import hashlib
+                    title, pixels, mime = row.attachment
+                    if not _valid(title, pixels, mime):
+                        raise ValueError('Invalid browser attachment')
+                    descriptor = json.loads(row.text) if row.text else None
+                    owner = None
+                    if descriptor is not None:
+                        validate_descriptor(descriptor)
+                        if (descriptor['title'] != title or descriptor['mime'] != mime
+                                or descriptor['sha256'] != hashlib.sha256(pixels).hexdigest()):
+                            raise ValueError('Invalid browser attachment descriptor')
+                        if 'owner' in descriptor:
+                            owner = validate_owner(descriptor['owner'], evidence_boundary)
+                        receipt = (row.identity.id, descriptor['name'], descriptor['sha256'])
+                        if receipt in browser_receipts:
+                            return
+                    count, size = browser_attachment_sizes.get(row.identity.id, (0, 0))
+                    if count >= 64 or size + len(pixels) > 16 * 1024 * 1024:
+                        if row.identity.id in browser_budget_reported:
+                            return
+                        browser_budget_reported.add(row.identity.id)
+                        browser_attachment_sizes[row.identity.id] = (64, size)
+                        pixels = json.dumps({'status': 'unavailable', 'phase': 'failure',
+                                             'context': 0, 'page': 0, 'reason': 'budget_exceeded'}).encode()
+                        frozen = ('UI failure context 0 page 0', pixels, 'application/json')
+                    else:
+                        if descriptor is not None:
+                            browser_receipts.add(receipt)
+                        browser_attachment_sizes[row.identity.id] = (count + 1, size + len(pixels))
+                        frozen = row.attachment
+                    if owner is None:
+                        content.setdefault(row.identity.id, []).append(frozen)
+                    else:
+                        queue_attachment(row.identity.id, owner, frozen)
             if row.kind == 'workflow_evidence':
                 from api_agent.workflows.evidence import attachment
                 raw_packet = json.loads(row.text)

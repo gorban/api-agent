@@ -300,7 +300,7 @@ def test_prepared_studio_request_uses_one_http_prompt_and_shared_capture(connect
     from api_agent.ui import provider as included
     from api_agent.testing.browser_evidence import PNG_SIGNATURE
     attachments=[]
-    monkeypatch.setattr(browser_attachments,'publish_attachment',attachments.append)
+    monkeypatch.setattr(browser_attachments,'publish_attachment',lambda attachment, **kwargs: attachments.append(attachment))
     provider=ImmediateProvider(failure=failure)
     backend=connection.ui_provider_backend.__wrapped__(None,provider,'sample')
     owner=UIIntegrationOwner({'config':{
@@ -320,7 +320,6 @@ def test_prepared_studio_request_uses_one_http_prompt_and_shared_capture(connect
             assert len(provider.requests)==1
             request=provider.requests[0]
             assert request.payload.messages[0].content==(TextContent('Answer with exactly: Ok'),)
-            await owner.capture('failure' if failure else 'success')
             if enabled:
                 assert len(attachments)==1
                 title,data,mime=attachments[0]
@@ -390,3 +389,51 @@ def test_cleanup_preserves_child_receipt_when_its_caller_is_cancelled(connection
             await pending.retry()
             assert settled == (['closed'] if failure_kind == 'error' else ['retried'])
     asyncio.run(run())
+
+
+def test_turn_capture_precedes_next_prompt(connection,tmp_path,monkeypatch):
+    from api_agent.testing.ui_runtime import UIIntegrationOwner
+    from api_agent.testing import browser_attachments
+    from api_agent.ui import provider as included
+    attachments=[]
+    events=tmp_path/'browser-events.jsonl'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(events))
+    real_publish=browser_attachments.publish_attachment
+    provider=ImmediateProvider()
+    def publish(attachment, *, owner=None):
+        assert owner is not None
+        assert len(provider.requests)==len(attachments)+1
+        real_publish(attachment,owner=owner)
+        attachments.append((attachment,owner))
+    monkeypatch.setattr(browser_attachments,'publish_attachment',publish)
+    backend=connection.ui_provider_backend.__wrapped__(None,provider,'sample')
+    owner=UIIntegrationOwner({'config':{'UI_LISTENER_URL':'http://127.0.0.1:9443',
+        'UI_PROVIDER':str(Path(included.__file__))+':create_provider','LOG_CONTENT':True},
+        'owner_root':str(tmp_path)},None,backend=backend)
+    async def exercise():
+        prepared=await owner.start()
+        try:
+            assert await connection.browser_prompt(prepared)=='Ok'
+            assert len(attachments)==1
+            assert await connection.browser_prompt(prepared)=='Ok'
+            assert len(attachments)==2
+            first,second=[binding for _,binding in attachments]
+            assert first['conversation_id']==second['conversation_id']
+            assert first['turn_id']!=second['turn_id']
+            await prepared.session.page.locator('#new-chat').click()
+            assert await connection.browser_prompt(prepared)=='Ok'
+            assert len(attachments)==3
+            third=attachments[2][1]
+            assert third['conversation_id']!=second['conversation_id']
+            assert third['turn_id'] not in (first['turn_id'],second['turn_id'])
+            import json
+            packets=[json.loads(line) for line in events.read_text().splitlines()]
+            assert len(packets)==3
+            for packet,(original,binding) in zip(packets,attachments):
+                descriptor=packet['data']
+                assert descriptor['owner']==binding
+                assert browser_attachments.read_attachment(descriptor,tmp_path)==original
+                assert original[2]=='image/png'
+        finally:
+            await owner.aclose()
+    asyncio.run(exercise())

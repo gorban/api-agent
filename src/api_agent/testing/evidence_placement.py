@@ -72,6 +72,10 @@ def place_evidence(steps, queued, *, call_scopes=None):
                 claims = (call_scopes or {}).get(owner['call_id'], ())
                 matches_owner = (step['name'] == 'call ' + owner['call_id'] or
                     (invocation, parameters.get('scope_id')) in claims)
+            elif kind == 'turn':
+                matches_owner = (step['name'].startswith('User turn ')
+                    and parameters.get('conversation_id') == owner['conversation_id']
+                    and parameters.get('turn_id') == owner['turn_id'])
             elif kind == 'trial':
                 matches_owner = (step['name'].startswith('Trial ') and parameters.get('trial_index') == str(owner['trial_index']))
             else:

@@ -120,3 +120,8 @@ Notice delivery passes 9,583 units and 27 subtests at 32 workers, with exact
 disabled worker-image gate, selected-test authority, asset digest and narrow
 source/license boundary. Two actual selected-provider tests with content off
 attach only the static notice; immutable local/object/secondary bytes match.
+
+## Per-turn response evidence
+
+- [x] Deliver [awaited per-turn screenshots](implementation_plan_a4a1.md) beneath
+  observed conversation/turn identities before the next UI-test prompt proceeds.

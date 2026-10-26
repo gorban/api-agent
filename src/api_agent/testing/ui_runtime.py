@@ -1,6 +1,7 @@
 """Launch-owned UI test fixture services without application or LLM activation."""
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 import socket
 from urllib.parse import urlunsplit
 
@@ -34,6 +35,9 @@ class UIIntegrationOwner:
         self._cancel_requested = set()
         self._started = self.closed = False
         self.prepared = None
+        self.ui_turn_lock = asyncio.Lock()
+        self._turn_images = self._turn_bytes = self._turn_attempts = 0
+        self._turn_exhausted = False
         self.extra_services = dict(services or {})
         self.backend_factory, self.backend = backend, None
         self._backend_cleanup = None
@@ -91,6 +95,7 @@ class UIIntegrationOwner:
             services = {'owner_root':self.owner_root, 'emissions':self.emissions,
                 'runtime_values':values, 'tls_material':material, 'ssl_context':ssl_context,
                 'ui_processes':StudioProcesses(ssl_context=ssl_context), **self.extra_services}
+            services['ui_turn_evidence'] = self
             if self.backend_factory is not None:
                 self.backend = self.backend_factory(values)
                 binding = await self.backend.__aenter__()
@@ -106,21 +111,78 @@ class UIIntegrationOwner:
             await self.prepared.start()
             return self.prepared
 
-    async def capture(self, phase):
+    async def capture(self, phase, *, owner=None):
         from .browser_evidence import capture_ui_evidence
         from .browser_attachments import publish_attachment
         # Do not even inspect browser/provider state when content is disabled.
         if self.emissions.policy.allow_content is not True:
             return
+        if owner is not None:
+            from .ui_turn import UITurn
+            try:
+                if type(owner) is not dict or set(owner) != {'kind','conversation_id','turn_id'} or owner['kind'] != 'turn':
+                    return
+                binding = UITurn(self.emissions)
+                binding.bind(conversation_id=owner['conversation_id'], turn_id=owner['turn_id'])
+                owner = binding.owner
+                if (self._turn_exhausted or self._turn_attempts >= 64 or self._turn_images >= 64
+                        or self._turn_bytes >= 16 * 1024 * 1024):
+                    if not self._turn_exhausted:
+                        self._turn_exhausted = True
+                        import json
+                        try:
+                            publish_attachment((f'UI {phase} context 1 page 1',
+                                json.dumps({'status':'unavailable','phase':phase,'context':1,
+                                    'page':1,'reason':'budget_exceeded'}, sort_keys=True).encode(),
+                                'application/json'), owner=owner)
+                        except Exception:
+                            pass
+                    return
+                self._turn_attempts += 1
+            except (ValueError, TypeError):
+                return
         session = self.browser_owner.session
         provider = None if self.prepared is None else self.prepared.provider
         policy = None
         if provider is not None and 'capture_evidence' in provider.implementation.capabilities.operations:
             async def policy(page, boundary):
                 return await provider.require('ui','capture_evidence').acapture_evidence(page=page, boundary=boundary)
+        contexts = () if session is None else (session.context,)
+        submit = publish_attachment
+        if owner is not None:
+            # A turn belongs to the prepared application's current page only.
+            page = None if self.prepared is None or self.prepared.session is None else self.prepared.session.page
+            contexts = (SimpleNamespace(pages=(page,)),)
+            if page is None:
+                policy = None
+            def submit(attachment):
+                title, content, mime = attachment
+                if mime == 'image/png':
+                    if self._turn_images >= 64 or self._turn_bytes + len(content) > 16 * 1024 * 1024:
+                        self._turn_exhausted = True
+                        import json
+                        attachment = (title, json.dumps({'status':'unavailable', 'phase':phase,
+                            'context':1, 'page':1, 'reason':'budget_exceeded'}, sort_keys=True).encode(), 'application/json')
+                    else:
+                        self._turn_images += 1
+                        self._turn_bytes += len(content)
+                # Credential registration may change while provider capture awaits.
+                if self.emissions.content_export(owner) == owner:
+                    publish_attachment(attachment, owner=dict(owner))
         with independent_timeout_scope():
-            await capture_ui_evidence(() if session is None else (session.context,), self.emissions,
-                publish_attachment, capture_policy=policy, phase=phase)
+            if owner is None:
+                await capture_ui_evidence(contexts, self.emissions, submit, capture_policy=policy, phase=phase)
+                return
+            try:
+                async with component_timeout('UI turn evidence', 6):
+                    await capture_ui_evidence(contexts, self.emissions, submit, capture_policy=policy, phase=phase)
+            except Exception:
+                import json
+                try:
+                    submit((f'UI {phase} context 1 page 1', json.dumps({'status':'unavailable',
+                        'phase':phase, 'context':1, 'page':1}, sort_keys=True).encode(), 'application/json'))
+                except Exception:
+                    pass
 
     async def aclose(self):
         self.closed = True

@@ -102,7 +102,9 @@ from api_agent.testing.browser_attachments import publish_attachment
 from api_agent.testing.browser_evidence import PNG_SIGNATURE
 @pytest.mark.requires_ui_session
 def test_ui():
-    publish_attachment(('UI success context 1 page 1',PNG_SIGNATURE+b'controlled','image/png'))
+    publish_attachment(('UI success context 1 page 1',PNG_SIGNATURE+b'controlled','image/png'), owner={
+      'kind':'turn','conversation_id':'00000000-0000-0000-0000-000000000001',
+      'turn_id':'00000000-0000-0000-0000-000000000002'})
     event=Path(os.environ['API_AGENT_INTEGRATION_EVENTS'])
     name='0'*32+'.evidence'
     descriptor=os.open(event.parent/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
@@ -123,7 +125,11 @@ def test_ui():
     assert result.exit_code==0 and result.tests[0].status=='passed'
     images=[row for row in events if row.kind=='browser_attachment']
     assert len(images)==int(enabled)
-    if enabled:assert images[0].attachment[1]==PNG_SIGNATURE+b'controlled'
+    if enabled:
+        assert images[0].attachment[1]==PNG_SIGNATURE+b'controlled'
+        assert json.loads(images[0].text)['owner'] == dict(kind='turn',
+            conversation_id='00000000-0000-0000-0000-000000000001',
+            turn_id='00000000-0000-0000-0000-000000000002')
     assert any(row.kind=='inspection_lost' for row in events)
 
 
