@@ -172,7 +172,8 @@ class AllureNavigation:
             return None
         if screen.kind == 'test-failure':
             result, key, _ = getattr(screen, 'result_return', (None, None, None))
-            if result is None or result is not self.unit_result:
+            from .test_results import details_belong_to_run
+            if not details_belong_to_run(screen, self.unit_result, getattr(self, 'test_run', None)):
                 return None
         else:
             if not screen.query(DataTable):

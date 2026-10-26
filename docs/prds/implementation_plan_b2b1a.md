@@ -65,3 +65,7 @@ The validation/retry and deadline changes require [fresh grouped-workflow qualif
 ## Tool-runtime source renewal
 
 Fresh [qualification after tool-runtime integration](implementation_plan_b2b1a7.md) is required for the changed current source bindings. Earlier records and acceptance apply only to their original qualified sources.
+
+## Current source renewal
+
+- [x] [Renew current source qualification](implementation_plan_b2b1a8.md) after strict source-stale rejection; preserve all earlier observations.

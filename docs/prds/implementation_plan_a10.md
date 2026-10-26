@@ -132,3 +132,7 @@ remains open; prior selection return is already accepted.
   contracts and safe report boundaries. See [CI requirements and acceptance](implementation_plan_a10a.md).
 - [ ] Human reviews CI output before execution fixes. The local port-conflict
   cause is now visible; that does not approve automatic resource reuse or cleanup.
+
+## Details before suite completion
+
+- [x] [Open completed tests while remaining tests run](implementation_plan_a10c.md).
