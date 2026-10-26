@@ -159,3 +159,61 @@ def scope_steps(events):
     for root in roots:
         bubble_attention(root)
     return roots
+
+
+def attach_payloads(steps, captures, calls):
+    """Place recorded file references on observed owners without inventing steps.
+
+    ``captures`` contains durable journal capture events; ``calls`` maps unique
+    call identities to phase attachments. Unowned calls remain root attachments.
+    """
+    scopes, leaves, untimed = {}, {}, {}
+
+    def visit(step):
+        scope = next((item['value'] for item in step.get('parameters', [])
+                      if item['name'] == 'scope_id'), None)
+        if scope is not None:
+            scopes.setdefault(scope, []).append(step)
+        if step.get('name', '').startswith('call '):
+            identifier = step['name'][5:]
+            if identifier in leaves:
+                raise ValueError('Ambiguous payload call owner')
+            leaves[identifier] = step
+        for item in step.get('parameters', []):
+            if item['name'].startswith('call ') and item['name'].endswith(' outcome'):
+                identifier = item['name'][5:-8]
+                if identifier in untimed:
+                    raise ValueError('Ambiguous payload call owner')
+                untimed[identifier] = step
+        for child in step.get('steps', []):
+            visit(child)
+
+    for step in steps:
+        visit(step)
+    for capture, attachment in captures:
+        owners = scopes.get(capture.get('visit_id'), [])
+        if len(owners) > 1:
+            raise ValueError('Ambiguous payload scope owner')
+        owner = owners[0] if owners else None
+        if owner is None:
+            raise ValueError('Payload capture has no observed scope owner')
+        owner.setdefault('attachments', []).append(attachment)
+    remaining = []
+    for identifier, phases in calls.items():
+        if identifier in leaves and identifier in untimed:
+            raise ValueError('Ambiguous payload call owner')
+        owner = leaves.get(identifier, untimed.get(identifier))
+        for phase, attachment in sorted(phases.items()):
+            if owner is None:
+                remaining.append(dict(attachment, name='Unattached ' + attachment['name']))
+            else:
+                attachments = owner.setdefault('attachments', [])
+                matching = [index for index, item in enumerate(attachments)
+                            if (item['source'], item['type']) == (attachment['source'], attachment['type'])]
+                if matching:
+                    attachments[matching[0]] = attachment
+                    for index in reversed(matching[1:]):
+                        attachments.pop(index)
+                else:
+                    attachments.append(attachment)
+    return remaining

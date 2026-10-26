@@ -41,7 +41,7 @@ def publish_content(rows, call_id):
 
 def content_attachment(event, boundary):
     row = json.loads(event.text)
-    if (type(row) is not dict or set(row) != {'call_id', 'phase', 'content'}
+    if (type(row) is not dict or set(row) not in ({'call_id', 'phase', 'content'}, {'call_id', 'phase', 'content', 'reason'})
             or type(row['call_id']) is not str or str(UUID(row['call_id'])) != row['call_id']
             or row['phase'] not in ('request', 'response') or type(row['content']) is not dict):
         raise ValueError('Invalid inference content event')

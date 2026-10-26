@@ -81,6 +81,92 @@ class RunRecorder:
             raise ValueError('Artifact requires a distinct filename and bytes')
         return self._write(name, content)
 
+    def existing_attachment(self, title, source, mime='application/json'):
+        """Reference bytes already owned by this run without writing another copy."""
+        _safe_component(source)
+        if (self._finalized or source not in self._files or source.endswith('-result.json')
+                or not isinstance(title, str) or not title or not isinstance(mime, str) or not mime):
+            raise ValueError('Attachment requires an owned artifact and title')
+        from .storage import RunStorage
+        RunStorage._read_source(self.directory / source, max_bytes=0)
+        return ExistingAttachment(title, source, mime)
+
+    def _attachment_rows(self, attachments):
+        attachment_rows = []
+        attachments = tuple(attachments)
+        for item in attachments:
+            if isinstance(item, ExistingAttachment):
+                self.existing_attachment(item.title, item.source, item.mime)
+                continue
+            title, content, mime = item
+            if not isinstance(title, str) or not title or type(content) is not bytes or not isinstance(mime, str) or not mime:
+                raise ValueError('Attachments require a title, bytes and MIME type')
+        for item in attachments:
+            if isinstance(item, ExistingAttachment):
+                attachment_rows.append({'name': self._safe_text(item.title), 'source': item.source, 'type': item.mime})
+                continue
+            title, content, mime = item
+            name = self._write(f'{uuid4()}-attachment', content)
+            attachment_rows.append({'name': self._safe_text(title), 'source': name, 'type': mime})
+        return attachment_rows
+
+    def _validate_step_sources(self, steps):
+        pending, admitted, attachment_groups = [(steps, 0)], 1, []
+        while pending:
+            value, depth = pending.pop()
+            if depth > 64:
+                raise ValueError('Native step tree exceeds recording limits')
+            if isinstance(value, (dict, list)):
+                # Reserve the full child collection before expanding it. No
+                # source reads occur until the entire bounded tree is admitted.
+                admitted += len(value)
+                if admitted > 65536:
+                    raise ValueError('Native step tree exceeds recording limits')
+                if isinstance(value, dict):
+                    if 'attachments' in value:
+                        attachments = value['attachments']
+                        if not isinstance(attachments, list):
+                            raise ValueError('Invalid native step attachments')
+                        attachment_groups.append(attachments)
+                    pending.extend((child, depth + 1) for child in value.values())
+                else:
+                    pending.extend((child, depth + 1) for child in value)
+        for attachments in attachment_groups:
+            for item in attachments:
+                if not isinstance(item, dict):
+                    raise ValueError('Invalid native step attachment')
+                self.existing_attachment(item.get('name'), item.get('source'), item.get('type'))
+
+    def _safe_steps(self, steps):
+        safe = self._evidence.content_export({'steps': steps}).get('steps', [])
+        self._validate_step_sources(safe)
+        return safe
+
+    def update_test_evidence(self, filename, *, attachments, steps):
+        """Atomically settle evidence while preserving the recorded test outcome."""
+        if self._finalized:
+            raise RuntimeError('Run already finalized')
+        if filename not in {row['file'] for row in self._results}:
+            raise ValueError('Unknown evidence result')
+        safe_steps = self._safe_steps(steps)
+        from .storage import RunStorage
+        path = self.directory / filename
+        row = json.loads(RunStorage._read_source(path, max_bytes=16 * 1024 * 1024))
+        if row.get('uuid') != filename.removesuffix('-result.json'):
+            raise ValueError('Recorded result identity changed')
+        row['attachments'] = self._attachment_rows(attachments)
+        row['steps'] = safe_steps
+        temporary = self.directory / f'.{uuid4()}.tmp'
+        try:
+            with temporary.open('xb') as stream:
+                stream.write(json.dumps(row, sort_keys=True, allow_nan=False).encode())
+            temporary.replace(path)
+        except (OSError, ValueError):
+            self._write_failed = True
+            raise
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def record_test(self, result: TestResult, attempt=1, attachments=(), steps=None):
         if self._finalized:
             raise RuntimeError('Run already finalized')
@@ -96,14 +182,8 @@ class RunRecorder:
         test = result.identity
         if not isinstance(test.file, str) or not test.file or not isinstance(test.node_id, str) or not test.node_id:
             raise ValueError('Incomplete test identity')
-        attachment_rows = []
-        attachments = tuple(attachments)
-        for title, content, mime in attachments:
-            if not isinstance(title, str) or not title or type(content) is not bytes or not isinstance(mime, str) or not mime:
-                raise ValueError('Attachments require a title, bytes and MIME type')
-        for title, content, mime in attachments:
-            name = self._write(f'{uuid4()}-attachment', content)
-            attachment_rows.append({'name': self._safe_text(title), 'source': name, 'type': mime})
+        safe_steps = self._safe_steps(steps) if steps is not None else None
+        attachment_rows = self._attachment_rows(attachments)
         node_name, separator, parameters = test.node_id.removeprefix(test.file + '::').partition('[')
         name = self._safe_text(node_name.rsplit('::', 1)[-1] + separator + parameters)
         ended = self._clock()
@@ -123,7 +203,7 @@ class RunRecorder:
         row['labels'].extend({'name': 'feature', 'value': self._safe_text(feature)}
                              for feature in test.features)
         if steps is not None:
-            row['steps'] = self._evidence.content_export({'steps': steps}).get('steps', [])
+            row['steps'] = safe_steps
         if result.status in {'cancelled', 'interrupted'}:
             row['statusDetails'] = {'message': 'Test interrupted'}
         elif status in {'failed', 'broken'}:
@@ -162,12 +242,13 @@ class RunRecorder:
         """Settle draft Allure steps from frozen accounting before manifest hashing."""
         if self._finalized:
             raise RuntimeError('Run already finalized')
-        for filename, steps in updates.items():
+        safe_updates = {filename: self._safe_steps(steps) for filename, steps in updates.items()}
+        for filename, steps in safe_updates.items():
             if filename not in {row['file'] for row in self._results}:
                 raise ValueError('Unknown workflow result')
             path = self.directory / filename
             row = json.loads(path.read_bytes())
-            row['steps'] = self._evidence.content_export({'steps': steps}).get('steps', [])
+            row['steps'] = steps
             temporary = self.directory / f'.{uuid4()}.tmp'
             try:
                 with temporary.open('xb') as stream:
@@ -237,3 +318,10 @@ class RunRecorder:
         self._write('manifest.json', json.dumps(manifest, sort_keys=True).encode())
         self._finalized = True
         return manifest
+
+
+@dataclass(frozen=True)
+class ExistingAttachment:
+    title: str
+    source: str
+    mime: str

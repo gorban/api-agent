@@ -200,20 +200,20 @@ class WorkflowObservations:
             plain_fields=plain_fields if self.log_policy.allow_content else None,
             _observer_override=(self._journal_observer, admitted_capture))
 
-    def capture_json(self, *, visit_id, direction, values, schema, cause_id=None):
+    def capture_json(self, *, visit_id, direction, values, schema, cause_id=None, capture_reason=None):
         """Project log and trace content independently before either queues it."""
-        from .capture import capture_reason, project_values
+        from .capture import capture_reason as classify_capture, project_values
         report = set()
         log_values = (project_values(values, schema, self.boundary, limit=65536, report=report)
-                      if self.log_policy.allow_content else None)
+                      if self.log_policy.allow_content and capture_reason != 'withheld' else None)
         trace_values = None
-        if self.trace is not None and self.trace.boundary.policy.allow_content:
+        if self.trace is not None and self.trace.boundary.policy.allow_content and capture_reason != 'withheld':
             trace_report = set()
             trace_values = project_values(values, schema, self.boundary, limit=65536, report=trace_report)
         def admitted_capture(row):
             live = dict(row)
             if log_values is not None:
-                live.update(values=log_values, reason=capture_reason(log_values, report))
+                live.update(values=log_values, reason=classify_capture(log_values, report, capture_reason))
             else:
                 live.pop('values', None)
                 live['reason'] = 'withheld'
@@ -223,7 +223,7 @@ class WorkflowObservations:
                 if span is not None:
                     try:
                         event = dict(event_id=row['event_id'], direction=direction, values=trace_values,
-                                     reason=capture_reason(trace_values, trace_report),
+                                     reason=classify_capture(trace_values, trace_report, capture_reason),
                                      capture_class='schema_user_io')
                         if cause_id is not None:
                             event['cause_id'] = cause_id
@@ -231,7 +231,7 @@ class WorkflowObservations:
                     except (Exception, asyncio.CancelledError):
                         pass
         return self.journal.capture_json(visit_id=visit_id, direction=direction,
-            values=values, schema=schema, cause_id=cause_id,
+            values=values, schema=schema, cause_id=cause_id, capture_reason=capture_reason,
             _observer_override=(self._journal_observer, admitted_capture))
 
     def close(self):

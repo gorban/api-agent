@@ -198,7 +198,6 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     config['_COST_RATE_CARD'] = freeze_pricing(context, config)
     estimator = estimator_for(context, tests, config, rate_card=config['_COST_RATE_CARD'])
     if historical_estimator is not None:
-        from copy import deepcopy
         estimator.advance_predictions = deepcopy(historical_estimator.predictions)
     if content_policy is not None:
         config = dict(config, LOG_CONTENT=content_policy.allow_content)
@@ -226,6 +225,16 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         ui_test_ids = {test.id for test in tests if 'requires_ui_session' in test.tags}
         workflow_steps = {}
         workflow_journals = {}
+        payload_stores = {}
+        pending_journals = {}
+        payload_calls = {}
+
+        def payload_store(test_id):
+            from .payloads import PayloadStore
+            if test_id not in payload_stores:
+                payload_stores[test_id] = PayloadStore(recorder, test_id,
+                    journal_test_id=next(test.node_id for test in tests if test.id == test_id))
+            return payload_stores[test_id]
         persisted = False
         manifest = None
         usage_summary = None
@@ -251,20 +260,51 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if usage_output is not None and (line := starting_usage_line(usage.report())):
                 usage_output(line)
 
+        def record_evidence(result):
+            test_id = result.identity.id
+            attachments = list(content.pop(test_id, ()))
+            bridge = workflow_steps.pop(test_id, None)
+            steps = deepcopy(bridge.steps) if bridge is not None else []
+            store = payload_stores.get(test_id)
+            if store is not None:
+                from .workflow_steps import attach_payloads
+                journals = pending_journals.pop(test_id, ())
+                store.admit_journals(journals)
+                for packet in journals:
+                    envelope = store.materialize_journal(packet)
+                    journal_name = 'workflow-' + str(list(recording_ids).index(test_id)) + '-' + packet['invocation_id'] + '.json'
+                    recorder.record_artifact(journal_name,
+                        json.dumps(envelope, ensure_ascii=False, allow_nan=False).encode())
+                    # record_artifact persists the requested filename.
+                    attachments.append(recorder.existing_attachment('Workflow execution evidence',
+                        journal_name))
+                    captures = [(event, dict(name='Input' if event['direction'] == 'input' else 'Output',
+                        source=event['payload']['source'], type='application/json'))
+                        for event in envelope['events'] if event.get('event') == 'capture' and 'source' in event.get('payload', {})]
+                    targets = [steps[index] for index, entry in enumerate(bridge.entries)
+                               if entry['invocation'] == packet['invocation_id']] if bridge is not None else []
+                    attach_payloads(targets, captures, {})
+                attachments.extend(recorder.existing_attachment(item['name'], item['source'], item['type'])
+                    for item in attach_payloads(steps, [], payload_calls.pop(test_id, {})))
+                index_name = 'payload-index-' + str(list(recording_ids).index(test_id)) + '.json'
+                recorder.record_artifact(index_name, json.dumps(store.index(), allow_nan=False).encode())
+                attachments.append(recorder.existing_attachment('Payload index', index_name))
+            attachments = tuple(attachments)
+            if config.get('LOG_CONTENT') is not True and result.identity.id in ui_test_ids:
+                from .withheld_screenshot import withheld_attachment
+                attachments += (withheld_attachment(),)
+            recorder.update_test_evidence(recording_ids[test_id], attachments=attachments,
+                                          steps=steps)
+
         def record(result):
             test = result.identity
             if test.repo != identity.repo:
                 label = ('provider:' + os.path.relpath(test.root, context.base_root)
                          if test.root is not None else test.repo)
                 test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
-            attachments = tuple(content.pop(result.identity.id, ()))
-            if config.get('LOG_CONTENT') is not True and result.identity.id in ui_test_ids:
-                from .withheld_screenshot import withheld_attachment
-                attachments += (withheld_attachment(),)
+            bridge = workflow_steps.get(result.identity.id)
             filename = recorder.record_test(replace(result, identity=test),
-                                            attachments=attachments,
-                                            steps=(workflow_steps.pop(result.identity.id).steps
-                                                   if result.identity.id in workflow_steps else None))
+                                            steps=deepcopy(bridge.steps) if bridge is not None else None)
             recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)
             from .allure_preview import emit_snapshot
@@ -284,6 +324,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             for outcome in result.tests:
                 if outcome.identity.id not in seen:
                     record(outcome)
+                record_evidence(outcome)
             if cleanup_failed:
                 failure = TestIdentity(f'{identity.repo}::__suite__::cleanup', identity.repo,
                                        '__suite__', '__suite__::cleanup')
@@ -387,13 +428,27 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     content.setdefault(row.identity.id, []).append(row.attachment)
             if row.kind == 'workflow_evidence':
                 from api_agent.workflows.evidence import attachment
+                raw_packet = json.loads(row.text)
+                if config.get('LOG_CONTENT') is not True and type(raw_packet) is dict and (
+                        raw_packet.get('content') == 'permitted_scrubbed' or
+                        any(type(event) is dict and 'values' in event for event in raw_packet.get('events', []))):
+                    raise ValueError('Workflow content violates recording policy')
                 frozen = attachment(row, evidence_boundary)
-                content.setdefault(row.identity.id, []).append(frozen)
                 packet = json.loads(frozen[1])
                 row = replace(row, text=json.dumps(packet, ensure_ascii=False, allow_nan=False))
-                workflow_steps.setdefault(row.identity.id, _WorkflowStepBridge()).add(packet)
                 if packet.get('version') == 1 and 'projection' in packet:
-                    workflow_journals.setdefault(row.identity.id, []).append(packet)
+                    pending = pending_journals.setdefault(row.identity.id, [])
+                    prior = next((item for item in pending if item['invocation_id'] == packet['invocation_id']), None)
+                    if prior is not None and prior != packet:
+                        raise ValueError('Conflicting workflow payload invocation')
+                    if prior is None:
+                        workflow_steps.setdefault(row.identity.id, _WorkflowStepBridge()).add(packet)
+                        pending.append(packet)
+                        workflow_journals.setdefault(row.identity.id, []).append(packet)
+                    payload_store(row.identity.id)
+                else:
+                    workflow_steps.setdefault(row.identity.id, _WorkflowStepBridge()).add(packet)
+                    content.setdefault(row.identity.id, []).append(frozen)
             if row.kind == 'quota_snapshot':
                 from .quota_events import capture
                 capture(row, observe_quota)
@@ -407,9 +462,15 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     return
                 from .inference_content import content_attachment
                 attachment = content_attachment(row, evidence_boundary)
-                content.setdefault(row.identity.id, []).append(attachment)
                 data = json.loads(row.text)
                 data['content'] = json.loads(attachment[1])
+                store = payload_store(row.identity.id)
+                reference = store.put_wire(data['call_id'], data['phase'], data['content'],
+                                           reason=data.get('reason', 'captured'))
+                if reference is not None:
+                    phases = payload_calls.setdefault(row.identity.id, {}).setdefault(data['call_id'], {})
+                    native = dict(name=attachment[0], source=reference['source'], type='application/json')
+                    phases[data['phase']] = native
                 row = replace(row, text=json.dumps(data, ensure_ascii=False))
             if on_event is not None:
                 on_event(row)

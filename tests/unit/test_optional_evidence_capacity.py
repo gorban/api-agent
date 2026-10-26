@@ -23,7 +23,7 @@ def test_optional_encoded_capacity_includes_envelope_unicode_and_newline(charact
     assert json.loads(frame)['content']['text'] == text
     evidence['content']['text']+='x'
     assert len(_encode(dict(version=1,status='evidence',**evidence))) == MAX_CONTENT_FRAME+1
-    assert _content_frame(evidence) is None
+    assert json.loads(_content_frame(evidence)) == dict(version=1, status='evidence', phase='response', content={}, reason='truncated')
     assert MAX_CONTENT_FRAME == 131072 and MAX_FRAME == 4194304
 
 
@@ -44,16 +44,17 @@ def test_received_optional_oversize_is_omitted_without_losing_completed_result(p
         client._reader.feed_eof()
         actual=await client._exchange('complete',{})
         assert actual == expected
-        assert client.evidence == [{'phase':'response','content':accepted['content']}]
+        expected_evidence = ([dict(phase='request', content={}, reason='truncated')] if phase == 'request' else [])
+        assert client.evidence == expected_evidence + [{'phase':'response','content':accepted['content']}]
         assert len(client._writer.writes) == 1
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('invalid',['shape','duplicate'])
+@pytest.mark.parametrize('invalid',['shape','duplicate','reason'])
 def test_optional_capacity_does_not_weaken_malformed_protocol_errors(invalid):
     from api_agent.providers.contracts import ContractError
     accepted={'version':1,'status':'evidence','phase':'response','content':{'text':'Small response'}}
-    malformed=accepted|{'content':[]} if invalid == 'shape' else accepted
+    malformed = accepted | {'content': []} if invalid == 'shape' else accepted | {'reason': 'fabricated_complete'} if invalid == 'reason' else accepted
     class Writer:
         def write(self,raw):pass
         async def drain(self):pass

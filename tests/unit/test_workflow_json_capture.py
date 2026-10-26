@@ -78,7 +78,7 @@ def test_json_capture_fans_out_independent_scrubbed_values(log, trace):
     assert ('values' in emitted) is log
     assert span.event.call_count == int(trace)
     if log:
-        assert len(stored['values']['text']) == 512
+        assert stored['values']['text'] == 'visible [REDACTED] ' + 'x' * 600
         assert len(emitted['values']['text']) > 512
         assert emitted['values']['parts'][0]['text'] == 'nested visible'
     if trace:
@@ -473,3 +473,113 @@ def test_overlapping_anyof_branch_subset_is_marked_partial():
                             EmissionBoundary(), report=report)
     assert result == {'value': {'a': 'first'}}
     assert capture_reason(result, report) == 'partial'
+
+
+def test_redaction_expansion_is_omitted_under_encoded_capture_bound():
+    boundary = EmissionBoundary(secrets=('qx',))
+    report = set()
+    value = {'text': 'qx|' * 20000}
+    assert len(json.dumps(value).encode()) < 65536
+    assert project_values(value, {'type': 'object'}, boundary, report=report) == {}
+    assert report == {'truncated'}
+
+
+def test_optional_preview_reports_clipping_after_credential_projection():
+    boundary = EmissionBoundary(secrets=('synthetic-secret',))
+    report = set()
+    values = {'parts': [{'text': 'synthetic-secret ' + 'x' * 600}], 'count': 2}
+    result = project_values(values, {'type': 'object'}, boundary, limit=32, report=report)
+    assert result == {'parts': [{'text': '[REDACTED] ' + 'x' * 21}], 'count': 2}
+    assert report == {'truncated'}
+
+
+def test_canonical_utf8_capture_admission_at_exact_boundary_and_escaping():
+    from api_agent.testing.payloads import encoded
+    boundary = EmissionBoundary(secrets=('synthetic-sensitive',))
+    value = {'text': '🧪' * 6000 + '\n"\\ synthetic-sensitive'}
+    report = set()
+    safe = project_values(value, {'type': 'object'}, boundary, report=report)
+    assert safe == {'text': '🧪' * 6000 + '\n"\\ [REDACTED]'}
+    assert report == set()
+    overhead = len(encoded({'text': ''}))
+    capacity = 65536 - overhead
+    text = '🧪' * (capacity // 4) + 'x' * (capacity % 4)
+    value = {'text': text}
+    assert len(encoded(value)) == 65536
+    assert project_values(value, {'type': 'object'}, boundary) == value
+    report = set()
+    assert project_values({'text': text + '\n'}, {'type': 'object'}, boundary, report=report) == {}
+    assert report == {'truncated'}
+
+
+@pytest.mark.parametrize('value', [{'text': chr(0xD800)}, {chr(0xDFFF): 'ordinary'}], ids=['text', 'key'])
+def test_non_utf8_capture_is_explicitly_unavailable(value):
+    from api_agent.workflows.capture import capture_reason
+    report = set()
+    safe = project_values(value, {'type': 'object'}, EmissionBoundary(), report=report)
+    assert safe == {}
+    assert report == {'unsupported'}
+    assert capture_reason(safe, report) == 'unavailable'
+
+
+@pytest.mark.parametrize('value', [{'text': chr(0xD800)}, {chr(0xDFFF): 'ordinary'}], ids=['text', 'key'])
+def test_non_utf8_final_projection_is_explicitly_unavailable(value):
+    from api_agent.workflows.capture import capture_reason
+    class CorruptProjection:
+        def __init__(self):
+            self.count = 0
+        def content_export(self, payload):
+            self.count += 1
+            return payload if self.count == 1 else {'values': value}
+    boundary = CorruptProjection()
+    report = set()
+    safe = project_values({'text': 'ordinary'}, {'type': 'object'}, boundary, report=report)
+    assert boundary.count == 2
+    assert safe == {}
+    assert report == {'unsupported'}
+    assert capture_reason(safe, report) == 'unavailable'
+
+
+def test_parsed_deterministic_result_survives_non_utf8_optional_capture(tmp_path):
+    from api_agent.workflows.definition import load_definition, load_native_catalog
+    from api_agent.workflows.execution import Workflow, NodeFunction
+    from api_agent.workflows.journal import WorkflowJournal, validate_journal
+    from test_workflow_definition import make_graph
+    entry = make_graph(tmp_path)
+    (tmp_path / 'native.py').write_text('def inspect(inputs, context):\n    return {"text": chr(0xD800)}\n')
+    (tmp_path / 'schemas/output.json').write_text(json.dumps({'type': 'object', 'properties': {'text': {'type': 'string'}}}))
+    definition = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+    native = load_native_catalog(definition, tmp_path / 'native.py')
+    journal = WorkflowJournal(definition, log_content=True, content_policy=ContentPolicy(True))
+    workflow = Workflow(definition, {'inspect': NodeFunction(native['inspect'])}, services={'journal': journal})
+    result = asyncio.run(workflow.arun({}))
+    assert result['inspect'] == {'text': chr(0xD800)}
+    retained = validate_journal(journal.finalize())
+    output = next(row for row in retained['events'] if row['event'] == 'capture' and row['direction'] == 'output')
+    assert output['reason'] == 'unavailable' and output['values'] == {}
+    assert chr(0xD800) not in json.dumps(retained, ensure_ascii=False)
+
+
+from test_workflow_stateful import fixture_graph
+
+
+def test_parsed_stateful_result_survives_non_utf8_optional_capture(fixture_graph):
+    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.journal import WorkflowJournal, validate_journal
+    root, entry = fixture_graph
+    source = root / 'native.py'
+    source.write_text(source.read_text().replace('    visits: int', '    visits: int\n    text: str').replace(
+        "return {'pending': True}", "return {'pending': True, 'text': chr(0xD800)}"))
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    journal = WorkflowJournal(definition, log_content=True, content_policy=ContentPolicy(True))
+    from langgraph.graph.message import add_messages
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages}, journal=journal)
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0, 'text': 'ordinary'},
+                                      thread_id='invalid-encoding'))
+    assert result['text'] == chr(0xD800)
+    assert result['pending'] is True and result['visits'] == 1
+    retained = validate_journal(journal.finalize())
+    finish = next(row['scope_id'] for row in retained['events'] if row['event'] == 'scope_start' and row['owner'] == 'finish')
+    output = next(row for row in retained['events'] if row['event'] == 'capture' and row['direction'] == 'output' and row['visit_id'] == finish)
+    assert output['reason'] == 'unavailable' and output['values'] == {}
+    assert chr(0xD800) not in json.dumps(retained, ensure_ascii=False)

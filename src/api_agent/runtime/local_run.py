@@ -530,22 +530,31 @@ class LocalRunOwner:
                 self.pending_cleanup = CleanupPendingError((self,), self.aclose)
                 error.cleanup_pending = self.pending_cleanup
                 raise
-        cancelled = False
-        with independent_timeout_scope():
-            async with report_timeout('Local cleanup attempt', self.CLEANUP_ATTEMPT_SECONDS) as budget:
-                while not self._closing.done():
-                    if budget.remaining <= 0:
-                        self.pending_cleanup = CleanupPendingError((self,), self.aclose)
+        closing = self._closing
+        cancelled, pending = False, None
+        try:
+            with independent_timeout_scope():
+                async with report_timeout('Local cleanup attempt', self.CLEANUP_ATTEMPT_SECONDS) as budget:
+                    while not closing.done():
+                        if budget.remaining <= 0:
+                            pending = CleanupPendingError((self,), self.aclose)
+                            self.pending_cleanup = pending
+                            try:
+                                self._publish_cleanup_pending()
+                            except BaseException:
+                                pass
+                            raise pending
                         try:
-                            self._publish_cleanup_pending()
-                        except BaseException:
-                            pass
-                        raise self.pending_cleanup
-                    try:
-                        await asyncio.wait({self._closing}, timeout=budget.remaining)
-                    except asyncio.CancelledError:
-                        cancelled = True
-        self._closing.result()
+                            await asyncio.wait({closing}, timeout=budget.remaining)
+                        except asyncio.CancelledError:
+                            cancelled = True
+        except CleanupPendingError as error:
+            # Context teardown can yield after this attempt reports pending.
+            # Only the same acknowledged task can settle that exact receipt.
+            if (error is not pending or closing is not self._closing or not closing.done()
+                    or closing.cancelled() or self.pending_cleanup is not None):
+                raise
+        closing.result()
         if cancelled:
             raise asyncio.CancelledError
 

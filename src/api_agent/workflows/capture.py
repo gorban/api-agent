@@ -1,6 +1,7 @@
 """Bounded JSON-only capture of declared workflow values."""
 from collections.abc import Mapping
 import math
+import json
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -12,7 +13,7 @@ from .journal import _schema_field
 _OMIT = object()
 
 
-def project_values(values, schema, boundary, *, limit=512, report=None):
+def project_values(values, schema, boundary, *, limit=None, report=None):
     """Project schema fields without inspecting arbitrary Python objects.
 
     Empty child schemas permit JSON values (including JSON message parts), but
@@ -82,6 +83,14 @@ def project_values(values, schema, boundary, *, limit=512, report=None):
         report.add('truncated')
         return {}
     if snapshot is _OMIT:
+        return {}
+    try:
+        encoded_size = len(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8'))
+    except UnicodeError:
+        report.add('unsupported')
+        return {}
+    if encoded_size > 65536:
+        report.add('truncated')
         return {}
     values = boundary.content_export({'values': snapshot}).get('values', {})
     budget = [2048]
@@ -219,6 +228,14 @@ def project_values(values, schema, boundary, *, limit=512, report=None):
     if selected is _OMIT:
         return {}
     safe = boundary.content_export({'values': selected}).get('values', {})
+    try:
+        encoded_size = len(json.dumps(safe, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8'))
+    except UnicodeError:
+        report.add('unsupported')
+        return {}
+    if encoded_size > 65536:
+        report.add('truncated')
+        return {}
     def clip(value):
         if type(value) is str:
             if len(value) > limit:
@@ -229,15 +246,15 @@ def project_values(values, schema, boundary, *, limit=512, report=None):
         if type(value) is list:
             return [clip(item) for item in value]
         return value
-    return clip(safe)
+    return clip(safe) if limit is not None else safe
 
 
-def capture_reason(values, report):
-    if 'truncated' in report:
+def capture_reason(values, report, upstream=None):
+    if 'truncated' in report or upstream == 'truncated':
         return 'truncated'
-    if not values:
+    if not values or upstream == 'unavailable':
         return 'unavailable'
-    return 'partial' if report else 'captured'
+    return 'partial' if report or upstream == 'partial' else 'captured'
 
 
 def annotation_schema(annotation, *, depth=0):

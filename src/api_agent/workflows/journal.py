@@ -87,23 +87,25 @@ def _encoded(value):
 
 def _schema_field(key):
     return (type(key) is str and _SAFE_LABEL.fullmatch(key)
-            and (not _UNSAFE_FIELD.search(key) or key in _COUNTS))
+            and (not _UNSAFE_FIELD.search(key) or key in _COUNTS or key in ('reasoning_effort', 'max_output_tokens')))
 
 
-def _capture_contract(value, depth=0, *, max_depth=4):
-    if depth > max_depth:
+def _capture_contract(value, depth=0, *, max_depth=4, budget=None):
+    budget = [2048] if budget is None else budget
+    budget[0] -= 1
+    if depth > max_depth or budget[0] < 0:
         return False
     if type(value) is dict:
         return (len(value) <= 32 and all(type(key) is str
                 and (_schema_field(key) if max_depth == 8 else
                      _SAFE_LABEL.fullmatch(key) and not _UNSAFE_FIELD.search(key))
-                and _capture_contract(item, depth + 1, max_depth=max_depth) for key, item in value.items()))
+                and _capture_contract(item, depth + 1, max_depth=max_depth, budget=budget) for key, item in value.items()))
     if type(value) is list:
-        return len(value) <= 16 and all(_capture_contract(item, depth + 1, max_depth=max_depth) for item in value)
+        return len(value) <= 16 and all(_capture_contract(item, depth + 1, max_depth=max_depth, budget=budget) for item in value)
     return (value is None or type(value) is bool
             or type(value) is int and abs(value) <= (1 << 53) - 1
             or type(value) is float and math.isfinite(value)
-            or type(value) is str and len(value) <= 512)
+            or type(value) is str and (max_depth == 8 or len(value) <= 512))
 
 
 def projection(definition, *, component_passes=None):
@@ -532,10 +534,12 @@ class WorkflowJournal:
         return self._observe(event, allow_values=True, observer_override=_observer_override)
 
     def capture_json(self, *, visit_id, direction, values, schema, cause_id=None,
-                     _observer_override=None):
+                     capture_reason=None, _observer_override=None):
         """Capture bounded JSON values admitted by a node or call schema."""
         self._begin()
-        from .capture import capture_reason, project_values
+        from .capture import capture_reason as classify_capture, project_values
+        if capture_reason not in (None, 'captured', 'partial', 'truncated', 'unavailable', 'withheld'):
+            raise ValueError('Invalid provider capture reason')
         if direction not in ('input', 'output'):
             raise ValueError('Invalid workflow capture direction')
         if type(visit_id) is not str or not visit_id:
@@ -544,11 +548,11 @@ class WorkflowJournal:
                      reason='withheld')
         if cause_id is not None:
             event['cause_id'] = cause_id
-        if self._log_content:
+        if self._log_content and capture_reason != 'withheld':
             report = set()
             safe = project_values(values, schema, self._boundary, report=report)
             event.update(values=safe, capture_class='schema_user_io',
-                         reason=capture_reason(safe, report))
+                         reason=classify_capture(safe, report, capture_reason))
         return self._observe(event, allow_values=True, observer_override=_observer_override)
 
     def record_call(self, *, visit_id, attempt_id=None, usage=None, selection=None,
@@ -723,6 +727,13 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                     max_depth=8 if event.get('capture_class') == 'schema_user_io' else 4):
                 raise ValueError('Unsafe workflow capture values')
             if 'values' in event and event.get('capture_class') == 'schema_user_io':
+                try:
+                    encoded_size = len(json.dumps(event['values'], sort_keys=True, separators=(',', ':'),
+                                                  ensure_ascii=False, allow_nan=False).encode())
+                except UnicodeError:
+                    raise ValueError('Workflow capture contains invalid UTF-8') from None
+                if encoded_size > 65536:
+                    raise ValueError('Workflow capture exceeds byte limit')
                 if (type(event['values']) is not dict
                         or event.get('reason') not in ('captured', 'partial', 'truncated', 'unavailable')):
                     raise ValueError('Invalid schema capture reason')

@@ -102,14 +102,15 @@ def _encode(value):
 
 def _content_frame(evidence):
     """Optional evidence has its own post-redaction bound, never a result gate."""
-    if (type(evidence) is not dict or set(evidence) != {'phase', 'content'}
-            or evidence['phase'] not in ('request', 'response') or type(evidence['content']) is not dict):
+    if (type(evidence) is not dict or set(evidence) not in ({'phase', 'content'}, {'phase', 'content', 'reason'})
+            or evidence['phase'] not in ('request', 'response') or type(evidence['content']) is not dict
+            or evidence.get('reason') not in (None, 'captured', 'partial', 'truncated', 'unavailable', 'withheld')):
         return None
     try:
         frame = _encode(dict(version=1, status='evidence', **evidence))
-        return frame if len(frame) <= MAX_CONTENT_FRAME else None
+        return frame if len(frame) <= MAX_CONTENT_FRAME else _encode(dict(version=1, status='evidence', phase=evidence['phase'], content={}, reason='truncated'))
     except ContractError:
-        return None
+        return _encode(dict(version=1, status='evidence', phase=evidence['phase'], content={}, reason='truncated'))
 
 
 async def _read(reader):
@@ -342,6 +343,11 @@ class SetupServer(_Owner):
             peer.waiting = False
 
     async def _dispatch(self, peer, frame, action):
+        from api_agent.workflows.inference_capture import collect_inference
+        with collect_inference() as collector:
+            return await self._dispatch_captured(peer, frame, action, collector)
+
+    async def _dispatch_captured(self, peer, frame, action, collector):
         if action == 'register':
             if peer.binding is not None:
                 raise ContractError('Setup connection already registered')
@@ -382,10 +388,13 @@ class SetupServer(_Owner):
                     if quote is not None:
                         from .costs import validate_quote
                         peer.writer.write(_encode(dict(version=1, status='cost', quote=validate_quote(quote))))
-                    exporter = getattr(self._registry, 'export_content', lambda *args: ())
                     try:
                         phases = set()
-                        for evidence in exporter(peer.binding, request, result):
+                        rows = collector['rows']
+                        if collector['boundary'] is None and not rows:
+                            exporter = getattr(self._registry, 'export_content', lambda *args: ())
+                            rows = exporter(peer.binding, request, result)
+                        for evidence in rows:
                             frame = _content_frame(evidence)
                             if frame is not None and evidence['phase'] not in phases:
                                 phases.add(evidence['phase'])
@@ -586,15 +595,23 @@ class SetupClient:
                 self.cost_quote = validate_quote(response['quote'])
                 continue
             if status == 'evidence' and action == 'complete':
-                if (set(response) != {'version', 'status', 'phase', 'content'}
+                if (set(response) not in ({'version', 'status', 'phase', 'content'}, {'version', 'status', 'phase', 'content', 'reason'})
                         or response['phase'] not in ('request', 'response')
                         or type(response['content']) is not dict):
                     raise ContractError('Invalid inference evidence response')
-                if _content_frame({'phase': response['phase'], 'content': response['content']}) is None:
-                    continue
-                if any(row['phase'] == response['phase'] for row in self.evidence):
+                row = {key: response[key] for key in ('phase', 'content', 'reason') if key in response}
+                if _content_frame(row) is None:
                     raise ContractError('Invalid inference evidence response')
-                self.evidence.append({'phase': response['phase'], 'content': response['content']})
+                if len(_encode(response)) > MAX_CONTENT_FRAME:
+                    row = dict(phase=response['phase'], content={}, reason='truncated')
+                previous = next((index for index, prior in enumerate(self.evidence)
+                                 if prior['phase'] == row['phase']), None)
+                if previous is not None:
+                    if self.evidence[previous] != dict(phase=row['phase'], content={}, reason='truncated'):
+                        raise ContractError('Invalid inference evidence response')
+                    self.evidence[previous] = row
+                else:
+                    self.evidence.append(row)
                 continue
             if status == 'progress' and action in ('ready', 'describe', 'complete'):
                 self._progress(response)

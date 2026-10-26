@@ -128,7 +128,7 @@ def test_redaction_expansion_cannot_replace_a_completed_loopback_result(allow):
     if allow:
         response=next(row for row in rows if row['phase']=='response')
         assert len(json.dumps(response, separators=(',', ':')).encode()) > MAX_CONTENT_FRAME
-        assert _content_frame(response) is None
+        assert json.loads(_content_frame(response)) == dict(version=1, status='evidence', phase='response', content={}, reason='truncated')
     else:
         assert rows == ()
     class Owner(Registry):
@@ -152,16 +152,17 @@ def test_redaction_expansion_cannot_replace_a_completed_loopback_result(allow):
             actual,evidence=await asyncio.to_thread(consumer)
             assert actual==expected and registry.calls==1
             assert all('al' not in json.dumps(row) for row in evidence)
-            assert [row['phase'] for row in evidence]==(['request'] if allow else [])
+            assert [row['phase'] for row in evidence]==(['request', 'response'] if allow else [])
+            if allow:
+                assert evidence[-1] == dict(phase='response', content={}, reason='truncated')
         finally:
             await server.aclose()
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('evidence',[None,{}, {'phase':'bad','content':{}},
-    {'phase':'request','content':[]}, {'phase':'request','content':{'number':float('nan')}},
-    {'phase':'response','content':{'text':'x'*262144}}])
-def test_invalid_or_oversized_optional_evidence_has_no_frame(evidence):
+    {'phase':'request','content':[]}])
+def test_invalid_optional_evidence_has_no_frame(evidence):
     from api_agent.providers.setup_transport import _content_frame
     assert _content_frame(evidence) is None
 
@@ -256,3 +257,11 @@ def test_mixed_billing_survives_immutable_parent_recording(tmp_path,monkeypatch)
 @pytest.mark.parametrize('selection',['gpt-6-luna-2030-12-31','gpt-6.1-sol-20301231','gpt-4.1-2030-12-31'])
 def test_verified_official_family_permits_valid_future_snapshot(selection):
     assert prompt_cache_fields('high',selection,base_url='https://api.openai.com/v1',subscription=False)
+
+
+@pytest.mark.parametrize('content', [{'number':float('nan')}, {'text':'x'*262144}, {'text':'x'*5000000}])
+def test_non_json_or_oversized_evidence_emits_bounded_omission(content):
+    from api_agent.providers.setup_transport import _content_frame, MAX_CONTENT_FRAME
+    frame = _content_frame(dict(phase='response', content=content))
+    assert len(frame) < MAX_CONTENT_FRAME
+    assert json.loads(frame) == dict(version=1, status='evidence', phase='response', content={}, reason='truncated')

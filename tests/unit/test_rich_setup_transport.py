@@ -214,7 +214,18 @@ def test_reasoning_continuation_crosses_real_ipc_and_http_without_content_eviden
             async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
                 return await complete_text(client=client,base_url='https://api.openai.com/v1',access_token=SECRET,subscription=subscription,api_mode='responses',request=request)
         boundary=content_boundary({'LOG_CONTENT':True})
-        owner=SimpleNamespace(ensure_ready=AsyncMock(),complete=complete,aclose=AsyncMock(),export_content=lambda request,result=None:export_content(boundary,request,result))
+        from api_agent.providers.shared_setup import SharedSetupOwner
+        from api_agent.workflows.inference_capture import bind_boundary
+        async def authorized(request, *, auth):
+            assert auth == SECRET
+            return await complete(request)
+        async def authenticate(callback):
+            return await callback(auth=SECRET)
+        shared=SharedSetupOwner('operation', 'selected', lambda credentials: SimpleNamespace(call=authenticate, aclose=AsyncMock()), complete=authorized)
+        async def captured(request):
+            bind_boundary(boundary)
+            return await shared.complete(request)
+        owner=SimpleNamespace(ensure_ready=AsyncMock(),complete=captured,aclose=shared.aclose)
         registry=SetupRegistry('operation','selection',lambda:owner)
         server=SetupServer(registry,CAP)
         endpoint=await server.start()
