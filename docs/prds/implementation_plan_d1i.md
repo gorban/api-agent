@@ -23,10 +23,8 @@
   identity, native history, exact attachments and exclusion of unselected tests
   using the actual Allure CLI. Complete applicable exact unit coverage, installed
   artifacts, boundary/license and independent/external reviews.
-- [ ] Human review a selected subset and all completed results, including a
+- [x] Human review a selected subset and all completed results, including a
   completed subset while other tests continue.
 
-**Deferred human review**
-
-Implementation and required verification/reviews are complete. Only explicit
-human acceptance above remains unchecked.
+Human acceptance of screenshot placement and selected/all-test viewing was
+explicitly recorded on October 26, 2026.
