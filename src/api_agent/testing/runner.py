@@ -129,6 +129,10 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     if any(available.get(test.id) != test for test in tests):
         raise CollectionError('Unit selection contains identities outside the collected suites')
     base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
+    from api_agent.runtime.frontend import ensure_source_frontend, source_root
+    # The reusable runner prepares only the selected source library's own base suite.
+    if base == source_root():
+        ensure_source_frontend(cancellation=cancel_event)
     roots = {base.name: base, owner.name: owner}
     if base != owner and base.name == owner.name:
         roots = {'base': base, 'pack': owner}

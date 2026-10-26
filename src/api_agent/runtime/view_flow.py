@@ -83,11 +83,15 @@ async def _serve_view(prepared):
 
 
 async def view_flow(context):
+    from api_agent.runtime.frontend import prepare_source_frontend
+    await prepare_source_frontend()
     await _serve_view(_prepare_view(context))
 
 
 def run_view_flow(context):
     try:
+        from api_agent.runtime.frontend import ensure_source_frontend
+        ensure_source_frontend()
         prepared = _prepare_view(context)
         asyncio.run(_serve_view(prepared))
     except KeyboardInterrupt:

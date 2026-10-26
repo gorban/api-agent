@@ -43,7 +43,7 @@ class DemoUIProvider:
         self._lock = asyncio.Lock()
 
     async def astart(self):
-        async with component_timeout('Studio UI launch', 60):
+        async with component_timeout('Studio UI setup', 300):
             async with self._lock:
                 if self.closed:
                     raise ValueError('ui_provider_closed')
@@ -60,7 +60,7 @@ class DemoUIProvider:
                     raise SetupPrerequisiteError('Studio requires the runtime UI process service')
                 executable = shutil.which('node')
                 if executable is None:
-                    raise SetupPrerequisiteError('Studio requires Node.js')
+                    raise SetupPrerequisiteError('Studio requires Node.js 24 or newer. Install Node.js and npm manually, then retry.')
                 app = app_directory()
                 if not (app / 'launch.mjs').is_file():
                     raise SetupPrerequisiteError('Studio packaged resources are unavailable')
@@ -75,10 +75,15 @@ class DemoUIProvider:
                         raise SetupPrerequisiteError('Studio requires runtime TLS material')
                     env.update(API_AGENT_UI_TLS_CERT=str(material.cert_file),
                                API_AGENT_UI_TLS_KEY=str(material.key_file))
+                from api_agent.runtime.frontend import prepare_source_frontend, source_root
+                root = source_root()
+                if root is not None and app.resolve() == root / 'apps/api-agent-ui':
+                    await prepare_source_frontend()
                 try:
-                    self.process = await launcher.start(
-                        (executable, str(app / 'launch.mjs')), cwd=app,
-                        host=endpoint.hostname, port=port, scheme=endpoint.scheme, env=env)
+                    async with component_timeout('Studio UI launch', 60):
+                        self.process = await launcher.start(
+                            (executable, str(app / 'launch.mjs')), cwd=app,
+                            host=endpoint.hostname, port=port, scheme=endpoint.scheme, env=env)
                     self._evidence_origin = listener.rstrip('/')
                 except CleanupPendingError as error:
                     self.pending = error

@@ -259,8 +259,10 @@ when editing settings through the TUI.
 
 ### Included frontend checks
 
-The Studio host uses Node's standard library. For browser development checks,
-install the pinned development tools and their Chromium once:
+The Studio host uses Node's standard library. With Node.js 24 or newer and npm
+installed, launcher unit execution automatically prepares missing locked frontend
+dependencies. For direct browser development checks, prepare the pinned tools
+and their Chromium explicitly:
 ```bash
 npm ci
 npx playwright install chromium

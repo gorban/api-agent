@@ -56,6 +56,15 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
         path = staged / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / relative, path)
+    admitted_notices = {
+        'src/api_agent/api_providers/graphql_mcp/licenses/third-party/' + parent +
+        '/node_modules/content-type/LICENSE'
+        for parent in ('body-parser', 'express', 'negotiator', 'type-is')
+    }
+    for relative in admitted_notices:
+        path = staged / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, path)
     sentinels = (
         '.synthetic-private/secret.txt',
         'src/api_agent/.synthetic-cache/secret.txt',
@@ -82,6 +91,7 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
         members = {name.split('/', 1)[1] for name in source.getnames() if '/' in name}
     assert {'src/api_agent/__init__.py', 'demo/pack.toml', 'flow.md.html',
             'workflows/component.md.html', 'tests/test_public.py'} <= members
+    assert admitted_notices <= members
     hidden = {name for name in members if any(part.startswith('.') for part in name.split('/'))}
     assert hidden == admitted_hidden
     assert {name for name in members if name.startswith('tools/')} == admitted_tools
