@@ -390,3 +390,66 @@ def test_explicit_genai_count_guards_do_not_exempt_other_credential_namespaces()
             'gen_ai.usage.input_tokens':7,'gen_ai.usage.output_tokens':2}
     assert boundary.export({'gen_ai.usage.input_tokens':.1})=={}
     assert boundary.export({'gen_ai.request.reasoning_effort':None})=={'gen_ai.request.reasoning_effort':None}
+
+
+@pytest.fixture(params=['native', 'nested', 'serialized'])
+def generation_limit_carrier(request):
+    if request.param == 'native':
+        return lambda value: value
+    if request.param == 'nested':
+        return lambda value: {'provider_payload': value}
+    return lambda value: {'serialized': json.dumps(value)}
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+@pytest.mark.parametrize('value', [None, 0, 128, (1 << 53) - 1])
+def test_native_generation_limit_retains_only_typed_bounded_counts(key, value, generation_limit_carrier):
+    payload = generation_limit_carrier({key: value})
+    assert EmissionBoundary(ContentPolicy(True)).export(payload) == payload
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+@pytest.mark.parametrize('value', [True, False, 'synthetic-sensitive-value', 128.0, -1, 1 << 53])
+def test_native_generation_limit_rejects_unsafe_values(key, value, generation_limit_carrier):
+    payload = generation_limit_carrier({key: value})
+    assert EmissionBoundary(ContentPolicy(True)).export(payload) == generation_limit_carrier({})
+
+
+class GenerationLimitInt(int):
+    pass
+
+
+class GenerationLimitFloat(float):
+    pass
+
+
+class GenerationLimitString(str):
+    pass
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+@pytest.mark.parametrize('value', [GenerationLimitInt(128), GenerationLimitFloat(128), GenerationLimitString('128')])
+@pytest.mark.parametrize('nested', [False, True])
+def test_native_generation_limit_rejects_custom_scalar_types(key, value, nested):
+    payload = {'provider_payload': {key: value}} if nested else {key: value}
+    expected = {'provider_payload': {}} if nested else {}
+    assert EmissionBoundary(ContentPolicy(True)).export(payload) == expected
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+@pytest.mark.parametrize('secret_kind', ['numeric', 'container'])
+def test_native_generation_limit_never_exempts_registered_secrets(key, secret_kind, generation_limit_carrier):
+    native = {key: 128}
+    payload = generation_limit_carrier(native)
+    boundary = EmissionBoundary(ContentPolicy(True))
+    assert boundary.export(payload) == payload
+    boundary.register_secret('128' if secret_kind == 'numeric' else json.dumps(native))
+    exported = boundary.export(payload)
+    assert exported != payload
+    assert '128' not in json.dumps(exported)
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+def test_native_generation_limit_does_not_enable_content_disabled_metadata(key, generation_limit_carrier):
+    payload = {**generation_limit_carrier({key: 128}), 'input_tokens': 2}
+    assert EmissionBoundary().export(payload) == {'input_tokens': 2}

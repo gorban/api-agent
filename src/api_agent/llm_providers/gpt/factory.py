@@ -53,6 +53,7 @@ class OwnedSubscriptionSession(SubscriptionSession):
 
 
 class GPTProvider:
+    captures_effective_payload = True
     version = 1
     capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"))
 

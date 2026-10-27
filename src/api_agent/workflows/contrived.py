@@ -50,12 +50,18 @@ async def produce(inputs, context):
     previous = inputs['previous']
     tail = dict(decisions=decisions, upstream=inputs['upstream'], previous=previous, feedback=inputs['feedback'],
                 attempt=context.attempt, max_passes=context.max_passes, trial=context.services['trial'])
-    schema = context.services['output_schema']
-    request = LLMRequest(context.services['selection'], CompletionRequest((
+    messages = (
         Message('system', (TextContent('\n\n'.join(context.prompts)),)),
         Message('user', (TextContent(inputs['user_input']),)),
-        Message('user', (TextContent(json.dumps(tail, ensure_ascii=False)),))),
-        structured=StructuredOutput('contrived_draft', json.dumps(schema))), str(uuid4()))
+        Message('user', (TextContent(json.dumps(tail, ensure_ascii=False)),)))
+    contract = getattr(context, 'response_contract', None)
+    if contract is not None and 'Output mode' in contract:
+        payload = context.response_request(messages)
+    else:
+        # Four-column declarations retain their existing explicit native request.
+        payload = CompletionRequest(messages, structured=StructuredOutput(
+            'contrived_draft', json.dumps(context.services['output_schema'])))
+    request = LLMRequest(context.services['selection'], payload, str(uuid4()))
     started = time.monotonic()
     async with component_timeout('Workflow LLM call', context.services.get('llm_timeout', 120)) as budget:
         result = await context.services['llm'](request)
@@ -121,8 +127,8 @@ def build(base_root, *, llm, selection, trial, observe=None, config=None):
         path = Path(str(files('api_agent').joinpath('demo/contrived/flow.md.html')))
     definition = load_definition(path, base_root=root if path.is_relative_to(root) else path.parents[2],
                                  pack_root=path.parent.parent)
-    schema_path = path.parent / 'schemas/draft.json'
-    schema = json.loads(definition.contents[schema_path])
+    draft = next(row for row in definition.layout.tables['Functions'] if row['ID'] == 'first_draft')
+    schema = json.loads(definition.contents[draft['Output']])
     source = next(step.source for step in definition.layout.steps if step.id == 'first_draft')
     catalog = load_native_catalog(definition, source)
     return Workflow(definition, {'produce': NodeFunction(catalog['produce'], 'llm'),

@@ -130,15 +130,64 @@ class StructuredOutput:
         _schema(self.schema)
 
 
+OutputMode = Literal["structured", "json", "prompted_json", "text"]
+FallbackPolicy = Literal["allow", "reject"]
+OUTPUT_MODES = frozenset({"structured", "json", "prompted_json", "text"})
+FALLBACK_REASONS = frozenset({"unsupported_mode", "unsupported_schema", "unsupported_combination", "unknown_capability"})
+
+
+@dataclass(frozen=True)
+class ResponsePolicy:
+    mode: OutputMode
+    fallback: FallbackPolicy
+    schema: StructuredOutput | None = field(default=None, repr=False)
+
+    def __post_init__(self):
+        _require(type(self.mode) is str and self.mode in OUTPUT_MODES)
+        _require(type(self.fallback) is str and self.fallback in {"allow", "reject"})
+        _require(self.schema is None if self.mode == "text" else isinstance(self.schema, StructuredOutput))
+
+
+@dataclass(frozen=True)
+class ResponseEvidence:
+    """Resolution metadata; strict is requested schema intent, not enforcement.
+
+    Native strict enforcement requires actual_mode=structured and strict=True.
+    JSON and prompted_json always rely on original-schema local validation.
+    """
+    requested_mode: OutputMode
+    fallback: FallbackPolicy
+    actual_mode: OutputMode
+    schema_sha256: str | None
+    strict: bool | None
+    fallback_reason: str | None
+
+    def __post_init__(self):
+        _require(type(self.requested_mode) is str and self.requested_mode in OUTPUT_MODES)
+        _require(type(self.actual_mode) is str and self.actual_mode in OUTPUT_MODES)
+        _require(type(self.fallback) is str and self.fallback in {"allow", "reject"})
+        _require(self.strict is None or type(self.strict) is bool)
+        _require(self.schema_sha256 is None or (type(self.schema_sha256) is str and len(self.schema_sha256) == 64 and all(c in "0123456789abcdef" for c in self.schema_sha256)))
+        _require((self.schema_sha256 is None and self.strict is None) if self.requested_mode == "text" else (self.schema_sha256 is not None and self.strict is not None))
+        if self.requested_mode == self.actual_mode:
+            _require(self.fallback_reason is None)
+        else:
+            _require(self.fallback == "allow" and (self.requested_mode, self.actual_mode) in {("structured", "json"), ("structured", "prompted_json"), ("json", "prompted_json")})
+            _require(type(self.fallback_reason) is str and self.fallback_reason in FALLBACK_REASONS)
+
+
 @dataclass(frozen=True)
 class CompletionRequest:
     messages: tuple[Message, ...] = field(repr=False)
     tools: tuple[Tool, ...] = field(default=(), repr=False)
     generation: GenerationOptions = field(default_factory=GenerationOptions)
     structured: StructuredOutput | None = field(default=None, repr=False)
+    response: ResponsePolicy | None = field(default=None, repr=False)
 
     def __post_init__(self):
         _require(_items(self.messages, Message) and bool(self.messages) and _items(self.tools, Tool) and isinstance(self.generation, GenerationOptions) and (self.structured is None or isinstance(self.structured, StructuredOutput)))
+        _require(self.response is None or isinstance(self.response, ResponsePolicy))
+        _require(self.structured is None or self.response is None)
         _require(sum(message.cache_boundary is not None for message in self.messages) <= 4)
         _require(len({tool.name for tool in self.tools}) == len(self.tools))
 
@@ -220,8 +269,10 @@ class LLMResult:
     billing: dict | None = field(default=None, repr=False)
 
     applied_cache_boundaries: tuple[int, ...] = ()
+    response: ResponseEvidence | None = None
 
     def __post_init__(self):
+        _require(self.response is None or isinstance(self.response, ResponseEvidence))
         _require(type(self.applied_cache_boundaries) is tuple and len(self.applied_cache_boundaries) <= 4 and len(set(self.applied_cache_boundaries)) == len(self.applied_cache_boundaries) and all(type(value) is int and 0 <= value < 64 for value in self.applied_cache_boundaries))
         if self.billing is not None:
             from .costs import validate_billing

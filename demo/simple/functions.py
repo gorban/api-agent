@@ -1,8 +1,9 @@
 """Single selected-model chat call for the bundled application flow."""
 from uuid import uuid4
+from dataclasses import replace
 
 from api_agent.providers.inference import request_from_wire, result_to_wire
-from api_agent.providers.llm import GenerationOptions
+from api_agent.providers.llm import GenerationOptions, LLMRequest, Message, TextContent
 from api_agent.workflows.execution import WorkflowError
 from api_agent.workflows.tool_gate import ToolGateError
 from api_agent.providers.tools import MAX_ARGUMENT_BYTES, canonical
@@ -30,7 +31,7 @@ async def llm_call(inputs, context):
     result = await context.services['llm'](request)
     if result.outcome != 'completed':
         raise WorkflowError('Chat inference did not complete')
-    response = result_to_wire(result)
+    response = result_to_wire(replace(result, response=None))
     if not response['text']:
         raise WorkflowError('Chat inference returned no text')
     response['response_text'] = response.pop('text')
@@ -47,10 +48,16 @@ async def _demo_llm(context, purpose, payload):
             'cache_policy': context.services['generation'].cache_policy}
     if context.services['generation'].reasoning_effort is not None:
         wire['reasoning_effort'] = context.services['generation'].reasoning_effort
-    result = await context.services['llm'](request_from_wire(wire))
+    request = request_from_wire(wire)
+    contract = getattr(context, 'response_contract', None)
+    if contract is not None and contract.get('Output mode', '-') != '-':
+        request = LLMRequest(request.selected_llm, context.response_request(
+            tuple(Message(item['role'], (TextContent(item['text']),)) for item in wire['messages']),
+            generation=context.services['generation']), request.request_id)
+    result = await context.services['llm'](request)
     if result.outcome != 'completed':
         raise WorkflowError('Demo inference did not complete')
-    return result, result_to_wire(result)['text']
+    return result, ''.join(part.text for part in result.payload.content)
 
 
 async def plan(inputs, context):

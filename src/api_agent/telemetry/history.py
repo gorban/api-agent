@@ -143,7 +143,7 @@ class HistoryCache:
             self.connection.execute('INSERT OR REPLACE INTO history_finish VALUES (?,?,?,?)',
                                     (origin, run_id, sha256(encoded.encode()).hexdigest(), finished))
 
-    def records(self, origin=None, *, since=None, until=None, run_id=None):
+    def records(self, origin=None, *, since=None, until=None, run_id=None, _check=None):
         query = ('SELECT h.run_id, h.digest, h.manifest, h.accounting, f.finished_utc FROM history h '
                  'JOIN history_finish f ON (f.origin=h.origin AND f.run_id=h.run_id AND f.digest=h.digest)')
         conditions, arguments = [], []
@@ -165,6 +165,8 @@ class HistoryCache:
             rows = []
             from api_agent.telemetry.accounting import validate_accounting
             for stored_run_id, digest, manifest, accounting, stored_finish in self.connection.execute(query + ' ORDER BY f.finished_utc,h.run_id,h.digest', arguments):
+                if _check is not None:
+                    _check()
                 try:
                     if sha256(manifest.encode()).hexdigest() != digest:
                         continue

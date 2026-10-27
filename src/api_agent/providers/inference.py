@@ -58,7 +58,7 @@ def request_from_wire(row, *, _validate_instances=True):
 
 
 def request_to_wire(request, *, _validate_instances=True):
-    if isinstance(request, LLMRequest) and (request.payload.tools or request.payload.structured is not None or request.payload.generation.temperature is not None or any(message.cache_boundary is not None for message in request.payload.messages)):
+    if isinstance(request, LLMRequest) and (request.payload.tools or request.payload.structured is not None or request.payload.response is not None or request.payload.generation.temperature is not None or any(message.cache_boundary is not None for message in request.payload.messages)):
         from .rich_inference import request_to_wire as rich
         return rich(request, _validate_instances=_validate_instances)
     if (not isinstance(request, LLMRequest) or request.payload.tools or request.payload.structured is not None
@@ -109,6 +109,15 @@ def result_from_wire(row):
     return result
 
 
+def error_usage(error):
+    """Retain only explicitly reported normalized usage on unchanged failures."""
+    value = getattr(error, 'usage', None)
+    if not isinstance(value, Usage):
+        return None
+    result_from_wire(dict(text='', outcome='completed', usage=usage_to_wire(value)))
+    return value
+
+
 def usage_to_wire(usage):
     """Keep older four-field observations readable; write counts are optional."""
     row = {name: getattr(usage, name) for name in
@@ -119,7 +128,7 @@ def usage_to_wire(usage):
 
 
 def result_to_wire(result):
-    if isinstance(result, LLMResult) and result.payload.calls:
+    if isinstance(result, LLMResult) and (result.payload.calls or result.response is not None):
         from .rich_inference import result_to_wire as rich
         return rich(result)
     if (not isinstance(result, LLMResult) or result.payload.calls or result.payload.results or result.payload.continuation is not None

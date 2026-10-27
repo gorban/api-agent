@@ -232,6 +232,7 @@ class IntegrationLLM:
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
                                                  credentials=credentials, describe=getattr(implementation, 'adescribe', None),
                                                  complete=complete if callable(getattr(implementation, 'acomplete', None)) else None,
+                                                 captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
                                                  validate_request=lambda request: self._validate_request(implementation, request),
                                                  catalog_ttl=self._provider_config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600))
 
@@ -340,7 +341,16 @@ class IntegrationLLM:
                 raise
             pytest.skip(str(error))
         except BaseException as error:
-            publish(request, result, call_id=call_id, failed=True, error=error)
+            terminal_error = error
+            if collector is not None:
+                from api_agent.workflows.inference_capture import retain_response_failure
+                try:
+                    retain_response_failure(error, collector['dispatch']['response'], collector['dispatch']['usage'])
+                except ContractError as conflict:
+                    terminal_error = conflict
+            publish(request, result, call_id=call_id, failed=True, error=terminal_error)
+            if terminal_error is not error:
+                raise terminal_error from None
             raise
         finally:
             from .inference_content import publish_content
@@ -469,7 +479,15 @@ class RemoteIntegrationLLM:
             publish(request, result, call_id=call_id, quote=getattr(self.client, 'cost_quote', None))
             return result
         except BaseException as error:
-            publish(request, result, call_id=call_id, failed=True, error=error)
+            from api_agent.workflows.inference_capture import retain_response_failure
+            terminal_error = error
+            try:
+                retain_response_failure(error, getattr(self.client, 'response_evidence', None))
+            except ContractError as conflict:
+                terminal_error = conflict
+            publish(request, result, call_id=call_id, failed=True, error=terminal_error)
+            if terminal_error is not error:
+                raise terminal_error from None
             raise
         finally:
             from .inference_content import publish_content

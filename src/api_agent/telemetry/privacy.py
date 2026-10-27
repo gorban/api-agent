@@ -71,7 +71,7 @@ _HIDDEN_TYPES = frozenset({'reasoning', 'analysis', 'thinking', 'redacted_thinki
 _EFFORTS = frozenset({'', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'auto', 'off'})
 _EFFORT_KEYS = frozenset({'reasoning_effort', 'gen_ai_request_reasoning_effort'})
 _GENAI_COUNT_KEYS = frozenset('gen_ai_usage_' + key for key in _COUNTS if 'tokens' in key)
-_COUNT_KEYS = _COUNTS | _GENAI_COUNT_KEYS | frozenset({'max_output_tokens'})
+_COUNT_KEYS = _COUNTS | _GENAI_COUNT_KEYS | frozenset({'max_output_tokens', 'max_completion_tokens', 'max_tokens'})
 
 
 def _normalized_key(key):
@@ -96,7 +96,7 @@ def _credential_key(key):
 
 def _permitted_metadata_value(key, value):
     normalized = _normalized_key(key)
-    if normalized in _GENAI_COUNT_KEYS or normalized == 'max_output_tokens':
+    if normalized in _GENAI_COUNT_KEYS or normalized in {'max_output_tokens', 'max_completion_tokens', 'max_tokens'}:
         return value is None or (type(value) is int and 0 <= value <= _MAX_JSON_INTEGER)
     if normalized == 'gen_ai_request_reasoning_effort':
         return value is None or (type(value) is str and value in _EFFORTS)

@@ -17,3 +17,7 @@ Generic inference preserves declared schemas and selected generation options acr
 
 - [x] Independent review, full applicable runtime units (12,100 tests; exact production line/branch coverage), controlled HTTP/IPC and source/relocated installed artifact checks pass for the bounded inference delivery.
 - [ ] Complete final external PR review and human runtime acceptance. Broader application/provider acceptance stays separate.
+
+## Declarative output-mode follow-through
+
+- [x] Join [workflow output modes and provider-owned fallback](implementation_plan_f1a1.md) through the existing Functions table, preserving complete node contracts, explicit schema strictness, effective-request capture and route-specific capability checks. Earlier bounded-schema delivery does not close this follow-through.

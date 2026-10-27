@@ -133,7 +133,19 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
         assert len(responses_saved) == int(log_content and status == 200)
         if requests_saved:
             payload = json.loads((result.directory / requests_saved[0]['source']).read_text())
-            assert payload['messages'][0]['text'] == 'Answer with exactly: Ok [REDACTED] /var/app/prompt.py'
+            container = 'input' if mode == 'responses' else 'messages'
+            expected_body = {'model': 'gpt-4.1-nano', container: [
+                {'role': 'user', 'content': 'Answer with exactly: Ok [REDACTED] /var/app/prompt.py'}],
+                'stream': False}
+            if mode == 'responses':
+                expected_body.update(store=False, max_output_tokens=128)
+            else:
+                expected_body['max_completion_tokens'] = 128
+            assert payload == {'provider_payload': expected_body, 'adapter_instructions': []}
+            dispatched_body = {**expected_body, container: [
+                {'role': 'user', 'content': 'Answer with exactly: Ok ' + key + ' /var/app/prompt.py'}]}
+            assert [json.loads(request.content) for request in requests if request.method == 'POST'] == [
+                dispatched_body, dispatched_body]
         if responses_saved:
             payload = json.loads((result.directory / responses_saved[0]['source']).read_text())
             assert payload['text'] == response_text

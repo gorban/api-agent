@@ -1,4 +1,5 @@
 """Read cached predictions immediately; storage refresh is optional and bounded."""
+from contextlib import nullcontext
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import json
@@ -7,6 +8,7 @@ from hashlib import sha256
 
 from api_agent.telemetry.estimation import EstimateSnapshot, predictions_for, calibration, key, payment_per_point, quota_allowed, calibration_key, quota_reset_observed, matching_compatibility
 from api_agent.telemetry.history import HistoryCache, MAX_BYTES
+from .history_projection import HistoryProjection, ProjectionCancelled, check_projection
 from .collection import repository_label
 from .storage import RunStorage
 from .cost_context import cost_config
@@ -58,7 +60,9 @@ class HistoricalEstimator(EstimateSnapshot):
         self._sync_stopped = threading.Event()
         self.tests, self.config, self.cache = tuple(tests), dict(config), cache
         self._fixed_now = now is not None
-        self.now = now if now is not None else datetime.now(timezone.utc)
+        self.now = now if now is not None else (
+            cache.now if isinstance(cache, HistoryProjection) and cache.now is not None
+            else datetime.now(timezone.utc))
         ignored_settings = config.get('_COST_IGNORED_SETTINGS')
         self.scope = allocation_scope(config)
         if 'UNATTENDED_AUTH' in config:
@@ -80,12 +84,13 @@ class HistoricalEstimator(EstimateSnapshot):
         def window_records(selected_origin, *, since=cutoff, until=self.now):
             if cache is None:
                 return []
-            if isinstance(HistoryCache, type) and isinstance(cache, HistoryCache):
+            if isinstance(HistoryCache, type) and isinstance(cache, (HistoryCache, HistoryProjection)):
                 return cache.records(selected_origin, since=since, until=until)
             # Compatibility for in-memory estimators supplied by callers and tests.
             return [(manifest, artifact) for manifest, artifact in cache.records(selected_origin)
                     if (since is None or since <= datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')))
                     and (until is None or datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')) <= until)]
+        check_projection()
         records = [(manifest, artifact) for manifest, artifact in window_records(origin)
                    if not quota_reset_observed(artifact.get('quota') or {})]
         # An older interval may overlap a long in-window suite. It remains
@@ -95,14 +100,17 @@ class HistoricalEstimator(EstimateSnapshot):
                   if isinstance(snapshot := (artifact.get('quota') or {}).get('before'), dict)
                   and isinstance(snapshot.get('captured_at'), str)]
         overlap_records = window_records(None, since=min(starts, default=cutoff), until=None)
+        check_projection()
         predictions = predictions_for(tests, records, card, fingerprints, self.compatibility,
-                                      ignored_settings=ignored_settings)
+                                      ignored_settings=ignored_settings, _check=check_projection)
         # A policy is learned only from exactly compatible successful histories.
         policies = {}
-        for _, artifact in records:
-            policy = (artifact.get('quota') or {}).get('payment_policy')
-            if policy and any(matching_compatibility(row.get('compatibility'), ignored_settings) == matching_compatibility(self.compatibility, ignored_settings) for row in artifact.get('tests', [])):
-                policies[key(policy)] = policy
+        if config.get('_COST_QUOTA_ALLOCATION_ID') is not None:
+            for _, artifact in records:
+                check_projection()
+                policy = (artifact.get('quota') or {}).get('payment_policy')
+                if policy and any(matching_compatibility(row.get('compatibility'), ignored_settings) == matching_compatibility(self.compatibility, ignored_settings) for row in artifact.get('tests', [])):
+                    policies[key(policy)] = policy
         if len(policies) == 1 and config.get('_COST_QUOTA_ALLOCATION_ID') is not None:
             policy = next(iter(policies.values()))
             groups = calibration(records, card, overlap_records=overlap_records, ignored_settings=ignored_settings)
@@ -120,8 +128,15 @@ class HistoricalEstimator(EstimateSnapshot):
                     row['basis'] = 'historical_quota'
                     row['variation'] *= scale
                     row['calibration'] = dict(fit, scale_factor=scale, provenance=json.loads(candidate))
-        super().__init__(predictions, records=records, card=card, overlap_records=overlap_records, now=self.now,
-                         ignored_settings=ignored_settings)
+        check_projection()
+        if isinstance(cache, HistoryProjection):
+            super().__init__(predictions, card=card, now=self.now, ignored_settings=ignored_settings)
+            # Projection queries decode fresh native rows for this child only.
+            # Transfer those owned rows rather than recopying the whole history.
+            self.records, self.overlap_records = records, overlap_records
+        else:
+            super().__init__(predictions, records=records, card=card, overlap_records=overlap_records, now=self.now,
+                             ignored_settings=ignored_settings)
 
     def cancel_synchronization(self):
         self._sync_stopped.set()
@@ -166,6 +181,7 @@ class HistoricalEstimator(EstimateSnapshot):
 
 def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=None, test_configs=None):
     from api_agent.providers.rates import BEDROCK, _source, cached_rate_card
+    check_projection()
     config = cost_config(context, config)
     card = (cached_rate_card(context, config) if _source(config) == BEDROCK else
             rate_card or config.get('_COST_RATE_CARD') or cached_rate_card(context, config))
@@ -183,9 +199,12 @@ def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=Non
                     group = [effective, []]
                     groups.append(group)
                 group[1].append(test)
-            return ProfileEstimator(estimator_for(context, selected, effective,
-                now=now, cache=cache, rate_card=effective.get('_COST_RATE_CARD', card))
-                for effective, selected in groups)
+            if isinstance(HistoryCache, type) and isinstance(cache, HistoryCache):
+                cache = HistoryProjection(cache)
+            with cache.read() if isinstance(cache, HistoryProjection) else nullcontext():
+                return ProfileEstimator(estimator_for(context, selected, effective,
+                    now=now, cache=cache, rate_card=effective.get('_COST_RATE_CARD', card))
+                    for effective, selected in groups)
         storage = None
         if config.get('ALLURE_S3_BUCKET'):
             storage = RunStorage(config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),
@@ -193,5 +212,7 @@ def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=Non
                                  localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566),
                                  managed_local=config.get('ALLURE_S3_USE_LOCALSTACK', False))
         return HistoricalEstimator(tests, config, cache, origin, repo, card, storage, now, context=context)
+    except ProjectionCancelled:
+        raise
     except Exception:
         return EstimateSnapshot({test.id: {'estimated_cost_usd': None, 'known_zero': False, 'basis': 'unavailable', 'sample_count': 0} for test in tests}, card=card)

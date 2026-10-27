@@ -1,5 +1,6 @@
 """Execute the selected one-pass chat declaration through its native binding."""
 import json
+from dataclasses import replace
 
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.inference import result_to_wire
@@ -38,7 +39,7 @@ class LocalChatApplication:
                     or message.continuation is not None or message.cache_boundary is not None):
                 raise ContractError('Local chat accepts plain text messages only.')
             messages.append({'role': message.role, 'content': ''.join(part.text for part in message.content)})
-        if request.payload.tools or request.payload.structured is not None or request.payload.generation.temperature is not None:
+        if request.payload.tools or request.payload.structured is not None or request.payload.response is not None or request.payload.generation.temperature is not None:
             raise ContractError('Local chat does not support this request shape.')
         results = []
         called = False
@@ -62,7 +63,7 @@ class LocalChatApplication:
                 observations.close()
         if len(results) != 1:
             raise WorkflowError('Local chat did not execute its declared LLM call.')
-        expected = result_to_wire(results[0])
+        expected = result_to_wire(replace(results[0], response=None))
         expected['response_text'] = expected.pop('text')
         expected['selected_model'] = request.selected_llm
         if values.get('llm_call') != expected:

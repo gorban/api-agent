@@ -11,7 +11,7 @@ from types import MappingProxyType
 from urllib.parse import unquote, urlsplit
 from weakref import WeakKeyDictionary
 
-from .layout import Layout, LayoutError, Step, _COLUMNS, _ID, _MD, _validate
+from .layout import Layout, LayoutError, Step, _COLUMNS, _RESPONSE_COLUMNS, _ID, _MD, _validate
 from .document_format import extract_document, validate_presentation_location
 
 
@@ -262,6 +262,10 @@ def _table(path, body, columns):
     tokens = _MD.parse('\n'.join(value for _, value in body))
     if not tokens or tokens[0].type != 'table_open' or tokens[-1].type != 'table_close' or sum(token.type == 'table_open' for token in tokens) != 1:
         raise LayoutError(f'{path}:{nonempty[0][0]}: expected one Markdown table')
+    if columns == _COLUMNS['Functions']:
+        header = tuple(part.strip() for part in nonempty[0][1].strip('|').split('|'))
+        if header == _RESPONSE_COLUMNS:
+            columns = _RESPONSE_COLUMNS
     def cells(item):
         number, value = item
         if not value.startswith('|') or not value.endswith('|'):
@@ -489,6 +493,9 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             if row['Kind'] not in ('llm', 'deterministic'):
                 raise LayoutError(f'{step.source}:1: unsupported native callable kind')
             matching[0]['Kind'] = row['Kind']
+            if ('Output mode' in matching[0]
+                    and (row['Kind'] == 'deterministic') != (matching[0]['Output mode'] == '-')):
+                raise LayoutError(f'{step.source}:{matching[0]["line"]}: response declaration must match native node kind')
             source = link(step.source, row['Source'], 'native_source')
             # The existing compiler checks this path against inspect.getsourcefile.
             execution_steps.append(Step(step.id, step.kind, step.parent, source, step.line))
@@ -512,7 +519,8 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
     for name in ('Functions', 'Prompts', 'Timeouts'):
         for row in tables[name]:
             owner = row.get('_owner', entry)
-            for column, kind in ((('Input', 'schema'), ('Output', 'schema')) if name == 'Functions' else
+            for column, kind in ((('Input', 'schema'), ('Output', 'schema'),
+                                  *((('Response schema', 'schema'),) if row.get('Response schema', '-') != '-' else ())) if name == 'Functions' else
                                  ((('File', 'prompt'),) if name == 'Prompts' else (('Source', 'configuration'),))):
                 value = row[column]
                 if column == 'File' and value.startswith('@'):

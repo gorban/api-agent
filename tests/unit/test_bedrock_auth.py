@@ -263,3 +263,46 @@ def frozen_ambient(monkeypatch):
     async def acquire(self, request, **kwargs):
         return SessionMaterial('frozen', access_key='synthetic-key', secret_key='synthetic-secret'), {}
     monkeypatch.setattr(AmbientSession, 'acquire', acquire)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode,failing_kind,expected_kinds', [
+    ('api_key', 'password', ['password']),
+    ('access_key', 'username', ['username']),
+    ('access_key', 'password', ['username', 'password']),
+])
+async def test_static_auth_preserves_selected_credential_failure(mode, failing_kind, expected_kinds):
+    from api_agent.providers.contracts import UnattendedCredentialError
+    failure = UnattendedCredentialError('Credential retrieval unavailable.', index_source='dotenv')
+    calls = []
+    async def reader(index, kind):
+        calls.append((index, kind))
+        if kind == failing_kind:
+            raise failure
+        return 'synthetic-key'
+
+    with pytest.raises(UnattendedCredentialError) as caught:
+        await create_session({'BEDROCK_AUTH_MODE': mode}, interactive=False,
+                             user_index=6, credentials=reader)
+
+    assert caught.value is failure
+    assert caught.value.index_source == 'dotenv'
+    assert calls == [(6, kind) for kind in expected_kinds]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['api_key', 'access_key'])
+async def test_static_auth_redacts_arbitrary_callback_error_without_fallback(mode):
+    calls = []
+    async def reader(index, kind):
+        calls.append((index, kind))
+        raise RuntimeError('synthetic-private-callback-value')
+
+    with pytest.raises(InteractionRequiredError) as caught:
+        await create_session({'BEDROCK_AUTH_MODE': mode}, interactive=False,
+                             user_index=6, credentials=reader)
+
+    assert type(caught.value) is InteractionRequiredError
+    assert 'synthetic-private-callback-value' not in str(caught.value)
+    assert caught.value.__suppress_context__
+    assert calls == [(6, 'password' if mode == 'api_key' else 'username')]

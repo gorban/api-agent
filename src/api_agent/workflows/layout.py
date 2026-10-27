@@ -48,6 +48,8 @@ _COLUMNS = {
     'Prompts': ('Node', 'File', 'When'),
     'Timeouts': ('Owner', 'Source', 'Key'),
 }
+_RESPONSE_COLUMNS = (*_COLUMNS['Functions'], 'Response schema', 'Output mode', 'Fallback')
+
 # Notes cannot supply reference definitions to executable sections.
 _MD = MarkdownIt('commonmark').enable('table').disable('reference')
 _ID = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
@@ -84,6 +86,10 @@ def _link(token, path, pack_root, roots, *, prompt=False):
     if prompt:
         source.read_text(encoding='utf-8')
     return children[1].content, source
+
+
+def _plain_cell_dash(cell):
+    return len(cell.children or ()) == 1 and cell.children[0].type == 'text' and cell.children[0].content == '-'
 
 
 def _decode_json(text):
@@ -160,7 +166,10 @@ def load_layout(path, *, base_root, pack_root):
                 rows.append(row)
                 row = []
         try:
-            if tuple(_plain(cell) for cell in rows[0]) != columns:
+            header = tuple(_plain(cell) for cell in rows[0])
+            if name == 'Functions' and header == _RESPONSE_COLUMNS:
+                columns = _RESPONSE_COLUMNS
+            if header != columns:
                 raise ValueError(f'{name} has unknown or misplaced columns')
             # markdown-it pads/truncates table rows: reject malformed source first.
             for offset, raw_line in enumerate(text.splitlines()[body[0].map[0]:body[0].map[1]], body[0].map[0] + 1):
@@ -180,7 +189,8 @@ def load_layout(path, *, base_root, pack_root):
                         values[column] = label
                         values['max_passes_key'] = label
                         values['max_passes_link'] = source
-                    elif column in ('File', 'Source', 'Input', 'Output') and name != 'Bindings':
+                    elif (column in ('File', 'Source', 'Input', 'Output', 'Response schema') and name != 'Bindings'
+                          and not (column == 'Response schema' and _plain_cell_dash(cell))):
                         _, source = _link(cell, path, pack_root, roots, prompt=column == 'File')
                         files.add(source)
                         values[column] = source
@@ -258,6 +268,29 @@ def _validate(layout, resource_bytes=None):
                 if schema.get('type') != 'object' or _has_reference(schema):
                     raise ValueError('schemas must be object contracts without remote references')
                 row[column + ' schema'] = schema
+            if 'Output mode' in row:
+                mode, fallback, response = (row[key] for key in ('Output mode', 'Fallback', 'Response schema'))
+                if mode == '-':
+                    if (fallback, response) != ('-', '-'):
+                        raise ValueError('deterministic response columns must all be -')
+                else:
+                    if mode not in ('structured', 'json', 'prompted_json', 'text') or fallback not in ('allow', 'reject'):
+                        raise ValueError('invalid response output mode or fallback')
+                    if (mode == 'text') != (response == '-'):
+                        raise ValueError('JSON modes require Response schema; text requires -')
+                    if response != '-':
+                        schema = (_decode_json(resource_bytes[response].decode('utf-8'))
+                                  if resource_bytes is not None else _json(response))
+                        if _has_unsupported_dialect(schema):
+                            raise ValueError('Layout v1 supports only JSON Schema draft 2020-12')
+                        Draft202012Validator.check_schema(schema)
+                        from api_agent.providers.rich_inference import response_schema
+                        from api_agent.providers.contracts import ContractError
+                        try:
+                            response_schema(json.dumps(schema))
+                        except ContractError as error:
+                            raise ValueError('invalid generated-response schema') from error
+                        row['Response schema value'] = schema
         except (OSError, ValueError, AttributeError, SchemaError) as error:
             layout.error(str(error), row['line'])
     pass_sources = {}

@@ -66,39 +66,54 @@ async def test_shared_prompt_through_normal_app_real_owner_and_llm(tmp_path, mon
     from test_tui import fixture
 
     replies, services_seen = [], []
+    loop = asyncio.get_running_loop()
+    prompt_written = loop.create_future()
+
+    def settle_prompt(error=None):
+        if not prompt_written.done():
+            if error is None:
+                prompt_written.set_result(None)
+            else:
+                prompt_written.set_exception(error)
     class Auth:
         async def __call__(self): return 'synthetic-session'
         async def aclose(self): pass
     class Provider:
         capabilities = ProviderCapabilities(kind='llm')
         async def asetup(self, **options):
-            if native:
-                from api_agent.llm_providers.bedrock.login_interaction import LoginInteraction
-                login = LoginInteraction(NS(interaction=services_seen[0]['interaction'], interactive=True))
-                try:
-                    await login.open()
-                    await login.write('Open https://example.test/sign-in and enter a value.\n')
-                    value = None
-                    while value is None:
-                        value = await login.read()
-                    from api_agent.auth.interaction import Reply
-                    replies.append(Reply('input', value))
-                finally:
-                    await login.aclose()
+            try:
+                if native:
+                    from api_agent.llm_providers.bedrock.login_interaction import LoginInteraction
+                    login = LoginInteraction(NS(interaction=services_seen[0]['interaction'], interactive=True))
+                    try:
+                        await login.open()
+                        await login.write('Open https://example.test/sign-in and enter a value.\n')
+                        settle_prompt()
+                        value = None
+                        while value is None:
+                            value = await login.read()
+                        from api_agent.auth.interaction import Reply
+                        replies.append(Reply('input', value))
+                    finally:
+                        await login.aclose()
+                    return Auth()
+                def converse():
+                    channel = services_seen[0]['interaction'].open('Synthetic sign-in')
+                    try:
+                        channel.write('Open https://example.test/sign-in and enter a value.\n')
+                        loop.call_soon_threadsafe(settle_prompt)
+                        while True:
+                            reply = channel.read(.02)
+                            if reply is not None:
+                                replies.append(reply)
+                                return
+                    finally:
+                        channel.close()
+                await asyncio.to_thread(converse)
                 return Auth()
-            def converse():
-                channel = services_seen[0]['interaction'].open('Synthetic sign-in')
-                try:
-                    channel.write('Open https://example.test/sign-in and enter a value.\n')
-                    while True:
-                        reply = channel.read(.02)
-                        if reply is not None:
-                            replies.append(reply)
-                            return
-                finally:
-                    channel.close()
-            await asyncio.to_thread(converse)
-            return Auth()
+            except BaseException as error:
+                settle_prompt(error)
+                raise
     async def loader(location, config, services, **options):
         services_seen.append(services)
         return NS(implementation=Provider(), astart=AsyncMock(), aclose=AsyncMock())
@@ -137,13 +152,21 @@ async def test_shared_prompt_through_normal_app_real_owner_and_llm(tmp_path, mon
         await pilot.pause()
         screen = LocalRunScreen(app.context, app.session.result)
         app.local_run_screen = screen
+        normal_run = screen.run
+
+        async def run_until_prompt():
+            try:
+                await normal_run()
+            finally:
+                # Failures before provider entry must also wake the write waiter.
+                settle_prompt(AssertionError(screen.failure or 'Local startup ended before writing its prompt'))
+
+        monkeypatch.setattr(screen, 'run', run_until_prompt)
         app.push_screen(screen)
-        for _ in range(100):
-            await pilot.pause(.02)
-            if (isinstance(app.screen, ManagerRecoveryScreen)
-                    and app.screen.is_mounted
-                    and 'https://example.test/sign-in' in app.screen.query_one('#manager-output', TextArea).text):
-                break
+        # Presentation precedes native write dispatch; wait for the real transport
+        # write to complete instead of repeatedly draining the UI while it runs.
+        await prompt_written
+        await pilot.pause()
         assert isinstance(app.screen, ManagerRecoveryScreen), screen.failure
         prompt = app.screen
         assert 'https://example.test/sign-in' in prompt.query_one('#manager-output', TextArea).text

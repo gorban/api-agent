@@ -10,6 +10,14 @@ from api_agent.providers.shared_setup import SharedSetupOwner, RevocableCredenti
 from api_agent.providers.llm import AvailableSelection
 
 
+@pytest.mark.parametrize('value', [0, 1, 'true', {}, []])
+def test_capture_override_rejects_non_boolean_values_before_ownership(value):
+    factory = Mock()
+    with pytest.raises(ContractError, match='Invalid shared setup binding'):
+        SharedSetupOwner('op', 'selected', factory, captures_effective_payload=value)
+    factory.assert_not_called()
+
+
 def test_concurrent_waiters_refresh_and_cancellation():
     async def scenario():
         gate = asyncio.Event()

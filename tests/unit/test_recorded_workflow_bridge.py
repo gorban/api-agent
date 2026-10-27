@@ -186,9 +186,47 @@ def test_legacy_only_repeated_delivery_and_distinct_same_name_graphs():
     assert len(bridge.steps) == 2
 
 
+@pytest.fixture
+def committed_driver_root(tmp_path):
+    from api_agent.workflows.definition import load_definition
+    from api_agent.workflows.provenance import committed_documents
+    from test_workflow_provenance import git
+    source = Path(__file__).resolve().parents[2]
+    definition = load_definition(source / 'demo/contrived/flow.md.html',
+                                 base_root=source, pack_root=source / 'demo')
+    root = tmp_path / 'workflow-owner'
+    root.mkdir()
+    copied = []
+    for path, body in definition.contents.items():
+        if not isinstance(path, Path):
+            continue
+        relative = path.relative_to(source)
+        assert relative.parts[:2] in (('demo', 'contrived'), ('demo', 'cfg'))
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        copied.append(relative.as_posix())
+    git(root, 'init', '-q')
+    git(root, 'config', 'user.name', 'Example')
+    git(root, 'config', 'user.email', 'example@example.invalid')
+    git(root, 'add', '--', *sorted(copied))
+    git(root, 'commit', '-qm', 'Add synthetic workflow test snapshot')
+    captured = load_definition(root / 'demo/contrived/flow.md.html',
+                               base_root=root, pack_root=root / 'demo')
+    manifest = committed_documents(captured)
+    commit = git(root, 'rev-parse', 'HEAD').stdout.decode().strip()
+    assert all(owner['commit'] == commit for owner in manifest['owners'])
+    assert git(root, 'status', '--porcelain').stdout == b''
+    for path, body in captured.contents.items():
+        if isinstance(path, Path):
+            assert git(root, 'show', 'HEAD:' + path.relative_to(root).as_posix()).stdout == body
+    return root
+
+
 @pytest.mark.parametrize('graphs,retry', [(1, False), (2, True)])
-def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tmp_path, monkeypatch, graphs, retry):
-    root = Path(__file__).resolve().parents[2]
+def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tmp_path, monkeypatch, committed_driver_root, graphs, retry):
+    root = committed_driver_root
+    source = Path(__file__).resolve().parents[2]
     selected = TestIdentity('base::test_graph.py::test_run', 'base', 'test_graph.py', 'test_graph.py::test_run')
     result = TestResult(selected, 'passed', .01)
     context = SimpleNamespace(base_root=root, owner_root=root, pack_root=root / 'demo',
@@ -196,7 +234,7 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
     packets = []
     config = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
         'ALLURE_RESULTS_DIR': tmp_path / 'results', 'LOG_CONTENT': False,
-        'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory'}
+        'LLM_PROVIDER': str(source / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory'}
 
     from test_workflow_trial_decisions import trial_uuid
     original_build = fixture_driver.build
@@ -400,3 +438,23 @@ def test_richer_legacy_retry_remains_explained_with_authoritative_first_attempt(
         assert {'name': 'retry_observed', 'value': 'true'} in step['parameters']
         assert {'name': 'outcome', 'value': 'passed'} in step['parameters']
     assert not any(item['name'] == 'retry_observed' for item in component['steps'][0]['parameters'])
+
+
+def test_actual_driver_rejects_dirty_fixture_before_inference(committed_driver_root, monkeypatch):
+    from api_agent.workflows.layout import LayoutError
+    root = committed_driver_root
+    source = Path(__file__).resolve().parents[2]
+    node = root / 'demo/contrived/workflows/components/first.md.html'
+    node.write_text(node.read_text() + '\n')
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
+    calls = []
+
+    def complete(request):
+        calls.append(request)
+        raise AssertionError('Inference reached a dirty workflow fixture')
+
+    config = {'LLM_PROVIDER': str(source / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory'}
+    with pytest.raises(LayoutError, match='differs from HEAD'):
+        fixture_driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', 1,
+                                 config, root=root, owner_root=root)
+    assert calls == []

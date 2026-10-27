@@ -177,12 +177,14 @@ def project_view(definition) -> ViewerProjection:
                                               resource.logical_path, resource.sha256, ()))
     else:
         owner_by_path = {target: identifier for identifier, (_, _, target) in definition.selected_declarations.items()}
-        for name, fields in (('Functions', ('Input', 'Output')),
+        for name, fields in (('Functions', ('Input', 'Output', 'Response schema')),
                              ('Prompts', ('File',)), ('Timeouts', ('Source',))):
             for row in definition.layout.tables[name]:
                 owner = row.get('_owner', definition.entry)
                 for field in fields:
-                    target = row[field]
+                    target = row.get(field)
+                    if target is None or target == '-':
+                        continue
                     attrs = {key: value for key, value in row.items()
                              if key not in ('line', '_owner', field) and isinstance(value, str)}
                     if name == 'Functions':

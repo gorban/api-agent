@@ -1,0 +1,1 @@
+{"type":"object","properties":{"correct":{"type":"boolean"},"grounded":{"type":"boolean"},"relevant":{"type":"boolean"},"preference":{"type":"boolean"}},"required":["correct","grounded","relevant","preference"],"additionalProperties":false}

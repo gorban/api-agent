@@ -42,4 +42,4 @@ def admit_terminal_call_receipt(row, journal):
     if receipts is not None and len(receipts) < 128 and not any(
             prior['call_id'] == row['call_id'] for prior in receipts):
         receipts.append({key: row[key] for key in
-            ('call_id', 'selection', 'usage', 'outcome', 'actual_model', 'reasoning_effort') if key in row})
+            ('call_id', 'selection', 'usage', 'outcome', 'actual_model', 'reasoning_effort', 'response') if key in row})

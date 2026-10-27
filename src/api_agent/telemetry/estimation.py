@@ -316,6 +316,12 @@ class EstimateSnapshot:
         self.now = now or datetime.now(timezone.utc)
         self.ignored_settings = deepcopy(ignored_settings)
 
+    def _set_history_json(self, records, overlap_records):
+        """History owners decode independent native evidence instead of copying it."""
+        from api_agent.testing.history_projection import decode_history
+        self.records = decode_history(records)
+        self.overlap_records = decode_history(overlap_records)
+
     def total(self, ids):
         rows = [self.predictions.get(identity, {}) for identity in dict.fromkeys(ids)]
         known = [row['estimated_cost_usd'] for row in rows if row.get('estimated_cost_usd') is not None]
@@ -427,23 +433,29 @@ def call_signature(row):
     return key(sorted(signatures))
 
 
-def predictions_for(tests, records, card, fingerprints, compatibility, *, ignored_settings=None):
+def predictions_for(tests, records, card, fingerprints, compatibility, *, ignored_settings=None, _check=None):
     result = {}
     immutable = {}
     conflicting = set()
     for manifest, artifact in records:
+        if _check is not None:
+            _check()
         run_id = artifact.get('run_id')
         if run_id is None:
             continue
         if run_id in immutable and immutable[run_id] != (manifest, artifact):
             conflicting.add(run_id)
         immutable.setdefault(run_id, (manifest, artifact))
+    compatible = compatibility_complete(compatibility)
+    target_compatibility = matching_compatibility(compatibility, ignored_settings) if compatible else None
     for test in tests:
         samples, signatures, zeroes, finished, quota_eligible = [], set(), [], [], []
         has_token_history = False
         reported_samples = False
         seen_runs = set()
         for manifest, artifact in records:
+            if _check is not None:
+                _check()
             run_id = artifact.get('run_id')
             if run_id in conflicting or (run_id is not None and run_id in seen_runs):
                 continue
@@ -452,8 +464,11 @@ def predictions_for(tests, records, card, fingerprints, compatibility, *, ignore
             if quota_reset_observed(artifact.get('quota') or {}):
                 continue
             for row in artifact.get('tests', []):
-                if (compatibility_complete(compatibility) and matching_compatibility(row.get('compatibility'), ignored_settings) == matching_compatibility(compatibility, ignored_settings) and fingerprints.get(test.id) is not None
-                        and row.get('source_fingerprint') == fingerprints[test.id] and row.get('node_id') == test.node_id):
+                if _check is not None:
+                    _check()
+                if (fingerprints.get(test.id) is not None
+                        and row.get('source_fingerprint') == fingerprints[test.id] and row.get('node_id') == test.node_id
+                        and compatible and matching_compatibility(row.get('compatibility'), ignored_settings) == target_compatibility):
                     has_token_history |= any(type(value) is int and value > 0
                         for call in row.get('calls', []) for value in (call.get('usage') or {}).values())
                     if not row.get('outcomes') or row['outcomes'][-1] != 'passed':

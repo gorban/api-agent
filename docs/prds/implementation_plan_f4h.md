@@ -42,3 +42,21 @@ packaged worker startup without inherited PYTHONPATH. An initial lane run hit an
 existing process-disappearance race in a /proc cleanup test; its isolated rerun
 and the final combined run passed. This does not qualify new live inference,
 attended recovery/reuse or main adoption; human acceptance above remains open.
+
+
+## Attended default selection follow-up
+
+Ordinary configuration now selects the bundled direct AWS adapter by default,
+while explicit blank retains SDK-only acquisition and explicit SSO/custom
+selectors retain ownership. Cached selected credentials remain first; permitted
+visible interaction is required for recovery. The selector is anchored beside
+its provider in installed and relocated layouts. See the scoped
+[default requirements](implementation_plan_f4a1.md).
+
+The user confirms the effective default attended login works. Current source
+verification passed 19,433 unit tests with exact line/branch coverage and source
+reviews. A fresh API-key Completions calibration after the default change
+promotes Bedrock cap 50; GPT cap 57 stays unchanged. Historical qualifications
+retain their original scopes. Repeat/restart cache reuse, SSO and indexed-session
+qualification remain separate. Packaged/relocated artifacts and final delivery
+review passed for this checkpoint; remaining human acceptance stays open.

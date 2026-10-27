@@ -61,9 +61,9 @@
 
 ### Functions
 
-| ID | Registry | Input | Output |
-| --- | --- | --- | --- |
-| plan | plan | [input](../../schemas/plan_input.json) | [output](../../schemas/plan_output.json) |
+| ID | Registry | Input | Output | Response schema | Output mode | Fallback |
+| --- | --- | --- | --- | --- | --- | --- |
+| plan | plan | [input](../../schemas/plan_input.json) | [output](../../schemas/plan_output.json) | [response](../../schemas/plan_output.json) | structured | allow |
 
 ## Node: review
 
@@ -75,6 +75,6 @@
 
 ### Functions
 
-| ID | Registry | Input | Output |
-| --- | --- | --- | --- |
-| review | review | [input](../../schemas/review_input.json) | [output](../../schemas/review_output.json) |
+| ID | Registry | Input | Output | Response schema | Output mode | Fallback |
+| --- | --- | --- | --- | --- | --- | --- |
+| review | review | [input](../../schemas/review_input.json) | [output](../../schemas/review_output.json) | [response](../../schemas/review_response.json) | structured | reject |

@@ -2,7 +2,7 @@
 import asyncio
 import time
 
-from api_agent.providers.contracts import ConfigurationRequiredError, ContractError, InteractionRequiredError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError
+from api_agent.providers.contracts import ConfigurationRequiredError, ContractError, InteractionRequiredError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError, UnattendedCredentialError
 from api_agent.providers.control import finish_cleanup
 from api_agent.providers.progress import component_timeout, independent_timeout_scope
 from .acquisition import SessionMaterial
@@ -41,6 +41,8 @@ class AcquiredSession:
                 raise
             except SetupPrerequisiteError:
                 raise SetupPrerequisiteError('Selected Bedrock session adapter prerequisites are unavailable; check requirements.') from None
+            except UnattendedCredentialError:
+                raise
             except InteractionRequiredError:
                 raise InteractionRequiredError('Bedrock session acquisition requires interaction.') from None
             except Exception:

@@ -28,7 +28,8 @@ def authenticated_child():
 
 @pytest.mark.parametrize('log,trace', [(False, False), (False, True), (True, False), (True, True)])
 @pytest.mark.parametrize('mode', ['OTEL', 'LangFuse'])
-def test_parsed_useful_demo_captures_nodes_and_actual_llm_messages_without_custom_wiring(log, trace, mode):
+@pytest.mark.parametrize('effective_payload', [False, True])
+def test_parsed_useful_demo_captures_nodes_and_actual_llm_messages_without_custom_wiring(log, trace, mode, effective_payload):
     with collector() as (endpoint, received):
         resolved = config(log, trace, mode, TRACE_TARGET=endpoint,
             LANGFUSE_PUBLIC_KEY='synthetic-public', LANGFUSE_SECRET_KEY='synthetic-secret')
@@ -47,15 +48,28 @@ def test_parsed_useful_demo_captures_nodes_and_actual_llm_messages_without_custo
             'arguments': {'query': '{ item { name } }'}, 'answer': ''}), verdict(), 'shared-visible-response'])
         async def provider(request, *, auth):
             requests.append(request)
-            result = LLMResult(Message('assistant', (TextContent(next(outputs)),)), Usage(2, 3))
+            from test_response_policy_contract import evidence
+            response = None if request.payload.response is None else evidence(request,
+                'prompted_json' if request.payload.response.mode == 'structured' and request.payload.response.fallback == 'allow' else None,
+                'unsupported_schema' if request.payload.response.mode == 'structured' and request.payload.response.fallback == 'allow' else None)
+            result = LLMResult(Message('assistant', (TextContent(next(outputs)),)), Usage(2, 3), response=response)
             # Stand in for the existing authoritative accounting publisher.
             journal, visit, attempt = current_workflow_visit()
             journal.record_call(visit_id=visit, attempt_id=attempt, call_id=str(uuid4()),
                 usage={'input_tokens': 2, 'output_tokens': 3}, selection='chosen-model', elapsed=.001)
             return result
+        class EffectiveProvider:
+            captures_effective_payload = True
+
+            async def complete(self, request, *, auth):
+                body = {'messages': [{'role': message.role, 'content': [part.text for part in message.content]} for message in request.payload.messages],
+                        'adapter_instructions': [{'role': 'user', 'content': 'adapter-added-format-instruction'}]}
+                capture_inference('input', {'provider_payload': body}, request.request_id, auth=auth)
+                return await provider(request, auth=auth)
+
         async def scenario():
             await runtime.astart()
-            shared = SharedSetupOwner('operation', 'selected', lambda credentials: authenticated_child(), complete=provider)
+            shared = SharedSetupOwner('operation', 'selected', lambda credentials: authenticated_child(), complete=EffectiveProvider().complete if effective_payload else provider)
             async def complete(request, *, context):
                 return await shared.complete(request)
             request = LLMRequest('chosen-model', CompletionRequest((Message('user',
@@ -74,6 +88,12 @@ def test_parsed_useful_demo_captures_nodes_and_actual_llm_messages_without_custo
                  for scope in resource.scope_spans for span in scope.spans]
         wire_text = str(spans)
         log_text, artifact_text = repr(rows), json.dumps(retained)
+        captures = [row for row in retained['events'] if row.get('event') == 'capture' and row.get('values', {}).get('llm_request')]
+        assert len(captures) == (len(requests) if log else 0)
+        for text in ('adapter-added-format-instruction',):
+            assert (text in wire_text) is (trace and effective_payload)
+            assert (text in log_text) is (log and effective_payload)
+            assert (text in artifact_text) is (log and effective_payload)
         for text in ('shared-visible-request', 'shared-visible-response'):
             assert (text in wire_text) is trace
             assert (text in log_text) is log

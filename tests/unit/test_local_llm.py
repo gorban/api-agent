@@ -628,3 +628,59 @@ def test_provider_services_borrow_operation_interaction(selected):
         assert loader.call_args.args[2]['interaction'] is interaction
         await owner.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_response_evidence_survives_local_terminal_accounting(selected, failure):
+    from dataclasses import replace
+    from unittest.mock import Mock
+    from api_agent.providers.llm import ResponsePolicy, ResponseEvidence
+    from api_agent.workflows.attribution import bind_workflow_visit
+    owner, implementation, _, _, _ = selected
+    req=request()
+    req=replace(req,payload=replace(req.payload,response=ResponsePolicy('text','reject')))
+    evidence=ResponseEvidence('text','reject','text',None,None,None)
+    async def complete(value, *, auth):
+        if failure:raise ProviderAccessError('unknown','Safe failure',usage=Usage(2,3),response=evidence)
+        return LLMResult(Message('assistant',(TextContent('answer'),)),Usage(2,3),response=evidence)
+    implementation.acomplete=complete
+    journal=SimpleNamespace(record_call=Mock())
+    async def scenario():
+        try:
+            with bind_workflow_visit(journal,'visit'):
+                if failure:
+                    with pytest.raises(ProviderAccessError):await owner.complete(req)
+                else:assert (await owner.complete(req)).response==evidence
+            assert len(owner.usage)==1
+            assert owner.usage[0]['response']['actual_mode']=='text'
+            assert journal.record_call.call_args.kwargs['response']==owner.usage[0]['response']
+            assert journal.record_call.call_args.kwargs['call_id']==owner.usage[0]['call_id']
+        finally:await owner.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('kind',[TimeoutError,OperationalError,asyncio.CancelledError])
+def test_dispatched_plain_failure_retains_mode_partial_usage_and_original_status(selected,kind):
+    from dataclasses import replace
+    from api_agent.providers.llm import ResponsePolicy,ResponseEvidence
+    from api_agent.workflows.inference_capture import record_response_dispatch
+    owner,implementation,_,_,_=selected
+    req=request();req=replace(req,payload=replace(req.payload,response=ResponsePolicy('text','reject')))
+    evidence=ResponseEvidence('text','reject','text',None,None,None)
+    error=kind('deadline');error.usage=Usage(3,2)
+    calls=[]
+    async def complete(value, *, auth):
+        calls.append(value);record_response_dispatch(evidence);raise error
+    implementation.acomplete=complete
+    async def scenario():
+        try:
+            expected=OperationalError if kind is TimeoutError else kind
+            with pytest.raises(expected) as caught:await owner.complete(req)
+            if kind is not TimeoutError and kind is not asyncio.CancelledError:
+                assert caught.value is error
+            assert len(owner.usage)==1 and calls==[req]
+            assert owner.usage[0]['response']['actual_mode']=='text'
+            assert owner.usage[0]['usage']['input_tokens']==3
+            assert owner.usage[0]['outcome']==('cancelled' if kind is asyncio.CancelledError else 'failed')
+        finally:await owner.aclose()
+    asyncio.run(scenario())
