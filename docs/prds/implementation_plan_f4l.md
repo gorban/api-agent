@@ -22,18 +22,20 @@ remain separate claims; partial or cap-reaching replies do not qualify a compari
 - [x] Complete [operation-scoped defaults and current qualification](implementation_plan_f4l3.md):
   Responses text/reasoning/Studio, native GLM5 Completions tools/workflow, isolated
   controls and exact source-bound calibration. Preserve strict tool/schema/truth
-  assertions, usage, reporting and cleanup. The current full ordinary catalog has
+  assertions, usage, reporting and cleanup. The historical native-adapter catalog had
   17 core cases plus one provider UI case.
-- [x] Complete current source-bound workflow qualification and the entire normal
+- [x] Complete the historical native-adapter workflow qualification and normal
   defaults catalog: 17 core cases plus one provider UI case. Retain failed runs.
 - [x] Complete final package/boundary reconciliation and independent/
   external review; source checks and live passes do not close these gates.
-- [ ] Human acceptance through launcher reasoning, Studio selection and normal
-  node coverage remains separate from source checks and pilot arithmetic.
+- [x] Record conditional human acceptance of the current launcher follow-up
+  after technical closure; retain earlier manual checkpoints in their details.
 
-Current source repairs have exact applicable full-unit coverage and source-review
-approval. Current post-repair calibration and the normal 18-case run passed;
-final artifact/external review passed; human acceptance remains open. Broader
+The historical native-adapter checkpoint passed its then-current calibration,
+18-case catalog, exact applicable units and final artifact/external review.
+The [current SDK-profile follow-up](implementation_plan_f4l3d.md) passed fresh
+workflow and reasoning cases, exact units and final technical gates, and records
+conditional acceptance. Its passes do not establish a new full 18-case run. Broader
 authentication, platforms, capabilities and actual-charge accounting remain with their owning Bedrock requirements. Bounded inference
 requires its own authorization; discovery or prior success does not extend it.
 

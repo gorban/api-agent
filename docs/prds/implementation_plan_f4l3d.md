@@ -23,10 +23,19 @@ application defaults cannot accidentally pin another provider's test configurati
   of the explicit native-login adapter; preserve old observations and unrelated
   provider baselines. The fresh 60-graph pilot supports cap 50 with the unchanged
   confidence, coverage target and fixed margin.
-- [ ] Pass normal reasoning and workflow integration with the effective defaults.
-- [ ] Independent review and final applicable verification.
-- [ ] Human acceptance through ordinary launcher selections.
+- [x] Pass normal reasoning and workflow integration with the effective defaults.
+- [x] Independent review and final applicable verification.
+- [x] Record the user’s conditional acceptance of this launcher follow-up after
+  technical closure; no additional manual launcher exercise is claimed.
 
 The review is read-only. Application settings remain editable in the existing
 Review flow; explicit test controls use dotenv, environment or CLI. Removing an
 existing saved override requires an explicit user decision through cleanup.
+
+The default SDK-profile pilot passed 60 graphs/160 calls: minimum 46 plus fixed
+margin four gives cap 50. Fresh workflow integration passed four graphs/12 calls;
+fresh reasoning passed all six calls with signed deltas 478, 1256 and 1257.
+The earlier empty-answer reasoning failure remains a failure. Applicable units
+passed 18,700 tests with exact coverage of 45,971 statements and 17,994 branches.
+Final package, boundary and independent/external review passed. These results
+supersede no earlier measurement's source, adapter or configuration identity.

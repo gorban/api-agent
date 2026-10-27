@@ -2,7 +2,7 @@
 
 [LLM adapters](implementation_plan_f1.md) · [Cost qualification](implementation_plan_f3c.md)
 
-Deliver Bedrock through replaceable provider contracts, with adapter-owned configuration, credentials, catalog, transport, pricing and lifecycle. The complete 18-case ordinary defaults catalog passed; final artifact/review passed; human and broader live gates remain open. The [acquisition foundation](implementation_plan_f4a1.md) defines replaceable session adapters.
+Deliver Bedrock through replaceable provider contracts, with adapter-owned configuration, credentials, catalog, transport, pricing and lifecycle. Earlier catalog and artifact/review passed; the current launcher follow-up has conditional acceptance after technical closure; broader live gates remain open. [Acquisition foundation](implementation_plan_f4a1.md) defines replaceable session adapters.
 
 Target only bedrock-mantle with [OpenAI-compatible APIs and three authentication choices](implementation_plan_f4d.md). Offline tests qualify both formats and reusable acquisition ownership; broader live capabilities remain open.
 
@@ -24,6 +24,6 @@ Qualification may use a bounded model/route matrix. Reject unsupported features 
 ## Integrated qualification
 
 - [x] Complete [default-driven ordinary integration delivery](implementation_plan_f4l3.md): unit/coverage, normal catalog, installed-resource, boundary and independent/external review gates passed. Preserve application/shared behavior and each earlier result's source/configuration scope.
-- [ ] Human acceptance through ordinary launcher defaults remains separate.
+- [x] Record conditional acceptance of the [launcher follow-up](implementation_plan_f4l3d.md) after its technical closure; earlier manual checkpoints remain separate.
 
 - [ ] Qualify [model-specific prompt caching](implementation_plan_f4m.md) with eligible inference access.
