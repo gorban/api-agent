@@ -72,7 +72,7 @@ result remains separate from the later complete 18-case pass.
 - [x] Complete final independent/external review
   before final reporting acceptance.
 
-The current normal run passed both real tool flows. A prior run rejected invalid
+The historical native-adapter normal run passed both real tool flows. A prior run rejected invalid
 tool-argument JSON before tool execution; its raw arguments were not retained,
 and no parser relaxation, coercion or repair was introduced. Preserve that
 failed run and its partial usage separately from the later pass.

@@ -2,6 +2,11 @@
 
 [Operation-scoped profiles](implementation_plan_f4l3.md)
 
+The completed calibration and full-catalog gates below describe the historical
+native-adapter checkpoint. The [current SDK-profile launcher follow-up](implementation_plan_f4l3d.md)
+records its separate cap 50 qualification, workflow/reasoning checks and
+conditional acceptance; it does not establish a new full 18-case run.
+
 Different qualified models may need different bounded coverage budgets. Keep
 the statistical claim independent of that operational choice. A completed
 pilot whose calculated bound exceeds its declared ceiling remains a failed
@@ -27,7 +32,7 @@ qualification; do not promote it or rewrite its source identity.
   malformed/forged reports, early completion and exhaustion, and causal rejection
   controls. Complete exact applicable unit coverage and independent/external
   review before fresh live qualification.
-- [x] Run a fresh predeclared 60-graph pilot under the final Bedrock profile and
+- [x] Run a fresh predeclared 60-graph pilot under the historical native-adapter Bedrock profile and
   fingerprint. Preserve prior failed observations separately without pooling,
   extending or cherry-picking them. Independently review its receipt, complete
   structural measurements and arithmetic before promoting a new entry.
