@@ -91,7 +91,7 @@ def validate_metadata(value):
             or (value.get('cache_policy') is not None and (type(value['cache_policy']) is not str or value['cache_policy'] not in ('off', 'medium', 'high')))
             or any(not _identifier(value[key], nullable=key in ('actual_model', 'serving_revision')) for key in
                    ('requested_model', 'catalog_model', 'actual_model', 'serving_revision'))
-            or not _identifier(value['service_tier'], nullable=True) or value['billing_mode'] not in ('subscription', 'api_key', 'unknown') or type(value['compatibility']) is not dict
+            or not _identifier(value['service_tier'], nullable=True) or value['billing_mode'] not in ('subscription', 'api_key', 'metered', 'unknown') or type(value['compatibility']) is not dict
             or set(value['compatibility']) != set(_COMPAT)):
         raise ContractError('Invalid call accounting metadata')
     validate_compatibility(value['compatibility'])
@@ -141,7 +141,7 @@ def validate_evidence(value):
     return value
 
 
-def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None, summary=None, context=None):
+def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None, summary=None, context=None, test_configs=None):
     summary = usage.report() if summary is None else summary
     quota = {key: deepcopy(summary.get(key)) for key in ('before', 'after', 'pct_point_delta',
              'quota_unavailable_reason', 'payment_policy', 'payment_month')}
@@ -156,7 +156,7 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
         costs = summary.get('test_costs', {}).get(test.id, {})
         prediction = None if estimator is None else deepcopy(getattr(estimator, 'advance_predictions', estimator.predictions).get(test.id))
         records.append(dict(test_id=test.id, node_id=test.node_id, source_fingerprint=source_fingerprint(test, context=context),
-            compatibility=compatibility(config), outcomes=statuses, attempts=len(statuses), calls=own,
+            compatibility=compatibility(config if test_configs is None else test_configs[test.id]), outcomes=statuses, attempts=len(statuses), calls=own,
             original_estimate=costs.get('estimated_cost_usd'), list_cost_usd=costs.get('list_cost_usd'),
             raw_quota_cost_usd=costs.get('estimated_cost_usd') if costs.get('basis') == 'quota_payment' else None,
             prediction=prediction, stabilized_estimate=None, calls_complete=calls_complete,

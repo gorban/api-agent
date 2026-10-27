@@ -26,7 +26,7 @@ _NAME = 'Shared provider setup'
 
 
 def _timeout(value):
-    if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 3600:
+    if type(value) not in (int, float) or not 0 < value <= 3600 or not math.isfinite(value):
         raise ContractError('Invalid setup timeout')
     return value
 

@@ -148,9 +148,9 @@ def test_selection_fixture_resolves_catalog_or_missing_capability(monkeypatch, a
     if not available:
         provider.describe.side_effect = pytest.skip.Exception('no catalog capability')
         with pytest.raises(pytest.skip.Exception, match='no catalog capability'):
-            provider_setup.llm_selection.__wrapped__(provider)
+            provider_setup.llm_selection.__wrapped__(provider, None)
     else:
-        assert provider_setup.llm_selection.__wrapped__(provider) == 'family-2'
+        assert provider_setup.llm_selection.__wrapped__(provider, None) == 'family-2'
     provider.describe.assert_called_once_with()
 
 

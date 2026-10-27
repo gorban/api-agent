@@ -6,7 +6,8 @@ def controls(session):
     """Inputs owned by UI actions, as opposed to files reread by the resolver."""
     return (session.context, session._provider_base_schema, session.argv,
             dict(session.environ), deepcopy(session._choices), session._tool_selection,
-            session._automatic_tool_selection, session._tool_intents, session.dotenv_path)
+            session._automatic_tool_selection, session._tool_intents, session.dotenv_path,
+            deepcopy(session._runtime_requirements), session._runtime_requirement_token)
 
 
 def fork_session(session):

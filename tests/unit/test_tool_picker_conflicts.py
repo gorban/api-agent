@@ -82,7 +82,7 @@ async def test_conflicting_default_union_stays_in_picker_and_recovers(conflictin
         await pilot.pause()
         await app.choose('review-config')
         await pilot.pause()
-        assert app.screen.kind == 'defaults'
+        assert app.screen.kind == 'case-configuration'
         assert not app.test_run_active()
         runner.assert_not_called()
 

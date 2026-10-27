@@ -80,7 +80,7 @@ def test_source_metadata_is_separate_from_provider_settings_and_reaches_worker(t
     assert data['config'] == {'UNATTENDED_USER_INDEX': 0}
     assert data.get('unattended_index_source') == source
     assert ('unattended_index_source' in data) is (source is not None)
-    values = p.llm_provider.__wrapped__()
+    values = p.llm_provider.__wrapped__(None)
     owner = next(values)
     assert owner.unattended_index_source == source
     with pytest.raises(StopIteration):
@@ -201,7 +201,7 @@ def test_required_configuration_lists_missing_names_without_values(values):
 
 def test_requirement_fixture_is_inert_and_false_zero_are_provided(tmp_path, monkeypatch):
     snapshot(tmp_path, monkeypatch, {'BOOL': False, 'NUMBER': 0, 'VALUE': 'configured'})
-    requirement = p.integration_config.__wrapped__()
+    requirement = p.integration_config.__wrapped__(None, lambda *args: None)
     requirement.require('BOOL', 'NUMBER', 'VALUE')
     requirement.require_combination(True, 'not relevant')
     with pytest.raises(pytest.skip.Exception, match='This operation requires the supported combination'):
@@ -282,7 +282,7 @@ def test_selected_invalid_combination_skips_shared_setup(tmp_path, jobs):
 
 def test_fixture_does_not_setup_and_always_closes(tmp_path, monkeypatch):
     snapshot(tmp_path, monkeypatch)
-    values = p.llm_provider.__wrapped__()
+    values = p.llm_provider.__wrapped__(None)
     owner = next(values)
     assert owner.provider is None
     with pytest.raises(StopIteration):

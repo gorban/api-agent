@@ -12,14 +12,22 @@ from api_agent.workflows.sampling import DECLARED, FIRST, measurement, observed_
 
 @pytest.mark.parametrize('route', ['skip', 'next_a', 'next_b'])
 @pytest.mark.parametrize('retry', [False, True])
-def test_measurement_accepts_actual_fixture_events(route, retry):
+def test_measurement_accepts_actual_fixture_events(route, retry, monkeypatch):
     root = Path(__file__).parents[2]
     events = []
     config = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory'}
 
+    from api_agent.workflows import fixture_driver
+    from test_workflow_trial_decisions import trial_uuid
+    original_build = fixture_driver.build
+    def controlled_build(*args, **kwargs):
+        kwargs['trial'] = trial_uuid(route, first_ready=not retry, second_ready=not retry)
+        return original_build(*args, **kwargs)
+    monkeypatch.setattr(fixture_driver, 'build', controlled_build)
+
     def complete(request):
-        attempt = json.loads(request.payload.messages[-1].content[0].text)['attempt']
-        draft = dict(original_input=USER_INPUT, route=route, ready=not retry or attempt > 1,
+        decisions = json.loads(request.payload.messages[-1].content[0].text)['decisions']
+        draft = dict(original_input=USER_INPUT, route=decisions['route'], ready=decisions['ready'],
                      final_output=USER_INPUT)
         return LLMResult(Message('assistant', (TextContent(json.dumps(draft)),)), Usage(3, 1))
 

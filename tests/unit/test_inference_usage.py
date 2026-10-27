@@ -162,3 +162,15 @@ def test_trial_evidence_has_no_conversation_identity(tmp_path, monkeypatch):
     with trial(2):
         publish(REQUEST, RESULT)
     assert 'conversation_id' not in json.loads(path.read_text())['data']
+
+
+
+def test_raw_validation_retains_reasoning_metadata_for_capture():
+    from api_agent.testing.inference_usage import validate_event
+    raw = row() | {'reasoning_effort': 'low'}
+    parsed, evidence = validate_event(event(raw))
+    assert parsed == raw
+    assert evidence['reasoning_effort'] == 'low'
+    tracker = SuiteUsage('run')
+    capture(event(raw), tracker)
+    assert tracker.inference_calls[raw['call_id']]['reasoning_effort'] == 'low'

@@ -44,11 +44,19 @@ The earlier node-only live coverage join retains three unverified definition-bin
 
 - [x] Require [observed retries and every root route](implementation_plan_b2b1a10.md) in addition to declared node coverage. The earlier node-only stopping and qualification records above remain historical.
 
-The expanded contract’s substantive gates are complete. Its explicit human acceptance remains unchecked in the linked detail.
+The earlier expanded contract’s substantive gates are complete. Its explicit
+human acceptance remains unchecked in the linked detail; earlier acceptance is
+preserved. The operating-budget extension below has separate unfinished gates.
 
-**Deferred human review**
+## Provider-selected operating ceilings
 
-All substantive implementation and required verification/review are complete. Only the expanded contract’s explicit human acceptance remains unchecked in its detail; earlier human acceptance is preserved.
+- [ ] Complete [bounded provider-selected test budgets](implementation_plan_f4l3a.md).
+  This extends the earlier universal operating maximum to a shared default of
+  60 and an explicitly selected ceiling up to 120. Maintenance pilots still
+  contain at most 60 graphs. Statistical confidence, coverage target, four-run
+  margin, strict current-source qualification and immediate early stopping stay
+  unchanged. Failed lower-ceiling evidence cannot be promoted under a larger
+  ceiling; require fresh reviewed qualification after the policy is fixed.
 
 - [Qualification evidence](implementation_plan_b2b1a.md)
 - [Expanded workflow coverage](implementation_plan_b2b1a10.md)

@@ -11,6 +11,7 @@ Run callbacks run synchronously on the calling thread; retained inspection
 completion events run on their monitor thread. ``after_run`` receives the
 final result after pytest completes; debug inspection handles retain owned workers.
 """
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from functools import wraps
 import json
@@ -118,7 +119,7 @@ def _complete_report(rows):
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None, config=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None):
+                          after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -261,6 +262,19 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             from .requirements import plan_integration_requirements
             stage = 'Integration requirements validation'
             plan_integration_requirements(tests).validate(context, config or {})
+            from .test_profiles import resolve_test_profiles
+            test_profiles = (resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields)
+                             if resolved_test_profiles is None and config is not None else
+                             deepcopy(resolved_test_profiles or {}))
+            if config is not None:
+                if set(test_profiles) != {test.id for test in tests} or any(
+                        test_profiles[test.id].get('node_id') != test.node_id or
+                        test_profiles[test.id].get('repo') != test.repo for test in tests):
+                    raise CollectionError('Test profiles do not match the freshly admitted integration identities')
+                from .cost_context import cost_config
+                for row in (() if resolved_test_profiles is not None else test_profiles.values()):
+                    values = {key: value for key, value in row['config'].items() if not key.startswith('_COST_')}
+                    row['config'] = cost_config(context, values)
             stage = 'Integration runner configuration'
             base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
             roots = {base.name: base, owner.name: owner}
@@ -310,14 +324,15 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     tool_plan_ready = True
                 if config is not None and backend is None and plan_integration_requirements(tests).requires_llm:
                     stage = 'Integration shared setup backend startup'
-                    from .setup_backend import SetupBackend
-                    backend = SetupBackend(config, context.owner_root,
+                    from .setup_pool import SetupPool
+                    backend = SetupPool(test_profiles, context.owner_root,
                         unattended_index_source=unattended_index_source,
                         password_manager_registry=manager_registry, interaction=interaction, quota_observer=quota_observer)
-                    retain_suite_cleanup(backend)
-                    if config.get('DEBUG'):
-                        inspections.append(backend)
-                    backend_descriptor = backend.start()
+                    try:
+                        backend_descriptor = backend.start()
+                    finally:
+                        if config.get('DEBUG'):
+                            inspections.extend(backend.owners)
                 stage = 'Integration pytest launch preparation'
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
@@ -326,7 +341,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         from .provider_setup import write_launch_snapshot
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
                             unattended_index_source=unattended_index_source,
-                            setup_backend=backend_descriptor, password_manager_registry=manager_registry,
+                            test_profiles=({identity.node_id: backend_descriptor[identity.id] for identity in selected.values()}
+                                           if backend_descriptor is not None else None), password_manager_registry=manager_registry,
                             interaction_descriptor=interaction_descriptor,
                             **({'tool_plan': tool_plan,
                                 'tool_cases': {identity.node_id: identity.id for identity in selected.values()}}
@@ -598,7 +614,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             try:
                 backend.close()
             except BaseException as error:
-                inspections.append(backend)
+                inspections.extend(backend.owners)
                 publication_error = error
                 if not isinstance(error, Exception) and interruption is None:
                     interruption = error

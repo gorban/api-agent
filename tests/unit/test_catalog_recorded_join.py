@@ -1,5 +1,6 @@
 """Real recorded workers verify the selected credential and retain safe failures."""
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -23,6 +24,16 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     key = 'synthetic-subscription-password-or-key-never-exported'
     secondary_key = 'synthetic-secondary-credential-not-selected'
     credential_reads, requests, loaded = [], [], []
+    # Price publication time changes on each refresh; identical test operations
+    # must freeze it once instead of allocating another credential owner.
+    from api_agent.providers import rates
+    price_reads = []
+    def fresh_prices(context, values):
+        price_reads.append(values)
+        card = rates.bundled_rate_card()
+        card['verified_at'] = datetime(2026, 10, 26, microsecond=len(price_reads), tzinfo=timezone.utc).isoformat()
+        return rates.compact_rate_card(card, values)
+    monkeypatch.setattr(rates, 'freeze_pricing', fresh_prices)
     def password(profile, **kwargs):
         credential_reads.append((profile.vault, profile.user))
         return key
@@ -88,6 +99,7 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     assert [test.status for test in result.execution.tests] == [expected, expected]
     assert result.exit_code == (0 if outcome == 'accepted' else 1)
     assert credential_reads == [('synthetic-vault', 'selected-entry')]
+    assert len(price_reads) == 1
     expected_request_counts = (2,) if outcome == 'accepted' else failure_request_counts
     assert len(requests) in expected_request_counts
     assert len(loaded) == 1

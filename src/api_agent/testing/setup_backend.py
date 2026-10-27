@@ -65,6 +65,8 @@ class SetupBackend(CleanupLeaseOwner):
 
     def __init__(self, config, owner_root, *, unattended_index_source=None,
                  password_manager_registry=None, interaction=None, quota_observer=None):
+        from api_agent.providers.setup_transport import _timeout
+        self.timeout = _timeout(config.get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', self.timeout))
         self.quota_observer = quota_observer
         self.interaction = interaction
         self._config = deepcopy(dict(config))

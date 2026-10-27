@@ -16,6 +16,7 @@ from .contracts import ContractError
 
 OPENAI = 'https://developers.openai.com/api/docs/pricing'
 OPENROUTER = 'https://openrouter.ai/api/v1/models'
+BEDROCK = 'https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-east-1/index.json'
 _KEYS = {'service_tier', 'input', 'cached_input', 'output', 'threshold', 'input_multiplier', 'output_multiplier'}
 
 
@@ -29,7 +30,7 @@ def _text(value):
 
 def validate_rate_card(card):
     if (type(card) is not dict or set(card) != {'version', 'source', 'revision', 'verified_at', 'fallback', 'currency', 'unit', 'models'}
-            or type(card['version']) is not int or card['version'] != 1 or card['source'] not in (OPENAI, OPENROUTER)
+            or type(card['version']) is not int or card['version'] != 1 or card['source'] not in (OPENAI, OPENROUTER, BEDROCK)
             or not _text(card['revision']) or type(card['fallback']) is not bool or card['currency'] != 'USD'
             or card['unit'] != 'token' or type(card['models']) is not dict or not card['models'] or len(card['models']) > 10000):
         raise ContractError('Invalid rate snapshot')
@@ -90,8 +91,16 @@ def price_usage_parts(card, model, usage):
         raise ContractError('Invalid priced usage') from None
     if rate is None or all(rate[name] is None for name in ('input', 'cached_input', 'output')) or tokens.input_tokens is None or tokens.output_tokens is None:
         return parts
-    # Unknown cached usage cannot be assumed to be zero.
+    # A flat input rate can price the inclusive total without inventing subsets.
     if tokens.cached_input_tokens is None:
+        if (rate['input'] is not None and rate['cached_input'] == rate.get('cache_write') == rate['input']
+                and (rate['threshold'] is None or rate['input_multiplier'] == rate['output_multiplier'] == 1)
+                and rate['output'] is not None):
+            output = tokens.output_tokens * rate['output']
+            parts.update(input_tokens=tokens.input_tokens * rate['input'], output_tokens=output,
+                cache_read_tokens=None, cache_creation_tokens=None if tokens.cache_write_tokens is None else tokens.cache_write_tokens * rate['input'],
+                reasoning_tokens=None if tokens.reasoning_tokens is None else tokens.reasoning_tokens * rate['output'],
+                total_tokens=math.fsum((tokens.input_tokens * rate['input'], output)))
         return parts
     remaining = tokens.input_tokens - tokens.cached_input_tokens
     writes = tokens.cache_write_tokens
@@ -331,7 +340,10 @@ def compact_rate_card(card, config=None, *, model=None):
 
 def _source(config):
     from api_agent.llm_providers.gpt import factory
+    from api_agent.llm_providers.bedrock import factory as bedrock_factory
     selected = config.get('LLM_PROVIDER')
+    if selected == str(Path(bedrock_factory.__file__).resolve()) + ':factory':
+        return BEDROCK
     if selected != str(Path(factory.__file__).resolve()) + ':factory':
         return None
     endpoint = config.get('GPT_BASE_URL', 'https://api.openai.com/v1')
@@ -374,6 +386,9 @@ def cached_rate_card(context=None, config=None):
     source = _source(config)
     if source is None:
         return None
+    if source == BEDROCK:
+        from api_agent.llm_providers.bedrock.pricing import bundled_rate_card as bedrock_rate_card
+        return bedrock_rate_card(config)
     card = config.get('_COST_RATE_CARD')
     if card is not None:
         try:
@@ -395,6 +410,8 @@ def freeze_pricing(context, config):
     source = _source(config)
     if source is None:
         return None
+    if source == BEDROCK:
+        return cached_rate_card(context, config)
     fallback = cached_rate_card(context, config)
     path = _cache_path(context, source)
     cached = _read_cache(path)

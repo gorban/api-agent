@@ -616,3 +616,15 @@ def test_listener_catalog_uses_request_budget_after_startup_expires(
             await listener.stop()
             await backend.aclose()
     asyncio.run(run())
+
+
+
+def test_provider_services_borrow_operation_interaction(selected):
+    owner, _, _, loader, _ = selected
+    interaction = object()
+    owner.interaction_owner = interaction
+    async def run():
+        await owner.ensure_ready()
+        assert loader.call_args.args[2]['interaction'] is interaction
+        await owner.aclose()
+    asyncio.run(run())

@@ -179,7 +179,7 @@ def test_menu_cancels_old_history_and_reentry_uses_a_new_snapshot(tmp_path, monk
             snapshot.cancel_synchronization = stops[i].set
         remaining = iter(snapshots)
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *args: next(remaining)))
+                            SimpleNamespace(estimator_for=lambda *args, **options: next(remaining)))
         app = fixture(tmp_path, 'integration', collector=lambda *args: identities(2))
         try:
             async with app.run_test() as pilot:
@@ -209,7 +209,7 @@ def test_queued_history_does_not_start_after_picker_closes(tmp_path, monkeypatch
     from test_test_table import identities
     async def scenario():
         snapshots = []
-        def estimate(*args):
+        def estimate(*args, **options):
             snapshot = Snapshot(1)
             snapshot.synchronize = Mock(return_value=snapshot)
             snapshots.append(snapshot)
@@ -252,7 +252,7 @@ def test_active_history_failure_preserves_picker(tmp_path, monkeypatch):
         snapshot = Snapshot(1)
         snapshot.synchronize = Mock(side_effect=OSError('source unavailable'))
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *args: snapshot))
+                            SimpleNamespace(estimator_for=lambda *args, **options: snapshot))
         app = fixture(tmp_path, 'integration', collector=lambda *args: identities(2))
         async with app.run_test() as pilot:
             await pilot.pause()

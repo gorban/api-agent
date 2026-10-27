@@ -198,10 +198,17 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
         'ALLURE_RESULTS_DIR': tmp_path / 'results', 'LOG_CONTENT': False,
         'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory'}
 
+    from test_workflow_trial_decisions import trial_uuid
+    original_build = fixture_driver.build
+    def controlled_build(*args, **kwargs):
+        kwargs['trial'] = trial_uuid('next_a', first_ready=not retry, second_ready=not retry)
+        return original_build(*args, **kwargs)
+    monkeypatch.setattr(fixture_driver, 'build', controlled_build)
+
     def complete(request):
-        attempt = json.loads(request.payload.messages[-1].content[0].text)['attempt']
-        response = dict(original_input=fixture_driver.USER_INPUT, route='next_a',
-            ready=not retry or attempt > 1, final_output=fixture_driver.USER_INPUT)
+        decisions = json.loads(request.payload.messages[-1].content[0].text)['decisions']
+        response = dict(original_input=fixture_driver.USER_INPUT, route=decisions['route'],
+            ready=decisions['ready'], final_output=fixture_driver.USER_INPUT)
         return LLMResult(Message('assistant', (TextContent(json.dumps(response)),)), Usage(3, 1))
 
     def runner(context, tests, **hooks):

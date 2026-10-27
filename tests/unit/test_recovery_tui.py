@@ -3,7 +3,7 @@ import asyncio
 import threading
 
 from textual.app import App
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, TextArea
 
 from api_agent.auth.interaction import Reply
 from api_agent.tui.manager_recovery import ManagerRecoveryScreen, TUIInteraction, transcript_text, _LIMIT
@@ -63,7 +63,7 @@ def test_recovery_send_cancel_focus_and_cleanup():
             assert not screen.query_one(Input).disabled
             assert not screen.query_one('#manager-send', Button).disabled
             assert app.focused.id == 'manager-input'
-            for expected in ('manager-send', 'manager-cancel', 'manager-input'):
+            for expected in ('manager-send', 'manager-cancel', 'manager-output', 'manager-input'):
                 await pilot.press('tab')
                 assert app.focused.id == expected
             screen.query_one('#manager-send', Button).focus()
@@ -162,7 +162,7 @@ def test_retry_queue_and_deadline_confirmation_close():
             await asyncio.to_thread(first.close)
             await pilot.pause()
             assert app.screen is second.screen
-            assert str(second.screen.query_one('#manager-output', Static).content) == 'queued output'
+            assert second.screen.query_one('#manager-output', TextArea).text == 'queued output'
             second.screen.request_cancel()
             second.screen.request_cancel()  # Two dialogs can still be disposed on operation expiry.
             await asyncio.to_thread(second.close)

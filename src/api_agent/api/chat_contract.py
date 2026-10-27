@@ -11,6 +11,7 @@ from ..providers.selection import ModelSelectionPolicy
 
 STREAM_BYTES = 1048576
 STREAM_EVENTS = 8192
+MAX_OUTPUT_TOKENS = 16384
 
 EFFORTS = ('off', 'low', 'medium', 'high')
 
@@ -77,7 +78,7 @@ def completion(row, default, reasoning_default):
             raise ContractError('Invalid conversation identifier') from None
     if 'reasoning_effort' in row and (type(row['reasoning_effort']) is not str or row['reasoning_effort'] not in EFFORTS):
         raise ContractError('Invalid reasoning effort')
-    if 'max_output_tokens' in row and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 4096):
+    if 'max_output_tokens' in row and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= MAX_OUTPUT_TOKENS):
         raise ContractError('Invalid output limit')
     if 'cache_policy' in row and (type(row['cache_policy']) is not str or row['cache_policy'] not in ('off', 'medium', 'high')):
         raise ContractError('Invalid cache policy')

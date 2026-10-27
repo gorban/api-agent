@@ -191,7 +191,8 @@ def test_selected_ui_intent_is_shared_by_tool_projection_and_review(selection_fi
 
 
 @pytest.mark.asyncio
-async def test_close_selected_test_review_returns_to_picker_without_stale_context(selection_fixture):
+@pytest.mark.parametrize('exit_action', ['close', 'button', 'edit'])
+async def test_close_selected_test_review_returns_to_picker_without_stale_context(selection_fixture, exit_action):
     from api_agent.tui.app import ApiAgentApp
     from api_agent.testing.selection import SelectionModel
     session = session_for(selection_fixture)
@@ -203,9 +204,15 @@ async def test_close_selected_test_review_returns_to_picker_without_stale_contex
         app.show_selection()
         await app.choose('review-config')
         await pilot.pause()
-        assert app.screen.kind == 'defaults'
-
-        await pilot.press('c')
+        assert app.screen.kind == 'case-configuration'
+        if exit_action == 'edit':
+            await app.choose('edit-test-config')
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+        if exit_action == 'button':
+            await app.choose('return-test-selection')
+        else:
+            await pilot.press('c')
         await pilot.pause()
         assert app.screen.kind == 'tests'
         assert app.session.tool_plan.selection.test_ids == (DUAL,)

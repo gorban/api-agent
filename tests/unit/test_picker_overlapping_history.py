@@ -24,13 +24,13 @@ def assert_cost_rows(picker, value):
 def cached_picker(tmp_path, monkeypatch):
     estimate = Snapshot(7)
     monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                        SimpleNamespace(estimator_for=lambda *args: estimate))
+                        SimpleNamespace(estimator_for=lambda *args, **options: estimate))
     return fixture(tmp_path, 'integration', collector=lambda *args: identities(2)), estimate
 
 
 def test_settings_followup_refreshes_both_independently_covered_pickers(tmp_path, monkeypatch):
     started, proceed = Event(), Event()
-    def build(context, tests, values):
+    def build(context, tests, values, **options):
         estimate = Snapshot(values['TEST_COST_HISTORY_DAYS'])
         if estimate.value == 14:
             def synchronize():

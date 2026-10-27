@@ -71,3 +71,13 @@ its secondary can select GraphQL or REST. The separate
 [shared-primary fixture](../tests/integration/fixtures/tool_instances/shared_primary/conversation.md.html)
 derives secondary values from the primary and acquires no second API stack.
 See [fixture selection and inference-free checks](tools.md#inspect-the-delivered-examples).
+
+## Provider-owned test defaults
+
+LLM providers can contribute [exact-case integration profiles](integration_test_profiles.md)
+for their qualified models, API formats, generation controls and deadlines. The
+launcher resolves each test before creating its provider; application settings
+and authentication identity remain unchanged. Explicit test controls take
+precedence, and unsupported choices fail with guidance. This allows a provider
+to use different qualified models for reasoning, Studio and structured workflows
+without putting protocol branches in generic test drivers.

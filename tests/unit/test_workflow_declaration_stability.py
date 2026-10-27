@@ -10,6 +10,7 @@ from jsonschema import Draft7Validator, Draft202012Validator
 
 from api_agent.providers.llm import LLMResult, Message, TextContent
 from api_agent.workflows import LayoutError, NodeFunction, Workflow, load_layout
+from test_workflow_trial_decisions import trial_uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,9 +29,10 @@ def compile_workflow(path, complete, **services):
     layout = load_layout(path, base_root=ROOT, pack_root=path.parent)
     catalog = runpy.run_path(str(path.parent / 'functions.py'))
     schema = next(row['Output schema'] for row in layout.tables['Functions'] if row['ID'] == 'first_draft')
+    trial = services.pop('trial', trial_uuid())
     return Workflow(layout, {name: NodeFunction(catalog[name]) for name in ('produce', 'validate_format', 'guard')},
                     {'skip_second': lambda values: values['first_draft']['route'] == 'skip', **services.pop('conditions', {})},
-                    services=dict(llm=complete, selection='synthetic', trial='test', output_schema=schema, **services))
+                    services=dict(llm=complete, selection='synthetic', trial=trial, output_schema=schema, **services))
 
 
 @pytest.mark.parametrize('dialect', ['http://json-schema.org/draft-07/schema#', 'https://example.invalid/unknown-schema'])
@@ -92,7 +94,7 @@ def test_retry_prompts_are_snapshotted_in_order_per_execution(declaration):
         second.unlink(missing_ok=True)
         attempt = json.loads(request.payload.messages[-1].content[0].text)['attempt']
         return LLMResult(Message('assistant', (TextContent(json.dumps(dict(original_input='original', route='skip', ready=attempt == 2, final_output='original'))),)))
-    graph = compile_workflow(declaration, complete, conditions={'include': lambda values: True})
+    graph = compile_workflow(declaration, complete, conditions={'include': lambda values: True}, trial=trial_uuid(first_ready=False))
     asyncio.run(graph.arun({'user_input': 'original'}))
     assert len(requests) == 2
     assert requests[0].payload.messages[:2] == requests[1].payload.messages[:2]
@@ -129,7 +131,7 @@ def test_concurrent_executions_keep_independent_prompt_snapshots(declaration):
                 first_started.set()
                 await release.wait()
             return LLMResult(Message('assistant', (TextContent(json.dumps(dict(original_input=original, route='skip', ready=attempt == 2, final_output=original))),)))
-        graph = compile_workflow(declaration, complete)
+        graph = compile_workflow(declaration, complete, trial=trial_uuid(first_ready=False))
         first = asyncio.create_task(graph.arun({'user_input': 'first'}))
         await first_started.wait()
         path.write_text('second execution')
@@ -146,7 +148,7 @@ def test_shared_prompt_path_is_read_once_per_execution_before_node_effects(decla
     async def complete(request):
         requests.append(request)
         return LLMResult(Message('assistant', (TextContent(json.dumps(dict(original_input='original', route='next_a', ready=True, final_output='original'))),)))
-    graph = compile_workflow(declaration, complete)
+    graph = compile_workflow(declaration, complete, trial=trial_uuid('next_a'))
     prompt = declaration.parent / 'prompts/produce.md'
     original_read = Path.read_text
     reads = []

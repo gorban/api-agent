@@ -390,6 +390,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 from api_agent.auth.terminal_interaction import TerminalInteraction
                 try:
                     execution = run_launched_integration(context, tests, result.values, accepted=True,
+                        config_fields=result.fields,
                         content_policy=ContentPolicy.from_config(result),
                         **({'tool_plan': result.tool_plan} if result.tool_plan is not None else {}),
                         interaction=TerminalInteraction(),

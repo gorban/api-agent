@@ -1,4 +1,5 @@
 """Declared routing and controller decisions remain data only."""
+from test_workflow_trial_decisions import trial_uuid
 import asyncio
 from copy import deepcopy
 import json
@@ -434,7 +435,7 @@ def test_compiled_format_rejection_retries_with_feedback_then_accepts():
             content=(SimpleNamespace(text=json.dumps(draft)),)))
 
     workflow = build(Path(__file__).resolve().parents[2], llm=llm,
-                     selection='synthetic', trial='format-repair', observe=events.append)
+                     selection='synthetic', trial=trial_uuid(), observe=events.append)
     values = asyncio.run(workflow.arun({'user_input': 'original request'}))
 
     assert values['first_format'] == {'valid': True}
@@ -468,7 +469,7 @@ def test_compiled_format_rejection_exhausts_declared_passes():
             content=(SimpleNamespace(text=json.dumps(draft)),)))
 
     workflow = build(Path(__file__).resolve().parents[2], llm=llm,
-                     selection='synthetic', trial='format-exhaustion', observe=events.append)
+                     selection='synthetic', trial=trial_uuid(), observe=events.append)
 
     with pytest.raises(RuntimeError, match='exhausted 2 passes'):
         asyncio.run(workflow.arun({'user_input': 'original request'}))

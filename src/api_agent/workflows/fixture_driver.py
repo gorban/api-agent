@@ -1,6 +1,7 @@
 """Permanent fixture sampling, explicit pilot refresh and reviewed coverage bounds."""
 import asyncio
 import ast
+from dataclasses import replace
 from hashlib import sha256
 from importlib.metadata import version
 from importlib.resources import files
@@ -17,7 +18,7 @@ from .contrived import build
 from .definition import load_definition
 from .evidence import publish
 from .execution import resolve_component_passes, resolve_timeouts
-from .sampling import DECLARED, TARGETS, COVERAGE_POLICY, cover, validate_calibration, measurement, observed_targets
+from .sampling import DECLARED, TARGETS, COVERAGE_POLICY, cover, coverage_ceiling, validate_calibration, measurement, observed_targets
 from .run_context import trial as trial_context, turn
 
 USER_INPUT = 'Repeat this demo request verbatim: hello Markdown graph.'
@@ -34,7 +35,7 @@ SAMPLING_SOURCES = (
     'providers/control.py', 'providers/progress.py', 'providers/cache_policy.py',
     'providers/inference.py', 'providers/rich_inference.py', 'providers/setup_transport.py',
     'providers/bounded_schema.py', 'providers/schema_validation_worker.py',
-    'providers/shared_setup.py', 'providers/setup_registry.py', 'providers/loading.py', 'auth/bindings.py', 'testing/setup_backend.py', 'testing/provider_setup.py',
+    'providers/shared_setup.py', 'providers/setup_registry.py', 'providers/loading.py', 'auth/bindings.py', 'testing/setup_backend.py', 'testing/provider_setup.py', 'testing/setup_pool.py', 'testing/test_profiles.py',
     'llm_providers/gpt/factory.py', 'runtime/tasks.py',
 )
 
@@ -47,7 +48,7 @@ def sampling_digest(path):
         tree = ast.parse(body)
         selected = [node for node in tree.body
                     if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and node.name in {'run_graph', 'fixture_root', 'provider_identity'})
+                        and node.name in {'run_graph', 'fixture_root', 'provider_identity', 'calibration_profile'})
                     or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
                         and target.id == 'USER_INPUT' for target in node.targets))]
         # Imports choose the implementations used by these sampling functions.
@@ -68,23 +69,52 @@ def fixture_root(root=None):
 
 
 def provider_identity(config, *, owner_root=None):
-    """Only the physically selected bundled factory has reviewed fixture bounds."""
+    """Bind reviewed bounds to the physically selected bundled factory."""
     location = config.get('LLM_PROVIDER')
     if type(location) is not str or not location:
-        raise ValueError('No reviewed fixture baseline without a selected bundled GPT provider')
+        raise ValueError('No reviewed fixture baseline without a selected bundled provider')
     path_text = location.rpartition(':')[0]
     if not Path(path_text).expanduser().is_absolute() and owner_root is None:
         raise ValueError('Relative fixture provider selection requires its operation owner root')
     path, factory = provider_location(location, owner_root=owner_root)
-    canonical = Path(__file__).resolve().parent.parent / 'llm_providers/gpt/factory.py'
+    package = Path(__file__).resolve().parent.parent
+    canonical = package / 'llm_providers/gpt/factory.py'
+    profile = calibration_profile(config, owner_root=owner_root)
+    if profile is not None:
+        return {'kind': profile['kind'], 'entrypoint': profile['entrypoint'],
+                'source_sha256': sha256(path.read_bytes()).hexdigest()}
     if factory != 'factory' or not path.samefile(canonical):
         raise ValueError('No reviewed fixture baseline for a replacement provider')
     return {'kind': 'bundled_gpt', 'entrypoint': 'api_agent.llm_providers.gpt.factory:factory',
             'source_sha256': sha256(canonical.read_bytes()).hexdigest()}
 
 
+def calibration_profile(config, *, owner_root=None):
+    """Read inert qualification metadata only for physically bundled factories."""
+    path, factory = provider_location(config['LLM_PROVIDER'], owner_root=owner_root)
+    package = Path(__file__).resolve().parent.parent
+    for declaration in sorted((package / 'llm_providers').glob('*/calibration.json')):
+        if factory == 'factory' and path.samefile(declaration.with_name('factory.py')):
+            profile = json.loads(declaration.read_text())
+            if profile.get('schema') != 1:
+                raise ValueError('Unsupported provider calibration declaration')
+            supported = profile.get('workflow_selections', [])
+            if supported and not any(all(config.get(key) == value for key, value in choice.items()) for choice in supported):
+                raise ValueError('Unsupported workflow model/API profile; select a qualified workflow profile before calibration')
+            return profile
+    return None
+
+
+def _selection_key(report):
+    """Legacy GPT entries remain readable; every new route is provider-bound."""
+    identity = report.get('provider_identity', {})
+    route = report.get('backend', {}).get('api_mode', report.get('effective_settings', {}).get('api_mode'))
+    return (identity.get('entrypoint'), route, report.get('model'))
+
+
 def fingerprint(selection, config, *, root=None, owner_root=None):
     """Versioned sampling contract; installed assets use the same logical paths."""
+    ceiling = coverage_ceiling(config.get('LLM_WORKFLOW_TEST_MAX_GRAPHS', 60))
     base = fixture_root(root)
     package = Path(__file__).resolve().parent.parent
     sources = {'src/api_agent/' + name: sampling_digest(package / name)
@@ -96,12 +126,13 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
     sources.update({resource.logical_path: resource.sha256 for resource in definition.resources})
     backend = {'auth_mode': config.get('GPT_AUTH_MODE', 'subscription'),
                'backend_identity': sha256(str(config.get('GPT_BASE_URL', 'https://api.openai.com/v1')).encode()).hexdigest()}
-    return dict(fingerprint_version=4, sampling_method='simultaneous_exact_binomial_independent_uuid_v2', coverage_policy=COVERAGE_POLICY, model=selection,
+    result = dict(operating_ceiling=ceiling, fingerprint_version=4, sampling_method='simultaneous_exact_binomial_independent_uuid_v2', coverage_policy=COVERAGE_POLICY, model=selection,
         dependency_versions={name: version(name) for name in DEPENDENCIES},
         python_version=platform.python_version(), backend=backend,
         provider_identity=provider_identity(config, owner_root=owner_root),
         user_input_hash=sha256(USER_INPUT.encode()).hexdigest(),
         effective_settings={'temperature': None, 'max_output_tokens': None,
+            'setup_timeout': config.get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', 300),
             'cache_policy': config.get('LLM_CACHE_POLICY') or None,
             'reasoning_effort': config.get('LLM_REASONING_EFFORT') or None,
             'api_mode': config.get('GPT_API_MODE'), 'retries': component_passes,
@@ -109,6 +140,38 @@ def fingerprint(selection, config, *, root=None, owner_root=None):
             'node_timeout': None,
             'component_timeout': {name: timeouts.get(name) for name in ('first', 'second')},
             'graph_timeout': timeouts.get('GRAPH')}, sources=sources)
+    profile = calibration_profile(config, owner_root=owner_root)
+    if profile is not None:
+        result['fingerprint_version'] = 4
+        result['backend'] = {name: config.get(field, default)
+            for name, (field, default) in profile['backend'].items()}
+        if not result['backend'].get('region'):
+            raise ValueError('Fixture calibration requires an explicit inference region')
+        identity_values = {name: config.get(name) for name in profile['identity_settings']}
+        for name in set(profile['identity_settings']) & set(profile['identity_source_settings']):
+            if identity_values[name]:
+                path, factory = provider_location(identity_values[name], owner_root=owner_root)
+                # Canonicalize only physical bundled modules, never an external
+                # copy or a path that escapes the package through a symlink.
+                relative = next((path.relative_to(parent) for parent in path.parents
+                                 if parent.samefile(package)), None)
+                if relative is not None:
+                    parts = relative.with_suffix('').parts
+                    if all(part.isidentifier() for part in parts):
+                        identity_values[name] = 'api_agent.' + '.'.join(parts) + ':' + factory
+        result['backend']['configuration_sha256'] = sha256(json.dumps(
+            identity_values, sort_keys=True).encode()).hexdigest()
+        result['backend']['adapter_sources'] = {name: sha256(provider_location(
+            config[name], owner_root=owner_root)[0].read_bytes()).hexdigest()
+            for name in profile['identity_source_settings'] if config.get(name)}
+        result['effective_settings']['api_mode'] = result['backend']['api_mode']
+        result['effective_settings']['max_output_tokens'] = profile['max_output_tokens']
+        names = [name for name in SAMPLING_SOURCES if not name.startswith('llm_providers/')]
+        names.extend(profile['sources'])
+        result['sources'] = {'src/api_agent/' + name: sampling_digest(package / name) for name in names}
+        result['sources'].update({resource.logical_path: resource.sha256 for resource in definition.resources})
+        result['dependency_versions'].update({name: version(name) for name in profile['dependencies']})
+    return result
 
 
 def _baselines():
@@ -120,19 +183,26 @@ def _baselines():
 
 def baseline_limit(selection, config, *, root=None, owner_root=None):
     """Fail stale/unknown sampling before a graph or LLM request can execute."""
-    matches = [report for report in _baselines() if report.get('model') == selection]
+    expected = fingerprint(selection, config, root=root, owner_root=owner_root)
+    matches = [report for report in _baselines() if _selection_key(report) == _selection_key(expected)]
     if len(matches) != 1:
-        raise ValueError('No reviewed fixture baseline for selected model; refresh calibration explicitly')
-    return validate_calibration(matches[0], DECLARED, fingerprint(selection, config, root=root, owner_root=owner_root))
+        raise ValueError('No reviewed matching fixture baseline for selected model/API (missing or stale); refresh calibration explicitly')
+    return validate_calibration(matches[0], DECLARED, expected,
+                                ceiling=coverage_ceiling(config.get('LLM_WORKFLOW_TEST_MAX_GRAPHS', 60)))
 
 
 def preflight_baselines(config, *, root=None, owner_root=None):
     """Check configured eligible reviewed models before provider fixture lookup."""
-    provider_identity(config, owner_root=owner_root)
+    identity = provider_identity(config, owner_root=owner_root)
     policy = ModelSelectionPolicy(config)
-    reports = _baselines()
+    reports = [report for report in _baselines()
+               if report.get('provider_identity', {}).get('entrypoint') == identity['entrypoint']]
+    selected = config.get('LLM_WORKFLOW_TEST_MODEL')
+    if 'LLM_WORKFLOW_TEST_MODEL' in config and not selected:
+        raise ValueError('LLM_WORKFLOW_TEST_MODEL has no qualified workflow selection; select a supported model/API profile before calibration')
     candidates = [report['model'] for report in reports
-                  if policy.default is not None and policy._matches(policy.default, report['model'])
+                  if ((report['model'] == selected) if selected is not None else
+                      (policy.default is not None and policy._matches(policy.default, report['model'])))
                   and policy._matches(policy.allowed, report['model'])]
     if not candidates:
         raise ValueError('Configured model selection has no reviewed fixture baseline; refresh calibration explicitly')
@@ -149,10 +219,15 @@ def run_graph(provider, selection, trial, config=None, *, root=None, owner_root=
         if observe is not None:
             observe(event)
 
+    profile = calibration_profile(config or {}, owner_root=owner_root)
+
     async def complete(request):
+        if profile is not None:
+            request = replace(request, payload=replace(request.payload, generation=replace(
+                request.payload.generation, max_output_tokens=profile['max_output_tokens'])))
         result = await offload(provider.complete, request)
         actual = getattr(result, 'actual_model', None)
-        if actual is not None and actual != selection:
+        if (profile is not None or actual is not None) and actual != selection:
             raise ValueError('Fixture inference returned a different model than the reviewed selection')
         return result
 
@@ -177,8 +252,9 @@ def node_coverage(provider, selection, config, *, root=None, owner_root=None):
     async def execute(trial):
         events = []
         values, nodes = await offload(run_graph, provider, selection, trial, config, root=root, owner_root=owner_root, observe=events.append)
-        return values, observed_targets(measurement(trial, values, nodes, events))
+        return values, observed_targets(measurement(trial, values, nodes, events), maximum=maximum)
 
-    result, _ = asyncio.run(cover(execute, TARGETS, maximum, publish))
+    result, _ = asyncio.run(cover(execute, TARGETS, maximum, publish,
+                                  ceiling=coverage_ceiling(config.get('LLM_WORKFLOW_TEST_MAX_GRAPHS', 60))))
     publish(dict(coverage=result))
     return result

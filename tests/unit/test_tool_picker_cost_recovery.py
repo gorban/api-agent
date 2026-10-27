@@ -19,7 +19,7 @@ async def test_cost_presentation_recovers_for_new_valid_selection(conflicting_ap
     app.session.environ['API_ENDPOINT'] = '42'
     estimates = []
 
-    def estimate(context, tests, values):
+    def estimate(context, tests, values, **options):
         assert app.session.tool_plan.selection.test_ids in ((PRIMARY,), (OTHER,))
         snapshot = EstimateSnapshot({PRIMARY: {'estimated_cost_usd': .42},
                                      OTHER: {'estimated_cost_usd': .84}})
@@ -114,7 +114,7 @@ async def test_late_preconflict_history_cannot_restore_retired_price(conflicting
     app.session.environ['API_ENDPOINT'] = '42'
     snapshots = []
 
-    def estimate(context, tests, values):
+    def estimate(context, tests, values, **options):
         snapshot = EstimateSnapshot({PRIMARY: {'estimated_cost_usd': .42},
                                      OTHER: {'estimated_cost_usd': .84}})
         snapshots.append(snapshot)
@@ -178,7 +178,7 @@ async def test_account_cycle_replaces_estimate_after_effective_change(tmp_path, 
     (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=0\n')
     built, scopes = [], []
 
-    def estimate(context, tests, values):
+    def estimate(context, tests, values, **options):
         scopes.append(allocation_scope({**values, 'LLM_CREDENTIAL_ROLE': 'LLM User',
             '_COST_PROVIDER_IDENTITY': 'a' * 64, '_COST_PACK_IDENTITY': 'b' * 64,
             '_COST_REQUEST_SETTINGS': {}}))
@@ -305,7 +305,7 @@ async def test_late_prior_account_history_cannot_restore_its_estimate(tmp_path, 
     (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=0\n')
     built = []
 
-    def estimate(context, tests, values):
+    def estimate(context, tests, values, **options):
         amount = .42 if values['UNATTENDED_USER_INDEX'] == 0 else .84
         snapshot = EstimateSnapshot({test.id: {'estimated_cost_usd': amount if i == 0 else 0}
                                      for i, test in enumerate(tests)})

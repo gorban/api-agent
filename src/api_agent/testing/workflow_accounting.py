@@ -10,7 +10,7 @@ def _call_facts(call):
     accounting = quote.get('accounting') or {}
     from api_agent.providers.costs import qualified_charge
     charge = (qualified_charge(accounting.get('billing'), usage)
-              if accounting.get('billing_mode') == 'api_key' else None)
+              if accounting.get('billing_mode') in ('api_key', 'metered') else None)
     return {name: usage.get(name) for name in ('input_tokens', 'output_tokens',
             'cached_input_tokens', 'cache_write_tokens', 'reasoning_tokens')} | {
             'list_cost_usd': quote.get('list_cost_usd'),
@@ -65,7 +65,10 @@ def join_workflow_accounting(journals, accounting, *, admissions=None):
         routes = []
         for journal in captures:
             validate_journal(journal)
-            expected = admissions.get(journal['projection']['definition_id'])
+            identifier = journal['projection']['definition_id']
+            # Generated host admissions are exact-case scoped. The flat key is
+            # retained only for the trusted caller's legacy admission contract.
+            expected = admissions.get((test_id, identifier), admissions.get(identifier))
             binding = 'verified' if expected is not None and journal['projection'] == expected else 'unverified'
             routes.append(dict(invocation_id=journal['invocation_id'],
                                turn_id=journal['turn_id'],

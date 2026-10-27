@@ -77,7 +77,8 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
     return call_id
 
 
-def capture(event, tracker):
+def validate_event(event):
+    """Validate raw accounting before privacy transformations can remove fields."""
     row = json.loads(event.text)
     if type(row) is not dict or set(row) - _TIMING not in ({'call_id', 'selection', 'usage'}, {'call_id', 'selection', 'usage', 'quote'}, {'call_id', 'selection', 'usage', 'actual_model'}, {'call_id', 'selection', 'usage', 'quote', 'actual_model'}):
         raise ValueError('Invalid inference usage event')
@@ -95,6 +96,12 @@ def capture(event, tracker):
     if 'reasoning_effort' in row:
         evidence['reasoning_effort'] = row['reasoning_effort']
     validate_evidence(evidence)
+    return row, evidence
+
+
+def capture(event, tracker):
+    row, evidence = validate_event(event)
+    identifier, selection, usage = row['call_id'], row['selection'], row['usage']
     if not tracker.record_inference(identifier, event.identity.id, evidence):
         return
     if usage is None:

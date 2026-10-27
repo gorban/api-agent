@@ -1,7 +1,7 @@
 """Permanent contrived node catalog: never replaced by the useful demo."""
 import json
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 from dataclasses import asdict
 import time
 import math
@@ -11,9 +11,44 @@ from .execution import NodeFunction, Workflow, WorkflowError
 from .definition import load_definition, load_native_catalog
 
 
-async def produce(inputs, context):
+def trial_decisions(trial, component):
+    """Independent UUID nibbles choose the route and each initial readiness."""
+    try:
+        seed = UUID(trial)
+    except (ValueError, TypeError, AttributeError):
+        raise WorkflowError('Contrived trial requires a canonical version-4 UUID') from None
+    if type(trial) is not str or str(seed) != trial.lower() or seed.version != 4:
+        raise WorkflowError('Contrived trial requires a canonical version-4 UUID')
+    if component not in ('first', 'second'):
+        raise WorkflowError('Contrived producer requires a first or second component identity')
+    route_digit = int(seed.hex[-1], 16)
+    route = 'skip' if route_digit < 5 else 'next_a' if route_digit < 10 else 'next_b'
+    ready_digit = int(seed.hex[-2 if component == 'first' else -3], 16)
+    return {'component': component, 'route': route, 'ready': ready_digit < 8}
+
+
+def requested_decisions(inputs, context):
+    """Bind declared decisions to the actual component and correction state."""
+    component = {'first_draft': 'first', 'second_draft': 'second'}.get(context.node_id)
+    decisions = trial_decisions(context.services['trial'], component)
+    upstream = inputs['upstream']
+    if (component == 'first' and upstream is not None
+            or component == 'second' and type(upstream) is not dict):
+        raise WorkflowError('Contrived component identity disagrees with its upstream input')
     previous = inputs['previous']
-    tail = dict(upstream=inputs['upstream'], previous=previous, feedback=inputs['feedback'],
+    if (context.attempt == 1) != (previous is None):
+        raise WorkflowError('Contrived correction requires its previous draft after the initial attempt')
+    if previous is not None:
+        if previous.get('route') != decisions['route']:
+            raise WorkflowError('Contrived correction state changed its original routing choice')
+        decisions = dict(decisions, route=previous['route'], ready=True)
+    return decisions
+
+
+async def produce(inputs, context):
+    decisions = requested_decisions(inputs, context)
+    previous = inputs['previous']
+    tail = dict(decisions=decisions, upstream=inputs['upstream'], previous=previous, feedback=inputs['feedback'],
                 attempt=context.attempt, max_passes=context.max_passes, trial=context.services['trial'])
     schema = context.services['output_schema']
     request = LLMRequest(context.services['selection'], CompletionRequest((
@@ -40,6 +75,10 @@ async def produce(inputs, context):
         raise WorkflowError('Contrived producer returned a non-object')
     if previous is not None and decoded.get('route') != previous.get('route'):
         raise WorkflowError('A correction changed its original routing choice')
+    if decoded.get('route') != decisions['route']:
+        raise WorkflowError('Contrived producer did not honor the requested route')
+    if decoded.get('ready') is not decisions['ready']:
+        raise WorkflowError('Contrived producer did not honor the requested readiness')
     return decoded
 
 

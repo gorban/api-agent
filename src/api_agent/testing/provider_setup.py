@@ -25,7 +25,7 @@ def _configured_request(request, config):
 
 
 def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None,
-                          password_manager_registry=None, interaction_descriptor=None, tool_plan=None, tool_cases=None):
+                          password_manager_registry=None, interaction_descriptor=None, tool_plan=None, tool_cases=None, test_profiles=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     from api_agent.auth.managers import registry_for_context
@@ -43,6 +43,8 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
     if interaction_descriptor is not None:
         from api_agent.auth.interaction_transport import validate_descriptor
         data['interaction'] = validate_descriptor(interaction_descriptor)
+    if test_profiles is not None:
+        data['test_profiles'] = test_profiles
     if tool_plan is not None:
         from .tool_runtime import write_tool_packet
         from api_agent.runtime.inventory import inventory_authority
@@ -73,7 +75,7 @@ def _read_snapshot():
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
@@ -94,6 +96,9 @@ def _read_snapshot():
                 raise ValueError
         elif any(key in data for key in ('tool_cases', 'base_root', 'pack_root', 'inventory_authority')):
             raise ValueError
+        if 'test_profiles' in data:
+            from .test_profiles import validate_snapshot_profiles
+            validate_snapshot_profiles(data['test_profiles'])
         if 'setup_backend' in data:
             from api_agent.providers.setup_transport import validate_descriptor
             data['setup_backend'] = validate_descriptor(data['setup_backend'])
@@ -189,7 +194,8 @@ class IntegrationLLM:
         if self.provider is None:
             self._provider_config = deepcopy(self.config)
             try:
-                services = {'owner_root': self.owner_root, 'emissions': self.emissions}
+                services = {'owner_root': self.owner_root, 'emissions': self.emissions,
+                            'interaction': self.interaction}
                 if self.inspection is not None:
                     services['browser_inspection'] = self.inspection
                 self.provider = await aload_provider(location, deepcopy(self._provider_config), services, kind='llm')
@@ -445,7 +451,8 @@ class RemoteIntegrationLLM:
     """Only readiness, bounded catalog metadata and lease disposal cross the backend boundary."""
     timeout = 300
     def __init__(self, descriptor, config=None):
-        from api_agent.providers.setup_transport import SetupClient
+        from api_agent.providers.setup_transport import SetupClient, _timeout
+        self.timeout = _timeout((config or {}).get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', self.timeout))
         self.config = dict(config or {})
         self.client = SetupClient(descriptor, timeout=self.timeout)
         self.loop = asyncio.new_event_loop()
@@ -503,17 +510,31 @@ def _worker_interaction(data):
     return InteractionClient(data['interaction'])
 
 
-@pytest.fixture(scope='session')
-def llm_selection(llm_provider):
-    from api_agent.providers.selection import ModelSelectionPolicy
+
+def _test_snapshot(request):
     data = _read_snapshot()
+    if 'test_profiles' in data:
+        node = getattr(request, 'node', request).nodeid
+        row = data['test_profiles'].get(node)
+        if row is None:
+            raise ContractError('Integration case is outside the admitted test profile map.')
+        data['config'] = deepcopy(row['config'])
+        data['profile_provenance'] = deepcopy(row['provenance'])
+        if 'setup_backend' in row:
+            data['setup_backend'] = row['setup_backend']
+    return data
+
+@pytest.fixture
+def llm_selection(llm_provider, request):
+    from api_agent.providers.selection import ModelSelectionPolicy
+    data = _test_snapshot(request)
     return ModelSelectionPolicy(data['config']).select_default(llm_provider.describe())
 
 
-@pytest.fixture(scope='session')
-def llm_provider():
+@pytest.fixture
+def llm_provider(request):
     """Requesting the fixture is inert; ensure_ready is the authentication gate."""
-    data = _read_snapshot()
+    data = _test_snapshot(request)
     if 'setup_backend' in data:
         _worker_manager_registry(data)
         provider = RemoteIntegrationLLM(data['setup_backend'], data['config'])
@@ -558,7 +579,7 @@ def ui_provider_backend():
 def ui_provider_session(request, ui_provider_loop, ui_provider_backend):
     """Prepare only the selected UI provider and retain its complete DEBUG owner."""
     from .ui_runtime import UIIntegrationOwner
-    data = _read_snapshot()
+    data = _test_snapshot(request)
     owner = UIIntegrationOwner(data, _worker_manager_registry(data), backend=ui_provider_backend)
     loop = ui_provider_loop
     try:
@@ -736,11 +757,18 @@ def workflow_tools(request, ui_provider_loop):
         finish_ui_browser_inspection(ui_provider_loop, None, owners=(owner,))
 
 
-@pytest.fixture(scope='session')
-def integration_config():
+@pytest.fixture
+def integration_config(request, record_property):
     """Require only settings used by this test, not unrelated suite settings."""
-    snapshot = _read_snapshot()
-    return IntegrationRequirements(snapshot['config'], snapshot['owner_root'])
+    snapshot = _test_snapshot(request)
+    requirements = IntegrationRequirements(snapshot['config'], snapshot['owner_root'])
+    requirements.provenance = snapshot.get('profile_provenance', {})
+    if requirements.provenance:
+        evidence = {key: {'value': requirements.values.get(key), 'source': source}
+                    for key, source in requirements.provenance.items()}
+        record_property('integration_test_profile', json.dumps(evidence, sort_keys=True, default=str))
+        print('Integration test profile: ' + json.dumps(evidence, sort_keys=True, default=str), flush=True)
+    return requirements
 
 
 @pytest.hookimpl(wrapper=True)
@@ -759,3 +787,17 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
     config.addinivalue_line("markers", "requires_ui_session: selected integration consumes the UI provider")
     config.addinivalue_line("markers", "requires_llm: UI integration also consumes the LLM provider")
+
+
+def pytest_runtest_setup(item):
+    """Expose only approved effective profile controls before test setup/auth."""
+    if 'API_AGENT_INTEGRATION_CONTEXT' not in os.environ:
+        return
+    snapshot = _test_snapshot(item)
+    provenance = snapshot.get('profile_provenance', {})
+    if provenance:
+        evidence = {key: {'value': snapshot['config'].get(key), 'source': source}
+                    for key, source in provenance.items()}
+        rendered = json.dumps(evidence, sort_keys=True, default=str)
+        item.user_properties.append(('integration_test_profile', rendered))
+        print('Integration test profile: ' + rendered, flush=True)

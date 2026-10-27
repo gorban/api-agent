@@ -69,7 +69,7 @@ def test_completed_integration_details_include_current_or_historical_accounting(
     snapshot = Snapshot()
     tests = identities(1)
     snapshot.predictions = {tests[0].id:{'has_token_history':historical}}
-    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', lambda *args: snapshot)
+    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', lambda *args, **kwargs: snapshot)
     async def scenario():
         app = fixture(tmp_path, mode, collector=lambda *a:tests)
         async with app.run_test(size=(100, 35)) as pilot:

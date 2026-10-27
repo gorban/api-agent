@@ -7,7 +7,8 @@ ALIASES = {'primary_read': 'primary', 'secondary_read': 'secondary'}
 PROMPT = ('Read hello independently with primary_read and secondary_read. '
           'Use each selected tool exactly once with arguments matching its declared schema. '
           'The values are unknown until read. Return only a JSON object with primary_read '
-          'and secondary_read keys containing their respective exact hello strings.')
+          'and secondary_read keys containing their respective exact hello strings. '
+          'Emit raw JSON only: no Markdown, code fences, or surrounding commentary.')
 
 
 async def converse(inputs, context):

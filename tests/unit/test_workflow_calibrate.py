@@ -631,3 +631,81 @@ def test_calibration_uses_shared_launcher_pack_precedence(tmp_path, monkeypatch,
     assert result.values['LLM_PROVIDER'] == provider
     assert result.values['LLM_DEFAULT_MODEL'] == expected
     assert 'GPT_AUTH_MODE' in result.values and not result.errors
+
+
+def test_pilot_uses_profile_model_instead_of_application_default(setup, monkeypatch):
+    setup.result.values.update(LLM_WORKFLOW_TEST_MODEL='profile-model', LLM_DEFAULT_MODEL='application-model')
+    setup.fingerprint['model'] = 'profile-model'
+    provider_type = __import__('api_agent.testing.provider_setup', fromlist=['IntegrationLLM']).IntegrationLLM
+    monkeypatch.setattr(provider_type, 'describe', lambda self: [SimpleNamespace(selected_llm='profile-model')])
+    monkeypatch.setattr('api_agent.providers.selection.ModelSelectionPolicy.select_default',
+                        lambda *args: pytest.fail('Explicit workflow profile was replaced by application default'))
+    original = calibrate.run_graph
+    selections = []
+    def observe_selection(provider, selection, *args, **kwargs):
+        selections.append(selection)
+        return original(provider, selection, *args, **kwargs)
+    monkeypatch.setattr(calibrate, 'run_graph', observe_selection)
+    report = calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
+    assert report['model'] == 'profile-model' and selections == ['profile-model'] * 60
+    assert setup.result.values['LLM_DEFAULT_MODEL'] == 'application-model'
+
+
+def test_pilot_requires_the_exact_profile_model_to_be_advertised(setup):
+    setup.result.values['LLM_WORKFLOW_TEST_MODEL'] = 'unadvertised-model'
+    with pytest.raises(ValueError, match='uniquely advertised'):
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
+    assert setup.calls == ['setup', 'close']
+    assert not setup.destination.exists() and setup.instances[0].closed
+
+
+def test_unset_explicit_profile_stops_pilot_before_authentication(setup):
+    setup.result.values['LLM_WORKFLOW_TEST_MODEL'] = ''
+    with pytest.raises(ValueError, match='qualified exact model'):
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
+    assert setup.instances == [] and not setup.destination.exists()
+
+
+@pytest.mark.parametrize('value', [0, 121, True, 60.0, None])
+def test_invalid_coverage_ceiling_never_allocates_pilot_or_provider(setup, value):
+    setup.result.values['LLM_WORKFLOW_TEST_MAX_GRAPHS'] = value
+    with pytest.raises(ValueError, match='integer from 1 to 120'):
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60)
+    assert setup.instances == [] and not setup.destination.exists()
+    assert not setup.destination.with_name('candidate.json.progress.jsonl').exists()
+
+
+def test_sixty_graph_pilot_and_storage_use_resolved_larger_coverage_ceiling(setup):
+    setup.result.values['LLM_WORKFLOW_TEST_MAX_GRAPHS'] = 120
+    setup.fingerprint['operating_ceiling'] = 120
+    report = calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
+    assert report['trials'] == 60 and report['operating_ceiling'] == 120
+    from api_agent.workflows.evidence import read_calibration
+    from api_agent.workflows.sampling import validate_calibration
+    saved = read_calibration(setup.destination)
+    assert validate_calibration(saved, DECLARED, setup.fingerprint, ceiling=120) == report['max_runs']
+    assert setup.calls.count('graph 60') == 1 and 'graph 61' not in setup.calls
+
+
+@pytest.mark.parametrize('provider, expected', [('gpt', 60), ('bedrock', 120)])
+def test_calibration_ceiling_uses_provider_profile_and_typed_explicit_override(monkeypatch, provider, expected):
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+    monkeypatch.setattr(calibrate.os, 'environ', {})
+    monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *args, **kwargs: None)
+    factory = str(ROOT / f'src/api_agent/llm_providers/{provider}/factory.py') + ':factory'
+    _, result = calibrate.configuration(ROOT, ['--llm-provider=' + factory])
+    assert result.values['LLM_WORKFLOW_TEST_MAX_GRAPHS'] == expected
+    _, explicit = calibrate.configuration(ROOT, ['--llm-provider=' + factory, '--llm-workflow-test-max-graphs=60'])
+    assert explicit.values['LLM_WORKFLOW_TEST_MAX_GRAPHS'] == 60
+    assert explicit.fields['LLM_WORKFLOW_TEST_MAX_GRAPHS'].explicit
+
+
+@pytest.mark.parametrize('provider', ['gpt', 'bedrock'])
+@pytest.mark.parametrize('value', ['121', 'True', '60.0'])
+def test_maintenance_configuration_rejects_explicit_unsupported_ceiling_before_setup(monkeypatch, provider, value):
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+    monkeypatch.setattr(calibrate.os, 'environ', {})
+    monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *args, **kwargs: None)
+    factory = str(ROOT / f'src/api_agent/llm_providers/{provider}/factory.py') + ':factory'
+    with pytest.raises(ValueError, match='LLM_WORKFLOW_TEST_MAX_GRAPHS'):
+        calibrate.configuration(ROOT, ['--llm-provider=' + factory, '--llm-workflow-test-max-graphs=' + value])

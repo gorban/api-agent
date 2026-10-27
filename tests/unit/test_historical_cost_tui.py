@@ -68,7 +68,7 @@ def test_cached_picker_refresh_preserves_search_range_without_cost_popup(tmp_pat
         refreshed = Snapshot(2)
         snapshot.synchronize = lambda: (gate.wait(5), refreshed)[1]
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *a: snapshot))
+                            SimpleNamespace(estimator_for=lambda *a, **kw: snapshot))
         tests = identities(4)
         app = fixture(tmp_path, mode, collector=lambda *a: tests)
         try:
@@ -120,7 +120,7 @@ def test_cached_picker_refresh_preserves_search_range_without_cost_popup(tmp_pat
 def test_unit_picker_skips_history(tmp_path, monkeypatch):
     async def scenario():
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *a: pytest.fail('unit history')))
+                            SimpleNamespace(estimator_for=lambda *a, **kw: pytest.fail('unit history')))
         app = fixture(tmp_path, 'unit', collector=lambda *a: identities(2))
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -133,7 +133,7 @@ def test_unit_picker_skips_history(tmp_path, monkeypatch):
 def test_history_failure_and_stale_refresh_are_nonblocking(tmp_path, monkeypatch):
     async def scenario():
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *a: (_ for _ in ()).throw(OSError('cache'))))
+                            SimpleNamespace(estimator_for=lambda *a, **kw: (_ for _ in ()).throw(OSError('cache'))))
         app = fixture(tmp_path, 'integration', collector=lambda *a: identities(2))
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -158,7 +158,7 @@ def test_costs_hidden_live_and_completed_without_cost_popup(tmp_path, monkeypatc
     async def scenario():
         snapshot = Snapshot()
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *a: snapshot))
+                            SimpleNamespace(estimator_for=lambda *a, **kw: snapshot))
         tests = identities(2)
         app = fixture(tmp_path, 'integration', collector=lambda *a: tests)
         async with app.run_test(size=(60, 25)) as pilot:
@@ -213,7 +213,7 @@ def test_search_toggle_summary_and_exit_restore_cost_cells(tmp_path, monkeypatch
         tests = identities(4)
         snapshot = PerLeafSnapshot({test.id:1 for test in tests})
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *a: snapshot))
+                            SimpleNamespace(estimator_for=lambda *a, **kw: snapshot))
         app = fixture(tmp_path, 'integration', collector=lambda *a: tests)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -238,7 +238,7 @@ def test_sync_during_modal_refreshes_after_close(tmp_path, monkeypatch):
         snapshot, replacement = Snapshot(1), Snapshot(2)
         snapshot.synchronize = lambda: (gate.wait(5), replacement)[1]
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *a: snapshot))
+                            SimpleNamespace(estimator_for=lambda *a, **kw: snapshot))
         app = fixture(tmp_path, 'integration', collector=lambda *a: identities(4))
         try:
             async with app.run_test() as pilot:
@@ -275,7 +275,7 @@ def test_refresh_finishing_after_start_cannot_replace_frozen_snapshot(tmp_path, 
         snapshot, replacement = Snapshot(1), Snapshot(2)
         snapshot.synchronize = lambda: (gate.wait(5), replacement)[1]
         monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                            SimpleNamespace(estimator_for=lambda *a: snapshot))
+                            SimpleNamespace(estimator_for=lambda *a, **kw: snapshot))
         app = fixture(tmp_path, 'integration', collector=lambda *a: identities(2))
         try:
             async with app.run_test() as pilot:
@@ -298,7 +298,7 @@ def test_background_history_cannot_replace_completed_run_snapshot(tmp_path, monk
         gate = threading.Event()
         original, replacement = Snapshot(1), Snapshot(2)
         original.synchronize = lambda: (gate.wait(5), replacement)[1]
-        monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history', SimpleNamespace(estimator_for=lambda *a: original))
+        monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history', SimpleNamespace(estimator_for=lambda *a, **kw: original))
         tests = identities(2)
         app = fixture(tmp_path, 'integration', collector=lambda *a: tests)
         try:
@@ -330,7 +330,7 @@ def test_back_to_selection_immediately_reads_new_local_history(tmp_path, monkeyp
     from test_historical_cache import fixture as history_fixture
     cache = HistoryCache(tmp_path / 'history.sqlite3')
     counts = []
-    def estimator(*args):
+    def estimator(*args, **options):
         count = len(cache.records('local'))
         counts.append(count)
         return Snapshot(1 + count)

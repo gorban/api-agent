@@ -135,6 +135,20 @@ def test_non_json_output_is_rejected(value):
         Workflow._validate({'type': 'object'}, value, 'example', 'output')
 
 
+def test_json_stable_output_must_still_satisfy_its_declared_schema():
+    import json
+    from jsonschema import Draft202012Validator
+    schema = {'type': 'object', 'properties': {'count': {'type': 'integer'}}, 'required': ['count']}
+    value = {'count': 'one'}
+    assert json.loads(json.dumps(value, allow_nan=False)) == value
+    error, = Draft202012Validator(schema).iter_errors(value)
+    assert list(error.path) == ['count']
+    assert error.validator == 'type'
+
+    with pytest.raises(WorkflowError, match=r"^Node example returned invalid output structure at \['count'\]$"):
+        Workflow._validate(schema, value, 'example', 'output')
+
+
 @pytest.mark.parametrize('edges,conditions', [
     ([{'From': 'first', 'To': 'second', 'When': 'choose'}], {'choose': lambda values: False}),
     ([{'From': 'first', 'To': 'second', 'When': 'choose'}, {'From': 'first', 'To': 'END', 'When': 'other'}],

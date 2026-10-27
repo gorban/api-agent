@@ -164,14 +164,28 @@ class HistoricalEstimator(EstimateSnapshot):
             pass
 
 
-def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=None):
-    from api_agent.providers.rates import cached_rate_card
+def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=None, test_configs=None):
+    from api_agent.providers.rates import BEDROCK, _source, cached_rate_card
     config = cost_config(context, config)
-    card = rate_card or config.get('_COST_RATE_CARD') or cached_rate_card(context, config)
+    card = (cached_rate_card(context, config) if _source(config) == BEDROCK else
+            rate_card or config.get('_COST_RATE_CARD') or cached_rate_card(context, config))
     repo = repository_label(context, context.owner_root)
     origin = sha256(json.dumps([config.get(name) for name in ('ALLURE_S3_ENDPOINT', 'ALLURE_S3_BUCKET', 'ALLURE_S3_PREFIX')] + [repo]).encode()).hexdigest()
     try:
         cache = cache if cache is not None else HistoryCache()
+        if test_configs is not None:
+            from .profile_estimation import ProfileEstimator
+            groups = []
+            for test in tests:
+                effective = test_configs[test.id]
+                group = next((item for item in groups if item[0] == effective), None)
+                if group is None:
+                    group = [effective, []]
+                    groups.append(group)
+                group[1].append(test)
+            return ProfileEstimator(estimator_for(context, selected, effective,
+                now=now, cache=cache, rate_card=effective.get('_COST_RATE_CARD', card))
+                for effective, selected in groups)
         storage = None
         if config.get('ALLURE_S3_BUCKET'):
             storage = RunStorage(config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),

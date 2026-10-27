@@ -12,7 +12,7 @@ from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.progress import component_timeout, independent_timeout_scope, report_timeout
 from api_agent.providers.selection import ModelSelectionPolicy
 from api_agent.runtime.local_contracts import LocalComponent, LocalDestination, LocalSnapshot, LocalEvent
-from api_agent.runtime.local_llm import LocalLLM
+from api_agent.runtime.local_llm import LocalLLM, _create_task
 from api_agent.runtime.operation import local_operation
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.view_flow import _prepare_view
@@ -82,7 +82,10 @@ class LocalCleanup:
 
 
 class LocalRunOwner:
-    """Creating-loop owner; consumers observe state and request cooperative stop."""
+    """Creating-loop owner; an optional interaction is transferred, never borrowed.
+
+    Callers sharing an interaction root must supply a dedicated operation fork.
+    """
     CLEANUP_ATTEMPT_SECONDS = 15
     CLEANUP_RETRY_SECONDS = 1
     _STARTUP_STAGES = frozenset({
@@ -94,7 +97,7 @@ class LocalRunOwner:
     def __init__(self, context, resolve, *, argv=(), on_event=None,
                  schema=None, engine_environment=None, plan_factory=None, operation_factory=local_operation, browser_factory=None,
                  prepare_view=_prepare_view, application_factory=selected_application,
-                 llm_factory=LocalLLM):
+                 llm_factory=LocalLLM, interaction_owner=None):
         self.context, self.resolve, self.argv = context, resolve, tuple(argv)
         self.on_event = on_event
         self._engine_environment_source = engine_environment
@@ -106,9 +109,14 @@ class LocalRunOwner:
         self.operation_factory, self.browser_factory = operation_factory, browser_factory
         self.prepare_view, self.application_factory = prepare_view, application_factory
         self.llm_factory = llm_factory
+        self.interaction_owner = interaction_owner
+        self._interaction_cancel = None
+        self._interaction_close = None
         self.snapshot = LocalSnapshot('idle')
         self.pending_cleanup = None
         self._stack = LocalCleanup()
+        if interaction_owner is not None:
+            self._stack.push(self._close_interaction)
         self._stop = asyncio.Event()
         self._start_done = asyncio.Event()
         self._start_done.set()
@@ -156,9 +164,22 @@ class LocalRunOwner:
 
     def request_stop(self):
         self._stop.set()
+        if self.interaction_owner is not None and (self._interaction_cancel is None
+                or self._interaction_cancel.cancelled()
+                or self._interaction_cancel.done() and self._interaction_cancel.exception() is not None):
+            self._interaction_cancel = _create_task(asyncio.to_thread(self.interaction_owner.cancel))
         if self._starting is not None and self._starting is not asyncio.current_task() and not self._starting.done():
             if not self._starting.cancelling():
                 self._starting.cancel()
+
+    async def _close_interaction(self):
+        from api_agent.runtime.tasks import settle
+        if self._interaction_cancel is not None:
+            await settle(self._interaction_cancel)
+        if self._interaction_close is None or self._interaction_close.cancelled() or (self._interaction_close.done()
+                and self._interaction_close.exception() is not None):
+            self._interaction_close = _create_task(asyncio.to_thread(self.interaction_owner.close))
+        await settle(self._interaction_close)
 
     def _runtime(self, config, origin, material):
         from api_agent.ui.process import StudioProcesses
@@ -172,8 +193,10 @@ class LocalRunOwner:
             self._graph.tools = runtime.tools_for(self._graph.definition)
         elif self._requires_api:
             bind_local_tools(runtime, self._graph, config)
+        options = ({'interaction_owner': self.interaction_owner}
+                   if self.interaction_owner is not None else {})
         self._llm = self.llm_factory(config.values, self.context.owner_root, emissions=runtime.emissions,
-                                     on_status=self._workflow_event, trace=runtime.tracing)
+                                     on_status=self._workflow_event, trace=runtime.tracing, **options)
         from api_agent.workflows.observations import WorkflowObservationFactory
         self._graph.observations = WorkflowObservationFactory(config, boundary=runtime.emissions,
             sink=self._workflow_event, trace=runtime.tracing)
@@ -418,6 +441,11 @@ class LocalRunOwner:
 
     def _workflow_event(self, row):
         """Consume only the source's admitted log projection, never trace data."""
+        if row.get('event') == 'configuration-required':
+            from api_agent.providers.contracts import ConfigurationRequiredError
+            fields = ConfigurationRequiredError(row.get('fields')).fields
+            self._notify(LocalEvent('configuration-required', required_fields=fields))
+            return
         if self._diagnostic_projection is None:
             return
         text = self._diagnostic_projection.format(row)

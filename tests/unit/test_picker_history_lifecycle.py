@@ -18,7 +18,7 @@ def test_history_finishes_before_picker_composition(tmp_path, monkeypatch):
     snapshot, replacement = Snapshot(1), Snapshot(2)
     snapshot.synchronize = lambda: replacement
     monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                        SimpleNamespace(estimator_for=lambda *args: snapshot))
+                        SimpleNamespace(estimator_for=lambda *args, **options: snapshot))
     compose = WorkbenchScreen._compose
     observed = []
     async def hold_picker_composition(screen):
@@ -45,7 +45,7 @@ def test_deferred_history_redraw_retains_picker_ownership(tmp_path, monkeypatch,
     from api_agent.tui.app import SettingHelpDialog
     snapshot = Snapshot(1)
     monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                        SimpleNamespace(estimator_for=lambda *args: snapshot))
+                        SimpleNamespace(estimator_for=lambda *args, **options: snapshot))
     async def scenario():
         app = fixture(tmp_path, 'integration', collector=lambda *args: identities(2))
         async with app.run_test() as pilot:

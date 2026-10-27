@@ -15,6 +15,7 @@ acknowledge_default = false
 help = "Operation-owned synthetic API activation; resolved by the bundled demo runtime."
 
 [fields.WORKFLOW_LLM_TIMEOUT_SECONDS]
+override = true
 type = "float"
 default = 120.0
 validation = "positive"

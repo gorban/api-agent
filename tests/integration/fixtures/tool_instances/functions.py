@@ -8,7 +8,8 @@ PROMPT = ('Use primary_read and secondary_read independently to read hello. '
           'Make exactly one read-only literal GraphQL query with each tool: { hello }. '
           'The hello value is unknown until read. Return only a JSON object with '
           'exactly primary_read and secondary_read as keys, each containing the '
-          'exact hello string returned by that named tool.')
+          'exact hello string returned by that named tool. '
+          'Emit raw JSON only: no Markdown, code fences, or surrounding commentary.')
 
 
 async def converse(inputs, context):

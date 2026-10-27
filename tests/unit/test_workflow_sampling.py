@@ -112,7 +112,7 @@ def test_stale_diagnostic_lists_only_changed_categories_in_fixed_order():
     assert 'Changed categories: effective_settings, sources.' in str(caught.value)
 
 
-@pytest.mark.parametrize('observations,required,ceiling', [([], {'a'}, 60), ([{'a'}], set(), 60), ([{'b'}], {'a'}, 60), ([{'a'}]*61, {'a'}, 60), ([{'a'}], {'a'}, 61), ([set()]*60, {'a'}, 60)])
+@pytest.mark.parametrize('observations,required,ceiling', [([], {'a'}, 60), ([{'a'}], set(), 60), ([{'b'}], {'a'}, 60), ([{'a'}]*61, {'a'}, 60), ([{'a'}], {'a'}, 121), ([set()]*60, {'a'}, 60)])
 def test_invalid_or_insufficient_pilot(observations, required, ceiling):
     with pytest.raises(ValueError):
         calibration(observations, required, ceiling=ceiling)
@@ -243,10 +243,10 @@ def test_calibrated_cap_adds_four_runs_after_exact_minimum():
     assert validate_calibration(report, DECLARED, {}) == minimum + 4
 
 
-@pytest.mark.parametrize('ceiling, minimum', [(13, 10), (60, 57)])
+@pytest.mark.parametrize('ceiling, minimum', [(13, 10), (60, 57), (120, 117)])
 def test_required_margin_above_operating_ceiling_rejects_without_clamping(monkeypatch, ceiling, minimum):
     from api_agent.workflows import sampling
-    probability = 1 - .0009 ** (1 / minimum)
+    probability = 1 - .001 ** (1 / (minimum - .5))
     monkeypatch.setattr(sampling, 'lower_probability', lambda *args: probability)
     assert (1 - probability) ** minimum <= .001
     assert (1 - probability) ** (minimum - 1) > .001

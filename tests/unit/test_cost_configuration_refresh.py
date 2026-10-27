@@ -20,7 +20,7 @@ def configured_picker(tmp_path, monkeypatch):
     values = {'TEST_COST_HISTORY_DAYS': 7}
     app.session = SimpleNamespace(result=lambda: SimpleNamespace(values=values))
     snapshots = []
-    def build(context, tests, config):
+    def build(context, tests, config, **options):
         snapshot = Snapshot(config['TEST_COST_HISTORY_DAYS'])
         snapshots.append(snapshot)
         return snapshot
@@ -94,7 +94,7 @@ def test_start_refreshes_clock_sensitive_predictions_with_unchanged_settings(con
 def test_modal_configuration_resync_keeps_pending_redraw_with_original_picker(tmp_path, monkeypatch):
     from api_agent.tui.app import SettingHelpDialog
     snapshots = []
-    def build(context, tests, values):
+    def build(context, tests, values, **options):
         snapshot = Snapshot(values['TEST_COST_HISTORY_DAYS'])
         snapshots.append(snapshot)
         return snapshot
