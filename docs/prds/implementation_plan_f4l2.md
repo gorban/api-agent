@@ -134,13 +134,14 @@ configuration-bound historical evidence.
 
 - [x] Complete [operation-scoped provider test profiles](implementation_plan_f4l3.md) and merged-source qualification. Historical explicit-profile passes above do not establish this defaults-only acceptance.
 
-Current operation defaults also select native GLM5 Completions for the two
-tool-bearing cases. Fresh independently reviewed shared-fixture qualifications
+The earlier native-adapter checkpoint selected native GLM5 Completions for the two
+tool-bearing cases. Its independently reviewed shared-fixture qualifications
 provide Bedrock cap 52 and GPT cap 48 under their separate fingerprints. The
 complete normal catalog passed: 17 core cases plus one provider UI case, Allure
 publication and clean exit. Unit coverage is exact across 45,926 statements and
-17,992 branches (18,674 tests). Final package/external review passed; human
-acceptance remains open. Earlier 14+1 passes above retain their original scope.
+17,992 branches (18,674 tests). Final package/external review passed for that checkpoint. Current SDK-profile
+launcher qualification and conditional acceptance are recorded in
+[launcher follow-up](implementation_plan_f4l3d.md). Earlier 14+1 passes above retain their original scope.
 
 **Deferred human review**
 

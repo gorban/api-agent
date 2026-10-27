@@ -2,8 +2,8 @@
 
 [Integration readiness](implementation_plan_f4l2.md) · [Provider requirements](implementation_plan_f4.md)
 
-Bedrock supplies isolated defaults under [profile precedence](../integration_test_profiles.md).
-The 18-case catalog passed; launcher follow-up verification remains open.
+Bedrock supplies defaults under [profile precedence](../integration_test_profiles.md).
+The earlier 18-case catalog passed; the launcher follow-up is technically closed.
 
 - [x] Reinventory exact integration cases, including tool/application flows.
   Admit generic versioned declarations before provider/session creation.
@@ -31,24 +31,22 @@ The 18-case catalog passed; launcher follow-up verification remains open.
   metadata reconciliation after calibration promotion.
 - [x] Complete scoped independent/external source reviews; retain each reviewed scope.
 - [x] Complete final independent and external review after suite and package reconciliation.
-- [ ] Human acceptance through ordinary launcher defaults after technical gates.
+- [x] Record conditional human acceptance of the launcher follow-up after technical closure.
 
 Native direct login and Identity Center adapters retain their separate acceptance.
 Indexed session automation and the requested federated adapter remain unfinished.
 Regional list-price estimates are not invoices; unknown charges remain unknown.
 
-- [x] Deliver [provider-selected workflow coverage budgets](implementation_plan_f4l3a.md) with technical gates passed.
+SDK-profile caps: Bedrock 50; GPT 48 unchanged.
 
-- [x] Qualify [default-profile tool responses](implementation_plan_f4l3b.md) in both shared-primary and independent-target flows.
+Launcher reasoning/workflow, units, package/boundary and independent/external review passed. Earlier results retain their frozen scope.
 
-- [x] Deliver [explicit workflow fixture decisions](implementation_plan_f4l3c.md).
+**Deferred human review**
 
-Current SDK-profile cap: Bedrock 50; GPT 48 remains unchanged. Earlier observations remain preserved.
-
-Follow-up verification is in progress; earlier technical results retain their frozen scope.
+Substantive work is complete in the linked children; their explicit human acceptance remains unchecked and does not block subsequent work.
 
 - [Coverage budgets](implementation_plan_f4l3a.md)
 - [Tool responses](implementation_plan_f4l3b.md)
 - [Fixture decisions](implementation_plan_f4l3c.md)
 
-- [ ] Close [selected-test configuration review](implementation_plan_f4l3d.md) and the ordinary-launcher follow-up before final acceptance.
+- [Selected-test review](implementation_plan_f4l3d.md)

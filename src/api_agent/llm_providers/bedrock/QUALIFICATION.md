@@ -1,12 +1,14 @@
 # Model controls and integration selections
 
-Current independently reviewed workflow qualifications provide Bedrock cap 52
-and GPT cap 48 under their separate fingerprints; exact safe exports are promoted.
-The fresh Bedrock qualification includes the credential transaction and adapter
-identity repairs. The later host-admission reporting fix leaves sampling
-fingerprints unchanged. The normal catalog passed all 17 core cases plus one
-provider UI case, with successful Allure publication and clean exit. The complete
-unit gate passed 18,674 tests with exact line/branch coverage. Final artifact/package/external review passed; human acceptance remains separate.
+The current built-in SDK-profile workflow qualification passed 60 graphs and
+160 calls. Its minimum 46 plus fixed margin four gives Bedrock cap 50; GPT cap
+48 remains unchanged under its separate fingerprint. Fresh normal workflow
+integration passed four graphs/12 calls. Fresh reasoning passed six calls with
+signed deltas 478, 1256 and 1257; the earlier empty-answer failure is retained.
+Applicable units passed 18,700 tests with exact coverage of 45,971 statements and
+17,994 branches. Final package/boundary and independent/external review passed.
+The user conditionally accepted this launcher follow-up after technical closure;
+no additional manual launcher exercise is claimed.
 
 The provider now contributes exact-case operation defaults through
 [test-profiles.toml](test-profiles.toml). These are resolved before backend
@@ -25,13 +27,19 @@ strict output, 1024 tokens, four passes and 600/300/120-second graph/component/L
 budgets. Generic/GPT workflow ceiling remains 60; Bedrock profile ceiling is 120.
 Inference/setup defaults remain 900/960 seconds, clipped by shorter parents.
 
-The new pilots retain all ten route/node/retry targets, independent UUID fixture
+The historical native-adapter/GPT pilots retained all ten route/node/retry targets, independent UUID fixture
 decisions, simultaneous 95% exact lower bounds, 99.9% coverage target and fixed
-four-run margin. Bedrock's reviewed minimum 48 plus margin 4 gives cap 52; GPT's
+four-run margin. The historical native-adapter minimum 48 plus margin 4 gave cap 52; GPT's
 minimum 44 plus margin 4 gives cap 48. These are separate provider fingerprints,
 not pooled observations. Prior failed pilots and incomplete prefixes remain
-unpromoted. Current post-repair calibration and the complete normal catalog passed. Final
-package/external review passed; human acceptance remains open.
+unpromoted. That native-adapter checkpoint passed its post-repair calibration and complete
+normal catalog, with final package/external review. Its manual acceptance scope
+remains historical and separate from the current conditional acceptance.
+
+## Historical native-adapter checkpoint
+
+The following 18-case/18,674-unit checkpoint is frozen evidence for its own
+source and native-adapter identity, not the current SDK-profile qualification.
 
 The auth transaction serializes complete selected-snapshot readiness/publication
 without inference replay; adapter identity canonicalization preserves physical
