@@ -131,6 +131,7 @@ def test_no_git_inventory_rejects_changed_or_unbounded_payload(packaged_owner, c
     'tests/integration/fixture"one',
 ])
 def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_owner, tmp_path, owner):
+    import os
     import sys
     import tarfile
     import tomllib
@@ -199,8 +200,28 @@ def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_
         assert 'tests/integration/fixtureXone/public.txt' in members
         source.extractall(extracted, filter='data')
     rebuilt, = extracted.iterdir()
-    subprocess.run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
-                    '--outdir', str(output), str(rebuilt)], check=True, capture_output=True)
+    no_git = dict(os.environ, PATH='', PIP_NO_INDEX='1', UV_OFFLINE='1')
+    wheel_command = [sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
+                     '--outdir', str(output), str(rebuilt)]
+    subprocess.run(wheel_command, check=True, capture_output=True, env=no_git)
+    if owner == 'tests/integration/fixture':
+        proof_path = rebuilt / 'workflow-source-proof.json'
+        original_proof = proof_path.read_bytes()
+        proof = json.loads(original_proof)
+        proof['manifest']['sha256'] = '0' * 64
+        proof_path.write_text(json.dumps(proof))
+        invalid = subprocess.run(wheel_command, capture_output=True, env=no_git)
+        assert invalid.returncode != 0 and b'Invalid packaged source manifest' in invalid.stderr
+        proof_path.write_bytes(original_proof)
+        hook_path = rebuilt / 'hatch_build.py'
+        fixed_hook = hook_path.read_text()
+        assert 'except (RuntimeError, FileNotFoundError):' in fixed_hook
+        hook_path.write_text(fixed_hook.replace('except (RuntimeError, FileNotFoundError):',
+                                               'except RuntimeError:', 1))
+        causal = subprocess.run(wheel_command, capture_output=True, env=no_git)
+        assert causal.returncode != 0 and b'FileNotFoundError' in causal.stderr
+        assert b"No such file or directory: 'git'" in causal.stderr
+        hook_path.write_text(fixed_hook)
     wheel, = output.glob('*.whl')
     with zipfile.ZipFile(wheel) as installed:
         for relative in nested_notices:
