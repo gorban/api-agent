@@ -597,14 +597,18 @@ class ConfigSession:
             self._choices.pop(name, None)
         return self.result()
 
-    def cleanup_rows(self, *, retained=()):
-        original = self.result()
-        result = self.result(_cleanup=True)
+    def cleanup_rows(self, *, retained=(), _prepared=None):
+        prepared = self._prepare_resolution(()) if _prepared is None else _prepared
+        original = self._resolve_prepared(prepared)[0]
+        original = self._with_runtime_requirements(original, original)
+        result = self._resolve_prepared(prepared, _cleanup=True)[0]
+        result = self._with_runtime_requirements(result, original)
         if "HELP" in original.fields:
             result.fields["HELP"] = original.fields["HELP"]
-        base = read_dotenv(self.context.base_root / '.env')
-        pack = read_dotenv(self.context.pack_root / '.env') if self.context.external_pack else {}
-        persisted = set().union(*(DotenvEditor(path).keys() for path in self.target_paths))
+        inputs = {path: dict(entries) for path, entries in prepared[-1]}
+        base = inputs[self.context.base_root / '.env']
+        pack = inputs[self.context.pack_root / '.env'] if self.context.external_pack else {}
+        persisted = set().union(*(set(entries) for entries in inputs.values()))
         inventory = self.tool_plan.option_schema if self.tool_plan is not None else self.schema
         return [CleanupRow(name, result.fields.get(name), field, name in base,
                            name in pack, name in persisted)

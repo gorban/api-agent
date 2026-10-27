@@ -59,6 +59,7 @@ default = '(?:openai/)?gpt-6(?:\.\d+)*-(?:luna|terra|sol)(?:-\d{4}-\d{2}-\d{2})?
 help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows GPT-6 Luna, Terra and Sol, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
 
 [fields.LLM_WORKFLOW_TEST_MODEL]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -66,6 +67,7 @@ default = "gpt-6-luna"
 help = "Exact model ID for workflow integration and calibration; empty requires provider qualification."
 
 [fields.LLM_REASONING_TEST_MODEL]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -73,6 +75,7 @@ default = "gpt-6-luna"
 help = "Exact model ID for the three-pair low/high reasoning contrast; empty requires an explicit qualified model."
 
 [fields.LLM_STUDIO_TEST_DEFAULT_MODEL]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -80,6 +83,7 @@ default = "gpt-6-sol"
 help = "Exact initial Studio selection-test model ID; empty requires explicit qualification."
 
 [fields.LLM_STUDIO_TEST_SELECTED_MODEL]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -87,6 +91,7 @@ default = "gpt-5.6-luna"
 help = "Exact alternate Studio selection-test model ID; must differ from the initial model."
 
 [fields.LLM_STUDIO_TEST_DEFAULT_EFFORT]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -94,6 +99,7 @@ default = "medium"
 help = "Initial Studio selection-test effort; empty uses the provider default."
 
 [fields.LLM_STUDIO_TEST_SELECTED_EFFORT]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -101,6 +107,7 @@ default = "off"
 help = "Alternate Studio selection-test effort; must differ from the initial effort."
 
 [fields.LLM_REASONING_TEST_LOW_EFFORT]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -108,6 +115,7 @@ default = "low"
 help = "Explicit lower-effort control for the matched three-pair contrast; must be qualified by the selected model catalog."
 
 [fields.LLM_REASONING_TEST_HIGH_EFFORT]
+acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
@@ -115,6 +123,7 @@ default = "high"
 help = "Explicit higher-effort control for the matched three-pair contrast; must be qualified by the selected model catalog."
 
 [fields.LLM_REASONING_TEST_TOKEN_REPORTING]
+acknowledge_default = false
 type = "bool"
 override = true
 override_if_present = true
@@ -122,6 +131,7 @@ default = true
 help = "GPT reasoning contrast uses reported reasoning tokens; the selected model must separately advertise both configured effort controls."
 
 [fields.LLM_REASONING_TEST_MAX_OUTPUT_TOKENS]
+acknowledge_default = false
 type = "int"
 allow_empty = true
 validation = "positive"
@@ -130,6 +140,7 @@ override_if_present = true
 help = "Optional output-token cap from 1 to 16384 for each of the six matched reasoning contrast requests; empty preserves the application/provider default. It is sent through the application API and checked against advertised model limits before inference."
 
 [fields.LLM_REASONING_TEST_TIMEOUT_SECONDS]
+acknowledge_default = false
 type = "float"
 validation = "positive"
 override = true

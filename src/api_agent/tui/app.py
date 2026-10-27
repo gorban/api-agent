@@ -722,7 +722,10 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 self.configuration_refresher = ReviewRefresher(self.app, self)
             self.configuration_refresher.request()
         elif self.kind == "cleanup" and self.app.screen is self:
-            self.app.refresh_rows()
+            from .configuration_refresh import CleanupRefresher
+            if not hasattr(self, 'configuration_refresher'):
+                self.configuration_refresher = CleanupRefresher(self.app, self)
+            self.configuration_refresher.request()
         if self.kind != 'tests':
             self.refresh_bindings()
 
@@ -796,7 +799,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             return None
         snapshot = getattr(self, 'configuration_snapshot', None)
         schema = snapshot.schema if snapshot else self.app.schema
-        field = schema.fields.get(self.app.focused_setting())
+        fields = getattr(self, 'cleanup_fields', schema.fields) if self.kind == 'cleanup' else schema.fields
+        field = fields.get(self.app.focused_setting())
         return (field.name, field.help) if field and field.help.strip() else None
 
     def action_setting_help(self):
@@ -1171,9 +1175,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return
         self.show('case-configuration', 'Selected-test effective configuration',
             'Each row shows one selected case after provider test defaults and explicit test overrides. '
-            'Edit application settings or test-specific controls, then reopen this review to refresh. '
+            'Edit application settings here, or set explicit test controls through .env, environment or CLI, then reopen to refresh. '
             'Provider defaults may replace application model, API mode and workflow settings.',
-            (('edit-test-config', 'Edit application / test controls'),
+            (('edit-test-config', 'Edit application settings'),
              ('return-test-selection', 'Back to selected tests')), rows=review.rows)
 
     def credential_roles(self, *, result=None):
@@ -2388,7 +2392,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
         actions = (("continue", "(s) Start selected tests"),)
         plan = getattr(self.session, 'tool_plan', None)
-        if plan is not None and (plan.tool_fields or plan.inactive_fields):
+        if self.mode in {'integration', 'e2e'} or (plan is not None and (plan.tool_fields or plan.inactive_fields)):
             actions += (('review-config', 'Review selected-test configuration'),)
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows,
                   configuration_error=configuration_error)
@@ -2412,8 +2416,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         table = self.screen.query_one(DataTable)
         if not table.row_count:
             return False
-        key = str(table.get_row_at(table.cursor_row)[1])
-        return any(row.name == key and row.present for row in self.session.cleanup_rows())
+        # Navigation and binding checks use the displayed snapshot. Entry and
+        # explicit refresh resolve it; deletion reads the current files again.
+        return bool(table.get_row_at(table.cursor_row)[0])
 
     def toggle_row(self, key):
         if self.screen.kind == "test-results":
@@ -2475,30 +2480,42 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if self.screen.kind == "tests":
             rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
         else:
-            rows = [(row.name, ("✓" if row.present else "", row.name, display_configuration(row.field, row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in self.session.cleanup_rows(retained=self.cleanup_names) if row.name in self.cleanup_names]
-        if self.screen.kind == "cleanup":
-            # Rebuilding posts another highlight event; unchanged snapshots must
-            # not rebuild again. Preserve the focused setting when rows change.
-            current = [tuple(table.get_row_at(i)) for i in range(table.row_count)]
-            if current == [tuple(literal_cell(cell) for cell in cells) for _, cells in rows]:
-                self.screen.refresh_bindings()
-                return
-            cursor = table.cursor_row
-            selected = current[cursor][1] if current else None
-            table.clear()
-            for key, cells in rows:
-                table.add_row(*(literal_cell(cell) for cell in cells), key=key)
-            if rows:
-                row_index = next((i for i, (key, _) in enumerate(rows) if key == selected),
-                                 min(cursor, len(rows) - 1))
-                table.move_cursor(row=row_index)
-            self.screen.refresh_bindings()
+            refresher = getattr(self.screen, 'configuration_refresher', None)
+            if refresher is not None:
+                refresher.invalidate()
+            self.apply_cleanup_rows(self.screen, self.session.cleanup_rows(retained=self.cleanup_names))
             return
         for key, cells in rows:
             for column, value in zip(table.columns, cells):
                 table.update_cell(key, column, literal_cell(value))
         self.screen.refresh_bindings()
         self.refresh_cost_summary()
+
+    def apply_cleanup_rows(self, screen, cleanup_rows):
+        # Declaration metadata belongs to the same display snapshot as values;
+        # the fork must not replace the live session's execution schema.
+        screen.cleanup_fields = {row.name: row.field for row in cleanup_rows}
+        table = screen.query_one(DataTable)
+        rows = [(row.name, ("✓" if row.present else "", row.name,
+                 display_configuration(row.field, row.value) if row.resolved else "Inactive / unset",
+                 row.source if row.resolved else ""))
+                for row in cleanup_rows if row.name in self.cleanup_names]
+        # Rebuilding posts another highlight event; unchanged snapshots must
+        # not rebuild again. Preserve the focused setting when rows change.
+        current = [tuple(table.get_row_at(i)) for i in range(table.row_count)]
+        if current == [tuple(literal_cell(cell) for cell in cells) for _, cells in rows]:
+            screen.refresh_bindings()
+            return
+        cursor = table.cursor_row
+        selected = current[cursor][1] if current else None
+        table.clear()
+        for key, cells in rows:
+            table.add_row(*(literal_cell(cell) for cell in cells), key=key)
+        if rows:
+            row_index = next((i for i, (key, _) in enumerate(rows) if key == selected),
+                             min(cursor, len(rows) - 1))
+            table.move_cursor(row=row_index)
+        screen.refresh_bindings()
 
     def delete_assignment(self, name):
         try:

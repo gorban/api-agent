@@ -25,3 +25,5 @@ Qualification may use a bounded model/route matrix. Reject unsupported features 
 
 - [x] Complete [default-driven ordinary integration delivery](implementation_plan_f4l3.md): unit/coverage, normal catalog, installed-resource, boundary and independent/external review gates passed. Preserve application/shared behavior and each earlier result's source/configuration scope.
 - [ ] Human acceptance through ordinary launcher defaults remains separate.
+
+- [ ] Qualify [model-specific prompt caching](implementation_plan_f4m.md) with eligible inference access.

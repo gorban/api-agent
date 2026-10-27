@@ -13,6 +13,16 @@ from test_test_table import identities
 from test_tui import fixture
 
 
+def picker_buttons(screen, mode):
+    start = screen.query_one('#continue', Button)
+    if mode == 'unit':
+        assert not screen.query('#review-config')
+        return [start]
+    review = screen.query_one('#review-config', Button)
+    assert str(review.label) == 'Review selected-test configuration'
+    return [start, review]
+
+
 def row_keys(table):
     return [row.key.value for row in table.ordered_rows]
 
@@ -31,7 +41,7 @@ def test_search_direction_exit_preserves_identity_and_selection(tmp_path, key, d
             await pilot.press(key)
             control = app.screen.query_one(SearchInput)
             assert app.focused is control
-            assert app.screen.focus_chain == [table, app.screen.query_one('#continue', Button), control]
+            assert app.screen.focus_chain == [table, *picker_buttons(app.screen, mode), control]
             assert 'all' not in row_keys(table)
             assert app.selection.selected_ids == selected
             assert app.screen.test_search.direction == direction
@@ -66,26 +76,32 @@ def test_search_tab_cycles_list_start_and_query_in_both_directions(tmp_path, key
         async with app.run_test(size=(90, 25)) as pilot:
             await pilot.pause()
             table = app.screen.query_one(TestTable)
-            start = app.screen.query_one('#continue', Button)
-            assert app.screen.focus_chain == [table, start]
-            await pilot.press('tab')
-            assert app.focused is start
-            await pilot.press('tab')
-            assert app.focused is table
+            buttons = picker_buttons(app.screen, mode)
+            start = buttons[0]
+            assert app.screen.focus_chain == [table, *buttons]
+            for expected in (*buttons, table):
+                await pilot.press('tab')
+                assert app.focused is expected
             await pilot.press(key)
             control = app.screen.query_one(SearchInput)
             assert app.focused is control
             for size in ((90, 25), (55, 16)):
                 await pilot.resize_terminal(*size)
                 await pilot.pause()
-                assert app.screen.focus_chain == [table, start, control]
+                assert app.screen.focus_chain == [table, *buttons, control]
                 table.focus()
-                for expected in (start, control, table):
+                rows_before = row_keys(table)
+                cursor_before = table.cursor_row
+                selected_before = app.selection.selected_ids.copy()
+                for expected in (*buttons, control, table):
                     await pilot.press('tab')
                     assert app.focused is expected
-                for expected in (control, start, table):
+                for expected in (control, *reversed(buttons), table):
                     await pilot.press('shift+tab')
                     assert app.focused is expected
+                assert row_keys(table) == rows_before
+                assert table.cursor_row == cursor_before
+                assert app.selection.selected_ids == selected_before
             app.choose = AsyncMock()
             await pilot.press('tab', 'enter')
             app.choose.assert_awaited_once_with('continue')
@@ -94,17 +110,17 @@ def test_search_tab_cycles_list_start_and_query_in_both_directions(tmp_path, key
             app.choose.assert_awaited_once_with('continue')
             assert app.focused is start and control.value == ''
             app.choose.reset_mock()
-            await pilot.press('tab', 's')
+            await pilot.press(*(['tab'] * len(buttons)), 's')
             assert app.focused is control and control.value == 's'
             app.choose.assert_not_awaited()
             await pilot.press('tab', 's')
             assert app.focused is control and control.value == 'ss'
             app.choose.assert_not_awaited()
             await pilot.press('escape')
-            assert app.screen.focus_chain == [table, start]
+            assert app.screen.focus_chain == [table, *buttons]
             assert app.focused is table
             await pilot.press('shift+tab')
-            assert app.focused is start
+            assert app.focused is buttons[-1]
     asyncio.run(scenario())
 
 

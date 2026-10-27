@@ -28,7 +28,13 @@ profile order/concurrent requests cannot select another case's route. Existing
 request and user-turn attribution and cleanup leases remain in force.
 
 The effective values and their profile/explicit provenance are available for
-review before execution and recorded with the test. Provider-specific profile
+review before execution and recorded with the test. Provider-dependent test controls
+are omitted from ordinary configuration Review so accepting application defaults
+does not pin test settings across provider changes. Use **Review selected-test
+configuration** in the integration/E2E picker to inspect each case's effective
+values and provenance. Explicit test overrides remain available through dotenv,
+environment and CLI; Clear .env configuration can remove a saved override so the
+provider profile supplies its default again. Provider-specific profile
 values belong in provider declarations, rather than protocol branches in generic
 test drivers. The calibration command resolves the same workflow-case profile
 before fingerprinting. Unsupported selections require a supported profile first;
