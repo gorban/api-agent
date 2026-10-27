@@ -313,7 +313,7 @@ class CustomBuildHook(BuildHookInterface):
         sidecar = root / 'workflow-source-proof.json'
         try:
             source_root = Path(_git(root, 'rev-parse', '--show-toplevel').decode().strip())
-        except RuntimeError:
+        except (RuntimeError, FileNotFoundError):
             source_root = None
         inventory = _package_inventory(root, source_root == root)
         if inventory is not None:
