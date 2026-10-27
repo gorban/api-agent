@@ -211,3 +211,22 @@ def test_ordinary_review_excludes_hidden_test_controls_even_when_explicit(tmp_pa
     names = {name for name, _ in app.configuration_rows(review=result)}
     assert not TEST_KEYS & names
     assert 'LLM_DEFAULT_MODEL' in names
+
+
+def test_selected_review_passes_collection_context_for_implicit_base_cases(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from test_test_profiles import configuration, CASES
+    from api_agent.tui.test_configuration import selected_review
+    from api_agent.testing.collection import repository_label
+    context = SimpleNamespace(base_root=ROOT, owner_root=tmp_path)
+    result = configuration()
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, result.values, owner_root=ROOT)
+    tests = [replace(case, repo=repository_label(context, ROOT), root=None) for case in (CASES[0], CASES[-1])]
+    snapshot = SimpleNamespace(execution=result, schema=schema, sources_current=lambda: True)
+    session = SimpleNamespace(context=context, review_snapshot=lambda: snapshot)
+    rows = {cells[:2]: cells[2:] for _, cells in selected_review(session, tests).rows}
+    key = 'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'
+    assert rows[(tests[0].id, key)][1] == 'inactive_bundled_test_control:shared_default'
+    assert rows[(tests[1].id, key)][0] == '1024'
+    assert rows[(tests[1].id, key)][1].endswith(':workflow')

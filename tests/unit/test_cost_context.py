@@ -200,3 +200,75 @@ def test_repository_tests_fingerprint_their_own_checkout(tmp_path, external):
         assert artifact['tests'][0]['source_fingerprint'] == expected
     unknown = TestIdentity('other::test.py::test_one', 'other', 'test.py', 'test.py::test_one')
     assert source_fingerprint(unknown, context=ctx) is None
+
+
+@pytest.mark.parametrize('allow_empty,present,value,known', [
+    (True, True, None, True), (True, False, None, False),
+    (False, True, None, False), (False, False, None, False),
+    (True, True, 1024, True)])
+def test_nullable_cost_identity_requires_explicit_admitted_value(tmp_path, monkeypatch, allow_empty, present, value, known):
+    mocked_schema(monkeypatch, [FieldDeclaration('CAP', 'int', cost_affecting=True, allow_empty=allow_empty)])
+    result = cost_config(context(tmp_path), {'CAP': value} if present else {})['_COST_REQUEST_SETTINGS']
+    if known:
+        import json
+        assert result == {'CAP': sha256(json.dumps(value).encode()).hexdigest()}
+    else:
+        assert result is None
+
+
+@pytest.mark.parametrize('name,kind', [('API_KEY', 'str'), ('OBJECT', 'jsonobject')])
+def test_nullable_secret_or_object_never_becomes_cost_identity(tmp_path, monkeypatch, name, kind):
+    mocked_schema(monkeypatch, [FieldDeclaration(name, kind, cost_affecting=True, allow_empty=True)])
+    assert cost_config(context(tmp_path), {name: None})['_COST_REQUEST_SETTINGS'] is None
+
+
+def test_real_workflow_cap_profile_distinguishes_null_and_explicit_cap():
+    from test_test_profiles import configuration, CASES, ROOT
+    from api_agent.testing.test_profiles import resolve_test_profiles
+    from api_agent.runtime.resource_pack import load_launch_context
+    config = configuration()
+    context = load_launch_context(ROOT)
+    rows = resolve_test_profiles(CASES, config.values, owner_root=ROOT, fields=config.fields)
+    ordinary = cost_config(context, rows[CASES[0].id]['config'])['_COST_REQUEST_SETTINGS']
+    workflow = cost_config(context, rows[CASES[-1].id]['config'])['_COST_REQUEST_SETTINGS']
+    key = 'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'
+    assert ordinary is not None and workflow is not None
+    assert ordinary[key] == sha256(b'null').hexdigest()
+    assert workflow[key] == sha256(b'1024').hexdigest()
+    assert ordinary[key] != workflow[key]
+
+
+@pytest.mark.parametrize('changes', [dict(type='str'), dict(sensitive=True),
+    dict(validation=''), dict(allow_empty=False), dict(type='jsonobject'),
+    dict(name='OTHER_MAX_OUTPUT_TOKENS'), dict(name='API_TOKEN'),
+    dict(name='CAP', sensitive=True)])
+def test_workflow_count_cost_exception_does_not_admit_other_declarations(tmp_path, monkeypatch, changes):
+    options = dict(name='LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS', type='int',
+                   cost_affecting=True, validation='positive', allow_empty=True)
+    options.update(changes)
+    field = FieldDeclaration(**options)
+    mocked_schema(monkeypatch, [field])
+    assert cost_config(context(tmp_path), {field.name: 1024})['_COST_REQUEST_SETTINGS'] is None
+
+
+@pytest.mark.parametrize('value', [None, 1, 1024, 1048576])
+def test_exact_shared_workflow_cap_cost_hash_is_not_mistaken_for_credentials(tmp_path, monkeypatch, value):
+    field = FieldDeclaration('LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS', 'int',
+                            cost_affecting=True, validation='positive', allow_empty=True)
+    mocked_schema(monkeypatch, [field])
+    import json
+    assert cost_config(context(tmp_path), {field.name: value})['_COST_REQUEST_SETTINGS'] == {
+        field.name: sha256(json.dumps(value).encode()).hexdigest()}
+
+
+@pytest.mark.parametrize('value', [True, False, 'synthetic-secret', 1024.0, {}, [], 0, -1, 1048577])
+def test_exact_workflow_cap_never_hashes_noncount_or_out_of_range_values(tmp_path, monkeypatch, value):
+    field = FieldDeclaration('LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS', 'int',
+                            cost_affecting=True, validation='positive', allow_empty=True)
+    mocked_schema(monkeypatch, [field])
+    assert cost_config(context(tmp_path), {field.name: value})['_COST_REQUEST_SETTINGS'] is None
+
+
+def test_explicit_sensitive_string_cannot_become_cost_identity(tmp_path, monkeypatch):
+    mocked_schema(monkeypatch, [FieldDeclaration('CHOICE', 'str', cost_affecting=True, sensitive=True)])
+    assert cost_config(context(tmp_path), {'CHOICE': 'synthetic-secret'})['_COST_REQUEST_SETTINGS'] is None

@@ -2,6 +2,10 @@
 
 [Permanent fixture](implementation_plan_b2b.md) · [Refresh procedure](../workflow_calibration.md).
 
+The statistical requirements below retain their historical scope. Normal coverage
+is superseded by the [deterministic follow-through](implementation_plan_b2b1a11.md);
+prior reports and signed measurements remain immutable.
+
 ## Original node-only requirements
 
 - [x] Remove calibration from normal integration collection entirely; never hide it behind a skip, deselection or automatic prerequisite. Keep node coverage an ordinary required integration test.
@@ -60,3 +64,11 @@ preserved. The operating-budget extension below has separate unfinished gates.
 
 - [Qualification evidence](implementation_plan_b2b1a.md)
 - [Expanded workflow coverage](implementation_plan_b2b1a10.md)
+
+## Deterministic coverage follow-through
+
+- [ ] Replace the ordinary calibrated stopping rule with [fresh-UUID deterministic
+  path coverage](implementation_plan_b2b1a11.md). Earlier statistical requirements
+  and observations above remain historical; the new contract requires actual
+  execution of all reachable route/readiness combinations under a whole-test
+  deadline and does not consume or relabel old pilot results.

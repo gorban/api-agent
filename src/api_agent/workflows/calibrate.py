@@ -12,7 +12,7 @@ from api_agent.providers.progress import progress_sink, report_timeout_sync
 from api_agent.testing.diagnostics import CredentialScrubber, format_exception, terminal_exception
 from api_agent.testing.suite_lock import suite_locked
 from .evidence import reserve_calibration, sanitize, store_calibration
-from .fixture_driver import fingerprint, provider_identity, run_graph
+from .fixture_driver import fingerprint, provider_identity, run_graph, calibration_profile
 from .sampling import DECLARED, PILOT_MAX_GRAPHS, coverage_ceiling, measured_calibration, measurement
 
 
@@ -64,7 +64,7 @@ def configuration(root, argv):
     from api_agent.testing.test_profiles import resolve_test_profiles
     node = 'tests/integration/test_workflow.py::test_workflow_node_coverage'
     case = TestIdentity('api-agent:' + node, 'api-agent', node.split('::')[0], node, root=root)
-    profile = resolve_test_profiles([case], result.values, owner_root=context.owner_root, fields=result.fields)[case.id]
+    profile = resolve_test_profiles([case], result.values, owner_root=context.owner_root, fields=result.fields, context=context)[case.id]
     result = replace(result, values=profile['config'])
     errors = list(result.errors)
     if result.values.get('COLLECT_ONLY'):
@@ -73,6 +73,7 @@ def configuration(root, argv):
         error = ValueError('\n'.join(errors) or 'Calibration does not accept test selectors.')
         error.calibration_config = result.values
         raise error
+    coverage_ceiling(result.values.get('LLM_WORKFLOW_TEST_MAX_GRAPHS', 60))
     verify_worktrees([context.base_root, context.pack_root, context.owner_root],
                      stdin=None if result.values.get('NO_STD_IN') else sys.stdin, stdout=sys.stdout)
     return context, result
@@ -211,6 +212,13 @@ def pilot(context, result, destination, count, *, output=print):
                         else:
                             selection = ModelSelectionPolicy(result.values).select_default(catalog)
                         expected = fingerprint(selection, result.values, root=context.base_root, owner_root=context.owner_root)
+                        # Preserve the historical calibration request cap explicitly;
+                        # ordinary workflow tests obtain caps from their generic profile.
+                        graph_config = dict(result.values)
+                        graph_config.pop('LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS', None)
+                        profile = calibration_profile(result.values, owner_root=context.owner_root)
+                        if profile is not None:
+                            graph_config['LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'] = profile['max_output_tokens']
                         records = []
                         stage = 'Calibration graph execution'
                         for trial in range(1, count + 1):
@@ -219,7 +227,7 @@ def pilot(context, result, destination, count, *, output=print):
                             def trial_observer(event):
                                 events.append(event)
                                 observe(event)
-                            values, nodes = run_graph(provider, selection, trial, result.values,
+                            values, nodes = run_graph(provider, selection, trial, graph_config,
                                                      root=context.base_root, owner_root=context.owner_root, observe=trial_observer)
                             records.append(measurement(trial, values, nodes, events))
                             emit(dict(records=records))

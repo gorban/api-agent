@@ -380,8 +380,24 @@ class IntegrationLLM:
 
     def _run_private(self, awaitable):
         """Preserve stack locations/errors without exporting provider frame locals."""
+        from api_agent.providers.progress import component_timeout
+        from inspect import CORO_CREATED, CORO_CLOSED, getcoroutinestate
+        started = False
+
+        async def bounded():
+            nonlocal started
+            try:
+                async with component_timeout('Integration provider operation'):
+                    started = True
+                    return await awaitable
+            finally:
+                if (not started and asyncio.iscoroutine(awaitable)
+                        and getcoroutinestate(awaitable) == CORO_CREATED):
+                    awaitable.close()
+
+        operation = bounded()
         try:
-            return self.loop.run_until_complete(awaitable)
+            return self.loop.run_until_complete(operation)
         except BaseException as error:
             pending, seen = [error], set()
             while pending:
@@ -395,6 +411,15 @@ class IntegrationLLM:
                 pending.extend(value for value in (item.__cause__, item.__context__)
                                if value is not None)
             raise
+        finally:
+            submitted = any(task.get_coro() is operation
+                            for task in asyncio.all_tasks(self.loop))
+            if not submitted and getcoroutinestate(operation) == CORO_CREATED:
+                operation.close()
+            if (not started and getcoroutinestate(operation) == CORO_CLOSED
+                    and asyncio.iscoroutine(awaitable)
+                    and getcoroutinestate(awaitable) == CORO_CREATED):
+                awaitable.close()
 
     async def _finish_execution(self):
         self._execution_finished = True

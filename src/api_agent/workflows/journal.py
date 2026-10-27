@@ -354,7 +354,10 @@ class WorkflowJournal:
 
     def __init__(self, definition, *, log_content=False, secrets=(), test_id=None,
                  source_manifest=None, boundary=None, turn_id=None, component_passes=None,
-                 content_policy=None, model_identity=None):
+                 content_policy=None, model_identity=None, semantic_identity=None):
+        from .identity import validate_identity
+        self._semantic_identity = (None if semantic_identity is None else
+                                  validate_identity(semantic_identity))
         self.projection = projection(definition, component_passes=component_passes)
         # Native callable kind is admitted by the definition compiler. Keep it
         # private to trace classification; journal and projection stay generic.
@@ -616,6 +619,23 @@ class WorkflowJournal:
                           accounting='unverified_tool' if unverified_tool else 'central_call_id'))
         return call_id
 
+    def admit_semantic_identity(self, identity):
+        """Bind a fresh journal to independently resolved invocation budgets."""
+        from .identity import validate_identity
+        identity = validate_identity(identity)
+        with self._lock:
+            if self._semantic_identity is not None:
+                if self._semantic_identity != identity:
+                    raise ValueError('Workflow journal semantic identity conflicts')
+                return
+            if self._started or self._events or self._finalized or self._gap is not None:
+                raise ValueError('Workflow semantic identity requires a fresh journal')
+            self._semantic_identity = identity
+
+    @property
+    def semantic_identity(self):
+        return None if self._semantic_identity is None else dict(self._semantic_identity)
+
     def finalize(self):
         with self._lock:
             self._started = True
@@ -632,11 +652,14 @@ class WorkflowJournal:
                            gap=self._gap, content='permitted_scrubbed' if self._log_content else 'withheld')
             if self.execution_context is not None:
                 payload['execution_context'] = dict(self.execution_context)
+            if self.semantic_identity is not None:
+                payload['semantic_identity'] = dict(self.semantic_identity)
             payload['sha256'] = sha256(_encoded(payload)).hexdigest()
             return payload
 
 
-def validate_journal(payload, *, expected_definition=None, expected_component_passes=None):
+def validate_journal(payload, *, expected_definition=None, expected_component_passes=None,
+                     expected_identity=None):
     """Admit only the already-scrubbed, bounded structural envelope."""
     if type(payload) is not dict or payload.get('version') != 1:
         raise ValueError('Invalid workflow journal version')
@@ -649,7 +672,13 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
     if 'execution_context' in payload:
         from .run_context import validate_execution_context
         validate_execution_context(payload['execution_context'])
-    if set(payload) - {'execution_context'} != {'version', 'projection', 'source_manifest', 'invocation_id', 'turn_id', 'test_id',
+    from .identity import validate_identity
+    if 'semantic_identity' in payload:
+        validate_identity(payload['semantic_identity'])
+    if expected_identity is not None:
+        if validate_identity(expected_identity) != payload.get('semantic_identity'):
+            raise ValueError('Workflow semantic identity differs from independently expected identity')
+    if set(payload) - {'execution_context', 'semantic_identity'} != {'version', 'projection', 'source_manifest', 'invocation_id', 'turn_id', 'test_id',
                         'events', 'completeness', 'gap', 'content', 'sha256'}:
         raise ValueError('Unexpected workflow journal field')
     projection_data = payload['projection']

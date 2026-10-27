@@ -430,12 +430,21 @@ class Workflow:
         if turn_id is not None and journal is not None and turn_id != journal.turn_id:
             raise ValueError('explicit turn identity disagrees with the active journal')
         if journal is not None and self.definition is not None:
+            from .identity import workflow_identity
+            identity = workflow_identity(self.definition, timeouts=self.timeouts,
+                                         component_passes=self.component_passes)
+            if (getattr(journal, 'semantic_identity', None) is not None
+                    and journal.semantic_identity != identity):
+                raise WorkflowError("Workflow journal semantic identity differs from effective budgets")
             from .journal import projection
             if journal.projection != projection(self.definition, component_passes=self.component_passes):
                 raise WorkflowError('Workflow journal uses a different effective component pass limit')
         selected_context = current_execution_context()
         if journal is not None:
             selected_context = journal.admit_execution_context(selected_context)
+            admit_identity = getattr(journal, 'admit_semantic_identity', None)
+            if self.definition is not None and admit_identity is not None:
+                admit_identity(identity)
         if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1':
             if self.definition is None:
                 raise WorkflowError('Reporting requires an admitted workflow definition')
@@ -443,7 +452,10 @@ class Workflow:
             proof = self.services.get('packaged_proof')
             source_manifest = verified_documents(self.definition, packaged_proof=proof)
             from .journal import WorkflowJournal
+            from .identity import workflow_identity
             journal = WorkflowJournal(self.definition,
+                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
+                                                    component_passes=self.component_passes),
                 component_passes=self.component_passes,
                 log_content=self.config.get('LOG_CONTENT') is True,
                 source_manifest=source_manifest,

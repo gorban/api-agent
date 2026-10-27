@@ -226,3 +226,28 @@ def test_nested_pack_keeps_its_owner_working_directory(tmp_path):
     units = suite(owner)
     identities = collect_tests(context(base, owner, {'unit': (units,)}), 'unit')
     assert {test.repo for test in identities} == {'base', 'nested'}
+
+
+@pytest.mark.parametrize('installed,base_name,owner_name,labels', [
+    (False, 'same', 'same', ('base', 'pack')),
+    (True, 'api_agent', 'external', ('api-agent', 'external')),
+    (True, 'api_agent', 'api-agent', ('base', 'pack')),
+    (True, 'api_agent', 'api_agent', ('api-agent', 'pack')),
+])
+def test_collector_implicit_roots_keep_unique_effective_repository_labels(tmp_path, monkeypatch, installed, base_name, owner_name, labels):
+    import json
+    from api_agent.testing import collection
+    base = tmp_path / 'base' / base_name
+    owner = tmp_path / 'owner' / owner_name
+    suite(base); suite(owner)
+    monkeypatch.setattr(collection, '_installed_base_identity', lambda root: installed and root == base)
+    def collect(args, *unused):
+        Path(args[3]).write_text(json.dumps([dict(node_id='tests/unit/test_tiny.py::test_value[1]', tags=[])]))
+        return subprocess.CompletedProcess(args, 0, '', '')
+    monkeypatch.setattr(collection, '_run_collection', collect)
+    tests = collect_tests(context(base, owner, {'unit': (owner / 'tests/unit',)}), 'unit')
+    assert tuple(test.repo for test in tests) == labels
+    assert len({test.id for test in tests}) == 2 and all(test.root is None for test in tests)
+    assert collection.repository_label(context(base), base) == ('api-agent' if installed else base.name)
+    other = tmp_path / 'provider'; other.mkdir()
+    assert collection.repository_label(context(base, owner), other) == ('pack' if base_name == owner_name else other.name)

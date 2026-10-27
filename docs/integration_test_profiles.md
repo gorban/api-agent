@@ -36,10 +36,24 @@ values and provenance. Explicit test overrides remain available through dotenv,
 environment and CLI; Clear .env configuration can remove a saved override so the
 provider profile supplies its default again. Provider-specific profile
 values belong in provider declarations, rather than protocol branches in generic
-test drivers. The calibration command resolves the same workflow-case profile
-before fingerprinting. Unsupported selections require a supported profile first;
-missing/stale baselines require an explicit fresh, reviewed calibration. Older
-reports are retained and never relabeled for a new source fingerprint.
+test drivers. Workflow coverage uses the profile's optional
+`LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS` and whole-test
+`LLM_WORKFLOW_TEST_TIMEOUT_SECONDS` controls. It exercises ten UUID-selected
+route/readiness cases without a statistical baseline. The explicit legacy
+calibration command still resolves the workflow profile before fingerprinting;
+its historical reports remain unchanged and do not gate ordinary tests.
+
+The workflow output cap is inactive for an explicit registry of exact bundled
+nonconsumer cases. Their effective test configuration uses the shared typed empty
+default with inactive provenance, after profile merging, so a workflow-only cap
+change does not invalidate unrelated test-cost history. The workflow consumer
+retains its explicit or profile value. Unknown identities, parameterized variants
+and cases outside the physical bundled suite conservatively retain their values;
+application configuration and source mappings remain unchanged. Implicit roots
+from collection are interpreted through the trusted base/owner context and its
+repository labels for both profile admission and dormant-control scoping.
+Explicit roots take precedence; unknown or ambiguous ownership stays unscoped,
+including installed-label collisions.
 
 Acceptance requires inert admission, exact identities, explicit empty semantics,
 allowed-model enforcement, identity/environment invariance, order/concurrency

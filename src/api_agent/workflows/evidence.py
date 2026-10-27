@@ -3,16 +3,19 @@ import json
 import math
 import os
 import re
-from .contrived import strict_json
+from .contrived import strict_json, trial_decisions
+from .run_context import canonical_uuid
 from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
 
-_KEYS = frozenset('operating_ceiling coverage_policy attempts internal_retry targets proof condition implicit attempt_id visit_id '.split()) | frozenset('fingerprint_version sampling_method provider_identity entrypoint source_sha256 trial dependency_versions python_version langgraph langchain-core jsonschema markdown-it-py httpx records route backend auth_mode backend_identity user_input_hash pyproject.toml uv.lock events event node component source target attempt max_passes elapsed kind accepted runs nodes seen complete stopping_reason coverage calibration trials hits bounds minimum_runs safety_margin minimum_missing_node_bound max_runs missing_node_bound confidence assumption target model effective_settings sources routes scope_id parent_id owner scope started_ms stopped_ms timeout_key status outcome start stop started stopped start_ms stop_ms timeout declared_timeout effective_timeout timeout_source provenance duration usage input_tokens output_tokens cached_tokens cached_input_tokens cache_write_tokens reasoning_tokens total_tokens llm_timeout node_timeout component_timeout graph_timeout temperature max_output_tokens cache_policy reasoning_effort retries api_mode first second skip next_a next_b graph_id definition_id'.split())
+_KEYS = frozenset('trial_uuid operating_ceiling coverage_policy attempts internal_retry targets proof condition implicit attempt_id visit_id '.split()) | frozenset('fingerprint_version sampling_method provider_identity entrypoint source_sha256 trial dependency_versions python_version langgraph langchain-core jsonschema markdown-it-py httpx records route backend auth_mode backend_identity user_input_hash pyproject.toml uv.lock events event node component source target attempt max_passes elapsed kind accepted runs nodes seen complete stopping_reason coverage calibration trials hits bounds minimum_runs safety_margin minimum_missing_node_bound max_runs missing_node_bound confidence assumption target model effective_settings sources routes scope_id parent_id owner scope started_ms stopped_ms timeout_key status outcome start stop started stopped start_ms stop_ms timeout declared_timeout effective_timeout timeout_source provenance duration usage input_tokens output_tokens cached_tokens cached_input_tokens cache_write_tokens reasoning_tokens total_tokens llm_timeout node_timeout component_timeout graph_timeout temperature max_output_tokens cache_policy reasoning_effort retries api_mode first second skip next_a next_b graph_id definition_id'.split())
 _TEXT = re.compile(r'[A-Za-z0-9_./: -]{1,256}\Z')
 
 
 def sanitize(value):
     """Never serialize producer inputs, output text, feedback or credentials."""
     if type(value) is dict:
+        if 'trial_uuid' in value:
+            trial_decisions(canonical_uuid(value['trial_uuid']), 'first')
         return {key: sanitize(item) for key, item in value.items()
                 if type(key) is str and (key in _KEYS or key.endswith('_draft') or key.endswith('_format') or key.endswith('_guard') or key.startswith(('demo/contrived/', 'demo/cfg/', 'src/api_agent/', 'tests/integration/')))}
     if type(value) in (list, tuple):

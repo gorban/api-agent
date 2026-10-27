@@ -1,21 +1,22 @@
 # Amazon Bedrock provider
 
-The current API-key Completions calibration qualifies Bedrock cap 50 from
+The historical API-key Completions calibration qualified Bedrock cap 50 from
 60 graphs and 156 calls: measured minimum 46 plus allowance 4. GPT cap 57 is
-unchanged. The matching normal API-key Completions workflow coverage test passed
-1/1, with six user turns and 9,415 tokens; cost remains unknown. Current source
-verification passed 19,433 unit tests with exact
+unchanged at that checkpoint. The matching normal API-key Completions workflow coverage test passed
+1/1, with six user turns and 9,415 tokens; cost remains unknown. At that historical
+checkpoint, source verification passed 19,433 unit tests with exact
 line/branch coverage and independent/external source reviews. The user confirms
 the effective default attended login works; repeat/restart reuse, SSO and indexed
 session qualification remain separate. Packaged/relocated artifact verification
-and final delivery review passed for this checkpoint. Remaining human acceptance
-stays open.
+and final delivery review passed for that checkpoint. The deterministic coverage
+follow-through below has separate unit, artifact, live and review gates; its human
+acceptance remains open.
 
 The earlier built-in SDK-profile checkpoint qualified Bedrock cap 50 with GPT
 cap 48. Fresh workflow/reasoning checks passed, retaining an earlier empty-answer
 failure. Its 18,700 units passed with exact line/branch coverage and technical
 reviews passed; launcher follow-up acceptance was conditional. Those historical
-settings are not the current API-key calibration.
+settings differ from the later API-key calibration.
 
 The historical native-adapter checkpoint qualified cap 52, passed 17 core plus
 one provider UI case and 18,674 units. This is not a new full 18-case SDK run.
@@ -194,12 +195,15 @@ Earlier reporting-enabled 14 Responses plus one Completions workflow passes
 retain their source/settings scope in [historical qualification](QUALIFICATION.md);
 they do not establish a new full 18-case SDK-profile run or authorize inference.
 
-The native-adapter repair and later reporting-only host admission correction
-retain their historical sampling identity. Current SDK-profile calibration has
-its own reviewed fingerprint; see [qualification](QUALIFICATION.md). Any different source, provider, route,
-model, dependency versions or effective settings still requires a matching
-reviewed qualification. Stale reports cannot substitute; committed workflow provenance checks remain required. See [calibration maintenance](../../../../docs/workflow_calibration.md)
-and [integration readiness requirements](../../../../docs/prds/implementation_plan_f4l2.md).
+Normal workflow coverage now executes ten fresh-UUID route/readiness cases under
+`LLM_WORKFLOW_TEST_TIMEOUT_SECONDS` (600 seconds by default), without consulting
+statistical baselines. Its profile sets the shared output-token cap to 1024;
+application generation limits remain independent. Earlier native-adapter and
+reporting qualification retain their historical source/settings identity in
+[qualification](QUALIFICATION.md). They are never relabeled as observations of
+new source. Committed workflow provenance checks remain required. See
+[legacy calibration maintenance](../../../../docs/workflow_calibration.md) and
+[integration readiness requirements](../../../../docs/prds/implementation_plan_f4l2.md).
 Profile resolution does not waive test assertions or turn an unavailable
 prerequisite into a passing result.
 

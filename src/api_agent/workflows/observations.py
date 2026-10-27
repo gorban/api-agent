@@ -27,11 +27,17 @@ class WorkflowObservationFactory:
         self.sink, self.trace = sink, trace
 
     def create(self, definition, *, journal=None, turn_id=None,
-               component_passes=None, test_id=None, source_manifest=None):
+               component_passes=None, test_id=None, source_manifest=None,
+               semantic_identity=None):
+        if journal is not None and semantic_identity is not None:
+            from .identity import validate_identity
+            if validate_identity(semantic_identity) != getattr(journal, 'semantic_identity', None):
+                raise ValueError("Existing journal semantic identity conflicts")
         journal = journal or WorkflowJournal(definition,
             log_content=self.log_policy.allow_content, boundary=self.boundary,
             turn_id=turn_id, component_passes=component_passes,
-            test_id=test_id, source_manifest=source_manifest)
+            test_id=test_id, source_manifest=source_manifest,
+            semantic_identity=semantic_identity)
         return WorkflowObservations(journal, boundary=self.boundary,
             log_policy=self.log_policy, sink=self.sink, trace=self.trace)
 
@@ -51,6 +57,10 @@ class WorkflowObservations:
         journal.subscribe(self._journal_observer)
 
     @property
+    def semantic_identity(self):
+        return self.journal.semantic_identity
+
+    @property
     def projection(self):
         return self.journal.projection
 
@@ -61,6 +71,9 @@ class WorkflowObservations:
     @property
     def invocation_id(self):
         return self.journal.invocation_id
+
+    def admit_semantic_identity(self, identity):
+        return self.journal.admit_semantic_identity(identity)
 
     def admit_execution_context(self, value):
         return self.journal.admit_execution_context(value)

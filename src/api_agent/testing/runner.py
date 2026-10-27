@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 
-from .collection import CollectionError, TestIdentity, collect_tests
+from .collection import CollectionError, TestIdentity, collect_tests, repository_label
 from .processes import disposal_complete, finalize
 from .suite_lock import suite_locked
 from .unit_watchdog import UnitWatchdog
@@ -133,9 +133,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     # The reusable runner prepares only the selected source library's own base suite.
     if base == source_root():
         ensure_source_frontend(cancellation=cancel_event)
-    roots = {base.name: base, owner.name: owner}
-    if base != owner and base.name == owner.name:
-        roots = {'base': base, 'pack': owner}
+    roots = {repository_label(context, root): root for root in dict.fromkeys((base, owner))}
     env = os.environ.copy()
     env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
     env['PYTHONUNBUFFERED'] = '1'

@@ -16,7 +16,8 @@ from api_agent.testing.cost_history import estimator_for
 
 @pytest.fixture
 def history_context(tmp_path):
-    from api_agent.config.declarations import UNSET, load_shared_schema
+    from api_agent.config.declarations import load_shared_schema
+    from api_agent.config import resolve_config
     from api_agent.providers.loading import bootstrap_schema
     base = Path(__file__).resolve().parents[2]
     pack = tmp_path / 'synthetic'; pack.mkdir()
@@ -28,9 +29,10 @@ def history_context(tmp_path):
                               config_path=pack / 'cfg/config.toml')
     provider = str(Path(factory.__file__).resolve()) + ':factory'
     schema = bootstrap_schema(load_shared_schema(base), (), {}, {}, {'LLM_PROVIDER': provider}, owner_root=pack)
-    config = {name: field.default for name, field in schema.fields.items() if field.default is not UNSET}
-    config.update(LLM_PROVIDER=provider, TUI_MODE='integration', E2E_RERUNS=0,
-                  LLM_DEFAULT_MODEL=pricing.MODEL, LLM_CACHE_POLICY='')
+    config = resolve_config(schema, environ={}, dotenv={}, overrides=dict(
+        LLM_PROVIDER=provider, TUI_MODE='integration', E2E_RERUNS='0',
+        LLM_DEFAULT_MODEL=pricing.MODEL, LLM_CACHE_POLICY='', SKIP_ALLURE_REPORTING='True'),
+        anchors={'base_root': base, 'owner_root': pack, 'pack_root': pack}).raise_for_errors().values
     test = TestIdentity('test', repository_label(context, pack), 'test_case.py', 'test_case.py::test_case', root=pack)
     resolved = cost_config(context, config)
     assert resolved['_COST_REQUEST_SETTINGS'] is not None
