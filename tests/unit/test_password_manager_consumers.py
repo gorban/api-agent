@@ -138,7 +138,7 @@ def test_worker_fixture_uses_snapshot_pack_location(tmp_path, monkeypatch):
         'config': {}, 'owner_root': str(tmp_path), 'password_manager_pack_root': str(pack),
         'password_manager_definitions': provider_setup._manager_definitions(load_manager_registry(pack_root=pack))})
     monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
-    fixture = provider_setup.llm_provider.__wrapped__()
+    fixture = provider_setup.llm_provider.__wrapped__(None)
     consumer = next(fixture)
     assert consumer.password_manager_registry.get('fixture').implementation == pack / 'adapter.py'
     with pytest.raises(StopIteration):
@@ -172,7 +172,7 @@ def test_debug_worker_rejects_declaration_drift_before_allocating_loop(tmp_path,
         declaration.write_text(declaration.read_text().replace('../adapter.py', '../new_adapter.py'))
     monkeypatch.setattr(provider_setup.asyncio, 'new_event_loop',
                         lambda: pytest.fail('drift must be rejected before loop allocation'))
-    fixture = provider_setup.llm_provider.__wrapped__()
+    fixture = provider_setup.llm_provider.__wrapped__(None)
     with pytest.raises(provider_setup.ContractError, match='declarations changed after launch; restart'):
         next(fixture)
     fixture.close()
@@ -191,7 +191,7 @@ def test_multiple_debug_workers_keep_validated_registry_after_fixture_start(tmp_
     calls = []
     monkeypatch.setattr(credentials, 'resolve_cli_path', lambda cli: '/synthetic/fixture-cli')
     monkeypatch.setattr(credentials, '_run', lambda argv, timeout: calls.append(argv) or 'synthetic-key\n')
-    fixtures = [provider_setup.llm_provider.__wrapped__() for _ in range(2)]
+    fixtures = [provider_setup.llm_provider.__wrapped__(None) for _ in range(2)]
     workers = []
     try:
         workers = [next(fixture) for fixture in fixtures]
@@ -261,7 +261,7 @@ def test_debug_run_captures_one_registry_across_repository_suites(tmp_path, monk
             with monkeypatch.context() as worker_env:
                 worker_env.setenv('API_AGENT_INTEGRATION_CONTEXT', env['API_AGENT_INTEGRATION_CONTEXT'])
                 worker_env.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
-                fixture = provider_setup.llm_provider.__wrapped__()
+                fixture = provider_setup.llm_provider.__wrapped__(SimpleNamespace(node=SimpleNamespace(nodeid=args[-1])))
                 try:
                     try:
                         worker = next(fixture)

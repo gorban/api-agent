@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "kind": "bundled_bedrock",
+  "entrypoint": "api_agent.llm_providers.bedrock.factory:factory",
+  "backend": {
+    "auth_mode": [
+      "BEDROCK_AUTH_MODE",
+      "session"
+    ],
+    "api_mode": [
+      "BEDROCK_API_MODE",
+      "responses"
+    ],
+    "region": [
+      "BEDROCK_REGION",
+      null
+    ]
+  },
+  "max_output_tokens": 1024,
+  "dependencies": [
+    "boto3",
+    "botocore",
+    "openai",
+    "httpx2"
+  ],
+  "sources": [
+    "llm_providers/bedrock/__init__.py",
+    "llm_providers/bedrock/acquisition.py",
+    "llm_providers/bedrock/ambient.py",
+    "llm_providers/bedrock/auth.py",
+    "llm_providers/bedrock/aws_login.py",
+    "llm_providers/bedrock/aws_sso.py",
+    "llm_providers/bedrock/calibration.json",
+    "llm_providers/bedrock/catalog.py",
+    "llm_providers/bedrock/factory.py",
+    "llm_providers/bedrock/key_interaction.py",
+    "llm_providers/bedrock/login_interaction.py",
+    "llm_providers/bedrock/login_transport.py",
+    "llm_providers/bedrock/login_worker.py",
+    "llm_providers/bedrock/mantle.py",
+    "llm_providers/bedrock/persistence.py",
+    "llm_providers/bedrock/pricing.py",
+    "llm_providers/bedrock/sdk.py",
+    "llm_providers/bedrock/session_providers.py",
+    "llm_providers/bedrock/sessions.py",
+    "llm_providers/bedrock/worker.py",
+    "llm_providers/bedrock/test-profiles.toml"
+  ],
+  "identity_settings": [
+    "BEDROCK_PROFILE",
+    "BEDROCK_SESSION_PROVIDER",
+    "BEDROCK_LOGIN_EXPECTED_ACCOUNT_ID",
+    "BEDROCK_LOGIN_EXPECTED_PRINCIPAL",
+    "BEDROCK_INFERENCE_TIMEOUT_SECONDS"
+  ],
+  "identity_source_settings": [
+    "BEDROCK_SESSION_PROVIDER"
+  ],
+  "workflow_selections": [
+    {
+      "BEDROCK_API_MODE": "completions",
+      "LLM_WORKFLOW_TEST_MODEL": "zai.glm-5"
+    }
+  ]
+}

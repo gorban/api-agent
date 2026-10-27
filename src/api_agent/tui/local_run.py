@@ -26,7 +26,8 @@ class LocalRunScreen(Screen):
                 Binding('escape', 'view', 'Close menu'),
                 Binding('c', 'close_view', 'Close'),
                 Binding('asterisk', 'all_logs', 'All logs'),
-                Binding('s', 'request_stop', 'Stop'), Binding('q', 'quit', 'Quit'),
+                Binding('s', 'request_stop', 'Stop'), Binding('r', 'review_configuration', 'Review configuration'),
+                Binding('q', 'quit', 'Quit'),
                 Binding('ctrl+c', 'copy_choice', 'Copy selection', priority=True)]
     DEFAULT_CSS = '''
     #local-output, #local-choices { height: 1fr; }
@@ -48,7 +49,10 @@ class LocalRunScreen(Screen):
         self.config_schema = schema
         self.owner = None
         self.run_task = None
-        self.source = resolve().values['RUN_LOG_SOURCE']
+        from copy import deepcopy
+        self.configuration_snapshot = deepcopy(resolve().values)
+        self.configuration_required = False
+        self.source = self.configuration_snapshot['RUN_LOG_SOURCE']
         self.events = deque()
         self._event_bytes = 0
         self.snapshot = LocalSnapshot("starting")
@@ -71,6 +75,9 @@ class LocalRunScreen(Screen):
         self._local_unmounting = False
         self._startup_started = None
         self._startup_timer = None
+        self._interaction_cancel = None
+        self._unclaimed_interaction = None
+        self._interaction_close_task = None
 
     def compose(self):
         yield Static('Starting local operation…', id='local-status', markup=False)
@@ -124,7 +131,16 @@ class LocalRunScreen(Screen):
                 from api_agent.runtime.local_run import LocalRunOwner
                 factory = LocalRunOwner
             options = {'schema': self.config_schema} if self.config_schema is not None else {}
+            if self.owner_factory is None and self.is_mounted:
+                from threading import Event
+                from api_agent.auth.interaction_transport import OwnedInteraction
+                from .manager_recovery import TUIInteraction
+                self._interaction_cancel = Event()
+                self._unclaimed_interaction = OwnedInteraction(
+                    TUIInteraction(self.app, self._interaction_cancel))
+                options['interaction_owner'] = self._unclaimed_interaction
             self.owner = factory(self.context, self.resolve, argv=self.argv, on_event=self.receive, **options)
+            self._unclaimed_interaction = None
             self.snapshot = await self.owner.start()
             self.reconcile_menu()
             self.refresh_view()
@@ -140,6 +156,11 @@ class LocalRunScreen(Screen):
             self.failure = (self.owner.diagnostic(error) if self.owner is not None
                             else 'Local operation could not start.')
         finally:
+            if self._unclaimed_interaction is not None:
+                try:
+                    await self._close_unclaimed_interaction()
+                except BaseException:
+                    self.pending_cleanup = CleanupPendingError((self,), self.retry_cleanup)
             if self.owner is not None and getattr(self.owner, 'pending_cleanup', None) is not None:
                 finish = getattr(self.owner, 'finish_cleanup', None)
                 if finish is not None:
@@ -162,6 +183,12 @@ class LocalRunScreen(Screen):
             while len(self.events) > 1000 or self._event_bytes > 1048576:
                 removed = self.events.popleft()
                 self._event_bytes -= len(removed.text.encode('utf-8'))
+        elif event.kind == 'configuration-required':
+            if (self.disposed or self.closing
+                    or getattr(self._local_app or self.app, 'local_run_screen', None) is not self):
+                return
+            self.configuration_required = self.app.session.require_fields(
+                event.required_fields, snapshot=self.configuration_snapshot)
         elif event.kind == 'status':
             snapshot = event.snapshot
             if snapshot.phase in {'stopping', 'cleanup-pending', 'stopped'} and not snapshot.destinations:
@@ -184,6 +211,8 @@ class LocalRunScreen(Screen):
         hint = self.MENU_HINT if self.menu else self.VIEW_HINT
         if self.disposed:
             hint = hint.replace('s Stop', 'c Close') if self.menu is None else hint.replace('  s Stop', '')
+        if self.configuration_required:
+            hint += '\nr Review configuration'
         self.query_one('#local-hint', Static).update(hint)
         text = ''.join(format_log(event, self.source) for event in self.events)
         area = self.query_one('#local-output', TextArea)
@@ -310,6 +339,8 @@ class LocalRunScreen(Screen):
         self.action_view()
 
     def check_action(self, action, parameters):
+        if action == 'review_configuration':
+            return self.configuration_required
         if action == 'request_stop' and self.disposed:
             return False
         if action == 'copy_choice':
@@ -417,6 +448,16 @@ class LocalRunScreen(Screen):
             event.prevent_default()
             event.stop()
 
+    async def _close_unclaimed_interaction(self):
+        from api_agent.runtime.local_llm import _create_task
+        from api_agent.runtime.tasks import settle
+        task = self._interaction_close_task
+        if task is None or task.cancelled() or task.done() and task.exception() is not None:
+            self._interaction_close_task = _create_task(
+                asyncio.to_thread(self._unclaimed_interaction.close))
+        await settle(self._interaction_close_task)
+        self._unclaimed_interaction = None
+
     async def settle_run_task(self):
         if self.run_task is None:
             return
@@ -450,11 +491,15 @@ class LocalRunScreen(Screen):
         if self.disposed:
             return True
         self.closing = True
+        if self._interaction_cancel is not None:
+            self._interaction_cancel.set()
         try:
             if self.owner is None:
                 if self.run_task is not None:
                     self.run_task.cancel()
                 await self.settle_run_task()
+                if self._unclaimed_interaction is not None:
+                    await self._close_unclaimed_interaction()
                 self.finished = True
                 if self.status in (0, 130):
                     self.snapshot = replace(self.snapshot, phase='stopped', activity=None)
@@ -509,6 +554,11 @@ class LocalRunScreen(Screen):
         if (self._stop_completed and not self._quit_confirmed and not self._local_unmounting
                 and self.is_mounted and self.app.screen is self):
             self.refresh_view()
+
+    async def action_review_configuration(self):
+        if self.configuration_required and await self.close_owned():
+            self.app.review_destination = 'run-local'
+            self.app.show_configuration()
 
     async def action_stop(self):
         if await self.close_owned():

@@ -9,6 +9,7 @@
 version = 1
 
 [fields.WORKFLOW_LLM_TIMEOUT_SECONDS]
+override = true
 type = "float"
 default = 120.0
 validation = "positive"

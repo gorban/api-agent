@@ -59,7 +59,7 @@ def quota_reset_observed(quota):
 
 
 def priced(row, card):
-    from api_agent.providers.rates import price_usage
+    from api_agent.providers.rates import BEDROCK, price_usage
     calls = row.get('calls')
     if row.get('calls_complete') is not True or not isinstance(calls, list) or row.get('observed_call_count', len(calls)) != len(calls):
         return None
@@ -69,6 +69,11 @@ def priced(row, card):
         evidence = quote.get('accounting')
         if not evidence or evidence.get('service_tier') not in (None, 'standard', 'default') or not evidence.get('actual_model') or not isinstance(evidence.get('usage', call.get('usage')), dict):
             return None
+        frozen = evidence.get('rate_card')
+        if ((isinstance(card, dict) and card.get('source') == BEDROCK)
+                or (isinstance(frozen, dict) and frozen.get('source') == BEDROCK)):
+            if not isinstance(frozen, dict) or not isinstance(card, dict) or frozen.get('source') != card.get('source'):
+                return None
         try:
             amount = price_usage(card, evidence['actual_model'], evidence.get('usage', call.get('usage')))
         except (ValueError, TypeError):
@@ -87,7 +92,7 @@ def reported_charge(row):
     amounts = []
     for call in calls:
         metadata = (call.get('quote') or {}).get('accounting') or {}
-        if metadata.get('billing_mode') != 'api_key':
+        if metadata.get('billing_mode') not in ('api_key', 'metered'):
             return None
         amount = qualified_charge(metadata.get('billing'), call.get('usage') or {})
         if amount is None:

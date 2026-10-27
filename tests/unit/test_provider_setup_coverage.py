@@ -79,7 +79,7 @@ def test_fixture_event_transport_uses_run_finalization(tmp_path, monkeypatch, re
     monkeypatch.setattr(p, '_read_snapshot', lambda: {'owner_root': str(tmp_path), 'config': {},
         'password_manager_definitions': p._manager_definitions(bundled_registry())})
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(tmp_path / 'events'))
-    fixture = p.llm_provider.__wrapped__()
+    fixture = p.llm_provider.__wrapped__(None)
     worker = next(fixture)
     assert not worker.closed and worker.provider is None
     with pytest.raises(StopIteration):

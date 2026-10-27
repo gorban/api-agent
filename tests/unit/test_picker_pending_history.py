@@ -18,7 +18,7 @@ from test_tui import fixture
 def cached_picker(tmp_path, monkeypatch):
     estimate = Snapshot(4)
     monkeypatch.setitem(sys.modules, 'api_agent.testing.cost_history',
-                        SimpleNamespace(estimator_for=lambda *args: estimate))
+                        SimpleNamespace(estimator_for=lambda *args, **options: estimate))
     return fixture(tmp_path, 'integration', collector=lambda *args: identities(3)), estimate
 
 

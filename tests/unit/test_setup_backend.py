@@ -327,7 +327,7 @@ def test_remote_fixture_is_inert_and_closes_lease_on_same_owned_thread(tmp_path,
         'setup_backend': {'fixture': True},
         'config': {},
         'password_manager_definitions': provider_setup._manager_definitions(load_manager_registry())})
-    values = provider_setup.llm_provider.__wrapped__()
+    values = provider_setup.llm_provider.__wrapped__(None)
     remote = next(values)
     assert events == []
     remote.ensure_ready()

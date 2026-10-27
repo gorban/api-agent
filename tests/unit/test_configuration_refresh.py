@@ -89,7 +89,7 @@ def test_pending_refresh_coalesces_and_discards_stale_external_values(tmp_path, 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('change', ['screen', 'session', 'choices', 'error', 'stale_error'])
+@pytest.mark.parametrize('change', ['screen', 'session', 'choices', 'requirements', 'error', 'stale_error'])
 def test_late_or_failed_refresh_cannot_overwrite_newer_ui(tmp_path, monkeypatch, change):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
@@ -105,6 +105,8 @@ def test_late_or_failed_refresh_cannot_overwrite_newer_ui(tmp_path, monkeypatch,
                 state.session = fork_session(app.session)
             elif change == 'choices':
                 app.session._choices['COUNT'] = '4'
+            elif change == 'requirements':
+                app.session.require_fields(('COUNT',), snapshot=app.session.result().values)
             if change in {'error', 'stale_error'}:
                 raise ValueError('private details')
             return object()
@@ -359,3 +361,31 @@ def test_transient_source_read_failure_is_retried(tmp_path, monkeypatch, where):
         state.apply_configuration_snapshot.assert_called_once()
         screen.query_one.assert_not_called()
     asyncio.run(scenario())
+
+
+def test_snapshot_rendering_does_not_resolve_live_session(tmp_path, monkeypatch):
+    app = fixture(tmp_path, fields={'ROUTE': {'type': 'str', 'default': '', 'acknowledge_default': False}})
+    app.review_destination = 'run-local'
+    app.session.require_fields(('ROUTE',), snapshot=app.session.result().values)
+    snapshot = app.session.review_snapshot()
+    resolve = Mock(side_effect=AssertionError('snapshot renderer read live configuration'))
+    monkeypatch.setattr(app.session, '_resolve', resolve)
+    rows = app.configuration_rows(review=snapshot.review, snapshot=snapshot)
+    assert str(next(cells[1] for name, cells in rows if name == 'ROUTE')) == 'Required'
+    assert app.can_recheck_setup(snapshot=snapshot)
+    assert 'r rechecks setup' in app.configuration_review_text(result=snapshot.execution, snapshot=snapshot)
+    resolve.assert_not_called()
+
+
+def test_runtime_token_replacement_invalidates_pending_refresh_controls(tmp_path):
+    app = fixture(tmp_path, fields={'ROUTE': {'type': 'str', 'default': ''}})
+    session = app.session
+    values = session.result().values
+    assert session.require_fields(('ROUTE',), snapshot=values)
+    before = controls(session)
+    old = session.review_snapshot()
+    assert session.require_fields(('ROUTE',), snapshot=values)
+    assert controls(session) != before
+    current = session.review_snapshot()
+    assert current.runtime_required_fields == old.runtime_required_fields == ('ROUTE',)
+    assert current.runtime_requirement_token is not old.runtime_requirement_token

@@ -471,3 +471,55 @@ def test_lazy_quota_failure_follows_start_and_is_saved_without_failing_tests(tmp
     summary=json.loads((result.directory/'usage-summary.json').read_text())
     assert summary['quota_errors'] == {phase:{'code':'http','status':401} for phase in ('before','after')}
     assert summary['before'] is None and summary['after'] is None
+
+
+def test_profile_recording_freezes_distinct_configurations_and_reuses_identical_receipts(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from api_agent.providers.rates import bundled_rate_card
+    from api_agent.telemetry.estimation import EstimateSnapshot
+    context, first, config = fixture(tmp_path)
+    tests = (first, TestIdentity('pack:second', 'pack', first.file, first.node_id + '[second]'),
+             TestIdentity('pack:third', 'pack', first.file, first.node_id + '[third]'))
+    config['LLM_DEFAULT_MODEL'] = 'application-model'
+    frozen, admitted = [], []
+
+    def profiles(selected, values, **options):
+        return {test.id: {'config': dict(values, LLM_DEFAULT_MODEL=model),
+            'provenance': {'LLM_DEFAULT_MODEL': 'provider_test_profile:synthetic'},
+            'node_id': test.node_id, 'repo': test.repo}
+            for test, model in zip(selected, ('first-model', 'first-model', 'second-model'))}
+
+    def freeze(context, values):
+        model = values['LLM_DEFAULT_MODEL']
+        frozen.append(model)
+        card = deepcopy(bundled_rate_card())
+        card['revision'] = model
+        return card
+
+    def estimate(context, selected, values, **options):
+        admitted.append(deepcopy(options['test_configs']))
+        return EstimateSnapshot({test.id: {'estimated_cost_usd': None} for test in selected})
+
+    observed = []
+    def run(context, selected, **hooks):
+        observed.append(deepcopy(hooks['resolved_test_profiles']))
+        return fake_runner()(context, selected, **hooks)
+
+    monkeypatch.setattr('api_agent.testing.cost_context.cost_config', lambda context, values: dict(values))
+    monkeypatch.setattr('api_agent.providers.rates.freeze_pricing', freeze)
+    monkeypatch.setattr('api_agent.testing.test_profiles.resolve_test_profiles', profiles)
+    monkeypatch.setattr('api_agent.testing.cost_history.estimator_for', estimate)
+    monkeypatch.setattr(recorded, 'run_integration_tests', run)
+    result = recorded.run_recorded_integration(context, tests, config, accepted=True,
+        storage=Storage(), runner=run)
+
+    assert result.persisted and result.exit_code == 0
+    assert frozen == ['application-model', 'first-model', 'second-model']
+    effective = admitted[0]
+    assert [effective[test.id]['_COST_RATE_CARD']['revision'] for test in tests] == [
+        'first-model', 'first-model', 'second-model']
+    assert [observed[0][test.id]['config'] for test in tests] == [effective[test.id] for test in tests]
+    accounting = json.loads((result.directory / 'accounting.json').read_text())
+    assert [row['compatibility']['LLM_DEFAULT_MODEL'] for row in accounting['tests']] == [
+        'first-model', 'first-model', 'second-model']
+    assert config['LLM_DEFAULT_MODEL'] == 'application-model'

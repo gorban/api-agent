@@ -1,0 +1,134 @@
+version = 1
+
+[fields.BEDROCK_AUTH_MODE]
+type = "str"
+enum = ["session", "access_key", "api_key"]
+default = "session"
+cost_affecting = true
+help = "api_key uses the selected LLM User password as a bearer key, or an attended masked prompt when no index is selected. session uses the selected acquisition adapter; the builtin path requires preauthenticated SDK credentials and rejects indexed accounts. An explicitly selected native CLI adapter offers attended direct AWS/SSO handoff; indexed browser automation remains separate. access_key uses the selected LLM User username as key ID and password as secret key, or attended prompts when no index is selected; temporary keys require a session adapter."
+
+[fields.BEDROCK_PROFILE]
+type = "str"
+default = "default"
+cost_affecting = true
+help = "SDK profile override in session mode, defaulting to the AWS named profile default. This overrides AWS_PROFILE; explicitly empty restores SDK profile resolution, including AWS_PROFILE. No credentials belong here."
+
+[fields.BEDROCK_SESSION_PROVIDER]
+type = "str"
+default = ""
+cost_affecting = true
+help = "Optional session-acquisition file.py:factory adapter, loaded only during session setup. Empty uses the builtin preauthenticated SDK/profile path, which rejects indexed accounts. For attended direct AWS handoff select src/api_agent/llm_providers/bedrock/aws_login.py:factory; for IAM Identity Center select src/api_agent/llm_providers/bedrock/aws_sso.py:factory. Both reuse valid selected SDK credentials before recovery; successful native login persists verified selected profile/cache entries and an exported shared-credentials snapshot; indexed automation remains separate. A custom version-1 adapter owns acquisition, temporary credential refresh and disposal; no credentials belong here."
+
+[fields.BEDROCK_REGION]
+type = "str"
+default = "us-east-1"
+cost_affecting = true
+help = "Regional override, defaulting to us-east-1 ahead of SDK region resolution. Explicitly empty restores SDK region resolution. Catalog discovery does not establish invocation permission."
+
+[fields.LLM_CREDENTIAL_ROLE]
+type = "str"
+override = true
+override_if_present = true
+acknowledge_default = false
+default = "LLM User"
+help = "Selected Bedrock credential role. api_key reads only password as the bearer key. access_key reads username as key ID and password as secret key. The builtin session adapter needs no indexed account; custom session adapters receive the selected role-bound reader."
+
+[fields.UNATTENDED_USER_INDEX]
+type = "int"
+allow_empty = true
+validation = "nonnegative"
+acknowledge_default = false
+help = "Optional zero-based selected LLM User index. Without an index, access_key and api_key prompt when private interaction is allowed; otherwise they fail. An explicit index binds the selected item with no fallback to prompts or another identity. The builtin session adapter rejects indexed identity selection; a custom session adapter must verify and preserve the selected identity. Empty clears the index."
+
+[fields.LLM_ALLOWED_MODELS]
+type = "str"
+validation = "regex"
+override = true
+override_if_present = true
+default = '(?:openai\.gpt-[a-z0-9]+(?:[.-][a-z0-9]+)*(?::\d+)?|zai\.glm-\d+(?:\.\d+)*(?:-flash)?|anthropic\.claude-(?:(?:haiku|sonnet|opus)-\d+(?:[.-]\d+)*|\d+(?:[.-]\d+)*-(?:haiku|sonnet|opus)(?:-\d+)*)(?:-v\d+)?(?::\d+)?)'
+help = "Full model-ID regular expression for bare Bedrock vendor.model IDs. Default allows version variants of OpenAI GPT, Z.ai GLM (including Flash), and Anthropic Claude Haiku, Sonnet and Opus. Regional/global inference-profile prefixes and other families are excluded. Admission does not establish API support or invocation permission. Explicit configuration replaces this default."
+
+[fields.BEDROCK_API_MODE]
+type = "str"
+enum = ["completions", "responses"]
+default = "responses"
+cost_affecting = true
+help = "Mantle API format. Model admission also requires support for the selected API."
+
+[fields.LLM_DEFAULT_MODEL]
+type = "str"
+validation = "regex"
+override = true
+override_if_present = true
+default = 'openai\.gpt-oss-20b'
+help = "Full model-ID regular expression for the default model. Both completions and responses default to openai.gpt-oss-20b. Explicit configuration replaces the default and is preserved when API mode changes."
+
+[fields.BEDROCK_LOGIN_EXPECTED_ACCOUNT_ID]
+type = "str"
+default = ""
+applies_when = {BEDROCK_AUTH_MODE = "session"}
+acknowledge_default = false
+review_optional = true
+help = "Optional non-secret 12-digit expected AWS account for the bundled native login adapters. In the AWS Console, open the upper-right account menu or IAM Dashboard AWS account section and copy Account ID (for example 123456789012). This assertion does not select an SSO account. The exact selected credentials must pass this STS identity check before use. Unused by builtin SDK/custom adapters."
+
+[fields.BEDROCK_LOGIN_EXPECTED_PRINCIPAL]
+type = "str"
+default = ""
+applies_when = {BEDROCK_AUTH_MODE = "session"}
+acknowledge_default = false
+review_optional = true
+help = "Optional identity assertion for the bundled native login adapters: exact IAM user ARN or STS assumed-role ARN prefix without the final variable session-name segment. For an IAM user, copy its ARN from IAM > Users > your user (for example arn:aws:iam::123456789012:user/example). For an assumed role, ask your administrator for the STS role prefix (for example arn:aws:sts::123456789012:assumed-role/ExampleRole); remove only the final /session-name from a known STS ARN. An IAM role ARN is not an STS assumed-role prefix. A shared role identifies an AWS principal, not a particular human. Never enter passwords, access keys or MFA codes here. Unused by builtin SDK/custom adapters."
+
+[fields.BEDROCK_LOGIN_SSO_START_URL]
+type = "str"
+default = ""
+applies_when = {BEDROCK_AUTH_MODE = "session"}
+acknowledge_default = false
+review_optional = true
+help = "HTTPS Identity Center start URL used only by aws_sso.py:factory for attended SSO recovery; use your organization-provided AWS access portal URL. An existing selected profile may supply it; requested only after its credentials are unusable. Successful native login persists only selected verified profile/cache entries and its credential snapshot. Unused by builtin SDK/custom adapters."
+
+[fields.BEDROCK_LOGIN_SSO_REGION]
+type = "str"
+default = ""
+applies_when = {BEDROCK_AUTH_MODE = "session"}
+acknowledge_default = false
+review_optional = true
+help = "Used only by aws_sso.py:factory. Identity Center region from your administrator or existing AWS SSO profile, independently of the Bedrock inference region. Selected-profile routing may supply it; requested only when attended SSO recovery needs it. Unused by builtin SDK/custom adapters."
+
+[fields.BEDROCK_LOGIN_SSO_ROLE_NAME]
+type = "str"
+default = ""
+applies_when = {BEDROCK_AUTH_MODE = "session"}
+acknowledge_default = false
+review_optional = true
+help = "Identity Center role name used only by aws_sso.py:factory for attended SSO recovery; find the permission-set role in your AWS access portal account selection. Selected-profile routing may supply it. Optional identity assertions independently check the resulting credentials. Unused by builtin SDK/custom adapters."
+
+[fields.BEDROCK_LOGIN_SSO_ACCOUNT_ID]
+type = "str"
+default = ""
+applies_when = {BEDROCK_AUTH_MODE = "session"}
+acknowledge_default = false
+review_optional = true
+help = "Used only by aws_sso.py:factory. Copy the account ID from the AWS access portal account selection: this 12-digit Identity Center account routing input for attended SSO recovery, independent of optional expected-account identity assertion. A selected SSO profile may supply it. Requested only after ambient credentials are unusable and SSO recovery needs it. Successful native login persists only selected verified profile/cache entries and its credential snapshot."
+
+[fields.BEDROCK_INFERENCE_TIMEOUT_SECONDS]
+type = "float"
+default = 900
+validation = "positive"
+help = "Total completion or streaming deadline in seconds, greater than zero and at most 3600. Parent deadlines can shorten this budget; catalog and setup retain their own limits."
+
+[fields.LLM_REASONING_TEST_TIMEOUT_SECONDS]
+type = "float"
+override = true
+override_if_present = true
+default = 960
+validation = "positive"
+help = "Application request deadline in seconds for each matched reasoning contrast call, including queue time."
+
+[fields.LLM_SETUP_REQUEST_TIMEOUT_SECONDS]
+type = "float"
+override = true
+override_if_present = true
+default = 960
+validation = "positive"
+help = "Setup-session IPC request deadline in seconds, including an inference turn. The default leaves room for the 900-second Bedrock inference budget; parent deadlines may shorten it."

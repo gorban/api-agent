@@ -14,7 +14,7 @@ from api_agent.runtime.tasks import offload, settle
 from api_agent.testing.studio_retained import StudioCleanup
 
 @asynccontextmanager
-async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None):
+async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None, timeout=120):
     """Own the real Agent HTTP bridge for the selected UI runtime."""
     import uvicorn
     async with AsyncExitStack() as cleanup:
@@ -40,7 +40,7 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
             policy=ModelSelectionPolicy({'LLM_ALLOWED_MODELS': re.escape(selection),
                                          'LLM_DEFAULT_MODEL': re.escape(selection), **(policy_config or {})}),
             origin=origin, nonce=nonce, scrub=lambda _: 'Selected provider rejected the request.',
-            reasoning_default=reasoning_default)
+            reasoning_default=reasoning_default, timeout=timeout)
         duties.push(backend.aclose)
         runtime = Runtime('demo', services={'studio_backend': backend})
         application = create_application(runtime)

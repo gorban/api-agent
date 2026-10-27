@@ -156,7 +156,9 @@ def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
                     diagnostic_output(details)
             output(format_test_summary('integration', execution.tests,
                 state='CANCELLED' if execution.cancelled else None, elapsed=getattr(recorded, 'elapsed', None)))
-            output('Allure publication: ' + ('PASS' if recorded.persisted else 'FAIL'))
+            publication = ('SKIPPED' if getattr(recorded, 'reporting_skipped', False)
+                           else 'PASS' if recorded.persisted else 'FAIL')
+            output('Allure publication: ' + publication)
             if getattr(recorded, 'usage', None):
                 from api_agent.telemetry.usage_output import final_usage_text
                 output(final_usage_text(recorded.usage))

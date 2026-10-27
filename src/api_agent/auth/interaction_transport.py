@@ -8,6 +8,7 @@ import threading
 import time
 
 _LIMIT = 65536
+_NOT_STARTED = object()
 
 
 def validate_descriptor(value):
@@ -50,6 +51,8 @@ class InteractionServer:
     def __init__(self, interaction):
         self.interaction = interaction
         self.channels = {}
+        self.closed_channels = set()
+        self.close_guard = threading.RLock()
         self.connections = set()
         self.lock = threading.RLock()
         self.closed = False
@@ -89,17 +92,45 @@ class InteractionServer:
                 return {'action': 'cancel', 'value': ''}
             if action == 'open':
                 label = row.get('label')
-                if type(label) is not str or len(label) > 200:
+                if (type(label) is not str or len(label) > 200
+                        or len(self.channels) + len(self.closed_channels) >= 4096):
                     raise ValueError
-                identifier = secrets.token_hex(16)
-                self.channels[identifier] = self.interaction.open(label)
+                identifier = row.get('channel', secrets.token_hex(16))
+                if (type(identifier) is not str or len(identifier) != 32
+                        or any(char not in '0123456789abcdef' for char in identifier)):
+                    raise ValueError
+                if identifier in self.closed_channels:
+                    return {'action': 'cancel', 'value': ''}
+                if identifier not in self.channels:
+                    self.channels[identifier] = self.interaction.open(label)
                 return {'channel': identifier}
-            channel = self.channels.get(row.get('channel'))
+            identifier = row.get('channel')
+            if action == 'close' and identifier not in self.channels:
+                if (type(identifier) is not str or len(identifier) != 32
+                        or any(char not in '0123456789abcdef' for char in identifier)):
+                    raise ValueError
+                if identifier not in self.closed_channels:
+                    if len(self.channels) + len(self.closed_channels) >= 4096:
+                        raise ValueError
+                    self.closed_channels.add(identifier)
+                return {'closed': True}
+            channel = self.channels.get(identifier)
             if channel is None:
                 return {'action': 'cancel', 'value': ''}
+            if action == 'check':
+                event = getattr(self.interaction, 'cancel_event', None)
+                if (getattr(channel, 'closed', False) or event is not None and event.is_set()
+                        or not all(callable(getattr(channel, name, None)) for name in ('write', 'read', 'close'))):
+                    return {'action': 'cancel', 'value': ''}
+                check = getattr(channel, 'check_open', None)
+                if check is not None:
+                    check()
+                return {'open': True}
             if action == 'close':
-                self.channels.pop(row['channel']).close()
-                return {}
+                channel.close()
+                self.channels.pop(identifier)
+                self.closed_channels.add(identifier)
+                return {'closed': True}
         if action == 'write':
             value = row.get('text')
             if type(value) is not str:
@@ -119,22 +150,33 @@ class InteractionServer:
         raise ValueError
 
     def close(self):
-        with self.lock:
-            self.closed = True
-            channels, self.channels = self.channels, {}
-            connections = tuple(self.connections)
-        for connection in connections:
+        with self.close_guard:
+            with self.lock:
+                self.closed = True
+                channels = tuple(self.channels.items())
+                connections = tuple(self.connections)
+            for connection in connections:
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            failed = False
             try:
-                connection.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-        try:
-            for channel in channels.values():
-                channel.close()
-        finally:
-            self.server.shutdown()
-            self.server.server_close()
-            self.thread.join()
+                for identifier, channel in channels:
+                    try:
+                        channel.close()
+                    except Exception:
+                        failed = True
+                    else:
+                        with self.lock:
+                            self.channels.pop(identifier)
+                            self.closed_channels.add(identifier)
+            finally:
+                self.server.shutdown()
+                self.server.server_close()
+                self.thread.join()
+            if failed:
+                raise RuntimeError('Interaction cleanup failed') from None
 
 
 class InteractionClient:
@@ -144,26 +186,45 @@ class InteractionClient:
 
     def _call(self, **row):
         from .interaction import Reply
+        started = False
         try:
             with socket.create_connection(('127.0.0.1', self.descriptor['port']), timeout=2) as stream:
+                started = True
                 _send(stream, dict(row, token=self.descriptor['token']))
                 return _receive(stream)
         except (OSError, EOFError, ValueError):
+            if row.get('action') == 'open' and not started:
+                return _NOT_STARTED
             return {'action': 'cancel', 'value': ''}
 
     def open(self, label):
-        result = self._call(action='open', label=label)
-        return _Channel(self, result.get('channel'))
+        identifier = secrets.token_hex(16)
+        result = self._call(action='open', label=label, channel=identifier)
+        if result is _NOT_STARTED:
+            return _CancelledChannel()
+        admitted = type(result) is dict and result == {'channel': identifier}
+        return _Channel(self, identifier, admitted=admitted)
 
 
 class _Channel:
-    def __init__(self, client, identifier):
+    def __init__(self, client, identifier, *, admitted=True):
         self.client, self.identifier = client, identifier
+        self.admitted = admitted
+    def check_open(self):
+        if not self.admitted:
+            raise RuntimeError('Interaction unavailable')
+        result = self.client._call(action='check', channel=self.identifier)
+        if type(result) is not dict or set(result) != {'open'} or result['open'] is not True:
+            raise RuntimeError('Interaction unavailable')
     def write(self, text):
+        if not self.admitted:
+            return
         for offset in range(0, len(text), 12000):
             self.client._call(action='write', channel=self.identifier, text=text[offset:offset + 12000])
     def read(self, timeout):
         from .interaction import Reply
+        if not self.admitted:
+            return Reply('cancel')
         result = self.client._call(action='read', channel=self.identifier, timeout=min(1, max(0, timeout)))
         if result is None:
             return None
@@ -172,7 +233,9 @@ class _Channel:
             return Reply('cancel')
         return Reply(result['action'], result['value'])
     def close(self):
-        self.client._call(action='close', channel=self.identifier)
+        result = self.client._call(action='close', channel=self.identifier)
+        if type(result) is not dict or set(result) != {'closed'} or result['closed'] is not True:
+            raise RuntimeError('Interaction cleanup failed')
 
 
 class OwnedInteraction:
@@ -183,6 +246,7 @@ class OwnedInteraction:
         self.interaction = interaction
         self.lock = getattr(interaction, 'lock', threading.RLock())
         self.guard = threading.RLock()
+        self.close_guard = threading.RLock()
         self.channels = set()
         self.cancelled = False
         self.cancel_event = threading.Event()
@@ -208,20 +272,27 @@ class OwnedInteraction:
         for request in requests:
             request.cancel()
     def close(self):
-        self.cancel()
-        with self.guard:
-            channels, self.channels = self.channels, set()
-            requests, self.requests = self.requests, set()
-        for request in requests:
-            request.close()
-        for channel in channels:
-            channel.close()
-        if self.parent is not None:
-            with self.parent.guard:
-                self.parent.requests.discard(self)
+        with self.close_guard:
+            self.cancel()
+            with self.guard:
+                channels = tuple(self.channels)
+                requests = tuple(self.requests)
+            failed = False
+            for resource in (*requests, *channels):
+                try:
+                    resource.close()
+                except Exception:
+                    failed = True
+            if failed:
+                raise RuntimeError('Interaction cleanup failed') from None
+            if self.parent is not None:
+                with self.parent.guard:
+                    self.parent.requests.discard(self)
 
 
 class _CancelledChannel:
+    def check_open(self):
+        raise RuntimeError('Interaction unavailable')
     def write(self, text):
         pass
     def read(self, timeout):
@@ -235,6 +306,14 @@ class _OwnedChannel:
     def __init__(self, owner, channel):
         self.owner, self.channel = owner, channel
         self.closed = False
+    def check_open(self):
+        if (self.closed or self.owner.cancel_event.is_set() or self.channel is None
+                or getattr(self.channel, 'closed', False)
+                or not all(callable(getattr(self.channel, name, None)) for name in ('write', 'read', 'close'))):
+            raise RuntimeError('Interaction unavailable')
+        check = getattr(self.channel, 'check_open', None)
+        if check is not None:
+            check()
     def write(self, text):
         if not self.closed and not self.owner.cancel_event.is_set():
             self.channel.write(text)
@@ -247,6 +326,6 @@ class _OwnedChannel:
         with self.owner.guard:
             if self.closed:
                 return
+            self.channel.close()
             self.closed = True
             self.owner.channels.discard(self)
-        self.channel.close()

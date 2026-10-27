@@ -2,6 +2,16 @@
 from math import comb
 
 ASSUMPTION = 'Independent graph trials; same model, effective settings and source hashes'
+PILOT_MAX_GRAPHS = 60
+DEFAULT_COVERAGE_CEILING = 60
+MAX_COVERAGE_CEILING = 120
+
+
+def coverage_ceiling(value=DEFAULT_COVERAGE_CEILING):
+    """Admit an explicit operating budget without changing statistical claims."""
+    if type(value) is not int or not 1 <= value <= MAX_COVERAGE_CEILING:
+        raise ValueError('LLM_WORKFLOW_TEST_MAX_GRAPHS must be an integer from 1 to 120')
+    return value
 
 
 def lower_probability(hits, trials, alpha):
@@ -31,15 +41,17 @@ def _report(hits, trials, ceiling):
                 raise ValueError('Calibrated minimum plus safety margin exceeds the operating ceiling')
             buffered_missing = sum((1 - probability) ** maximum for probability in bounds.values())
             return dict(trials=trials, hits=hits, bounds=bounds, minimum_runs=runs,
+                        operating_ceiling=ceiling,
                         safety_margin=4, minimum_missing_node_bound=missing, max_runs=maximum,
                         missing_node_bound=buffered_missing, confidence=.95, target=.999,
                         assumption=ASSUMPTION)
     raise ValueError('Observed coverage does not justify the target within the operating ceiling')
 
 
-def calibration(observations, required, *, ceiling=60):
+def calibration(observations, required, *, ceiling=DEFAULT_COVERAGE_CEILING):
+    ceiling = coverage_ceiling(ceiling)
     required = frozenset(required)
-    if not observations or len(observations) > 60 or not required or type(ceiling) is not int or not 1 <= ceiling <= 60:
+    if not observations or len(observations) > PILOT_MAX_GRAPHS or not required:
         raise ValueError('Calibration requires up to 60 observations, nodes and a bounded ceiling')
     if any(not set(run) <= required for run in observations):
         raise ValueError('Calibration contains undeclared nodes')
@@ -172,11 +184,12 @@ def structural_targets(row):
     return graph_id, set(scopes)
 
 
-def observed_targets(row):
-    """Validate contiguous component attempts before recognizing a retry."""
+def observed_targets(row, *, maximum=PILOT_MAX_GRAPHS):
+    """Validate executed attempts within a pilot or admitted normal-run budget."""
+    maximum = coverage_ceiling(maximum)
     if type(row) is not dict or set(row) != {'trial', 'route', 'nodes', 'attempts', 'proof'}:
         raise ValueError('Invalid pilot measurement schema')
-    if type(row['trial']) is not int or not 1 <= row['trial'] <= 60 or type(row['route']) is not str or row['route'] not in ROUTES:
+    if type(row['trial']) is not int or not 1 <= row['trial'] <= maximum or type(row['route']) is not str or row['route'] not in ROUTES:
         raise ValueError('Invalid pilot trial identity or route')
     expected = FIRST if row['route'] == 'skip' else DECLARED
     if type(row['nodes']) is not list or row['nodes'] != sorted(expected):
@@ -204,9 +217,9 @@ def observed_targets(row):
     return set(row['nodes']) | {row['route']} | ({'internal_retry'} if retry else set())
 
 
-def measured_calibration(records, required, *, ceiling=60):
+def measured_calibration(records, required, *, ceiling=DEFAULT_COVERAGE_CEILING):
     """Derive all statistics from contiguous successful per-trial measurements."""
-    if set(required) != DECLARED or type(records) is not list or not 1 <= len(records) <= 60:
+    if set(required) != DECLARED or type(records) is not list or not 1 <= len(records) <= PILOT_MAX_GRAPHS:
         raise ValueError('Invalid pilot measurements or fixture declaration')
     observations, routes = [], {route: 0 for route in sorted(ROUTES)}
     identities = set()
@@ -224,12 +237,13 @@ def measured_calibration(records, required, *, ceiling=60):
     return dict(result, coverage_policy=COVERAGE_POLICY, records=records, routes=routes)
 
 
-def validate_calibration(report, required, fingerprint):
-    """Recompute every claim before a coverage run can consume a saved pilot."""
+def validate_calibration(report, required, fingerprint, *, ceiling=DEFAULT_COVERAGE_CEILING):
+    """Recompute claims under the independently selected operating ceiling."""
+    ceiling = coverage_ceiling(ceiling)
     if type(report) is not dict or any(report.get(key) != value for key, value in fingerprint.items()):
         # Emit fixed category names only: neither saved evidence nor configured
         # values belong in a prerequisite diagnostic.
-        categories = ('fingerprint_version', 'sampling_method', 'coverage_policy', 'model', 'dependency_versions',
+        categories = ('fingerprint_version', 'sampling_method', 'coverage_policy', 'operating_ceiling', 'model', 'dependency_versions',
                       'python_version', 'backend', 'provider_identity', 'user_input_hash',
                       'effective_settings', 'sources')
         changed = [name for name in categories if type(report) is dict and name in fingerprint
@@ -238,16 +252,21 @@ def validate_calibration(report, required, fingerprint):
         raise ValueError('Calibration is stale for model, effective settings or sources. '
                          f'Changed categories: {detail}. Refresh calibration explicitly; '
                          'see docs/workflow_calibration.md. The maintenance pilot makes real LLM calls.')
-    expected = measured_calibration(report.get('records'), required)
+    expected = measured_calibration(report.get('records'), required, ceiling=ceiling)
+    # Historical reports predate this explicit field and used only cap 60.
+    # Normal preflight supplies a current fingerprint containing the ceiling.
+    if 'operating_ceiling' not in report and ceiling == DEFAULT_COVERAGE_CEILING:
+        expected.pop('operating_ceiling')
     if any(type(report.get(key)) is not type(value) or report.get(key) != value for key, value in expected.items()):
         raise ValueError('Calibration claims do not match exact recomputed bounds')
     return expected['max_runs']
 
 
-async def cover(run_graph, required, maximum, observe=None):
+async def cover(run_graph, required, maximum, observe=None, *, ceiling=DEFAULT_COVERAGE_CEILING):
+    ceiling = coverage_ceiling(ceiling)
     required, seen = frozenset(required), set()
-    if not required or type(maximum) is not int or not 1 <= maximum <= 60:
-        raise ValueError('Coverage requires declared nodes and a run cap up to 60')
+    if not required or type(maximum) is not int or not 1 <= maximum <= ceiling:
+        raise ValueError('Coverage requires declared nodes and a run cap within the selected operating ceiling')
     for trial in range(1, maximum + 1):
         result, nodes = await run_graph(trial)
         if not set(nodes) <= required:

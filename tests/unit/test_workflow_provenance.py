@@ -1,3 +1,4 @@
+from test_workflow_trial_decisions import trial_uuid
 import subprocess
 from pathlib import Path
 from types import MappingProxyType
@@ -71,7 +72,7 @@ def test_reporting_marker_rejects_unverifiable_source_before_native_exec(monkeyp
     git(root, 'init', '-q')
     async def complete(request):
         return LLMResult(Message('assistant', (TextContent('{}'),)))
-    workflow = build(root, llm=complete, selection='example', trial='synthetic')
+    workflow = build(root, llm=complete, selection='example', trial=trial_uuid())
     source = next(step.source for step in workflow.definition.layout.steps if step.kind == 'node')
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
     with pytest.raises(LayoutError, match='verifiable committed provenance'):

@@ -13,7 +13,7 @@ from api_agent.testing.diagnostics import CredentialScrubber, format_exception, 
 from api_agent.testing.suite_lock import suite_locked
 from .evidence import reserve_calibration, sanitize, store_calibration
 from .fixture_driver import fingerprint, provider_identity, run_graph
-from .sampling import DECLARED, measured_calibration, measurement
+from .sampling import DECLARED, PILOT_MAX_GRAPHS, coverage_ceiling, measured_calibration, measurement
 
 
 def source_checkout(selected=None):
@@ -41,6 +41,10 @@ def configuration(root, argv):
     # This command selects its operation without enabling unrelated API/UI/Allure duties.
     fields = dict(schema.fields)
     fields['TUI_MODE'] = replace(fields['TUI_MODE'], enum=(*fields['TUI_MODE'].enum, 'workflow-calibration'))
+    for name in ('LLM_WORKFLOW_TEST_MODEL', 'LLM_WORKFLOW_TEST_MAX_GRAPHS'):
+        declaration = fields[name]
+        fields[name] = replace(declaration,
+            applies_when=dict(declaration.applies_when, TUI_MODE=['integration', 'workflow-calibration']))
     authentication = fields['UNATTENDED_AUTH']
     fields['UNATTENDED_AUTH'] = replace(authentication, applies_when=dict(authentication.applies_when,
         TUI_MODE=[*authentication.applies_when['TUI_MODE'], 'workflow-calibration']))
@@ -56,6 +60,12 @@ def configuration(root, argv):
     overrides = dict(runtime_directory_overrides(context), TUI_MODE='workflow-calibration')
     result = retain_runtime_directory(resolve_config(schema, argv=argv, environ=os.environ, dotenv=dotenv,
         anchors=context.anchors, pack_launcher=context.external_pack, overrides=overrides), context)
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.test_profiles import resolve_test_profiles
+    node = 'tests/integration/test_workflow.py::test_workflow_node_coverage'
+    case = TestIdentity('api-agent:' + node, 'api-agent', node.split('::')[0], node, root=root)
+    profile = resolve_test_profiles([case], result.values, owner_root=context.owner_root, fields=result.fields)[case.id]
+    result = replace(result, values=profile['config'])
     errors = list(result.errors)
     if result.values.get('COLLECT_ONLY'):
         errors.append('Calibration is an explicit maintenance execution; COLLECT_ONLY is not applicable.')
@@ -141,8 +151,9 @@ def candidate_path(destination):
 @suite_locked
 def pilot(context, result, destination, count, *, output=print):
     """Reserve once, observe every graph/call, clean up, then finalize a candidate."""
-    if type(count) is not int or not 1 <= count <= 60:
+    if type(count) is not int or not 1 <= count <= PILOT_MAX_GRAPHS:
         raise ValueError('Calibration requires between 1 and 60 graphs.')
+    ceiling = coverage_ceiling(result.values.get('LLM_WORKFLOW_TEST_MAX_GRAPHS', 60))
     destination = candidate_path(destination)
     progress_path = destination.with_name(destination.name + '.progress.jsonl')
     from api_agent.auth.managers import registry_for_context
@@ -179,6 +190,10 @@ def pilot(context, result, destination, count, *, output=print):
             try:
                 with progress_sink(timing), report_timeout_sync('Workflow calibration'):
                     provider_identity(result.values, owner_root=context.owner_root)
+                    configured_selection = None
+                    if 'LLM_WORKFLOW_TEST_MODEL' in result.values:
+                        from api_agent.testing.model_choices import exact_model
+                        configured_selection = exact_model(result.values, 'LLM_WORKFLOW_TEST_MODEL')
                     provider = IntegrationLLM(result.values, context.owner_root, skip_unavailable=False,
                         unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
                         password_manager_registry=registry_for_context(context),
@@ -188,7 +203,13 @@ def pilot(context, result, destination, count, *, output=print):
                         for value in provider.emissions._secrets - initial_secrets:
                             scrubber.register_secret(value)
                     try:
-                        selection = ModelSelectionPolicy(result.values).select_default(provider.describe())
+                        catalog = provider.describe()
+                        if configured_selection is not None:
+                            from api_agent.testing.model_choices import catalog_choice
+                            selection = configured_selection
+                            catalog_choice(catalog, selection, require_metadata=False)
+                        else:
+                            selection = ModelSelectionPolicy(result.values).select_default(catalog)
                         expected = fingerprint(selection, result.values, root=context.base_root, owner_root=context.owner_root)
                         records = []
                         stage = 'Calibration graph execution'
@@ -208,9 +229,9 @@ def pilot(context, result, destination, count, *, output=print):
                     stage = 'Calibration candidate validation'
                     if fingerprint(selection, result.values, root=context.base_root, owner_root=context.owner_root) != expected:
                         raise ValueError('Sampling sources/settings changed during calibration.')
-                    report = dict(measured_calibration(records, DECLARED), **expected)
+                    report = dict(measured_calibration(records, DECLARED, ceiling=ceiling), **expected)
                     candidate_path(destination)
-                    store_calibration(destination, report)
+                    store_calibration(destination, report, ceiling=ceiling)
                     emit(dict(calibration=report))
                     output(f'Calibration candidate saved: {destination}. Review it before manually updating checked-in model bounds.')
                     return report

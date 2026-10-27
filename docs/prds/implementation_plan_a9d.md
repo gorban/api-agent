@@ -13,7 +13,10 @@ authorization and main-menu navigation.
 
 - [x] Missing active requirements block an operation and identify the latest
   missing setting in red above the shortcuts. Refresh the diagnostic after edits;
-  preserve hidden-required guidance and configuration source precedence.
+  keep Required rows visible even when default acknowledgment is disabled, and
+  preserve configuration source precedence.
+- [ ] Complete [runtime-discovered configuration requirements](implementation_plan_a9k.md)
+  for Run local without executing provider probes during configuration review.
 - [x] Offer pending visible values at startup and after Clear .env. Valid effective
   defaults do not block menu or noninteractive operation entry.
 - [x] Complete [startup intent and authentication return](implementation_plan_a9a.md):
@@ -31,7 +34,7 @@ authorization and main-menu navigation.
 - [Startup requirements and test mappings](implementation_plan_a9a.md)
 - [Earlier requirements, corrections and validation](implementation_plan_a9b.md)
 
-The latest correction passes all 5,797 applicable units at exact 100% line and
+The preceding correction passed all 5,797 applicable units at exact 100% line and
 branch coverage. Independent review and targeted mutations close reported issues.
 Human acceptance remains recorded in the detail; earlier gates do not establish
 acceptance of later navigation changes.

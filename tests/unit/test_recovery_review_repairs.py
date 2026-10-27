@@ -117,13 +117,14 @@ def test_non_recovery_terminal_dispatch_without_termios(monkeypatch, activation)
          patch('api_agent.config.read_dotenv', return_value={}), \
          patch('api_agent.config.dotenv.read_dotenv', return_value={}), \
          patch('api_agent.runtime.worktrees.verify_worktrees'), \
+         patch('api_agent.runtime.hook_assurance.assure_hook'), \
          patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
          patch('api_agent.testing.collection.collect_tests', return_value=[TestIdentity(
              'base::selected.py::test_case', 'base', 'selected.py', 'selected.py::test_case')]), \
          patch('api_agent.testing.launched.run_launched_integration',
                return_value=SimpleNamespace(exit_code=0)) as runner, \
          patch('builtins.__import__', side_effect=import_without_termios):
-        assert main(args, base_root=Path(__file__).resolve().parents[2]) == 0
+        assert main(args, base_root=Path(__file__).resolve().parents[2]) == 0, stderr.getvalue()
     assert runner.call_count == 1 and not stderr.getvalue()
 
 

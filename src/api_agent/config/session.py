@@ -54,6 +54,8 @@ class ReviewSnapshot:
     saved_names: frozenset
     dotenv_inputs: tuple
     source_reads: object
+    runtime_required_fields: tuple = ()
+    runtime_requirement_token: object = None
 
     def sources_current(self):
         """Content check at delivery; timestamps do not establish freshness."""
@@ -90,6 +92,8 @@ class ConfigSession:
         self.argv = tuple(argv)
         self.environ = dict(os.environ if environ is None else environ)
         self._choices = {}
+        self._runtime_requirements = None
+        self._runtime_requirement_token = None
         launcher = getattr(context, 'launcher_root', None)
         self._dotenv_path = Path(launcher) / '.env' if launcher else Path(context.dotenv_path)
         provider_dotenv = {}
@@ -353,7 +357,59 @@ class ConfigSession:
             raise
 
     def result(self, *, _cleanup=False, _review=False, operation_intents=()):
-        return self._resolve(_cleanup=_cleanup, _review=_review, operation_intents=operation_intents)[0]
+        result = self._resolve(_cleanup=_cleanup, _review=_review, operation_intents=operation_intents)[0]
+        if self._runtime_requirements is None:
+            return result
+        current = self._resolve()[0] if _review or _cleanup or operation_intents else result
+        return self._with_runtime_requirements(result, current)
+
+    def _with_runtime_requirements(self, result, current):
+        if self._runtime_requirements is None:
+            return result
+        names, snapshot = self._runtime_requirements
+        scope = {name: value for name, value in current.values.items() if name not in names}
+        if scope != snapshot or not set(names) <= self.schema.fields.keys():
+            self._runtime_requirements = None
+            self._runtime_requirement_token = None
+            return result
+        missing = tuple(name for name in names if name not in result.values
+                        or result.values[name] is None
+                        or isinstance(result.values[name], str) and not result.values[name].strip())
+        return replace(result, missing=tuple(dict.fromkeys((*result.missing, *missing))))
+
+    def require_fields(self, fields, *, snapshot):
+        """Admit only requirements from the still-current operation snapshot."""
+        from api_agent.providers.contracts import ConfigurationRequiredError
+        names = ConfigurationRequiredError(fields).fields
+        current = self._resolve()[0]
+        if not set(names) <= self.schema.fields.keys():
+            raise ConfigError('Configuration requirement references an undeclared field')
+        scope = {name: value for name, value in snapshot.items() if name not in names}
+        effective = {name: value for name, value in current.values.items() if name not in names}
+        if scope != effective:
+            return False
+        self._runtime_requirements = (names, deepcopy(scope))
+        self._runtime_requirement_token = object()
+        return True
+
+    @property
+    def runtime_required_fields(self):
+        self.result()
+        return self._runtime_requirements[0] if self._runtime_requirements is not None else ()
+
+    @property
+    def runtime_requirement_token(self):
+        self.result()
+        return self._runtime_requirement_token if self._runtime_requirements is not None else None
+
+    def clear_runtime_requirements(self, *, expected_token):
+        """Explicitly recheck only the still-current runtime facts; preserve settings."""
+        self.result()
+        if expected_token is None or self.runtime_requirement_token is not expected_token:
+            return False
+        self._runtime_requirements = None
+        self._runtime_requirement_token = None
+        return True
 
     def auth_sources(self):
         """Effective per-component provenance, independent of the write target."""
@@ -370,8 +426,12 @@ class ConfigSession:
             prepared = self._prepare_resolution(())
             execution = self._resolve_prepared(prepared)[0]
             review = self._resolve_prepared(prepared, _review=True)[0]
+            review = self._with_runtime_requirements(review, execution)
+            execution = self._with_runtime_requirements(execution, execution)
         return ReviewSnapshot(self.schema, prepared[6], execution, review,
-                              frozenset(prepared[2]), prepared[-1], reads.snapshot())
+                              frozenset(prepared[2]), prepared[-1], reads.snapshot(),
+                              self._runtime_requirements[0] if self._runtime_requirements else (),
+                              self._runtime_requirement_token)
 
     def _prepare_resolution(self, operation_intents):
         operation_intents = tuple(dict.fromkeys((*self._tool_intents, *operation_intents)))

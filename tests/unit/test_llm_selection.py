@@ -62,9 +62,11 @@ assert resolve_config(schema, environ={}).values['FILTER'] == 'a|b'
 
 
 def test_declared_defaults_allow_three_variants_but_choose_luna():
-    from api_agent.config.declarations import load_declarations
+    from api_agent.config import load_shared_schema
+    from api_agent.providers.loading import bootstrap_schema
     from pathlib import Path
-    schema = load_declarations(Path(__file__).parents[2]/'cfg/config.toml')
+    root = Path(__file__).resolve().parents[2]
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, {}, owner_root=root)
     config = resolve_config(schema, environ={}).values
     policy = ModelSelectionPolicy(config)
     values = tuple(selection(name, version, family) for name, version, family in [

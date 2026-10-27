@@ -1,0 +1,65 @@
+version = 1
+factory = "factory"
+provider_fields = ["BEDROCK_API_MODE", "BEDROCK_INFERENCE_TIMEOUT_SECONDS"]
+
+[profiles.ordinary]
+cases = ["tests/integration/test_llm_discovery.py::test_llm_discovery", "tests/integration/test_llm_request.py::test_llm_request", "tests/integration/test_studio_request.py::test_studio_request"]
+[profiles.ordinary.settings]
+BEDROCK_API_MODE = 'responses'
+BEDROCK_INFERENCE_TIMEOUT_SECONDS = 900
+LLM_SETUP_REQUEST_TIMEOUT_SECONDS = 960
+LLM_DEFAULT_MODEL = 'openai\.gpt-oss-20b'
+LLM_REASONING_EFFORT = 'low'
+
+[profiles.tools]
+cases = ["tests/integration/test_tool_instances.py::test_shared_primary", "tests/integration/test_tool_alternate.py::test_independent_tools"]
+[profiles.tools.settings]
+BEDROCK_API_MODE = 'completions'
+BEDROCK_INFERENCE_TIMEOUT_SECONDS = 900
+LLM_SETUP_REQUEST_TIMEOUT_SECONDS = 960
+LLM_DEFAULT_MODEL = 'zai\.glm-5'
+LLM_REASONING_EFFORT = ''
+
+[profiles.reasoning]
+cases = ["tests/integration/test_reasoning_contrast.py::test_reasoning_contrast"]
+[profiles.reasoning.settings]
+BEDROCK_API_MODE = 'responses'
+BEDROCK_INFERENCE_TIMEOUT_SECONDS = 900
+LLM_SETUP_REQUEST_TIMEOUT_SECONDS = 960
+LLM_DEFAULT_MODEL = 'openai\.gpt-oss-20b'
+LLM_REASONING_EFFORT = 'low'
+LLM_REASONING_TEST_MODEL = 'openai.gpt-oss-120b'
+LLM_REASONING_TEST_LOW_EFFORT = 'low'
+LLM_REASONING_TEST_HIGH_EFFORT = 'medium'
+LLM_REASONING_TEST_TOKEN_REPORTING = true
+LLM_REASONING_TEST_MAX_OUTPUT_TOKENS = 16000
+LLM_REASONING_TEST_TIMEOUT_SECONDS = 960
+
+[profiles.studio_selection]
+cases = ["tests/integration/test_studio_selection.py::test_studio_selection"]
+[profiles.studio_selection.settings]
+BEDROCK_API_MODE = 'responses'
+BEDROCK_INFERENCE_TIMEOUT_SECONDS = 900
+LLM_SETUP_REQUEST_TIMEOUT_SECONDS = 960
+LLM_DEFAULT_MODEL = 'openai\.gpt-oss-20b'
+LLM_REASONING_EFFORT = 'low'
+LLM_STUDIO_TEST_DEFAULT_MODEL = 'openai.gpt-oss-20b'
+LLM_STUDIO_TEST_SELECTED_MODEL = 'openai.gpt-oss-120b'
+LLM_STUDIO_TEST_DEFAULT_EFFORT = 'low'
+LLM_STUDIO_TEST_SELECTED_EFFORT = 'medium'
+
+[profiles.workflow]
+cases = ["tests/integration/test_workflow.py::test_workflow_node_coverage"]
+[profiles.workflow.settings]
+LLM_WORKFLOW_TEST_MAX_GRAPHS = 120
+BEDROCK_API_MODE = 'completions'
+BEDROCK_INFERENCE_TIMEOUT_SECONDS = 900
+LLM_SETUP_REQUEST_TIMEOUT_SECONDS = 960
+LLM_DEFAULT_MODEL = 'zai\.glm-5'
+LLM_REASONING_EFFORT = ''
+LLM_WORKFLOW_TEST_MODEL = 'zai.glm-5'
+WORKFLOW_MAX_PASSES = 4
+WORKFLOW_GRAPH_TIMEOUT_SECONDS = 600
+WORKFLOW_COMPONENT_TIMEOUT_SECONDS = 300
+WORKFLOW_LLM_TIMEOUT_SECONDS = 120
+

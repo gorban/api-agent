@@ -50,6 +50,19 @@ class InteractionRequiredError(ContractError):
     """A safe, actionable message requesting attended provider setup."""
 
 
+class ConfigurationRequiredError(InteractionRequiredError):
+    """A bounded request for declared settings, containing no setting values."""
+
+    def __init__(self, fields):
+        if (type(fields) not in (tuple, list) or not 1 <= len(fields) <= 32
+                or any(type(name) is not str or len(name) > 128
+                       or not name.isidentifier() or name != name.upper() for name in fields)
+                or len(set(fields)) != len(fields)):
+            raise ContractError('Invalid configuration requirement fields')
+        self.fields = tuple(fields)
+        super().__init__('Additional configuration is required. Open Review configuration.')
+
+
 class UnattendedCredentialError(InteractionRequiredError):
     """Credential access failed; never silently replace the selected identity."""
 

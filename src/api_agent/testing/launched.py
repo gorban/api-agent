@@ -13,7 +13,7 @@ from .requirements import plan_integration_requirements
 
 @suite_locked
 def run_launched_integration(context, tests, config, *, accepted=False,
-                             no_std_in=False, prerequisites=None, reporting_session=None, tool_plan=None, **options):
+                             no_std_in=False, prerequisites=None, reporting_session=None, tool_plan=None, config_fields=None, **options):
     """Acquire storage lazily; retain its cleanup handle through every outcome.
 
     Test recording finishes before the prerequisite lease is released. Only
@@ -33,20 +33,50 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         if tool_plan is not None:
             from .prerequisites import prepare_selected_tool_dependencies
             prepare_selected_tool_dependencies(context, tool_plan)
+        import json
+        from dataclasses import replace
+        from .diagnostics import CredentialScrubber
+        from api_agent.telemetry.usage import SuiteUsage
+        from api_agent.telemetry.usage_output import final_usage_text
+        from .inference_usage import capture, validate_event
+        identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
+        usage = SuiteUsage(identity.run_id)
+        boundary = CredentialScrubber(config, boundary=options.get('evidence_boundary'),
+            secret_values=options.get('secret_values', ())).boundary
+
+        def observe(row):
+            if row.kind == 'inference_usage':
+                data, _ = validate_event(row)
+                data = boundary.content_export(data)
+                row = replace(row, text=json.dumps(data, allow_nan=False))
+                capture(row, usage)
+            if options.get('on_event') is not None:
+                options['on_event'](row)
+
         started = monotonic()
         # No report installer, storage lease, recorder, attachment, manifest or
         # publication exists on this explicitly unrecorded path.
         execution = run_integration_tests(context, tests, accepted=accepted,
             no_std_in=False, config=config,
             parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
-            on_event=options.get('on_event'), output=options.get('output'),
+            on_event=observe, output=options.get('output'),
             cancel_event=options.get('cancel_event'),
             unattended_index_source=options.get('unattended_index_source'),
             interaction=options.get('interaction'),
-            **({'tool_plan': tool_plan} if tool_plan is not None else {}))
-        return RecordedIntegrationResult(execution,
-            RunIdentity.create(repository_label(context, context.owner_root), 'integration'),
+            **({'tool_plan': tool_plan} if tool_plan is not None else {}),
+            **({'config_fields': config_fields} if config_fields is not None else {}))
+        result = RecordedIntegrationResult(execution, identity,
             None, {}, None, False, monotonic() - started, reporting_skipped=True)
+        try:
+            result.usage.update(boundary.content_export(usage.report()))
+            if options.get('usage_output') is not None:
+                options['usage_output'](final_usage_text(result.usage))
+        except BaseException as error:
+            error.recorded_result = result
+            error.execution = execution
+            error.inspections = getattr(execution, 'inspections', ())
+            raise
+        return result
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
     plan = plan_integration_requirements(tests)
     plan.validate(context, config)
@@ -70,6 +100,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     try:
         execution = run_recorded_integration(context, tests, config, accepted=accepted,
             no_std_in=no_std_in, prepare=before,
+            **({'config_fields': config_fields} if config_fields is not None else {}),
             **({'tool_plan': tool_plan} if tool_plan is not None else {}), **options)
         return execution
     finally:

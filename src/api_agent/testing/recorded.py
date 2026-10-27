@@ -189,7 +189,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
                              unattended_index_source=None, interaction=None, content_policy=None, historical_estimator=None,
-                             workflow_admissions=None, tool_plan=None):
+                             workflow_admissions=None, tool_plan=None, config_fields=None):
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
@@ -201,7 +201,6 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
     from .workflow_admission import capture_workflow_admissions
-    workflow_admissions = capture_workflow_admissions(context, workflow_admissions, tool_plan=tool_plan)
     started_at = monotonic()
     from api_agent.providers.rates import freeze_pricing
     from .cost_history import estimator_for
@@ -209,12 +208,30 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     # Optional accounting never authenticates or changes test outcomes.
     from .cost_context import cost_config
     config = cost_config(context, config)
-    config['_COST_RATE_CARD'] = freeze_pricing(context, config)
-    estimator = estimator_for(context, tests, config, rate_card=config['_COST_RATE_CARD'])
-    if historical_estimator is not None:
-        estimator.advance_predictions = deepcopy(historical_estimator.predictions)
     if content_policy is not None:
         config = dict(config, LOG_CONTENT=content_policy.allow_content)
+    config['_COST_RATE_CARD'] = freeze_pricing(context, config)
+    from .test_profiles import resolve_test_profiles
+    profiles = resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields)
+    workflow_admissions = capture_workflow_admissions(context, workflow_admissions,
+        tool_plan=tool_plan, profiles=profiles)
+    # Derive compatibility after specialization, not from the application snapshot.
+    # One immutable price receipt per identical operation configuration also
+    # prevents refreshed timestamps from splitting otherwise shared owners.
+    pricing = [({name: value for name, value in config.items() if not name.startswith('_COST')},
+                config['_COST_RATE_CARD'])]
+    for row in profiles.values():
+        effective = {name: value for name, value in row['config'].items() if not name.startswith('_COST')}
+        row['config'] = cost_config(context, effective)
+        frozen = next((item for item in pricing if item[0] == effective), None)
+        if frozen is None:
+            frozen = (effective, freeze_pricing(context, effective))
+            pricing.append(frozen)
+        row['config']['_COST_RATE_CARD'] = deepcopy(frozen[1])
+    test_configs = {identity: row['config'] for identity, row in profiles.items()}
+    estimator = estimator_for(context, tests, config, rate_card=config['_COST_RATE_CARD'], test_configs=test_configs)
+    if historical_estimator is not None:
+        estimator.advance_predictions = deepcopy(historical_estimator.predictions)
     identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
     with ExitStack() as resources:
         local_directory = config.get('ALLURE_RESULTS_DIR')
@@ -383,7 +400,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                         recorder.record_test(TestResult(failure, 'error'))
             usage_summary = usage.report()
             from api_agent.telemetry.accounting import build_accounting
-            artifact = build_accounting(identity, tests, config, usage, result.tests, estimator=estimator, summary=usage_summary, context=context)
+            artifact = build_accounting(identity, tests, config, usage, result.tests, estimator=estimator, summary=usage_summary, context=context, test_configs=test_configs)
             stabilized = estimator.complete(artifact)
             completed_averages = estimator.completed_averages(artifact, stabilized)
             # Preserve the initial raw allocation while publishing separately
@@ -599,7 +616,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                            unattended_index_source=unattended_index_source,
                            **({'quota_observer': observe_quota} if runner is run_integration_tests and quota_fetcher is None else {}),
                            **({'interaction': interaction} if interaction is not None else {}),
-                           **({'tool_plan': tool_plan} if tool_plan is not None else {}))
+                           **({'tool_plan': tool_plan} if tool_plan is not None else {}),
+                           **({'config_fields': config_fields} if config_fields is not None else {}),
+                           **({'resolved_test_profiles': profiles} if runner is run_integration_tests else {}))
         return RecordedIntegrationResult(execution, identity, directory if local_directory else None,
                                          usage_summary if usage_summary is not None else usage.report(), manifest, persisted,
                                          monotonic() - started_at)

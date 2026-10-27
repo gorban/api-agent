@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from api_agent.workflows.contrived import produce, strict_json, validate_format, guard
 from api_agent.workflows.execution import WorkflowError
+from test_workflow_trial_decisions import trial_uuid
 
 
 @pytest.mark.parametrize('value', ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '{broken', '{"x":1e999}'])
@@ -34,7 +35,7 @@ def test_guard_does_not_relax_final_pass(ready):
 def test_producer_rejects_contract_defects(output,outcome,previous,error):
     async def llm(request):
         return SimpleNamespace(outcome=outcome,payload=SimpleNamespace(content=(SimpleNamespace(text=output),)))
-    context=SimpleNamespace(attempt=2,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':'id','output_schema':{}})
+    context=SimpleNamespace(node_id='first_draft',attempt=2 if previous is not None else 1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(previous['route'] if previous else 'skip'),'output_schema':{}})
     with pytest.raises(WorkflowError,match=error):
         asyncio.run(produce({'previous':previous,'feedback':None,'upstream':None,'user_input':'original'},context))
 
@@ -43,20 +44,20 @@ def test_producer_sends_input_and_upstream_separately():
     requests=[]
     async def llm(request):
         requests.append(request)
-        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip"}'),)))
-    context=SimpleNamespace(attempt=2,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':'id','output_schema':{}})
+        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip","ready":true}'),)))
+    context=SimpleNamespace(node_id='second_draft',attempt=2,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(),'output_schema':{}})
     result=asyncio.run(produce({'previous':{'route':'skip'},'feedback':{'reason':'repair'},'upstream':{'final_output':'accepted'},'user_input':' λ\n'},context))
-    assert result == {'route':'skip'}
+    assert result == {'route':'skip','ready':True}
     assert requests[0].payload.messages[1].content[0].text == ' λ\n'
     metadata = json.loads(requests[0].payload.messages[2].content[0].text)
     assert metadata['upstream'] == {'final_output':'accepted'}
-    assert list(metadata) == ['upstream','previous','feedback','attempt','max_passes','trial']
+    assert list(metadata) == ['decisions','upstream','previous','feedback','attempt','max_passes','trial']
 
 
 def test_build_bundled_workflow():
     from pathlib import Path
     from api_agent.workflows.contrived import build
-    workflow=build(Path(__file__).resolve().parents[2],llm=None,selection='synthetic',trial='id')
+    workflow=build(Path(__file__).resolve().parents[2],llm=None,selection='synthetic',trial=trial_uuid())
     assert len(workflow.layout.steps)==8
 
 
@@ -122,7 +123,7 @@ def test_build_installed_resource_fallback(monkeypatch,tmp_path):
     from api_agent.workflows import contrived
     root = Path(__file__).resolve().parents[2]
     monkeypatch.setattr('importlib.resources.files', lambda package: root)
-    workflow = contrived.build(tmp_path,llm=None,selection='synthetic',trial='id')
+    workflow = contrived.build(tmp_path,llm=None,selection='synthetic',trial=trial_uuid())
     assert workflow.definition.graph_id == 'contrived_qualification'
     assert len(workflow.layout.steps) == 8
 
@@ -137,7 +138,7 @@ def test_complete_fixture_repairs_without_losing_upstream(route,calls):
         requests.append(metadata)
         draft={'route':route,'original_input':request.payload.messages[1].content[0].text,'ready':metadata['attempt'] > 1,'final_output':request.payload.messages[1].content[0].text}
         return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text=json.dumps(draft)),)))
-    workflow=build(Path(__file__).resolve().parents[2],llm=llm,selection='synthetic',trial='id',observe=events.append)
+    workflow=build(Path(__file__).resolve().parents[2],llm=llm,selection='synthetic',trial=trial_uuid(route,first_ready=False,second_ready=False),observe=events.append)
     values=asyncio.run(workflow.arun({'user_input':' λ\n'}))
     assert values['first_draft']['ready'] is True
     assert requests[1]['previous']['route'] == route
@@ -170,7 +171,7 @@ def test_typed_timeout_configuration_defaults_env_cli(argv,environ,expected,sour
 def test_typed_timeout_bindings_and_default_disabled_limits():
     from pathlib import Path
     from api_agent.workflows.contrived import build
-    workflow=build(Path(__file__).resolve().parents[2],llm=None,selection='synthetic',trial='id')
+    workflow=build(Path(__file__).resolve().parents[2],llm=None,selection='synthetic',trial=trial_uuid())
     assert workflow.timeouts == {'GRAPH': 600.0, 'first': 300.0, 'second': 300.0}
     assert workflow.services['llm_timeout']==120
 
@@ -180,12 +181,12 @@ def test_configured_llm_scope_is_clipped_to_parent(monkeypatch):
     seen=[]
     async def llm(request):
         seen.append(progress._scope.get().timeout)
-        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip"}'),)))
-    context=SimpleNamespace(attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':'id','output_schema':{},'llm_timeout':7.5})
+        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip","ready":true}'),)))
+    context=SimpleNamespace(node_id='first_draft',attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(),'output_schema':{},'llm_timeout':7.5})
     async def execute():
         async with progress.component_timeout('parent',2):
             return await produce({'previous':None,'feedback':None,'upstream':None,'user_input':'input'},context)
-    assert asyncio.run(execute())=={'route':'skip'}
+    assert asyncio.run(execute())=={'route':'skip','ready':True}
     assert 0 < seen[0] <= 2
 
 
@@ -195,8 +196,8 @@ def test_swallowed_llm_child_timeout_never_returns_success(monkeypatch):
     monkeypatch.setattr(progress,'_clock',lambda:clock[0])
     async def llm(request):
         clock[0]=2.0
-        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip"}'),)))
-    context=SimpleNamespace(attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':'id','output_schema':{},'llm_timeout':1})
+        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip","ready":true}'),)))
+    context=SimpleNamespace(node_id='first_draft',attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(),'output_schema':{},'llm_timeout':1})
     with pytest.raises(TimeoutError,match='LLM call deadline expired'):
         asyncio.run(produce({'previous':None,'feedback':None,'upstream':None,'user_input':'input'},context))
 
@@ -206,7 +207,7 @@ def test_llm_timeout_rejected_before_inference(timeout):
     calls=[]
     async def llm(request):
         calls.append(request)
-    context=SimpleNamespace(attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':'id','output_schema':{},'llm_timeout':timeout})
+    context=SimpleNamespace(node_id='first_draft',attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(),'output_schema':{},'llm_timeout':timeout})
     with pytest.raises(ValueError,match='component timeout'):
         asyncio.run(produce({'previous':None,'feedback':None,'upstream':None,'user_input':'input'},context))
     assert calls==[]
@@ -220,7 +221,7 @@ def test_configured_typed_limits_clip_all_workflow_scopes():
         text=request.payload.messages[1].content[0].text
         return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text=json.dumps({'route':'skip','original_input':text,'ready':True,'final_output':text})),)))
     settings={'WORKFLOW_LLM_TIMEOUT_SECONDS':7.5,'WORKFLOW_COMPONENT_TIMEOUT_SECONDS':9.0,'WORKFLOW_GRAPH_TIMEOUT_SECONDS':2.0}
-    workflow=build(Path(__file__).resolve().parents[2],llm=llm,selection='synthetic',trial='id',config=settings,observe=events.append)
+    workflow=build(Path(__file__).resolve().parents[2],llm=llm,selection='synthetic',trial=trial_uuid(),config=settings,observe=events.append)
     asyncio.run(workflow.arun({'user_input':'synthetic'}))
     starts=[event for event in events if event['event']=='scope_start']
     assert starts
@@ -235,8 +236,8 @@ def test_native_cancelled_llm_cannot_swallow_timeout_and_return_success():
             await asyncio.sleep(60)
         except asyncio.CancelledError:
             cancellations.append(True)
-        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip"}'),)))
-    context=SimpleNamespace(attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':'id','output_schema':{},'llm_timeout':.001})
+        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip","ready":true}'),)))
+    context=SimpleNamespace(node_id='first_draft',attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(),'output_schema':{},'llm_timeout':.001})
     with pytest.raises(TimeoutError,match='LLM call deadline expired'):
         asyncio.run(produce({'previous':None,'feedback':None,'upstream':None,'user_input':'input'},context))
     assert cancellations==[True]

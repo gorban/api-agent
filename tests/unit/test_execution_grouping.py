@@ -141,8 +141,9 @@ def test_supplied_journal_context_admitted_before_execution(
             record()
             return LLMResult(Message('assistant', (TextContent(json.dumps(dict(
                 original_input='x', route='skip', ready=True, final_output='x'))),)))
+        from test_workflow_trial_decisions import trial_uuid
         workflow = build(Path(__file__).resolve().parents[2], llm=complete,
-                         selection='example', trial='synthetic')
+                         selection='example', trial=trial_uuid())
         admitted = workflow.definition
     else:
         root, entry = fixture_graph

@@ -478,10 +478,15 @@ def test_server_disposes_listener_when_channel_close_fails(monkeypatch):
     InteractionClient(server.descriptor).open('Keeper')
     def fail():
         raise RuntimeError('closed UI unavailable')
+    original = interaction.channel.close
     monkeypatch.setattr(interaction.channel, 'close', fail)
-    with pytest.raises(RuntimeError, match='closed UI unavailable'):
+    with pytest.raises(RuntimeError, match='^Interaction cleanup failed$'):
         server.close()
     assert not server.thread.is_alive()
+    assert server.channels
+    monkeypatch.setattr(interaction.channel, 'close', original)
+    server.close()
+    assert not server.channels
 
 
 def test_terminal_fragmented_prompts_preserve_input_after_progress():

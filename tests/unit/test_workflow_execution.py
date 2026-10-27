@@ -4,6 +4,7 @@ import json
 import pytest
 from api_agent.providers.llm import LLMResult, Message, TextContent
 from api_agent.workflows.contrived import build
+from test_workflow_trial_decisions import trial_uuid
 from api_agent.workflows.execution import WorkflowError
 from api_agent.workflows.layout import load_layout, LayoutError
 from api_agent.workflows.sampling import lower_probability, calibration, cover
@@ -19,11 +20,11 @@ def test_compiled_langgraph_preserves_input_and_independent_pass_budgets(route, 
     async def complete(request):
         requests.append(request)
         tail = json.loads(request.payload.messages[-1].content[0].text)
-        component = 'first' if len([event for event in events if event.get('component')=='second']) == 0 else 'second'
+        component = tail['decisions']['component']
         rejected = retry_first if component == 'first' else retry_second
         value = dict(original_input=original, route=route, ready=not rejected or tail['attempt']>1, final_output=original)
         return LLMResult(Message('assistant',(TextContent(json.dumps(value)),)))
-    workflow = build(ROOT,llm=complete,selection='gpt-example',trial='synthetic',observe=events.append)
+    workflow = build(ROOT,llm=complete,selection='gpt-example',trial=trial_uuid(route,first_ready=not retry_first,second_ready=not retry_second),observe=events.append)
     values = asyncio.run(workflow.arun({'user_input':original}))
     assert values['first_draft']['original_input'] == original
     assert ('second_draft' in values) == (route != 'skip')
@@ -43,15 +44,16 @@ def test_contract_failure_is_not_a_guard_retry(response):
         calls.append(request)
         return LLMResult(Message('assistant',(TextContent(response),)))
     with pytest.raises(WorkflowError):
-        asyncio.run(build(ROOT,llm=complete,selection='gpt-example',trial='x').arun({'user_input':'user'}))
+        asyncio.run(build(ROOT,llm=complete,selection='gpt-example',trial=trial_uuid()).arun({'user_input':'user'}))
     assert len(calls)==1
 
 
 def test_guard_exhaustion_is_failure_without_final_pass_relaxation():
     async def complete(request):
-        return LLMResult(Message('assistant',(TextContent(json.dumps(dict(original_input='user',route='skip',ready=False,final_output='user'))),)))
+        metadata = json.loads(request.payload.messages[-1].content[0].text)
+        return LLMResult(Message('assistant',(TextContent(json.dumps(dict(original_input='user',route='skip',ready=metadata['decisions']['ready'],final_output='wrong'))),)))
     with pytest.raises(WorkflowError,match='exhausted 2 passes'):
-        asyncio.run(build(ROOT,llm=complete,selection='gpt-example',trial='x').arun({'user_input':'user'}))
+        asyncio.run(build(ROOT,llm=complete,selection='gpt-example',trial=trial_uuid()).arun({'user_input':'user'}))
 
 
 def test_exact_bound_and_node_coverage_cap():
@@ -111,7 +113,7 @@ def test_recorded_without_observation_factory_requires_resolved_content_authorit
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING','1')
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(events))
     monkeypatch.setattr('api_agent.workflows.provenance.verified_documents',lambda *a,**k:None)
-    workflow = build(ROOT,llm=complete,selection='example',trial='synthetic',config={'LOG_CONTENT':True})
+    workflow = build(ROOT,llm=complete,selection='example',trial=trial_uuid(),config={'LOG_CONTENT':True})
     workflow.services.update(emissions=EmissionBoundary(ContentPolicy(True)),
         content_policy=ContentPolicy.from_config(resolved) if authority else None,
         plain_io_fields={'first_draft':{'input':['user_input'],'output':['final_output']}})

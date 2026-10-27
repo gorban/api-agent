@@ -68,6 +68,23 @@ def test_terminal_without_inspection_reports_status(cancelled, persisted):
     assert len(lines) == 2
 
 
+@pytest.mark.parametrize('status', ['passed', 'failed', 'skipped'])
+def test_terminal_reporting_skip_preserves_actual_test_outcome(status):
+    recorded = result(persisted=False)
+    recorded.reporting_skipped = True
+    recorded.execution = replace(recorded.execution, exit_code=0 if status == 'passed' else 1,
+        tests=(replace(recorded.execution.tests[0], status=status),))
+    lines = []
+
+    assert finish_terminal_inspection(recorded, lines.append)
+
+    from api_agent.testing.contracts import format_test_summary
+    assert lines[0] == format_test_summary('integration', recorded.execution.tests)
+    assert lines[1] == 'Allure publication: SKIPPED'
+    assert recorded.execution.tests[0].status == status
+    assert recorded.execution.exit_code == (0 if status == 'passed' else 1)
+
+
 def test_terminal_keyboard_interrupt_synchronously_closes_own_group():
     item = handle(pending=True)
     item.wait_closed = Mock(side_effect=KeyboardInterrupt)

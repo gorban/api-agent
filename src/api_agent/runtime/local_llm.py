@@ -12,7 +12,7 @@ from uuid import uuid4
 from api_agent.auth.bindings import bind_role_credentials
 from api_agent.auth.managers import registry_for_owner
 from api_agent.providers.cache_policy import configured_request, validate_provider_request
-from api_agent.providers.contracts import SetupPrerequisiteError, ProviderAccessError
+from api_agent.providers.contracts import ConfigurationRequiredError, SetupPrerequisiteError, ProviderAccessError
 from api_agent.providers.control import CleanupPendingError, OperationContext
 from api_agent.providers.costs import quote_cost, validate_quote
 from api_agent.providers.inference import async_request_to_wire, usage_to_wire
@@ -121,7 +121,7 @@ class LocalLLM(_Owner):
         if not location:
             raise SetupPrerequisiteError('Select LLM_PROVIDER before requesting LLM setup.')
         services = {'owner_root': self.owner_root, 'emissions': self.emissions,
-                    'browser_inspection': self.inspection}
+                    'browser_inspection': self.inspection, 'interaction': self.interaction_owner}
         try:
             self.provider = await self.loader(location, deepcopy(dict(self.config)), services, kind='llm')
         except BaseException as error:
@@ -268,6 +268,13 @@ class LocalLLM(_Owner):
         try:
             async with component_timeout('Local LLM request', context.remaining() or None):
                 return await context.run(tracked())
+        except ConfigurationRequiredError as error:
+            if self.on_status is not None:
+                try:
+                    self.on_status(MappingProxyType({'event': 'configuration-required', 'fields': error.fields}))
+                except BaseException:
+                    pass
+            raise
         finally:
             self._calls.discard(task)
             self._request_context.reset(token)

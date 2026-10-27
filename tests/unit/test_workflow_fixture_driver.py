@@ -431,10 +431,10 @@ def test_mandatory_integration_validates_before_provider_lookup(monkeypatch):
 
     def lookup(name):
         events.append(name)
-        return 'synthetic'
+        return SimpleNamespace(describe=lambda: (SimpleNamespace(selected_llm='synthetic', family=None, version=None),))
 
-    function(SimpleNamespace(getfixturevalue=lookup), SimpleNamespace(values={}))
-    assert events == ['preflight', 'llm_selection', 'selection admitted', 'llm_provider', 'coverage']
+    function(SimpleNamespace(getfixturevalue=lookup), SimpleNamespace(values={'LLM_WORKFLOW_TEST_MODEL': 'synthetic'}))
+    assert events == ['preflight', 'selection admitted', 'llm_provider', 'coverage']
 
 
 def test_reported_different_model_rejects_graph_measurement(monkeypatch):
@@ -587,3 +587,49 @@ def test_presentation_parser_change_invalidates_saved_sampling(monkeypatch):
     assert changed['sources'][source] != report['sources'][source]
     with pytest.raises(ValueError, match='stale'):
         validate_calibration(report, DECLARED, changed)
+
+
+def test_provider_calibration_schema_rejected_before_use(monkeypatch):
+    from api_agent.llm_providers.bedrock import factory
+    original = driver.json.loads
+    monkeypatch.setattr(driver.json, 'loads', lambda text: dict(original(text), schema=99))
+    config = {'LLM_PROVIDER': str(Path(factory.__file__)) + ':factory'}
+    with pytest.raises(ValueError, match='Unsupported provider calibration declaration'):
+        driver.calibration_profile(config)
+
+
+def test_provider_fingerprint_requires_effective_region():
+    from api_agent.llm_providers.bedrock import factory
+    config = {'LLM_PROVIDER': str(Path(factory.__file__)) + ':factory', 'BEDROCK_API_MODE': 'completions',
+              'LLM_WORKFLOW_TEST_MODEL': 'zai.glm-5', 'BEDROCK_REGION': ''}
+    with pytest.raises(ValueError, match='explicit inference region'):
+        driver.fingerprint('zai.glm-5', config)
+
+
+def test_empty_workflow_choice_is_a_prerequisite_not_calibration_offer():
+    from api_agent.llm_providers.gpt import factory
+    config = {'LLM_PROVIDER': str(Path(factory.__file__)) + ':factory', 'LLM_WORKFLOW_TEST_MODEL': ''}
+    with pytest.raises(ValueError, match='select a supported model/API profile before calibration'):
+        driver.preflight_baselines(config)
+
+
+def test_workflow_profile_enforces_declared_strict_output_bound(monkeypatch):
+    from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent
+    calls = []
+    request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('fixture'),)),)))
+    async def arun(values, **kwargs):
+        return {'completed': True}
+    def build(root, **kwargs):
+        async def execute(values, **call_kwargs):
+            await kwargs['llm'](request)
+            return await arun(values, **call_kwargs)
+        return SimpleNamespace(arun=execute)
+    def complete(observed):
+        calls.append(observed)
+        return SimpleNamespace(actual_model='synthetic')
+    monkeypatch.setattr(driver, 'provider_identity', lambda *args, **kwargs: {})
+    monkeypatch.setattr(driver, 'calibration_profile', lambda *args, **kwargs: {'max_output_tokens': 1024})
+    monkeypatch.setattr(driver, 'build', build)
+    driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', 1, {})
+    assert calls[0].payload.generation.max_output_tokens == 1024
+    assert request.payload.generation.max_output_tokens is None

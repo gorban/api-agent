@@ -1,3 +1,4 @@
+from test_workflow_trial_decisions import trial_uuid
 from api_agent.telemetry.privacy import ContentPolicy
 import json
 from hashlib import sha256
@@ -134,7 +135,7 @@ def test_runtime_emits_implicit_entry_and_exit_edges():
         })),)))
 
     root = Path(__file__).resolve().parents[2]
-    workflow = build(root, llm=complete, selection='example', trial='synthetic')
+    workflow = build(root, llm=complete, selection='example', trial=trial_uuid())
     journal = WorkflowJournal(workflow.definition)
     workflow.services['journal'] = journal
     asyncio.run(workflow.arun({'user_input': 'hello'}))
@@ -322,7 +323,7 @@ def test_actual_inference_call_id_joins_node_visit(monkeypatch, tmp_path, observ
 
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '0')
     workflow = build(Path(__file__).resolve().parents[2], llm=complete,
-                     selection='example', trial='synthetic')
+                     selection='example', trial=trial_uuid())
     rows = []
     if observe:
         from api_agent.workflows.observations import WorkflowObservationFactory

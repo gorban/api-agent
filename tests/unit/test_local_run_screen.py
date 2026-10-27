@@ -1794,7 +1794,7 @@ def test_two_column_menus_render_and_scroll_unbounded_choices(reconciling_screen
             await pilot.press('left', 'up')
             assert app.focused is buttons[0]
             buttons[-1].focus()
-            await pilot.pause(0.5)
+            await asyncio.wait_for(pilot.wait_for_scheduled_animations(), timeout=2)
             pane = screen.query_one('#local-choices')
             assert pane.scroll_y > 0
             assert buttons[-1].region.y >= pane.content_region.y

@@ -1,4 +1,5 @@
 """A following route requires successful completion of its source scope."""
+from test_workflow_trial_decisions import trial_uuid
 import asyncio
 from copy import deepcopy
 from hashlib import sha256
@@ -101,7 +102,7 @@ def test_guard_rejection_retries_passed_children_and_completes(monkeypatch):
                  'ready': tail['attempt'] > 1, 'final_output': 'hello'}
         return LLMResult(Message('assistant', (TextContent(json.dumps(draft)),)))
 
-    workflow = build_contrived(ROOT, llm=complete, selection='controlled', trial='local')
+    workflow = build_contrived(ROOT, llm=complete, selection='controlled', trial=trial_uuid(first_ready=False))
     journal = WorkflowJournal(workflow.definition)
     workflow.services['journal'] = journal
 
@@ -119,10 +120,11 @@ def test_guard_exhaustion_keeps_failed_component_and_graph_partial(monkeypatch):
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '0')
 
     async def complete(request):
-        draft = {'original_input': 'hello', 'route': 'skip', 'ready': False, 'final_output': 'hello'}
+        metadata = json.loads(request.payload.messages[-1].content[0].text)
+        draft = {'original_input': 'hello', 'route': 'skip', 'ready': metadata['decisions']['ready'], 'final_output': 'wrong'}
         return LLMResult(Message('assistant', (TextContent(json.dumps(draft)),)))
 
-    workflow = build_contrived(ROOT, llm=complete, selection='controlled', trial='local')
+    workflow = build_contrived(ROOT, llm=complete, selection='controlled', trial=trial_uuid())
     journal = WorkflowJournal(workflow.definition)
     workflow.services['journal'] = journal
 

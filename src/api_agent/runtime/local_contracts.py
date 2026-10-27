@@ -34,3 +34,4 @@ class LocalEvent:
     text: str = ''
     sequence: int = 0
     diagnostic: Mapping | None = None
+    required_fields: tuple[str, ...] = ()

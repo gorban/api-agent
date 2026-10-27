@@ -46,7 +46,8 @@ def test_explicit_turn_is_visible_to_nested_journals_and_usage(
             record()
             return LLMResult(Message('assistant', (TextContent(json.dumps(dict(
                 original_input='x', route='skip', ready=True, final_output='x'))),)))
-        workflow = build(Path(__file__).resolve().parents[2], llm=complete, selection='example', trial='synthetic')
+        from test_workflow_trial_decisions import trial_uuid
+        workflow = build(Path(__file__).resolve().parents[2], llm=complete, selection='example', trial=trial_uuid())
         definition = workflow.definition
         journal = WorkflowJournal(definition, turn_id=EXPLICIT)
         workflow.services['journal'] = journal

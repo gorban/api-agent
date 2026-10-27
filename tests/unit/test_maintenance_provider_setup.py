@@ -27,4 +27,4 @@ def test_requirements_owner_root_is_optional_and_snapshot_fixture_supplies_it(tm
     from api_agent.testing.provider_setup import IntegrationRequirements, integration_config
     assert IntegrationRequirements({}).owner_root is None
     monkeypatch.setattr('api_agent.testing.provider_setup._read_snapshot', lambda: {'config': {}, 'owner_root': str(tmp_path)})
-    assert integration_config.__wrapped__().owner_root == str(tmp_path)
+    assert integration_config.__wrapped__(None, lambda *args: None).owner_root == str(tmp_path)

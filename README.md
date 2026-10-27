@@ -56,7 +56,9 @@ arbitrary child output, which may contain credentials even with `LOG_CONTENT=Tru
 
 - [Settings and TUI controls](docs/workbench.md)
 - [Credentials and LLM connections](docs/connections.md)
+- [Included Bedrock provider and conditional AWS setup](src/api_agent/llm_providers/bedrock/README.md)
 - [Resource packs, providers and named tools](docs/resource-packs.md#workflow-selected-named-tools)
+- [Provider-owned integration test profiles](docs/integration_test_profiles.md)
 - [Running, debugging and testing](docs/development.md)
 - [Workflow diagrams and browser inspection](docs/workflow_viewer.md)
 - [Bundled API demonstration](docs/api_demo.md)
@@ -126,7 +128,10 @@ See [test controls and automation](docs/development.md#testing).
 ### For full coverage
 
 Run all unit tests without selectors; require every test to pass and 100% line
-and branch coverage. Some integrations also need every valid configuration:
+and branch coverage. Run integrations under the documented qualified settings
+needed to cover every applicable test. Providers can require different settings
+for different tests; coverage does not require every possible setting combination.
+For GPT, the valid discovery configurations are:
 
 - `GPT_API_MODE`
   - `responses`
@@ -136,7 +141,7 @@ and branch coverage. Some integrations also need every valid configuration:
   - `subscription`
     - Subscription not supported with `GPT_API_MODE=completions`.
 
-Run the full integration suite once with your valid effective settings:
+When one configuration qualifies the whole suite, run it once with those settings:
 ```bash
 ./launch.py --tui-mode integration --no-std-in --start
 ```
@@ -150,7 +155,13 @@ runs for GPT. For example, when this differs from your first run:
 ```
 
 Discovery checks remote credential acceptance and catalog access without inference.
-API-specific request tests also need coverage under each applicable mode.
+API-specific request tests also need coverage under each applicable mode. Repeat
+affected tests after changing effective provider settings. A passing configured
+run does not qualify other settings. The included Bedrock provider supplies
+[operation-scoped test profiles](docs/integration_test_profiles.md): ordinary
+Responses calls and structured Completions workflows use separate defaults.
+The application retains its own settings; configure the provider and supported
+authentication once rather than switching API/model settings between tests.
 
 ## Markdown workflow PoC
 

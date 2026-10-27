@@ -32,8 +32,8 @@ help = "Component deadline in seconds across all passes, clipped to the graph de
 [fields.LLM_ALLOWED_MODELS]
 type = "str"
 validation = "regex"
-default = '(?:openai/)?gpt-6(?:\.\d+)*-(?:luna|terra|sol)(?:-\d{4}-\d{2}-\d{2})?'
-help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows GPT-6 Luna, Terra and Sol, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
+default = '.*'
+help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. The selected provider supplies its default model families. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
 
 [fields.LLM_DEFAULT_MODEL]
 cost_affecting = true
@@ -461,7 +461,7 @@ COLLECT_ONLY = false
 [fields.LLM_PROVIDER]
 type = "str"
 review_optional = true
-help = "Replaceable LLMProvider version-1 factory (file.py:factory). The bundled GPT provider supports lazy subscription/API-key setup, authenticated catalog discovery and text completion. Any adapter implementing that interface may replace it."
+help = "Replaceable LLMProvider version-1 factory (file.py:factory). The default is bundled GPT at src/api_agent/llm_providers/gpt/factory.py:factory (resolved to its installed absolute path). Bundled Bedrock is an alternative: src/api_agent/llm_providers/bedrock/factory.py:factory. Any adapter implementing that interface may replace it."
 
 [fields.LLM_CREDENTIAL_ROLE]
 type = "str"
@@ -516,3 +516,121 @@ type = "int"
 validation = "positive"
 default = 7
 help = "Days of compatible finalized integration/E2E accounting history used for advance cost predictions and subscription calibration. Cached history appears immediately; background synchronization never starts services or login. Older records remain preserved but are outside this estimation window."
+
+[fields.LLM_WORKFLOW_TEST_MODEL]
+type = "str"
+default = ""
+review_optional = true
+help = "Exact model ID for workflow integration and calibration; empty requires provider qualification."
+[fields.LLM_WORKFLOW_TEST_MODEL.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_REASONING_TEST_MODEL]
+type = "str"
+default = ""
+review_optional = true
+help = "Exact model ID for the three-pair reasoning contrast using the configured effort pair; empty requires an explicit qualified model."
+[fields.LLM_REASONING_TEST_MODEL.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_STUDIO_TEST_DEFAULT_MODEL]
+type = "str"
+default = ""
+review_optional = true
+help = "Exact initial Studio selection-test model ID; empty requires explicit qualification."
+[fields.LLM_STUDIO_TEST_DEFAULT_MODEL.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_STUDIO_TEST_SELECTED_MODEL]
+type = "str"
+default = ""
+review_optional = true
+help = "Exact alternate Studio selection-test model ID; must differ from the initial model."
+[fields.LLM_STUDIO_TEST_SELECTED_MODEL.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_STUDIO_TEST_DEFAULT_EFFORT]
+type = "str"
+default = ""
+review_optional = true
+help = "Initial Studio selection-test effort; empty uses the provider default."
+enum = ["", "off", "low", "medium", "high"]
+[fields.LLM_STUDIO_TEST_DEFAULT_EFFORT.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_STUDIO_TEST_SELECTED_EFFORT]
+type = "str"
+default = ""
+review_optional = true
+help = "Alternate Studio selection-test effort; must differ from the initial effort."
+enum = ["", "off", "low", "medium", "high"]
+[fields.LLM_STUDIO_TEST_SELECTED_EFFORT.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_REASONING_TEST_LOW_EFFORT]
+type = "str"
+default = ""
+enum = ["", "off", "low", "medium", "high"]
+review_optional = true
+help = "Explicit lower-effort control for the matched three-pair contrast; must be qualified by the selected model catalog."
+[fields.LLM_REASONING_TEST_LOW_EFFORT.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_REASONING_TEST_HIGH_EFFORT]
+type = "str"
+default = ""
+enum = ["", "off", "low", "medium", "high"]
+review_optional = true
+help = "Explicit higher-effort control for the matched three-pair contrast; must be qualified by the selected model catalog."
+[fields.LLM_REASONING_TEST_HIGH_EFFORT.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_REASONING_TEST_TOKEN_REPORTING]
+type = "bool"
+default = false
+review_optional = true
+help = "Whether the selected provider/API route is qualified to report reasoning-token measurements for the contrast test. This does not establish a behavioral contrast. False rejects before authentication or inference."
+[fields.LLM_REASONING_TEST_TOKEN_REPORTING.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_REASONING_TEST_MAX_OUTPUT_TOKENS]
+type = "int"
+allow_empty = true
+validation = "positive"
+review_optional = true
+help = "Optional output-token cap from 1 to 16384 for each of the six matched reasoning contrast requests; empty preserves the application/provider default. It is sent through the application API and checked against advertised model limits before inference."
+[fields.LLM_REASONING_TEST_MAX_OUTPUT_TOKENS.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_REASONING_TEST_TIMEOUT_SECONDS]
+type = "float"
+default = 150
+validation = "positive"
+review_optional = true
+help = "Positive finite per-request reasoning contrast budget shared by the application, component and HTTP client."
+[fields.LLM_REASONING_TEST_TIMEOUT_SECONDS.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_SETUP_REQUEST_TIMEOUT_SECONDS]
+type = "float"
+default = 300
+validation = "positive"
+help = "Positive finite shared setup request budget, at most 3600 seconds; shorter enclosing deadlines remain authoritative. Applies to backend and worker transport leases."
+
+[fields.WORKFLOW_LLM_TIMEOUT_SECONDS]
+type = "float"
+default = 120
+validation = "positive"
+acknowledge_default = false
+help = "Per-call workflow deadline; the component and graph remaining budgets may shorten it."
+
+[fields.LLM_WORKFLOW_TEST_MAX_GRAPHS]
+cost_affecting = true
+type = "int"
+default = 60
+validation = "positive"
+review_optional = true
+acknowledge_default = false
+help = "Maximum normal workflow coverage graphs (integer 1..120), including the fixed four-graph margin above the recomputed statistical minimum. Calibration pilots remain limited to 60 observations. This budget never lowers confidence, target coverage, or structural assertions; unsupported values fail before provider setup."
+[fields.LLM_WORKFLOW_TEST_MAX_GRAPHS.applies_when]
+TUI_MODE = "integration"
