@@ -44,7 +44,7 @@ independent review before selecting live integration tests. Live tests require
 the standard integration provider/authentication configuration documented by the
 repository and may incur provider usage.
 
-## Explicit calibration and coverage
+## Deterministic workflow coverage
 
 For standalone use, start `python launch.py --tui-mode integration` from this
 checkout. Its bundled `demo/` is selected automatically; save personal settings
@@ -63,10 +63,9 @@ An external resource pack may instead own personal configuration and reports:
 start `python launch.py --resource-pack-dir <external-pack>`. In either case,
 select the integration test identifiers below and use Continue only after the
 gates above pass. These tests explicitly load the permanent contrived fixture,
-independently of the selected pack's main workflow. Coverage uses
-the reviewed, checked-in model-specific baseline. Calibration is no longer an integration test or a local-file prerequisite. All collected workflow integration tests should run normally; there is no calibration skip or deselection rule.
-
-Refresh bounds explicitly with the [maintenance procedure](workflow_calibration.md) when models, executable prompts, inference semantics or relevant dependencies change. It explains the bounded manual command, immutable candidate review, source/settings fingerprints and failure evidence. Never copy a budget from another model or silently update fingerprints after a source change.
+independently of the selected pack's main workflow. Normal coverage requires no
+statistical baseline, calibration refresh, skip or deselection. Historical pilots
+and the explicit [maintenance procedure](workflow_calibration.md) remain separate.
 
 Select normal coverage:
 
@@ -74,24 +73,27 @@ Select normal coverage:
 tests/integration/test_workflow.py::test_workflow_node_coverage
 ```
 
-Coverage first validates freshness, full declared-node membership and recomputes
-all probability claims from route-consistent records. Fingerprints bind the canonical bundled GPT factory identity, auth/backend identity,
-effective settings, sampling driver/input, request/result transport and relevant
-installed dependencies. Replacement adapters with the same model name cannot
-reuse these bounds. Invalid evidence fails before graph inference; configured
-factory/model/settings checks precede provider lookup where possible.
-Coverage stops immediately after every declared node succeeds, within its
-reviewed model-specific cap. Sixty graphs is the operating ceiling, not the
-budget for every normal coverage run. A defect or exhausted cap fails the test.
+Coverage draws fresh canonical version-4 UUIDs and uses the native fixture's
+route/readiness decoder to discard combinations already exercised. It never
+edits UUID bits. The ten reachable cases are two `skip` cases and four readiness
+combinations for each of `next_a` and `next_b`. Rejected duplicate draws make no
+LLM call. Each accepted UUID reaches the real graph unchanged, including its
+prompts; the actual structured response, nodes, edges and required correction
+attempts must pass validation before that case counts. Normal execution needs at
+least 27 real completions; legitimate format repairs remain visible and costed.
 
-The one-sided exact binomial lower bounds use a Bonferroni allocation totaling
-0.05. A union bound targets at most 0.001 probability of missing any node,
-conditional on independent graph trials with unchanged settings. This does not
-assert an overall live-test pass rate or guarantee model randomness.
+`LLM_WORKFLOW_TEST_TIMEOUT_SECONDS` defaults to 600 seconds and covers provider
+setup, catalog access, UUID selection and all ten graphs. Shorter parent deadlines
+remain authoritative; existing owned cleanup drains separately. Provider profiles
+may set the optional `LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS` cap. Application settings,
+credential identity and ordinary model admission retain their existing behavior.
 
-Structural event evidence records attempts, guards, nodes, durations and routes;
-the recording seam excludes arbitrary producer content. No live acceptance is
-claimed by the deterministic unit suite.
+Structural evidence records actual attempts, guards, nodes, durations and routes.
+Exact captured-resource hashes and owning commits remain in GRAPH journals for
+historical joins. Additive declaration/settings digests are scoped diagnostics;
+they do not replace exact source admission or prove arbitrary native/provider
+behavior equivalent. See [identity requirements](prds/implementation_plan_b1c3a.md).
+No live acceptance is established by deterministic unit tests alone.
 
 ## Controlled preference proof
 
@@ -127,15 +129,15 @@ deadline in both layouts.
 A component deadline covers all of its passes. Every child budget is clipped to
 the earliest enclosing deadline. The producer checks its LLM budget after the
 call returns, so a provider swallowing cancellation cannot produce success after
-its own timeout. Maintenance and coverage use the same resolved settings and include
-them in reviewed calibration fingerprints. Unit tests cover typed defaults/environment/CLI,
+its own timeout. Coverage records the resolved workflow budget identity; legacy
+maintenance includes resolved settings in its historical sampling fingerprint. Unit tests cover typed defaults/environment/CLI,
 linked numeric declarations, nested clipping, invalid values before inference and
 swallowed cancellation; removing the post-call deadline check fails its test.
 
 Calibration fingerprints also record the running Python version and installed
 `langgraph`, `langchain-core`, `jsonschema`, `markdown-it-py` and `httpx` versions.
-Dependency upgrades therefore require a fresh pilot even if source files are
-unchanged. These are public package versions, without environment paths.
+An explicit legacy calibration refresh binds its current dependencies; normal
+coverage does not require a pilot after dependency upgrades. These are public package versions, without environment paths.
 
 ## Installed declaration check
 

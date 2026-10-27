@@ -806,15 +806,26 @@ class StatefulWorkflow:
         journal_turn = getattr(selected_journal, 'turn_id', None)
         if turn_id is not None and journal_turn is not None and turn_id != journal_turn:
             raise ValueError('explicit turn identity disagrees with the active journal')
+        from .identity import workflow_identity
+        if selected_journal is not None:
+            identity = workflow_identity(self.definition, timeouts=self.timeouts, component_passes={})
+            if (getattr(selected_journal, 'semantic_identity', None) is not None
+                    and selected_journal.semantic_identity != identity):
+                raise ValueError("Workflow journal semantic identity differs from effective budgets")
         selected_context = current_execution_context()
         if selected_journal is not None:
             selected_context = selected_journal.admit_execution_context(selected_context)
+            admit_identity = getattr(selected_journal, 'admit_semantic_identity', None)
+            if admit_identity is not None:
+                admit_identity(identity)
         recorded = os.environ.get('API_AGENT_ALLURE_REPORTING') == '1'
         if recorded:
             proof = selected_services.get('packaged_proof')
             source_manifest = _source_manifest(self.definition, proof)
             from .journal import WorkflowJournal
             journal = WorkflowJournal(self.definition,
+                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
+                                                    component_passes={}),
                 log_content=self.config.get('LOG_CONTENT') is True,
                 source_manifest=source_manifest,
                 boundary=selected_services.get('emissions'),

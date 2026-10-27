@@ -49,3 +49,9 @@ physical installed owner. Without the filesystem-path admission guard, both case
 raise TypeError before classifying ownership. Existing physical inventory and
 committed-source checks remain unchanged. Renewed regression, independent/external
 review, exact unit coverage, package and public-boundary checks pass.
+
+## Scoped identity follow-through
+
+- [ ] Add [executable declaration and resolved-setting identities](implementation_plan_b1c3a.md)
+  alongside exact source provenance. These identities do not depend on workflow
+  calibration and do not replace committed-document or native-admission checks.

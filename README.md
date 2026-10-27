@@ -167,9 +167,10 @@ authentication once rather than switching API/model settings between tests.
 
 The [workflow guide](docs/workflow_poc.md) covers the restricted Markdown grammar,
 inference-free validation and the permanent mandatory node-coverage fixture.
-Model-specific bounds are packaged with the fixture; [calibration refresh](docs/workflow_calibration.md)
-is explicit maintenance outside normal test collection. Normal coverage needs no
-local pilot file and rejects unsupported provider/model/settings without substitution.
+Normal coverage filters fresh UUIDs before inference to exercise all ten reachable
+route/readiness combinations, with real responses and retries under one test deadline.
+It needs no calibration baseline; [older statistical maintenance](docs/workflow_calibration.md)
+remains separate. Unsupported provider/model/settings fail without substitution.
 The selected [API demonstration](docs/api_demo.md) uses its own declared flow;
 the root flow remains the small one-call chat example.
 

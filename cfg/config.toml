@@ -637,12 +637,37 @@ acknowledge_default = false
 help = "Per-call workflow deadline; the component and graph remaining budgets may shorten it."
 
 [fields.LLM_WORKFLOW_TEST_MAX_GRAPHS]
-cost_affecting = true
+cost_affecting = false
 type = "int"
 default = 60
 validation = "positive"
 review_optional = true
 acknowledge_default = false
-help = "Maximum normal workflow coverage graphs (integer 1..120), including the fixed four-graph margin above the recomputed statistical minimum. Calibration pilots remain limited to 60 observations. This budget never lowers confidence, target coverage, or structural assertions; unsupported values fail before provider setup."
+help = "Legacy explicit calibration operating ceiling (integer 1..120). Normal workflow coverage executes its ten reachable cases under the whole-test timeout and does not use this statistical budget. Calibration pilots remain limited to 60 observations."
 [fields.LLM_WORKFLOW_TEST_MAX_GRAPHS.applies_when]
+TUI_MODE = "integration"
+
+
+[fields.LLM_WORKFLOW_TEST_TIMEOUT_SECONDS]
+type = "float"
+default = 600
+validation = "positive"
+review_optional = true
+acknowledge_default = false
+help = "Whole workflow coverage test deadline, including provider setup, catalog, UUID selection and all ten real graphs. Existing owned cleanup is drained separately."
+
+[fields.LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS]
+type = "int"
+review_optional = true
+allow_empty = true
+default = ""
+validation = "positive"
+cost_affecting = true
+acknowledge_default = false
+help = "Optional per-call output token cap for the workflow coverage test. Empty preserves the provider's generation default; provider test profiles may supply a cap. Explicit test settings remain authoritative."
+
+[fields.LLM_WORKFLOW_TEST_TIMEOUT_SECONDS.applies_when]
+TUI_MODE = "integration"
+
+[fields.LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS.applies_when]
 TUI_MODE = "integration"

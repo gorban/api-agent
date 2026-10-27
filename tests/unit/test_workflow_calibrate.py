@@ -709,3 +709,19 @@ def test_maintenance_configuration_rejects_explicit_unsupported_ceiling_before_s
     factory = str(ROOT / f'src/api_agent/llm_providers/{provider}/factory.py') + ':factory'
     with pytest.raises(ValueError, match='LLM_WORKFLOW_TEST_MAX_GRAPHS'):
         calibrate.configuration(ROOT, ['--llm-provider=' + factory, '--llm-workflow-test-max-graphs=' + value])
+
+
+@pytest.mark.parametrize('legacy_profile,expected', [(None, None), ({'max_output_tokens': 1024}, 1024)])
+def test_explicit_maintenance_retains_legacy_cap_not_normal_test_override(setup, monkeypatch, legacy_profile, expected):
+    setup.result.values['LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'] = 2048
+    monkeypatch.setattr(calibrate, 'calibration_profile', lambda *args, **kwargs: legacy_profile)
+    seen = []
+    def graph(provider, selection, trial, config, **kwargs):
+        seen.append(config.get('LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'))
+        raise RuntimeError('stop after verifying maintenance request cap')
+    monkeypatch.setattr(calibrate, 'run_graph', graph)
+    with pytest.raises(RuntimeError, match='maintenance request cap'):
+        calibrate.pilot(setup.context, setup.result, setup.destination, 60, output=lambda text: None)
+    assert seen == [expected]
+    assert setup.result.values['LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'] == 2048
+    assert not setup.destination.exists()

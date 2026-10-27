@@ -284,3 +284,21 @@ def test_large_selection_uses_file_instead_of_os_argument_budget(tmp_path, monke
     result = run_unit_tests(ctx, tests)
     assert len(result.tests) == len(nodes)
     assert len(launches) == 1 and not launches[0].exists()
+
+
+@pytest.mark.parametrize('installed,base_name,owner_name', [
+    (False, 'same', 'same'), (True, 'api_agent', 'external'),
+    (True, 'api_agent', 'api-agent'), (True, 'api_agent', 'api_agent')])
+def test_unit_executor_uses_collected_labels_for_each_actual_child_cwd(tmp_path, monkeypatch, installed, base_name, owner_name):
+    from api_agent.testing import collection
+    def build(path):
+        return fixture_repo(path, test='from pathlib import Path\ndef test_cwd():\n    assert Path.cwd() == Path(' + repr(str(path)) + ')\n')
+    base = build(tmp_path / 'base' / base_name)
+    owner = build(tmp_path / 'owner' / owner_name)
+    monkeypatch.setattr(collection, '_installed_base_identity', lambda root: installed and root == base)
+    ctx = context(base, owner)
+    tests = collect_tests(ctx, 'unit')
+    assert len({test.id for test in tests}) == 2 and all(test.root is None for test in tests)
+    result = run_unit_tests.__wrapped__(ctx, tests, require_full_coverage=False)
+    assert result.exit_code == 0
+    assert len(result.tests) == 2 and all(row.status == 'passed' for row in result.tests)

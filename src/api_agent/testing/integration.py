@@ -25,7 +25,7 @@ import threading
 import time
 from uuid import uuid4
 
-from .collection import CollectionError, collect_tests
+from .collection import repository_label, CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
 from .diagnostics import format_exception
 from .processes import finalize
@@ -263,7 +263,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             stage = 'Integration requirements validation'
             plan_integration_requirements(tests).validate(context, config or {})
             from .test_profiles import resolve_test_profiles
-            test_profiles = (resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields)
+            test_profiles = (resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields, context=context)
                              if resolved_test_profiles is None and config is not None else
                              deepcopy(resolved_test_profiles or {}))
             if config is not None:
@@ -277,9 +277,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     row['config'] = cost_config(context, values)
             stage = 'Integration runner configuration'
             base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
-            roots = {base.name: base, owner.name: owner}
-            if base != owner and base.name == owner.name:
-                roots = {'base': base, 'pack': owner}
+            roots = {repository_label(context, root): root for root in dict.fromkeys((base, owner))}
             env = os.environ.copy()
             if config is not None and config.get('SKIP_ALLURE_REPORTING') is True:
                 env['API_AGENT_ALLURE_REPORTING'] = '0'

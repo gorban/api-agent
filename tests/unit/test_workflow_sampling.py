@@ -176,9 +176,8 @@ def test_measurements_derive_routes_and_hits():
 
 @pytest.fixture
 def workflow_driver():
-    import runpy
-    from pathlib import Path
-    return runpy.run_path(str(Path(__file__).resolve().parents[2]/'tests/integration/test_workflow.py'))
+    from api_agent.workflows import fixture_driver
+    return vars(fixture_driver)
 
 
 @pytest.mark.parametrize('setting,value', [('GPT_AUTH_MODE','api_key'),('GPT_BASE_URL','https://example.invalid/v1'),('GPT_API_MODE','completions'),('LLM_CACHE_POLICY','off')])

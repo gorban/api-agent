@@ -4,10 +4,10 @@ import re
 from api_agent.testing.test_profiles import SHARED_KEYS, resolve_test_profiles
 
 
-def profile_rows(tests, result, schema, owner_root):
+def profile_rows(tests, result, schema, owner_root, *, context=None):
     """Keep exact case identity and provenance; never export credential settings."""
     from .app import display_configuration
-    profiles = resolve_test_profiles(tests, result.values, owner_root=owner_root, fields=result.fields)
+    profiles = resolve_test_profiles(tests, result.values, owner_root=owner_root, fields=result.fields, context=context)
     rows = []
     for test in tests:
         profile = profiles[test.id]
@@ -29,7 +29,7 @@ def profile_cost_configs(tests, result, context):
     """Fingerprint each distinct effective configuration once per picker build."""
     from api_agent.testing.cost_context import cost_config
     profiles = resolve_test_profiles(tests, result.values, owner_root=context.owner_root,
-                                     fields=getattr(result, 'fields', None))
+                                     fields=getattr(result, 'fields', None), context=context)
     groups, output = [], {}
     for test in tests:
         values = profiles[test.id]['config']
@@ -67,7 +67,7 @@ def selected_review(session, tests):
         factory, _ = provider_location(location, owner_root=session.context.owner_root)
         source = factory.parent / 'test-profiles.toml'
     before = _profile_revision(source)
-    rows = profile_rows(tests, snapshot.execution, snapshot.schema, session.context.owner_root)
+    rows = profile_rows(tests, snapshot.execution, snapshot.schema, session.context.owner_root, context=session.context)
     review = SelectedReview(snapshot, rows, source, before)
     if not review.sources_current():
         raise ValueError('Configuration sources changed during review')

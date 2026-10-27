@@ -65,11 +65,16 @@ def repository_label(context, root):
     """Use the same repository identity for collection and recording."""
     base, owner, root = (Path(path).resolve() for path in
                          (context.base_root, context.owner_root, root))
-    if root == base and _installed_base_identity(base):
-        return 'api-agent'
-    if base != owner and base.name == owner.name:
-        return 'base' if root == base else 'pack'
-    return root.name
+    raw_collision = base != owner and base.name == owner.name
+    base_label = 'api-agent' if _installed_base_identity(base) else ('base' if raw_collision else base.name)
+    owner_label = 'pack' if raw_collision else owner.name
+    if base != owner and base_label == owner_label:
+        base_label, owner_label = 'base', 'pack'
+    if root == base:
+        return base_label
+    if root == owner:
+        return owner_label
+    return 'pack' if raw_collision else root.name
 
 
 def _installed_base_identity(base):

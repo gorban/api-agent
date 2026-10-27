@@ -196,7 +196,7 @@ def test_stale_settings_reject_before_graph_execution(monkeypatch, setting, valu
     graph = Mock(side_effect=AssertionError('Stale sampling must not execute'))
     monkeypatch.setattr(driver, 'run_graph', graph)
     with pytest.raises(ValueError, match='stale'):
-        driver.node_coverage(object(), 'gpt-6-luna', CONFIG | {setting: value})
+        driver.baseline_limit('gpt-6-luna', CONFIG | {setting: value})
     graph.assert_not_called()
 
 
@@ -310,7 +310,7 @@ def test_schema_acceptance_helper_change_rejects_calibration_before_graph(
     assert current['sources'][key] != report['sources'][key]
     assert current['fingerprint_version'] == report['fingerprint_version'] == 4
     with pytest.raises(ValueError, match='stale'):
-        driver.node_coverage(provider, 'gpt-6-luna', config)
+        driver.baseline_limit('gpt-6-luna', config)
     graph.assert_not_called()
     provider.complete.assert_not_called()
 
@@ -352,7 +352,7 @@ def test_graph_uses_independent_seed_and_publishes_observations(monkeypatch, fai
     else:
         assert driver.run_graph(provider, 'synthetic', 1, CONFIG, observe=streamed.append) == ({'first_draft': {'route': 'skip'}}, {'first_draft'})
     assert len(seeds[0]) == 36
-    assert published == [{'trial': 1, 'events': streamed}]
+    assert published == [{'trial': 1, 'trial_uuid': seeds[0], 'events': streamed}]
     assert len(streamed) == 2
 
 
@@ -368,23 +368,26 @@ def test_graph_observer_is_optional(monkeypatch):
     assert driver.run_graph(object(), 'synthetic', 1, CONFIG) == ({}, {'first_draft'})
 
 
-def test_node_coverage_stops_when_all_targets_hit(monkeypatch):
+def test_node_coverage_stops_when_all_cases_and_actual_targets_hit(monkeypatch):
+    from test_workflow_deterministic_coverage import SEEDS, selected_draws
     calls, published = [], []
-    synthetic_report = synthetic_current_report()
-    monkeypatch.setattr(driver, '_baselines', lambda: [synthetic_report])
+    selected_draws(monkeypatch, SEEDS)
 
     def graph(provider, selection, trial, config, **options):
-        calls.append(trial)
-        route = ('skip', 'next_a', 'next_b')[trial - 1]
+        calls.append(options['trial_uuid'])
+        route = driver.coverage_case(options['trial_uuid'])[0]
         for event in structural_events(trial, route):
             options['observe'](event)
-        return {'first_draft': {'route': route}}, FIRST if trial == 1 else DECLARED
+        return {'first_draft': {'route': route}}, FIRST if route == 'skip' else DECLARED
 
     monkeypatch.setattr(driver, 'run_graph', graph)
     monkeypatch.setattr(driver, 'publish', published.append)
     result = driver.node_coverage(object(), 'gpt-6-luna', CONFIG)
-    assert calls == [1, 2, 3]
-    assert result == {'runs': 3, 'nodes': sorted(DECLARED), 'targets': sorted(TARGETS), 'stopping_reason': 'all_targets_hit'}
+    assert calls == list(SEEDS)
+    assert result['runs'] == 10
+    assert result['nodes'] == sorted(DECLARED)
+    assert result['targets'] == sorted(TARGETS)
+    assert result['stopping_reason'] == 'all_cases_hit'
     assert published[-1] == {'coverage': result}
 
 
@@ -392,8 +395,8 @@ def test_integration_collection_has_only_mandatory_coverage():
     import runpy
     module = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'tests/integration/test_workflow.py'))
     assert [name for name in module if name.startswith('test_')] == ['test_workflow_node_coverage']
-    lookup = Mock(side_effect=AssertionError('Unreviewed config must not request provider fixtures'))
-    with pytest.raises(ValueError, match='[Nn]o reviewed'):
+    lookup = Mock(side_effect=AssertionError('Missing model must not request provider fixtures'))
+    with pytest.raises(ValueError, match='LLM_WORKFLOW_TEST_MODEL'):
         module['test_workflow_node_coverage'](SimpleNamespace(getfixturevalue=lookup), SimpleNamespace(values={}))
     lookup.assert_not_called()
 
@@ -425,8 +428,7 @@ def test_mandatory_integration_validates_before_provider_lookup(monkeypatch):
     module = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'tests/integration/test_workflow.py'))
     events = []
     function = module['test_workflow_node_coverage']
-    monkeypatch.setitem(function.__globals__, 'preflight_baselines', lambda config, **kwargs: events.append('preflight'))
-    monkeypatch.setitem(function.__globals__, 'baseline_limit', lambda selection, config, **kwargs: events.append('selection admitted'))
+    monkeypatch.setitem(function.__globals__, 'coverage_preflight', lambda config, **kwargs: events.append('preflight'))
     monkeypatch.setitem(function.__globals__, 'node_coverage', lambda provider, selection, config, **kwargs: events.append('coverage'))
 
     def lookup(name):
@@ -434,7 +436,7 @@ def test_mandatory_integration_validates_before_provider_lookup(monkeypatch):
         return SimpleNamespace(describe=lambda: (SimpleNamespace(selected_llm='synthetic', family=None, version=None),))
 
     function(SimpleNamespace(getfixturevalue=lookup), SimpleNamespace(values={'LLM_WORKFLOW_TEST_MODEL': 'synthetic'}))
-    assert events == ['preflight', 'selection admitted', 'llm_provider', 'coverage']
+    assert events == ['preflight', 'llm_provider', 'coverage']
 
 
 def test_reported_different_model_rejects_graph_measurement(monkeypatch):
@@ -475,18 +477,22 @@ def test_sampling_import_redirection_changes_fingerprint(tmp_path):
     assert driver.sampling_digest(path) != before
 
 
-def test_wrong_factory_same_model_rejects_before_provider_lookup(tmp_path, monkeypatch):
-    report = synthetic_current_report()
-    monkeypatch.setattr(driver, '_baselines', lambda: [report])
+def test_replacement_factory_needs_no_calibration_before_provider_lookup(tmp_path, monkeypatch):
     import runpy
     other = tmp_path / 'other.py'
-    other.write_text('raise AssertionError("Factory file must never execute during preflight")\n')
+    other.write_text('raise AssertionError("Provider declarations stay owned by normal setup")\n')
     module = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'tests/integration/test_workflow.py'))
-    lookup = Mock(side_effect=AssertionError('Wrong factory must not request provider fixtures'))
-    with pytest.raises(ValueError, match='replacement provider'):
-        module['test_workflow_node_coverage'](SimpleNamespace(getfixturevalue=lookup),
-            SimpleNamespace(values=CONFIG | {'LLM_PROVIDER': str(other) + ':factory'}))
-    lookup.assert_not_called()
+    calls = []
+    monkeypatch.setitem(module['test_workflow_node_coverage'].__globals__, 'node_coverage',
+                        lambda *args, **kwargs: calls.append('coverage'))
+    provider = SimpleNamespace(describe=lambda: (SimpleNamespace(selected_llm='synthetic',
+                                family=None, version=None),))
+    lookup = Mock(return_value=provider)
+    module['test_workflow_node_coverage'](SimpleNamespace(getfixturevalue=lookup),
+        SimpleNamespace(values=CONFIG | {'LLM_PROVIDER': str(other) + ':factory',
+                                       'LLM_WORKFLOW_TEST_MODEL': 'synthetic'}))
+    lookup.assert_called_once_with('llm_provider')
+    assert calls == ['coverage']
 
 
 @pytest.mark.parametrize('value', [None, '', 1])
@@ -628,8 +634,8 @@ def test_workflow_profile_enforces_declared_strict_output_bound(monkeypatch):
         calls.append(observed)
         return SimpleNamespace(actual_model='synthetic')
     monkeypatch.setattr(driver, 'provider_identity', lambda *args, **kwargs: {})
-    monkeypatch.setattr(driver, 'calibration_profile', lambda *args, **kwargs: {'max_output_tokens': 1024})
     monkeypatch.setattr(driver, 'build', build)
-    driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', 1, {})
+    driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', 1,
+                     {'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS': 1024})
     assert calls[0].payload.generation.max_output_tokens == 1024
     assert request.payload.generation.max_output_tokens is None

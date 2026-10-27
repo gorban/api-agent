@@ -212,7 +212,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         config = dict(config, LOG_CONTENT=content_policy.allow_content)
     config['_COST_RATE_CARD'] = freeze_pricing(context, config)
     from .test_profiles import resolve_test_profiles
-    profiles = resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields)
+    profiles = resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields, context=context)
     workflow_admissions = capture_workflow_admissions(context, workflow_admissions,
         tool_plan=tool_plan, profiles=profiles)
     # Derive compatibility after specialization, not from the application snapshot.

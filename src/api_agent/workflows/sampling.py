@@ -185,8 +185,12 @@ def structural_targets(row):
 
 
 def observed_targets(row, *, maximum=PILOT_MAX_GRAPHS):
-    """Validate executed attempts within a pilot or admitted normal-run budget."""
-    maximum = coverage_ceiling(maximum)
+    """Legacy pilot admission retains its statistical operating ceiling."""
+    return _executed_targets(row, maximum=coverage_ceiling(maximum))
+
+
+def _executed_targets(row, *, maximum):
+    """Validate unchanged emitted proof under an explicit ordinal bound."""
     if type(row) is not dict or set(row) != {'trial', 'route', 'nodes', 'attempts', 'proof'}:
         raise ValueError('Invalid pilot measurement schema')
     if type(row['trial']) is not int or not 1 <= row['trial'] <= maximum or type(row['route']) is not str or row['route'] not in ROUTES:
@@ -281,3 +285,32 @@ async def cover(run_graph, required, maximum, observe=None, *, ceiling=DEFAULT_C
                 summary['targets'] = sorted(seen)
             return summary, result
     raise AssertionError('Incomplete coverage at calibrated cap; missing targets: ' + ', '.join(sorted(required - seen)))
+
+
+# Normal coverage is finite control-flow coverage, not a statistical pilot.
+DETERMINISTIC_CASES = frozenset(
+    [('skip', ready, None) for ready in (False, True)] +
+    [(route, first, second) for route in ('next_a', 'next_b')
+     for first in (False, True) for second in (False, True)])
+
+
+def coverage_case(trial_uuid):
+    """Decode an unmodified fresh draw using the native fixture's decisions."""
+    from .contrived import trial_decisions
+    from .run_context import canonical_uuid
+    canonical_uuid(trial_uuid)
+    first = trial_decisions(trial_uuid, 'first')
+    second = None if first['route'] == 'skip' else trial_decisions(trial_uuid, 'second')['ready']
+    return first['route'], first['ready'], second
+
+
+def case_targets(row, case):
+    """Require actual structural proof before accepting one selected case."""
+    targets = _executed_targets(row, maximum=len(DETERMINISTIC_CASES))
+    if row['route'] != case[0]:
+        raise AssertionError('Executed route differs from the selected UUID case')
+    for component, ready in zip(('first', 'second'), case[1:]):
+        if ready is False and not any(item['component'] == component and item['attempt'] > 1
+                                      for item in row['attempts']):
+            raise AssertionError('Selected not-ready component did not execute its correction')
+    return targets

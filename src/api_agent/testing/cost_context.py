@@ -60,13 +60,18 @@ def cost_config(context, config):
                 if field.enum and not _credential_key(name) and config.get(name) is not None:
                     selected[name] = sha256(json.dumps(config[name], sort_keys=True, allow_nan=False).encode()).hexdigest()
                 continue
-            if _credential_key(name) or field.type == 'jsonobject':
+            workflow_cap = (name == 'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'
+                            and field.type == 'int' and field.validation == 'positive'
+                            and field.allow_empty is True and field.sensitive is False)
+            if field.sensitive or (_credential_key(name) and not workflow_cap) or field.type == 'jsonobject':
                 return result
             if not _matches(field.applies_when, config):
                 selected[name] = sha256(b'inactive').hexdigest()
                 continue
             value = config.get(name)
-            if value is None:
+            if workflow_cap and value is not None and (type(value) is not int or not 1 <= value <= 1048576):
+                return result
+            if name not in config or (value is None and not field.allow_empty):
                 return result
             if isinstance(value, Path):
                 value = str(value)

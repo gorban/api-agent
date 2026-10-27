@@ -52,6 +52,7 @@ LLM_STUDIO_TEST_SELECTED_EFFORT = 'medium'
 cases = ["tests/integration/test_workflow.py::test_workflow_node_coverage"]
 [profiles.workflow.settings]
 LLM_WORKFLOW_TEST_MAX_GRAPHS = 120
+LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS = 1024
 BEDROCK_API_MODE = 'completions'
 BEDROCK_INFERENCE_TIMEOUT_SECONDS = 900
 LLM_SETUP_REQUEST_TIMEOUT_SECONDS = 960

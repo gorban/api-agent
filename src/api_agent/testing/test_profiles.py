@@ -16,6 +16,7 @@ SHARED_KEYS = frozenset({
     'WORKFLOW_MAX_PASSES', 'WORKFLOW_COMPONENT_TIMEOUT_SECONDS',
     'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 'WORKFLOW_LLM_TIMEOUT_SECONDS',
     'LLM_WORKFLOW_TEST_MODEL', 'LLM_WORKFLOW_TEST_MAX_GRAPHS', 'LLM_REASONING_TEST_MODEL',
+    'LLM_WORKFLOW_TEST_TIMEOUT_SECONDS', 'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS',
     'LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL',
     'LLM_STUDIO_TEST_DEFAULT_EFFORT', 'LLM_STUDIO_TEST_SELECTED_EFFORT',
     'LLM_REASONING_TEST_LOW_EFFORT', 'LLM_REASONING_TEST_HIGH_EFFORT',
@@ -23,6 +24,27 @@ SHARED_KEYS = frozenset({
     'LLM_REASONING_TEST_TIMEOUT_SECONDS',
 })
 TEST_KEYS = frozenset(key for key in SHARED_KEYS if '_TEST_' in key) | {'LLM_SETUP_REQUEST_TIMEOUT_SECONDS'}
+
+# Only these exact shipped cases are known not to consume this workflow control.
+# New/parameterized or external cases retain conservative cost compatibility.
+INACTIVE_BUNDLED_CONTROLS = {
+    'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS': frozenset({
+        'tests/integration/test_llm_discovery.py::test_llm_discovery',
+        'tests/integration/test_llm_request.py::test_llm_request',
+        'tests/integration/test_reasoning_contrast.py::test_reasoning_contrast',
+        'tests/integration/test_studio_request.py::test_studio_request',
+        'tests/integration/test_studio_selection.py::test_studio_selection',
+        'tests/integration/test_tool_instances.py::test_shared_primary',
+        'tests/integration/test_tool_alternate.py::test_independent_tools',
+        'tests/integration/test_application_graph.py::test_selected_application_flow_executes_llm_call',
+        'tests/integration/test_workflow_preferences.py::test_final_pass_relaxes_only_preference',
+        'tests/integration/test_workflow_preferences.py::test_truth_failure_stays_blocking_on_final_pass',
+        'tests/integration/test_useful_demo_graph.py::test_selected_graph_relaxes_preference_only_after_retry_and_renders_partial_evidence',
+        'tests/integration/test_useful_demo_graph.py::test_selected_graph_rejects_removed_review_guard_before_execution',
+        'tests/integration/test_view_flow_cli.py::test_view_flow_rejects_test_mode_before_browser_setup',
+        'tests/integration/test_ui_provider_session.py::test_ui_provider_session',
+    }),
+}
 
 
 def bundled_suite_root():
@@ -83,31 +105,49 @@ def declaration(config, *, owner_root):
             if key not in SHARED_KEYS | set(provider_fields) or schema.fields[key].sensitive:
                 raise ValueError('Forbidden test profile setting: ' + key)
             convert_value(schema.fields[key], value, external=False, anchors=None)
-            if key == 'LLM_WORKFLOW_TEST_MAX_GRAPHS':
-                from api_agent.workflows.sampling import coverage_ceiling
-                coverage_ceiling(value)
     return path, schema, profiles
 
 
-def resolve_test_profiles(tests, config, *, owner_root, fields=None):
+def _test_root(test, owner_root, context=None):
+    """Interpret implicit roots using the collector's exact repository labels."""
+    if test.root is not None:
+        return Path(test.root)
+    from types import SimpleNamespace
+    from .collection import repository_label
+    if context is None:
+        context = SimpleNamespace(base_root=owner_root, owner_root=owner_root)
+    roots = tuple(dict.fromkeys(Path(root).resolve() for root in
+                                (context.base_root, context.owner_root)))
+    matches = [root for root in roots if repository_label(context, root) == test.repo]
+    return matches[0] if len(matches) == 1 else None
+
+
+def resolve_test_profiles(tests, config, *, owner_root, fields=None, context=None):
     """Application < test defaults < explicitly supplied test-specific controls.
 
     Dict-only callers have no provenance, so their existing test-specific keys
     conservatively count as explicit. No application/environment mapping changes.
     """
+    if context is not None and Path(context.owner_root).resolve() != Path(owner_root).resolve():
+        raise ValueError('Profile collection owner differs from configuration owner')
     loaded = declaration(config, owner_root=owner_root)
-    output = {}
+    output, inactive_defaults = {}, {}
     for test in tests:
         if test.id in output:
             raise ValueError('Duplicate admitted integration case')
         values, provenance = deepcopy(dict(config)), {}
+        root = _test_root(test, owner_root, context)
+        try:
+            bundled = root is not None and root.is_dir() and root.samefile(bundled_suite_root())
+        except OSError:
+            bundled = False
         if loaded is not None:
             path, schema, profiles = loaded
             for name, profile in profiles.items():
                 if test.node_id not in profile['cases']:
                     continue
                 # Only bundled suite cases belong to a provider's bundled profile.
-                if not Path(test.root or owner_root).samefile(bundled_suite_root()):
+                if not bundled:
                     continue
                 for key, value in profile['settings'].items():
                     explicit = key in TEST_KEYS and (key in config if fields is None else bool(getattr(fields.get(key), 'explicit', False)))
@@ -116,9 +156,16 @@ def resolve_test_profiles(tests, config, *, owner_root, fields=None):
                         continue
                     values[key] = convert_value(schema.fields[key], value, external=False, anchors=None)
                     provenance[key] = f'provider_test_profile:{path.name}:{name}'
-        if 'LLM_WORKFLOW_TEST_MAX_GRAPHS' in values:
-            from api_agent.workflows.sampling import coverage_ceiling
-            coverage_ceiling(values['LLM_WORKFLOW_TEST_MAX_GRAPHS'])
+        for key, nonconsumers in INACTIVE_BUNDLED_CONTROLS.items():
+            if test.node_id not in nonconsumers:
+                continue
+            if not bundled:
+                continue
+            if key not in inactive_defaults:
+                field = load_shared_schema().fields[key]
+                inactive_defaults[key] = convert_value(field, field.default, external=False, anchors=None)
+            values[key] = deepcopy(inactive_defaults[key])
+            provenance[key] = 'inactive_bundled_test_control:shared_default'
         policy = ModelSelectionPolicy(values)
         for key in ('LLM_WORKFLOW_TEST_MODEL', 'LLM_REASONING_TEST_MODEL', 'LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'):
             if key in provenance and values.get(key):

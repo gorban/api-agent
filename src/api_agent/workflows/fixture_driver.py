@@ -18,7 +18,8 @@ from .contrived import build
 from .definition import load_definition
 from .evidence import publish
 from .execution import resolve_component_passes, resolve_timeouts
-from .sampling import DECLARED, TARGETS, COVERAGE_POLICY, cover, coverage_ceiling, validate_calibration, measurement, observed_targets
+from .sampling import (DECLARED, TARGETS, COVERAGE_POLICY, cover, coverage_ceiling, validate_calibration,
+                       measurement, observed_targets, DETERMINISTIC_CASES, coverage_case, case_targets, structural_targets)
 from .run_context import trial as trial_context, turn
 
 USER_INPUT = 'Repeat this demo request verbatim: hello Markdown graph.'
@@ -210,52 +211,102 @@ def preflight_baselines(config, *, root=None, owner_root=None):
     return {selection: baseline_limit(selection, config, root=root, owner_root=owner_root) for selection in candidates}
 
 
-def run_graph(provider, selection, trial, config=None, *, root=None, owner_root=None, observe=None):
-    """One independent graph with unchanged request/seed and structural evidence."""
-    provider_identity(config or {}, owner_root=owner_root)
+def coverage_preflight(config, *, root=None):
+    """Reject an impossible retry policy and invalid cap before provider setup."""
+    base = fixture_root(root)
+    definition = load_definition(base / 'demo/contrived/flow.md.html', base_root=base, pack_root=base / 'demo')
+    passes, _ = resolve_component_passes(definition.layout, config)
+    if any(passes[name] < 2 for name in ('first', 'second')):
+        raise ValueError('Workflow coverage requires at least two passes for both components')
+    cap = config.get('LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS')
+    if cap is not None and (type(cap) is not int or not 1 <= cap <= 1048576):
+        raise ValueError('Workflow output token cap must be empty or an integer from 1 to 1048576')
+
+
+def run_graph(provider, selection, trial, config=None, *, root=None, owner_root=None, observe=None, trial_uuid=None):
+    """Execute one real graph with the exact accepted UUID, independent of calibration."""
     events = []
+    seed = str(uuid4()) if trial_uuid is None else trial_uuid
+    coverage_case(seed)
+    cap = (config or {}).get('LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS')
 
     def observed(event):
         events.append(event)
         if observe is not None:
             observe(event)
 
-    profile = calibration_profile(config or {}, owner_root=owner_root)
-
     async def complete(request):
-        if profile is not None:
+        if cap is not None:
             request = replace(request, payload=replace(request.payload, generation=replace(
-                request.payload.generation, max_output_tokens=profile['max_output_tokens'])))
+                request.payload.generation, max_output_tokens=cap)))
         result = await offload(provider.complete, request)
         actual = getattr(result, 'actual_model', None)
-        if (profile is not None or actual is not None) and actual != selection:
-            raise ValueError('Fixture inference returned a different model than the reviewed selection')
+        if actual is not None and actual != selection:
+            raise ValueError('Fixture inference returned a different model than the selected model')
         return result
 
     async def execute():
         turn_id = str(uuid4())
         with trial_context(trial), turn(turn_id), user_turn(turn_id):
             workflow = build(fixture_root(root), llm=complete, selection=selection,
-                             trial=str(uuid4()), observe=observed, config=config)
+                             trial=seed, observe=observed, config=config)
             result = await workflow.arun({'user_input': USER_INPUT}, turn_id=turn_id)
         return result, {event['node'] for event in events if event['event'] == 'node'}
 
     try:
         return asyncio.run(execute())
     finally:
-        publish(dict(trial=trial, events=events))
+        publish(dict(trial=trial, trial_uuid=seed, events=events))
 
 
 def node_coverage(provider, selection, config, *, root=None, owner_root=None):
-    """Mandatory early stopping using checked-in, recomputed per-model bounds."""
-    maximum = baseline_limit(selection, config, root=root, owner_root=owner_root)
+    """Execute each reachable UUID route/readiness case once, with real proof."""
+    from api_agent.providers.progress import component_timeout
+    coverage_preflight(config, root=root)
 
-    async def execute(trial):
-        events = []
-        values, nodes = await offload(run_graph, provider, selection, trial, config, root=root, owner_root=owner_root, observe=events.append)
-        return values, observed_targets(measurement(trial, values, nodes, events), maximum=maximum)
+    async def execute():
+        missing, seen, scopes, records = set(DETERMINISTIC_CASES), set(), set(), []
+        try:
+            async with component_timeout('Workflow case coverage', config.get('LLM_WORKFLOW_TEST_TIMEOUT_SECONDS', 600)) as budget:
+                while missing:
+                    if budget.remaining == 0:
+                        raise TimeoutError('Workflow coverage deadline expired during UUID selection')
+                    seed = str(uuid4())
+                    case = coverage_case(seed)
+                    if case not in missing:
+                        await asyncio.sleep(0)
+                        continue
+                    trial, events = len(records) + 1, []
+                    values, nodes = await offload(run_graph, provider, selection, trial, config,
+                        root=root, owner_root=owner_root, observe=events.append, trial_uuid=seed)
+                    row = measurement(trial, values, nodes, events)
+                    targets = case_targets(row, case)
+                    _, emitted_scopes = structural_targets(row)
+                    if scopes & emitted_scopes:
+                        raise AssertionError('Coverage graphs reuse executed scope identities')
+                    if budget.remaining == 0:
+                        raise TimeoutError('Workflow coverage deadline expired after graph proof')
+                    scopes.update(emitted_scopes)
+                    seen.update(targets)
+                    missing.remove(case)
+                    records.append(dict(trial=trial, trial_uuid=seed, route=case[0], first=case[1], second=case[2]))
+                if not TARGETS <= seen:
+                    raise AssertionError('Deterministic cases did not prove all workflow targets')
+                if budget.remaining == 0:
+                    raise TimeoutError('Workflow coverage deadline expired before coverage result')
+        except BaseException as error:
+            labels = []
+            for route, first, second in sorted(missing, key=repr):
+                label = f'{route}/first={str(first).lower()}'
+                if second is not None:
+                    label += f'/second={str(second).lower()}'
+                labels.append(label)
+            BaseException.add_note(error, 'Uncovered workflow cases: ' + (', '.join(labels) or 'none'))
+            raise
+        return dict(runs=len(records), nodes=sorted(seen & DECLARED), targets=sorted(seen),
+                    records=records, stopping_reason='all_cases_hit',
+                    coverage_policy='deterministic_route_readiness_v1')
 
-    result, _ = asyncio.run(cover(execute, TARGETS, maximum, publish,
-                                  ceiling=coverage_ceiling(config.get('LLM_WORKFLOW_TEST_MAX_GRAPHS', 60))))
+    result = asyncio.run(execute())
     publish(dict(coverage=result))
     return result

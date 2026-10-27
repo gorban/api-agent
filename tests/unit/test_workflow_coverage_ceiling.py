@@ -175,22 +175,21 @@ def test_explicit_test_ceiling_overrides_provider_default_with_provenance(value)
 
 
 @pytest.mark.parametrize('value', [0, 121, True, 60.0, None])
-def test_dict_only_test_ceiling_rejects_before_backend_creation(value):
+def test_unused_legacy_ceiling_does_not_gate_normal_profile_resolution(value):
     from api_agent.testing.test_profiles import resolve_test_profiles
     result = configuration()
     result.values['LLM_WORKFLOW_TEST_MAX_GRAPHS'] = value
-    with pytest.raises(ValueError, match='integer from 1 to 120'):
-        resolve_test_profiles(CASES[3:], result.values, owner_root=ROOT)
+    row = resolve_test_profiles(CASES[3:], result.values, owner_root=ROOT)[CASES[3].id]
+    assert row['config']['LLM_WORKFLOW_TEST_MAX_GRAPHS'] is value
 
 
-def test_provider_declaration_cannot_supply_out_of_range_ceiling(monkeypatch):
+def test_provider_legacy_ceiling_does_not_gate_normal_profile_declaration(monkeypatch):
     import api_agent.testing.test_profiles as profiles
     source = (ROOT / 'src/api_agent/llm_providers/bedrock/test-profiles.toml').read_text()
     original = profiles.tomllib.loads
     changed = source.replace('LLM_WORKFLOW_TEST_MAX_GRAPHS = 120', 'LLM_WORKFLOW_TEST_MAX_GRAPHS = 121')
     monkeypatch.setattr(profiles.tomllib, 'loads', lambda text: original(changed) if text == source else original(text))
-    with pytest.raises(ValueError, match='integer from 1 to 120'):
-        profiles.declaration(configuration().values, owner_root=ROOT)
+    assert profiles.declaration(configuration().values, owner_root=ROOT)[2]['workflow']['settings']['LLM_WORKFLOW_TEST_MAX_GRAPHS'] == 121
 
 
 def test_workflow_fingerprint_and_preflight_bind_current_ceiling(monkeypatch):
@@ -210,39 +209,26 @@ def test_workflow_fingerprint_and_preflight_bind_current_ceiling(monkeypatch):
 
 @pytest.mark.parametrize('provider', ['gpt', 'bedrock'])
 @pytest.mark.parametrize('value', [121, True, 60.0])
-def test_complete_workflow_configuration_rejects_invalid_ceiling_before_session(monkeypatch, provider, value):
-    from api_agent.testing import integration, setup_pool
-    from api_agent.testing.test_profiles import resolve_test_profiles
-    from api_agent.runtime.resource_pack import load_launch_context
-    from unittest.mock import Mock
-    result = configuration()
-    config = dict(result.values, LLM_PROVIDER=str(ROOT / f'src/api_agent/llm_providers/{provider}/factory.py') + ':factory')
-    config['LLM_WORKFLOW_TEST_MAX_GRAPHS'] = 60
-    admitted = resolve_test_profiles(CASES[3:], config, owner_root=ROOT)
-    assert admitted[CASES[3].id]['config']['LLM_WORKFLOW_TEST_MAX_GRAPHS'] == 60
-    config['LLM_WORKFLOW_TEST_MAX_GRAPHS'] = value
-    monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: CASES[3:])
-    construct = Mock(side_effect=AssertionError('Invalid ceiling created a provider backend'))
-    process = Mock(side_effect=AssertionError('Invalid ceiling started a test worker'))
-    monkeypatch.setattr(setup_pool, 'SetupPool', construct)
-    monkeypatch.setattr(integration.subprocess, 'Popen', process)
-    run = integration.run_integration_tests(load_launch_context(ROOT), CASES[3:], accepted=True, config=config)
-    assert run.exit_code == 1
-    assert all('LLM_WORKFLOW_TEST_MAX_GRAPHS' in test.local_diagnostic for test in run.tests)
-    construct.assert_not_called()
-    process.assert_not_called()
+def test_explicit_maintenance_still_rejects_invalid_ceiling_before_provider(monkeypatch, provider, value):
+    from api_agent.workflows import fixture_driver as driver
+    config = configuration().values
+    config.update(LLM_PROVIDER=str(ROOT / f'src/api_agent/llm_providers/{provider}/factory.py') + ':factory',
+                  LLM_WORKFLOW_TEST_MAX_GRAPHS=value)
+    monkeypatch.setattr(driver, 'provider_identity', lambda *args, **kwargs: pytest.fail('Invalid ceiling reached provider identity'))
+    with pytest.raises(ValueError, match='integer from 1 to 120'):
+        driver.fingerprint('synthetic', config)
 
 
-def test_coverage_ceiling_changes_cost_compatibility_without_changing_identity():
+def test_unused_legacy_ceiling_does_not_change_normal_cost_compatibility():
     from api_agent.testing.cost_context import cost_config
     from api_agent.runtime.resource_pack import load_launch_context
     config = configuration().values
     context = load_launch_context(ROOT)
     ordinary = cost_config(context, dict(config, LLM_WORKFLOW_TEST_MAX_GRAPHS=60))
     expanded = cost_config(context, dict(config, LLM_WORKFLOW_TEST_MAX_GRAPHS=120))
-    before = ordinary['_COST_REQUEST_SETTINGS']['LLM_WORKFLOW_TEST_MAX_GRAPHS']
-    after = expanded['_COST_REQUEST_SETTINGS']['LLM_WORKFLOW_TEST_MAX_GRAPHS']
-    assert len(before) == len(after) == 64 and before != after
+    assert ordinary['_COST_REQUEST_SETTINGS'] is not None
+    assert 'LLM_WORKFLOW_TEST_MAX_GRAPHS' not in ordinary['_COST_REQUEST_SETTINGS']
+    assert ordinary['_COST_REQUEST_SETTINGS'] == expanded['_COST_REQUEST_SETTINGS']
     assert ordinary['_COST_PROVIDER_IDENTITY'] == expanded['_COST_PROVIDER_IDENTITY']
     assert ordinary['LLM_PROVIDER'] == expanded['LLM_PROVIDER']
 

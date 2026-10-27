@@ -1219,3 +1219,21 @@ def test_retained_stdout_boundary_receipt_controls_transfer(tmp_path, monkeypatc
             if liveness_fd is not None:
                 os.close(liveness_fd)
             directory.temporary.cleanup()
+
+
+@pytest.mark.parametrize('installed,base_name,owner_name', [
+    (False, 'same', 'same'), (True, 'api_agent', 'external'),
+    (True, 'api_agent', 'api-agent'), (True, 'api_agent', 'api_agent')])
+def test_integration_executor_uses_collected_labels_for_each_actual_child_cwd(tmp_path, monkeypatch, installed, base_name, owner_name):
+    from api_agent.testing import collection
+    def build(path):
+        return fixture_repo(path, test='from pathlib import Path\ndef test_cwd():\n    assert Path.cwd() == Path(' + repr(str(path)) + ')\n')
+    base = build(tmp_path / 'base' / base_name)
+    owner = build(tmp_path / 'owner' / owner_name)
+    monkeypatch.setattr(collection, '_installed_base_identity', lambda root: installed and root == base)
+    ctx = context(base, owner)
+    tests = collect_tests(ctx, 'integration')
+    assert len({test.id for test in tests}) == 2 and all(test.root is None for test in tests)
+    result = run_integration_tests.__wrapped__(ctx, tests, accepted=True)
+    assert result.exit_code == 0
+    assert len(result.tests) == 2 and all(row.status == 'passed' for row in result.tests)
