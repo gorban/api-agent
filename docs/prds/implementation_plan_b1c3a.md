@@ -47,3 +47,14 @@ sole consuming role. Dual-use prompt, schema or native bindings retain exact
 bytes; explicitly declared opaque v3 configuration resources also retain their
 whole-byte hash, including unrelated fields. This scope does not infer arbitrary
 native configuration dependencies or establish native/provider equivalence.
+
+- [x] Emit self-contained canonical journal graph roots with no packet parent in both
+  parsed executors, including under an enclosing workflow-test deadline. Preserve
+  actual timeout ancestry, inherited deadlines, child ownership and strict journal
+  and reporting validation. Verify complete canonical journals and recorded
+  multi-graph joins under that enclosing budget.
+
+- [x] Preserve real nested graph ownership in combined observer trees through a
+  task-local structural workflow scope, independent of journal availability and
+  ordinary progress timers. Normalize only copied per-invocation journal roots;
+  retain actual timeout ancestry, cancellation cleanup and strict child parents.
