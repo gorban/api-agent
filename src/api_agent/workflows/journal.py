@@ -87,7 +87,7 @@ def _encoded(value):
 
 def _schema_field(key):
     return (type(key) is str and _SAFE_LABEL.fullmatch(key)
-            and (not _UNSAFE_FIELD.search(key) or key in _COUNTS or key in ('reasoning_effort', 'max_output_tokens')))
+            and (not _UNSAFE_FIELD.search(key) or key in _COUNTS or key in ('reasoning_effort', 'max_output_tokens', 'max_completion_tokens', 'max_tokens')))
 
 
 def _capture_contract(value, depth=0, *, max_depth=4, budget=None):
@@ -456,7 +456,7 @@ class WorkflowJournal:
                    'attempt', 'max_passes', 'source', 'target', 'condition', 'implicit', 'elapsed',
                    'started_ms', 'stopped_ms', 'declared_timeout', 'effective_timeout',
                    'timeout_key', 'outcome', 'accepted', 'visit_id', 'attempt_id',
-                   'call_id', 'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'direction',
+                   'call_id', 'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'response', 'direction',
                    'values', 'reason', 'accounting', 'plain_fields', 'capture_class',
                    'truncated_fields')
         for key in ('event', 'owner', 'kind', 'node', 'component', 'source',
@@ -474,6 +474,9 @@ class WorkflowJournal:
             row = {**row, 'actual_model': None}
         if row.get('reasoning_effort') not in (None, 'off', 'low', 'medium', 'high'):
             raise ValueError('Invalid workflow reasoning effort')
+        if 'response' in row:
+            from api_agent.providers.rich_inference import response_evidence_from_wire
+            response_evidence_from_wire(row['response'])
         if 'condition' in row and not _condition_label(row['condition']):
             raise ValueError('Unsafe workflow observation condition')
         if row['event'] == 'edge' and 'condition' in row and tuple(row.get(key) for key in (
@@ -575,7 +578,7 @@ class WorkflowJournal:
 
     def record_call(self, *, visit_id, attempt_id=None, usage=None, selection=None,
                     elapsed=None, outcome='completed', call_id=None,
-                    actual_model=None, reasoning_effort=None):
+                    actual_model=None, reasoning_effort=None, response=None):
         self._begin()
         if type(visit_id) is not str or not visit_id:
             raise ValueError('A leaf call requires a node visit owner')
@@ -609,6 +612,7 @@ class WorkflowJournal:
                           outcome=outcome,
                           **({'actual_model': actual_model} if actual_model is not None else {}),
                           **({'reasoning_effort': reasoning_effort} if reasoning_effort is not None else {}),
+                          **({'response': response} if response is not None else {}),
                           accounting='unverified_tool' if unverified_tool else 'central_call_id'))
         return call_id
 
@@ -719,7 +723,7 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                'started_ms', 'stopped_ms', 'declared_timeout', 'effective_timeout',
                'timeout_key', 'outcome', 'accepted', 'sequence', 'event_id',
                'invocation_id', 'turn_id', 'visit_id', 'attempt_id', 'call_id',
-               'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'direction', 'values', 'reason', 'accounting',
+               'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'response', 'direction', 'values', 'reason', 'accounting',
                'plain_fields', 'capture_class', 'truncated_fields'}
     event_ids = set()
     for sequence, event in enumerate(events, 1):
@@ -727,6 +731,9 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
             raise ValueError('Invalid workflow event sequence or field')
         if event.get('reasoning_effort') not in (None, 'off', 'low', 'medium', 'high'):
             raise ValueError('Invalid workflow reasoning effort')
+        if 'response' in event:
+            from api_agent.providers.rich_inference import response_evidence_from_wire
+            response_evidence_from_wire(event['response'])
         actual_model = event.get('actual_model')
         if actual_model is not None and (type(actual_model) is not str or not actual_model.isprintable() or not 0 < len(actual_model) <= 200):
             raise ValueError('Invalid workflow actual model')

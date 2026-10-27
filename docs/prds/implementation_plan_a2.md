@@ -129,3 +129,7 @@ Deletion is one selected account or the shared manager at a time; there is no du
 The broad operation-selection entries above remain open for request-time choices, local full-pair UI handoff and E2E wiring. Integration DEBUG is the only currently implemented terminal-free integration execution exception.
 
 Delivered terminal configuration UX is human-accepted. This records approval, not additional manual replay; future capabilities remain separately gated.
+
+## Descriptor-field copying
+
+- [x] Complete [contextual copying in account and manager editors](implementation_plan_a2b.md), preserving stored values and private-input behavior.

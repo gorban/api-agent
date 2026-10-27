@@ -30,6 +30,18 @@ consumer's already-running authentication.
 
 `LLMResult` holds an assistant message, outcome (completed/length/tool_calls/refused) and usage. Counts may be unknown (`None`), including when a transport supplies no data. Input totals include cached input; output totals include reasoning. These subsets are not added again to totals and cannot exceed their known totals. There is no inferred price or invented zero usage.
 
+For explicit `CompletionRequest.response` policies, adapters resolve the format
+before dispatch and construct `ResponseEvidence` for that resolution. After
+authentication and request validation, immediately before admitting the transport
+call, invoke `record_response_dispatch(evidence)` from
+`api_agent.workflows.inference_capture`. Return the same evidence in the result,
+or attach it to a postdispatch failure. Shared IPC requires a matching observed
+dispatch event; terminal-only mode claims are rejected while explicitly reported
+usage is retained. Predispatch failures carry no actual-mode evidence. This hook
+records transport admission, not proof of paid execution. Legacy requests keep
+their existing behavior. See [response modes](../../src/api_agent/llm_providers/gpt/RESPONSE_MODES.md)
+for format selection, fallback and content-control details.
+
 `StreamEvent` is text, tool_call or completed. The terminal completed event carries the result and terminal usage. Clean exhaustion requires exactly one terminal event; duplicate terminal events or output after it are invalid. Early explicit closure may have no terminal result and must not invent one. Text, tool arguments, schemas, result payloads and browser objects are excluded from carrier repr.
 
 ## Selection and activation

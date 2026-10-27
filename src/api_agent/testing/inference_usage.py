@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 _STARTS = {}
-_TIMING = {'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision', 'reasoning_effort', 'conversation_id'}
+_TIMING = {'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision', 'reasoning_effort', 'conversation_id', 'response'}
 _TURN = ContextVar('inference_user_turn', default=None)
 
 
@@ -35,7 +35,8 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
     now = datetime.now(timezone.utc).isoformat()
     started = _STARTS.setdefault(call_id, now)
     from api_agent.providers.contracts import ProviderAccessError
-    reported = error.usage if isinstance(error, ProviderAccessError) else None
+    from api_agent.providers.inference import error_usage
+    reported = error_usage(error)
     row = {'call_id': call_id, 'selection': selection,
            'usage': (usage_to_wire(reported) if reported is not None else None)
                     if result is None else result_to_wire(result)['usage']}
@@ -45,6 +46,10 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
         for name in ('actual_model', 'service_tier', 'serving_revision'):
             if getattr(result, name) is not None:
                 row[name] = getattr(result, name)
+    response = result.response if result is not None else getattr(error, 'response', None)
+    if response is not None:
+        from api_agent.providers.rich_inference import response_evidence_to_wire
+        row['response'] = response_evidence_to_wire(response)
     if quote is not None:
         from api_agent.providers.costs import validate_quote
         row['quote'] = validate_quote(quote)
@@ -71,7 +76,8 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
                                 attempt_id=attempt_id, usage=row['usage'],
                                 selection=selection, outcome=row['outcome'],
                                 actual_model=row.get('actual_model'),
-                                reasoning_effort=row.get('reasoning_effort'))
+                                reasoning_effort=row.get('reasoning_effort'),
+                                **({'response': row['response']} if 'response' in row else {}))
             from api_agent.workflows.attribution import admit_terminal_call_receipt
             admit_terminal_call_receipt({**row, 'visit_id': visit_id, 'attempt_id': attempt_id}, journal)
     return call_id
@@ -95,6 +101,8 @@ def validate_event(event):
         evidence['conversation_id'] = row['conversation_id']
     if 'reasoning_effort' in row:
         evidence['reasoning_effort'] = row['reasoning_effort']
+    if 'response' in row:
+        evidence['response'] = row['response']
     validate_evidence(evidence)
     return row, evidence
 

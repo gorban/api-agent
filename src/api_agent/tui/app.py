@@ -318,6 +318,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error=""):
         super().__init__()
         self.kind, self.heading, self.body = kind, title, text
+        self.account_cycle_available = False
         self.actions, self.rows = actions, rows
         self.selected_row = selected_row
         self.test_run_complete = False
@@ -368,7 +369,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                     yield Input(id="config-value", password=field.sensitive)
             if self.kind not in {"cleanup", "test-results"}:
                 if self.kind == 'tests' and app.mode == 'integration' and 'UNATTENDED_USER_INDEX' in app.schema.fields:
-                    yield Static(app.account_summary(), id='account-selection', markup=False)
+                    yield Static(app.account_summary(screen=self), id='account-selection', markup=False)
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions") as actions:
                 if self.kind == "suggest":
@@ -705,8 +706,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             return self.kind == "tests"
         if action in {'previous_account', 'next_account'}:
             return (self.kind == 'tests' and self.app.mode == 'integration'
-                    and (bool(self.app.account_options())
-                         or self.app.session.result().values.get('UNATTENDED_USER_INDEX') is not None))
+                    and self.account_cycle_available)
         if action == "stop_selected":
             return self.kind == "containers"
         if action == "skip_setup":
@@ -1112,16 +1112,23 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         else:
             await self.start_configuration()
 
-    def select_tool_context(self, tests=None):
-        if hasattr(self.session, 'select_operation'):
+    @staticmethod
+    def _tool_context_result(session, tests=None):
+        """Retain the ordinary collection result when a selected union fails."""
+        if hasattr(session, 'select_operation'):
             from api_agent.tooling.models import OperationSelection, ToolSelectionError
             try:
-                return self.session.select_operation(tests)
-            except ToolSelectionError:
+                return None, session.select_operation(tests)
+            except ToolSelectionError as error:
                 # UI bindings still resolve ordinary settings after a rejected union.
-                self.session.select_operation(OperationSelection('collection'))
-                raise
-        return self.session.result()
+                return error, session.select_operation(OperationSelection('collection'))
+        return None, session.result()
+
+    def select_tool_context(self, tests=None):
+        error, result = ApiAgentApp._tool_context_result(self.session, tests)
+        if error is not None:
+            raise error
+        return result
 
     def tool_review_fields(self, snapshot=None):
         if snapshot is not None:
@@ -2222,12 +2229,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 green_prefixes=("Code coverage: lines 100% · branches 100%.", "Allure publication: PASS"),
                 red_prefixes=('Allure publication: FAIL', 'Test operation: FAIL', 'Inspection cleanup: FAIL')))
 
-    def account_options(self):
+    def account_options(self, *, result=None):
         if 'UNATTENDED_USER_INDEX' not in self.schema.fields:
             return ()
         from .accounts import account_options
         try:
-            result = self.session.result(_review=True)
+            result = self.session.result(_review=True) if result is None else result
             roles = self.credential_roles(result=result)
             return account_options(result.values.get('UNATTENDED_AUTH') or {},
                                    roles, paired=self.mode == 'run-local',
@@ -2235,28 +2242,39 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         except ValueError:
             return ()
 
-    def account_summary(self):
-        index = self.session.result().values.get('UNATTENDED_USER_INDEX')
+    def account_summary(self, *, screen=None, result=None):
+        result = self.session.result(_review=True) if result is None else result
+        index = result.values.get('UNATTENDED_USER_INDEX')
+        options = self.account_options(result=result)
+        if screen is not None:
+            screen.account_cycle_available = bool(options) or index is not None
         if index is None:
             return Text('No unattended user set — logins must be done manually', style='red')
-        label = dict(self.account_options()).get(index)
+        label = dict(options).get(index)
         if label is None:
             return Text(f'Unattended user #{index} is unavailable; configure accounts or choose manual login.', style='red')
         return Text(f'Use unattended user #{index}: {label}', style='green')
 
+    def interrupt_picker_estimates(self):
+        reader = getattr(self.screen, 'picker_estimates', None)
+        if reader is not None:
+            reader.interrupt()
+
     def cycle_account(self, direction):
+        self.interrupt_picker_estimates()
         try:
-            choices = (None,) + tuple(index for index, _ in self.account_options())
-            current = self.session.result().values.get('UNATTENDED_USER_INDEX')
+            before = self.session.result(_review=True)
+            choices = (None,) + tuple(index for index, _ in self.account_options(result=before))
+            current = before.values.get('UNATTENDED_USER_INDEX')
             position = choices.index(current) if current in choices else 0
             selected = choices[(position + direction) % len(choices)]
-            self.session.set_value('UNATTENDED_USER_INDEX', '' if selected is None else str(selected), persist=True)
-            self.screen.query_one('#account-selection', Static).update(self.account_summary())
+            after = self.session.set_value('UNATTENDED_USER_INDEX', '' if selected is None else str(selected), persist=True)
+            self.screen.query_one('#account-selection', Static).update(self.account_summary(screen=self.screen, result=after))
             self.screen.refresh_bindings()
-            actual = self.session.result().fields['UNATTENDED_USER_INDEX']
+            actual = after.fields['UNATTENDED_USER_INDEX']
             if self.screen.kind == 'tests' and actual.value != current:
                 self.cost_estimator = None
-                self.refresh_rows()
+                self.refresh_rows(account_result=after)
             message = (f'Saved to {self.session._source(self.session.dotenv_path)}, but {actual.source} overrides the saved choice.'
                        if actual.value != selected else '')
             self.screen.query_one('#error', Static).update(self.screen.configuration_error or message)
@@ -2276,15 +2294,15 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return {}
 
     def fresh_cost_estimator(self):
-        from api_agent.testing.cost_history import estimator_for
-        from .test_configuration import profile_cost_configs
-        result = self.session.result()
-        values = result.values
-        configs = profile_cost_configs(self.selection.tests, result, self.context)
-        snapshot = estimator_for(self.context, self.selection.tests, values, test_configs=configs)
-        snapshot.picker_configuration = deepcopy(values)
-        snapshot.picker_provenance = self.cost_provenance(result)
-        return snapshot
+        from .picker_estimates import build_estimator
+        return build_estimator(self.context, self.selection.tests, self.session.result())
+
+    def request_picker_estimates(self):
+        from .picker_estimates import PickerEstimates
+        reader = getattr(self.screen, 'picker_estimates', None)
+        if reader is None:
+            reader = self.screen.picker_estimates = PickerEstimates(self, self.screen, self.selection)
+        reader.request()
 
     @staticmethod
     def cost_provenance(result):
@@ -2371,15 +2389,17 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.run_worker(self.synchronize_cost_history(self.cost_estimator, selection),
                                 group='cost-history', exclusive=True)
 
+    def picker_configuration(self):
+        """Keep the fresh selected context alongside its editable union error."""
+        error, result = ApiAgentApp._tool_context_result(self.session, self.selection.selected_tests)
+        if error is not None:
+            self.cost_estimator = None
+            return str(error), result
+        return "", result
+
     def picker_configuration_error(self):
         """Keep invalid test unions editable while execution still validates them."""
-        from api_agent.tooling.models import ToolSelectionError
-        try:
-            self.select_tool_context(self.selection.selected_tests)
-        except ToolSelectionError as error:
-            self.cost_estimator = None
-            return str(error)
-        return ""
+        return self.picker_configuration()[0]
 
     def show_selection(self):
         configuration_error = self.picker_configuration_error()
@@ -2451,23 +2471,26 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         elif self.screen.kind == "containers":
             self.toggle_managed_container(key)
 
-    def refresh_rows(self):
+    def refresh_rows(self, *, account_result=None):
         if self.screen.kind == "tests" and self.selection is None:
             return
         if self.screen.kind == 'tests':
-            self.screen.configuration_error = self.picker_configuration_error()
+            self.interrupt_picker_estimates()
+            exact_account_result = (account_result is not None
+                and not getattr(self.session, '_automatic_tool_selection', True)
+                and self.session._tool_selection == tuple(self.selection.selected_tests))
+            if not exact_account_result or self.screen.configuration_error:
+                error, resolved = self.picker_configuration()
+                self.screen.configuration_error = error
+                account_result = resolved
             self.screen.query_one('#error', Static).update(self.screen.configuration_error)
             if (not self.screen.configuration_error and self.cost_estimator is None
                     and self.mode in {'integration', 'e2e'}):
-                try:
-                    self.cost_estimator = self.fresh_cost_estimator()
-                except Exception:
-                    pass
-                else:
-                    self.run_worker(self.synchronize_cost_history(self.cost_estimator, self.selection),
-                                    group='cost-history', exclusive=True)
+                self.request_picker_estimates()
         table = self.screen.query_one(DataTable)
         if self.screen.kind == 'tests':
+            for account in self.screen.query('#account-selection'):
+                account.update(self.account_summary(screen=self.screen, result=account_result))
             has_cost_column = 'estimated-cost' in table.columns
             if has_cost_column and self.cost_estimator is None:
                 table.remove_column('estimated-cost')

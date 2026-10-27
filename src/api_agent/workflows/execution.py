@@ -58,6 +58,21 @@ class NodeContext:
     services: dict
     visit_id: str | None = None
     attempt_id: str | None = None
+    response_contract: dict | None = None
+
+    def response_request(self, messages, *, tools=(), generation=None, strict=True):
+        """Explicitly bind a request to this node's generated-response contract."""
+        from api_agent.providers.llm import CompletionRequest, GenerationOptions, ResponsePolicy, StructuredOutput
+        row = self.response_contract
+        if row is None or row.get('Output mode', '-') == '-':
+            raise WorkflowError('Node has no declared generated-response contract')
+        if type(strict) is not bool or (row['Output mode'] == 'text' and not strict):
+            raise WorkflowError('Invalid generated-response strictness')
+        schema = None
+        if row['Output mode'] != 'text':
+            schema = StructuredOutput(self.node_id, json.dumps(row['Response schema value'], default=dict), strict=strict)
+        return CompletionRequest(tuple(messages), tuple(tools), generation or GenerationOptions(),
+                                 response=ResponsePolicy(row['Output mode'], row['Fallback'], schema))
 
     @property
     def tools(self):
@@ -164,6 +179,8 @@ class Workflow:
                     or not callable(function.invoke)
                     or (self.definition is not None and function.kind != row['Kind'])):
                 layout.error('unknown or invalid registered node function', row['line'])
+            if 'Output mode' in row and ((function.kind == 'deterministic') != (row['Output mode'] == '-')):
+                layout.error('response declaration must match registered node kind', row['line'])
             try:
                 source = inspect.getsourcefile(function.invoke)
                 matches_source = source is not None and Path(source).samefile(steps[row['ID']].source)
@@ -335,7 +352,7 @@ class Workflow:
             values = state['values']
             context = NodeContext(step.id, state['ancestry'], tuple(state['prompts'][item['File']] for item in prompts
                 if item['When'] == 'always' or self._condition(item['When'], values)), self.services,
-                budget.id, state.get('attempt_id'))
+                budget.id, state.get('attempt_id'), row)
             for binding in bindings:
                 source = binding['From']
                 sources = {'START': values['START'], 'PREVIOUS': state['previous'].get(step.id, {}),

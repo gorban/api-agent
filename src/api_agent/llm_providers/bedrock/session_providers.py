@@ -7,7 +7,7 @@ import sys
 from types import MappingProxyType, ModuleType
 import uuid
 
-from api_agent.providers.contracts import ConfigurationRequiredError, InteractionRequiredError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError
+from api_agent.providers.contracts import ConfigurationRequiredError, InteractionRequiredError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError, UnattendedCredentialError
 from api_agent.providers.control import finish_cleanup
 from api_agent.providers.loading import (
     LoadedProvider, ProviderError, _ReturnedAwaitable, provider_location, release_modules,
@@ -66,6 +66,8 @@ class _AcquirerOwner:
             raise
         except SetupPrerequisiteError:
             raise SetupPrerequisiteError('Selected Bedrock session adapter prerequisites are unavailable; check requirements.') from None
+        except UnattendedCredentialError:
+            raise
         except InteractionRequiredError:
             raise InteractionRequiredError('Bedrock session acquisition requires interaction.') from None
         except Exception:

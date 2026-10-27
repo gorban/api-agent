@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol
 from .control import CleanupPendingError, OperationalError, OperationContext
-from .llm import (LLM_FEATURES, CacheBoundary, cache_boundary_indexes, AvailableSelection, CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, StreamEvent, StructuredOutput, TextContent, Tool, ToolCall, ToolResult, Usage)
+from .llm import (LLM_FEATURES, OutputMode, FallbackPolicy, ResponsePolicy, ResponseEvidence, CacheBoundary, cache_boundary_indexes, AvailableSelection, CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, StreamEvent, StructuredOutput, TextContent, Tool, ToolCall, ToolResult, Usage)
 
 
 class ContractError(ValueError):
@@ -12,7 +12,9 @@ class ContractError(ValueError):
 
 class ProviderAccessError(OperationalError):
     """Provider-sanitized, bounded upstream rejection details for consumer reports."""
-    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None, usage=None):
+    response: ResponseEvidence | None = None
+
+    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None, usage=None, response=None):
         super().__init__(kind)
         if status is not None and (status.__class__ is not int or not 100 <= status <= 599):
             raise ContractError('Invalid provider error status')
@@ -28,6 +30,11 @@ class ProviderAccessError(OperationalError):
                 value is not None and value > 2147483647 for value in (usage.input_tokens,
                 usage.output_tokens, usage.cached_input_tokens, usage.reasoning_tokens, usage.cache_write_tokens))):
             raise ContractError('Invalid provider error usage')
+        from .llm import ResponseEvidence
+        if response is not None and not isinstance(response, ResponseEvidence):
+            raise ContractError('Invalid provider response evidence')
+        if response is not None:
+            self.response = response
         self.usage = usage
         self.args = (message,)
 

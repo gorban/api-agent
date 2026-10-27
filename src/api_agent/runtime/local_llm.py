@@ -149,6 +149,7 @@ class LocalLLM(_Owner):
         self.shared = SharedSetupOwner(self._operation_id, self._operation_id, owner_factory,
             credentials=credentials, describe=getattr(implementation, 'adescribe', None),
             complete=complete, validate_request=lambda request: validate_provider_request(implementation, request),
+            captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
             timeout=self._timeout, catalog_ttl=self.config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600))
         self._resources.append((self.shared, 'aclose'))
         start = getattr(self.provider, 'astart', None)
@@ -334,7 +335,8 @@ class LocalLLM(_Owner):
                 try:
                     self._status('request', 'executing')
                     from api_agent.workflows.attribution import bind_terminal_call_receipts
-                    with bind_terminal_call_receipts() as receipts:
+                    from api_agent.workflows.inference_capture import bind_response_dispatch
+                    with bind_response_dispatch() as dispatch, bind_terminal_call_receipts() as receipts:
                         result = await shared.complete(request)
                     self._status('request', 'completed')
                     return result
@@ -343,13 +345,18 @@ class LocalLLM(_Owner):
                     self._status('request', 'cancelled' if isinstance(failure, asyncio.CancelledError) else 'failed')
                     raise
                 finally:
-                    usage = result.usage if result is not None else error.usage if isinstance(error, ProviderAccessError) else None
+                    from api_agent.providers.inference import error_usage
+                    usage = result.usage if result is not None else error_usage(error) or dispatch['usage']
                     row = {'call_id': str(uuid4()), 'selection': request.selected_llm,
                            'outcome': result.outcome if result is not None else
                                'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
                            'usage': None if usage is None else usage_to_wire(usage),
                            'actual_model': result.actual_model if result is not None else None,
                            'reasoning_effort': request.payload.generation.reasoning_effort or None}
+                    evidence = result.response if result is not None else getattr(error, 'response', None) or dispatch['response']
+                    if evidence is not None:
+                        from api_agent.providers.rich_inference import response_evidence_to_wire
+                        row['response'] = response_evidence_to_wire(evidence)
                     try:
                         if result is not None:
                             row['quote'] = validate_quote(self.emissions.content_export(quote_cost(provider.implementation, request, result)))
@@ -362,7 +369,8 @@ class LocalLLM(_Owner):
                         journal.record_call(call_id=row['call_id'], elapsed=time.monotonic() - started, visit_id=visit_id,
                             attempt_id=attempt_id, usage=row['usage'],
                             selection=row['selection'], outcome=row['outcome'],
-                            actual_model=row['actual_model'], reasoning_effort=row['reasoning_effort'])
+                            actual_model=row['actual_model'], reasoning_effort=row['reasoning_effort'],
+                            **({'response': row['response']} if 'response' in row else {}))
                     # A central publisher may already have admitted terminal calls
                     # during this exact operation. Reuse those receipts; a separate
                     # local UUID would charge and instrument the same work twice.

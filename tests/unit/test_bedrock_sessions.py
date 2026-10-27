@@ -234,6 +234,26 @@ async def test_interaction_requirement_preserves_type_and_sanitizes_text():
 
 
 @pytest.mark.asyncio
+async def test_session_preserves_selected_credential_error_identity_and_source():
+    from api_agent.providers.contracts import UnattendedCredentialError
+    original = UnattendedCredentialError('Selected credentials unavailable.', index_source='dotenv')
+    adapter = Adapter()
+
+    async def acquire(request, *, previous=None):
+        raise original
+
+    adapter.acquire = acquire
+    owner = session(adapter)
+    try:
+        with pytest.raises(UnattendedCredentialError) as error:
+            await owner()
+        assert error.value is original and error.value.index_source == 'dotenv'
+    finally:
+        await owner.aclose()
+    assert adapter.closed == 1
+
+
+@pytest.mark.asyncio
 async def test_first_waiter_deadline_does_not_own_shared_acquisition():
     from api_agent.providers.progress import component_timeout
     adapter = Adapter()

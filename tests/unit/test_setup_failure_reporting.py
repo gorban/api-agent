@@ -15,7 +15,6 @@ from test_setup_transport import CAPABILITY, Registry, descriptor
 
 
 @pytest.mark.parametrize('error,kind', [
-    (OperationalError('authorization'), 'authorization'),
     (TimeoutError('private body'), 'deadline'),
     (OSError('private body'), 'unavailable'),
     (ContractError('private body'), 'contract'),
@@ -29,6 +28,25 @@ def test_backend_classification_does_not_transfer_arbitrary_messages(error, kind
     with pytest.raises(ContractError) as caught:
         _raise_error(frame)
     assert str(caught.value) == frame['message']
+
+
+def test_backend_operational_failure_preserves_safe_typed_fields():
+    error = OperationalError('authorization', execution='not_started', retry_after=2)
+    error.args = ('private body',)
+
+    frame = _error(error, CAPABILITY)
+
+    assert frame['category'] == 'operational'
+    assert frame['message'] == 'Shared operation failed'
+    assert frame['details'] == dict(version=3, kind='authorization', execution='not_started',
+                                    retry_after=2, response=None, usage=None)
+    assert 'private body' not in json.dumps(frame)
+    with pytest.raises(OperationalError) as caught:
+        _raise_error(frame)
+    assert caught.value.kind == 'authorization'
+    assert caught.value.execution == 'not_started'
+    assert caught.value.retry_after == 2
+    assert 'private body' not in str(caught.value)
 
 
 @pytest.mark.parametrize('invalid', [['private body'], 'private body'])
@@ -77,18 +95,17 @@ def test_remote_failure_and_local_transport_failure_keep_safe_causes(monkeypatch
         server = SetupServer(registry, CAPABILITY, timeout=3)
         client = SetupClient(await server.start(), timeout=3)
         try:
-            with pytest.raises(ContractError) as caught:
+            with pytest.raises(OperationalError) as caught:
                 await asyncio.to_thread(client.ensure_ready)
-            cause = caught.value.__cause__
-            assert isinstance(cause, ContractError)
-            assert 'Backend failure category: authorization' in str(cause)
-            evidence = ''.join(traceback.format_exception(caught.value))
-            assert 'Backend failure category: authorization' in evidence
-            assert 'setup_transport.py:' in evidence
-            assert client._disposed and client._loop.is_closed()
+            assert caught.value.kind == 'authorization'
+            assert caught.value.execution == 'not_started'
+            assert caught.value.retry_after is None
+            assert caught.value.__cause__ is None
+            assert not client._disposed and not client._loop.is_closed()
         finally:
             await asyncio.to_thread(client.close)
             await server.aclose()
+        assert client._disposed and client._loop.is_closed()
     asyncio.run(scenario())
     monkeypatch.setattr(asyncio, 'open_connection', AsyncMock(side_effect=OSError('private body')))
     client = SetupClient(descriptor())

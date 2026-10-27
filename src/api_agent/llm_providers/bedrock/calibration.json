@@ -24,6 +24,7 @@
     "httpx2"
   ],
   "sources": [
+    "llm_providers/response_policy.py",
     "llm_providers/bedrock/__init__.py",
     "llm_providers/bedrock/acquisition.py",
     "llm_providers/bedrock/ambient.py",
@@ -40,6 +41,7 @@
     "llm_providers/bedrock/mantle.py",
     "llm_providers/bedrock/persistence.py",
     "llm_providers/bedrock/pricing.py",
+    "llm_providers/bedrock/response_policy.py",
     "llm_providers/bedrock/sdk.py",
     "llm_providers/bedrock/session_providers.py",
     "llm_providers/bedrock/sessions.py",

@@ -159,7 +159,7 @@ def test_new_acquisition_setting_is_inert_in_real_schema():
     override = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory'}
     schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, override, owner_root=root)
     result = resolve_config(schema, environ={}, overrides=override)
-    assert result.values['BEDROCK_SESSION_PROVIDER'] == ''
+    assert result.values['BEDROCK_SESSION_PROVIDER'] == str(root / 'src/api_agent/llm_providers/bedrock/aws_login.py') + ':factory'
     assert 'aws_login.py:factory' in schema.fields['BEDROCK_SESSION_PROVIDER'].help
 
 
@@ -481,3 +481,137 @@ def frozen_ambient(monkeypatch):
     async def acquire(self, request, **kwargs):
         return SessionMaterial('frozen', access_key='synthetic-key', secret_key='synthetic-secret'), {}
     monkeypatch.setattr(AmbientSession, 'acquire', acquire)
+
+
+def normal_session_config(root, *, argv=(), environ=None, dotenv=None):
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.providers.loading import bootstrap_schema
+    selection = {'LLM_PROVIDER': str(root / 'factory.py') + ':factory'}
+    schema = bootstrap_schema(load_shared_schema(), argv, environ or {}, dotenv or {}, selection,
+                              owner_root=root)
+    return resolve_config(schema, argv=argv, environ=environ or {}, dotenv=dotenv or {}, overrides=selection)
+
+
+@pytest.mark.parametrize('layout', ['source', 'installed', 'relocated'])
+def test_normal_default_is_owned_adapter_beside_selected_factory(tmp_path, monkeypatch, layout):
+    import shutil
+    from api_agent.providers.loading import provider_location
+    source = Path(__file__).resolve().parents[2] / 'src/api_agent/llm_providers/bedrock'
+    root = source
+    if layout != 'source':
+        root = tmp_path / layout / 'site-packages/api_agent/llm_providers/bedrock'
+        shutil.copytree(source, root)
+    # Neither schema composition nor resolving the selector may import SDKs.
+    import sys
+    monkeypatch.setitem(sys.modules, 'boto3', None)
+    monkeypatch.setitem(sys.modules, 'botocore', None)
+    result = normal_session_config(root)
+    selected, factory_name = provider_location(result.values['BEDROCK_SESSION_PROVIDER'], owner_root=tmp_path)
+    assert selected == root / 'aws_login.py'
+    assert factory_name == 'factory'
+    assert result.fields['BEDROCK_SESSION_PROVIDER'].explicit is False
+    assert factory(result.values, {}).sessions == []
+
+
+@pytest.mark.parametrize('source', ['dotenv', 'environment', 'cli'])
+@pytest.mark.parametrize('selected', ['', 'aws_sso.py:factory', 'custom.py:factory'])
+def test_explicit_session_selector_overrides_native_default(source, selected):
+    root = Path(__file__).resolve().parents[2] / 'src/api_agent/llm_providers/bedrock'
+    options = {'argv': [], 'environ': {}, 'dotenv': {}}
+    if source == 'cli':
+        options['argv'] = ['--bedrock-session-provider=' + selected]
+    else:
+        options['environ' if source == 'environment' else source] = {'BEDROCK_SESSION_PROVIDER': selected}
+    result = normal_session_config(root, **options)
+    assert result.values['BEDROCK_SESSION_PROVIDER'] == selected
+    assert result.fields['BEDROCK_SESSION_PROVIDER'].source == source
+
+
+@pytest.mark.asyncio
+async def test_normal_default_dispatches_cached_first_without_recovery(monkeypatch):
+    from api_agent.llm_providers.bedrock.ambient import AmbientSession
+    from api_agent.llm_providers.bedrock.login_transport import LoginTransport
+    from api_agent.llm_providers.bedrock.acquisition import SessionMaterial
+    from api_agent.llm_providers.bedrock.auth import create_session
+    root = Path(__file__).resolve().parents[2] / 'src/api_agent/llm_providers/bedrock'
+    result = normal_session_config(root)
+    assert result.values['BEDROCK_SESSION_PROVIDER'] == str(root / 'aws_login.py') + ':factory'
+    material = SessionMaterial('frozen', access_key='synthetic-key', secret_key='synthetic-secret')
+    ambient = AsyncMock(return_value=(material, {}))
+    native = AsyncMock(side_effect=AssertionError('Recovery must not run for valid cached credentials'))
+    monkeypatch.setattr(AmbientSession, 'acquire', ambient)
+    monkeypatch.setattr(LoginTransport, 'acquire', native)
+    session = await create_session(result.values, interactive=True, user_index=None,
+                                   credentials=None, services={'owner_root': root})
+    try:
+        assert session._acquirer._owner.implementation._method == 'direct'
+        assert session._acquirer._owner.implementation._root is None
+        assert await session() is session
+        assert session.worker_config()['access_key'] == 'synthetic-key'
+        assert ambient.await_count == 1
+        native.assert_not_awaited()
+    finally:
+        await session.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('no_stdin,interactive,owner,index', [
+    (True, True, object(), None), (False, True, None, None),
+    (False, False, object(), None), (False, True, object(), 0),
+])
+async def test_normal_default_keeps_interaction_and_index_guards(monkeypatch, no_stdin, interactive, owner, index):
+    from api_agent.llm_providers.bedrock.ambient import AmbientSession
+    from api_agent.llm_providers.bedrock.login_transport import LoginTransport
+    from api_agent.llm_providers.bedrock.auth import create_session
+    root = Path(__file__).resolve().parents[2] / 'src/api_agent/llm_providers/bedrock'
+    config = dict(normal_session_config(root).values, NO_STD_IN=no_stdin)
+    ambient = AsyncMock(return_value=(None, {}))
+    native = AsyncMock(side_effect=AssertionError('Hidden recovery is forbidden'))
+    monkeypatch.setattr(AmbientSession, 'acquire', ambient)
+    monkeypatch.setattr(LoginTransport, 'acquire', native)
+    with pytest.raises(InteractionRequiredError):
+        await create_session(config, interactive=interactive, user_index=index,
+                             credentials=None, services={'owner_root': root, 'interaction': owner})
+    assert ambient.await_count == (0 if index is not None else 1)
+    native.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('selection', ['blank', 'sso', 'custom'])
+async def test_explicit_session_adapter_dispatch_remains_authoritative(tmp_path, selection):
+    from api_agent.llm_providers.bedrock.session_providers import load_acquirer, SDKProfileAcquirer
+    root = Path(__file__).resolve().parents[2] / 'src/api_agent/llm_providers/bedrock'
+    custom = tmp_path / 'custom.py'
+    custom.write_text(ADAPTER)
+    selected = {'blank': '', 'sso': str(root / 'aws_sso.py') + ':factory',
+                'custom': str(custom) + ':factory'}[selection]
+    result = normal_session_config(root, argv=['--bedrock-session-provider=' + selected])
+    closes = []
+    acquirer = await load_acquirer(result.values['BEDROCK_SESSION_PROVIDER'], result.values,
+                                   {'owner_root': tmp_path, 'closes': closes})
+    try:
+        if selection == 'blank':
+            assert type(acquirer) is SDKProfileAcquirer
+        elif selection == 'sso':
+            assert acquirer._owner.implementation._method == 'sso'
+        else:
+            assert acquirer._owner.implementation.__class__.__name__ == 'Adapter'
+    finally:
+        await acquirer.aclose()
+    assert closes == ([1] if selection == 'custom' else [])
+
+
+@pytest.mark.asyncio
+async def test_raw_programmatic_config_without_resolved_defaults_retains_sdk_only(monkeypatch):
+    from api_agent.llm_providers.bedrock.ambient import AmbientSession
+    from api_agent.llm_providers.bedrock.acquisition import SessionMaterial
+    from api_agent.llm_providers.bedrock.auth import create_session
+    from api_agent.llm_providers.bedrock.session_providers import SDKProfileAcquirer
+    material = SessionMaterial('frozen', access_key='synthetic-key', secret_key='synthetic-secret')
+    monkeypatch.setattr(AmbientSession, 'acquire', AsyncMock(return_value=(material, {})))
+    session = await create_session({}, interactive=False, user_index=None, credentials=None)
+    try:
+        assert type(session._acquirer) is SDKProfileAcquirer
+        assert session.worker_config()['access_key'] == 'synthetic-key'
+    finally:
+        await session.aclose()

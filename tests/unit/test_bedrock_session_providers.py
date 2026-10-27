@@ -328,6 +328,63 @@ async def test_acquirer_preserves_sanitized_setup_prerequisite(adapter_file):
         await owner.aclose()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['initial', 'refresh'])
+@pytest.mark.parametrize('index_source', ['dotenv', 'cli'])
+async def test_loaded_selected_session_preserves_credential_failure_through_refresh(adapter_file, phase, index_source):
+    from api_agent.llm_providers.bedrock.auth import create_session
+    from api_agent.llm_providers.bedrock.acquisition import SessionMaterial
+    from api_agent.providers.contracts import UnattendedCredentialError
+
+    original = UnattendedCredentialError('Selected credentials unavailable.', index_source=index_source)
+    reads, acquisitions = [], []
+    fail_reads = phase == 'initial'
+
+    async def credentials(index, kind):
+        reads.append((index, kind))
+        if fail_reads:
+            raise original
+        return 'synthetic-password'
+
+    async def acquire(request, *, previous=None):
+        acquisitions.append((request, previous))
+        await request.credentials(6, 'password')
+        return SessionMaterial('temporary', user_index=6, access_key='synthetic-key',
+                               secret_key='synthetic-secret', session_token='synthetic-token',
+                               expires_at=1e12)
+
+    source = GOOD.replace('pass', 'self.closed = True').replace(
+        "return services['created']", "services['created'].acquire = services['acquire']\n    return services['created']")
+    services = {'acquire': acquire}
+    config = {'BEDROCK_AUTH_MODE': 'session', 'BEDROCK_SESSION_PROVIDER': adapter_file(source)}
+    owner = None
+    try:
+        if phase == 'initial':
+            with pytest.raises(UnattendedCredentialError) as error:
+                await create_session(config, interactive=False, user_index=6,
+                                     credentials=credentials, services=services)
+            assert len(acquisitions) == 1 and acquisitions[0][1] is None
+        else:
+            owner = await create_session(config, interactive=False, user_index=6,
+                                         credentials=credentials, services=services)
+            assert owner.worker_config()['mode'] == 'temporary'
+            owner._clock = lambda: 1e12 - 30
+            fail_reads = True
+            with pytest.raises(UnattendedCredentialError) as error:
+                await owner()
+            assert len(acquisitions) == 2
+            assert acquisitions[1][1] is owner._material
+        assert error.value is original and error.value.index_source == index_source
+        assert reads == [(6, 'password')] * len(acquisitions)
+        assert all(request.user_index == 6 for request, _ in acquisitions)
+    finally:
+        if owner is not None:
+            await owner.aclose()
+    assert services['created'].closed
+    with pytest.raises(SessionClosedError):
+        await acquisitions[-1][0].credentials(6, 'password')
+
+
 @pytest.fixture(autouse=True)
 def frozen_ambient(monkeypatch):
     from api_agent.llm_providers.bedrock.ambient import AmbientSession

@@ -366,3 +366,24 @@ async def test_cleanup_deadline_retains_live_helper_for_retry(monkeypatch):
         await reader.aclose()
     assert finished.is_set()
     assert not reader._reads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['username', 'password'])
+async def test_refresh_reader_preserves_selected_credential_failure(kind):
+    from api_agent.providers.contracts import UnattendedCredentialError
+    failure = UnattendedCredentialError('Credential retrieval unavailable.', index_source='command_line')
+    calls = []
+    async def retrieve(index, requested_kind):
+        calls.append((index, requested_kind))
+        raise failure
+    reader = SelectedCredentialReader(retrieve, 6)
+
+    try:
+        with pytest.raises(UnattendedCredentialError) as caught:
+            await reader(6, kind)
+        assert caught.value is failure
+        assert caught.value.index_source == 'command_line'
+        assert calls == [(6, kind)]
+    finally:
+        await reader.aclose()

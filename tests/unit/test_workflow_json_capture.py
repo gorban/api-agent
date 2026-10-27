@@ -13,6 +13,49 @@ from api_agent.workflows.observations import WorkflowObservationFactory
 from test_workflow_observations import config, definition
 
 
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+@pytest.mark.parametrize('value', [None, 0, 128, (1 << 53) - 1])
+def test_native_generation_limit_survives_authorized_capture_projection(key, value):
+    payload = {'provider_payload': {key: value}}
+    boundary = EmissionBoundary(ContentPolicy(True))
+    assert project_values(payload, {'type': 'object'}, boundary) == payload
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+@pytest.mark.parametrize('value', [True, False, 'synthetic-sensitive-value', 128.0, -1])
+def test_native_generation_limit_projection_keeps_typed_admission(key, value):
+    payload = {'provider_payload': {key: value, 'visible': 'ordinary text'}}
+    boundary = EmissionBoundary(ContentPolicy(True))
+    assert project_values(payload, {'type': 'object'}, boundary) == {
+        'provider_payload': {'visible': 'ordinary text'}}
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+def test_native_generation_limit_projection_preserves_json_integer_bound(key):
+    payload = {'provider_payload': {key: 1 << 53, 'visible': 'ordinary text'}}
+    assert project_values(payload, {'type': 'object'}, EmissionBoundary(ContentPolicy(True))) == {}
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+@pytest.mark.parametrize('secret_kind', ['numeric', 'container'])
+def test_native_generation_limit_projection_preserves_registered_secret_guards(key, secret_kind):
+    native = {key: 128}
+    payload = {'provider_payload': native}
+    boundary = EmissionBoundary(ContentPolicy(True))
+    assert project_values(payload, {'type': 'object'}, boundary) == payload
+    boundary.register_secret('128' if secret_kind == 'numeric' else json.dumps(native))
+    exported = project_values(payload, {'type': 'object'}, boundary)
+    assert exported != payload and '128' not in json.dumps(exported)
+
+
+@pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+def test_native_generation_limit_capture_keeps_content_disabled(key):
+    from api_agent.workflows.inference_capture import capture_inference, collect_inference
+    with collect_inference(EmissionBoundary(ContentPolicy(False))) as collector:
+        capture_inference('input', {'provider_payload': {key: 128}}, str(uuid4()))
+    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'withheld'}]
+
+
 def test_json_capture_excludes_policy_admission_before_projection(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event

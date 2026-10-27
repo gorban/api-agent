@@ -39,6 +39,18 @@ Core orchestration consumes these interfaces rather than hardcoding a pack's
 services. See [provider architecture](architecture/provider_architecture.md) and
 [versioned contracts](architecture/provider_contracts_v1.md) for extension details.
 
+## Generated response contracts
+
+A workflow can declare one generated response schema per node, separately from
+its complete node output. Its native function explicitly constructs a
+`CompletionRequest.response` policy through `NodeContext.response_request`.
+Provider implementations resolve the requested mode for their actual route,
+validate generated JSON against the original schema and report the actual mode.
+Fallback permission changes formatting only; it never authorizes another
+account, model, endpoint or a replay after failure. Legacy requests retain their
+existing contract. See [declaration and binding requirements](prds/implementation_plan_f1a1.md)
+and [included adapter modes and evidence](../src/api_agent/llm_providers/gpt/RESPONSE_MODES.md).
+
 ## Contribute integration tests
 
 A selected provider can add adjacent `cfg/tests.toml`:

@@ -139,7 +139,6 @@ def test_cross_owner_schema_link_uses_captured_source_owner():
 
 
 @pytest.mark.parametrize('kind, field, path, data', [
-    ('functions', 'Input', 'base/cfg/input.toml', b'{"type":"object"}'),
     ('timeouts', 'LIMIT', 'base/contracts/limit.json', b'[fields.LIMIT]\ndefault = 1\n'),
 ])
 def test_reference_sources_skip_wrong_target_extensions(kind, field, path, data):
@@ -711,3 +710,44 @@ def test_unguarded_linked_single_pass_has_configuration_without_guard_anchor(tmp
     assert setting[2] in links
     assert f'n0 .. {setting[1]}' not in display
     assert 'EXHAUSTED' not in display
+
+
+@pytest.mark.parametrize('response_path', [None, 'base/contracts/output.json', 'base/contracts/response.json'])
+def test_schema_reference_order_and_links_include_declared_response(response_path):
+    projection, document = _projection()
+    schema = b'{"type":"object"}'
+    digest = __import__('hashlib').sha256(schema).hexdigest()
+    fields = [('Input', 'base/contracts/input.json'), ('Output', 'base/contracts/output.json')]
+    if response_path is not None:
+        fields.append(('Response schema', response_path))
+    projection.references = tuple(ViewerReference('functions', document.logical_path, 'task', 1,
+        path, digest, (('field', field),)) for field, path in reversed(fields))
+    projection.resources = tuple(SimpleNamespace(logical_path=path, sha256=digest, content_bytes=schema)
+                                 for path in sorted({path for _, path in fields}))
+
+    source, links = _projection_source(projection, document)
+
+    labels = [f'{field}: {Path(path).name.replace(".", "&#46;")}'.encode() for field, path in fields]
+    assert [source.index(label) for label in labels] == sorted(source.index(label) for label in labels)
+    assert set(links) >= {'../../contracts/' + Path(path).name for _, path in fields}
+    assert viewer_render._reference_sources(projection) == {
+        'r/' + path: schema for _, path in fields}
+    if response_path is None:
+        assert b'Response schema:' not in source
+
+
+@pytest.mark.parametrize('field', ['Input', 'Output', 'Response schema'])
+def test_admitted_schema_reference_has_no_filename_extension_requirement(field):
+    projection, document = _projection()
+    schema = b'{"type":"object"}'
+    digest = __import__('hashlib').sha256(schema).hexdigest()
+    path = 'base/contracts/response.schema'
+    projection.references = (ViewerReference('functions', document.logical_path, 'task', 1,
+                                             path, digest, (('field', field),)),)
+    projection.resources = (SimpleNamespace(logical_path=path, sha256=digest, content_bytes=schema),)
+
+    source, links = _projection_source(projection, document)
+
+    assert f'{field}: response&#46;schema'.encode() in source
+    assert '../../contracts/response.schema' in links
+    assert viewer_render._reference_sources(projection) == {'r/' + path: schema}

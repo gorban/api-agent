@@ -162,3 +162,63 @@ def test_packaged_adapter_requires_physical_module_identity(adapter_identity_val
     expected = {name: values.get(name) for name in profile['identity_settings']}
     assert observed['backend']['configuration_sha256'] == hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()
     assert observed['backend']['adapter_sources']['BEDROCK_SESSION_PROVIDER'] == hashlib.sha256(adapter.read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def response_fingerprint_config():
+    def values(provider):
+        config = {'LLM_PROVIDER': str(ROOT / f'src/api_agent/llm_providers/{provider}/factory.py') + ':factory',
+                  'LLM_WORKFLOW_TEST_MODEL': 'gpt-6-luna', 'GPT_API_MODE': 'responses'}
+        if provider == 'bedrock':
+            config.update(BEDROCK_API_MODE='completions', BEDROCK_AUTH_MODE='session',
+                          BEDROCK_REGION='us-east-1', LLM_WORKFLOW_TEST_MODEL='zai.glm-5')
+        return config
+    return values
+
+
+@pytest.mark.parametrize('provider,helper', [
+    ('gpt', 'llm_providers/response_policy.py'),
+    ('gpt', 'llm_providers/gpt/response_policy.py'),
+    ('bedrock', 'llm_providers/response_policy.py'),
+    ('bedrock', 'llm_providers/bedrock/response_policy.py'),
+])
+def test_response_helper_change_invalidates_its_provider_qualification(monkeypatch, response_fingerprint_config, provider, helper):
+    from api_agent.workflows import fixture_driver as driver
+    from api_agent.workflows.sampling import DECLARED, validate_calibration
+    from test_workflow_fixture_driver import synthetic_current_report
+    config = response_fingerprint_config(provider)
+    selection = config['LLM_WORKFLOW_TEST_MODEL']
+    before = driver.fingerprint(selection, config, root=ROOT, owner_root=ROOT)
+    key = 'src/api_agent/' + helper
+    assert key in before['sources']
+    report = synthetic_current_report()
+    report.update(before)
+    validate_calibration(report, DECLARED, before)
+    original_digest = driver.sampling_digest
+    target = ROOT / key
+
+    def changed_helper_digest(path):
+        return '0' * 64 if path == target else original_digest(path)
+
+    monkeypatch.setattr(driver, 'sampling_digest', changed_helper_digest)
+    after = driver.fingerprint(selection, config, root=ROOT, owner_root=ROOT)
+
+    assert after['sources'] == {**before['sources'], key: '0' * 64}
+    assert {name: value for name, value in after.items() if name != 'sources'} == {
+        name: value for name, value in before.items() if name != 'sources'}
+    with pytest.raises(ValueError, match='stale'):
+        validate_calibration(report, DECLARED, after)
+
+
+@pytest.mark.parametrize('provider,irrelevant', [('gpt', 'llm_providers/bedrock/response_policy.py'),
+                                               ('bedrock', 'llm_providers/gpt/response_policy.py')])
+def test_other_provider_response_helper_does_not_change_qualification(monkeypatch, response_fingerprint_config, provider, irrelevant):
+    from api_agent.workflows import fixture_driver as driver
+    config = response_fingerprint_config(provider)
+    selection = config['LLM_WORKFLOW_TEST_MODEL']
+    before = driver.fingerprint(selection, config, root=ROOT, owner_root=ROOT)
+    key = 'src/api_agent/' + irrelevant
+    assert key not in before['sources']
+    original_digest = driver.sampling_digest
+    monkeypatch.setattr(driver, 'sampling_digest', lambda path: '0' * 64 if path == ROOT / key else original_digest(path))
+    assert driver.fingerprint(selection, config, root=ROOT, owner_root=ROOT) == before

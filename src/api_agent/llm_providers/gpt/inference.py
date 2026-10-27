@@ -1,5 +1,6 @@
 """Bounded text inference; caller owns HTTP transport and selected authentication."""
-from asyncio import sleep
+from asyncio import sleep, CancelledError
+from dataclasses import replace
 import json
 from uuid import UUID
 
@@ -7,6 +8,7 @@ import httpx
 
 from api_agent.providers.llm import LLMRequest, LLMResult, Message, TextContent, Usage
 from api_agent.providers.contracts import ProviderAccessError
+from api_agent.providers.control import OperationalError
 from api_agent.providers.progress import component_timeout
 from .discovery import _endpoint, _failure, _authentication_type
 from .cache_policy import prompt_cache_fields
@@ -355,7 +357,15 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     if api_mode not in ('responses', 'completions') or (subscription and api_mode != 'responses'):
         raise ProviderAccessError('invalid_request', 'GPT subscription inference requires responses mode.')
     base_url = _endpoint(base_url, access_token, subscription)
-    body = _payload(request, api_mode, subscription, _validate_instances=_validate_instances)
+    from .response_policy import prepare_response
+    prepared, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
+    from api_agent.llm_providers.response_policy import format_payload
+    body = format_payload(request, _payload(prepared, api_mode, subscription, _validate_instances=_validate_instances), evidence)
+    if evidence is not None and evidence.actual_mode == 'json':
+        if api_mode == 'responses':
+            body['text'] = {'format': {'type': 'json_object'}}
+        else:
+            body['response_format'] = {'type': 'json_object'}
     from .reasoning import reasoning_fields
     body.update(reasoning_fields(request, base_url=base_url, api_mode=api_mode))
     from .rich import _protected
@@ -400,14 +410,23 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
         # JSON key. Both refer to this owned provider session, never credentials.
         body['prompt_cache_key'] = cache_session_id
         headers['session-id'] = cache_session_id
+    from api_agent.providers.inference import error_usage
+    from api_agent.workflows.inference_capture import record_response_failure
+    failure_usage = None
+    dispatch = {'response': None, 'captured': False}
     try:
         async with component_timeout('GPT text inference', _TIMEOUT) as budget:
             attempt = 0
             while True:
                 try:
-                    return await _complete_attempt(client=client, base_url=base_url, headers=headers,
-                        body=body, subscription=subscription, api_mode=api_mode, request=request,
-                        access_token=access_token, budget=budget)
+                    try:
+                        return await _complete_attempt(client=client, base_url=base_url, headers=headers,
+                            body=body, subscription=subscription, api_mode=api_mode, request=request,
+                            access_token=access_token, budget=budget, dispatch=dispatch)
+                    except (OperationalError, TimeoutError, httpx.RequestError, CancelledError) as failure:
+                        failure_usage = error_usage(failure)
+                        record_response_failure(failure)
+                        raise
                 except ProviderAccessError as error:
                     if (error.execution != 'not_started' or error.code != _RETRY_CODE
                             or attempt == len(_RETRY_DELAYS)):
@@ -419,13 +438,20 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
                     if budget.remaining < _RETRY_RESPONSE_RESERVE:
                         raise
                     attempt += 1
-    except (TimeoutError, httpx.TimeoutException):
-        error = ProviderAccessError('deadline', 'GPT inference timed out.')
+    except (ProviderAccessError, OperationalError, CancelledError) as error:
+        error.response = dispatch['response']
+        raise
+    except (TimeoutError, httpx.TimeoutException) as failure:
+        from api_agent.providers.inference import error_usage
+        error = ProviderAccessError('deadline', 'GPT inference timed out.', usage=error_usage(failure) or failure_usage)
         error.execution = 'possibly_executed'
+        error.response = dispatch['response']
         raise error from None
-    except httpx.RequestError:
-        error = ProviderAccessError('unavailable', 'GPT inference transport is unavailable.')
+    except httpx.RequestError as failure:
+        from api_agent.providers.inference import error_usage
+        error = ProviderAccessError('unavailable', 'GPT inference transport is unavailable.', usage=error_usage(failure) or failure_usage)
         error.execution = 'possibly_executed'
+        error.response = dispatch['response']
         raise error from None
 
 
@@ -444,8 +470,22 @@ def _admission_rejection(status, data, subscription):
 
 
 async def _complete_attempt(*, client, base_url, headers, body, subscription, api_mode,
-                            request, access_token, budget):
+                            request, access_token, budget, dispatch):
     """Own and close one HTTP response before the caller decides to retry."""
+    from .response_policy import prepare_response
+    from api_agent.llm_providers.response_policy import capture_payload
+    _, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
+    if budget.remaining == 0:
+        raise TimeoutError('GPT inference deadline expired before dispatch.')
+    if not dispatch['captured']:
+        capture_payload(request, body, evidence, auth=access_token)
+        dispatch['captured'] = True
+    if budget.remaining == 0:
+        raise TimeoutError('GPT inference deadline expired before dispatch.')
+    if evidence is not None:
+        from api_agent.workflows.inference_capture import record_response_dispatch
+        record_response_dispatch(evidence)
+        dispatch['response'] = evidence
     async with client.stream('POST', base_url + ('/responses' if api_mode == 'responses' else '/chat/completions'),
             json=body, headers=headers,
             follow_redirects=False, timeout=budget.remaining) as response:
@@ -471,11 +511,10 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
             if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
                 raise _invalid('GPT subscription inference requires an event stream.')
             from .rich import async_validate_result
-            return await async_validate_result(request, _sse(raw, access_token, request_id), access_token)
+            return await async_validate_result(request, replace(_sse(raw, access_token, request_id), response=evidence), access_token)
         data = _json(raw)
         result = _result(data, api_mode == 'responses', access_token)
         if base_url == 'https://openrouter.ai/api/v1':
-            from dataclasses import replace
             usage = _usage(data.get('usage'), api_mode == 'responses', router=True)
             try:
                 billing = _billing(data, request_id, access_token)
@@ -484,4 +523,4 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                 raise
             result = replace(result, usage=usage, billing=billing)
         from .rich import async_validate_result
-        return await async_validate_result(request, result, access_token)
+        return await async_validate_result(request, replace(result, response=evidence), access_token)

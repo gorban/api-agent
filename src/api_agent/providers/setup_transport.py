@@ -3,6 +3,7 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 import hmac
+from hashlib import sha256
 import json
 import math
 import os
@@ -90,6 +91,10 @@ def _decode(raw):
         raise ContractError('Invalid setup frame') from None
 
 
+def _request_digest(request):
+    return sha256(json.dumps(request, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()).hexdigest()
+
+
 def _encode(value):
     try:
         raw = json.dumps(value, allow_nan=False, separators=(',', ':')).encode() + b'\n'
@@ -151,21 +156,60 @@ def _diagnostic(error, boundary):
 
 def _error(error, capability=None):
     category, source, message = 'failed', None, 'Shared authentication setup failed'
+    if isinstance(error, OperationalError):
+        # Exception attributes remain mutable after construction, including on
+        # subclasses. Validate before either wire representation is selected.
+        try:
+            kind, execution, retry_after = error.kind, error.execution, error.retry_after
+            classification = OperationalError(kind, execution, retry_after)
+            if isinstance(error, ProviderAccessError):
+                # Provider acquisition can establish that even an unknown
+                # failure occurred before inference. Preserve that valid stage.
+                classification.execution = execution
+        except (ValueError, OverflowError, AttributeError):
+            classification = OperationalError('unknown')
     if isinstance(error, ProviderAccessError):
-        details = {name: getattr(error, name) for name in ('status', 'code', 'type', 'request_id')}
-        details['kind'] = error.kind
-        default_execution = 'possibly_executed' if error.kind == 'unknown' else 'not_started'
-        if error.execution != default_execution:
-            details['execution'] = error.execution
-        if error.usage is not None:
-            from .inference import usage_to_wire
-            details['usage'] = usage_to_wire(error.usage)
-        message = error.message if capability is None else error.message.replace(capability, '[redacted]')
+        # Reuse the provider contract to validate each bounded diagnostic. Keep
+        # valid details even when another mutable field has become invalid.
+        message = getattr(error, 'message', None)
+        try:
+            ProviderAccessError(classification.kind, message)
+        except ValueError:
+            message = 'Shared provider operation failed'
+        details = {}
+        for name in ('status', 'code', 'type', 'request_id'):
+            value = getattr(error, name, None)
+            try:
+                ProviderAccessError(classification.kind, message, **{name: value})
+            except ValueError:
+                value = None
+            details[name] = value
+        details['kind'] = classification.kind
+        default_execution = 'possibly_executed' if classification.kind == 'unknown' else 'not_started'
+        if classification.execution != default_execution:
+            details['execution'] = classification.execution
+        if getattr(error, 'usage', None) is not None:
+            from .inference import error_usage, usage_to_wire
+            details['usage'] = usage_to_wire(error_usage(error))
+        if getattr(error, 'response', None) is not None:
+            from .rich_inference import response_evidence_to_wire
+            details['response'] = dict(version=3, response=response_evidence_to_wire(error.response))
         if capability is not None:
+            message = message.replace(capability, '[redacted]')
             details = {name: value.replace(capability, '[redacted]') if isinstance(value, str) else value
                        for name, value in details.items()}
         return dict(version=1, status='error', category='provider', index_source=None,
                     message=message, details=details)
+    if isinstance(error, OperationalError):
+        from .inference import error_usage, usage_to_wire
+        from .rich_inference import response_evidence_to_wire
+        usage = error_usage(error)
+        response = getattr(error, 'response', None)
+        return dict(version=1, status='error', category='operational', index_source=None,
+            message='Shared operation failed', details=dict(version=3, kind=classification.kind,
+                execution=classification.execution, retry_after=classification.retry_after,
+                response=None if response is None else response_evidence_to_wire(response),
+                usage=None if usage is None else usage_to_wire(usage)))
     if isinstance(error, UnattendedCredentialError):
         category = 'credential'
         original = getattr(error, 'index_source', None)
@@ -181,14 +225,46 @@ def _error(error, capability=None):
         message = 'Shared setup requires attention.'
     if capability is not None:
         message = message.replace(capability, '[redacted]')
-    return dict(version=1, status='error', category=category, index_source=source, message=message)
+    frame = dict(version=1, status='error', category=category, index_source=source, message=message)
+    response = getattr(error, 'response', None)
+    if category == 'failed' and response is not None:
+        from .rich_inference import response_evidence_to_wire
+        from .inference import error_usage, usage_to_wire
+        usage = error_usage(error)
+        frame['details'] = dict(version=3, response=response_evidence_to_wire(response),
+            usage=None if usage is None else usage_to_wire(usage))
+    return frame
 
 
 def _raise_error(frame):
+    if frame.get('category') == 'operational':
+        from .inference import result_from_wire
+        from .rich_inference import response_evidence_from_wire
+        if (set(frame) != {'version', 'status', 'category', 'index_source', 'message', 'details'}
+                or type(frame['version']) is not int or frame['version'] != 1 or frame['status'] != 'error'
+                or frame['index_source'] is not None or frame['message'] != 'Shared operation failed'
+                or type(frame['details']) is not dict
+                or set(frame['details']) != {'version', 'kind', 'execution', 'retry_after', 'response', 'usage'}
+                or type(frame['details']['version']) is not int or frame['details']['version'] != 3):
+            raise ContractError('Invalid operational response')
+        details = frame['details']
+        try:
+            error = OperationalError(details['kind'], details['execution'], details['retry_after'])
+            if error.execution != details['execution']:
+                raise ValueError()
+            response = None if details['response'] is None else response_evidence_from_wire(details['response'])
+            usage = None if details['usage'] is None else result_from_wire(dict(text='', outcome='completed', usage=details['usage'])).usage
+        except (ValueError, OverflowError):
+            raise ContractError('Invalid operational response') from None
+        if response is not None:
+            error.response = response
+        if usage is not None:
+            error.usage = usage
+        raise error
     if frame.get('category') == 'provider':
         if (set(frame) != {'version', 'status', 'category', 'index_source', 'message', 'details'}
                 or frame['index_source'] is not None or type(frame['details']) is not dict
-                or set(frame['details']) - {'usage', 'execution'} != {'kind', 'status', 'code', 'type', 'request_id'}):
+                or set(frame['details']) - {'usage', 'execution', 'response'} != {'kind', 'status', 'code', 'type', 'request_id'}):
             raise ContractError('Invalid provider response')
         details = frame['details'].copy()
         kind = details.pop('kind')
@@ -200,17 +276,36 @@ def _raise_error(frame):
                 from .inference import result_from_wire
                 usage = details['usage']
                 details['usage'] = result_from_wire({'text': '', 'outcome': 'completed', 'usage': usage}).usage
+            if 'response' in details:
+                from .rich_inference import response_evidence_from_wire
+                nested = details['response']
+                if type(nested) is not dict or set(nested) != {'version', 'response'} or type(nested['version']) is not int or nested['version'] != 3:
+                    raise ValueError()
+                details['response'] = response_evidence_from_wire(nested['response'])
             error = ProviderAccessError(kind, frame['message'], **details)
             if execution is not None:
                 error.execution = execution
         except ValueError:
             raise ContractError('Invalid provider response') from None
         raise error
-    if (set(frame) != {'version', 'status', 'category', 'index_source', 'message'}
+    if (set(frame) - {'details'} != {'version', 'status', 'category', 'index_source', 'message'}
             or type(frame['category']) is not str or frame['category'] not in ('failed', 'prerequisite', 'credential', 'interaction')
             or frame['index_source'] not in (None, 'dotenv', 'override')
             or type(frame['message']) is not str or not frame['message'] or len(frame['message']) > 4096):
         raise ContractError('Invalid setup response')
+    if 'details' in frame:
+        from .rich_inference import response_evidence_from_wire
+        from .inference import result_from_wire
+        details = frame['details']
+        if (frame['category'] != 'failed' or frame['index_source'] is not None
+                or type(details) is not dict or set(details) != {'version', 'response', 'usage'}
+                or type(details['version']) is not int or details['version'] != 3):
+            raise ContractError('Invalid dispatched failure evidence')
+        response = response_evidence_from_wire(details['response'])
+        usage = None if details['usage'] is None else result_from_wire(dict(text='', outcome='completed', usage=details['usage'])).usage
+        error = ContractError(frame['message'])
+        error.response, error.usage = response, usage
+        raise error
     category = frame['category']
     if category == 'credential':
         raise UnattendedCredentialError(frame['message'], index_source=frame['index_source'])
@@ -231,6 +326,7 @@ class _Peer:
     binding: object = None
     waiting: bool = False
     count: int = 0
+    complete_count: int = 0
     dropping: object = None
     jobs: tuple = ()
     finals: set = field(default_factory=set)
@@ -343,9 +439,27 @@ class SetupServer(_Owner):
             peer.waiting = False
 
     async def _dispatch(self, peer, frame, action):
-        from api_agent.workflows.inference_capture import collect_inference
-        with collect_inference() as collector:
-            return await self._dispatch_captured(peer, frame, action, collector)
+        from api_agent.workflows.inference_capture import collect_inference, bind_response_dispatch
+        if action == 'complete':
+            peer.complete_count += 1
+        def dispatched(evidence):
+            from .rich_inference import response_evidence_to_wire, validate_response_evidence
+            from .inference import request_from_wire
+            from types import SimpleNamespace
+            if action != 'complete':
+                raise ContractError('Response dispatch requires a completion')
+            validate_response_evidence(request_from_wire(frame['request']), SimpleNamespace(response=evidence, usage=None))
+            peer.writer.write(_encode(dict(version=1, status='response_policy',
+                call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
+                binding_sha256=_request_digest(peer.binding),
+                response=dict(version=3, response=response_evidence_to_wire(evidence)))))
+        with bind_response_dispatch(dispatched) as dispatch, collect_inference() as collector:
+            try:
+                return await self._dispatch_captured(peer, frame, action, collector)
+            except BaseException as error:
+                from api_agent.workflows.inference_capture import retain_response_failure
+                retain_response_failure(error, dispatch['response'], dispatch['usage'])
+                raise
 
     async def _dispatch_captured(self, peer, frame, action, collector):
         if action == 'register':
@@ -502,6 +616,8 @@ class SetupClient:
         self._lock = threading.RLock()
         self.evidence = []
         self.cost_quote = None
+        self.response_evidence = None
+        self._complete_count = 0
 
     def _context(self):
         if self._pid != os.getpid():
@@ -581,6 +697,8 @@ class SetupClient:
                     if remaining <= 0:
                         raise ProviderAccessError('deadline', 'Inference call deadline expired.')
                     frame['timeout'] = min(self._timeout, remaining)
+        if action == 'complete':
+            self._complete_count += 1
         self._writer.write(_encode(frame))
         await self._writer.drain()
         while True:
@@ -588,6 +706,22 @@ class SetupClient:
             if type(response.get('version')) is not int or response['version'] != 1:
                 raise ContractError('Invalid setup response')
             status = response.get('status')
+            if status == 'response_policy' and action == 'complete':
+                from .rich_inference import response_evidence_from_wire, validate_response_evidence
+                from .inference import request_from_wire
+                from types import SimpleNamespace
+                nested = response.get('response')
+                if (set(response) != {'version', 'status', 'call_sequence', 'request_sha256', 'binding_sha256', 'response'} or self.response_evidence is not None
+                        or type(response['call_sequence']) is not int or response['call_sequence'] != self._complete_count
+                        or response['request_sha256'] != _request_digest(request)
+                        or response['binding_sha256'] != _request_digest(self._binding)
+                        or type(nested) is not dict or set(nested) != {'version', 'response'}
+                        or type(nested['version']) is not int or nested['version'] != 3):
+                    raise ContractError('Invalid dispatched response policy')
+                evidence = response_evidence_from_wire(nested['response'])
+                validate_response_evidence(request_from_wire(request), SimpleNamespace(response=evidence, usage=None))
+                self.response_evidence = evidence
+                continue
             if status == 'cost' and action == 'complete':
                 from .costs import validate_quote
                 if set(response) != {'version', 'status', 'quote'} or self.cost_quote is not None:
@@ -695,7 +829,31 @@ class SetupClient:
         with self._lock:
             self.evidence = []
             self.cost_quote = None
-            return self._run_request('complete', request_to_wire(request))
+            self.response_evidence = None
+            from .rich_inference import validate_response_evidence, validate_response_result
+            try:
+                result = self._run_request('complete', request_to_wire(request))
+            except BaseException as error:
+                from api_agent.workflows.inference_capture import retain_response_failure
+                if self.response_evidence is None and getattr(error, 'response', None) is not None:
+                    from .inference import error_usage
+                    rejected = ContractError('Unobserved dispatched response policy')
+                    rejected.usage = error_usage(error)
+                    raise rejected from error
+                retain_response_failure(error, self.response_evidence)
+                if getattr(error, 'response', None) is not None:
+                    validate_response_evidence(request, error)
+                raise
+            if self.response_evidence is None and result.response is not None:
+                rejected = ContractError('Unobserved dispatched response policy')
+                rejected.usage = result.usage
+                raise rejected
+            if self.response_evidence is not None and self.response_evidence != result.response:
+                conflict = ContractError('Conflicting dispatched response policy')
+                conflict.response = self.response_evidence
+                conflict.usage = result.usage
+                raise conflict
+            return validate_response_result(request, result)
 
     def _run_request(self, action, request=None):
         with self._lock:
@@ -709,12 +867,16 @@ class SetupClient:
             self._request_task.add_done_callback(_consume)
             try:
                 return self._loop.run_until_complete(self._request_task)
-            except (SetupPrerequisiteError, InteractionRequiredError, ProviderAccessError):
+            except (SetupPrerequisiteError, InteractionRequiredError, ProviderAccessError, OperationalError):
                 raise
             except BaseException as original:
                 self._failed = True
                 interrupted = isinstance(original, (KeyboardInterrupt, SystemExit, asyncio.CancelledError))
                 operation_error = ContractError('Shared setup connection failed')
+                if getattr(original, 'response', None) is not None:
+                    from .inference import error_usage
+                    operation_error.response = original.response
+                    operation_error.usage = error_usage(original)
                 cause = original if isinstance(original, ContractError) else ContractError(_diagnostic(original, 'Worker transport'))
                 operation_error.__cause__ = cause
                 try:

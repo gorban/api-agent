@@ -1,16 +1,28 @@
 # Amazon Bedrock provider
 
-The current built-in SDK-profile checkpoint qualifies Bedrock cap 50; GPT cap 48
-remains unchanged. Fresh workflow/reasoning checks passed, retaining an earlier
-empty-answer failure. Units passed 18,700 tests with exact line/branch coverage;
-technical reviews passed and launcher follow-up acceptance is conditional.
+The current API-key Completions calibration qualifies Bedrock cap 50 from
+60 graphs and 156 calls: measured minimum 46 plus allowance 4. GPT cap 57 is
+unchanged. The matching normal API-key Completions workflow coverage test passed
+1/1, with six user turns and 9,415 tokens; cost remains unknown. Current source
+verification passed 19,433 unit tests with exact
+line/branch coverage and independent/external source reviews. The user confirms
+the effective default attended login works; repeat/restart reuse, SSO and indexed
+session qualification remain separate. Packaged/relocated artifact verification
+and final delivery review passed for this checkpoint. Remaining human acceptance
+stays open.
+
+The earlier built-in SDK-profile checkpoint qualified Bedrock cap 50 with GPT
+cap 48. Fresh workflow/reasoning checks passed, retaining an earlier empty-answer
+failure. Its 18,700 units passed with exact line/branch coverage and technical
+reviews passed; launcher follow-up acceptance was conditional. Those historical
+settings are not the current API-key calibration.
 
 The historical native-adapter checkpoint qualified cap 52, passed 17 core plus
 one provider UI case and 18,674 units. This is not a new full 18-case SDK run.
 See the [qualification guide](QUALIFICATION.md) for evidence and acceptance scopes.
 
 This optional provider uses only regional bedrock-mantle
-endpoint through the ordinary provider interface. The maintained OpenAI SDK handles AWS signing, HTTP and SSE in an owned worker.
+endpoint through the ordinary provider interface. The OpenAI SDK owns signing, HTTP and SSE in a worker.
 Converse, InvokeModel, Bedrock Runtime and direct OpenAI fallback remain unsupported.
 Controlled tests qualify the initial matrix below; live account access remains
 a separate acceptance step.
@@ -21,7 +33,7 @@ Install the optional Python dependencies in the environment running the app:
 
     python -m pip install 'api-agent[bedrock]'
 
-The dependency manifest declares identical Boto3/pinned openai[bedrock] requirements. Source packaging requires frontend assets from npm ci.
+Source packaging requires frontend assets from npm ci.
 SDK imports and credential resolution are lazy, so configuration inspection
 does not require AWS access or invoke login.
 
@@ -64,12 +76,15 @@ than choosing an arbitrary model.
 
 ## Credential sources
 
-- session uses the selected acquisition adapter. The builtin path requires a
-  preauthenticated SDK profile or credential chain and rejects indexed account
-  selection. BEDROCK_PROFILE defaults to lowercase default; BEDROCK_REGION
-  defaults to us-east-1. Explicit blanks restore SDK resolution. A custom
-  BEDROCK_SESSION_PROVIDER=file.py:factory can acquire complete temporary
-  key/secret/token material, with identity binding, expiry, refresh and disposal.
+- session defaults to the bundled aws_login.py:factory adapter through ordinary
+  configuration resolution. It reuses valid selected SDK credentials first,
+  then offers attended direct AWS recovery when permitted. No extra session
+  selector is needed. Explicitly empty BEDROCK_SESSION_PROVIDER selects the
+  SDK-only preauthenticated path; an explicit SSO/custom selector remains
+  authoritative. Bundled adapters reject indexed account selection. NO_STD_IN
+  or a missing interaction owner prevents hidden recovery. BEDROCK_PROFILE
+  defaults to lowercase default and BEDROCK_REGION to us-east-1; explicit blanks
+  restore SDK resolution. Custom adapters own acquisition, refresh and disposal.
 - access_key with an unattended LLM User index reads only that selected item:
   access-key ID from username and secret access key from password. With no index,
   allowed private interaction prompts for the ID and then the masked secret.
@@ -88,9 +103,10 @@ preserves exact values, including whitespace and punctuation. NO_STD_IN, missing
 or canceled interaction fails explicitly without hidden stdin. No new vault item
 is created.
 
-The optional native CLI adapter supports attended direct AWS/Identity Center.
-Indexed direct/federated automation remains future acquisition work.
-Okta is one replaceable federated provider, not the only planned session route. For session adapters, the version-one asynchronous
+The default native adapter supports attended direct AWS recovery; explicitly
+select an absolute or owner-root-relative path to aws_sso.py:factory for IAM
+Identity Center.
+Indexed direct/federated acquisition remains future work; Okta is replaceable. For session adapters, the version-one asynchronous
 acquire(request, *, previous=None)/aclose contract and canonical
 SessionRequest/SessionMaterial types live in acquisition.py. Indexed custom
 adapters must verify effective AWS identity. The builtin profile path does not
@@ -104,9 +120,10 @@ refresh, cancellation and failed cleanup retain explicit retry ownership.
 
 ## Selected-profile sessions and attended recovery
 
-Session setup first verifies the selected SDK profile. Usable credentials need no extra identity settings/CLI/browser. Select the optional bundled native
-adapter only to permit attended direct AWS or Identity Center recovery when
-credentials are unavailable. Expected account/principal assertions are optional;
+Session setup first verifies the selected SDK profile. Usable credentials need no extra identity settings/CLI/browser. Ordinary resolved defaults select the bundled
+direct AWS adapter for permitted attended recovery when credentials are
+unavailable. Explicit blank selects SDK-only acquisition; Identity Center needs
+an explicit SSO adapter path. Expected account/principal assertions are optional;
 SSO routing is requested through ordinary configuration review only when needed.
 See [session login and recovery](SESSION_LOGIN.md) for selectors, routing,
 identity assertions, selected-profile/cache persistence, exported credential
@@ -137,6 +154,12 @@ schema output on Completions. Other structured model/API combinations and GLM
 categorical effort controls fail explicitly. See [integration qualification](QUALIFICATION.md)
 for provider-contributed test selections and their limits.
 
+New response policies admit native strict GLM5 Completions schemas within the
+conservative subset. Native JSON mode, OSS schemas and response-format/tool
+combinations remain unqualified; allowed fallback uses the same text route.
+Original-schema validation and legacy behavior remain intact. See
+[response modes and evidence](../gpt/RESPONSE_MODES.md).
+
 Explicit cache controls, cache boundaries, native continuations, preserved
 reasoning continuity and additional model routes remain unsupported.
 Token/context caps interpret published K units conservatively in
@@ -161,10 +184,8 @@ explicit empty value; invalid or unsupported selections fail visibly.
 | Studio selection | Responses, OSS20B low to OSS120B medium |
 | Workflow | Completions, GLM 5, strict structured output with 1024 output tokens, four component passes |
 
-The workflow profile uses graph/component/LLM budgets of 600/300/120 seconds.
-The ordinary application default remains two component passes. Provider inference
-and setup defaults remain 900 and 960 seconds; shorter parent deadlines still
-apply. Profiles select operations within the selected provider and use the
+Workflow graph/component/LLM budgets are 600/300/120 seconds; application defaults
+remain two passes. Inference/setup defaults are 900/960 seconds, clipped by parents. Profiles select operations within the selected provider and use the
 intended configured credential identity. Studio browser cases retain their
 ordinary frontend/browser prerequisites. Unsupported cache-retention controls
 remain unsupported.
@@ -203,5 +224,3 @@ Direct AWS sign-in and IAM Identity Center use separate session adapters:
 `src/api_agent/llm_providers/bedrock/aws_sso.py:factory`, respectively, selected
 through BEDROCK_SESSION_PROVIDER. Both reuse valid selected credentials before
 recovery. See [session setup and migration](SESSION_LOGIN.md).
-
-See [list-price estimates and limitations](COSTS.md) for qualified models, regions, tiers and historical predictions.

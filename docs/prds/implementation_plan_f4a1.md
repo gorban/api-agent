@@ -24,3 +24,33 @@ This phase introduces a provider-local acquisition interface and temporary-crede
 - [x] Verify actual configuration/provider/runtime joins, explicit adapter load failures, relative imports, expiry/refresh races, index isolation, cancellation, cleanup retry and secret exclusion using deterministic offline tests. Require exact 100% line and branch coverage for new modules, meaningful causal mutations and focused affected regressions. Verify source/installed/relocated resources and independent adversarial review before acceptance.
 
 Live authentication requires account-readiness confirmation. Any inference-spending test requires separate explicit authorization and bounds. Successful offline acquisition or temporary-token transport does not qualify a concrete AWS/SSO login adapter, pricing or production adoption.
+
+
+## Attended default follow-up
+
+- [x] Ordinary Bedrock configuration defaults BEDROCK_SESSION_PROVIDER to
+  aws_login.py:factory beside the selected provider factory, including installed
+  and relocated layouts. Reuse valid selected SDK credentials before attended
+  direct recovery; no extra selector is required. Explicit blank remains
+  SDK-only; explicit SSO/custom choices remain authoritative. Raw programmatic
+  dictionaries that omit the field retain legacy SDK-only behavior.
+- [x] Keep configuration/help/collection lazy. Preserve NO_STD_IN, visible-owner
+  and selected-index guards, identity binding, refresh and disposal. Verify normal
+  resolution and actual owned adapter dispatch with synthetic cached material;
+  reject hidden login and test explicit overrides without AWS calls.
+- [x] Complete independent and external source review of this default/configuration
+  follow-up; the complete unit run passes with exact line/branch coverage.
+- [x] Renew the affected API-key Completions calibration after the default changes
+  its identity inputs: 60 graphs and 156 calls support measured minimum 46 plus
+  allowance 4, promoting Bedrock cap 50. Matching normal API-key Completions
+  workflow coverage passed 1/1 with six user turns and 9,415 tokens; cost remains
+  unknown. GPT cap 57 is unchanged. Historical
+  SDK-only/native qualifications retain their original scopes; this calibration
+  does not qualify attended session reuse, SSO or indexed session acquisition.
+- [x] User confirmation: the effective default attended login works.
+- [ ] Human acceptance: verify ordinary launch with the session selector omitted,
+  auth mode omitted or explicitly session, and no unattended index reuses the
+  selected cache or offers direct attended handoff for the same identity when
+  required. Repeat/restart must reuse valid credentials without unnecessary
+  login. The reported working attended login does not close these separate
+  reuse/restart checks, SSO or indexed-session qualification.

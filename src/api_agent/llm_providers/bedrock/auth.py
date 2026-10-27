@@ -1,7 +1,7 @@
 """Opaque credentials and lazily selected provider-local acquisition owners."""
 import asyncio
 
-from api_agent.providers.contracts import ContractError, InteractionRequiredError, SessionClosedError
+from api_agent.providers.contracts import ContractError, InteractionRequiredError, SessionClosedError, UnattendedCredentialError
 from api_agent.providers.progress import component_timeout, independent_timeout_scope, report_timeout
 from api_agent.providers.control import finish_cleanup, CleanupPendingError
 
@@ -29,6 +29,8 @@ class SelectedCredentialReader:
         async with report_timeout('Bedrock selected credential helper', 60):
             try:
                 value = await self._credentials(index, kind)
+            except UnattendedCredentialError:
+                raise
             except Exception:
                 raise InteractionRequiredError('Unable to read selected Bedrock credentials.') from None
             self._live()
@@ -170,6 +172,8 @@ async def create_session(config, *, interactive, user_index, credentials, servic
                 raise InteractionRequiredError('Bedrock api_key requires a selected credential account.')
             try:
                 secret = attended['api_key'] if attended is not None else await credentials(user_index, 'password')
+            except UnattendedCredentialError:
+                raise
             except Exception:
                 raise InteractionRequiredError('Unable to read selected Bedrock credentials.') from None
             if not isinstance(secret, str) or not secret.strip():
@@ -184,6 +188,8 @@ async def create_session(config, *, interactive, user_index, credentials, servic
                 else:
                     key = await credentials(user_index, 'username')
                     secret = await credentials(user_index, 'password')
+            except UnattendedCredentialError:
+                raise
             except Exception:
                 raise InteractionRequiredError('Unable to read selected Bedrock credentials.') from None
             if not isinstance(key, str) or not isinstance(secret, str) or not key.strip() or not secret.strip():

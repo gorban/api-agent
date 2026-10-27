@@ -79,7 +79,8 @@ def test_declarative_fixture_preserves_legacy_graph_contract():
         def contract(rows):
             return [{key: value for key, value in row.items()
                      if key not in {'line', '_owner', '_owner_id', 'Input schema', 'Output schema', 'Kind',
-                                    'max_passes_key', 'max_passes_link', 'max_passes_default'}
+                                    'max_passes_key', 'max_passes_link', 'max_passes_default',
+                                    'Response schema', 'Output mode', 'Fallback', 'Response schema value'}
                      and not (section == 'Prompts' and key == 'File')}
                     for row in rows]
         if section == 'Components':

@@ -73,7 +73,15 @@ class AuthTable(DataTable):
             super().action_cursor_up()
 
 
-class ExecutableInput(Input):
+class AuthInput(Input):
+    """Keep masked replies private even when a screen shortcut is unavailable."""
+
+    def action_copy(self):
+        if not self.password:
+            super().action_copy()
+
+
+class ExecutableInput(AuthInput):
     """Preserve deliberate same-text replacements as explicit edits."""
 
     def __init__(self, value, *, on_edit, id):
@@ -147,9 +155,9 @@ class AuthEditScreen(FocusNavigation, SelectedTextCopy, Screen[bool]):
                 yield ExecutableInput(value=self.values['cli_path'], on_edit=self._record_cli_edit, id='auth-path')
             else:
                 yield Static('Vault name', id='auth-first-label')
-                yield Input(value=self.values['vault'], id='auth-vault')
+                yield AuthInput(value=self.values['vault'], id='auth-vault')
                 yield Static('Login / item name', id='auth-login-label', classes='auth-next-field')
-                yield Input(value=self.values['user'], id='auth-user')
+                yield AuthInput(value=self.values['user'], id='auth-user')
             yield Static('', id='auth-error', markup=False)
             yield Static(self.owner.target_summary(), id='auth-targets', markup=False)
         with Horizontal(id='auth-form-actions') as actions:
@@ -185,6 +193,36 @@ class AuthEditScreen(FocusNavigation, SelectedTextCopy, Screen[bool]):
 
     def action_cancel(self):
         self.dismiss(False)
+
+    def on_descendant_focus(self, event):
+        self.refresh_bindings()
+
+    def copy_target(self):
+        selected, _ = super().copy_target()
+        if selected is not None:
+            return selected, True
+        focused = self.app.focused
+        if isinstance(focused, Input) and focused.screen is self and not focused.password:
+            return focused.selected_text or focused.value, bool(focused.selected_text)
+        return None, False
+
+    async def action_copy_value(self):
+        value, selected = self.copy_target()
+        focused = self.app.focused
+        input_selection = (focused if selected and self.get_selected_text() is None
+                           and isinstance(focused, Input) and not focused.password else None)
+        snapshot = (input_selection.value, input_selection.selection) if input_selection is not None else None
+        readonly_snapshot = dict(self.selections)
+
+        def copied():
+            if input_selection is not None:
+                if (input_selection.value, input_selection.selection) == snapshot:
+                    input_selection.selection = type(input_selection.selection).cursor(input_selection.cursor_position)
+            elif (selected and self.selections == readonly_snapshot
+                  and self.get_selected_text() == value):
+                self.clear_selection()
+
+        await self._copy_with_feedback(value, copied)
 
     def check_action(self, action, parameters):
         if self.app.screen is not self:

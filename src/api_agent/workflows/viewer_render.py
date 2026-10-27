@@ -34,6 +34,7 @@ RENDER_OPTIONS = ("-Playout=smetana", "-tsvg")
 _SVG_FONT_STACK = "DejaVu Sans, Liberation Sans, Arial, sans-serif"
 _SVG_NS = "http://www.w3.org/2000/svg"
 _XLINK_NS = "http://www.w3.org/1999/xlink"
+_SCHEMA_FIELDS = ('Input', 'Output', 'Response schema')
 _MAX_INPUT = 250_000
 _MAX_OUTPUT = 4_000_000
 _MAX_JAR = 30_000_000
@@ -169,13 +170,12 @@ def _reference_sources(projection: object) -> dict[str, bytes]:
     sources: dict[str, bytes] = {}
     for reference in projection.references:
         attrs = dict(reference.attributes)
-        schema = reference.kind == 'functions' and attrs.get('field') in ('Input', 'Output')
+        schema = reference.kind == 'functions' and attrs.get('field') in _SCHEMA_FIELDS
         configuration = reference.kind in ('timeout', 'timeouts', 'pass_limit')
         if not (schema or configuration):
             continue
         key = attrs.get('key') or attrs.get('Key') if configuration else None
-        suffix = '.json' if schema else '.toml'
-        if (configuration and not key) or not reference.target_path.endswith(suffix):
+        if configuration and (not key or not reference.target_path.endswith('.toml')):
             continue
         resource = resources.get(reference.target_path)
         if (resource is None or resource.sha256 != reference.target_sha256 or
@@ -294,7 +294,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         schema_refs = [reference for reference in projection.references
                        if reference.owner_id == step.id and reference.kind == 'functions'
                        and _route(reference.target_path) in reference_sources]
-        schema_refs.sort(key=lambda item: ('Input', 'Output').index(dict(item.attributes)['field']))
+        schema_refs.sort(key=lambda item: _SCHEMA_FIELDS.index(dict(item.attributes)['field']))
         lines.append(f'rectangle "{step_label(step)}" as {aliases[step.id]} [[{step_href(step)}]]')
         prior_schema_alias = None
         for reference in schema_refs:

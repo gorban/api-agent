@@ -75,7 +75,7 @@ def test_declared_defaults_allow_three_variants_but_choose_luna():
         ('gpt-6-terra', '6', 'gpt-terra'), ('gpt-6-haiku', '6', 'gpt-haiku'),
         ('gpt-6-astra', '6', 'gpt-astra'),
         ('gpt-5-luna', '5', 'gpt-luna'), ('openai/gpt-6-sol', '6', 'gpt-sol')])
-    assert tuple(row.selected_llm for row in policy.filter(values)) == tuple(row.selected_llm for row in values if row.selected_llm not in ('gpt-6-haiku', 'gpt-6-astra', 'gpt-5-luna'))
+    assert tuple(row.selected_llm for row in policy.filter(values)) == tuple(row.selected_llm for row in values if row.selected_llm not in ('gpt-6-haiku', 'gpt-6-astra'))
     assert policy.select_default(values) == 'gpt-6.10-luna'
     assert schema.fields['LLM_ALLOWED_MODELS'].acknowledge_default
     assert schema.fields['LLM_DEFAULT_MODEL'].acknowledge_default

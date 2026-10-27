@@ -1,13 +1,15 @@
 """Version-two bounded structured/tool inference; version-one text stays valid."""
 import json
 import re
+from hashlib import sha256
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from referencing import Registry
+from referencing.jsonschema import DRAFT202012
 from referencing.exceptions import NoSuchResource, Unresolvable
 from .contracts import ContractError, ProviderAccessError
 from .llm import (CompletionRequest, GenerationOptions, LLMRequest, LLMResult,
-                  Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, Usage, CacheBoundary, cache_boundary_indexes)
+                  Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, Usage, CacheBoundary, cache_boundary_indexes, ResponsePolicy, ResponseEvidence)
 
 
 def _pairs(items):
@@ -175,6 +177,61 @@ def schema(value, strict=True):
         raise ContractError('Rich inference requires a strict object schema') from None
 
 
+def _response_dialects(definition):
+    """Only draft 2020-12 schema positions may declare an explicit dialect."""
+    pending = [definition]
+    # _references has already bounded depth and total schema visits.
+    seen = set()
+    while pending:
+        node = pending.pop()
+        if type(node) is not dict or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if node.get('$schema', 'https://json-schema.org/draft/2020-12/schema') != 'https://json-schema.org/draft/2020-12/schema':
+            raise ValueError()
+        pending.extend(DRAFT202012.subresources_of(node))
+        if '$ref' in node:
+            # _references already admitted this bounded, root-relative pointer.
+            target = definition
+            for part in node['$ref'][2:].split('/'):
+                token = part.replace('~1', '/').replace('~0', '~')
+                target = target[int(token)] if type(target) is list else target[token]
+            pending.append(target)
+
+
+
+def response_schema(value):
+    """Admit absent or exact HTTPS 2020-12 dialects at schema positions only."""
+    try:
+        _text(value, 32768)
+        decoded = object_json(value)
+        _references(decoded)
+        Draft202012Validator.check_schema(decoded)
+        _response_dialects(decoded)
+        return decoded
+    except (ValueError, TypeError, KeyError, IndexError, SchemaError, RecursionError):
+        raise ContractError('Invalid original response schema') from None
+
+
+def _response_json(text):
+    try:
+        _text(text)
+        value = json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant)
+        _instance_bound(value)
+        _bounded(value)
+        return value
+    except (ValueError, TypeError, RecursionError):
+        raise ContractError('Invalid generated response JSON') from None
+
+
+def _validation_value(text, strict):
+    return _response_json(text) if strict is None else object_json(text)
+
+
+def _validation_schema(definition, strict):
+    return response_schema(definition) if strict is None else schema(definition, strict)
+
+
 def _identifier(value, *, name=False, empty=False):
     _text(value, 64 if name else 200)
     if ((not value and not empty) or (value and (not value.isprintable() or value.strip() != value))
@@ -258,6 +315,57 @@ def _bounded(row):
     raise ContractError('Rich inference exceeds its JSON byte limit')
 
 
+_RESPONSE_KEYS = ('requested_mode', 'fallback', 'actual_mode', 'schema_sha256', 'strict', 'fallback_reason')
+
+
+def response_evidence_to_wire(evidence):
+    if not isinstance(evidence, ResponseEvidence):
+        raise ContractError('Invalid response evidence')
+    row = {name: getattr(evidence, name) for name in _RESPONSE_KEYS}
+    response_evidence_from_wire(row)
+    return row
+
+
+def response_evidence_from_wire(row):
+    _exact(row, _RESPONSE_KEYS)
+    try:
+        return ResponseEvidence(**row)
+    except (TypeError, ValueError):
+        raise ContractError('Invalid response evidence') from None
+
+
+def _response_to_wire(policy):
+    definition = policy.schema
+    return dict(mode=policy.mode, fallback=policy.fallback, schema=None if definition is None else
+                dict(name=definition.name, schema=definition.schema, strict=definition.strict))
+
+
+def _response_from_wire(row):
+    _exact(row, ('mode', 'fallback', 'schema'))
+    definition = row['schema']
+    if definition is not None:
+        _exact(definition, ('name', 'schema', 'strict'))
+        response_schema(definition['schema'])
+        definition = StructuredOutput(_identifier(definition['name'], name=True), _text(definition['schema']), definition['strict'])
+    return ResponsePolicy(row['mode'], row['fallback'], definition)
+
+
+def validate_response_evidence(request, result):
+    policy, evidence = request.payload.response, result.response
+    if policy is None:
+        valid = evidence is None
+    elif evidence is None:
+        valid = False
+    else:
+        response_evidence_to_wire(evidence)
+        definition = policy.schema
+        valid = (evidence.requested_mode == policy.mode and evidence.fallback == policy.fallback
+                 and evidence.schema_sha256 == (None if definition is None else sha256(definition.schema.encode()).hexdigest())
+                 and evidence.strict == (None if definition is None else definition.strict))
+    if not valid:
+        raise ProviderAccessError('unknown', 'Response evidence does not match its request', usage=getattr(result, 'usage', None), response=evidence)
+
+
 def request_to_wire(request, *, _validate_instances=True):
     payload = request.payload
     row = dict(version=2, selected_llm=request.selected_llm, request_id=request.request_id,
@@ -265,6 +373,8 @@ def request_to_wire(request, *, _validate_instances=True):
                tools=[dict(name=tool.name, description=tool.description, schema=tool.input_schema, **({} if tool.strict else {"strict": False})) for tool in payload.tools],
                structured=None if payload.structured is None else dict(name=payload.structured.name, schema=payload.structured.schema, **({} if payload.structured.strict else {"strict": False})),
                max_output_tokens=payload.generation.max_output_tokens, cache_policy=payload.generation.cache_policy)
+    if payload.response is not None:
+        row.update(version=3, response=_response_to_wire(payload.response))
     if payload.generation.temperature is not None:
         row['temperature'] = payload.generation.temperature
     if payload.generation.reasoning_effort is not None:
@@ -275,16 +385,19 @@ def request_to_wire(request, *, _validate_instances=True):
 
 def request_from_wire(row, *, _validate_instances=True):
     keys = ('version','selected_llm','request_id','messages','tools','structured','max_output_tokens','cache_policy')
-    extras = tuple(key for key in ('reasoning_effort', 'temperature') if type(row) is dict and key in row)
+    extras = tuple(key for key in ('reasoning_effort', 'temperature', 'response') if type(row) is dict and key in row)
     _exact(row, (*keys, *extras))
     _bounded(row)
     try:
-        if (type(row['version']) is not int or row['version'] != 2
+        if (type(row['version']) is not int or row['version'] not in (2, 3)
                 or type(row['messages']) is not list or not 1 <= len(row['messages']) <= 64
                 or type(row['tools']) is not list or len(row['tools']) > 64):
             raise ValueError()
         if row['max_output_tokens'] is not None and (type(row['max_output_tokens']) is not int or not 1 <= row['max_output_tokens'] <= 1048576):
             raise ValueError()
+        if (row['version'] == 3) != ('response' in row) or (row['version'] == 3 and row['structured'] is not None):
+            raise ValueError()
+        response = _response_from_wire(row['response']) if row['version'] == 3 else None
         tools = []
         for item in row['tools']:
             _exact(item, ('name','description','schema', *(() if 'strict' not in item else ('strict',))))
@@ -315,18 +428,20 @@ def request_from_wire(row, *, _validate_instances=True):
         if pending:
             raise ValueError()
         return LLMRequest(_identifier(row['selected_llm']), CompletionRequest(messages, tuple(tools),
-            GenerationOptions(row['max_output_tokens'], temperature=row.get('temperature'), cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort')), structured), _identifier(row['request_id'], empty=True))
+            GenerationOptions(row['max_output_tokens'], temperature=row.get('temperature'), cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort')), structured, response), _identifier(row['request_id'], empty=True))
     except (ValueError, TypeError):
         raise ContractError('Invalid rich inference request') from None
 
 
 def result_to_wire(result):
     from .inference import usage_to_wire
-    if result.outcome != 'tool_calls' or not result.payload.calls or result.payload.results:
+    if result.response is None and (result.outcome != 'tool_calls' or not result.payload.calls or result.payload.results):
         raise ContractError('Tool-call results require the matching outcome')
     row = dict(version=2, message=message_to_wire(result.payload), outcome=result.outcome,
                usage=usage_to_wire(result.usage), actual_model=result.actual_model,
                service_tier=result.service_tier, serving_revision=result.serving_revision, billing=result.billing)
+    if result.response is not None:
+        row.update(version=3, response=response_evidence_to_wire(result.response))
     if result.applied_cache_boundaries:
         row['applied_cache_boundaries'] = list(result.applied_cache_boundaries)
     result_from_wire(row)
@@ -334,33 +449,48 @@ def result_to_wire(result):
 
 
 def result_from_wire(row):
-    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing', *(() if 'applied_cache_boundaries' not in row else ('applied_cache_boundaries',))))
+    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing', *(() if 'applied_cache_boundaries' not in row else ('applied_cache_boundaries',)), *(() if 'response' not in row else ('response',))))
     _bounded(row)
     try:
-        if type(row['version']) is not int or row['version'] != 2 or row['outcome'] != 'tool_calls':
+        if type(row['version']) is not int or row['version'] not in (2, 3):
+            raise ValueError()
+        if (row['version'] == 3) != ('response' in row):
+            raise ValueError()
+        response = response_evidence_from_wire(row['response']) if row['version'] == 3 else None
+        if row['outcome'] not in ('completed', 'length', 'refused', 'tool_calls') or (row['version'] == 2 and row['outcome'] != 'tool_calls'):
             raise ValueError()
         message = message_from_wire(row['message'])
-        if not message.calls or message.results or len({call.call_id for call in message.calls}) != len(message.calls):
+        if message.role != 'assistant' or message.results or bool(message.calls) != (row['outcome'] == 'tool_calls') or len({call.call_id for call in message.calls}) != len(message.calls):
             raise ValueError()
         from .inference import result_from_wire as text_result, _cache_boundaries
         checked = text_result(dict(text='', outcome='completed', usage=row['usage'], actual_model=row['actual_model'],
                                    service_tier=row['service_tier'], serving_revision=row['serving_revision'],billing=row['billing']))
-        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing, _cache_boundaries(row))
+        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing, _cache_boundaries(row), response)
     except (TypeError, ValueError):
         raise ContractError('Invalid rich inference result') from None
 
 
-def _output_checks(request, result, selection=None):
+def _response_output_checks(request, result):
     if not isinstance(result, LLMResult):
         raise ContractError("Invalid inference result")
+    validate_response_evidence(request, result)
+    if result.payload.results or bool(result.payload.calls) != (result.outcome == "tool_calls"):
+        raise ProviderAccessError("unknown", "Inference outcome does not match its payload", usage=result.usage, response=result.response)
+    if request.payload.response is not None and request.payload.response.schema is not None and result.outcome == 'completed':
+        definition = request.payload.response.schema
+        yield definition.schema, None, ''.join(part.text for part in result.payload.content), 'Response output does not match its original schema'
+
+
+def _output_checks(request, result, selection=None):
+    yield from _response_output_checks(request, result)
     eligible = () if selection is None else cache_boundary_indexes(request, selection)
     if not set(result.applied_cache_boundaries).issubset(eligible):
-        raise ProviderAccessError('unknown', 'Invalid applied cache boundary', usage=result.usage)
+        raise ProviderAccessError('unknown', 'Invalid applied cache boundary', usage=result.usage, response=result.response)
     tools = {tool.name: tool for tool in request.payload.tools}
     for call in result.payload.calls:
         tool = tools.get(call.name)
         if tool is None:
-            raise ProviderAccessError('unknown', 'Tool output does not match its schema', usage=result.usage)
+            raise ProviderAccessError('unknown', 'Tool output does not match its schema', usage=result.usage, response=result.response)
         yield tool.input_schema, tool.strict, call.arguments, 'Tool output does not match its schema'
     if request.payload.structured is not None and result.outcome == 'completed':
         definition = request.payload.structured
@@ -372,7 +502,7 @@ def _bounded_result(result):
     try:
         result_to_wire(result)
     except (ValueError, TypeError, RecursionError):
-        raise ProviderAccessError('unknown', 'Invalid bounded inference result', usage=result.usage) from None
+        raise ProviderAccessError('unknown', 'Invalid bounded inference result', usage=result.usage, response=result.response) from None
     return result
 
 
@@ -380,24 +510,32 @@ def validate_result(request, result, *, selection=None):
     """Validate actual output against the originating unmodified schemas."""
     for definition, strict, text, message in _output_checks(request, result, selection):
         if not _valid_output(definition, strict, text):
-            raise ProviderAccessError('unknown', message, usage=result.usage)
+            raise ProviderAccessError('unknown', message, usage=result.usage, response=result.response)
     return _bounded_result(result)
+
+
+def validate_response_result(request, result):
+    """Admit original policy output at IPC without inventing route capabilities."""
+    for definition, strict, text, message in _response_output_checks(request, result):
+        if not _valid_output(definition, strict, text):
+            raise ProviderAccessError('unknown', message, usage=result.usage, response=result.response)
+    return result
 
 
 async def async_validate_result(request, result, *, selection=None):
     for definition, strict, text, message in _output_checks(request, result, selection):
         try:
-            valid = await async_valid_schema(schema(definition, strict), object_json(text))
+            valid = await async_valid_schema(_validation_schema(definition, strict), _validation_value(text, strict))
         except ContractError:
             valid = False
         if not valid:
-            raise ProviderAccessError('unknown', message, usage=result.usage)
+            raise ProviderAccessError('unknown', message, usage=result.usage, response=result.response)
     return _bounded_result(result)
 
 
 def _valid_output(definition, strict, text):
     try:
-        return valid_schema(schema(definition, strict), object_json(text))
+        return valid_schema(_validation_schema(definition, strict), _validation_value(text, strict))
     except ContractError:
         return False
 

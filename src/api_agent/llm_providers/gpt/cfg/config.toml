@@ -55,8 +55,8 @@ type = "str"
 override = true
 override_if_present = true
 validation = "regex"
-default = '(?:openai/)?gpt-6(?:\.\d+)*-(?:luna|terra|sol)(?:-\d{4}-\d{2}-\d{2})?'
-help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows GPT-6 Luna, Terra and Sol, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
+default = '(?:openai/)?gpt-\d+(?:\.\d+)*-(?:luna|terra|sol)(?:-\d{4}-\d{2}-\d{2})?'
+help = "Full model-ID regular expression used by the shared agent to filter catalogs and reject disallowed inference before authentication. Default allows numeric GPT versions (including 5.6, 6 and 6.1) with Luna, Terra and Sol variants and optional dated suffixes, excluding Astra. Alternation is supported; .* is a wildcard, while \\* matches a literal asterisk. Override for another model family/provider."
 
 [fields.LLM_WORKFLOW_TEST_MODEL]
 acknowledge_default = false

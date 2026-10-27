@@ -75,8 +75,11 @@ class SharedSetupOwner(_Owner):
     Failed authentication checkpoints remain failed for this operation. Catalog
     failures can be retrieved again without replacing the provider or identity.
     This is deliberately not a cross-process registry.
+
+    Wrapped completions may explicitly preserve provider-owned payload capture;
+    None retains marker discovery on an ordinary bound completion method.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, validate_request=None, timeout=5, catalog_ttl=3600):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600):
         super().__init__(timeout)
         if type(catalog_ttl) not in (int, float):
             raise ContractError('Invalid shared setup binding')
@@ -87,6 +90,7 @@ class SharedSetupOwner(_Owner):
         if (not isinstance(operation_id, str) or not operation_id
                 or not isinstance(selected_identity, str) or not selected_identity
                 or not callable(owner_factory)
+                or (captures_effective_payload is not None and type(captures_effective_payload) is not bool)
                 or not math.isfinite(catalog_ttl) or catalog_ttl < 0):
             raise ContractError('Invalid shared setup binding')
         self.operation_id = operation_id
@@ -102,6 +106,7 @@ class SharedSetupOwner(_Owner):
         self._catalog_expires_at = 0.0
         self._catalog_ttl = catalog_ttl
         self._complete = complete
+        self._captures_effective_payload = captures_effective_payload
         self._validate_request = validate_request
         self._calls = set()
 
@@ -168,20 +173,27 @@ class SharedSetupOwner(_Owner):
         return result
 
     async def complete(self, request, *, selected_identity=None):
-        self._check()
-        task = _spawn(self._complete_request(request, selected_identity=selected_identity))
-        self._calls.add(task)
-        try:
-            result = await asyncio.shield(task)
-            self._check()
-            return result
-        finally:
+        from api_agent.workflows.inference_capture import bind_response_dispatch
+        with bind_response_dispatch() as dispatch:
             try:
-                await finish_cleanup(_drain([task], self._timeout, self._cancel_requested))
-            finally:
-                if task.done():
-                    self._calls.discard(task)
-                    self._cancel_requested.discard(task)
+                self._check()
+                task = _spawn(self._complete_request(request, selected_identity=selected_identity))
+                self._calls.add(task)
+                try:
+                    result = await asyncio.shield(task)
+                    self._check()
+                    return result
+                finally:
+                    try:
+                        await finish_cleanup(_drain([task], self._timeout, self._cancel_requested))
+                    finally:
+                        if task.done():
+                            self._calls.discard(task)
+                            self._cancel_requested.discard(task)
+            except BaseException as error:
+                from api_agent.workflows.inference_capture import retain_response_failure
+                retain_response_failure(error, dispatch['response'], dispatch['usage'])
+                raise
 
     async def _complete_request(self, request, *, selected_identity=None):
         from .inference import async_request_to_wire, result_to_wire
@@ -202,15 +214,26 @@ class SharedSetupOwner(_Owner):
                 from .rich_inference import resolve_catalog_selection
                 selection = await resolve_catalog_selection(lambda: self.describe(selected_identity=selected_identity), request)
         async def invoke(*, auth):
-            from api_agent.workflows.inference_capture import capture_inference
+            from api_agent.workflows.inference_capture import capture_inference, bind_inference_call
             cause_id = str(uuid4())
-            capture_inference('input', request_wire, cause_id, auth=auth)
-            result = await self._complete(request, auth=auth)
-            self._check()
-            from .rich_inference import async_validate_result
-            await async_validate_result(request, result, selection=selection)
-            capture_inference('output', result_to_wire(result), cause_id, auth=auth)
-            return result
+            with bind_inference_call(cause_id):
+                effective_capture = self._captures_effective_payload
+                if effective_capture is None:
+                    implementation = getattr(self._complete, '__self__', None)
+                    effective_capture = getattr(implementation, 'captures_effective_payload', False) is True
+                if not effective_capture:
+                    capture_inference('input', request_wire, cause_id, auth=auth)
+                try:
+                    result = await self._complete(request, auth=auth)
+                except BaseException as error:
+                    from api_agent.workflows.inference_capture import record_response_failure
+                    record_response_failure(error)
+                    raise
+                self._check()
+                from .rich_inference import async_validate_result
+                await async_validate_result(request, result, selection=selection)
+                capture_inference('output', result_to_wire(result), cause_id, auth=auth)
+                return result
         return await self._owner.call(invoke)
 
     async def aclose(self):

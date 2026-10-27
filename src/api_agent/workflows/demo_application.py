@@ -50,7 +50,7 @@ class UsefulDemoApplication:
                 raise ContractError('Useful demo accepts plain text messages')
             messages.append({'role': message.role,
                              'content': ''.join(part.text for part in message.content)})
-        if (request.payload.tools or request.payload.structured is not None
+        if (request.payload.tools or request.payload.structured is not None or request.payload.response is not None
                 or request.payload.generation.temperature is not None):
             raise ContractError('Useful demo does not accept caller tools or structured output')
         selected_owner = tool_owner or self.tool_owner

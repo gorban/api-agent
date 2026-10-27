@@ -2,18 +2,22 @@
 
 [Provider setup](README.md)
 
-For an attended session select:
+Ordinary resolved configuration defaults to session mode with the bundled
+aws_login.py:factory adapter. No additional session selector is needed for
+attended direct AWS recovery. Valid selected SDK credentials are reused first;
+recovery requires permitted visible interaction.
 
-    BEDROCK_AUTH_MODE=session
-    BEDROCK_SESSION_PROVIDER=src/api_agent/llm_providers/bedrock/aws_login.py:factory
-
-The selected session factory controls recovery. Use aws_login.py:factory for
-direct AWS console sign-in or aws_sso.py:factory in the same directory for IAM
-Identity Center. Both share credential verification, persistence and cleanup.
-Relative selectors use the provider owner root; absolute paths also work. For an
-installed package use the corresponding installed adapter file's absolute path.
-Builtin/custom adapters retain exclusive acquisition ownership; native settings
-are consumed only by these explicitly selected bundled adapters.
+An explicitly empty BEDROCK_SESSION_PROVIDER selects the SDK-only
+preauthenticated path. For IAM Identity Center in a source checkout, select
+src/api_agent/llm_providers/bedrock/aws_sso.py:factory; for an installed package,
+select that adapter file's absolute path. An explicit custom adapter owns its
+acquisition policy.
+Explicit dotenv, environment and CLI selectors remain authoritative. The bundled
+default is resolved beside the selected provider factory in source, installed and
+relocated layouts; explicit relative selectors use the owner root, and absolute
+paths also work. Native settings are consumed only by the selected native adapter.
+Raw programmatic config dictionaries that omit the field retain the legacy
+SDK-only behavior; use normal configuration resolution to receive defaults.
 
 The earlier PoC BEDROCK_LOGIN_METHOD setting is obsolete and may be removed from
 .env. Migrate its sso value by selecting
@@ -42,8 +46,8 @@ An absent selected SDK profile counts as missing credentials; native recovery
 creates that same profile name in its isolated files and never selects another
 SDK profile.
 
-Only recognized missing, expired or invalid credentials allow the explicitly
-selected native adapter to start attended recovery. Network failures, denied
+Only recognized missing, expired or invalid credentials allow the selected
+native adapter to start attended recovery. Network failures, denied
 access, missing dependencies, malformed profiles and other errors stop without
 login. The builtin adapter never starts CLI recovery; custom adapters retain
 exclusive acquisition ownership. Mantle authentication/authorization or inference

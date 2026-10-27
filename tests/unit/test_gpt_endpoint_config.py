@@ -138,3 +138,51 @@ def test_tui_effective_provider_settings_and_default_review(tmp_path):
             app.session.set_value('LLM_PROVIDER', '')
             assert 'GPT_BASE_URL' not in app.session.schema.fields
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('key', ['LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'])
+def test_real_provider_default_admits_its_studio_selections(tmp_path, key):
+    from api_agent.testing.model_choices import exact_model
+    result = resolve_config(provider_schema(tmp_path), environ={}, dotenv={},
+                            anchors={'owner_root': tmp_path}, interactive=True)
+    assert exact_model(result.values, key) == result.values[key]
+
+
+@pytest.mark.parametrize('model', [
+    'gpt-5.6-luna', 'gpt-6-terra', 'gpt-6.1-sol',
+    'openai/gpt-5.6-terra', 'openai/gpt-6-sol-2026-10-27', 'gpt-6.1-luna-2026-10-27',
+])
+def test_real_provider_default_admits_general_version_families(tmp_path, model):
+    from api_agent.providers.selection import ModelSelectionPolicy
+    result = resolve_config(provider_schema(tmp_path), environ={}, dotenv={},
+                            anchors={'owner_root': tmp_path}, interactive=True)
+    ModelSelectionPolicy(result.values).require_allowed(model)
+
+
+@pytest.mark.parametrize('model', ['gpt-5.6-astra', 'gpt-6-astra', 'gpt-6.1-haiku', 'claude-haiku'])
+def test_real_provider_default_rejects_other_families(tmp_path, model):
+    from api_agent.providers.selection import ModelSelectionPolicy
+    from api_agent.providers.contracts import ProviderAccessError
+    result = resolve_config(provider_schema(tmp_path), environ={}, dotenv={},
+                            anchors={'owner_root': tmp_path}, interactive=True)
+    with pytest.raises(ProviderAccessError):
+        ModelSelectionPolicy(result.values).require_allowed(model)
+
+
+@pytest.mark.parametrize('source', ['dotenv', 'environment', 'cli'])
+def test_explicit_model_restriction_remains_authoritative(tmp_path, source):
+    from api_agent.providers.selection import ModelSelectionPolicy
+    from api_agent.providers.contracts import ProviderAccessError
+    restricted = r'gpt-6-sol'
+    options = {'dotenv': {}, 'environ': {}, 'argv': []}
+    if source == 'cli':
+        options['argv'] = ['--llm-allowed-models=' + restricted]
+    else:
+        options['environ' if source == 'environment' else 'dotenv'] = {'LLM_ALLOWED_MODELS': restricted}
+    result = resolve_config(provider_schema(tmp_path), **options,
+                            anchors={'owner_root': tmp_path}, interactive=True)
+    assert result.fields['LLM_ALLOWED_MODELS'].source == source
+    policy = ModelSelectionPolicy(result.values)
+    policy.require_allowed('gpt-6-sol')
+    with pytest.raises(ProviderAccessError):
+        policy.require_allowed('gpt-5.6-luna')
