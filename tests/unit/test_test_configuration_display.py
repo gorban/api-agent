@@ -138,6 +138,7 @@ async def test_selected_review_mounts_case_setting_value_and_source_columns(tmp_
         app.selection = SelectionModel((test,))
         app.show_selection()
         await pilot.pause()
+        assert ('review-config', 'Review selected-test configuration') in app.screen.actions
         await app.choose('review-config')
         await pilot.pause()
         assert app.screen.kind == 'case-configuration'
@@ -147,3 +148,66 @@ async def test_selected_review_mounts_case_setting_value_and_source_columns(tmp_
         assert table.row_count == 1
         assert list(table.get_row_at(0)) == [test.id, 'LLM_DEFAULT_MODEL',
             'example-model', 'application:shared_default']
+
+
+@pytest.mark.parametrize('provider', ['gpt', 'bedrock'])
+def test_provider_declarations_hide_test_controls_from_ordinary_review(provider):
+    from api_agent.testing.test_profiles import TEST_KEYS
+    location = ROOT / f'src/api_agent/llm_providers/{provider}/factory.py'
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {},
+        {'LLM_PROVIDER': str(location) + ':factory'}, owner_root=ROOT)
+    assert TEST_KEYS <= schema.fields.keys()
+    assert all(not schema.fields[name].acknowledge_default for name in TEST_KEYS)
+    assert schema.fields['LLM_DEFAULT_MODEL'].acknowledge_default
+
+
+@pytest.mark.parametrize('saved_false', [False, True])
+def test_bedrock_reasoning_review_reports_profile_or_explicit_dotenv_override(saved_false):
+    from api_agent.testing.reasoning_contrast import scope
+    from api_agent.testing.test_profiles import resolve_test_profiles
+    location = ROOT / 'src/api_agent/llm_providers/bedrock/factory.py'
+    overrides = {'TUI_MODE': 'integration', 'LLM_PROVIDER': str(location) + ':factory'}
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, overrides, owner_root=ROOT)
+    dotenv = {'LLM_REASONING_TEST_TOKEN_REPORTING': 'False'} if saved_false else {}
+    result = resolve_config(schema, environ={}, dotenv=dotenv, overrides=overrides)
+    test = TestIdentity('base:reasoning', 'base', 'test_reasoning_contrast.py',
+        'tests/integration/test_reasoning_contrast.py::test_reasoning_contrast', root=ROOT)
+    before = dict(result.values)
+    assert result.values['LLM_REASONING_TEST_MODEL'] == ''
+    rows = {cells[1]: cells[2:] for _, cells in profile_rows((test,), result, schema, ROOT)}
+    effective = resolve_test_profiles((test,), result.values, owner_root=ROOT, fields=result.fields)[test.id]['config']
+    assert rows['LLM_REASONING_TEST_MODEL'][0] == 'openai.gpt-oss-120b'
+    assert rows['LLM_REASONING_TEST_HIGH_EFFORT'][0] == 'medium'
+    assert rows['LLM_REASONING_TEST_MAX_OUTPUT_TOKENS'][0] == '16000'
+    assert rows['LLM_SETUP_REQUEST_TIMEOUT_SECONDS'][0] == '960.0'
+    if saved_false:
+        assert rows['LLM_REASONING_TEST_TOKEN_REPORTING'] == ('False', 'dotenv')
+        with pytest.raises(ValueError, match='qualified for reasoning-token reporting'):
+            scope(effective)
+    else:
+        assert rows['LLM_REASONING_TEST_TOKEN_REPORTING'] == (
+            'True', 'provider_test_profile:test-profiles.toml:reasoning')
+        assert scope(effective)
+    assert result.values == before
+    assert dotenv == ({'LLM_REASONING_TEST_TOKEN_REPORTING': 'False'} if saved_false else {})
+
+
+@pytest.mark.parametrize('provider', ['gpt', 'bedrock'])
+def test_ordinary_review_excludes_hidden_test_controls_even_when_explicit(tmp_path, provider):
+    from types import SimpleNamespace
+    from api_agent.testing.test_profiles import TEST_KEYS
+    from test_tui import fixture
+    location = ROOT / f'src/api_agent/llm_providers/{provider}/factory.py'
+    overrides = {'TUI_MODE': 'integration', 'LLM_PROVIDER': str(location) + ':factory'}
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, overrides, owner_root=ROOT)
+    result = resolve_config(schema, environ={},
+        dotenv={'LLM_REASONING_TEST_TOKEN_REPORTING': 'False'}, overrides=overrides)
+    app = fixture(tmp_path)
+    app.schema = schema
+    app.session = SimpleNamespace(result=lambda **kwargs: result,
+        runtime_required_fields=(), review_field_names=lambda: frozenset(schema.fields))
+    app.review_names = set(schema.fields)
+    assert not TEST_KEYS & app.configuration_pending()
+    names = {name for name, _ in app.configuration_rows(review=result)}
+    assert not TEST_KEYS & names
+    assert 'LLM_DEFAULT_MODEL' in names

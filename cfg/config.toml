@@ -518,6 +518,7 @@ default = 7
 help = "Days of compatible finalized integration/E2E accounting history used for advance cost predictions and subscription calibration. Cached history appears immediately; background synchronization never starts services or login. Older records remain preserved but are outside this estimation window."
 
 [fields.LLM_WORKFLOW_TEST_MODEL]
+acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
@@ -526,6 +527,7 @@ help = "Exact model ID for workflow integration and calibration; empty requires 
 TUI_MODE = "integration"
 
 [fields.LLM_REASONING_TEST_MODEL]
+acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
@@ -534,6 +536,7 @@ help = "Exact model ID for the three-pair reasoning contrast using the configure
 TUI_MODE = "integration"
 
 [fields.LLM_STUDIO_TEST_DEFAULT_MODEL]
+acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
@@ -542,6 +545,7 @@ help = "Exact initial Studio selection-test model ID; empty requires explicit qu
 TUI_MODE = "integration"
 
 [fields.LLM_STUDIO_TEST_SELECTED_MODEL]
+acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
@@ -550,6 +554,7 @@ help = "Exact alternate Studio selection-test model ID; must differ from the ini
 TUI_MODE = "integration"
 
 [fields.LLM_STUDIO_TEST_DEFAULT_EFFORT]
+acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
@@ -559,6 +564,7 @@ enum = ["", "off", "low", "medium", "high"]
 TUI_MODE = "integration"
 
 [fields.LLM_STUDIO_TEST_SELECTED_EFFORT]
+acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
@@ -568,6 +574,7 @@ enum = ["", "off", "low", "medium", "high"]
 TUI_MODE = "integration"
 
 [fields.LLM_REASONING_TEST_LOW_EFFORT]
+acknowledge_default = false
 type = "str"
 default = ""
 enum = ["", "off", "low", "medium", "high"]
@@ -577,6 +584,7 @@ help = "Explicit lower-effort control for the matched three-pair contrast; must 
 TUI_MODE = "integration"
 
 [fields.LLM_REASONING_TEST_HIGH_EFFORT]
+acknowledge_default = false
 type = "str"
 default = ""
 enum = ["", "off", "low", "medium", "high"]
@@ -586,6 +594,7 @@ help = "Explicit higher-effort control for the matched three-pair contrast; must
 TUI_MODE = "integration"
 
 [fields.LLM_REASONING_TEST_TOKEN_REPORTING]
+acknowledge_default = false
 type = "bool"
 default = false
 review_optional = true
@@ -594,6 +603,7 @@ help = "Whether the selected provider/API route is qualified to report reasoning
 TUI_MODE = "integration"
 
 [fields.LLM_REASONING_TEST_MAX_OUTPUT_TOKENS]
+acknowledge_default = false
 type = "int"
 allow_empty = true
 validation = "positive"
@@ -603,6 +613,7 @@ help = "Optional output-token cap from 1 to 16384 for each of the six matched re
 TUI_MODE = "integration"
 
 [fields.LLM_REASONING_TEST_TIMEOUT_SECONDS]
+acknowledge_default = false
 type = "float"
 default = 150
 validation = "positive"
@@ -612,6 +623,7 @@ help = "Positive finite per-request reasoning contrast budget shared by the appl
 TUI_MODE = "integration"
 
 [fields.LLM_SETUP_REQUEST_TIMEOUT_SECONDS]
+acknowledge_default = false
 type = "float"
 default = 300
 validation = "positive"

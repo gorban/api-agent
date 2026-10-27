@@ -47,3 +47,8 @@ sampling, an agreed latency budget and human acceptance stay open above.
 - [x] Keep mouse text selection, contextual copying and subsequent keyboard navigation responsive. Selection and focus changes must not repeatedly resolve selected-test configuration or rebuild unchanged shortcut hints; account actions and Start must still use current authoritative configuration.
 - [x] Verify collection success/error/cancellation, pending automatic start and repeated selection/copy/navigation, measure the warm selected-text path, and complete independent/external review.
 - [ ] Human acceptance of confirmation persistence and responsiveness after selecting picker text.
+
+## Clear configuration navigation
+
+- [ ] Keep Clear .env cursor handlers and shortcut checks free of configuration resolution and filesystem reads. Use the displayed presence snapshot for shortcut availability; refresh it on entry, explicit refresh and after deletion. Coalesce navigation-triggered discovery in an isolated background resolver and reject obsolete or changed-source snapshots before delivery. Retain bounded source-receipt validation immediately before applying a display snapshot; this delivery check may read sources synchronously, but must not rediscover or resolve configuration. Keep help declarations in the same display snapshot without replacing execution authority. Deletion must apply to current assignments in every target file, including external edits since display.
+- [ ] Measure navigation after three seconds idle and verify retained rows, effective-source independence, external refresh and deletion freshness; complete independent review before acceptance.

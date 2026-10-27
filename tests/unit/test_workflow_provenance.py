@@ -991,3 +991,31 @@ def test_archive_distribution_cannot_claim_physical_documents(installed_distribu
         monkeypatch.setattr(metadata, 'distributions', lambda: discovered)
 
         assert _distribution_owns_documents(selected, 'base') is physical_owner
+
+
+@pytest.mark.parametrize('target', ['document', 'receipt'])
+@pytest.mark.parametrize('claim', ['absolute', 'traversal'])
+def test_distribution_inventory_rejects_unsafe_required_path_claim(
+        installed_distribution, monkeypatch, target, claim):
+    from importlib import metadata
+    from api_agent.workflows.provenance import _distribution_owns_documents
+    selected, _, site, info, _ = installed_distribution
+
+    class NormalizingDistribution(metadata.PathDistribution):
+        def locate_file(self, path):
+            # A locator can normalize paths; validate the raw inventory entry
+            # independently of the later physical-file/containment checks.
+            return Path(super().locate_file(path)).resolve()
+
+    distribution = NormalizingDistribution(info)
+    monkeypatch.setattr(metadata, 'distributions', lambda: [distribution])
+    assert _distribution_owns_documents(selected, 'base')
+    required = (selected.entry if target == 'document'
+                else selected.roots['base'] / 'workflow-source-proof.json')
+    relative = required.relative_to(site).as_posix()
+    unsafe = str(required) if claim == 'absolute' else 'synthetic_workflow/../' + relative
+    record = info / 'RECORD'
+    record.write_text(record.read_text().replace(relative + ',,', unsafe + ',,'))
+
+    assert distribution.locate_file(unsafe) == required
+    assert not _distribution_owns_documents(selected, 'base')

@@ -118,6 +118,7 @@ validation = "positive"
 help = "Total completion or streaming deadline in seconds, greater than zero and at most 3600. Parent deadlines can shorten this budget; catalog and setup retain their own limits."
 
 [fields.LLM_REASONING_TEST_TIMEOUT_SECONDS]
+acknowledge_default = false
 type = "float"
 override = true
 override_if_present = true
@@ -126,6 +127,7 @@ validation = "positive"
 help = "Application request deadline in seconds for each matched reasoning contrast call, including queue time."
 
 [fields.LLM_SETUP_REQUEST_TIMEOUT_SECONDS]
+acknowledge_default = false
 type = "float"
 override = true
 override_if_present = true

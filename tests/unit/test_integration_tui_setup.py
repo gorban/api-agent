@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from textual.widgets import DataTable, Static
+from textual.widgets import Button, DataTable, Static
 
 from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import TestResult
@@ -184,7 +184,21 @@ def test_single_start_uses_effective_account_choice(tmp_path, unattended):
         app.integration_runner = run
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause(.2)
-            assert app.screen.actions == (('continue', '(s) Start selected tests'),)
+            assert app.screen.actions == (('continue', '(s) Start selected tests'),
+                ('review-config', 'Review selected-test configuration'))
+            selected = app.selection.selected_ids.copy()
+            await pilot.press('tab', 'tab')
+            assert app.focused is app.screen.query_one('#review-config', Button)
+            await pilot.press('enter')
+            await pilot.pause(.2)
+            assert app.screen.kind == 'case-configuration'
+            assert not calls
+            assert app.selection.selected_ids == selected
+            app.screen.query_one('#return-test-selection', Button).focus()
+            await pilot.press('enter')
+            await pilot.pause(.2)
+            assert app.screen.kind == 'tests'
+            assert app.selection.selected_ids == selected
             await pilot.press('u')
             assert not calls
             await pilot.press('s')
