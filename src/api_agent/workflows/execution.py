@@ -1,4 +1,5 @@
 """LangGraph compilation, owned nested pass budgets and strict node contracts."""
+from .run_context import current_structural_scope, structural_scope
 import asyncio
 from contextlib import asynccontextmanager
 from contextlib import nullcontext
@@ -210,7 +211,10 @@ class Workflow:
     def _event(self, event, **values):
         journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
         if journal is not None:
-            journal.observe(dict(event=event, **values))
+            row = dict(event=event, **values)
+            if event in ('scope_start', 'scope_end') and row.get('owner') == 'GRAPH' and row.get('kind') == 'graph':
+                row['parent_id'] = None
+            journal.observe(row)
         observer = self.services.get('observe')
         if observer is not None:
             observer(dict(event=event, **values))
@@ -220,25 +224,27 @@ class Workflow:
         declared = self.timeouts.get(owner)
         async with component_timeout('Workflow ' + owner, declared) as budget:
             started = time.time() * 1000
-            common = dict(scope_id=budget.id, parent_id=budget.parent_id, owner=owner,
+            parent_id = current_structural_scope() if owner == 'GRAPH' and metadata.get('kind') == 'graph' else budget.parent_id
+            common = dict(scope_id=budget.id, parent_id=parent_id, owner=owner,
                           started_ms=started, declared_timeout=declared,
                           effective_timeout=budget.timeout, timeout_key=self.timeout_keys.get(owner), **metadata)
-            outcome = 'failed'
-            try:
-                self._event('scope_start', **common)
-                yield budget
-                self._check_deadline(budget)
-                outcome = 'passed'
-            except asyncio.CancelledError:
-                outcome = 'failed' if budget.deadline is not None and time.monotonic() >= budget.deadline else 'cancelled'
-                raise
-            finally:
+            with structural_scope(budget.id):
+                outcome = 'failed'
                 try:
-                    self._event('scope_end', **common, stopped_ms=time.time() * 1000,
-                                elapsed=time.monotonic() - budget.started, outcome=outcome)
-                except Exception:
-                    if outcome == 'passed':
-                        raise
+                    self._event('scope_start', **common)
+                    yield budget
+                    self._check_deadline(budget)
+                    outcome = 'passed'
+                except asyncio.CancelledError:
+                    outcome = 'failed' if budget.deadline is not None and time.monotonic() >= budget.deadline else 'cancelled'
+                    raise
+                finally:
+                    try:
+                        self._event('scope_end', **common, stopped_ms=time.time() * 1000,
+                                    elapsed=time.monotonic() - budget.started, outcome=outcome)
+                    except Exception:
+                        if outcome == 'passed':
+                            raise
 
     @staticmethod
     def _check_deadline(budget):

@@ -66,3 +66,16 @@ def turn(turn_id):
 def execution_context(value):
     """Bind an admitted envelope for the actual execution, including legacy absence."""
     return _bind(_EXECUTION, validate_execution_context(value) if value is not None else None)
+
+
+_STRUCTURAL_SCOPE = ContextVar('workflow_structural_scope', default=None)
+
+
+def current_structural_scope():
+    """Nearest actual workflow scope, independent of timing-only scopes."""
+    return _STRUCTURAL_SCOPE.get()
+
+
+def structural_scope(scope_id):
+    """Bind structural ownership with task-local restoration on every exit."""
+    return _bind(_STRUCTURAL_SCOPE, canonical_uuid(scope_id))

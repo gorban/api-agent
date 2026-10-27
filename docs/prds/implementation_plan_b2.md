@@ -12,9 +12,10 @@ acceptance before retiring the old Layout paths.
 
 ## Requirements and acceptance
 
-- [x] [B2a — Layout/runtime contracts and inference](implementation_plan_b2a.md):
+- [ ] [B2a — Layout/runtime contracts and inference](implementation_plan_b2a.md):
   structural declarations, compiled execution, independent nested retries,
-  strict contracts, timeout ownership and reusable artifacts.
+  strict contracts, timeout ownership and reusable artifacts are delivered;
+  the separate nested runtime interoperability follow-up remains open.
 - [x] [B2b — Permanent contrived fixture and statistical acceptance](implementation_plan_b2b.md):
   model-chosen independent route/readiness, verbatim input, repair, pilot,
   validated immutable calibration, bounded coverage and recorded evidence.
@@ -33,10 +34,10 @@ Human acceptance remains tracked in B2c.
 
 See [workflow usage](../workflow_poc.md) for reproducible generic commands.
 
-**Deferred human review**
-
-Substantive work is complete. Explicit human acceptance remains unchecked in the
-child requirements; technical completion does not waive that acceptance.
+The earlier delivery and review checks above remain complete. Substantive future
+[nested runtime interoperability](implementation_plan_b2a2.md) remains unchecked.
+Explicit human acceptance of the earlier work remains in its child requirements;
+technical completion does not waive that acceptance.
 
 - [Layout/runtime contracts](implementation_plan_b2a.md)
 - [Permanent contrived fixture](implementation_plan_b2b.md)

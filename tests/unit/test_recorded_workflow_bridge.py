@@ -247,7 +247,10 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
         decisions = json.loads(request.payload.messages[-1].content[0].text)['decisions']
         response = dict(original_input=fixture_driver.USER_INPUT, route=decisions['route'],
             ready=decisions['ready'], final_output=fixture_driver.USER_INPUT)
-        return LLMResult(Message('assistant', (TextContent(json.dumps(response)),)), Usage(3, 1))
+        result = LLMResult(Message('assistant', (TextContent(json.dumps(response)),)), Usage(3, 1))
+        from api_agent.testing.inference_usage import publish
+        publish(request, result)
+        return result
 
     def runner(context, tests, **hooks):
         hooks['before_run']()
@@ -255,14 +258,23 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
         monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
         monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(event_path))
         monkeypatch.setenv('PYTEST_CURRENT_TEST', selected.node_id + ' (call)')
-        for trial in range(1, graphs + 1):
-            fixture_driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', trial,
-                config, root=root, owner_root=root)
+        import asyncio
+        from api_agent.providers.progress import component_timeout
+        from api_agent.runtime.tasks import offload
+        async def run_graphs():
+            async with component_timeout('Workflow case coverage', 30):
+                for trial in range(1, graphs + 1):
+                    await offload(fixture_driver.run_graph, SimpleNamespace(complete=complete),
+                        'synthetic', trial, config, root=root, owner_root=root)
+        asyncio.run(run_graphs())
         for line in event_path.read_text().splitlines():
             emitted = json.loads(line)
             if emitted['kind'] == 'workflow_evidence':
                 packets.append(deepcopy(emitted['data']))
                 hooks['on_event'](RunnerEvent('workflow_evidence', 'base', selected,
+                    text=json.dumps(emitted['data'])))
+            elif emitted['kind'] == 'inference_usage':
+                hooks['on_event'](RunnerEvent('inference_usage', 'base', selected,
                     text=json.dumps(emitted['data'])))
         hooks['on_result'](result)
         execution = IntegrationRunResult(0, (result,), '')
@@ -274,6 +286,16 @@ def test_actual_driver_dual_publication_records_one_frozen_tree_per_execution(tm
     journals = [item for item in packets if 'projection' in item]
     legacy = [item for item in packets if 'trial' in item]
     assert len(journals) == len(legacy) == graphs
+    assert all(item['completeness'] == 'complete' for item in journals)
+    assert recorded.exit_code == 0
+    accounting = json.loads((recorded.directory / 'accounting.json').read_text())
+    calls = accounting['tests'][0]['calls']
+    expected_calls = graphs * (4 if retry else 2)
+    assert len(calls) == expected_calls
+    assert sum(call['usage']['input_tokens'] for call in calls) == 3 * expected_calls
+    assert sum(call['usage']['output_tokens'] for call in calls) == expected_calls
+    journal_calls = [call for item in journals for call in item['events'] if call['event'] == 'call']
+    assert {call['call_id'] for call in calls} == {call['call_id'] for call in journal_calls}
     rendered = json.loads(next(recorded.directory.glob('*-result.json')).read_text())
     assert len(rendered['steps']) == graphs
     assert [step['name'] for step in rendered['steps']] == ['Trial ' + str(index + 1) for index in range(graphs)]

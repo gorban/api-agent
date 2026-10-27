@@ -42,3 +42,7 @@ IPC and excludes it from content reports. Native schemas use a conservative
 closed subset with external retrieval disabled. Cached OpenRouter Responses
 continuations ending in a tool-output item fail explicitly as unsupported;
 ordinary text and supported Chat Completions calls retain their behavior.
+
+- [ ] Complete the separate future
+  [B2a2 — Nested runtime interoperability](implementation_plan_b2a2.md) contract.
+  Earlier delivered requirements and acceptance above retain their recorded status.

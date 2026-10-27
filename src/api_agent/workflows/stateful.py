@@ -1,4 +1,5 @@
 """Explicit, admitted LangGraph state workflows (Workflow v3)."""
+from .run_context import current_structural_scope, structural_scope
 
 import asyncio
 import ast
@@ -630,7 +631,10 @@ class StatefulWorkflow:
         services = self._services.get()
         callback = self._journal.get() or services.get('journal')
         if callback is not None:
-            callback.observe(dict(event=event, **metadata))
+            row = dict(event=event, **metadata)
+            if event in ('scope_start', 'scope_end') and row.get('owner') == 'GRAPH' and row.get('kind') == 'graph':
+                row['parent_id'] = None
+            callback.observe(row)
         observer = services.get('observe')
         if observer is not None:
             observer(dict(event=event, **metadata))
@@ -641,9 +645,11 @@ class StatefulWorkflow:
             turn = self._turn_state.get()
             parent_scope = (bind_timeout_budget(turn['open_components'][parent]['budget'])
                             if parent is not None else nullcontext())
-            with parent_scope:
+            with parent_scope, (structural_scope(turn['open_components'][parent]['budget'].id)
+                                if parent is not None else nullcontext()):
                 async with component_timeout('Workflow ' + row['ID'], self.timeouts.get(row['ID'])) as budget:
-                    return await self._run_node(row, function, state, budget)
+                    with structural_scope(budget.id):
+                        return await self._run_node(row, function, state, budget)
         return invoke
 
     async def _run_node(self, row, function, state, budget):
@@ -705,34 +711,36 @@ class StatefulWorkflow:
         finish = asyncio.get_running_loop().create_future()
         async def own():
             try:
-                with parent_scope:
+                with parent_scope, (structural_scope(turn['open_components'][owner_parent]['budget'].id)
+                                    if owner_parent is not None else nullcontext()):
                     async with component_timeout('Workflow ' + parent, self.timeouts.get(parent)) as budget:
-                        started = time.monotonic()
-                        wall_started = time.time() * 1000
-                        self._event('scope_start', scope_id=budget.id, parent_id=budget.parent_id,
-                                    owner=parent, kind='component', visit_id=budget.id,
-                                    attempt=1, max_passes=1,
-                                    started_ms=wall_started,
-                                    declared_timeout=self.timeouts.get(parent),
-                                    effective_timeout=budget.timeout,
-                                    timeout_key=self.timeout_keys.get(parent))
-                        ready.set_result(budget)
-                        outcome = 'failed'
-                        try:
-                            await finish
-                            outcome = 'passed'
-                        except asyncio.CancelledError:
-                            outcome = ('failed' if budget.deadline is not None
-                                       and time.monotonic() >= budget.deadline else 'cancelled')
-                            raise
-                        finally:
-                            self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
+                        with structural_scope(budget.id):
+                            started = time.monotonic()
+                            wall_started = time.time() * 1000
+                            self._event('scope_start', scope_id=budget.id, parent_id=budget.parent_id,
                                         owner=parent, kind='component', visit_id=budget.id,
-                                        elapsed=time.monotonic() - started, outcome=outcome,
-                                        started_ms=wall_started, stopped_ms=time.time() * 1000,
+                                        attempt=1, max_passes=1,
+                                        started_ms=wall_started,
                                         declared_timeout=self.timeouts.get(parent),
                                         effective_timeout=budget.timeout,
                                         timeout_key=self.timeout_keys.get(parent))
+                            ready.set_result(budget)
+                            outcome = 'failed'
+                            try:
+                                await finish
+                                outcome = 'passed'
+                            except asyncio.CancelledError:
+                                outcome = ('failed' if budget.deadline is not None
+                                           and time.monotonic() >= budget.deadline else 'cancelled')
+                                raise
+                            finally:
+                                self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
+                                            owner=parent, kind='component', visit_id=budget.id,
+                                            elapsed=time.monotonic() - started, outcome=outcome,
+                                            started_ms=wall_started, stopped_ms=time.time() * 1000,
+                                            declared_timeout=self.timeouts.get(parent),
+                                            effective_timeout=budget.timeout,
+                                            timeout_key=self.timeout_keys.get(parent))
             except BaseException as error:
                 if not ready.done():
                     ready.set_exception(error)
@@ -867,37 +875,39 @@ class StatefulWorkflow:
 
     @asynccontextmanager
     async def _scope_graph(self, budget):
-        started = time.monotonic()
-        wall_started = time.time() * 1000
-        self._event('scope_start', scope_id=budget.id, parent_id=budget.parent_id,
-                    owner='GRAPH', kind='graph', attempt=1, max_passes=1,
-                    started_ms=wall_started,
-                    declared_timeout=self.timeouts.get('GRAPH'), effective_timeout=budget.timeout,
-                    timeout_key=self.timeout_keys.get('GRAPH'))
-        self._event('edge', owner='GRAPH', source='START', target=self.definition.layout.steps[0].id,
-                    implicit=True)
-        outcome = 'failed'
-        try:
-            yield
-            outcome = 'passed'
-        except asyncio.CancelledError:
-            outcome = ('failed' if budget.deadline is not None
-                       and time.monotonic() >= budget.deadline else 'cancelled')
-            raise
-        finally:
+        parent_id = current_structural_scope()
+        with structural_scope(budget.id):
+            started = time.monotonic()
+            wall_started = time.time() * 1000
+            self._event('scope_start', scope_id=budget.id, parent_id=parent_id,
+                        owner='GRAPH', kind='graph', attempt=1, max_passes=1,
+                        started_ms=wall_started,
+                        declared_timeout=self.timeouts.get('GRAPH'), effective_timeout=budget.timeout,
+                        timeout_key=self.timeout_keys.get('GRAPH'))
+            self._event('edge', owner='GRAPH', source='START', target=self.definition.layout.steps[0].id,
+                        implicit=True)
+            outcome = 'failed'
             try:
-                for component in tuple(self._turn_state.get()['open_components']):
-                    try:
-                        await self._complete_component(component, outcome=outcome)
-                    except BaseException:
-                        if outcome == 'passed':
-                            raise
+                yield
+                outcome = 'passed'
+            except asyncio.CancelledError:
+                outcome = ('failed' if budget.deadline is not None
+                           and time.monotonic() >= budget.deadline else 'cancelled')
+                raise
             finally:
-                self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
-                            owner='GRAPH', kind='graph', elapsed=time.monotonic() - started,
-                            started_ms=wall_started, stopped_ms=time.time() * 1000,
-                            outcome=outcome, declared_timeout=self.timeouts.get('GRAPH'),
-                            effective_timeout=budget.timeout, timeout_key=self.timeout_keys.get('GRAPH'))
+                try:
+                    for component in tuple(self._turn_state.get()['open_components']):
+                        try:
+                            await self._complete_component(component, outcome=outcome)
+                        except BaseException:
+                            if outcome == 'passed':
+                                raise
+                finally:
+                    self._event('scope_end', scope_id=budget.id, parent_id=parent_id,
+                                owner='GRAPH', kind='graph', elapsed=time.monotonic() - started,
+                                started_ms=wall_started, stopped_ms=time.time() * 1000,
+                                outcome=outcome, declared_timeout=self.timeouts.get('GRAPH'),
+                                effective_timeout=budget.timeout, timeout_key=self.timeout_keys.get('GRAPH'))
 
     async def arun(self, update, *, thread_id, request=None, services=None, journal=None,
                    turn_id=None, turn_kind='initial'):
