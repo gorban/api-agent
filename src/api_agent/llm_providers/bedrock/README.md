@@ -1,11 +1,13 @@
 # Amazon Bedrock provider
 
-Reviewed workflow qualifications provide Bedrock cap 52
-and GPT cap 48 under their separate fingerprints; exact safe exports are promoted.
-Bedrock qualification includes the credential transaction/adapter identity repairs. The later host-admission reporting fix leaves sampling
-fingerprints unchanged. The normal catalog passed all 17 core cases plus one
-provider UI case, with successful Allure publication and clean exit. The complete
-unit gate passed 18,674 tests with exact line/branch coverage. Final artifact/package/external review passed; human acceptance remains separate.
+The current built-in SDK-profile checkpoint qualifies Bedrock cap 50; GPT cap 48
+remains unchanged. Fresh workflow/reasoning checks passed, retaining an earlier
+empty-answer failure. Units passed 18,700 tests with exact line/branch coverage;
+technical reviews passed and launcher follow-up acceptance is conditional.
+
+The historical native-adapter checkpoint qualified cap 52, passed 17 core plus
+one provider UI case and 18,674 units. This is not a new full 18-case SDK run.
+See the [qualification guide](QUALIFICATION.md) for evidence and acceptance scopes.
 
 This optional provider uses only regional bedrock-mantle
 endpoint through the ordinary provider interface. The maintained OpenAI SDK handles AWS signing, HTTP and SSE in an owned worker.
@@ -169,11 +171,11 @@ remain unsupported.
 
 Earlier reporting-enabled 14 Responses plus one Completions workflow passes
 retain their source/settings scope in [historical qualification](QUALIFICATION.md);
-they neither qualify the current 18-case catalog nor authorize inference.
+they do not establish a new full 18-case SDK-profile run or authorize inference.
 
-The fresh independently reviewed calibration matches its frozen sampling
-identity after the credential transaction repair. The reporting-only host
-admission correction preserves that sampling identity. Any different source, provider, route,
+The native-adapter repair and later reporting-only host admission correction
+retain their historical sampling identity. Current SDK-profile calibration has
+its own reviewed fingerprint; see [qualification](QUALIFICATION.md). Any different source, provider, route,
 model, dependency versions or effective settings still requires a matching
 reviewed qualification. Stale reports cannot substitute; committed workflow provenance checks remain required. See [calibration maintenance](../../../../docs/workflow_calibration.md)
 and [integration readiness requirements](../../../../docs/prds/implementation_plan_f4l2.md).
@@ -189,8 +191,7 @@ Run focused offline tests:
 Tests use synthetic SDK/HTTP responses, controlled subprocesses and real
 flow.md.html/LangGraph/provider joins. They require no real credentials or AWS
 calls. Account readiness must be confirmed before live authentication/catalog
-checks; inference needs separate explicit bounded spending approval. The full applicable unit gate passed with exact line/branch coverage. Final
-archive/packaging/boundary reconciliation remains a main-integration gate.
+checks; inference needs separate explicit bounded spending approval. The full applicable unit gate passed with exact line/branch coverage. See [qualification](QUALIFICATION.md) for technical gates and acceptance.
 
 Protocol and model requirements: [Mantle contract](../../../../docs/prds/implementation_plan_f4d.md),
 [AWS endpoints](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html),
