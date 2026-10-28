@@ -129,6 +129,8 @@ def capture(event, tracker):
         count = len(ledger['attempts'])
         known = {target: summary['usage'][source] for source, target in names.items()
                  if count > summary['unknown_usage_attempts'][source]}
+        if summary['known_total_tokens'] is not None:
+            known['total_tokens'] = summary['known_total_tokens']
         exact = {target: None if not count or summary['unknown_remainder'] or summary['unknown_usage_attempts'][source]
                  else summary['usage'][source] for source, target in names.items()}
         tracker.add_usage(provider='selected-llm', model=selection, session_id=event.identity.id,

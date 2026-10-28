@@ -109,3 +109,60 @@ def test_different_attempts_contribute_independent_known_categories():
     assert observed['output_tokens'] == 3
     assert observed['total_tokens'] == 10
     assert 'total_tokens' in observed['unknown_fields']
+
+
+def test_subsets_on_separate_attempt_add_to_known_total_once():
+    tracker = SuiteUsage('run')
+    ledger = TransportAttemptLedger(2)
+    first = ledger.begin(1)
+    ledger.finish(first, error=SimpleNamespace(execution='possibly_executed', http_status=429,
+                                              usage=Usage(input_tokens=10, cached_input_tokens=4)),
+                  retry_delay_seconds=0)
+    second = ledger.begin(2)
+    ledger.finish(second, result=SimpleNamespace(
+        usage=Usage(cached_input_tokens=3, cache_write_tokens=2, reasoning_tokens=6), billing=None))
+    row = {'call_id': str(uuid4()), 'selection': 'synthetic', 'usage': None,
+           'transport_attempts': ledger.snapshot()}
+    event = SimpleNamespace(text=json.dumps(row), identity=SimpleNamespace(id='test'))
+
+    capture(event, tracker)
+    capture(event, tracker)
+
+    report = tracker.report()
+    observed = report['usage_observations'][0]
+    assert observed['llm_calls'] == 1
+    assert observed['input_tokens'] == 10
+    assert observed['total_tokens'] == 21
+    assert report['usage_rows'][0]['total_tokens'] is None
+    assert 'total_tokens' in observed['unknown_fields']
+
+
+@pytest.mark.parametrize('values, expected', [
+    ({'cache_read_tokens': 3, 'cache_creation_tokens': 2, 'reasoning_tokens': 6}, 11),
+    ({'cache_read_tokens': 0}, 0),
+    ({'input_tokens': 10, 'cache_read_tokens': 4, 'reasoning_tokens': 6}, 16),
+    ({'output_tokens': 8, 'reasoning_tokens': 6}, 8),
+])
+def test_legacy_subsets_provide_disjoint_known_total(values, expected):
+    tracker = SuiteUsage('run')
+    tracker.add_usage(provider='p', model='m', session_id='s', **values)
+
+    report = tracker.report()
+    assert report['usage_rows'][0]['total_tokens'] is None
+    assert report['usage_observations'][0]['total_tokens'] == expected
+    assert 'total_tokens' in report['usage_observations'][0]['unknown_fields']
+
+
+@pytest.mark.parametrize('usage, expected', [
+    (Usage(cached_input_tokens=0), 0),
+    (Usage(cache_write_tokens=2, reasoning_tokens=3), 5),
+    (Usage(), None),
+])
+def test_incomplete_ledger_preserves_subset_evidence_without_exact_total(usage, expected):
+    tracker = SuiteUsage('run')
+    capture_ledger(tracker, usage, complete=False)
+
+    report = tracker.report()
+    assert report['usage_rows'][0]['total_tokens'] is None
+    assert report['usage_observations'][0]['total_tokens'] == expected
+    assert 'total_tokens' in report['usage_observations'][0]['unknown_fields']

@@ -176,12 +176,14 @@ class SuiteUsage:
         if values['total_tokens'] is None and all(values[k] is not None for k in ('input_tokens', 'output_tokens')):
             values['total_tokens'] = values['input_tokens'] + values['output_tokens']
         if values['total_tokens'] is None and (known_subtotals is None or 'total_tokens' not in known_subtotals):
-            # Inclusive input and output are disjoint; cache and reasoning are subsets.
+            from api_agent.providers.llm import known_usage_lower_bound
             parts = [values[field] if values[field] is not None else
-                     (known_subtotals or {}).get(field) for field in ('input_tokens', 'output_tokens')]
-            if any(part is not None for part in parts):
-                known_subtotals = {**(known_subtotals or {}),
-                                   'total_tokens': sum(_count(part) for part in parts if part is not None)}
+                     (known_subtotals or {}).get(field) for field in
+                     ('input_tokens', 'output_tokens', 'cache_read_tokens',
+                      'cache_creation_tokens', 'reasoning_tokens')]
+            bound = known_usage_lower_bound(*(_count(part) for part in parts))
+            if bound is not None:
+                known_subtotals = {**(known_subtotals or {}), 'total_tokens': bound}
         key = (provider, model, session_id)
         with self._lock:
             row = self._rows.setdefault(key, {'llm_calls': 0, **{k: None for k in _TOKEN_FIELDS}})
