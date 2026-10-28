@@ -40,6 +40,10 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
     row = {'call_id': call_id, 'selection': selection,
            'usage': (usage_to_wire(reported) if reported is not None else None)
                     if result is None else result_to_wire(result)['usage']}
+    attempts = getattr(result if result is not None else error, 'transport_attempts', None)
+    if attempts is not None:
+        from api_agent.providers.generation_attempts import validate_transport_attempts
+        row['transport_attempts'] = validate_transport_attempts(attempts)
     if request.payload.generation.reasoning_effort is not None:
         row['reasoning_effort'] = request.payload.generation.reasoning_effort or None
     if result is not None:
@@ -77,6 +81,7 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
                                 selection=selection, outcome=row['outcome'],
                                 actual_model=row.get('actual_model'),
                                 reasoning_effort=row.get('reasoning_effort'),
+                                **({'transport_attempts': row['transport_attempts']} if 'transport_attempts' in row else {}),
                                 **({'response': row['response']} if 'response' in row else {}))
             from api_agent.workflows.attribution import admit_terminal_call_receipt
             admit_terminal_call_receipt({**row, 'visit_id': visit_id, 'attempt_id': attempt_id}, journal)
@@ -86,7 +91,7 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
 def validate_event(event):
     """Validate raw accounting before privacy transformations can remove fields."""
     row = json.loads(event.text)
-    if type(row) is not dict or set(row) - _TIMING not in ({'call_id', 'selection', 'usage'}, {'call_id', 'selection', 'usage', 'quote'}, {'call_id', 'selection', 'usage', 'actual_model'}, {'call_id', 'selection', 'usage', 'quote', 'actual_model'}):
+    if type(row) is not dict or set(row) - _TIMING - {'transport_attempts'} not in ({'call_id', 'selection', 'usage'}, {'call_id', 'selection', 'usage', 'quote'}, {'call_id', 'selection', 'usage', 'actual_model'}, {'call_id', 'selection', 'usage', 'quote', 'actual_model'}):
         raise ValueError('Invalid inference usage event')
     identifier = row['call_id']
     if type(identifier) is not str or str(UUID(identifier)) != identifier:
@@ -101,6 +106,8 @@ def validate_event(event):
         evidence['conversation_id'] = row['conversation_id']
     if 'reasoning_effort' in row:
         evidence['reasoning_effort'] = row['reasoning_effort']
+    if 'transport_attempts' in row:
+        evidence['transport_attempts'] = row['transport_attempts']
     if 'response' in row:
         evidence['response'] = row['response']
     validate_evidence(evidence)
@@ -112,14 +119,33 @@ def capture(event, tracker):
     identifier, selection, usage = row['call_id'], row['selection'], row['usage']
     if not tracker.record_inference(identifier, event.identity.id, evidence):
         return
-    if usage is None:
-        tracker.record_prompt(turn_id=event.identity.id, prompt_id=evidence['turn_id'], kind=evidence['turn_kind'])
-    else:
-        from api_agent.providers.inference import result_from_wire
-        values = result_from_wire({'text': '', 'outcome': 'completed', 'usage': usage}).usage
+    ledger = row.get('transport_attempts')
+    if ledger is not None:
+        from api_agent.providers.generation_attempts import rollup_transport_attempts
+        summary = rollup_transport_attempts(ledger)
+        names = {'input_tokens': 'input_tokens', 'output_tokens': 'output_tokens',
+                 'cached_input_tokens': 'cache_read_tokens', 'cache_write_tokens': 'cache_creation_tokens',
+                 'reasoning_tokens': 'reasoning_tokens'}
+        count = len(ledger['attempts'])
+        known = {target: summary['usage'][source] for source, target in names.items()
+                 if count > summary['unknown_usage_attempts'][source]}
+        exact = {target: None if not count or summary['unknown_remainder'] or summary['unknown_usage_attempts'][source]
+                 else summary['usage'][source] for source, target in names.items()}
         tracker.add_usage(provider='selected-llm', model=selection, session_id=event.identity.id,
-            input_tokens=values.input_tokens, output_tokens=values.output_tokens,
-            cache_read_tokens=values.cached_input_tokens, reasoning_tokens=values.reasoning_tokens,
-            cache_creation_tokens=values.cache_write_tokens)
-
-    tracker.add_cost(identifier, event.identity.id, row.get('quote'))
+                          known_subtotals=known, **exact)
+        if summary['unknown_remainder'] or summary['unknown_cost_attempts']:
+            quote = None
+        else:
+            quote = {'list_cost_usd': summary['list_cost_usd'], 'payment': None}
+        tracker.add_cost(identifier, event.identity.id, quote, known_subtotal=summary['list_cost_usd'])
+    else:
+        if usage is None:
+            tracker.record_prompt(turn_id=event.identity.id, prompt_id=evidence['turn_id'], kind=evidence['turn_kind'])
+        else:
+            from api_agent.providers.inference import result_from_wire
+            values = result_from_wire({'text': '', 'outcome': 'completed', 'usage': usage}).usage
+            tracker.add_usage(provider='selected-llm', model=selection, session_id=event.identity.id,
+                input_tokens=values.input_tokens, output_tokens=values.output_tokens,
+                cache_read_tokens=values.cached_input_tokens, reasoning_tokens=values.reasoning_tokens,
+                cache_creation_tokens=values.cache_write_tokens)
+        tracker.add_cost(identifier, event.identity.id, row.get('quote'))

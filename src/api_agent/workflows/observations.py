@@ -145,9 +145,30 @@ class WorkflowObservations:
                 value = (row.get('usage') or {}).get(source)
                 if type(value) is int and value >= 0:
                     structural['gen_ai.usage.' + target] = value
+            ledger = row.get('transport_attempts')
+            if ledger is not None:
+                from api_agent.providers.generation_attempts import validate_transport_attempts
+                ledger = validate_transport_attempts(ledger)
+                structural.update({'api_agent.transport_attempt_count': len(ledger['attempts']),
+                                   'api_agent.transport_complete': ledger['complete'],
+                                   'api_agent.transport_recovered': any(
+                                       item['retry_delay_seconds'] is not None for item in ledger['attempts'])})
             span = self.trace.begin(operation if tool else 'chat ' + selection, structural,
                 parent=self._spans.get(row.get('visit_id')), kind='CLIENT',
                 start_time=int(row['started_ms'] * 1_000_000) if row.get('started_ms') is not None else None)
+            if ledger is not None:
+                for item in ledger['attempts']:
+                    child = self.trace.begin('transport attempt', {
+                        'api_agent.transport_id': item['id'],
+                        'api_agent.transport_index': item['index'],
+                        'api_agent.transport_outcome': item['outcome'],
+                        'api_agent.transport_status': item['status'],
+                    }, parent=span, kind='CLIENT',
+                        start_time=item['started_ms'] * 1_000_000)
+                    if item['outcome'] not in ('started', 'observed'):
+                        child.attributes({'status': 'error' if item['outcome'] == 'failed' else 'ok'})
+                    child.end(end_time=item['stopped_ms'] * 1_000_000
+                              if item['stopped_ms'] is not None else None)
             span.attributes({'duration_seconds': row.get('elapsed'),
                              'status': 'error' if row.get('outcome') in ('failed', 'failure', 'partial') else
                                        'cancelled' if row.get('outcome') == 'cancelled' else 'ok'})

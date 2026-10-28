@@ -110,6 +110,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
     started = time.monotonic()
     client = body = http = None
     execution = 'not_started'
+    received = {}
     try:
         json_value(request)
         if set(request) != {'operation', 'auth', 'payload', 'timeout'} or request['operation'] not in OPERATIONS:
@@ -153,6 +154,13 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
         region, options = selected_auth(request['auth'], session_factory)
         timeout = inference_timeout(deadline - time.monotonic())
         http = http_factory(timeout=timeout)
+        hooks = getattr(http, 'event_hooks', None)
+        if isinstance(hooks, dict) and isinstance(hooks.get('response'), list):
+            def capture_headers(response):
+                received['status'] = response.status_code
+                from api_agent.providers.inference_retry import retry_after
+                received['retry_after'] = retry_after(response.headers.get('retry-after'))
+            hooks['response'].append(capture_headers)
         client = client_factory(region, prefix, options, http)
         execution = 'possibly_executed'
         if operation == 'models':
@@ -176,6 +184,8 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
     except Exception as error:
         name = type(error).__name__
         status = getattr(error, 'status_code', None)
+        if status is None:
+            status = received.get('status')
         kind = {401: 'authentication', 403: 'authorization', 429: 'rate_limited',
                 400: 'invalid_request', 404: 'invalid_request', 422: 'invalid_request',
                 500: 'unavailable', 502: 'unavailable', 503: 'unavailable', 504: 'unavailable'}.get(status)
@@ -184,7 +194,16 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     'APIConnectionError': 'unavailable', 'APITimeoutError': 'unavailable',
                     'ModuleNotFoundError': 'setup', 'ImportError': 'setup',
                     'MissingDependencyException': 'setup', 'ProfileNotFound': 'setup', 'NoRegionError': 'setup'}.get(name, 'unknown')
-        emit({'error': kind, 'execution': execution})
+        frame = {'error': kind, 'execution': execution}
+        if type(status) is int and 100 <= status <= 599:
+            frame['http_status'] = status
+            response = getattr(error, 'response', None)
+            headers = getattr(response, 'headers', None)
+            from api_agent.providers.inference_retry import retry_after
+            hint = retry_after(headers.get('retry-after')) if headers is not None else received.get('retry_after')
+            if hint is not None:
+                frame['retry_after'] = hint
+        emit(frame)
     finally:
         try:
             if body is not None:

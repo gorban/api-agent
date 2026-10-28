@@ -72,6 +72,29 @@ async def test_invalid_worker_frames_are_safe(auth, fake_process, frames, messag
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('field,value', [
+    ('http_status', True), ('http_status', 99), ('http_status', 600),
+    ('retry_after', True), ('retry_after', -1), ('retry_after', '2'),
+])
+async def test_worker_rejects_invalid_retry_metadata(auth, fake_process, field, value):
+    frame = {'error': 'unavailable', 'execution': 'possibly_executed', field: value}
+    fake_process[0]['frames'] = [frame]
+    with pytest.raises(ContractError, match='provider error status|worker retry delay'):
+        await sdk.SDKTransport().call('completions', {}, auth=auth)
+
+
+@pytest.mark.asyncio
+async def test_worker_preserves_valid_retry_metadata(auth, fake_process):
+    fake_process[0]['frames'] = [{'error': 'unavailable', 'execution': 'possibly_executed',
+                                  'http_status': 503, 'retry_after': 2.5}]
+    with pytest.raises(ProviderAccessError) as caught:
+        await sdk.SDKTransport().call('completions', {}, auth=auth)
+    assert caught.value.http_status == 503
+    assert caught.value.retry_after == 2.5
+    assert caught.value.execution == 'possibly_executed'
+
+
+@pytest.mark.asyncio
 async def test_nonzero_worker_exit(auth, fake_process):
     fake_process[0]['returncode'] = 1
     with pytest.raises(ContractError, match='worker failed'):

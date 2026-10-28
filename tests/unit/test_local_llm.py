@@ -513,7 +513,10 @@ def test_optional_accounting_preserves_contract_valid_provider_result_and_identi
                     await app.complete(value,llm=owner,context=OperationContext('request'))
                 assert caught.value is error
             else:
-                assert await app.complete(value,llm=owner,context=OperationContext('request')) is expected
+                actual = await app.complete(value,llm=owner,context=OperationContext('request'))
+                assert actual == expected and actual is not expected
+                assert not hasattr(expected, 'transport_attempts')
+                assert len(actual.transport_attempts['attempts']) == 1
             assert owner.usage[0]['selection'] == model
         finally:
             await owner.aclose()
@@ -684,3 +687,34 @@ def test_dispatched_plain_failure_retains_mode_partial_usage_and_original_status
             assert owner.usage[0]['outcome']==('cancelled' if kind is asyncio.CancelledError else 'failed')
         finally:await owner.aclose()
     asyncio.run(scenario())
+
+
+def test_failed_central_receipt_keeps_ledger_when_no_quote_available(selected):
+    from uuid import uuid4
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.workflows.attribution import bind_workflow_visit, current_workflow_visit
+    from api_agent.workflows.journal import WorkflowJournal
+    from test_workflow_observations import definition
+
+    owner, implementation, _, _, _ = selected
+    identifier = str(uuid4())
+    failure = ProviderAccessError('unavailable', 'Synthetic failure')
+    async def published(value, *, auth):
+        journal, visit, attempt = current_workflow_visit()
+        journal.record_call(visit_id=visit, attempt_id=attempt, call_id=identifier,
+                            usage=None, selection='sample', outcome='failed')
+        raise failure
+    implementation.acomplete = published
+    journal = WorkflowJournal(definition())
+    async def run():
+        journal.observe(dict(event='scope_start', scope_id='visit', kind='node', owner='Make'))
+        try:
+            with bind_workflow_visit(journal, 'visit'), pytest.raises(ProviderAccessError) as caught:
+                await owner.complete(request())
+            assert caught.value is failure
+            assert len(owner.usage) == 1 and owner.usage[0]['call_id'] == identifier
+            assert owner.usage[0]['transport_attempts']['attempts'][0]['outcome'] == 'failed'
+            assert 'quote' not in owner.usage[0]
+        finally:
+            await owner.aclose()
+    asyncio.run(run())

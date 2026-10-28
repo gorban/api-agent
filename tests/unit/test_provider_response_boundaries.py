@@ -75,30 +75,53 @@ def test_maximum_authored_conversation_keeps_every_row_and_one_encoded_instructi
 
 def test_retryable_subscription_admission_captures_one_logical_effective_body(monkeypatch):
     from api_agent.llm_providers.gpt import inference
+    from api_agent.providers import inference_retry
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import collect_inference
     calls = []
-    captures = []
-    sleeps = []
-    async def sleep(delay):
-        sleeps.append(delay)
     async def handler(sent):
         calls.append(json.loads(sent.content))
-        if len(calls) == 1:
+        if len(calls) in (1, 3):
             return httpx.Response(503, json={'error': {'code': 'subscription_sharing_user_unavailable', 'message': 'synthetic admission'}})
         data = {'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant',
             'content': [{'type': 'output_text', 'text': '{"answer":"yes"}'}]}],
             'usage': {'input_tokens': 3, 'output_tokens': 2}}
         return httpx.Response(200, text='data: ' + json.dumps({'type': 'response.completed', 'response': data}) + '\n\n',
             headers={'content-type': 'text/event-stream'})
-    monkeypatch.setattr(inference, 'sleep', sleep)
-    monkeypatch.setattr('api_agent.workflows.inference_capture.capture_inference', lambda *args, **kw: captures.append(args))
+    monkeypatch.setattr(inference_retry, 'retry_delay', lambda number, hint: 0)
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            return await inference.complete_text(client=client, base_url=BASE, access_token='synthetic-token',
-                subscription=True, api_mode='responses', request=request(model='gpt-6-luna'))
-    result = asyncio.run(run())
-    assert len(calls) == 2 and calls[0] == calls[1] and sleeps == [1]
+            async def physical(req, *, auth):
+                return await inference.complete_text(client=client, base_url=BASE, access_token=auth,
+                    subscription=True, api_mode='responses', request=req)
+            async def call(callback):
+                return await callback(auth='synthetic-token')
+            owner = SharedSetupOwner('op', 'selected', lambda _: SimpleNamespace(call=call, aclose=AsyncMock()),
+                                     complete=physical, captures_effective_payload=True)
+            try:
+                with collect_inference(EmissionBoundary(ContentPolicy(True))) as captured:
+                    result = await owner.complete(request(model='gpt-6-luna'))
+                    await owner.complete(request(model='gpt-6-luna'))
+            finally:
+                await owner.aclose()
+            return result, captured
+    result, captured = asyncio.run(run())
+    assert len(calls) == 4 and all(body == calls[0] for body in calls)
     assert result.response.actual_mode == 'structured'
-    assert len(captures) == 1 and captures[0][1]['provider_payload'] == calls[0]
+    inputs = [row for row in captured['rows'] if row['phase'] == 'request']
+    assert len(inputs) == 2
+    assert all(row['content']['provider_payload'] == calls[0] for row in inputs)
+
+
+def test_logical_capture_keeps_changed_effective_input():
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import bind_inference_call, capture_inference, collect_inference
+    with collect_inference(EmissionBoundary(ContentPolicy(True))) as captured:
+        with bind_inference_call('logical-call'):
+            capture_inference('input', {'value': 'first'}, 'physical')
+            capture_inference('input', {'value': 'second'}, 'physical')
+    assert [row['content']['value'] for row in captured['rows']] == ['first', 'second']
 
 
 @pytest.mark.parametrize('api_mode', ['responses', 'completions'])

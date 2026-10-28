@@ -137,9 +137,9 @@ class SuiteUsage:
         with self._lock:
             self.contaminated = True
 
-    def add_cost(self, call_id, session_id, quote=None):
+    def add_cost(self, call_id, session_id, quote=None, *, known_subtotal=None):
         with self._lock:
-            self._costs.record(call_id, session_id, quote)
+            self._costs.record(call_id, session_id, quote, known_subtotal=known_subtotal)
 
     def record_inference(self, call_id, session_id, evidence):
         """Retain validated content-free call facts without double accounting."""
@@ -164,7 +164,7 @@ class SuiteUsage:
                   output_tokens: int | None = None, total_tokens: int | None = None,
                   cache_read_tokens: int | None = None,
                   cache_creation_tokens: int | None = None,
-                  reasoning_tokens: int | None = None) -> None:
+                  reasoning_tokens: int | None = None, known_subtotals=None) -> None:
         if any(type(x) is not str or not x for x in (provider, model, session_id)):
             raise ValueError('provider, model and session_id are required')
         if type(llm_calls) is not int or llm_calls < 1:
@@ -183,6 +183,8 @@ class SuiteUsage:
             row['llm_calls'] += llm_calls
             for field, value in values.items():
                 if value is None:
+                    if known_subtotals is not None and field in known_subtotals:
+                        known[field] = known.get(field, 0) + _count(known_subtotals[field])
                     unknown.add(field)
                     row[field] = None
                 else:

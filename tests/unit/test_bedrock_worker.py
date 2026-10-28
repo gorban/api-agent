@@ -71,7 +71,7 @@ def test_actual_sdk_denies_redirects_and_retries(status, kind):
         return httpx2.Response(status, headers={'location': 'https://wrong.invalid'}, json={'error': {'message': 'synthetic-secret'}})
     worker.execute(request(), emitted.append, http_factory=lambda **kw: httpx2.Client(transport=httpx2.MockTransport(handle), follow_redirects=False, trust_env=False))
     assert len(seen) == 1
-    assert emitted == [{'error': kind, 'execution': 'possibly_executed'}]
+    assert emitted == [{'error': kind, 'execution': 'possibly_executed', 'http_status': status}]
 
 
 @pytest.mark.parametrize('value', [{1: 'bad'}, (1,), float('nan'), {'x': object()}, 'x' * (worker.MAX_FRAME+1)])
@@ -303,7 +303,7 @@ def test_real_sdk_receives_wire_timeout_without_retry(timeout, monkeypatch):
     assert seen[0].extensions['timeout'] == {
         'connect': min(10, timeout), 'read': timeout, 'write': timeout, 'pool': timeout}
     assert owners[0].is_closed
-    assert emitted == [{'error': 'unavailable', 'execution': 'possibly_executed'}]
+    assert emitted == [{'error': 'unavailable', 'execution': 'possibly_executed', 'http_status': 503}]
 
 
 def test_worker_deducts_authentication_elapsed_time(monkeypatch):
@@ -360,3 +360,32 @@ def test_worker_deducts_json_validation_elapsed_time(monkeypatch):
     worker.execute(value_request, emitted.append, http_factory=http_factory)
     assert received == [238]
     assert emitted == [{'error': 'unknown', 'execution': 'not_started'}]
+
+
+def test_worker_retains_safe_retry_after_with_http_status():
+    emitted = []
+    def handle(request):
+        return httpx2.Response(429, headers={'retry-after': '9', 'x-private': 'sensitive'},
+                               json={'error': {'message': 'sensitive'}})
+    worker.execute(request(), emitted.append, http_factory=lambda **kw: httpx2.Client(
+        transport=httpx2.MockTransport(handle), follow_redirects=False, trust_env=False))
+    assert emitted == [{'error': 'rate_limited', 'execution': 'possibly_executed',
+                        'http_status': 429, 'retry_after': 9}]
+
+
+def test_body_timeout_after_headers_retains_status_and_closes_worker_http():
+    emitted, owners = [], []
+    class Stream(httpx2.SyncByteStream):
+        def __iter__(self):
+            raise httpx2.ReadTimeout('synthetic timeout')
+            yield b''
+    def handle(request):
+        return httpx2.Response(503, headers={'retry-after': '3'}, stream=Stream())
+    def http_factory(**kwargs):
+        client = httpx2.Client(transport=httpx2.MockTransport(handle), follow_redirects=False, trust_env=False)
+        owners.append(client)
+        return client
+    worker.execute(request(), emitted.append, http_factory=http_factory)
+    assert owners[0].is_closed
+    assert emitted == [{'error': 'unavailable', 'execution': 'possibly_executed',
+                        'http_status': 503, 'retry_after': 3}]

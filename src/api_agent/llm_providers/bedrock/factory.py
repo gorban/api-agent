@@ -117,8 +117,10 @@ class BedrockProvider:
                 dispatched = True
                 try:
                     response = await self.transport.call(self.api_mode, payload, auth=auth)
-                    result = decode(response, self.api_mode, selected_llm=request.selected_llm)
-                    return await async_validate_result(request, replace(result, response=evidence))
+                    result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm), response=evidence)
+                    from api_agent.providers.generation_attempts import snapshot_transport_result
+                    snapshot_transport_result(result)
+                    return await async_validate_result(request, result)
                 except (OperationalError, TimeoutError, asyncio.CancelledError) as error:
                     failure_usage = error_usage(error)
                     record_response_failure(error)

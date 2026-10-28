@@ -144,8 +144,17 @@ class SDKTransport:
                     execution = frame.get('execution')
                     if execution not in {'not_started', 'possibly_executed'}:
                         raise ContractError('Invalid Bedrock worker execution state')
-                    error = ProviderAccessError(kind, 'Bedrock SDK operation failed; verify provider setup and permissions.')
+                    status = frame.get('http_status')
+                    error = ProviderAccessError(kind, 'Bedrock SDK operation failed; verify provider setup and permissions.', status=status)
                     error.execution = execution
+                    hint = frame.get('retry_after')
+                    if status is not None:
+                        error.http_status = status
+                    if hint is not None:
+                        import math
+                        if type(hint) not in (int, float) or not math.isfinite(hint) or hint < 0:
+                            raise ContractError('Invalid Bedrock worker retry delay')
+                        error.retry_after = hint
                     raise error
                 if set(frame) not in ({'event'}, {'result'}) or not isinstance(next(iter(frame.values())), dict):
                     raise ContractError('Invalid Bedrock worker response')

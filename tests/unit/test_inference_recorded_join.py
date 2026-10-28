@@ -1,4 +1,6 @@
 """Actual loaded-factory recorded consumers retain usage and safe failures."""
+import csv as csv_module
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -119,7 +121,11 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
         if status != 200:
             assert all(row['calls'][0]['outcome'] == 'failed' for row in artifact['tests'])
     else:
-        assert len(csv.splitlines())==1
+        rows = list(csv_module.DictReader(io.StringIO(csv)))
+        assert len(rows) == 2 and len({row['session_id'] for row in rows}) == 2
+        assert all(row['llm_calls'] == '1' for row in rows)
+        assert all(row[name] == '' for row in rows for name in
+                   ('input_tokens', 'output_tokens', 'total_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'reasoning_tokens'))
         assert len(usage['unmeasured_calls']) == 2
         assert 'total: unavailable' in console[-1]
         assert 'HTTP status: 403' in result.execution.output and 'Request permission denied' in result.execution.output

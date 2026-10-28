@@ -234,7 +234,9 @@ class IntegrationLLM:
                                                  complete=complete if callable(getattr(implementation, 'acomplete', None)) else None,
                                                  captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
                                                  validate_request=lambda request: self._validate_request(implementation, request),
-                                                 catalog_ttl=self._provider_config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600))
+                                                 catalog_ttl=self._provider_config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600),
+                                                 max_attempts=self._provider_config.get('LLM_MAX_ATTEMPTS', 5),
+                                                 inference_timeout=getattr(implementation, 'inference_timeout', None))
 
     async def _capture_quota(self, phase):
         async with self._quota_lock:
@@ -326,21 +328,28 @@ class IntegrationLLM:
         from api_agent.workflows.inference_capture import collect_inference, capture_rows
         result = None
         collector = None
+        from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger, attach_transport_attempts
+        from api_agent.providers.costs import quote_cost
+        ledger = TransportAttemptLedger(self._provider_config.get('LLM_MAX_ATTEMPTS', 5),
+            quote=lambda result: self.emissions.content_export(quote_cost(self.provider.implementation, request, result)))
         async def captured_complete():
             nonlocal collector
-            with collect_inference(self.emissions, call_id) as collector:
+            with bind_transport_attempt_ledger(ledger), collect_inference(self.emissions, call_id) as collector:
                 return await self._complete(request)
         try:
             result = self._run_private(captured_complete())
+            result = attach_transport_attempts(result, ledger.snapshot())
             from api_agent.providers.costs import quote_cost
             publish(request, result, call_id=call_id, quote=self.emissions.content_export(quote_cost(self.provider.implementation, request, result)))
             return result
         except SetupPrerequisiteError as error:
-            publish(request, result, call_id=call_id, failed=True)
+            attach_transport_attempts(error, ledger.snapshot())
+            publish(request, result, call_id=call_id, failed=True, error=error)
             if not self.skip_unavailable:
                 raise
             pytest.skip(str(error))
         except BaseException as error:
+            attach_transport_attempts(error, ledger.snapshot())
             terminal_error = error
             if collector is not None:
                 from api_agent.workflows.inference_capture import retain_response_failure
@@ -348,6 +357,7 @@ class IntegrationLLM:
                     retain_response_failure(error, collector['dispatch']['response'], collector['dispatch']['usage'])
                 except ContractError as conflict:
                     terminal_error = conflict
+                    attach_transport_attempts(conflict, error.transport_attempts)
             publish(request, result, call_id=call_id, failed=True, error=terminal_error)
             if terminal_error is not error:
                 raise terminal_error from None
@@ -499,17 +509,25 @@ class RemoteIntegrationLLM:
         from .inference_usage import publish
         call_id = publish(request) or str(uuid4())
         result = None
+        self.client.transport_attempts = None
         try:
             result = self._request(lambda: self.client.complete(request))
             publish(request, result, call_id=call_id, quote=getattr(self.client, 'cost_quote', None))
             return result
         except BaseException as error:
+            from api_agent.providers.generation_attempts import attach_transport_attempts, validate_transport_attempts
+            snapshot = getattr(error, 'transport_attempts', None)
+            if snapshot is None:
+                snapshot = getattr(self.client, 'transport_attempts', None) or {'version': 1, 'complete': False, 'attempts': []}
+                snapshot = validate_transport_attempts({**snapshot, 'complete': False})
+            attach_transport_attempts(error, snapshot)
             from api_agent.workflows.inference_capture import retain_response_failure
             terminal_error = error
             try:
                 retain_response_failure(error, getattr(self.client, 'response_evidence', None))
             except ContractError as conflict:
                 terminal_error = conflict
+                attach_transport_attempts(conflict, snapshot)
             publish(request, result, call_id=call_id, failed=True, error=terminal_error)
             if terminal_error is not error:
                 raise terminal_error from None

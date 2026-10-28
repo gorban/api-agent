@@ -19,3 +19,5 @@ The included [personal GPT provider](implementation_plan_f2.md) and replaceable 
 - [ ] Join deterministic contract tests before live authentication-only integration, then authenticated discovery with a zero-inference transport guard. Record Allure/usage/privacy evidence from the first real integration; only after configuration and authentication review proceed to the initial renderer test. Keep every live integration/E2E behind its interactive acceptance rules.
 
 See [bounded inference and schema requirements](implementation_plan_f1a.md).
+
+- [ ] Deliver [bounded inference recovery and physical-attempt evidence](implementation_plan_f1b.md), preserving application retry counters and uncertain charges.

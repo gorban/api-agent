@@ -150,7 +150,9 @@ class LocalLLM(_Owner):
             credentials=credentials, describe=getattr(implementation, 'adescribe', None),
             complete=complete, validate_request=lambda request: validate_provider_request(implementation, request),
             captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
-            timeout=self._timeout, catalog_ttl=self.config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600))
+            timeout=self._timeout, catalog_ttl=self.config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600),
+            max_attempts=self.config.get('LLM_MAX_ATTEMPTS', 5),
+            inference_timeout=getattr(implementation, 'inference_timeout', None))
         self._resources.append((self.shared, 'aclose'))
         start = getattr(self.provider, 'astart', None)
         if start is not None:
@@ -332,16 +334,21 @@ class LocalLLM(_Owner):
                 error = None
                 receipts = []
                 started = time.monotonic()
+                from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger, attach_transport_attempts
+                ledger = TransportAttemptLedger(self.config.get('LLM_MAX_ATTEMPTS', 5),
+                    quote=lambda result: self.emissions.content_export(quote_cost(provider.implementation, request, result)))
                 try:
                     self._status('request', 'executing')
                     from api_agent.workflows.attribution import bind_terminal_call_receipts
                     from api_agent.workflows.inference_capture import bind_response_dispatch
-                    with bind_response_dispatch() as dispatch, bind_terminal_call_receipts() as receipts:
+                    with bind_transport_attempt_ledger(ledger), bind_response_dispatch() as dispatch, bind_terminal_call_receipts() as receipts:
                         result = await shared.complete(request)
+                    result = attach_transport_attempts(result, ledger.snapshot())
                     self._status('request', 'completed')
                     return result
                 except BaseException as failure:
                     error = failure
+                    attach_transport_attempts(error, ledger.snapshot())
                     self._status('request', 'cancelled' if isinstance(failure, asyncio.CancelledError) else 'failed')
                     raise
                 finally:
@@ -353,6 +360,7 @@ class LocalLLM(_Owner):
                            'usage': None if usage is None else usage_to_wire(usage),
                            'actual_model': result.actual_model if result is not None else None,
                            'reasoning_effort': request.payload.generation.reasoning_effort or None}
+                    row['transport_attempts'] = ledger.snapshot()
                     evidence = result.response if result is not None else getattr(error, 'response', None) or dispatch['response']
                     if evidence is not None:
                         from api_agent.providers.rich_inference import response_evidence_to_wire
@@ -370,12 +378,15 @@ class LocalLLM(_Owner):
                             attempt_id=attempt_id, usage=row['usage'],
                             selection=row['selection'], outcome=row['outcome'],
                             actual_model=row['actual_model'], reasoning_effort=row['reasoning_effort'],
+                            transport_attempts=row['transport_attempts'],
                             **({'response': row['response']} if 'response' in row else {}))
                     # A central publisher may already have admitted terminal calls
                     # during this exact operation. Reuse those receipts; a separate
                     # local UUID would charge and instrument the same work twice.
-                    if len(receipts) == 1 and 'quote' in row:
-                        receipts[0]['quote'] = row['quote']
+                    if len(receipts) == 1:
+                        receipts[0]['transport_attempts'] = row['transport_attempts']
+                        if 'quote' in row:
+                            receipts[0]['quote'] = row['quote']
                     self._usage.extend(receipts or [row])
                     del self._usage[:-128]
         return await self._run(complete, context)

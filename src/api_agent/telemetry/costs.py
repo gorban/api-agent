@@ -10,14 +10,20 @@ from .estimation import quota_reset_observed
 class CostLedger:
     def __init__(self):
         self.calls = {}
+        self.known_subtotals = {}
 
-    def record(self, call_id, session_id, quote=None):
+    def record(self, call_id, session_id, quote=None, *, known_subtotal=None):
         if quote is not None:
             quote = deepcopy(validate_quote(quote))
         value = (session_id, quote)
         if call_id in self.calls and self.calls[call_id] != value and self.calls[call_id] != (session_id, None):
             raise ValueError('Conflicting call cost identity')
         self.calls[call_id] = value
+        if known_subtotal is not None:
+            from api_agent.providers.costs import valid_amount
+            if not valid_amount(known_subtotal):
+                raise ValueError('Invalid known cost subtotal')
+            self.known_subtotals[call_id] = known_subtotal
 
     def report(self, usage, prompt_counts, *, now=None):
         date = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -59,6 +65,7 @@ class CostLedger:
         return {'estimated_cost_usd': total, 'cost_per_prompt_usd': None if total is None or not prompts else total / prompts,
                 'raw_quota_cost_usd': total if basis == 'quota_payment' else None,
                 'cost_basis': basis, 'list_cost_usd': list_total,
+                'known_list_cost_usd': math.fsum(self.known_subtotals.get(call_id, quote['list_cost_usd'] if quote and quote['list_cost_usd'] is not None else 0) for call_id, (_, quote) in self.calls.items()),
                 'unallocated_cost_usd': None if total is None else max(0.0, total - assigned),
                 'test_costs': allocated, 'payment_policy': policy,
                 'payment_month': f'{date.year:04d}-{date.month:02d}' if policy is not None and policy['period'] == 'calendar_month' else None,

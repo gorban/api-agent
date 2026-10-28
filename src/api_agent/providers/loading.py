@@ -176,7 +176,10 @@ class _StreamView:
         validate_provider_request(self._implementation, request)
         selection = await _validate_model(self._implementation, request, auth)
         from .rich_inference import async_validate_result
-        return await async_validate_result(request, await self._implementation.acomplete(request, auth=auth), selection=selection)
+        result = await self._implementation.acomplete(request, auth=auth)
+        from .generation_attempts import snapshot_transport_result
+        snapshot_transport_result(result)
+        return await async_validate_result(request, result, selection=selection)
 
 
 @dataclass

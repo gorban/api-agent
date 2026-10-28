@@ -20,6 +20,31 @@ def attention_status(*statuses):
     return max(statuses, key={"passed": 0, "broken": 1, "failed": 2}.__getitem__)
 
 
+def transport_attempt_steps(ledger):
+    """Project admitted physical evidence without creating logical call rows."""
+    if ledger is None:
+        return []
+    from api_agent.providers.generation_attempts import validate_transport_attempts
+    ledger = validate_transport_attempts(ledger)
+    steps = []
+    for row in ledger['attempts']:
+        recovered = row['retry_delay_seconds'] is not None
+        parameters = [dict(name='transport_' + key, value=str(row[key]))
+                      for key in ('id', 'index', 'execution', 'retry_delay_seconds')
+                      if row[key] is not None]
+        for key in ('outcome', 'status', 'error_kind', 'started_ms', 'stopped_ms'):
+            if row.get(key) is not None:
+                parameters.append(dict(name='transport_' + key, value=str(row[key])))
+        steps.append(dict(name='transport attempt ' + str(row['index']),
+                          status=('broken' if recovered or row.get('error_kind') == 'cancelled' else
+                                  'failed' if row.get('outcome') == 'failed' else
+                                  'broken' if row.get('outcome') in ('started', 'observed') else 'passed'),
+                          steps=[], parameters=parameters))
+    if not ledger['complete']:
+        steps.append(dict(name='transport evidence incomplete', status='broken', steps=[], parameters=[]))
+    return steps
+
+
 def bubble_attention(step):
     """Propagate attention upward while preserving each successful child."""
     for child in step["steps"]:
@@ -137,11 +162,19 @@ def scope_steps(events):
         parameters.append(dict(name='outcome', value=str(outcome)))
         status = ('passed' if outcome in ('completed', 'tool_calls') else
                   'failed' if outcome == 'failed' else 'broken')
+        physical_steps = transport_attempt_steps(event.get('transport_attempts'))
+        if physical_steps:
+            status = attention_status(status, *(step['status'] for step in physical_steps))
         parent['status'] = attention_status(parent['status'], status)
         start, stop = event.get('started_ms'), event.get('stopped_ms')
         if _time(start) and _time(stop) and parent['start'] <= start <= stop <= parent['stop']:
             parent['steps'].append(dict(name='call ' + call_id, status=status,
-                                        start=int(start), stop=int(stop), steps=[], parameters=parameters))
+                                        start=int(start), stop=int(stop), steps=physical_steps, parameters=parameters))
+        elif event.get('transport_attempts') is not None:
+            # Preserve call identity without inventing timing when only nested
+            # physical evidence has timestamps.
+            parent['steps'].append(dict(name='call ' + call_id, status=status,
+                                        steps=physical_steps, parameters=parameters))
         else:
             parent['parameters'].extend(dict(name='call ' + call_id + ' ' + item['name'], value=item['value'])
                                         for item in parameters)

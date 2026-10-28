@@ -8,6 +8,7 @@ from .attribution import current_workflow_visit
 
 _COLLECTOR = ContextVar('provider_payload_collector', default=None)
 _CALL_ID = ContextVar('provider_payload_call_id', default=None)
+_CALL_REQUESTS = ContextVar('provider_payload_requests', default=None)
 _DISPATCH = ContextVar('provider_response_dispatch', default=None)
 
 
@@ -15,9 +16,11 @@ _DISPATCH = ContextVar('provider_response_dispatch', default=None)
 def bind_inference_call(call_id):
     """Join adapter-added request capture to the existing canonical call."""
     token = _CALL_ID.set(call_id)
+    requests_token = _CALL_REQUESTS.set([])
     try:
         yield
     finally:
+        _CALL_REQUESTS.reset(requests_token)
         _CALL_ID.reset(token)
 
 
@@ -31,6 +34,19 @@ def bind_response_dispatch(observer=None):
         yield state
     finally:
         _DISPATCH.reset(token)
+
+
+@contextmanager
+def isolated_response_dispatch():
+    """Keep each physical dispatch's evidence separate from prior failures."""
+    with bind_response_dispatch(lambda evidence: None) as state:
+        yield state
+
+
+def promote_response_dispatch(state):
+    """Admit the successful physical dispatch into the enclosing call."""
+    if state['response'] is not None:
+        record_response_dispatch(state['response'])
 
 
 def record_response_dispatch(evidence):
@@ -136,6 +152,15 @@ def capture_inference(direction, wire, cause_id, *, auth=None):
         safe = projected.get(name, {})
         row = {'phase': 'request' if direction == 'input' else 'response',
                'content': safe, 'reason': capture_reason(safe, report) if allowed else 'withheld'}
+        requests = _CALL_REQUESTS.get()
+        if direction == 'input' and requests is not None:
+            from hashlib import sha256
+            import json
+            fingerprint = sha256(json.dumps(wire, sort_keys=True, separators=(',', ':'),
+                                             ensure_ascii=False, allow_nan=False).encode()).digest()
+            if fingerprint in requests:
+                return
+            requests.append(fingerprint)
         identifier = collector['call_id'] if collector is not None else _CALL_ID.get() or cause_id
         if collector is not None:
             collector['rows'].append(row)

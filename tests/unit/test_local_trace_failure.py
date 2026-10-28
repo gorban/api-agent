@@ -63,7 +63,12 @@ def test_failed_local_request_preserves_selection_but_omits_model_prose_from_otl
     try:
         asyncio.run(run())
         spans = exporter.get_finished_spans()
-        client = next(span for span in spans if span.kind.name == 'CLIENT')
+        clients = [span for span in spans if span.kind.name == 'CLIENT']
+        client, = [span for span in clients if 'api_agent.transport_id' not in span.attributes]
+        physical, = [span for span in clients if 'api_agent.transport_id' in span.attributes]
+        assert physical.parent.span_id == client.context.span_id
+        assert physical.attributes['api_agent.transport_index'] == 1
+        assert physical.attributes['api_agent.transport_outcome'] == 'failed'
         if model == 'customer_private_question':
             assert client.name == 'chat'
             assert 'gen_ai.request.model' not in client.attributes
