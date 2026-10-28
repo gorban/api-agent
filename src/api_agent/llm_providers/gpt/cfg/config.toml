@@ -19,7 +19,7 @@ cost_affecting = true
 type = "str"
 default = "https://api.openai.com/v1"
 applies_when = {GPT_AUTH_MODE = "api_key"}
-help = "HTTPS base for API-key requests. For an alternate compatible backend, set its base (for example https://openrouter.ai/api/v1) and select its matching LLM User key. Subscription ignores this setting and uses the fixed official endpoint."
+help = "HTTPS base for API-key requests. For an alternate compatible backend, set its base (for example https://openrouter.ai/api/v1) and select its matching LLM User key. The OpenRouter integration-test model defaults match this exact spelling with or without a trailing slash; other equivalent spellings require explicit test model IDs. Subscription ignores this setting and uses the fixed official endpoint."
 
 [fields.GPT_STATE_DIR]
 type = "path"
@@ -63,6 +63,7 @@ acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
+conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key", GPT_BASE_URL = ["https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"]}, value = "openai/gpt-6-luna"}]
 default = "gpt-6-luna"
 help = "Exact model ID for workflow integration and calibration; empty requires provider qualification."
 
@@ -71,6 +72,7 @@ acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
+conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key", GPT_BASE_URL = ["https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"]}, value = "openai/gpt-6-luna"}]
 default = "gpt-6-luna"
 help = "Exact model ID for the three-pair low/high reasoning contrast; empty requires an explicit qualified model."
 
@@ -79,6 +81,7 @@ acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
+conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key", GPT_BASE_URL = ["https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"]}, value = "openai/gpt-6-sol"}]
 default = "gpt-6-sol"
 help = "Exact initial Studio selection-test model ID; empty requires explicit qualification."
 
@@ -87,6 +90,7 @@ acknowledge_default = false
 type = "str"
 override = true
 override_if_present = true
+conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key", GPT_BASE_URL = ["https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"]}, value = "openai/gpt-6-luna"}]
 default = "gpt-5.6-luna"
 help = "Exact alternate Studio selection-test model ID; must differ from the initial model."
 
@@ -137,6 +141,7 @@ allow_empty = true
 validation = "positive"
 override = true
 override_if_present = true
+conditional_defaults = [{when = {GPT_AUTH_MODE = "api_key", GPT_BASE_URL = ["https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"]}, value = 16384}]
 help = "Optional output-token cap from 1 to 16384 for each of the six matched reasoning contrast requests; empty preserves the application/provider default. It is sent through the application API and checked against advertised model limits before inference."
 
 [fields.LLM_REASONING_TEST_TIMEOUT_SECONDS]

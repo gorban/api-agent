@@ -59,31 +59,37 @@ def test_unknown_routes_downgrade_only_when_allowed(kwargs):
 ROUTER = 'https://openrouter.ai/api/v1'
 
 
-def test_openrouter_exact_structured_route_sends_required_routing_and_schema():
+@pytest.mark.parametrize('api_mode', ['completions', 'responses'])
+def test_openrouter_exact_structured_route_sends_required_routing_and_schema(api_mode):
     req = request(fallback='reject', model='openai/gpt-6-luna')
-    result, calls = run_gpt(req, base=ROUTER, api_mode='completions')
+    result, calls = run_gpt(req, base=ROUTER, api_mode=api_mode)
     body = json.loads(calls[0].content)
     assert result.response.actual_mode == 'structured'
     assert body['provider'] == {'require_parameters': True}
-    assert body['response_format'] == {'type': 'json_schema', 'json_schema': {
-        'name': 'answer', 'schema': json.loads(SHAPE), 'strict': True}}
+    definition = {'name': 'answer', 'schema': json.loads(SHAPE), 'strict': True}
+    if api_mode == 'responses':
+        assert body['text']['format'] == {'type': 'json_schema', **definition}
+    else:
+        assert body['response_format'] == {'type': 'json_schema', 'json_schema': definition}
 
 
-def test_openrouter_structured_and_reasoning_keep_both_routing_constraints():
+@pytest.mark.parametrize('api_mode', ['completions', 'responses'])
+def test_openrouter_structured_and_reasoning_keep_both_routing_constraints(api_mode):
     req = request(fallback='reject', model='openai/gpt-6-luna')
     req = replace(req, payload=replace(req.payload, generation=GenerationOptions(reasoning_effort='low')))
-    result, calls = run_gpt(req, base=ROUTER, api_mode='completions')
+    result, calls = run_gpt(req, base=ROUTER, api_mode=api_mode)
     body = json.loads(calls[0].content)
     assert result.response.actual_mode == 'structured'
     assert body['provider'] == {'require_parameters': True, 'allow_fallbacks': False}
     assert body['reasoning'] == {'effort': 'low'}
-    assert body['response_format']['type'] == 'json_schema'
+    assert (body['text']['format'] if api_mode == 'responses' else body['response_format'])['type'] == 'json_schema'
 
 
-def test_openrouter_invalid_structured_response_keeps_evidence_and_usage():
+@pytest.mark.parametrize('api_mode', ['completions', 'responses'])
+def test_openrouter_invalid_structured_response_keeps_evidence_and_usage(api_mode):
     req = request(fallback='reject', model='openai/gpt-6-luna')
     with pytest.raises(ProviderAccessError) as caught:
-        run_gpt(req, base=ROUTER, api_mode='completions', output='{"answer":7}')
+        run_gpt(req, base=ROUTER, api_mode=api_mode, output='{"answer":7}')
     assert caught.value.response.actual_mode == 'structured'
     assert caught.value.usage.output_tokens == 2
 
@@ -91,7 +97,8 @@ def test_openrouter_invalid_structured_response_keeps_evidence_and_usage():
 @pytest.mark.parametrize('base,model,mode,subscription', [
     ('https://alternate.example/v1', 'openai/gpt-6-luna', 'completions', False),
     (ROUTER, 'openai/gpt-6-sol', 'completions', False),
-    (ROUTER, 'openai/gpt-6-luna', 'responses', False),
+    (ROUTER, 'openai/gpt-6-sol', 'responses', False),
+    ('https://alternate.example/v1', 'openai/gpt-6-luna', 'responses', False),
     (ROUTER, 'openai/gpt-6-luna', 'completions', True),
 ])
 def test_openrouter_adjacent_routes_still_reject(base, model, mode, subscription):
@@ -100,10 +107,11 @@ def test_openrouter_adjacent_routes_still_reject(base, model, mode, subscription
 
 
 @pytest.mark.parametrize('kwargs', [dict(shape=OPEN), dict(tools=(Tool('lookup', '', SHAPE),))])
-def test_openrouter_unqualified_schema_and_tools_still_reject(kwargs):
+@pytest.mark.parametrize('api_mode', ['completions', 'responses'])
+def test_openrouter_unqualified_schema_and_tools_still_reject(kwargs, api_mode):
     with pytest.raises(OperationalError):
         prepare(request(fallback='reject', model='openai/gpt-6-luna', **kwargs),
-                base=ROUTER, mode='completions')
+                base=ROUTER, mode=api_mode)
 
 
 @pytest.mark.parametrize('shape', [OPEN, '{"type":"object","allOf":[{"type":"object"}]}',

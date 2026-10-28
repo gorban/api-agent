@@ -93,10 +93,17 @@ def _catalog(data, subscription, token, *, base_url=None):
         family, inferred_version = _selection_identity(identifier)
         from .reasoning import reasoning_efforts
         efforts = reasoning_efforts(identifier, base_url=base_url)
+        # This exact route/model is qualified separately; catalog parameters alone
+        # do not establish equivalent support across all models and routes.
+        supported = row.get('supported_parameters')
+        limit_supported = (not subscription and base_url == 'https://openrouter.ai/api/v1'
+                           and identifier == 'openai/gpt-6-luna'
+                           and type(supported) is list and 'max_tokens' in supported)
+        features = (('reasoning_effort',) if efforts else ()) + (('max_output_tokens',) if limit_supported else ())
         selections.append(AvailableSelection(identifier, description, display_name=name,
                           version=version if version is not None else inferred_version,
                           max_output_tokens=maximum, context_length=context, family=family,
-                          features=("reasoning_effort",) if efforts else (), reasoning_efforts=efforts))
+                          features=features, reasoning_efforts=efforts))
     if len(selections) > 256:
         raise ModelDiscoveryError('unknown', 'GPT model discovery returned too many selections.')
     return tuple(selections)

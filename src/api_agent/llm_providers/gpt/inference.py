@@ -359,6 +359,10 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     prepared, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
     from api_agent.llm_providers.response_policy import format_payload
     body = format_payload(request, _payload(prepared, api_mode, subscription, _validate_instances=_validate_instances), evidence)
+    if base_url == 'https://openrouter.ai/api/v1':
+        # OpenRouter may reject otherwise tool-capable routes when this explicit
+        # parameter is supplied. Returned calls remain independently validated.
+        body.pop('parallel_tool_calls', None)
     if evidence is not None and evidence.actual_mode == 'json':
         if api_mode == 'responses':
             body['text'] = {'format': {'type': 'json_object'}}
@@ -369,6 +373,8 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
         body['provider'] = {'require_parameters': True}
     from .reasoning import reasoning_fields
     body.update(reasoning_fields(request, base_url=base_url, api_mode=api_mode))
+    if base_url == 'https://openrouter.ai/api/v1' and request.payload.generation.max_output_tokens is not None:
+        body.setdefault('provider', {}).update(require_parameters=True, allow_fallbacks=False)
     from .rich import _protected
     from api_agent.providers.rich_inference import continuation
     if any(message.continuation is not None and _protected(continuation(message.continuation), access_token) for message in request.payload.messages):

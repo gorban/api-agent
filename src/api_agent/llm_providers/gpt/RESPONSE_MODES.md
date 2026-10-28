@@ -23,13 +23,14 @@ were checked October 27, 2026. Unlisted names and combined native
 response-format/tool requests remain unqualified for the new policy.
 Existing model/reasoning/tool restrictions still apply independently.
 
-For API-key Chat Completions at `https://openrouter.ai/api/v1`, the exact
+For API-key Chat Completions and Responses at `https://openrouter.ai/api/v1`, the exact
 `openai/gpt-6-luna` model also supports the structured policy under the same
 schema and tool restrictions. The request sets `provider.require_parameters`
 to require a compatible serving endpoint; generated output is still validated
-locally. Other alternate endpoints, models and OpenRouter Responses remain
+locally. Other alternate endpoints and models remain
 unqualified. See [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
-and the [model page](https://openrouter.ai/openai/gpt-6-luna/).
+and the [model page](https://openrouter.ai/openai/gpt-6-luna/). The Responses
+route has also passed a live strict-schema check; availability may vary by serving endpoint.
 
 The existing qualified GPT-6 Luna subscription Responses schema route remains
 supported on its official endpoint. That qualification does not establish native
