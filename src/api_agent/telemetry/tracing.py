@@ -54,7 +54,7 @@ def _structural(boundary, payload, model_identities=frozenset()):
         return {}
     clean = {}
     identifiers = {'api_agent.' + key for key in ('event_id', 'invocation_id', 'turn_id',
-        'scope_id', 'parent_id', 'visit_id', 'attempt_id', 'call_id')}
+        'scope_id', 'parent_id', 'visit_id', 'attempt_id', 'call_id', 'transport_id')}
     for key, value in payload.items():
         if key in ('gen_ai.request.model', 'gen_ai.response.model'):
             if _model_identity(value, model_identities):
@@ -67,6 +67,17 @@ def _structural(boundary, payload, model_identities=frozenset()):
         elif key in ('api_agent.attempt', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens'):
             if type(value) is int and 0 <= value <= (1 << 53) - 1:
                 clean[key] = value
+        elif key in ('api_agent.transport_index', 'api_agent.transport_attempt_count'):
+            if type(value) is int and 0 <= value <= 20:
+                clean[key] = value
+        elif key == 'api_agent.transport_status':
+            if type(value) is int and 100 <= value <= 599:
+                clean[key] = value
+        elif key in ('api_agent.transport_complete', 'api_agent.transport_recovered'):
+            if type(value) is bool:
+                clean[key] = value
+        elif key == 'api_agent.transport_outcome' and value in ('started', 'observed', 'completed', 'failed'):
+            clean[key] = value
         elif key == 'gen_ai.operation.name' and value in ('chat', 'execute_tool'):
             clean[key] = value
     return _attributes(boundary.for_policy(ContentPolicy(True)), clean,
@@ -78,7 +89,7 @@ def _span_name(boundary, name, model_identities=frozenset()):
         return 'chat'
     if type(name) is not str or not (
             re.fullmatch(r'(?:graph|component|node) [A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', name)
-            or name == 'execute_tool'
+            or name in ('execute_tool', 'transport attempt')
             or (name.startswith('chat ') and _model_identity(name[5:], model_identities))):
         return 'api_agent.span'
     return boundary.content_export({'name': name}).get('name', 'api_agent.span')

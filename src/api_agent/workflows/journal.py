@@ -461,7 +461,10 @@ class WorkflowJournal:
                    'timeout_key', 'outcome', 'accepted', 'visit_id', 'attempt_id',
                    'call_id', 'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'response', 'direction',
                    'values', 'reason', 'accounting', 'plain_fields', 'capture_class',
-                   'truncated_fields')
+                   'truncated_fields', 'transport_attempts')
+        if 'transport_attempts' in row:
+            from api_agent.providers.generation_attempts import validate_transport_attempts
+            row = {**row, 'transport_attempts': validate_transport_attempts(row['transport_attempts'])}
         for key in ('event', 'owner', 'kind', 'node', 'component', 'source',
                     'target', 'outcome', 'timeout_key'):
             value = row.get(key)
@@ -581,7 +584,7 @@ class WorkflowJournal:
 
     def record_call(self, *, visit_id, attempt_id=None, usage=None, selection=None,
                     elapsed=None, outcome='completed', call_id=None,
-                    actual_model=None, reasoning_effort=None, response=None):
+                    actual_model=None, reasoning_effort=None, response=None, transport_attempts=None):
         self._begin()
         if type(visit_id) is not str or not visit_id:
             raise ValueError('A leaf call requires a node visit owner')
@@ -616,6 +619,7 @@ class WorkflowJournal:
                           **({'actual_model': actual_model} if actual_model is not None else {}),
                           **({'reasoning_effort': reasoning_effort} if reasoning_effort is not None else {}),
                           **({'response': response} if response is not None else {}),
+                          **({'transport_attempts': transport_attempts} if transport_attempts is not None else {}),
                           accounting='unverified_tool' if unverified_tool else 'central_call_id'))
         return call_id
 
@@ -753,11 +757,16 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                'timeout_key', 'outcome', 'accepted', 'sequence', 'event_id',
                'invocation_id', 'turn_id', 'visit_id', 'attempt_id', 'call_id',
                'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'response', 'direction', 'values', 'reason', 'accounting',
-               'plain_fields', 'capture_class', 'truncated_fields'}
+               'plain_fields', 'capture_class', 'truncated_fields', 'transport_attempts'}
     event_ids = set()
     for sequence, event in enumerate(events, 1):
         if type(event) is not dict or set(event) - allowed or event.get('sequence') != sequence:
             raise ValueError('Invalid workflow event sequence or field')
+        if 'transport_attempts' in event:
+            from api_agent.providers.generation_attempts import validate_transport_attempts
+            validate_transport_attempts(event['transport_attempts'])
+            if event.get('event') != 'call':
+                raise ValueError('Transport attempts require a call')
         if event.get('reasoning_effort') not in (None, 'off', 'low', 'medium', 'high'):
             raise ValueError('Invalid workflow reasoning effort')
         if 'response' in event:

@@ -8,16 +8,26 @@ def _call_facts(call):
     usage = call.get('usage') or {}
     quote = call.get('quote') or {}
     accounting = quote.get('accounting') or {}
+    ledger = call.get('transport_attempts')
+    rollup = None
+    if ledger is not None:
+        from api_agent.providers.generation_attempts import rollup_transport_attempts
+        rollup = rollup_transport_attempts(ledger)
+        usage = {key: (value if not rollup['unknown_usage_attempts'][key] and not rollup['unknown_remainder'] else None)
+                 for key, value in rollup['usage'].items()}
+        quote = {}
     from api_agent.providers.costs import qualified_charge
     charge = (qualified_charge(accounting.get('billing'), usage)
-              if accounting.get('billing_mode') in ('api_key', 'metered') else None)
+              if ledger is None and accounting.get('billing_mode') in ('api_key', 'metered') else None)
+    if rollup is not None and not rollup['unknown_charge_attempts'] and not rollup['unknown_remainder']:
+        charge = rollup['reported_charge_usd']
     return {name: usage.get(name) for name in ('input_tokens', 'output_tokens',
             'cached_input_tokens', 'cache_write_tokens', 'reasoning_tokens')} | {
-            'list_cost_usd': quote.get('list_cost_usd'),
-            'list_cost_basis': 'provider_quote' if quote.get('list_cost_usd') is not None else 'unknown',
+            'list_cost_usd': (rollup['list_cost_usd'] if rollup is not None and not rollup['unknown_cost_attempts'] and not rollup['unknown_remainder'] else quote.get('list_cost_usd')),
+            'list_cost_basis': 'provider_quote' if (quote.get('list_cost_usd') is not None or rollup is not None and not rollup['unknown_cost_attempts'] and not rollup['unknown_remainder']) else 'unknown',
             'reported_charge_usd': charge,
             'reported_charge_basis': 'qualified_provider_billing' if charge is not None else 'unavailable',
-            'cost_basis': 'provider_quote' if quote.get('list_cost_usd') is not None else 'unknown',
+            'cost_basis': 'provider_quote' if (quote.get('list_cost_usd') is not None or rollup is not None and not rollup['unknown_cost_attempts'] and not rollup['unknown_remainder']) else 'unknown',
             'selection': call.get('selection'), 'actual_model': call.get('actual_model'),
             'requested_model': accounting.get('requested_model'),
             'catalog_model': accounting.get('catalog_model'),
@@ -26,6 +36,13 @@ def _call_facts(call):
             'serving_revision': call.get('serving_revision'),
             'provider_identity': (accounting.get('compatibility') or {}).get('_COST_PROVIDER_IDENTITY'),
             'outcome': call.get('outcome'), 'turn_id': call.get('turn_id'),
+            **({'transport_known_list_cost_usd': rollup['list_cost_usd'],
+                'transport_unknown_cost_attempts': rollup['unknown_cost_attempts'],
+                'transport_known_reported_charge_usd': rollup['reported_charge_usd'],
+                'transport_unknown_charge_attempts': rollup['unknown_charge_attempts'],
+                'transport_unknown_remainder': rollup['unknown_remainder'],
+                **{'transport_known_' + key: value for key, value in rollup['usage'].items()},
+                **{'transport_unknown_' + key + '_attempts': value for key, value in rollup['unknown_usage_attempts'].items()}} if rollup is not None else {}),
             **({'conversation_id': call['conversation_id']} if 'conversation_id' in call else {})}
 
 
@@ -131,7 +148,8 @@ def apply_frozen_steps(steps, test_id, scope_facts):
             call_id = step['name'][5:]
             matching = [(identifier, facts) for (owner, _, identifier), facts in scope_facts.items()
                         if owner == test_id and identifier == call_id]
-            parameters[:] = ([dict(name=name, value='unknown' if value is None else str(value))
+            retained = [item for item in parameters if item.get('name', '').startswith('transport_')]
+            parameters[:] = retained + ([dict(name=name, value='unknown' if value is None else str(value))
                               for name, value in matching[0][1].items()] if len(matching) == 1
                              else [dict(name='accounting', value='unknown')])
             return []
@@ -283,7 +301,7 @@ def _call_chronology(call):
 
 def include_unowned_calls(steps, calls, unowned_ids):
     """Add truthful call leaves for explicit context, or an unattached container."""
-    from .workflow_steps import bubble_attention
+    from .workflow_steps import bubble_attention, transport_attempt_steps
     unowned = set(unowned_ids)
     additions, unattached = [], []
     for call in sorted(calls, key=_call_chronology):
@@ -293,8 +311,10 @@ def include_unowned_calls(steps, calls, unowned_ids):
         status = 'passed' if outcome in ('completed', 'tool_calls') else 'failed' if outcome == 'failed' else 'broken'
         parameters = {name: call[name] for name in ('conversation_id', 'turn_id') if name in call}
         parameters.update(outcome=outcome, attribution='outside_graph')
-        step = dict(name='call ' + call['call_id'], status=status, steps=[],
+        physical_steps = transport_attempt_steps(call.get('transport_attempts'))
+        step = dict(name='call ' + call['call_id'], status=status, steps=physical_steps,
                     parameters=[dict(name=name, value=str(value)) for name, value in parameters.items()])
+        bubble_attention(step)
         if call.get('started_at') is not None:
             step['parameters'].append(dict(name='recorded_started_ms',
                                            value=str(datetime.fromisoformat(call['started_at']).timestamp() * 1000)))

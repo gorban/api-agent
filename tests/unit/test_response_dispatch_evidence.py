@@ -233,7 +233,7 @@ def test_publisher_wrappers_reject_conflicting_terminal_mode_before_overwrite(mo
         owner._request=lambda call:call()
     else:
         owner=provider_setup.IntegrationLLM.__new__(provider_setup.IntegrationLLM)
-        owner.config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
+        owner.config={};owner._provider_config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
         async def complete(value):record_response_dispatch(chosen);raise error
         owner._complete=complete;owner._run_private=asyncio.run
     with pytest.raises(ContractError,match='Conflicting'):owner.complete(req)
@@ -279,7 +279,7 @@ def test_publisher_failure_wrappers_preserve_only_admitted_mode_and_explicit_usa
         owner.config={};owner.client=SimpleNamespace(response_evidence=chosen if dispatched else None,complete=lambda _:(_ for _ in ()).throw(error));owner._request=lambda call:call()
     else:
         owner=provider_setup.IntegrationLLM.__new__(provider_setup.IntegrationLLM)
-        owner.config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
+        owner.config={};owner._provider_config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
         async def complete(value):
             if dispatched:record_response_dispatch(chosen)
             if partial_usage:
@@ -370,7 +370,7 @@ def test_conflicting_publisher_failure_still_has_one_terminal_canonical_receipt(
         owner.config={};owner.client=SimpleNamespace(response_evidence=chosen,complete=lambda _:(_ for _ in ()).throw(error));owner._request=lambda call:call()
     else:
         owner=provider_setup.IntegrationLLM.__new__(provider_setup.IntegrationLLM)
-        owner.config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
+        owner.config={};owner._provider_config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
         async def complete(value):record_response_dispatch(chosen);raise error
         owner._complete=complete;owner._run_private=asyncio.run
     with pytest.raises(ContractError,match='Conflicting') as caught:owner.complete(req)
@@ -400,7 +400,7 @@ def test_local_failure_before_capture_starts_has_one_unlabeled_terminal_receipt(
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(path))
     monkeypatch.setenv('PYTEST_CURRENT_TEST','test_policy.py::test_before_capture (call)')
     owner=provider_setup.IntegrationLLM.__new__(provider_setup.IntegrationLLM)
-    owner.config={};owner.closed=False;owner.skip_unavailable=False
+    owner.config={};owner._provider_config={};owner.closed=False;owner.skip_unavailable=False
     owner.emissions=EmissionBoundary(ContentPolicy(False))
     entered=[];closed=[]
     async def complete(value):

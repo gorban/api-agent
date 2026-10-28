@@ -79,7 +79,7 @@ class SharedSetupOwner(_Owner):
     Wrapped completions may explicitly preserve provider-owned payload capture;
     None retains marker discovery on an ordinary bound completion method.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600, max_attempts=5, inference_timeout=None):
         super().__init__(timeout)
         if type(catalog_ttl) not in (int, float):
             raise ContractError('Invalid shared setup binding')
@@ -93,6 +93,12 @@ class SharedSetupOwner(_Owner):
                 or (captures_effective_payload is not None and type(captures_effective_payload) is not bool)
                 or not math.isfinite(catalog_ttl) or catalog_ttl < 0):
             raise ContractError('Invalid shared setup binding')
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 20:
+            raise ContractError('Invalid inference attempt limit')
+        if inference_timeout is not None and (type(inference_timeout) not in (int, float) or not math.isfinite(inference_timeout) or inference_timeout <= 0):
+            raise ContractError('Invalid inference timeout')
+        self._max_attempts = max_attempts
+        self._inference_timeout = inference_timeout
         self.operation_id = operation_id
         self._selected_identity = selected_identity
         self._factory = owner_factory
@@ -223,12 +229,39 @@ class SharedSetupOwner(_Owner):
                     effective_capture = getattr(implementation, 'captures_effective_payload', False) is True
                 if not effective_capture:
                     capture_inference('input', request_wire, cause_id, auth=auth)
-                try:
-                    result = await self._complete(request, auth=auth)
-                except BaseException as error:
-                    from api_agent.workflows.inference_capture import record_response_failure
-                    record_response_failure(error)
-                    raise
+                from .inference_retry import retryable, retry_delay, retry_hint_supported
+                from .generation_attempts import begin_transport_attempt, finish_transport_attempt
+                from .progress import component_timeout
+                async with component_timeout('LLM inference', self._inference_timeout):
+                    index = 1
+                    while True:
+                        token = begin_transport_attempt(index)
+                        attempt_dispatch = None
+                        try:
+                            from api_agent.workflows.inference_capture import isolated_response_dispatch, promote_response_dispatch
+                            with isolated_response_dispatch() as attempt_dispatch:
+                                result = await self._complete(request, auth=auth)
+                            promote_response_dispatch(attempt_dispatch)
+                        except BaseException as error:
+                            if attempt_dispatch is not None:
+                                from api_agent.workflows.inference_capture import retain_response_failure
+                                retain_response_failure(error, attempt_dispatch['response'], attempt_dispatch['usage'])
+                            delay = (retry_delay(index, getattr(error, 'retry_after', None))
+                                     if (index < self._max_attempts and retryable(error)
+                                         and retry_hint_supported(getattr(error, 'retry_after', None))) else None)
+                            finish_transport_attempt(token, error=error, retry_delay_seconds=delay,
+                                                     response=attempt_dispatch['response'] if attempt_dispatch is not None else None)
+                            if delay is None:
+                                if attempt_dispatch is not None:
+                                    promote_response_dispatch(attempt_dispatch)
+                                from api_agent.workflows.inference_capture import record_response_failure
+                                record_response_failure(error)
+                                raise
+                            await asyncio.sleep(delay)
+                            index += 1
+                        else:
+                            finish_transport_attempt(token, result=result, response=attempt_dispatch['response'])
+                            break
                 self._check()
                 from .rich_inference import async_validate_result
                 await async_validate_result(request, result, selection=selection)

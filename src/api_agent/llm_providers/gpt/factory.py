@@ -55,6 +55,7 @@ class OwnedSubscriptionSession(SubscriptionSession):
 class GPTProvider:
     captures_effective_payload = True
     version = 1
+    inference_timeout = 120
     capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"))
 
     def __init__(self, config, *, inspection=None):

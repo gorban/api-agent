@@ -1,6 +1,6 @@
 # F2c — Bounded GPT admission retries
 
-The included GPT provider owns transport retries. Workflow semantic retries remain separate. The [official recovery contract](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery) identifies HTTP 503 `subscription_sharing_user_unavailable` as temporary subscriber/workspace information unavailability and recommends preserving credentials with bounded backoff.
+This document records the earlier GPT-only admission recovery delivery. Its retry allowlist, provider-local ownership and delay schedule are superseded by [shared bounded inference recovery](implementation_plan_f1b.md); the evidence below remains historical. Workflow semantic retries remain separate. The [official recovery contract](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery) identifies HTTP 503 `subscription_sharing_user_unavailable` as temporary subscriber/workspace information unavailability and recommends preserving credentials with bounded backoff.
 
 ## Requirements and acceptance
 

@@ -1,5 +1,5 @@
 """Bounded text inference; caller owns HTTP transport and selected authentication."""
-from asyncio import sleep, CancelledError
+from asyncio import CancelledError
 from dataclasses import replace
 import json
 from uuid import UUID
@@ -16,8 +16,6 @@ from .cache_policy import prompt_cache_fields
 _LIMIT = 1048576
 _TIMEOUT = 120
 _RETRY_CODE = "subscription_sharing_user_unavailable"
-_RETRY_DELAYS = (1, 5, 15, 30)
-_RETRY_RESPONSE_RESERVE = 20
 
 
 def _invalid(message='GPT inference returned an invalid result.'):
@@ -396,7 +394,7 @@ async def async_validate_text_request(*, base_url, access_token, subscription, a
 
 
 async def complete_text(*, client, base_url, access_token, subscription, api_mode, request, cache_session_id=None):
-    """Bounded inference with retries only for known pre-inference admission failures."""
+    """Perform one bounded physical inference attempt."""
     base_url, body = await async_validate_text_request(base_url=base_url, access_token=access_token,
         subscription=subscription, api_mode=api_mode, request=request)
     headers = {'Authorization': 'Bearer ' + access_token, 'Accept-Encoding': 'identity'}
@@ -413,31 +411,17 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
     from api_agent.providers.inference import error_usage
     from api_agent.workflows.inference_capture import record_response_failure
     failure_usage = None
-    dispatch = {'response': None, 'captured': False}
+    dispatch = {'response': None}
     try:
         async with component_timeout('GPT text inference', _TIMEOUT) as budget:
-            attempt = 0
-            while True:
-                try:
-                    try:
-                        return await _complete_attempt(client=client, base_url=base_url, headers=headers,
-                            body=body, subscription=subscription, api_mode=api_mode, request=request,
-                            access_token=access_token, budget=budget, dispatch=dispatch)
-                    except (OperationalError, TimeoutError, httpx.RequestError, CancelledError) as failure:
-                        failure_usage = error_usage(failure)
-                        record_response_failure(failure)
-                        raise
-                except ProviderAccessError as error:
-                    if (error.execution != 'not_started' or error.code != _RETRY_CODE
-                            or attempt == len(_RETRY_DELAYS)):
-                        raise
-                    delay = _RETRY_DELAYS[attempt]
-                    if budget.remaining < delay + _RETRY_RESPONSE_RESERVE:
-                        raise
-                    await sleep(delay)
-                    if budget.remaining < _RETRY_RESPONSE_RESERVE:
-                        raise
-                    attempt += 1
+            try:
+                return await _complete_attempt(client=client, base_url=base_url, headers=headers,
+                    body=body, subscription=subscription, api_mode=api_mode, request=request,
+                    access_token=access_token, budget=budget, dispatch=dispatch)
+            except (OperationalError, TimeoutError, httpx.RequestError, CancelledError) as failure:
+                failure_usage = error_usage(failure)
+                record_response_failure(failure)
+                raise
     except (ProviderAccessError, OperationalError, CancelledError) as error:
         error.response = dispatch['response']
         raise
@@ -477,9 +461,7 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
     _, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
     if budget.remaining == 0:
         raise TimeoutError('GPT inference deadline expired before dispatch.')
-    if not dispatch['captured']:
-        capture_payload(request, body, evidence, auth=access_token)
-        dispatch['captured'] = True
+    capture_payload(request, body, evidence, auth=access_token)
     if budget.remaining == 0:
         raise TimeoutError('GPT inference deadline expired before dispatch.')
     if evidence is not None:
@@ -489,29 +471,47 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
     async with client.stream('POST', base_url + ('/responses' if api_mode == 'responses' else '/chat/completions'),
             json=body, headers=headers,
             follow_redirects=False, timeout=budget.remaining) as response:
-        if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
-            raise _invalid('GPT inference returned unsupported content encoding.')
-        raw = bytearray()
-        async for chunk in response.aiter_bytes():
-            if len(raw) + len(chunk) > _LIMIT:
-                raise _invalid('GPT inference response exceeded its limit.')
-            raw.extend(chunk)
-        request_id = response.headers.get('x-request-id')
-        if response.status_code != 200:
-            try:
-                data = _json(raw)
-            except ProviderAccessError:
-                data = None
-            error = _rejection(response.status_code, data, request_id, access_token,
-                               _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
-            if _admission_rejection(response.status_code, data, subscription):
-                error.execution = 'not_started'
-            raise error
+        from api_agent.providers.inference_retry import retry_after
+        status = response.status_code
+        hint = retry_after(response.headers.get('retry-after'))
+        try:
+            if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
+                raise _invalid('GPT inference returned unsupported content encoding.')
+            raw = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(raw) + len(chunk) > _LIMIT:
+                    raise _invalid('GPT inference response exceeded its limit.')
+                raw.extend(chunk)
+            request_id = response.headers.get('x-request-id')
+            if response.status_code != 200:
+                try:
+                    data = _json(raw)
+                except ProviderAccessError:
+                    data = None
+                error = _rejection(response.status_code, data, request_id, access_token,
+                                   _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
+                if _admission_rejection(response.status_code, data, subscription):
+                    error.execution = 'not_started'
+                raise error
+        except Exception as error:
+            if status != 200:
+                if not isinstance(error, OperationalError):
+                    error = ProviderAccessError('unavailable', 'GPT inference was rejected.', status=status)
+                    error.execution = 'possibly_executed'
+                elif not isinstance(error, ProviderAccessError) or error.status is None:
+                    error.execution = 'possibly_executed'
+                error.http_status = status
+                error.retry_after = hint
+                raise error from None
+            raise
         if subscription:
             if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
                 raise _invalid('GPT subscription inference requires an event stream.')
             from .rich import async_validate_result
-            return await async_validate_result(request, replace(_sse(raw, access_token, request_id), response=evidence), access_token)
+            result = replace(_sse(raw, access_token, request_id), response=evidence)
+            from api_agent.providers.generation_attempts import snapshot_transport_result
+            snapshot_transport_result(result)
+            return await async_validate_result(request, result, access_token)
         data = _json(raw)
         result = _result(data, api_mode == 'responses', access_token)
         if base_url == 'https://openrouter.ai/api/v1':
@@ -523,4 +523,7 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                 raise
             result = replace(result, usage=usage, billing=billing)
         from .rich import async_validate_result
-        return await async_validate_result(request, replace(result, response=evidence), access_token)
+        result = replace(result, response=evidence)
+        from api_agent.providers.generation_attempts import snapshot_transport_result
+        snapshot_transport_result(result)
+        return await async_validate_result(request, result, access_token)

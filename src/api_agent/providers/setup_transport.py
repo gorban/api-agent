@@ -453,13 +453,27 @@ class SetupServer(_Owner):
                 call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
                 binding_sha256=_request_digest(peer.binding),
                 response=dict(version=3, response=response_evidence_to_wire(evidence)))))
-        with bind_response_dispatch(dispatched) as dispatch, collect_inference() as collector:
+        from .generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger
+        def attempt_event(phase, row):
+            peer.writer.write(_encode(dict(version=1, status='transport_attempt', phase=phase, row=row,
+                call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
+                binding_sha256=_request_digest(peer.binding))))
+        def attempt_quote(result):
+            from .inference import request_from_wire
+            return self._registry.quote_cost(peer.binding, request_from_wire(frame['request']), result)
+        ledger = TransportAttemptLedger(20, observer=attempt_event, quote=attempt_quote) if action == 'complete' else None
+        with bind_transport_attempt_ledger(ledger), bind_response_dispatch(dispatched) as dispatch, collect_inference() as collector:
             try:
                 return await self._dispatch_captured(peer, frame, action, collector)
             except BaseException as error:
                 from api_agent.workflows.inference_capture import retain_response_failure
                 retain_response_failure(error, dispatch['response'], dispatch['usage'])
                 raise
+            finally:
+                if ledger is not None and not peer.writer.is_closing():
+                    peer.writer.write(_encode(dict(version=1, status='transport_terminal', ledger=ledger.snapshot(),
+                        call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
+                        binding_sha256=_request_digest(peer.binding))))
 
     async def _dispatch_captured(self, peer, frame, action, collector):
         if action == 'register':
@@ -617,6 +631,7 @@ class SetupClient:
         self.evidence = []
         self.cost_quote = None
         self.response_evidence = None
+        self.transport_attempts = None
         self._complete_count = 0
 
     def _context(self):
@@ -682,6 +697,7 @@ class SetupClient:
         if action == 'complete':
             self.evidence = []
             self.cost_quote = None
+            self.transport_attempts = {'version': 1, 'complete': False, 'attempts': []}
         frame = dict(version=1, action=action, timeout=self._timeout, capability=self._descriptor['capability'])
         if action == 'register':
             frame.update(worker_id=self._worker, attempt=1)
@@ -706,6 +722,39 @@ class SetupClient:
             if type(response.get('version')) is not int or response['version'] != 1:
                 raise ContractError('Invalid setup response')
             status = response.get('status')
+            if status in ('transport_attempt', 'transport_terminal') and action == 'complete':
+                from .generation_attempts import validate_transport_attempts
+                expected = {'version', 'status', 'call_sequence', 'request_sha256', 'binding_sha256'}
+                expected |= {'phase', 'row'} if status == 'transport_attempt' else {'ledger'}
+                if (set(response) != expected or response['call_sequence'] != self._complete_count
+                        or response['request_sha256'] != _request_digest(request)
+                        or response['binding_sha256'] != _request_digest(self._binding)
+                        or self.transport_attempts['complete']):
+                    raise ContractError('Invalid transport attempt response')
+                previous = self.transport_attempts['attempts']
+                if status == 'transport_attempt':
+                    phase, row = response['phase'], response['row']
+                    if phase == 'start' and (not previous or previous[-1]['outcome'] == 'failed'):
+                        rows = previous + [row]
+                        if row.get('outcome') != 'started':
+                            raise ContractError('Invalid transport attempt start')
+                    elif phase in ('evidence', 'finish') and previous and previous[-1]['outcome'] in ('started', 'observed'):
+                        prior = previous[-1]
+                        outcome = 'observed' if phase == 'evidence' else ('completed', 'failed')
+                        valid_outcome = row.get('outcome') == outcome if phase == 'evidence' else row.get('outcome') in outcome
+                        if (any(row.get(key) != prior[key] for key in ('id', 'index', 'started_ms')) or not valid_outcome
+                                or (prior['outcome'] == 'observed' and any(prior[key] is not None and row.get(key) != prior[key] for key in ('usage', 'billing', 'quote', 'response')))):
+                            raise ContractError('Invalid transport attempt update')
+                        rows = previous[:-1] + [row]
+                    else:
+                        raise ContractError('Invalid transport attempt sequence')
+                    self.transport_attempts = validate_transport_attempts(dict(version=1, complete=False, attempts=rows))
+                else:
+                    terminal = validate_transport_attempts(response['ledger'])
+                    if terminal['attempts'] != previous:
+                        raise ContractError('Conflicting transport attempt ledger')
+                    self.transport_attempts = terminal
+                continue
             if status == 'response_policy' and action == 'complete':
                 from .rich_inference import response_evidence_from_wire, validate_response_evidence
                 from .inference import request_from_wire
@@ -834,26 +883,43 @@ class SetupClient:
             try:
                 result = self._run_request('complete', request_to_wire(request))
             except BaseException as error:
+                from .generation_attempts import attach_transport_attempts
+                attach_transport_attempts(error, self.transport_attempts)
                 from api_agent.workflows.inference_capture import retain_response_failure
                 if self.response_evidence is None and getattr(error, 'response', None) is not None:
                     from .inference import error_usage
                     rejected = ContractError('Unobserved dispatched response policy')
                     rejected.usage = error_usage(error)
+                    attach_transport_attempts(rejected, self.transport_attempts)
                     raise rejected from error
-                retain_response_failure(error, self.response_evidence)
+                try:
+                    retain_response_failure(error, self.response_evidence)
+                except ContractError as conflict:
+                    attach_transport_attempts(conflict, self.transport_attempts)
+                    raise
                 if getattr(error, 'response', None) is not None:
                     validate_response_evidence(request, error)
                 raise
             if self.response_evidence is None and result.response is not None:
                 rejected = ContractError('Unobserved dispatched response policy')
                 rejected.usage = result.usage
+                from .generation_attempts import attach_transport_attempts
+                attach_transport_attempts(rejected, self.transport_attempts)
                 raise rejected
             if self.response_evidence is not None and self.response_evidence != result.response:
                 conflict = ContractError('Conflicting dispatched response policy')
                 conflict.response = self.response_evidence
                 conflict.usage = result.usage
+                from .generation_attempts import attach_transport_attempts
+                attach_transport_attempts(conflict, self.transport_attempts)
                 raise conflict
-            return validate_response_result(request, result)
+            from .generation_attempts import attach_transport_attempts
+            result = attach_transport_attempts(result, self.transport_attempts)
+            try:
+                return validate_response_result(request, result)
+            except BaseException as error:
+                attach_transport_attempts(error, self.transport_attempts)
+                raise
 
     def _run_request(self, action, request=None):
         with self._lock:
