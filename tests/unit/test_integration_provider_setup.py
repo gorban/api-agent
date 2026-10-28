@@ -28,6 +28,88 @@ def test_snapshot_private_paths_and_bounds(tmp_path, monkeypatch):
         p.write_launch_snapshot(tmp_path, SimpleNamespace(owner_root=tmp_path), {})
 
 
+def test_large_repeated_rate_cards_round_trip_per_case(tmp_path, monkeypatch):
+    card = {'models': {'model': {'rate': 'x' * 90000}}}
+    backend = {'version': 1, 'host': '127.0.0.1', 'port': 43210, 'capability': 'a' * 32}
+    rows = {f'case-{i}': {'config': {'_COST_RATE_CARD': card, 'choice': i},
+                          'provenance': {'choice': f'source-{i}'},
+                          'setup_backend': {**backend, 'port': 43210 + i}} for i in range(19)}
+    rows['null'] = {'config': {'_COST_RATE_CARD': None}, 'provenance': {}}
+    rows['missing'] = {'config': {}, 'provenance': {}}
+    rows['different'] = {'config': {'_COST_RATE_CARD': {'other': 1}}, 'provenance': {}}
+    assert len(json.dumps(rows).encode()) > p._SNAPSHOT_BYTES
+    path = p.write_launch_snapshot(tmp_path, SimpleNamespace(owner_root=tmp_path), {}, test_profiles=rows)
+    monkeypatch.setenv('API_AGENT_INTEGRATION_CONTEXT', str(path))
+    assert path.stat().st_size < p._SNAPSHOT_BYTES
+    restored = p._read_snapshot()['test_profiles']
+    assert restored == rows
+    for i in (0, 18):
+        request = SimpleNamespace(node=SimpleNamespace(nodeid=f'case-{i}'))
+        effective = p._test_snapshot(request)
+        assert effective['config'] == rows[f'case-{i}']['config']
+        assert effective['profile_provenance'] == rows[f'case-{i}']['provenance']
+        assert effective['setup_backend'] == rows[f'case-{i}']['setup_backend']
+    restored['case-0']['config']['_COST_RATE_CARD']['models'].clear()
+    assert restored['case-1']['config']['_COST_RATE_CARD'] == card
+
+
+@pytest.mark.parametrize('index', [True, -1, 1, '0'])
+def test_snapshot_rejects_invalid_rate_card_references(tmp_path, monkeypatch, index):
+    path = snapshot(tmp_path, monkeypatch)
+    data = json.loads(path.read_text())
+    data['test_profile_rate_cards'] = [None]
+    data['test_profiles'] = {'case': {'config': {}, 'provenance': {}, 'rate_card_index': index}}
+    path.write_text(json.dumps(data))
+    with pytest.raises(ContractError, match='start through launch.py'):
+        p._read_snapshot()
+
+
+def test_snapshot_rejects_rate_card_expansion_over_budget(tmp_path, monkeypatch):
+    path = snapshot(tmp_path, monkeypatch)
+    data = json.loads(path.read_text())
+    data['test_profile_rate_cards'] = ['x' * 100]
+    data['test_profiles'] = {str(i): {'config': {}, 'provenance': {}, 'rate_card_index': 0} for i in range(2)}
+    path.write_text(json.dumps(data))
+    monkeypatch.setattr(p, '_EXPANDED_PROFILE_BYTES', 150)
+    with pytest.raises(ContractError, match='start through launch.py'):
+        p._read_snapshot()
+    with pytest.raises(ContractError, match='too large'):
+        p.write_launch_snapshot(tmp_path / 'absent', SimpleNamespace(owner_root=tmp_path), {},
+            test_profiles={str(i): {'config': {'_COST_RATE_CARD': 'x' * 100}, 'provenance': {}} for i in range(2)})
+
+
+@pytest.mark.parametrize('profiles,cards', [([], []), ({}, {})])
+def test_rate_card_decoder_rejects_invalid_container_types(profiles, cards):
+    with pytest.raises(ValueError, match='Invalid integration profile rate cards'):
+        p._unpack_profile_rate_cards(profiles, cards)
+
+
+def test_rate_card_decoder_rejects_non_object_profile():
+    with pytest.raises(ValueError, match='Invalid integration profile entry'):
+        p._unpack_profile_rate_cards({'case': []}, [])
+
+
+@pytest.mark.parametrize('problem', ['duplicate', 'orphan'])
+def test_snapshot_rejects_inconsistent_rate_card_table(tmp_path, monkeypatch, problem):
+    path = snapshot(tmp_path, monkeypatch)
+    data = json.loads(path.read_text())
+    data['test_profile_rate_cards'] = [None]
+    if problem == 'duplicate':
+        data['test_profiles'] = {'case': {'config': {'_COST_RATE_CARD': None}, 'provenance': {}, 'rate_card_index': 0}}
+    path.write_text(json.dumps(data))
+    with pytest.raises(ContractError, match='start through launch.py'):
+        p._read_snapshot()
+
+
+def test_legacy_snapshot_profiles_remain_readable(tmp_path, monkeypatch):
+    path = snapshot(tmp_path, monkeypatch)
+    data = json.loads(path.read_text())
+    profiles = {'case': {'config': {'_COST_RATE_CARD': None}, 'provenance': {}}}
+    data['test_profiles'] = profiles
+    path.write_text(json.dumps(data))
+    assert p._read_snapshot()['test_profiles'] == profiles
+
+
 @pytest.mark.parametrize('problem', ['missing', 'mode', 'owner', 'symlink', 'large', 'json', 'list', 'version', 'bool_version', 'fields', 'config', 'root', 'source', 'definitions', 'missing_definitions'])
 def test_snapshot_rejects_untrusted_context_without_echo(tmp_path, monkeypatch, problem):
     path = snapshot(tmp_path, monkeypatch)

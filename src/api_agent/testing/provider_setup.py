@@ -17,6 +17,50 @@ from api_agent.providers.loading import aload_provider
 from api_agent.providers.sessions import InspectionOwner, LLMSessionOwner
 from api_agent.providers.shared_setup import SharedSetupOwner
 
+_SNAPSHOT_BYTES = 1048576
+_EXPANDED_PROFILE_BYTES = 16 * 1048576
+
+
+def _pack_profile_rate_cards(profiles):
+    """Intern repeated pricing receipts without changing case configurations."""
+    from .test_profiles import validate_snapshot_profiles
+    validate_snapshot_profiles(profiles)
+    packed, cards, lookup = {}, [], {}
+    for node, row in profiles.items():
+        row = deepcopy(row)
+        if '_COST_RATE_CARD' in row['config']:
+            card = row['config'].pop('_COST_RATE_CARD')
+            key = json.dumps(card, default=str, allow_nan=False)
+            if key not in lookup:
+                lookup[key] = len(cards)
+                cards.append(card)
+            row['rate_card_index'] = lookup[key]
+        packed[node] = row
+    return packed, cards
+
+
+def _unpack_profile_rate_cards(profiles, cards):
+    """Bound expansion before reconstructing independent per-case receipts."""
+    if type(profiles) is not dict or type(cards) is not list:
+        raise ValueError('Invalid integration profile rate cards')
+    sizes = [len(json.dumps(card, default=str, allow_nan=False).encode()) for card in cards]
+    expanded = 0
+    for row in profiles.values():
+        if type(row) is not dict:
+            raise ValueError('Invalid integration profile entry')
+        if 'rate_card_index' in row:
+            index = row['rate_card_index']
+            if (type(index) is not int or not 0 <= index < len(cards)
+                    or type(row.get('config')) is not dict or '_COST_RATE_CARD' in row['config']):
+                raise ValueError('Invalid integration profile rate card reference')
+            expanded += sizes[index]
+            if expanded > _EXPANDED_PROFILE_BYTES:
+                raise ValueError('Integration profile rate cards exceed expansion budget')
+    for row in profiles.values():
+        if 'rate_card_index' in row:
+            row['config']['_COST_RATE_CARD'] = deepcopy(cards[row.pop('rate_card_index')])
+    return profiles
+
 
 def _configured_request(request, config):
     """Freeze effective options before transport and accounting see the call."""
@@ -45,7 +89,12 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
         from api_agent.auth.interaction_transport import validate_descriptor
         data['interaction'] = validate_descriptor(interaction_descriptor)
     if test_profiles is not None:
-        data['test_profiles'] = test_profiles
+        data['test_profiles'], data['test_profile_rate_cards'] = _pack_profile_rate_cards(test_profiles)
+        # Apply the reader's expansion budget before publishing a worker context.
+        try:
+            _unpack_profile_rate_cards(deepcopy(data['test_profiles']), data['test_profile_rate_cards'])
+        except ValueError:
+            raise ContractError('Integration configuration is too large.') from None
     if tool_plan is not None:
         from .tool_runtime import write_tool_packet
         from api_agent.runtime.inventory import inventory_authority
@@ -54,7 +103,7 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
         data['tool_cases'] = dict(tool_cases or {})
         data['base_root'], data['pack_root'] = str(context.base_root), str(context.pack_root)
     payload = json.dumps(data, default=str, allow_nan=False).encode()
-    if len(payload) > 1048576:
+    if len(payload) > _SNAPSHOT_BYTES:
         raise ContractError('Integration configuration is too large.')
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'wb') as stream:
@@ -71,12 +120,12 @@ def _read_snapshot():
             if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
                     or stat.S_IMODE(metadata.st_mode) != 0o600):
                 raise ValueError
-            raw = stream.read(1048577)
-        if len(raw) > 1048576:
+            raw = stream.read(_SNAPSHOT_BYTES + 1)
+        if len(raw) > _SNAPSHOT_BYTES:
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles', 'test_profile_rate_cards'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
@@ -97,6 +146,10 @@ def _read_snapshot():
                 raise ValueError
         elif any(key in data for key in ('tool_cases', 'base_root', 'pack_root', 'inventory_authority')):
             raise ValueError
+        if 'test_profile_rate_cards' in data:
+            if 'test_profiles' not in data:
+                raise ValueError
+            data['test_profiles'] = _unpack_profile_rate_cards(data['test_profiles'], data.pop('test_profile_rate_cards'))
         if 'test_profiles' in data:
             from .test_profiles import validate_snapshot_profiles
             validate_snapshot_profiles(data['test_profiles'])

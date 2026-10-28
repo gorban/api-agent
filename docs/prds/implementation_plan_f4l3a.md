@@ -81,3 +81,9 @@ and promoted. GPT retains its separate reviewed cap 48.
 
 [Credential readiness transactions](implementation_plan_f4a2a.md) own the concurrent
 session repair. Final technical gates passed; human acceptance remains separate.
+
+## Bounded integration launch snapshots
+
+- [x] Allow complete selected suites within snapshot and expansion budgets to launch when many per-test profiles share a large frozen cost-rate card. Deduplicate cards with identical serialized representations in the protected worker snapshot and reconstruct independent per-case values, preserving each case's settings, provenance and setup owner.
+- [x] Retain bounded snapshot reads, file ownership and permission checks, legacy snapshot compatibility and a bounded reconstructed profile size. Reject malformed references and excessive expansion. Verify a suite-sized rate card, distinct per-case cards, causal removal of deduplication and the normal recorded integration launch.
+- [ ] Record human acceptance of the repaired full-suite launch; provider-specific failures remain separate.
