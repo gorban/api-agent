@@ -879,6 +879,7 @@ class SetupClient:
             self.evidence = []
             self.cost_quote = None
             self.response_evidence = None
+            self.transport_attempts = {'version': 1, 'complete': False, 'attempts': []}
             from .rich_inference import validate_response_evidence, validate_response_result
             try:
                 result = self._run_request('complete', request_to_wire(request))

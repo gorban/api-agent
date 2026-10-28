@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -188,13 +189,16 @@ def test_remote_outer_timeout_publishes_admitted_prefix(monkeypatch):
     ledger = TransportAttemptLedger(1)
     ledger.begin(1)
     prefix = ledger.snapshot()
-    client = SimpleNamespace(transport_attempts=None, response_evidence=None, evidence=[])
+    client = SimpleNamespace(_lock=threading.RLock(), transport_attempts=None, response_evidence=None, evidence=[])
     remote = RemoteIntegrationLLM.__new__(RemoteIntegrationLLM)
     remote.config, remote.client = {}, client
     published = []
     monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: published.append(kw))
-    def timeout(_):
+    def complete(_):
         client.transport_attempts = prefix
+    client.complete = complete
+    def timeout(call):
+        call()
         raise TimeoutError('deadline')
     remote._request = timeout
     request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('question'),)),)))
@@ -239,17 +243,19 @@ def test_remote_conflict_preserves_interrupted_attempt_prefix(monkeypatch):
     prefix = ledger.snapshot()
     first = ResponseEvidence('text', 'reject', 'text', None, None, None)
     second = ResponseEvidence('text', 'allow', 'text', None, None, None)
-    client = SimpleNamespace(transport_attempts=None, response_evidence=first, evidence=[])
+    client = SimpleNamespace(_lock=threading.RLock(), transport_attempts=None, response_evidence=None, evidence=[])
     remote = RemoteIntegrationLLM.__new__(RemoteIntegrationLLM)
     remote.config, remote.client = {}, client
     published = []
     monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: published.append(kw))
     def fail(_):
         client.transport_attempts = prefix
+        client.response_evidence = first
         error = TimeoutError('deadline')
         error.response = second
         raise error
-    remote._request = fail
+    client.complete = fail
+    remote._request = lambda call: call()
     request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('question'),)),)))
     with pytest.raises(ContractError, match='Conflicting'):
         remote.complete(request)

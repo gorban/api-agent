@@ -1,3 +1,4 @@
+import threading
 """Dispatch metadata survives real local/IPC failure and cancellation boundaries."""
 import asyncio
 from copy import deepcopy
@@ -229,8 +230,11 @@ def test_publisher_wrappers_reject_conflicting_terminal_mode_before_overwrite(mo
     chosen=evidence(req,'prompted_json','unsupported_mode')
     if remote:
         owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
-        owner.config={};owner.client=SimpleNamespace(response_evidence=chosen,complete=lambda _:(_ for _ in ()).throw(error))
-        owner._request=lambda call:call()
+        owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock())
+        def complete(_):
+            owner.client.response_evidence=chosen
+            raise error
+        owner.client.complete=complete;owner._request=lambda call:call()
     else:
         owner=provider_setup.IntegrationLLM.__new__(provider_setup.IntegrationLLM)
         owner.config={};owner._provider_config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
@@ -245,7 +249,7 @@ def test_remote_publisher_preserves_legacy_client_without_optional_metadata(monk
     monkeypatch.setattr(inference_usage,'publish',lambda *a,**k:None)
     req=request('json');error=TimeoutError('controlled')
     owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
-    owner.config={};owner.client=SimpleNamespace(complete=lambda _:(_ for _ in ()).throw(error));owner._request=lambda call:call()
+    owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock(),complete=lambda _:(_ for _ in ()).throw(error));owner._request=lambda call:call()
     with pytest.raises(TimeoutError) as caught:owner.complete(req)
     assert caught.value is error
 
@@ -276,7 +280,11 @@ def test_publisher_failure_wrappers_preserve_only_admitted_mode_and_explicit_usa
     if remote:
         if partial_usage:error.usage=Usage(3,2)
         owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
-        owner.config={};owner.client=SimpleNamespace(response_evidence=chosen if dispatched else None,complete=lambda _:(_ for _ in ()).throw(error));owner._request=lambda call:call()
+        owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock())
+        def complete(_):
+            if dispatched:owner.client.response_evidence=chosen
+            raise error
+        owner.client.complete=complete;owner._request=lambda call:call()
     else:
         owner=provider_setup.IntegrationLLM.__new__(provider_setup.IntegrationLLM)
         owner.config={};owner._provider_config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))
@@ -367,7 +375,11 @@ def test_conflicting_publisher_failure_still_has_one_terminal_canonical_receipt(
     monkeypatch.setenv('PYTEST_CURRENT_TEST','test_policy.py::test_conflict (call)')
     if remote:
         owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
-        owner.config={};owner.client=SimpleNamespace(response_evidence=chosen,complete=lambda _:(_ for _ in ()).throw(error));owner._request=lambda call:call()
+        owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock())
+        def complete(_):
+            owner.client.response_evidence=chosen
+            raise error
+        owner.client.complete=complete;owner._request=lambda call:call()
     else:
         owner=provider_setup.IntegrationLLM.__new__(provider_setup.IntegrationLLM)
         owner.config={};owner._provider_config={};owner.closed=False;owner.skip_unavailable=False;owner.emissions=EmissionBoundary(ContentPolicy(False))

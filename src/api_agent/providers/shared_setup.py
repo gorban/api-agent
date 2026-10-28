@@ -243,11 +243,19 @@ class SharedSetupOwner(_Owner):
                                 result = await self._complete(request, auth=auth)
                             promote_response_dispatch(attempt_dispatch)
                         except BaseException as error:
+                            conflict = None
                             if attempt_dispatch is not None:
                                 from api_agent.workflows.inference_capture import retain_response_failure
-                                retain_response_failure(error, attempt_dispatch['response'], attempt_dispatch['usage'])
+                                from .contracts import ContractError
+                                try:
+                                    retain_response_failure(error, attempt_dispatch['response'], attempt_dispatch['usage'])
+                                except ContractError as rejected:
+                                    conflict = rejected
+                                    from .inference import error_usage
+                                    if error_usage(error) is None and error_usage(conflict) is not None:
+                                        error.usage = conflict.usage
                             delay = (retry_delay(index, getattr(error, 'retry_after', None))
-                                     if (index < self._max_attempts and retryable(error)
+                                     if (conflict is None and index < self._max_attempts and retryable(error)
                                          and retry_hint_supported(getattr(error, 'retry_after', None))) else None)
                             finish_transport_attempt(token, error=error, retry_delay_seconds=delay,
                                                      response=attempt_dispatch['response'] if attempt_dispatch is not None else None)
@@ -255,7 +263,9 @@ class SharedSetupOwner(_Owner):
                                 if attempt_dispatch is not None:
                                     promote_response_dispatch(attempt_dispatch)
                                 from api_agent.workflows.inference_capture import record_response_failure
-                                record_response_failure(error)
+                                record_response_failure(conflict or error)
+                                if conflict is not None:
+                                    raise conflict from error
                                 raise
                             await asyncio.sleep(delay)
                             index += 1

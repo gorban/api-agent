@@ -255,3 +255,73 @@ def create(config, services): return Provider()
         await owner.aclose()
         await loaded.aclose()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('usage_source', ['provider_error', 'dispatch_state'])
+def test_conflicting_failure_policy_finalizes_physical_usage_once(usage_source):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+    from api_agent.providers.contracts import ContractError
+    from api_agent.providers.generation_attempts import (
+        TransportAttemptLedger, bind_transport_attempt_ledger, rollup_transport_attempts,
+    )
+    from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, ResponseEvidence, TextContent, Usage
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    from api_agent.testing.inference_usage import capture
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.workflows.inference_capture import record_response_dispatch, record_response_failure
+
+    async def scenario():
+        dispatched = ResponseEvidence('text', 'reject', 'text', None, None, None)
+        contradictory = ResponseEvidence('text', 'allow', 'text', None, None, None)
+        calls = []
+        async def call(callback):
+            return await callback(auth='selected')
+        async def physical(request, *, auth):
+            calls.append(request)
+            record_response_dispatch(dispatched)
+            error = RuntimeError('Synthetic provider failure')
+            error.response = contradictory
+            if usage_source == 'provider_error':
+                error.usage = Usage(7, 1)
+            else:
+                observed = RuntimeError('Synthetic usage observation')
+                observed.usage = Usage(7, 1)
+                record_response_failure(observed)
+            error.http_status = 503
+            error.billing = {'usd': 0.1, 'request_id': None, 'generation_id': None}
+            raise error
+        owner = SharedSetupOwner('op', 'selected', lambda _: SimpleNamespace(call=call, aclose=AsyncMock()),
+                                 complete=physical)
+        request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('test'),)),)))
+        ledger = TransportAttemptLedger(5, quote=lambda value: {'list_cost_usd': 0.25, 'payment': None})
+        try:
+            with bind_transport_attempt_ledger(ledger), pytest.raises(ContractError, match='Conflicting') as caught:
+                await owner.complete(request)
+            snapshot = ledger.snapshot()
+            row = snapshot['attempts'][0]
+            total = rollup_transport_attempts(snapshot)
+            assert len(calls) == 1
+            assert caught.value.usage == Usage(7, 1)
+            assert snapshot['complete'] is True
+            assert row['outcome'] == 'failed' and row['execution'] == 'possibly_executed'
+            assert row['response']['fallback'] == 'reject'
+            assert row['usage']['input_tokens'] == 7 and row['usage']['output_tokens'] == 1
+            assert row['billing']['usd'] == 0.1 and row['status'] == 503
+            assert row['quote']['list_cost_usd'] == 0.25
+            assert total['usage']['input_tokens'] == 7 and total['usage']['output_tokens'] == 1
+            assert total['unknown_remainder'] is False
+            event = SimpleNamespace(text=json.dumps({'call_id': str(uuid4()), 'selection': 'synthetic',
+                'usage': row['usage'], 'transport_attempts': snapshot}), identity=SimpleNamespace(id='test'))
+            tracker = SuiteUsage('run')
+            capture(event, tracker)
+            capture(event, tracker)
+            assert len(tracker.inference_calls) == 1
+            assert tracker.report()['usage_rows'][0]['input_tokens'] == 7
+            assert tracker.report()['usage_rows'][0]['output_tokens'] == 1
+        finally:
+            await owner.aclose()
+    asyncio.run(scenario())
