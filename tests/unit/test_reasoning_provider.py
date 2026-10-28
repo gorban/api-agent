@@ -209,3 +209,55 @@ def test_56_luna_existing_chat_tool_restriction_is_unchanged(effort):
             base_url=BASE, api_mode='completions')
     assert reasoning_fields(request('gpt-5.6-luna', 'off', tools=True),
         base_url=BASE, api_mode='completions') == {'reasoning_effort': 'none'}
+
+
+def test_openrouter_catalog_exposes_output_limit_only_when_advertised():
+    rows = [{'id': 'openai/gpt-6-luna', 'supported_parameters': ['max_tokens'],
+             'top_provider': {'max_completion_tokens': 16384}},
+            {'id': 'openai/gpt-6-sol', 'supported_parameters': ['max_tokens']}]
+    luna, sol = _catalog({'data': rows}, False, 'synthetic-token',
+                         base_url='https://openrouter.ai/api/v1')
+    assert 'max_output_tokens' in luna.features
+    assert luna.max_output_tokens == 16384
+    assert 'max_output_tokens' not in sol.features
+
+
+@pytest.mark.parametrize('base, supported', [
+    ('https://compatible.example/v1', ['max_tokens']),
+    ('https://openrouter.ai/api/v1', None),
+    ('https://openrouter.ai/api/v1', 'max_tokens'),
+])
+def test_output_limit_is_not_inferred_without_openrouter_parameter_list(base, supported):
+    selection, = _catalog({'data': [{'id': 'openai/gpt-6-luna', 'supported_parameters': supported}]},
+                          False, 'synthetic-token', base_url=base)
+    assert 'max_output_tokens' not in selection.features
+
+
+def test_subscription_catalog_does_not_advertise_output_limit():
+    selection, = _catalog({'models': [{'slug': 'gpt-6-luna', 'display_name': 'Luna',
+                                       'visibility': 'list', 'supported_parameters': ['max_tokens']}]},
+                          True, 'synthetic-token', base_url='https://openrouter.ai/api/v1')
+    assert 'max_output_tokens' not in selection.features
+
+
+@pytest.mark.parametrize('mode,key', [('responses', 'max_output_tokens'),
+                                      ('completions', 'max_completion_tokens')])
+def test_openrouter_explicit_output_cap_requires_parameter_support_without_effort(mode, key):
+    req = LLMRequest('openai/gpt-6-luna', CompletionRequest(
+        (Message('user', (TextContent('Hello'),)),),
+        generation=GenerationOptions(max_output_tokens=4096)))
+    _, body = validate_text_request(base_url='https://openrouter.ai/api/v1',
+        access_token='synthetic-token', subscription=False, api_mode=mode, request=req)
+    assert body[key] == 4096
+    assert body['provider'] == {'require_parameters': True, 'allow_fallbacks': False}
+    assert 'reasoning' not in body
+
+
+def test_openrouter_capped_effort_retains_reasoning_and_strict_routing():
+    req = LLMRequest('openai/gpt-6-luna', CompletionRequest(
+        (Message('user', (TextContent('Hello'),)),),
+        generation=GenerationOptions(max_output_tokens=4096, reasoning_effort='high')))
+    _, body = validate_text_request(base_url='https://openrouter.ai/api/v1',
+        access_token='synthetic-token', subscription=False, api_mode='responses', request=req)
+    assert body['provider'] == {'require_parameters': True, 'allow_fallbacks': False}
+    assert body['reasoning'] == {'effort': 'high'}

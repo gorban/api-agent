@@ -35,6 +35,55 @@ def test_roundtrip_preserves_history_native_definitions_usage_and_metadata():
         assert ('text' in body) if mode == 'responses' else ('response_format' in body)
 
 
+@pytest.mark.parametrize('mode', ['completions', 'responses'])
+def test_openrouter_tool_requests_omit_parallel_control(mode):
+    _, body = inference.validate_text_request(base_url='https://openrouter.ai/api/v1/',
+        access_token=TOKEN, subscription=False, api_mode=mode, request=request())
+    assert len(body['tools']) == 1
+    assert 'parallel_tool_calls' not in body
+
+
+@pytest.mark.parametrize('base,subscription,mode', [
+    ('https://api.openai.com/v1', False, 'completions'),
+    ('https://api.openai.com/v1', False, 'responses'),
+    ('https://api.openai.com/v1', True, 'responses'),
+    ('https://example.com/v1', False, 'completions'),
+    ('https://openrouter.ai/other', False, 'completions'),
+])
+def test_other_routes_retain_serial_tool_request(base, subscription, mode):
+    _, body = inference.validate_text_request(base_url=base, access_token=TOKEN,
+        subscription=subscription, api_mode=mode, request=request())
+    assert body['parallel_tool_calls'] is False
+
+
+def test_each_returned_tool_call_is_validated_before_delivery():
+    data = native(False)
+    data['choices'][0]['message']['tool_calls'].append(dict(id='call-2', type='function',
+        function=dict(name='lookup', arguments='{"value":4}')))
+    result = rich.tool_result(data, False, TOKEN)
+    with pytest.raises(ProviderAccessError, match='outside its declared contract'):
+        rich.validate_result(request(), result)
+
+
+def test_native_tool_call_batch_is_bounded():
+    data = native(False)
+    call = data['choices'][0]['message']['tool_calls'][0]
+    data['choices'][0]['message']['tool_calls'] = [{**call, 'id': f'call-{i}'} for i in range(64)]
+    assert len(rich.tool_result(data, False, TOKEN).payload.calls) == 64
+    data['choices'][0]['message']['tool_calls'].append({**call, 'id': 'call-64'})
+    with pytest.raises(ProviderAccessError, match='invalid function calls'):
+        rich.tool_result(data, False, TOKEN)
+
+
+def test_native_tool_call_limit_is_checked_before_wire_validation(monkeypatch):
+    data = native(False)
+    call = data['choices'][0]['message']['tool_calls'][0]
+    data['choices'][0]['message']['tool_calls'] = [{**call, 'id': f'call-{i}'} for i in range(65)]
+    monkeypatch.setattr(rich, 'result_to_wire', lambda result: None)
+    with pytest.raises(ProviderAccessError, match='invalid function calls'):
+        rich.tool_result(data, False, TOKEN)
+
+
 @pytest.mark.parametrize('source', ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '[]', '{', 'null', '{"x":1e999}', 'x'*32769, 4])
 def test_object_json_rejects_ambiguous_nonfinite_or_unbounded_values(source):
     with pytest.raises(ContractError):

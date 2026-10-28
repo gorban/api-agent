@@ -264,6 +264,38 @@ def test_same_batch_dependent_candidate_receives_prior_verified_result(scenario)
     assert scenario[0][ALIASES[1]].invocations == ['use-id']
 
 
+def test_batch_calls_are_reviewed_and_executed_in_order_with_continuation(scenario):
+    events = []
+    for alias, owner in scenario[0].items():
+        validate, invoke = owner.validate, owner.invoke
+        async def record_validation(prepared, *, name=alias, original=validate):
+            events.append(('validate', name, prepared.invocation_id))
+            await original(prepared)
+        async def record_execution(prepared, *, name=alias, original=invoke):
+            events.append(('execute', name, prepared.invocation_id))
+            return await original(prepared)
+        owner.validate, owner.invoke = record_validation, record_execution
+    calls = (ToolCall('first-id', ALIASES[0], '{"query":"hello"}'),
+             ToolCall('second-id', ALIASES[1], '{"query":"hello"}'))
+    script = Script([reply(calls=calls, continuation='native-state'), verdict(), verdict(),
+                     reply(json.dumps(dict(zip(ALIASES, ('unknown-0', 'unknown-1')))))])
+    async def complete(request):
+        if request.payload.structured:
+            name = next(alias for alias in ALIASES if f'Tool: {alias}\n' in request.payload.messages[0].content[0].text)
+            events.append(('review', name))
+        return await script(request)
+    result = run(scenario, complete, required_tools=ALIASES, verify_final=check_final)
+    assert events == [('validate', ALIASES[0], 'first-id'), ('review', ALIASES[0]),
+                      ('execute', ALIASES[0], 'first-id'), ('validate', ALIASES[1], 'second-id'),
+                      ('review', ALIASES[1]), ('execute', ALIASES[1], 'second-id')]
+    assert [row['invocation'] for row in result['calls']] == ['first-id', 'second-id']
+    messages = script.requests[-1].payload.messages
+    assert messages[1].continuation == 'native-state'
+    assert [item.call_id for item in messages[2].results] == ['first-id', 'second-id']
+    assert [json.loads(item.content[0].text)['data'] for item in messages[2].results] == [
+        {'hello': 'unknown-0'}, {'hello': 'unknown-1'}]
+
+
 def test_repeated_alias_results_retain_distinct_prior_invocations(scenario):
     script = Script([tool_call(ALIASES[0]), verdict(), tool_call(ALIASES[0], 'again'),
                      verdict(), tool_call(ALIASES[1], 'dependent'), verdict(), reply('finished')])

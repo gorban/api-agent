@@ -3,7 +3,7 @@
 Verified contracts: https://developers.openai.com/api/docs/guides/structured-outputs
 and the exact GPT-5.6 Luna/Terra/Sol, GPT-6 Luna/Sol/Astra and GPT-6.1 Sol
 model pages under https://developers.openai.com/api/docs/models/, 2026-10-27.
-OpenRouter documents GPT-6 Luna structured output on chat completions;
+OpenRouter documents GPT-6 Luna structured output and its Responses API;
 its routing must require parameter support for the selected endpoint.
 https://openrouter.ai/openai/gpt-6-luna/
 https://openrouter.ai/docs/guides/features/structured-outputs
@@ -26,7 +26,7 @@ def prepare_response(request, *, base_url, api_mode, subscription):
                     and api_mode in ('responses', 'completions'))
         router = (not subscription and base_url == 'https://openrouter.ai/api/v1'
                   and request.selected_llm == 'openai/gpt-6-luna'
-                  and api_mode == 'completions' and mode == 'structured')
+                  and api_mode in ('responses', 'completions') and mode == 'structured')
         if not (official or router):
             return 'unknown_capability'
         if mode == 'json' and response_schema(request.payload.response.schema.schema).get('type') != 'object':

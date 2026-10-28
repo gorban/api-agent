@@ -108,3 +108,74 @@ def test_gpt_profile_preserves_unset_cap_and_documented_defaults():
     assert result.values['LLM_SETUP_REQUEST_TIMEOUT_SECONDS'] == 300
     assert result.values['LLM_REASONING_TEST_HIGH_EFFORT']=='high'
     assert result.values['LLM_STUDIO_TEST_SELECTED_EFFORT']=='off'
+
+
+@pytest.mark.parametrize('base', ['https://openrouter.ai/api/v1', 'https://openrouter.ai/api/v1/'])
+def test_gpt_openrouter_defaults_select_verified_route_models(base):
+    from pathlib import Path
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.llm_providers.gpt.reasoning import reasoning_efforts
+    from api_agent.providers.loading import bootstrap_schema
+    root = Path(__file__).resolve().parents[2]
+    values = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory',
+              'GPT_AUTH_MODE': 'api_key', 'GPT_BASE_URL': base, 'GPT_API_MODE': 'responses',
+              'TUI_MODE': 'integration', 'ALLURE_RESULTS_DIR': '', 'SKIP_ALLURE_REPORTING': 'True'}
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, values, owner_root=root)
+    result = resolve_config(schema, environ={}, dotenv={}, overrides=values)
+    assert not result.errors
+    assert result.values['LLM_WORKFLOW_TEST_MODEL'] == 'openai/gpt-6-luna'
+    assert result.values['LLM_REASONING_TEST_MODEL'] == 'openai/gpt-6-luna'
+    assert result.values['LLM_STUDIO_TEST_DEFAULT_MODEL'] == 'openai/gpt-6-sol'
+    assert result.values['LLM_STUDIO_TEST_SELECTED_MODEL'] == 'openai/gpt-6-luna'
+    assert result.values['GPT_API_MODE'] == 'responses'
+    assert result.values['LLM_REASONING_TEST_MAX_OUTPUT_TOKENS'] == 16384
+    for model, efforts in [('openai/gpt-6-luna', ('low', 'high', 'off')),
+                           ('openai/gpt-6-sol', ('medium',))]:
+        assert set(efforts) <= set(reasoning_efforts(model, base_url='https://openrouter.ai/api/v1'))
+
+
+@pytest.mark.parametrize('auth,base', [('subscription', 'https://openrouter.ai/api/v1'),
+                                      ('api_key', 'https://compatible.example/v1')])
+def test_gpt_other_routes_retain_original_defaults(auth, base):
+    from pathlib import Path
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.providers.loading import bootstrap_schema
+    root = Path(__file__).resolve().parents[2]
+    values = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory',
+              'GPT_AUTH_MODE': auth, 'GPT_BASE_URL': base, 'TUI_MODE': 'integration',
+              'ALLURE_RESULTS_DIR': '', 'SKIP_ALLURE_REPORTING': 'True'}
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, values, owner_root=root)
+    result = resolve_config(schema, environ={}, dotenv={}, overrides=values)
+    assert result.values['LLM_WORKFLOW_TEST_MODEL'] == 'gpt-6-luna'
+    assert result.values['LLM_STUDIO_TEST_SELECTED_MODEL'] == 'gpt-5.6-luna'
+    assert result.values.get('LLM_REASONING_TEST_MAX_OUTPUT_TOKENS') is None
+
+
+def test_gpt_openrouter_explicit_test_models_override_route_defaults():
+    from pathlib import Path
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.providers.loading import bootstrap_schema
+    root = Path(__file__).resolve().parents[2]
+    values = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory',
+              'GPT_AUTH_MODE': 'api_key', 'GPT_BASE_URL': 'https://openrouter.ai/api/v1',
+              'TUI_MODE': 'integration', 'ALLURE_RESULTS_DIR': '', 'SKIP_ALLURE_REPORTING': 'True'}
+    explicit = {'LLM_WORKFLOW_TEST_MODEL': 'custom/workflow', 'LLM_REASONING_TEST_MODEL': 'custom/reasoning',
+                'LLM_STUDIO_TEST_DEFAULT_MODEL': 'custom/initial', 'LLM_STUDIO_TEST_SELECTED_MODEL': 'custom/alternate',
+                'LLM_REASONING_TEST_MAX_OUTPUT_TOKENS': '4096'}
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, values, owner_root=root)
+    result = resolve_config(schema, environ={}, dotenv=explicit, overrides=values)
+    assert {key: result.values[key] for key in explicit} == explicit | {'LLM_REASONING_TEST_MAX_OUTPUT_TOKENS': 4096}
+
+
+def test_gpt_openrouter_explicit_empty_limit_keeps_application_default():
+    from pathlib import Path
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.providers.loading import bootstrap_schema
+    root = Path(__file__).resolve().parents[2]
+    values = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory',
+              'GPT_AUTH_MODE': 'api_key', 'GPT_BASE_URL': 'https://openrouter.ai/api/v1',
+              'TUI_MODE': 'integration', 'ALLURE_RESULTS_DIR': '', 'SKIP_ALLURE_REPORTING': 'True'}
+    schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, values, owner_root=root)
+    result = resolve_config(schema, environ={}, dotenv={'LLM_REASONING_TEST_MAX_OUTPUT_TOKENS': ''},
+                            overrides=values)
+    assert result.values['LLM_REASONING_TEST_MAX_OUTPUT_TOKENS'] is None

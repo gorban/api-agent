@@ -21,3 +21,5 @@ Generic inference preserves declared schemas and selected generation options acr
 ## Declarative output-mode follow-through
 
 - [x] Join [workflow output modes and provider-owned fallback](implementation_plan_f1a1.md) through the existing Functions table, preserving complete node contracts, explicit schema strictness, effective-request capture and route-specific capability checks. Earlier bounded-schema delivery does not close this follow-through.
+
+- [x] Qualify [OpenRouter integration defaults and routing](implementation_plan_f1a3.md) without overriding explicitly selected settings; human acceptance remains separate.
