@@ -356,7 +356,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     if config is not None and config.get('DEBUG'):
                         args.append('-s')
                     if parallel_jobs:
-                        args += ['-n', str(parallel_jobs)]
+                        args += ['-n', str(parallel_jobs), '--dist=worksteal']
                     args.extend(selected)
                     liveness_read = liveness_write = None
                     if os.name == 'posix':
