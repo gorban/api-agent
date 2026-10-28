@@ -35,7 +35,7 @@ def _step_identity(step):
 def _step_envelopes(step, *, parent=None):
     identity = _step_identity(step)
     fixed = {'attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key', 'outcome', 'conversation_id', 'trial_index', 'turn_id', 'invocation_id', 'recorded_started_ms'}
-    envelope = ({key: step[key] for key in ('name', 'start', 'stop')}, parent,
+    envelope = ({key: step[key] for key in ('name', 'start', 'stop') if key in step}, parent,
                 {item['name']: item['value'] for item in step['parameters'] if item['name'] in fixed})
     result = {identity: envelope}
     # Untimed calls remain parameters in the rendered tree, but keep the same
