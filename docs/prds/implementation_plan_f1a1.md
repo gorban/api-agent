@@ -144,3 +144,16 @@ their own containing-document-relative links.
 
 Recheck applicable provider documentation during implementation; these links do
 not establish access or feature support for an unverified deployment.
+
+## OpenRouter structured route
+
+- [x] Admit the `structured` response policy for API-key Chat Completions at
+  `https://openrouter.ai/api/v1` with the exact `openai/gpt-6-luna` model and
+  the existing conservative native schema and tool restrictions. Set
+  `provider.require_parameters=true` so routing requires parameter support;
+  retain local validation of the original schema and rejection of unqualified
+  routes when fallback is forbidden. Verify the payload, adjacent routes,
+  reasoning composition and validation with controlled requests. The
+  [model page](https://openrouter.ai/openai/gpt-6-luna/) and
+  [structured-output routing documentation](https://openrouter.ai/docs/guides/features/structured-outputs)
+  are the public contract basis.

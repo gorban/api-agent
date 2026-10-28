@@ -13,6 +13,13 @@ unsupported. API-key credentials are stored as a password-manager entry's
 password, without a separate secret-bearing API-key configuration field.
 API-key setup/transports are tracked in [the GPT plan](prds/implementation_plan_f2.md).
 
+For OpenRouter, use an OpenRouter key in the selected password-manager entry,
+set `GPT_AUTH_MODE=api_key`, `GPT_BASE_URL=https://openrouter.ai/api/v1` and
+`GPT_API_MODE=completions`, and select `openai/gpt-6-luna`. This route supports
+the structured response policy with compatible schemas; see the
+[GPT response modes](../src/api_agent/llm_providers/gpt/RESPONSE_MODES.md)
+for its restrictions and fallback behavior.
+
 Authentication starts when an operation needs it. Help, collection and choosing
 tests do not sign in or send inference requests. The shared `test_llm_discovery`
 authenticates the selected provider and verifies remote catalog access without

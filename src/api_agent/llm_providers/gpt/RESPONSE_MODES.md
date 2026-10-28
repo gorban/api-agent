@@ -19,9 +19,17 @@ GPT-5.6 Luna/Terra/Sol, GPT-6 Luna/Sol/Astra and GPT-6.1 Sol aliases, plus
 `gpt-4o-mini`, `gpt-4o-mini-2024-07-18` and `gpt-4o-2024-08-06`. The
 [OpenAI structured-output guide](https://developers.openai.com/api/docs/guides/structured-outputs)
 and individual [model contracts](https://developers.openai.com/api/docs/models/)
-were checked October 27, 2026. Unlisted names, alternate endpoints and combined
-native response-format/tool requests remain unqualified for the new policy.
+were checked October 27, 2026. Unlisted names and combined native
+response-format/tool requests remain unqualified for the new policy.
 Existing model/reasoning/tool restrictions still apply independently.
+
+For API-key Chat Completions at `https://openrouter.ai/api/v1`, the exact
+`openai/gpt-6-luna` model also supports the structured policy under the same
+schema and tool restrictions. The request sets `provider.require_parameters`
+to require a compatible serving endpoint; generated output is still validated
+locally. Other alternate endpoints, models and OpenRouter Responses remain
+unqualified. See [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
+and the [model page](https://openrouter.ai/openai/gpt-6-luna/).
 
 The existing qualified GPT-6 Luna subscription Responses schema route remains
 supported on its official endpoint. That qualification does not establish native

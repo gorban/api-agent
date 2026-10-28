@@ -364,6 +364,9 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
             body['text'] = {'format': {'type': 'json_object'}}
         else:
             body['response_format'] = {'type': 'json_object'}
+    if (base_url == 'https://openrouter.ai/api/v1' and evidence is not None
+            and evidence.actual_mode == 'structured'):
+        body['provider'] = {'require_parameters': True}
     from .reasoning import reasoning_fields
     body.update(reasoning_fields(request, base_url=base_url, api_mode=api_mode))
     from .rich import _protected
