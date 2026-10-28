@@ -70,9 +70,37 @@ invokes an additional legacy authentication hook alongside preparation.
 
 `OperationContext(correlation_id, deadline)` is immutable with an optional absolute monotonic deadline. Pass the same context through authentication, getter calls, operation work and stream iteration; retries never receive a fresh overall budget. Cleanup uses a separate bounded wait. Scheduled work at an expired deadline is conservatively possibly_executed; a fresh unscheduled coroutine is not_started.
 
-OperationalError has a safe kind, execution disposition and optional retry delay. Kinds are authentication, authorization, unavailable, rate_limited, unsupported, invalid_request, deadline and unknown. Execution is not_started/possibly_executed/completed. Unknown failures are sanitized and possibly_executed. Retry authority belongs to the operation consumer; these owners perform no automatic inference or mutation retries.
+OperationalError has a safe kind, execution disposition and optional retry delay. Kinds are authentication, authorization, unavailable, rate_limited, unsupported, invalid_request, deadline and unknown. Execution is not_started/possibly_executed/completed. Unknown failures are sanitized and possibly_executed. Retry authority belongs to the operation consumer. Shared completion consumers apply the bounded recovery policy below; mutation and workflow retries remain separate.
 
 Use `async with owner.stream(operation, context=budget) as stream` and iterate inside that lease. Do not treat a bare async iterator or garbage collection as ownership. Exhaustion or explicit awaited close releases iteration work; early break still requires context exit. Concurrent iteration is rejected. Cancellation-resistant factories, reads and close tasks retain their session dependencies until disposal is confirmed.
+
+
+## Bounded completion recovery
+
+The shared completion owner retries confirmed upstream HTTP 429 and 500..599, with
+`LLM_MAX_ATTEMPTS` defaulting to five total attempts including the first (1..20;
+one disables recovery). Nominal delays are 200ms, 1s, 5s and 25s with bounded jitter
+and a 30-second algorithm cap. A valid Retry-After minimum may be longer, but all
+attempts and waits share the provider/enclosing deadline. Authentication, tools,
+whole workflows and already delivered streams are never replayed. Provider and
+SDK retry loops must be disabled on this shared path.
+
+For a confirmed HTTP failure, retain the actual integer upstream status as
+`error.http_status` on the raised safe provider error. Its ordinary `status` may
+also describe provider error details; a status in an HTTP 200 body or stream does
+not establish an HTTP failure. Preserve the confirmed status and any parsed
+`error.retry_after` before reading or decoding a failure body. The shared
+`api_agent.providers.inference_retry.retry_after` helper parses the header into
+a bounded numeric hint; an unsupported large server minimum declines recovery.
+Local validation, cancellation, statusless failures and other HTTP statuses stay
+terminal under this policy.
+
+Return available usage/billing on results and failures without inventing zero
+for unknown charges. The shared consumer records one logical call with distinct
+physical attempts, preserving partials and unknowns. Recovered attempts attract
+yellow attention without changing application-defined attempts or Max passes.
+See [recovery requirements](../prds/implementation_plan_f1b.md) for evidence,
+accounting and acceptance boundaries.
 
 ## Shutdown and failed loads
 

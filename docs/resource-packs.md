@@ -29,7 +29,7 @@ factories, and rejects inconsistent/cyclic selection changes before execution.
 
 ## Replaceable responsibilities
 
-- LLM providers own authentication, sessions, inference and usage normalization.
+- LLM providers own authentication, sessions, inference and usage normalization. Their completion transports follow the [shared recovery contract](architecture/provider_contracts_v1.md#bounded-completion-recovery), including normalized HTTP evidence and disabled nested SDK retries.
 - API providers own upstream access; the implementation can use GraphQL, REST
   or another protocol through the same consumer contract.
 - UI providers own frontend startup configuration and browser authentication.
