@@ -50,11 +50,11 @@ The earlier node-only live coverage join retains three unverified definition-bin
 
 The earlier expanded contract’s substantive gates are complete. Its explicit
 human acceptance remains unchecked in the linked detail; earlier acceptance is
-preserved. The operating-budget extension below has separate unfinished gates.
+preserved. The operating-budget extension below has separate human acceptance.
 
 ## Provider-selected operating ceilings
 
-- [ ] Complete [bounded provider-selected test budgets](implementation_plan_f4l3a.md).
+- [x] Complete [bounded provider-selected test budgets](implementation_plan_f4l3a.md).
   This extends the earlier universal operating maximum to a shared default of
   60 and an explicitly selected ceiling up to 120. Maintenance pilots still
   contain at most 60 graphs. Statistical confidence, coverage target, four-run
@@ -67,8 +67,16 @@ preserved. The operating-budget extension below has separate unfinished gates.
 
 ## Deterministic coverage follow-through
 
-- [ ] Replace the ordinary calibrated stopping rule with [fresh-UUID deterministic
+- [x] Replace the ordinary calibrated stopping rule with [fresh-UUID deterministic
   path coverage](implementation_plan_b2b1a11.md). Earlier statistical requirements
   and observations above remain historical; the new contract requires actual
   execution of all reachable route/readiness combinations under a whole-test
   deadline and does not consume or relabel old pilot results.
+
+**Deferred human review**
+
+Substantive work is complete in the linked children; their explicit human acceptance remains unchecked and does not block subsequent work.
+
+- [Provider-selected budgets](implementation_plan_f4l3a.md)
+- [Expanded coverage](implementation_plan_b2b1a10.md)
+- [Deterministic coverage](implementation_plan_b2b1a11.md)
