@@ -3,6 +3,7 @@ import asyncio
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 import json
+import inspect
 import os
 from pathlib import Path
 import stat
@@ -509,22 +510,31 @@ class RemoteIntegrationLLM:
         from .inference_usage import publish
         call_id = publish(request) or str(uuid4())
         result = None
-        self.client.transport_attempts = None
+        packet = dict(transport_attempts=None, cost_quote=None, response_evidence=None, evidence=[])
+
+        def invoke():
+            # Snapshot all per-call facts before another caller can reset them.
+            with self.client._lock:
+                try:
+                    return self.client.complete(request)
+                finally:
+                    for name in packet:
+                        packet[name] = deepcopy(getattr(self.client, name, packet[name]))
         try:
-            result = self._request(lambda: self.client.complete(request))
-            publish(request, result, call_id=call_id, quote=getattr(self.client, 'cost_quote', None))
+            result = self._request(invoke)
+            publish(request, result, call_id=call_id, quote=packet['cost_quote'])
             return result
         except BaseException as error:
             from api_agent.providers.generation_attempts import attach_transport_attempts, validate_transport_attempts
             snapshot = getattr(error, 'transport_attempts', None)
             if snapshot is None:
-                snapshot = getattr(self.client, 'transport_attempts', None) or {'version': 1, 'complete': False, 'attempts': []}
+                snapshot = packet['transport_attempts'] or {'version': 1, 'complete': False, 'attempts': []}
                 snapshot = validate_transport_attempts({**snapshot, 'complete': False})
             attach_transport_attempts(error, snapshot)
             from api_agent.workflows.inference_capture import retain_response_failure
             terminal_error = error
             try:
-                retain_response_failure(error, getattr(self.client, 'response_evidence', None))
+                retain_response_failure(error, packet['response_evidence'])
             except ContractError as conflict:
                 terminal_error = conflict
                 attach_transport_attempts(conflict, snapshot)
@@ -535,7 +545,7 @@ class RemoteIntegrationLLM:
         finally:
             from .inference_content import publish_content
             from api_agent.workflows.inference_capture import capture_rows
-            rows = getattr(self.client, 'evidence', ())
+            rows = packet['evidence']
             capture_rows(rows, call_id)
             publish_content(rows, call_id)
 
@@ -551,10 +561,16 @@ class RemoteIntegrationLLM:
         async def ready():
             async with report_timeout('Shared provider setup', self.timeout):
                 return await offload(method)
+        if self.loop.is_closed():
+            raise RuntimeError('Event loop is closed')
+        work = ready()
         try:
-            return self.loop.run_until_complete(ready())
+            return self.loop.run_until_complete(work)
         except SetupPrerequisiteError as error:
             pytest.skip(str(error))
+        finally:
+            if inspect.getcoroutinestate(work) == inspect.CORO_CREATED:
+                work.close()
 
     def close(self):
         if not self.loop.is_closed():
