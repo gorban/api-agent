@@ -232,7 +232,7 @@ class SharedSetupOwner(_Owner):
                 from .inference_retry import retryable, retry_delay, retry_hint_supported
                 from .generation_attempts import begin_transport_attempt, finish_transport_attempt
                 from .progress import component_timeout
-                async with component_timeout('LLM inference', self._inference_timeout):
+                async with component_timeout('LLM inference', self._inference_timeout) as budget:
                     index = 1
                     while True:
                         token = begin_transport_attempt(index)
@@ -257,6 +257,9 @@ class SharedSetupOwner(_Owner):
                             delay = (retry_delay(index, getattr(error, 'retry_after', None))
                                      if (conflict is None and index < self._max_attempts and retryable(error)
                                          and retry_hint_supported(getattr(error, 'retry_after', None))) else None)
+                            remaining = budget.remaining
+                            if delay is not None and remaining is not None and remaining <= delay:
+                                delay = None
                             finish_transport_attempt(token, error=error, retry_delay_seconds=delay,
                                                      response=attempt_dispatch['response'] if attempt_dispatch is not None else None)
                             if delay is None:
