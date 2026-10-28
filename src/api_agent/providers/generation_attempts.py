@@ -219,6 +219,7 @@ def rollup_transport_attempts(snapshot):
     names = ('input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens', 'cache_write_tokens')
     totals = {name: 0 for name in names}
     unknown = {name: 0 for name in names}
+    known_total = None
     known_cost = 0.0
     unknown_cost = 0
     known_charge = 0.0
@@ -230,6 +231,12 @@ def rollup_transport_attempts(snapshot):
                 unknown[name] += 1
             else:
                 totals[name] += value
+        from .llm import known_usage_lower_bound
+        usage = row['usage'] or {}
+        bound = known_usage_lower_bound(*(usage.get(name) for name in
+            ('input_tokens', 'output_tokens', 'cached_input_tokens', 'cache_write_tokens', 'reasoning_tokens')))
+        if bound is not None:
+            known_total = (known_total or 0) + bound
         from .costs import qualified_charge
         charge = None if row['billing'] is None or row['usage'] is None else qualified_charge(row['billing'], row['usage'])
         if charge is None:
@@ -241,6 +248,6 @@ def rollup_transport_attempts(snapshot):
             unknown_cost += 1
         else:
             known_cost += amount
-    return dict(usage=totals, unknown_usage_attempts=unknown, list_cost_usd=known_cost,
+    return dict(usage=totals, unknown_usage_attempts=unknown, known_total_tokens=known_total, list_cost_usd=known_cost,
                 unknown_cost_attempts=unknown_cost, reported_charge_usd=known_charge,
                 unknown_charge_attempts=unknown_charge, unknown_remainder=not ledger['complete'])

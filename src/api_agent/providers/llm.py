@@ -258,6 +258,19 @@ class Usage:
                  (self.cached_input_tokens or 0) + self.cache_write_tokens <= self.input_tokens)
 
 
+def known_usage_lower_bound(input_tokens, output_tokens, cached_input_tokens,
+                            cache_write_tokens, reasoning_tokens):
+    """Minimum disjoint input and output implied by one usage observation."""
+    parts = (input_tokens, output_tokens, cached_input_tokens,
+             cache_write_tokens, reasoning_tokens)
+    if all(value is None for value in parts):
+        return None
+    input_min = (input_tokens if input_tokens is not None else
+                 (cached_input_tokens or 0) + (cache_write_tokens or 0))
+    output_min = output_tokens if output_tokens is not None else (reasoning_tokens or 0)
+    return input_min + output_min
+
+
 @dataclass(frozen=True)
 class LLMResult:
     payload: Message = field(repr=False)
