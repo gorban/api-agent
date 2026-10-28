@@ -41,3 +41,9 @@
 ## Content-control follow-through
 
 - [x] Deliver bounded manual [independent log and trace capture](implementation_plan_k1b.md) for both backends. Human acceptance remains in that child; broader automatic instrumentation retains its separate gate. This supersedes the former requirement that LOG_CONTENT authorize every tracing destination.
+
+## Native array encoding
+
+- [x] After privacy filtering, preserve homogeneous scalar arrays as OTLP arrays and retain safe JSON encoding for mixed, nested or invalid UTF-8 string arrays. Do not admit credential or hidden-reasoning content through this conversion.
+- [x] Verify actual encoded OTLP types, safe Unicode fallback and privacy filtering with causal controls, exact applicable coverage, independent and external review. Broader field availability and signal conformance remain separate.
+- [ ] Record human acceptance.

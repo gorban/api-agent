@@ -184,7 +184,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                 args += ['--cov-branch', '--cov-report=']
                 env['COVERAGE_FILE'] = str(Path(temporary) / '.coverage')
             if parallel_jobs:
-                args += ['-n', str(parallel_jobs), '--max-worker-restart=0']
+                args += ['-n', str(parallel_jobs), '--dist=worksteal', '--max-worker-restart=0']
             selection_file = Path(temporary) / 'selection.json'
             selection_file.write_text(json.dumps(list(selected)), encoding='utf-8')
             env['API_AGENT_UNIT_SELECTION'] = str(selection_file)

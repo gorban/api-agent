@@ -29,6 +29,23 @@ class TraceDeliveryError(TraceError):
 TRACE_DELIVERY_WARNING = 'Trace delivery failed; tracing resources were closed. Some traces may be missing.'
 
 
+def _native_array(value):
+    if type(value) is not list:
+        return False
+    if not value:
+        return True
+    kind = type(value[0])
+    if kind not in (str, bool, int, float) or any(type(item) is not kind for item in value):
+        return False
+    if kind is str:
+        try:
+            for item in value:
+                item.encode('utf-8')
+        except UnicodeEncodeError:
+            return False
+    return True
+
+
 def _attributes(boundary, payload, *, model_identity=None):
     clean = boundary.export(payload)
     for key in ('gen_ai.request.model', 'gen_ai.response.model'):
@@ -37,7 +54,7 @@ def _attributes(boundary, payload, *, model_identity=None):
             model = payload.get(key)
             if model_identity(model) is True:
                 clean.update(boundary.for_policy(ContentPolicy(True)).export({key: model}))
-    return {key: value if type(value) in (str, bool, int, float) else json.dumps(value)
+    return {key: value if type(value) in (str, bool, int, float) or _native_array(value) else json.dumps(value)
             for key, value in clean.items()}
 
 
