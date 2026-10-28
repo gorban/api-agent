@@ -110,7 +110,15 @@ def test_interruption_during_retry_wait_does_not_dispatch_again(monkeypatch, int
     from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent
     from api_agent.providers.shared_setup import SharedSetupOwner
 
-    monkeypatch.setattr(retry, 'retry_delay', lambda number, hint: 30)
+    from api_agent.providers import shared_setup
+
+    monkeypatch.setattr(retry, 'retry_delay', lambda number, hint: .01)
+    class AsyncioProxy:
+        def __getattr__(self, name):
+            return blocked_sleep if name == 'sleep' else getattr(asyncio, name)
+    async def blocked_sleep(delay):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(shared_setup, 'asyncio', AsyncioProxy())
 
     async def scenario():
         attempted = asyncio.Event()
@@ -138,7 +146,7 @@ def test_interruption_during_retry_wait_does_not_dispatch_again(monkeypatch, int
         attempts = ledger.snapshot()['attempts']
         assert len(attempts) == 1
         assert attempts[0]['outcome'] == 'failed'
-        assert attempts[0]['retry_delay_seconds'] == 30
+        assert attempts[0]['retry_delay_seconds'] == .01
         await owner.aclose()
     asyncio.run(scenario())
 
@@ -322,6 +330,59 @@ def test_conflicting_failure_policy_finalizes_physical_usage_once(usage_source):
             assert len(tracker.inference_calls) == 1
             assert tracker.report()['usage_rows'][0]['input_tokens'] == 7
             assert tracker.report()['usage_rows'][0]['output_tokens'] == 1
+        finally:
+            await owner.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('status,deadline,hint,expected_calls', [
+    (429, 120, 1728, 1), (503, 120, 1728, 1),
+    (429, 120, 120, 1), (429, 120, 119, 2), (429, None, 1728, 2),
+])
+def test_retry_delay_must_fit_inherited_deadline(monkeypatch, status, deadline, hint, expected_calls):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from api_agent.providers import progress, shared_setup
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger
+    from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent, Usage
+    from api_agent.providers.progress import component_timeout
+
+    monkeypatch.setattr(progress, '_clock', lambda: 100.0)
+    sleep = AsyncMock()
+    class AsyncioProxy:
+        def __getattr__(self, name):
+            return sleep if name == 'sleep' else getattr(asyncio, name)
+    monkeypatch.setattr(shared_setup, 'asyncio', AsyncioProxy())
+    failure = ProviderAccessError('rate_limited', 'Synthetic failure', status=status, usage=Usage(7, 1))
+    failure.http_status = status
+    failure.retry_after = hint
+    failure.billing = {'usd': 0.1, 'request_id': None, 'generation_id': None}
+
+    async def scenario():
+        async def invoke(callback):
+            return await callback(auth='selected')
+        physical = AsyncMock(side_effect=failure)
+        owner = shared_setup.SharedSetupOwner('op', 'selected',
+            lambda _: SimpleNamespace(call=invoke, aclose=AsyncMock()), complete=physical, max_attempts=2)
+        request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('test'),)),)))
+        ledger = TransportAttemptLedger(2)
+        try:
+            async with component_timeout('Ancestor', deadline):
+                with bind_transport_attempt_ledger(ledger), pytest.raises(ProviderAccessError) as caught:
+                    await owner.complete(request)
+            assert caught.value is failure
+            assert physical.await_count == expected_calls
+            assert sleep.await_count == expected_calls - 1
+            if expected_calls == 2:
+                sleep.assert_awaited_once_with(hint)
+            attempts = ledger.snapshot()['attempts']
+            assert len(attempts) == expected_calls
+            assert attempts[0]['status'] == status
+            assert attempts[0]['usage']['input_tokens'] == 7
+            assert attempts[0]['billing']['usd'] == .1
+            assert attempts[0]['retry_delay_seconds'] == (hint if expected_calls == 2 else None)
         finally:
             await owner.aclose()
     asyncio.run(scenario())

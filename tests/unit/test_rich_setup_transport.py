@@ -249,3 +249,54 @@ def test_reasoning_continuation_crosses_real_ipc_and_http_without_content_eviden
             await server.aclose()
             await registry.aclose()
     asyncio.run(scenario())
+
+
+def test_ipc_declines_retry_wait_that_cannot_fit_parent_deadline():
+    import time
+    from api_agent.providers.llm import Usage
+    from api_agent.providers.shared_setup import SharedSetupOwner
+
+    async def scenario():
+        calls = []
+        async def invoke(callback):
+            return await callback(auth='selected')
+        async def complete(request, *, auth):
+            calls.append(request)
+            error = ProviderAccessError('rate_limited', 'Synthetic upstream failure',
+                                        status=429, usage=Usage(7, 1))
+            error.http_status = 429
+            error.retry_after = 1728
+            error.billing = {'usd': 0.1, 'request_id': None, 'generation_id': None}
+            raise error
+        owner = SharedSetupOwner('operation', 'synthetic-selection',
+            lambda _: SimpleNamespace(call=invoke, aclose=AsyncMock()), complete=complete)
+        registry = SetupRegistry('operation', 'synthetic-selection', lambda: owner)
+        server = SetupServer(registry, CAP)
+        client = SetupClient(await server.start(), timeout=3)
+
+        def call():
+            with report_timeout_sync('Synthetic graph node', .5):
+                return client.complete(REQUEST)
+        try:
+            started = time.monotonic()
+            with pytest.raises(ProviderAccessError) as caught:
+                await asyncio.to_thread(call)
+            elapsed = time.monotonic() - started
+            assert elapsed < .5
+            assert caught.value.status == 429
+            assert caught.value.message == 'Synthetic upstream failure'
+            assert caught.value.usage == Usage(7, 1)
+            assert calls == [REQUEST]
+            ledger = client.transport_attempts
+            assert ledger['complete'] is True
+            assert len(ledger['attempts']) == 1
+            attempt = ledger['attempts'][0]
+            assert attempt['status'] == 429 and attempt['outcome'] == 'failed'
+            assert attempt['retry_delay_seconds'] is None
+            assert attempt['usage']['input_tokens'] == 7
+            assert attempt['billing']['usd'] == .1
+        finally:
+            await asyncio.to_thread(client.close)
+            await server.aclose()
+            await registry.aclose()
+    asyncio.run(scenario())

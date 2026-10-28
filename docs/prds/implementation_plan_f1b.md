@@ -20,7 +20,9 @@ for the supported shared completion path.
 - [ ] Nominal waits are `min(30, 0.2 * 5 ** (retry_number - 1))` seconds, giving
   200ms, 1s, 5s and 25s for the default. Apply bounded jitter; a valid Retry-After
   value is a minimum and may exceed the algorithm's cap. Reject malformed/unbounded
-  hints safely. Do not wait or dispatch beyond the existing overall deadline.
+  hints safely. If a computed wait cannot fit within the remaining effective
+  deadline, do not admit the wait, sleep, or dispatch again; preserve the original
+  terminal upstream error and physical-attempt evidence.
 - [ ] Use one shared completion recovery loop after readiness and selection.
   Preserve selected credentials, identity, endpoint, model, generation settings and
   logical request throughout. Disable competing provider/SDK retry loops and close
