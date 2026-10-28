@@ -52,6 +52,6 @@ review, exact unit coverage, package and public-boundary checks pass.
 
 ## Scoped identity follow-through
 
-- [ ] Add [executable declaration and resolved-setting identities](implementation_plan_b1c3a.md)
+- [x] Add [executable declaration and resolved-setting identities](implementation_plan_b1c3a.md)
   alongside exact source provenance. These identities do not depend on workflow
   calibration and do not replace committed-document or native-admission checks.

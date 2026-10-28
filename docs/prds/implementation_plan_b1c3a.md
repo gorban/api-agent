@@ -26,13 +26,13 @@ owning commits; statistical test calibration is not an identity service.
   expected descriptor. Do not treat producer metadata alone as trusted semantic
   admission. Keep older recorded envelopes readable;
   do not silently reinterpret or replace their existing identities.
-- [ ] Prove stability under relocation, presentation and unused-config edits;
+- [x] Prove stability under relocation, presentation and unused-config edits;
   sensitivity to referenced defaults/effective values, executable declarations,
   prompts, schemas, native bindings and replacement selection; reject malformed
   descriptors, reject tampering and mismatches against an independently expected
   descriptor, and preserve privacy and capture/admission equality. Self-consistent
   producer metadata alone is not trusted semantic admission.
-- [ ] Complete independent/external review, exact applicable unit coverage,
+- [x] Complete independent/external review, exact applicable unit coverage,
   source/installed/relocated provenance and public-boundary checks.
 - [ ] Human review confirms graph identity and effective-setting evidence.
 
