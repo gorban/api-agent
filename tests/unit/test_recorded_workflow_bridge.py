@@ -480,3 +480,54 @@ def test_actual_driver_rejects_dirty_fixture_before_inference(committed_driver_r
         fixture_driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', 1,
                                  config, root=root, owner_root=root)
     assert calls == []
+
+
+@pytest.mark.parametrize('terminal', [False, True])
+@pytest.mark.parametrize('journal_first', [False, True])
+def test_recording_joins_untimed_transport_call_and_freezes_allure(tmp_path, terminal, journal_first):
+    from api_agent.workflows.journal import WorkflowJournal
+    from test_transport_reporting import ledger
+
+    selected = TestIdentity('base::test.py::test_graph', 'base', 'test.py', 'test.py::test_graph')
+    result = TestResult(selected, 'failed' if terminal else 'passed', .01)
+    definition = SimpleNamespace(graph_id='Example', definition_id='a' * 64, entry_root='base',
+        layout=SimpleNamespace(steps=[SimpleNamespace(id='N', kind='node', parent=None)], tables={'Edges': []}),
+        resources=[], replacements=[])
+    journal = WorkflowJournal(definition, test_id=selected.node_id)
+    graph, node, call = (str(uuid4()) for _ in range(3))
+    graph_scope = dict(scope_id=graph, parent_id=None, kind='graph', owner='GRAPH', started_ms=1)
+    node_scope = dict(scope_id=node, parent_id=graph, kind='node', owner='N', started_ms=1)
+    journal.observe(dict(event='scope_start', **graph_scope))
+    journal.observe(dict(event='edge', owner='GRAPH', source='START', target='N', implicit=True))
+    journal.observe(dict(event='scope_start', **node_scope))
+    attempts = ledger()
+    if terminal:
+        attempts['attempts'][-1].update(outcome='failed', execution='possibly_executed', status=503, error_kind='server')
+    journal.record_call(visit_id=node, call_id=call, outcome='failed' if terminal else 'completed', transport_attempts=attempts)
+    journal.observe(dict(event='node', scope_id=node, node='N'))
+    journal.observe(dict(event='scope_end', stopped_ms=3, outcome='passed', **node_scope))
+    journal.observe(dict(event='edge', owner='GRAPH', source='N', target='END', implicit=True, visit_id=node))
+    journal.observe(dict(event='scope_end', stopped_ms=4, outcome='passed', **graph_scope))
+    canonical = journal.finalize()
+    legacy = {'events': [dict(event='scope_start', **graph_scope), dict(event='scope_start', **node_scope),
+                         dict(event='scope_end', stopped_ms=3, outcome='passed', **node_scope),
+                         dict(event='scope_end', stopped_ms=4, outcome='passed', **graph_scope)]}
+    def runner(context, tests, **hooks):
+        hooks['before_run']()
+        for payload in ([canonical, legacy] if journal_first else [legacy, canonical]):
+            hooks['on_event'](RunnerEvent('workflow_evidence', 'base', selected, text=json.dumps(payload)))
+        hooks['on_result'](result)
+        execution = IntegrationRunResult(1 if terminal else 0, (result,), '')
+        hooks['after_run'](execution)
+        return execution
+    context = SimpleNamespace(base_root=tmp_path/'base', owner_root=tmp_path/'base')
+    recorded = run_recorded_integration(context, [selected],
+        dict(TUI_MODE='integration', ALLURE_S3_BUCKET='synthetic', ALLURE_RESULTS_DIR=tmp_path/'results'),
+        accepted=True, runner=runner, storage=SimpleNamespace(persist=lambda *args: None))
+    rendered = json.loads(next(recorded.directory.glob('*-result.json')).read_text())
+    calls = [step for root in rendered['steps'] for step in flatten(root) if step['name'] == 'call ' + call]
+    assert len(calls) == 1
+    assert 'start' not in calls[0] and 'stop' not in calls[0]
+    assert calls[0]['status'] == ('failed' if terminal else 'broken')
+    assert [step['status'] for step in calls[0]['steps']] == ['broken', 'failed' if terminal else 'passed']
+    assert recorded.persisted
