@@ -13,20 +13,25 @@ connections, start local services, run tests and inspect failures.
   access-key or API-key authentication. Select an included provider or add your own.
   Contributions welcome to add Anthropic / Claude support as another
   out-of-the-box option.
+
 - **Executable workflows:** a small default chat graph plus a separate
   [API demonstration](docs/api_demo.md) combining LLM and deterministic nodes,
   a GraphQL MCP tool and a synthetic backend. Extend the declared tools and
   native adapters for other APIs and protocols.
+
 - **Studio chat UI:** run `./launch.sh --tui-mode run-local --run-ui`, or save
   `RUN_UI=True` and choose Run local. Use or adapt the UI while retaining David
   Bruck's copyright notice, the license conditions and disclaimer; binary
   redistributions must reproduce them in accompanying materials. See [LICENSE](LICENSE).
+
 - **Selected prerequisites:** nested configuration, provider Python packages,
   tool-contributed mise runtimes and recursive local container dependencies.
   [Add a tool, including one in another language](docs/tool-executables.md).
+
 - **Inspection and testing:** selectable tests, failure details, token/cost
   accounting, Allure reports, optional OpenTelemetry/GenAI or LangFuse tracing,
   and retained DEBUG browsers for human or coding-agent inspection.
+
 - **Assisted authentication:** optional password-manager adapters for supported
   UI and LLM sign-in steps; some challenges still require human approval.
 
@@ -139,9 +144,15 @@ for prerequisites and connection instructions.
   [safe multi-stage runtime image](docs/prds/implementation_plan_k2a.md#deployment-dashboard-credential-defaults)
   will clear both admin defaults to empty and require explicit configuration
   when LangFuse is selected; that image work remains pending.
+
+  - **Workaround:** set `LANGFUSE_ADMIN_EMAIL` and `LANGFUSE_ADMIN_PASSWORD`
+    in `.env` or the environment before initializing a new managed LangFuse
+    instance. These settings do not change an existing account's credentials.
+
 - **API-key mode needs a configured password-manager entry.** Manual key entry
   is [not implemented](docs/prds/implementation_plan_f2.md); the attended-login
   alternative applies to subscription authentication.
+
 - Some authentication challenges remain manual; 1Password CLI must already be
   signed in. See [authentication limitations and workarounds](docs/authentication-limitations.md)
   for hardware keys, Keeper software passkeys, OAuth refresh and CLI recovery.

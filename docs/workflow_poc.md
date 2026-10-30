@@ -27,6 +27,38 @@ to the caller, use an explicitly owned mutable result carrier, as the bundled
 application does with `result_store`. Give concurrent operations separate result
 carriers; nested service objects are borrowed, not deep-copied.
 
+## Named tools and optional dependencies
+
+Workflows select named tool instances through linked Tools tables. Graph and
+component tables declare availability; a consuming node's table also lists its
+permitted operations. The runtime supplies `context.tools[port]` automatically
+and rejects undeclared ports or operations before dispatch. Native code chooses
+when to call the capability and supplies its arguments; it does not repeat the
+instance binding. See [node capabilities](tools.md#node-capabilities) and the
+[demo execution node](../demo/simple/workflows/components/execute_tool.md.html).
+
+Tools can contribute more than a callable:
+
+- **Configuration:** an implementation declares typed inputs, defaults and help;
+  each instance binds these local slots to public configuration names. Only the
+  selected implementation's consumed inputs become active. See
+  [instance inputs](tools.md#bind-instance-inputs).
+- **Development services:** an instance can declare optional local acquisition
+  and recursive prerequisites through the shared infrastructure planner. For
+  example, a tool can use a locally started API whose dependencies include a
+  database. Compose assets, readiness, seeding and cleanup belong to those
+  declarations, rather than arbitrary commands in the node. See
+  [local services and recursive dependencies](tool-infrastructure.md).
+- **Adapter dependencies:** selected implementations can declare captured Python
+  dependencies and [host executable requirements](tool-executables.md).
+
+Configuration and infrastructure are independent: a tool may need either, both
+or neither. In the [bundled instance](../demo/simple/cfg/tools/primary.toml), a
+blank `API_ENDPOINT` requests its declared local API; a nonempty remote endpoint
+avoids that local closure. Separately declared unconditional prerequisites still
+apply. Deployed agents can use externally managed endpoints without starting
+development containers.
+
 ## Local verification
 
 Use a Python environment installed with the project's development dependencies.
