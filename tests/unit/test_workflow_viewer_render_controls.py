@@ -146,14 +146,15 @@ def test_hosted_view_labels_only_actual_captured_nonserved_links():
     document = SimpleNamespace(logical_path="base/workflows/task.md.html", executable_bytes=raw)
     selected = SimpleNamespace(logical_path="base/other.md.html")
     config = SimpleNamespace(logical_path="base/cfg/settings.json", kind="schema", sha256="a" * 64)
-    code = SimpleNamespace(logical_path="base/native/worker.py", kind="native_source", sha256="b" * 64)
+    code = SimpleNamespace(logical_path="base/native/worker.py", kind="native_source",
+                           sha256=__import__("hashlib").sha256(b"source").hexdigest(), content_bytes=b"source")
     projection = SimpleNamespace(documents=(document, selected), resources=(config, code))
 
     hosted = _annotate_hosted_resources(projection, document, raw.splitlines(keepends=True))
 
     assert b"[config](../cfg/settings.json#field)" not in hosted
     assert b"captured schema: base/cfg/settings.json; SHA-256 " + b"a" * 64 in hosted
-    assert b"captured native_source: base/native/worker.py; SHA-256 " + b"b" * 64 in hosted
+    assert b"[code](../native/worker.py)" in hosted
     assert b"[selected](../other.md.html)" in hosted
     assert b"`[inline](../cfg/settings.json)`" in hosted
     assert b"[inline next line](../cfg/settings.json)" in hosted
@@ -225,7 +226,8 @@ def test_hosted_bundle_annotates_captured_resources_without_source_write():
 
     pages = {file.path: file.body for file in bundle.files}
     hosted = pages["r/base/workflows/components/agent.md.html"]
-    assert b"captured native_source:" in hosted
+    assert b"captured native_source:" not in hosted
+    assert b"[Python]" in hosted
     assert b"[input](../contracts/llm_call_input.json)" in hosted
     assert b"[output](../contracts/llm_call_output.json)" in hosted
     assert pages["r/base/workflows/contracts/llm_call_input.json"] == (
@@ -1834,3 +1836,13 @@ def recorded_repository_for_generation_controls(tmp_path):
     directory = tmp_path / "cfg"
     directory.mkdir(exist_ok=True)
     (directory / "workflow-view.toml").write_text('version = 1\nrepository_url = "//github.com/example/agent"\n')
+
+
+def test_native_only_projection_preserves_its_source_link():
+    from hashlib import sha256
+    source = b'[Python](code.py)\n'
+    document = SimpleNamespace(logical_path='base/flow.md.html')
+    resource = SimpleNamespace(logical_path='base/code.py', kind='native_source',
+                               content_bytes=b'print("source")', sha256=sha256(b'print("source")').hexdigest())
+    projection = SimpleNamespace(documents=(document,), resources=(resource,), references=(), tool_bindings=())
+    assert _annotate_hosted_resources(projection, document, [source]) == source

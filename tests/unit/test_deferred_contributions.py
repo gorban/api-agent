@@ -87,7 +87,7 @@ def test_help_rejects_invalid_deferred_siblings_in_either_order(tmp_path, monkey
     output = capsys.readouterr()
     assert status == 2
     assert 'Launch error: expected positive integer' in output.err
-    assert 'Usage: ./launch.py' not in output.out
+    assert 'Usage: ./launch.sh' not in output.out
 
 
 @pytest.mark.parametrize('controller_first', [False, True])
@@ -102,7 +102,7 @@ def test_help_accepts_valid_deferred_siblings_in_either_order(tmp_path, monkeypa
 
     output = capsys.readouterr()
     assert status == 0 and not output.err
-    assert 'Usage: ./launch.py [OPTIONS] [TEST SELECTORS]' in output.out
+    assert 'Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]' in output.out
 
 
 def test_deferred_source_order_keeps_later_value_and_owning_file(tmp_path):
@@ -233,7 +233,7 @@ def test_help_accepts_valid_mixed_siblings(tmp_path, monkeypatch, capsys, predic
 
     output = capsys.readouterr()
     assert status == 0 and not output.err
-    assert 'Usage: ./launch.py [OPTIONS] [TEST SELECTORS]' in output.out
+    assert 'Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]' in output.out
 
 
 @pytest.mark.parametrize('new_value', [False, True])
@@ -249,7 +249,7 @@ def test_help_rejects_invalid_mixed_siblings(tmp_path, monkeypatch, capsys, pred
 
     output = capsys.readouterr()
     assert status == 2 and 'Launch error: expected positive integer' in output.err
-    assert 'Usage: ./launch.py' not in output.out
+    assert 'Usage: ./launch.sh' not in output.out
 
 
 def test_pending_controller_context_is_lookup_only(tmp_path):

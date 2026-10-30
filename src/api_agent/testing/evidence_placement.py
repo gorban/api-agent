@@ -36,6 +36,23 @@ def observed_call_scopes(steps):
     return claims
 
 
+def graph_for_visit(journals, invocation_id, visit_id):
+    """Find the nearest observed graph ancestor for a visit in one invocation."""
+    matches = [journal for journal in journals if journal.get('invocation_id') == invocation_id]
+    if len(matches) != 1:
+        return {'kind': 'unattached'}
+    starts = {event['scope_id']: event for event in matches[0].get('events', ())
+              if event.get('event') == 'scope_start' and 'scope_id' in event}
+    scope, seen = visit_id, set()
+    while scope in starts and scope not in seen:
+        seen.add(scope)
+        event = starts[scope]
+        if event.get('kind') == 'graph':
+            return dict(kind='scope', invocation_id=invocation_id, scope_id=scope)
+        scope = event.get('parent_id')
+    return {'kind': 'unattached'}
+
+
 def place_evidence(steps, queued, *, call_scopes=None):
     """Return test attachments; attach unique observed owners in place.
 

@@ -12,7 +12,7 @@ _KEYS = ('event', 'category', 'outcome', 'owner', 'kind', 'node', 'component',
          'visit_id', 'attempt_id', 'call_id', 'operation_id', 'direction', 'reason',
          'elapsed', 'attempt', 'max_passes', 'declared_timeout', 'effective_timeout',
          'timeout_key', 'source', 'target', 'condition', 'implicit', 'usage',
-         'selection', 'accounting', 'started_ms', 'stopped_ms', 'accepted', 'cause_id')
+         'selection', 'accounting', 'started_ms', 'stopped_ms', 'accepted', 'cause_id', 'content_notice')
 
 
 def _plain(value):

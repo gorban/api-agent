@@ -18,10 +18,10 @@
 - [x] Verify empty/missing files, retained hidden rows, multiple targets,
   external edits and repeated entry with mounted terminal regressions.
 - [x] Complete applicable unit coverage and independent review.
-- [ ] Human acceptance confirms Clear and subsequent Review behavior.
+- [x] Human accepts Clear and subsequent Review behavior, including last-deleted-row focus, without another manual retest.
 
-## Deferred human review
+## Human acceptance
 
 Implementation, regression checks, exact unit coverage and independent external
-review are complete. Explicit human acceptance of this display repair remains
-unchecked; earlier configuration approvals remain recorded separately.
+review are complete. Explicit human acceptance is recorded above without another
+manual retest; earlier configuration approvals remain recorded separately.

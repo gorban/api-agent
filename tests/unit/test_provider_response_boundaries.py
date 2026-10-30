@@ -183,10 +183,15 @@ def test_budget_expiring_during_optional_capture_does_not_admit_transport(monkey
     async def http(sent):
         calls.append(sent)
         raise AssertionError('expired capture dispatched HTTP')
+    async def call(*args, **kwargs):
+        kwargs['on_dispatch']()
+        calls.append(args)
+        raise AssertionError('expired capture dispatched transport')
     async def stream(*args, **kwargs):
+        kwargs['on_dispatch']()
         calls.append(args)
         yield {}
-    transport = SimpleNamespace(call=AsyncMock(side_effect=AssertionError('expired capture dispatched transport')), stream=stream)
+    transport = SimpleNamespace(call=AsyncMock(side_effect=call), stream=stream)
     monkeypatch.setattr(factory, 'SDKTransport', lambda **kw: transport)
     async def run():
         with bind_response_dispatch() as observed:
@@ -205,7 +210,8 @@ def test_budget_expiring_during_optional_capture_does_not_admit_transport(monkey
                             await implementation.acomplete(request('json', model='zai.glm-5'))
                 assert getattr(caught.value, 'response', None) is None and observed['response'] is None
     asyncio.run(run())
-    assert calls == [] and transport.call.await_count == 0
+    assert calls == []
+    assert transport.call.await_count == (1 if provider == 'bedrock' else 0)
 
 
 def test_private_http_attempt_refuses_an_already_expired_budget_without_capture(monkeypatch):
@@ -234,7 +240,10 @@ def test_encoded_instruction_preserves_prior_provider_serialization(provider, ap
     from api_agent.llm_providers.response_policy import format_payload
     from test_provider_response_policy import prepare
     req = request('prompted_json', model='gpt-6-sol' if provider == 'gpt' else 'openai.gpt-oss-20b')
-    instruction = Message('user', (TextContent('Return only JSON satisfying this response schema:\n' + SHAPE),))
+    instruction = Message('user', (TextContent(
+        'Return a complete final answer containing only JSON satisfying this response schema. '
+        'Include the final JSON answer even when reasoning is enabled; reasoning is not the answer.\n'
+        + SHAPE),))
     legacy = replace(req, payload=replace(req.payload, response=None, messages=(*req.payload.messages, instruction)))
     if provider == 'gpt':
         from api_agent.llm_providers.gpt.inference import validate_text_request

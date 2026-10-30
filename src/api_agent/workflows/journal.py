@@ -1,5 +1,7 @@
 """Bounded owner-sequenced workflow observations for recorded tests."""
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 import json
 import math
@@ -11,6 +13,19 @@ from uuid import uuid4, UUID
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary, _COUNTS
 from .layout import MAX_COMPONENT_PASSES
 from .predicates import PredicateError, native_condition_id, parse_predicate
+
+_CAPTURE_CALLBACKS = ContextVar('workflow_capture_callbacks', default=None)
+
+
+@contextmanager
+def defer_capture_callbacks(callbacks):
+    """Queue only already-admitted capture rows until source leases end."""
+    token = _CAPTURE_CALLBACKS.set(callbacks)
+    try:
+        yield
+    finally:
+        _CAPTURE_CALLBACKS.reset(token)
+
 
 _MAX_EVENTS = 8192
 _MAX_BYTES = 4 * 1024 * 1024
@@ -90,18 +105,24 @@ def _schema_field(key):
             and (not _UNSAFE_FIELD.search(key) or key in _COUNTS or key in ('reasoning_effort', 'max_output_tokens', 'max_completion_tokens', 'max_tokens')))
 
 
-def _capture_contract(value, depth=0, *, max_depth=4, budget=None):
+def _provider_field(key):
+    """Plaintext SDK content fields, never workflow declaration permission."""
+    return _schema_field(key) or key in ('reasoning', 'reasoning_content', 'analysis',
+                                        'thinking', 'thinking_content', 'chain_of_thought')
+
+
+def _capture_contract(value, depth=0, *, max_depth=4, budget=None, provider_content=False):
     budget = [2048] if budget is None else budget
     budget[0] -= 1
     if depth > max_depth or budget[0] < 0:
         return False
     if type(value) is dict:
-        return (len(value) <= 32 and all(type(key) is str
-                and (_schema_field(key) if max_depth == 8 else
+        return (len(value) <= (2048 if max_depth == 8 else 32) and all(type(key) is str
+                and ((_provider_field(key) if provider_content else _schema_field(key)) if max_depth == 8 else
                      _SAFE_LABEL.fullmatch(key) and not _UNSAFE_FIELD.search(key))
-                and _capture_contract(item, depth + 1, max_depth=max_depth, budget=budget) for key, item in value.items()))
+                and _capture_contract(item, depth + 1, max_depth=max_depth, budget=budget, provider_content=provider_content) for key, item in value.items()))
     if type(value) is list:
-        return len(value) <= 16 and all(_capture_contract(item, depth + 1, max_depth=max_depth, budget=budget) for item in value)
+        return len(value) <= (2048 if max_depth == 8 else 16) and all(_capture_contract(item, depth + 1, max_depth=max_depth, budget=budget, provider_content=provider_content) for item in value)
     return (value is None or type(value) is bool
             or type(value) is int and abs(value) <= (1 << 53) - 1
             or type(value) is float and math.isfinite(value)
@@ -169,6 +190,7 @@ def _routes_complete(projection_data, events):
     passes, node_outcomes = {}, set()
     graph_roots = 0
     call_ids = set()
+    calls_by_id = {}
     for event in events:
         kind = event.get('event')
         if kind == 'scope_start':
@@ -320,6 +342,38 @@ def _routes_complete(projection_data, events):
             and all(cursor == 'END' for cursor in routes.values()))
 
 
+def _credential_authorities(boundary):
+    """Return original live credential owners, validating bounded wrapper graphs."""
+    owners, seen_owners, visited = [], set(), set()
+    remaining = [2048]
+    def collect(current, ancestors):
+        remaining[0] -= 1
+        if remaining[0] < 0:
+            raise ValueError('Journal credential authority exceeds limits')
+        if type(current) is EmissionBoundary:
+            identity = id(current._authority)
+            if identity not in seen_owners:
+                seen_owners.add(identity)
+                owners.append(current)
+            return
+        if type(current) is not _JournalBoundary:
+            raise TypeError('Invalid journal credential authority owner')
+        identity = id(current)
+        if identity in ancestors:
+            raise ValueError('Cyclic journal credential authority')
+        if len(ancestors) >= 64 or len(visited) >= 1024:
+            raise ValueError('Journal credential authority exceeds limits')
+        if identity in visited:
+            return
+        visited.add(identity)
+        if type(current._boundaries) is not tuple or not current._boundaries:
+            raise ValueError('Invalid journal credential authority union')
+        for child in current._boundaries:
+            collect(child, ancestors | {identity})
+    collect(boundary, frozenset())
+    return tuple(owners)
+
+
 class _JournalBoundary:
     """Keep credential authorities live without replacing their registrations."""
     def __init__(self, policy, *boundaries):
@@ -331,6 +385,11 @@ class _JournalBoundary:
     def register_secret(self, secret):
         for boundary in self._boundaries:
             boundary.register_secret(secret)
+
+    async def aregister_secret(self, secret):
+        from api_agent.telemetry.privacy import register_secret_async
+        for boundary in self._boundaries:
+            await register_secret_async(boundary, secret)
 
     def content_export(self, payload):
         # One original projection must see the union: sequential scrubbing can
@@ -392,12 +451,17 @@ class WorkflowJournal:
         self._complete = False
         self._finalized = False
         self._gap = None
+        self._evidence_loss = False
         if content_policy is not None and not isinstance(content_policy, ContentPolicy):
             raise TypeError('Journal content authority must be an explicit policy')
         self._requested_content = (log_content is True and
                                    (content_policy is None or content_policy.allow_content is True))
         self._log_content = (self._requested_content and content_policy is not None
                              and content_policy.allow_content is True)
+
+    def credential_authorities(self):
+        """Expose exact live credential owners for operation admission only."""
+        return _credential_authorities(self._boundary)
 
     def admit_execution_context(self, value):
         """Bind a fresh unlabelled journal; never relabel retained execution data."""
@@ -461,7 +525,8 @@ class WorkflowJournal:
                    'timeout_key', 'outcome', 'accepted', 'visit_id', 'attempt_id',
                    'call_id', 'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'response', 'direction',
                    'values', 'reason', 'accounting', 'plain_fields', 'capture_class',
-                   'truncated_fields', 'transport_attempts')
+                   'truncated_fields', 'transport_attempts', 'transport_attempt_id', 'capture_source',
+                   'tool_invocation_id', 'tool_name', 'tool_instance')
         if 'transport_attempts' in row:
             from api_agent.providers.generation_attempts import validate_transport_attempts
             row = {**row, 'transport_attempts': validate_transport_attempts(row['transport_attempts'])}
@@ -488,7 +553,7 @@ class WorkflowJournal:
         if row['event'] == 'edge' and 'condition' in row and tuple(row.get(key) for key in (
                 'owner', 'source', 'target', 'condition', 'implicit')) not in self._admitted_edges:
             raise ValueError('Undeclared workflow observation edge')
-        for key in ('scope_id', 'parent_id', 'visit_id', 'attempt_id', 'call_id', 'cause_id'):
+        for key in ('scope_id', 'parent_id', 'visit_id', 'attempt_id', 'call_id', 'cause_id', 'transport_attempt_id'):
             value = row.get(key)
             if value is not None and (type(value) is not str or len(value) > 64):
                 raise ValueError('Invalid workflow observation identity')
@@ -525,6 +590,9 @@ class WorkflowJournal:
             if len(self._events) >= _MAX_EVENTS or self._bytes + size > _MAX_BYTES:
                 self._gap = 'event_limit'
                 return
+            if any(key in clean for key in ('tool_invocation_id', 'tool_name', 'tool_instance')) or clean['event'] in ('tool_start', 'tool_end'):
+                from .tool_observations import validate_tool_events
+                validate_tool_events([*self._events, clean])
             self._events.append(clean)
             self._bytes += size
             if clean['event'] == 'call':
@@ -535,7 +603,12 @@ class WorkflowJournal:
         for observer in self._admitted_observers:
             callback = (observer_override[1] if observer_override is not None
                         and observer is observer_override[0] else observer)
-            callback(json.loads(_encoded(clean)))
+            deferred = _CAPTURE_CALLBACKS.get() if clean['event'] in ('capture', 'tool_start', 'tool_end') else None
+            row = json.loads(_encoded(clean))
+            if deferred is None:
+                callback(row)
+            else:
+                deferred.append((callback, row))
         return json.loads(_encoded(clean))
 
     def capture(self, *, visit_id, direction, values, schema, plain_fields=None,
@@ -561,7 +634,7 @@ class WorkflowJournal:
         return self._observe(event, allow_values=True, observer_override=_observer_override)
 
     def capture_json(self, *, visit_id, direction, values, schema, cause_id=None,
-                     capture_reason=None, _observer_override=None):
+                     capture_reason=None, transport_attempt_id=None, capture_source=None, tool_invocation_id=None, attempt_id=None, _observer_override=None):
         """Capture bounded JSON values admitted by a node or call schema."""
         self._begin()
         from .capture import capture_reason as classify_capture, project_values
@@ -573,14 +646,27 @@ class WorkflowJournal:
             raise ValueError('Workflow capture requires a node visit')
         event = dict(event='capture', visit_id=visit_id, direction=direction,
                      reason='withheld')
+        if tool_invocation_id is not None:
+            event.update(tool_invocation_id=tool_invocation_id, attempt_id=attempt_id)
         if cause_id is not None:
             event['cause_id'] = cause_id
+        if transport_attempt_id is not None:
+            event['transport_attempt_id'] = transport_attempt_id
+        if capture_source is not None:
+            if capture_source not in ('fallback', 'provider'):
+                raise ValueError('Invalid provider capture source')
+            event['capture_source'] = capture_source
         if self._log_content and capture_reason != 'withheld':
             report = set()
-            safe = project_values(values, schema, self._boundary, report=report)
+            safe = project_values(values, schema, self._boundary, report=report,
+                                  _provider_content=cause_id is not None and capture_source == 'provider')
             event.update(values=safe, capture_class='schema_user_io',
                          reason=classify_capture(safe, report, capture_reason))
         return self._observe(event, allow_values=True, observer_override=_observer_override)
+
+    def record_evidence_loss(self):
+        with self._lock:
+            self._evidence_loss = True
 
     def record_call(self, *, visit_id, attempt_id=None, usage=None, selection=None,
                     elapsed=None, outcome='completed', call_id=None,
@@ -647,13 +733,15 @@ class WorkflowJournal:
                 raise ValueError('Journal already finalized')
             self._finalized = True
             events = json.loads(_encoded(self._events))
-            complete = self._gap is None and _routes_complete(self.projection, events)
+            from .tool_observations import validate_tool_events
+            gap = self._gap or ('tool_evidence_unavailable' if self._evidence_loss else None)
+            complete = gap is None and _routes_complete(self.projection, events) and validate_tool_events(events)
             payload = dict(version=1, projection=json.loads(_encoded(self.projection)),
                            source_manifest=json.loads(_encoded(self.source_manifest)),
                            invocation_id=self.invocation_id, turn_id=self.turn_id,
                            test_id=self.test_id, events=events,
                            completeness='complete' if complete else 'partial',
-                           gap=self._gap, content='permitted_scrubbed' if self._log_content else 'withheld')
+                           gap=gap, content='permitted_scrubbed' if self._log_content else 'withheld')
             if self.execution_context is not None:
                 payload['execution_context'] = dict(self.execution_context)
             if self.semantic_identity is not None:
@@ -757,11 +845,16 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                'timeout_key', 'outcome', 'accepted', 'sequence', 'event_id',
                'invocation_id', 'turn_id', 'visit_id', 'attempt_id', 'call_id',
                'cause_id', 'usage', 'selection', 'actual_model', 'reasoning_effort', 'response', 'direction', 'values', 'reason', 'accounting',
-               'plain_fields', 'capture_class', 'truncated_fields', 'transport_attempts'}
+               'plain_fields', 'capture_class', 'truncated_fields', 'transport_attempts', 'transport_attempt_id', 'capture_source',
+               'tool_invocation_id', 'tool_name', 'tool_instance'}
     event_ids = set()
     for sequence, event in enumerate(events, 1):
         if type(event) is not dict or set(event) - allowed or event.get('sequence') != sequence:
             raise ValueError('Invalid workflow event sequence or field')
+        if 'transport_attempt_id' in event and (event.get('event') != 'capture' or event.get('cause_id') is None):
+            raise ValueError('Invalid transport capture identity')
+        if 'capture_source' in event and (event.get('event') != 'capture' or event['capture_source'] not in ('fallback', 'provider') or event.get('cause_id') is None):
+            raise ValueError('Invalid provider capture source')
         if 'transport_attempts' in event:
             from api_agent.providers.generation_attempts import validate_transport_attempts
             validate_transport_attempts(event['transport_attempts'])
@@ -792,7 +885,8 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
             if payload['content'] == 'withheld' and 'values' in event:
                 raise ValueError('Withheld workflow capture contains values')
             if 'values' in event and not _capture_contract(event['values'],
-                    max_depth=8 if event.get('capture_class') == 'schema_user_io' else 4):
+                    max_depth=8 if event.get('capture_class') == 'schema_user_io' else 4,
+                    provider_content=event.get('cause_id') is not None and event.get('capture_source') == 'provider'):
                 raise ValueError('Unsafe workflow capture values')
             if 'values' in event and event.get('capture_class') == 'schema_user_io':
                 try:
@@ -828,11 +922,13 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
     node_visits = {event.get('scope_id') for event in events
                    if event.get('event') == 'scope_start' and event.get('kind') == 'node'}
     call_ids = set()
+    calls_by_id = {}
     for event in events:
         if event.get('event') == 'call':
             if event.get('visit_id') not in node_visits or event.get('call_id') in call_ids:
                 raise ValueError('Leaf call lacks a unique node visit owner')
             call_ids.add(event['call_id'])
+            calls_by_id[event['call_id']] = event
     capture_pairs = {}
     for event in events:
         if event.get('event') == 'capture' and event.get('cause_id') is not None:
@@ -846,12 +942,27 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
             if (not valid_cause or type(owner) is not str or owner not in node_visits
                     or direction not in ('input', 'output')):
                 raise ValueError('Invalid workflow capture correlation')
+            physical = event.get('transport_attempt_id')
+            if physical is not None:
+                try:
+                    if type(physical) is not str or str(UUID(physical)) != physical:
+                        raise ValueError()
+                except ValueError:
+                    raise ValueError('Invalid transport capture identity') from None
+            call = calls_by_id.get(cause)
+            if physical is not None:
+                ledger = None if call is None else call.get('transport_attempts')
+                if (call is None or call.get('visit_id') != owner or ledger is None or
+                        physical not in {attempt['id'] for attempt in ledger['attempts']}):
+                    raise ValueError('Transport capture lacks its call attempt owner')
             previous_owner, directions = capture_pairs.setdefault(cause, (owner, set()))
-            if previous_owner != owner or direction in directions:
+            if previous_owner != owner or (physical, direction) in directions:
                 raise ValueError('Invalid workflow capture correlation')
-            directions.add(direction)
+            directions.add((physical, direction))
     routes_complete = _routes_complete(payload['projection'], events)
-    complete = payload['gap'] is None and routes_complete
+    from .tool_observations import validate_tool_events
+    tools_complete = validate_tool_events(events)
+    complete = payload['gap'] is None and routes_complete and tools_complete
     if payload['completeness'] != ('complete' if complete else 'partial'):
         raise ValueError('Workflow completeness mismatch')
     return payload

@@ -9,7 +9,7 @@ from api_agent.testing.model_choices import exact_model, catalog_choice
 from test_studio_request import studio_configuration, studio_backend_factory, browser_prompt
 
 
-pytestmark = pytest.mark.feature('Studio model selection')
+pytestmark = [pytest.mark.feature('Studio model selection'), pytest.mark.credential_authorities('ui')]
 
 
 def require_selection_configuration(requirements):

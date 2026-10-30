@@ -372,3 +372,29 @@ def test_wait_interrupt_remains_primary_when_cleanup_is_interrupted():
     item.end_inspection.side_effect = lambda: setattr(item, 'closed', True) or True
     asyncio.run(receipt.retry())
     assert not caught.value.inspection_group.active
+
+
+def test_group_reports_only_unique_open_loopback_inspection_endpoints():
+    first, second, closed = handle(), handle(), handle()
+    first.inspection_endpoints = ('http://127.0.0.1:1234', 'http://127.0.0.1:1234', '', None,
+                                 'http://example.test:1234', 'http://127.0.0.1:65536', 'http://127.0.0.1:0')
+    second.inspection_endpoints = ('http://127.0.0.1:4321',)
+    closed.inspection_endpoints = ('http://127.0.0.1:9999',)
+    closed.closed = True
+    group = InspectionGroup((first, second, closed))
+    assert group.endpoints == ('http://127.0.0.1:1234', 'http://127.0.0.1:4321')
+    first.closed = True
+    assert group.endpoints == ('http://127.0.0.1:4321',)
+    second.closed = True
+    assert group.endpoints == ()
+
+
+def test_terminal_completion_lists_retained_browser_before_waiting():
+    item = handle()
+    item.inspection_endpoints = ('http://127.0.0.1:1234',)
+    output = []
+    def finish():
+        assert 'Browser CDP (retained suite browser): http://127.0.0.1:1234' in output
+        item.closed = True
+    item.wait_closed.side_effect = finish
+    assert finish_terminal_inspection(result((item,)), output.append)

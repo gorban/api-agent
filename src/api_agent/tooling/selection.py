@@ -334,6 +334,8 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
         spec = implementation_declaration(capture.toml(implementation))
         if spec['interface'] != data['interface']:
             raise ToolSelectionError('Selected tool interface is incompatible')
+        from .executables import capture_executables
+        executables, executable_assets = capture_executables(capture, implementation, spec.get('executables'))
         aliases = data.get('bindings', {})
         for slot, row in spec.get('inputs', {}).items():
             if slot not in aliases:
@@ -389,6 +391,7 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
             service_capabilities=capabilities, prerequisite_roots=tuple(data.get('prerequisites', ())),
             infrastructure=infrastructure, descriptor_path=path,
             implementation_path=implementation, admission=admission,
+            executables=executables, executable_assets=executable_assets,
             nonempty_inputs=tuple(slot for slot, row in spec.get('inputs', {}).items()
                                   if row.get('nonempty', False))))
     try:

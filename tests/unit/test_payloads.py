@@ -18,7 +18,7 @@ def recorder(tmp_path):
     return RunRecorder(tmp_path, RunIdentity(str(uuid4()), 'example', 'integration', datetime.now(timezone.utc)))
 
 
-def journal(values=None, cause=None, test_id=None, call_owner=None):
+def journal(values=None, cause=None, test_id=None, call_owner=None, capture_reason=None):
     node = SimpleNamespace(id='Make', kind='node', parent=None)
     definition = SimpleNamespace(graph_id='Example', definition_id='b' * 64, entry_root='base',
         layout=SimpleNamespace(steps=[node], tables={'Edges': []}), resources=[], replacements=[])
@@ -27,7 +27,7 @@ def journal(values=None, cause=None, test_id=None, call_owner=None):
     owner.observe(dict(event='edge',source='START',target='Make',owner='GRAPH',implicit=True))
     owner.observe(dict(event='scope_start',scope_id='visit',parent_id='scope',kind='node',owner='Make',started_ms=1))
     if values is not None:
-        owner.capture_json(visit_id='visit',direction='input', values=values, schema={'type':'object'}, cause_id=cause)
+        owner.capture_json(visit_id='visit',direction='input', values=values, schema={'type':'object'}, cause_id=cause, capture_reason=capture_reason)
     if call_owner is not None:
         owner.observe(dict(event='scope_start',scope_id=call_owner,parent_id='scope',kind='node',owner='Make',started_ms=2))
         owner.record_call(visit_id=call_owner,call_id=cause)
@@ -51,6 +51,63 @@ def test_occurrences_share_only_by_identity_and_conflicts_reject(tmp_path):
     with pytest.raises(ValueError,match='Conflicting'):
         store.put_wire(call,'request',{})
     assert len(store.index()['entries']) == 2
+
+
+def test_chunked_payload_roundtrip_and_detects_corruption(tmp_path):
+    run = recorder(tmp_path)
+    store = PayloadStore(run, 'test')
+    value = {'messages': [{'text': '🧪' * 130000}]}
+    ref = store.put_wire(str(uuid4()), 'request', value)
+    assert ref['kind'] == 'chunked'
+    parts = store.native_parts(ref)
+    assert len(parts) == 3
+    assert all((tmp_path / name).stat().st_size <= 200 * 1024 for name in parts)
+    run.record_test(result())
+    manifest = run.finalize()
+    with PayloadResolver.local(tmp_path, manifest) as resolver:
+        assert resolver(ref) == value
+    (tmp_path / parts[1]).write_bytes(b'corrupted')
+    with PayloadResolver.local(tmp_path, manifest) as resolver:
+        with pytest.raises(ValueError, match='Chunk'):
+            resolver(ref)
+
+
+def test_failed_chunk_validation_does_not_consume_resolver_budget(tmp_path):
+    run = recorder(tmp_path)
+    invalid = b'{broken'
+    part = run.record_artifact('invalid.part', invalid)
+    descriptor = encoded({'version': 1, 'length': len(invalid),
+        'sha256': hashlib.sha256(invalid).hexdigest(),
+        'chunks': [{'source': part, 'sha256': hashlib.sha256(invalid).hexdigest(), 'length': len(invalid)}]})
+    name = run.record_artifact('invalid.json', descriptor)
+    bad = {'kind': 'chunked', 'source': name, 'sha256': hashlib.sha256(descriptor).hexdigest(), 'length': len(invalid)}
+    store = PayloadStore(run, 'test')
+    value = {'text': 'x' * 70000}
+    good = store.put_wire(str(uuid4()), 'request', value)
+    run.record_test(result())
+    with PayloadResolver.local(tmp_path, run.finalize()) as resolver:
+        before = resolver.remaining
+        with pytest.raises(ValueError):
+            resolver(bad)
+        assert resolver.remaining == before
+        assert resolver(good) == value
+
+
+def test_failed_chunk_write_removes_prior_fragments(tmp_path, monkeypatch):
+    run = recorder(tmp_path)
+    store = PayloadStore(run, 'test')
+    write = run.record_artifact
+    calls = []
+    def fail_second(name, content):
+        calls.append(name)
+        if len(calls) == 2:
+            raise OSError('synthetic write failure')
+        return write(name, content)
+    monkeypatch.setattr(run, 'record_artifact', fail_second)
+    with pytest.raises(OSError):
+        store.put_wire(str(uuid4()), 'request', {'text': 'x' * 300000})
+    assert not list(tmp_path.iterdir())
+    assert store.index()['entries'] == []
 
 
 def test_existing_attachment_reuses_one_native_source(tmp_path):
@@ -86,6 +143,23 @@ def test_journal_materialization_retains_exact_digest_and_null(tmp_path):
         hydrate_journal(durable,None)
 
 
+def test_failed_hydration_restores_resolver_state(tmp_path):
+    run = recorder(tmp_path)
+    store = PayloadStore(run, 'test')
+    packet = journal({'text': 'visible'})
+    durable = store.materialize_journal(packet)
+    manifest = _finalized_with_indexes(run, {'index.json': store.index()})
+    resolver = PayloadResolver.local(tmp_path, manifest)
+    resolver.index('index.json')
+    broken = dict(durable, original_sha256='0' * 64)
+    broken['sha256'] = hashlib.sha256(encoded({key: value for key, value in broken.items() if key != 'sha256'})).hexdigest()
+    before = resolver.remaining
+    with pytest.raises(ValueError):
+        hydrate_journal(broken, resolver)
+    assert resolver.remaining == before
+    assert hydrate_journal(durable, resolver) == packet
+
+
 def test_wire_capture_reuses_authoritative_source(tmp_path):
     run = recorder(tmp_path)
     store = PayloadStore(run,'test')
@@ -111,7 +185,7 @@ def test_missing_wire_and_withheld_do_not_create_payload(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize('value',[{'x':'a' * 65536}, {'x':[0] * 17}, {'x':float('inf')}, {'x':object()}])
+@pytest.mark.parametrize('value',[{'x':'a' * (4 * 1024 * 1024)}, {'x':[0] * 2048}, {'x':float('inf')}, {'x':object()}])
 def test_payload_bounds_reject_before_writing(tmp_path,value):
     store = PayloadStore(recorder(tmp_path),'test')
     with pytest.raises(ValueError):
@@ -266,7 +340,9 @@ def test_full_payload_budget_can_reopen_after_index_admission(tmp_path):
     resolver.index('index.json')
     assert [resolver(ref) for ref in refs] == [value] * 64
     assert resolver.remaining == 0
-    with pytest.raises(ValueError, match='retrieval'):
+    assert resolver(refs[0]) == value
+    (tmp_path / refs[0]['source']).write_bytes(b'corrupt')
+    with pytest.raises(ValueError, match='digest'):
         resolver(refs[0])
 
 
@@ -319,7 +395,7 @@ def test_parent_symlink_read_is_rejected(tmp_path):
 
 def test_unavailable_empty_journal_hydrates_without_payload_file(tmp_path):
     store = PayloadStore(recorder(tmp_path),'test')
-    packet = journal({})
+    packet = journal({}, capture_reason='unavailable')
     durable = store.materialize_journal(packet)
     assert hydrate_journal(durable, None) == packet
     assert store.index()['entries'][0]['kind'] == 'omitted'
@@ -372,7 +448,7 @@ def test_unsupported_durable_envelope_rejects(packet):
 
 
 @pytest.mark.parametrize('values', [[[[[[[[[[0]]]]]]]]],
-    {str(number):number for number in range(33)}, {'x' * 129:0}])
+    {str(number):number for number in range(2048)}, {'x' * 129:0}])
 def test_payload_depth_and_map_bounds_reject(tmp_path,values):
     with pytest.raises(ValueError):
         PayloadStore(recorder(tmp_path),'test').put({'kind':'node'},values)
@@ -887,3 +963,21 @@ def test_supplied_reader_resolver_context_requires_no_reader_close(tmp_path):
     resolver.close()
     with pytest.raises(ValueError,match='closed'):
         resolver({})
+
+
+def test_successful_empty_journal_has_canonical_payload_and_requires_resolver(tmp_path):
+    run = recorder(tmp_path)
+    store = PayloadStore(run, 'test')
+    packet = journal({}, test_id='test')
+    capture = next(row for row in packet['events'] if row['event'] == 'capture')
+    assert capture['reason'] == 'captured' and capture['values'] == {}
+    durable = store.materialize_journal(packet)
+    entry = store.index()['entries'][0]
+    assert entry['kind'] != 'omitted'
+    assert json.loads((tmp_path / entry['source']).read_bytes()) == {}
+    with pytest.raises(TypeError):
+        hydrate_journal(durable, None)
+    manifest = _finalized_with_indexes(run, {'empty-index.json': store.index()})
+    with PayloadResolver.local(tmp_path, manifest) as resolver:
+        resolver.index('empty-index.json')
+        assert hydrate_journal(durable, resolver) == packet

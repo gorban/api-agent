@@ -221,10 +221,12 @@ def test_call_attention_reaches_ancestors_even_without_leaf_timing(outcome, stat
     node = component['steps'][0]
     assert graph['status'] == component['status'] == node['status'] == status
     assert {'name': 'outcome', 'value': 'passed'} in node['parameters']
-    assert len(node['steps']) == int(timed)
-    if timed:
-        assert node['steps'][0]['status'] == status
-        assert {'name': 'outcome', 'value': outcome} in node['steps'][0]['parameters']
+    assert len(node['steps']) == 1
+    leaf = node['steps'][0]
+    assert leaf['status'] == status
+    assert {'name': 'outcome', 'value': outcome} in leaf['parameters']
+    assert ('start' in leaf) is timed and ('stop' in leaf) is timed
+    assert not any(item['name'].startswith('call ') for item in node['parameters'])
 
 
 def test_retry_attention_preserves_successful_visits_and_siblings():
@@ -260,3 +262,36 @@ def test_unknown_call_outcome_is_bounded_before_rendering():
     assert leaf['status'] == 'broken'
     assert {'name': 'outcome', 'value': 'unknown'} in leaf['parameters']
     assert 'unrecognized provider detail' not in json.dumps(graph)
+
+
+def test_mixed_llm_tool_children_follow_observation_order_with_untimed_call_ownership():
+    root, visit, tool = (str(uuid4()) for _ in range(3))
+    initial, relevance, continuation = (str(uuid4()) for _ in range(3))
+    graph = dict(event='scope_start', scope_id=root, parent_id=None,
+        kind='graph', owner='GRAPH', started_ms=0)
+    node = dict(event='scope_start', scope_id=visit, parent_id=root,
+        kind='node', owner='Converse', started_ms=1)
+    def call(identifier):
+        return dict(event='call', call_id=identifier, visit_id=visit,
+            outcome='completed', usage={'input_tokens': 2})
+    owner = dict(tool_invocation_id=tool, visit_id=visit, attempt_id=None)
+    events = [graph, node, call(initial), call(relevance),
+        dict(owner, event='tool_start', tool_name='lookup', started_ms=2),
+        dict(owner, event='capture', direction='input'),
+        dict(owner, event='capture', direction='output'),
+        dict(owner, event='tool_end', tool_name='lookup', outcome='success', stopped_ms=3),
+        call(continuation), dict(node, event='scope_end', outcome='passed', stopped_ms=4),
+        dict(graph, event='scope_end', outcome='passed', stopped_ms=5)]
+
+    projected = scope_steps(events)[0]['steps'][0]
+
+    assert [leaf['name'] for leaf in projected['steps']] == [
+        'call ' + initial, 'call ' + relevance, 'Tool lookup', 'call ' + continuation]
+    tool_leaf = projected['steps'][2]
+    assert {'name': 'tool_invocation_id', 'value': tool} in tool_leaf['parameters']
+    assert (tool_leaf['start'], tool_leaf['stop']) == (2, 3)
+    calls = [projected['steps'][index] for index in (0, 1, 3)]
+    assert all('start' not in leaf and 'stop' not in leaf for leaf in calls)
+    assert all({'name': 'input_tokens', 'value': '2'} in leaf['parameters'] for leaf in calls)
+    assert {'name': 'inclusive_input_tokens', 'value': '6.0'} in projected['parameters']
+    assert not any(item['name'].startswith('call ') for item in projected['parameters'])

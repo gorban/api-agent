@@ -88,6 +88,22 @@ class InspectionGroup:
         return any(cleanup_active(handle) for handle in self.handles)
 
     @property
+    def endpoints(self):
+        """Deduplicate retained loopback browsers, without assigning them to tests."""
+        import re
+        endpoints = []
+        for handle in self.handles:
+            if handle.closed:
+                continue
+            for endpoint in getattr(handle, 'inspection_endpoints', ()):
+                if (isinstance(endpoint, str)
+                        and re.fullmatch(r'http://127\.0\.0\.1:[1-9][0-9]{0,4}', endpoint)
+                        and int(endpoint.rsplit(':', 1)[1]) <= 65535
+                        and endpoint not in endpoints):
+                    endpoints.append(endpoint)
+        return tuple(endpoints)
+
+    @property
     def pending(self):
         return any(getattr(handle, 'pending', False) or (handle.closed and cleanup_active(handle))
                    for handle in self.handles)
@@ -162,6 +178,8 @@ def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
             if getattr(recorded, 'usage', None):
                 from api_agent.telemetry.usage_output import final_usage_text
                 output(final_usage_text(recorded.usage))
+            for endpoint in group.endpoints:
+                output('Browser CDP (retained suite browser): ' + endpoint)
             if group.active:
                 if any(not handle.closed and getattr(handle, 'retains_browser', True) for handle in group.handles):
                     output('Debug inspection remains open. Tests and publication have finished; close the browser windows or press Ctrl+C to end inspection.')

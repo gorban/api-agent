@@ -128,7 +128,7 @@ def test_production_recording_places_custom_and_legacy_after_grouping(tmp_path, 
     result = run_recorded_integration(context, [selected], config, accepted=True, runner=runner, storage=Storage())
     assert result.persisted
     row = json.loads(next(result.directory.glob('*-result.json')).read_bytes())
-    assert {item['name'] for item in row['attachments']} == {'Coverage summary', 'Unattached Missing', 'Payload index',
+    assert {item['name'] for item in row['attachments']} == {'Coverage summary', 'Unattached Missing (capture diagnostics)', 'Payload index',
         'Suite usage', 'Workflow accounting join', 'Immutable accounting', 'Test cost estimate'}
     sources = []
     for wrapper in row['steps']:
@@ -138,7 +138,10 @@ def test_production_recording_places_custom_and_legacy_after_grouping(tmp_path, 
         attachments = {item['name']: item for item in graph['attachments']}
         assert set(attachments) == {'Execution evidence', 'Execution diagnostics', 'Custom ' + str(index)}
         node = graph['steps'][0]
-        assert 'Untimed ' + str(index) in [item['name'] for item in node['attachments']]
+        call = next(child for child in node['steps'] if child['name'] == 'call ' + identifier(index))
+        diagnostic_name = 'Untimed ' + str(index) + ' (capture diagnostics)'
+        assert diagnostic_name in [item['name'] for item in call['attachments']]
+        assert diagnostic_name not in [item['name'] for item in node['attachments']]
         canonical = attachments['Execution evidence']['source']
         assert canonical.endswith(journals[index - 1]['invocation_id'] + '.json')
         sources.append(canonical)
@@ -183,8 +186,9 @@ def test_graphfree_custom_evidence_retains_withheld_test_and_unknown_owners(tmp_
     row = json.loads(next(result.directory.glob('*-result.json')).read_bytes())
     assert row['steps'] == []
     evidence = [item for item in row['attachments'] if 'Withheld' in item['name']]
-    assert [item['name'] for item in evidence] == ['Withheld', 'Unattached Withheld']
-    assert all(json.loads((result.directory / item['source']).read_bytes()) == {'content': 'withheld'} for item in evidence)
+    assert [item['name'] for item in evidence] == ['Withheld (capture diagnostics)', 'Unattached Withheld (capture diagnostics)']
+    assert all(json.loads((result.directory / item['source']).read_bytes()) == {
+        'capture_reason':'withheld'} for item in evidence)
     assert len(observed) == 2
 
 
@@ -223,7 +227,7 @@ def test_graphfree_call_evidence_moves_to_actual_leaves_after_accounting(tmp_pat
         assert [step['name'] for step in row['steps']] == ['Unattached']
         leaves = row['steps'][0]['steps']
     assert [leaf['name'] for leaf in leaves] == ['call ' + call for call in calls]
-    assert all([item['name'] for item in leaf['attachments']] == ['Call evidence'] for leaf in leaves)
+    assert all([item['name'] for item in leaf['attachments']] == ['Call evidence (capture diagnostics)'] for leaf in leaves)
     assert len({leaf['attachments'][0]['source'] for leaf in leaves}) == 2
     assert not any('Call evidence' in item['name'] for item in row['attachments'])
     assert result.usage['test_costs'][selected.id]['list_cost_usd'] == .02

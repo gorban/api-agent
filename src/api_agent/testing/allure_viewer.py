@@ -225,6 +225,14 @@ class ManagedAllureViewer:
                     raise ValueError()
             except (TypeError, ValueError):
                 raise ViewerError('Invalid ALLURE_CLI; provide a command and quote arguments containing spaces') from None
+            if self.cli == 'allure':
+                from api_agent.runtime.mise_tools import ensure_tools
+                cancellation = threading.Event()
+                try:
+                    await offload(partial(ensure_tools, 'java', 'allure', timeout=self.timeout,
+                                          cancellation=cancellation), cancellation=cancellation)
+                except (OSError, TimeoutError) as exc:
+                    raise ViewerError('Unable to prepare Allure and Java') from exc
             executable = shutil.which(arguments[0])
             if executable is None:
                 raise ViewerError('Allure 2 CLI command is missing from PATH; configure ALLURE_CLI or install with brew install allure; see https://allurereport.org/docs/v2/install/')

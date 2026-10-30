@@ -306,7 +306,7 @@ def test_debug_run_captures_one_registry_across_repository_suites(tmp_path, monk
     else:
         assert result.exit_code == 1 and result.tests[-1].status == 'error'
         assert len(errors) == 2 - expected_workers
-        assert all(error == 'Password manager declarations changed after launch; restart through launch.py.'
+        assert all(error == 'Password manager declarations changed after launch; restart through launch.sh.'
                    for error in errors)
         assert 'declarations changed after launch' in result.tests[-1].traceback
 

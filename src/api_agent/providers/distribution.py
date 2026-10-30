@@ -85,7 +85,7 @@ def read_provider_manifest(root: Path, *, owner: str) -> ProviderDependencyManif
 
 def selected_manifests(values, *, owner_root: Path, active_kinds, groups_by_kind=None):
     """Resolve only execution-active provider locations to inert manifests."""
-    from api_agent.providers.loading import provider_location
+    from api_agent.providers.loading import provider_location, provider_owner_root
 
     unknown = set(active_kinds) - PROVIDER_SELECTORS.keys()
     if unknown:
@@ -95,7 +95,8 @@ def selected_manifests(values, *, owner_root: Path, active_kinds, groups_by_kind
     for kind, field in PROVIDER_SELECTORS.items():
         if kind not in active_kinds or not values.get(field):
             continue
-        path, _ = provider_location(values[field], owner_root=owner_root)
+        selection_owner = provider_owner_root(kind, values, owner_root)
+        path, _ = provider_location(values[field], owner_root=selection_owner)
         manifest = selected.get(path.parent)
         if manifest is None:
             manifest = read_provider_manifest(path.parent, owner=str(path.parent))

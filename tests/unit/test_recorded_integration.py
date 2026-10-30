@@ -523,3 +523,53 @@ def test_profile_recording_freezes_distinct_configurations_and_reuses_identical_
     assert [row['compatibility']['LLM_DEFAULT_MODEL'] for row in accounting['tests']] == [
         'first-model', 'first-model', 'second-model']
     assert config['LLM_DEFAULT_MODEL'] == 'application-model'
+
+
+@pytest.mark.parametrize('sidecar_failure', [False, True])
+def test_real_worker_scoped_journal_loss_reaches_recorded_visit(tmp_path, monkeypatch, sidecar_failure):
+    if sidecar_failure:
+        import sqlite3
+        from api_agent.testing import inference_content
+        def fail_read(*args):
+            raise sqlite3.DatabaseError('synthetic sidecar failure')
+        monkeypatch.setattr(inference_content, 'read_evidence', fail_read)
+    from api_agent.testing.collection import collect_tests
+    context, _, config = fixture(tmp_path)
+    suite = context.owner_root / 'tests/integration'
+    suite.mkdir(parents=True)
+    context.suite_paths = lambda mode: (suite,)
+    (suite / 'test_loss.py').write_text('''from types import SimpleNamespace
+from uuid import uuid4
+from api_agent.workflows.journal import WorkflowJournal
+from api_agent.workflows.attribution import bind_workflow_visit
+from api_agent.workflows.inference_capture import capture_rows
+from api_agent.workflows.evidence import publish
+
+def test_loss():
+    node = SimpleNamespace(id="Make", kind="node", parent=None)
+    definition = SimpleNamespace(graph_id="Example", definition_id="b" * 64, entry_root="base",
+        layout=SimpleNamespace(steps=[node], tables={"Edges": []}), resources=[], replacements=[])
+    journal = WorkflowJournal(definition, log_content=False)
+    graph, visit, call = (str(uuid4()) for _ in range(3))
+    root = dict(scope_id=graph, kind="graph", owner="GRAPH", parent_id=None, started_ms=1)
+    leaf = dict(scope_id=visit, kind="node", owner="Make", parent_id=graph, started_ms=2)
+    journal.observe(dict(event="scope_start", **root))
+    journal.observe(dict(event="edge", source="START", target="Make", owner="GRAPH", implicit=True))
+    journal.observe(dict(event="scope_start", **leaf))
+    class Broken:
+        invocation_id = journal.invocation_id
+        def capture_json(self, **kwargs): raise ValueError("unavailable")
+    with bind_workflow_visit(Broken(), visit):
+        capture_rows([dict(phase="request", content={})], call)
+    journal.observe(dict(event="scope_end", stopped_ms=3, outcome="passed", **leaf))
+    journal.observe(dict(event="edge", source="Make", target="END", owner="GRAPH", implicit=True))
+    journal.observe(dict(event="scope_end", stopped_ms=4, outcome="passed", **root))
+    publish(journal.finalize())
+''')
+    selected, = collect_tests(context, 'integration', config=config)
+    result = recorded.run_recorded_integration(context, [selected], config, accepted=True, storage=Storage())
+    assert result.execution.exit_code == 0
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    graph = row['steps'][0]
+    assert any(a['name'] == 'Incomplete workflow LLM evidence' for a in graph['attachments'])
+    assert any(a['name'] == 'Incomplete workflow LLM evidence' for a in graph['steps'][0]['attachments'])

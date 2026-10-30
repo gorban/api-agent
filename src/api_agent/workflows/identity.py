@@ -107,7 +107,7 @@ class _Snapshot:
                                     (d.selected_declarations or {}).items()},
                       fragments=dict(d.declaration_fragments or {}),
                       replacements=[[r.target_id, r.root_id, Path(r.entry).as_posix()] for r in d.replacements],
-                      tools=[[t.scope, t.port, self.logical(t.instance), t.scope_kind]
+                      tools=[[t.scope, t.port, self.logical(t.instance), t.scope_kind, list(t.operations)]
                              for t in d.tool_usages])
         if v2:
             # Linked pass labels contain presentation syntax; the admitted key

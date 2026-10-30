@@ -35,7 +35,7 @@ default = 5
 validation = "positive"
 enum = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 cost_affecting = true
-help = "Maximum physical inference attempts (1 through 20). Retrying HTTP 429 or 5xx can incur additional charges."
+help = "Maximum physical inference attempts (1 through 20), including the first. HTTP 429/5xx and classified transient network failures retry with bounded jittered backoff. Retrying a possibly executed request can incur additional or unknown charges."
 
 [fields.LLM_ALLOWED_MODELS]
 type = "str"
@@ -93,17 +93,17 @@ TRACE_MODE = "OTEL"
 [fields.LOG_CONTENT]
 type = "bool"
 default = false
-help = "Default False withholds prompts, responses and tool content from logs, local diagnostics and Allure details/screenshots. True permits scrubbed content only in those destinations. TRACELOOP_TRACE_CONTENT independently controls OTEL and LangFuse trace payloads. Credentials are always redacted."
+help = "Default False withholds prompts, responses, provider-returned plaintext reasoning and tool content from logs, local diagnostics and Allure details/screenshots. True permits scrubbed content in those destinations. TRACELOOP_TRACE_CONTENT independently controls trace payloads. Credentials, encrypted reasoning and internal state remain excluded."
 
 [fields.TRACELOOP_TRACE_CONTENT]
 type = "bool"
 default = false
-help = "Default False withholds trace payload content. Explicit True permits scrubbed user-visible content in both OTEL and LangFuse spans. Does not enable logs, local diagnostics or Allure content; LOG_CONTENT controls those destinations. Credentials are always redacted."
+help = "Default False withholds trace payload content. Explicit True permits scrubbed content, including provider-returned plaintext reasoning, in OTEL and LangFuse spans. Does not enable logs, local diagnostics or Allure content; LOG_CONTENT controls those destinations. Credentials, encrypted reasoning and internal state remain excluded."
 
 [fields.RUN_LOG_FULL_CONTENT]
 type = "bool"
 default = false
-help = "Show full permitted local diagnostic input/output within admitted payload limits instead of truncated previews. Default False. Requires LOG_CONTENT=True; credentials, authentication state and hidden reasoning are always excluded. Does not change trace content or the TUI display retention."
+help = "Show full permitted local diagnostic input/output within admitted payload limits instead of truncated previews. Default False. Requires LOG_CONTENT=True; credentials, encrypted reasoning and internal state remain excluded. Does not change trace content or the TUI display retention."
 
 [fields.LANGFUSE_ADMIN_EMAIL]
 type = "str"

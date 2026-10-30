@@ -130,7 +130,8 @@ def test_cached_session_token_registered_without_password_lookup(tmp_path, monke
     from api_agent.testing.provider_setup import IntegrationLLM
     session = AsyncMock(return_value=auth)
     implementation = SimpleNamespace(capabilities=ProviderCapabilities(kind='llm', operations=('complete',)),
-        asetup=AsyncMock(return_value=session), acomplete=AsyncMock(return_value=RESULT))
+        asetup=AsyncMock(return_value=session), acomplete=AsyncMock(return_value=RESULT),
+        credential_protection_version=1, bind_credential_authority=Mock(return_value=None))
     loaded = SimpleNamespace(implementation=implementation, aclose=AsyncMock())
     monkeypatch.setattr('api_agent.testing.provider_setup.aload_provider', AsyncMock(return_value=loaded))
     provider = IntegrationLLM({'LOG_CONTENT': True, 'LLM_PROVIDER': 'synthetic',
@@ -138,6 +139,7 @@ def test_cached_session_token_registered_without_password_lookup(tmp_path, monke
     request = LLMRequest('gpt-example', CompletionRequest((Message('user', (TextContent('cached-server-token'),)),)))
     try:
         assert provider.complete(request) == RESULT
+        implementation.bind_credential_authority.assert_called_with(provider.emissions)
         rows = export_content(provider.emissions, request, RESULT)
         assert rows[0]['content']['messages'][0]['text'] == ('[REDACTED]' if auth == 'cached-server-token' else 'cached-server-token')
         implementation.acomplete.assert_awaited_once_with(request, auth=auth)
@@ -206,7 +208,12 @@ def test_parent_recording_scrubs_before_callbacks_and_keeps_usage_without_conten
         assert 'parent-only-secret' not in content_events[0].text
         assert '[REDACTED] /var/app/source.py' in content_events[0].text
     outcome = json.loads(next(result.directory.glob('*-result.json')).read_text())
-    assert len(outcome['attachments']) == 3 + 2 * int(enabled and policy is None)
+    assert len(outcome['attachments']) == 5
+    if not (enabled and policy is None):
+        diagnostic = next(row for row in outcome['attachments'] if 'LLM request diagnostics' in row['name'])
+        notice = json.loads((result.directory / diagnostic['source']).read_text())
+        assert 'LOG_CONTENT=True' in notice['content_notice']
+        assert '/var/app/source.py' not in json.dumps(notice)
     if content_events:
         assert any(row['name'] == 'Payload index' for row in outcome['attachments'])
         assert any(row['name'].startswith('Unattached LLM request') for row in outcome['attachments'])

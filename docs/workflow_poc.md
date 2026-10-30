@@ -4,19 +4,28 @@ The runtime loads versioned nested declarations from a selected `flow.md.html`,
 captures their resources, and compiles registered LangGraph execution. The
 [declaration grammar](prds/implementation_plan_b1b2.md) defines the inert source
 format and resource bounds. The root example is a single chat component with one LLM call;
-the permanent synthetic qualification fixture remains separate under
+the permanent synthetic coverage fixture remains separate under
 `demo/contrived/`. Layout v1 remains for focused compatibility units. Each of two components owns
-its producer, format check, guard and two-pass budget. The model selects the
-first route and readiness; deterministic code never manufactures those choices.
+its producer, format check, guard and configurable pass budget. Fresh UUIDs
+determine the coverage cases supplied to the real model; the test validates its
+structured responses and executes the declared routes and retries.
 The selected bundled pack uses the separate [verified API demonstration](api_demo.md).
 
 Requirements and acceptance gates are in
 [the B2 hierarchy](prds/implementation_plan_b2.md).
 
 Open root `flow.md.html` directly for its saved static declaration/diagram, or
-use `./launch.py --view-flow` for checked managed viewing. See
+use `./launch.sh --view-flow "flow.md.html"` for its checked managed view.
+Omitting the path instead opens the selected application's flow. See
 [diagram maintenance and inspection](workflow_viewer.md) for markup-based
 freshness, explicit generation and pre-commit checks.
+
+Native nodes share an invocation-local service dictionary. Assigning a service
+key affects later nodes in that invocation, but does not mutate the caller's
+constructor dictionary or another invocation. To return additional runtime data
+to the caller, use an explicitly owned mutable result carrier, as the bundled
+application does with `result_store`. Give concurrent operations separate result
+carriers; nested service objects are borrowed, not deep-copied.
 
 ## Local verification
 
@@ -46,7 +55,7 @@ repository and may incur provider usage.
 
 ## Deterministic workflow coverage
 
-For standalone use, start `python launch.py --tui-mode integration` from this
+For standalone use, start `./launch.sh --tui-mode integration` from this
 checkout. Its bundled `demo/` is selected automatically; save personal settings
 in the ignored repository-root `.env`. For managed local report storage, add
 `--allure-s3-use-localstack=True`, or save that same setting through Review
@@ -60,7 +69,7 @@ once its requirements are valid. Manual Review and Review after Clear .env use
 `c Close / menu` to return to the main menu.
 
 An external resource pack may instead own personal configuration and reports:
-start `python launch.py --resource-pack-dir <external-pack>`. In either case,
+start `./launch.sh --resource-pack-dir <external-pack>`. In either case,
 select the integration test identifiers below and use Continue only after the
 gates above pass. These tests explicitly load the permanent contrived fixture,
 independently of the selected pack's main workflow. Normal coverage requires no

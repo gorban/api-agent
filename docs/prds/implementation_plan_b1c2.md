@@ -36,3 +36,7 @@ Complete the [mixed-model pricing and quota qualification](implementation_plan_f
 - [ ] Reuse the declaration-derived flow.md.html view for exact recorded attempts: an authorized run/test/attempt selector may load immutable execution overlays, while an unscoped view remains static. Keep scope identifiers distinct from authorization and prohibit arbitrary file/URL fetching. Show turn/visit/retry-specific paths and details from the saved artifact, never current mutable graph state; legacy or missing trace data stays explicitly partial.
 
 - [ ] Reuse the shared static diagram interaction and the tested managed HTTP decoration seam for scoped run overlays. Inject observations only into the served presentation: visited/recovered/error states, turn/visit/retry-specific permitted inputs/outputs, timing, tokens and estimated costs come from the versioned evidence projection. Preserve static-file behavior without run data; `LOG_CONTENT` other than True shows content-withheld reasons, while True still requires credential scrubbing. Keep overlay selectors, authorization, source identity and completeness independently validated.
+
+## Executed setting overlays
+
+- [ ] Show [captured execution-time settings](implementation_plan_b1c1b.md) alongside the selected invocation/scope's input/output details, including configured and parent-limited timeout budgets and effective max passes. Historical values come only from that attempt's admitted evidence; missing or withheld values stay explicit rather than using current defaults.

@@ -19,6 +19,8 @@ class Auth:
     async def aclose(self): pass
 class Adapter:
     version = 1
+    credential_protection_version = 1
+    def bind_credential_authority(self, authority): self.authority = authority
     async def asetup(self, **kwargs): return Auth()
     async def adescribe(self, *, auth): return (AvailableSelection(MODEL),)
     async def acomplete(self, request, *, auth):

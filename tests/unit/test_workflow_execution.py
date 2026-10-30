@@ -12,6 +12,42 @@ from api_agent.workflows.sampling import lower_probability, calibration, cover
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_recorded_v2_workflow_uses_unstaged_identity_that_matches_later_commit(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+    from api_agent.workflows import evidence
+    from api_agent.workflows.provenance import verified_documents
+    shutil.copytree(ROOT / 'demo/contrived', tmp_path / 'demo/contrived')
+    shutil.copytree(ROOT / 'demo/cfg', tmp_path / 'demo/cfg')
+    def git(*args):
+        subprocess.run(('git', '-C', str(tmp_path), *args), check=True, capture_output=True)
+    git('init', '-q')
+    git('config', 'user.name', 'Example')
+    git('config', 'user.email', 'example@example.invalid')
+    git('add', '.')
+    git('commit', '-qm', 'initial workflow')
+    entry = tmp_path / 'demo/contrived/flow.md.html'
+    entry.write_text(entry.read_text().replace('| contrived_qualification |', '| changed_qualification |'))
+    async def complete(request):
+        tail = json.loads(request.payload.messages[-1].content[0].text)
+        return LLMResult(Message('assistant', (TextContent(json.dumps(dict(
+            original_input='hello', route=tail['decisions']['route'],
+            ready=tail['decisions']['ready'], final_output='hello'))),)))
+    records = []
+    monkeypatch.setattr(evidence, 'publish', records.append)
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
+    workflow = build(tmp_path, llm=complete, selection='example', trial=trial_uuid('skip'))
+    asyncio.run(workflow.arun({'user_input': 'hello'}))
+    recorded = records[-1]
+    assert recorded['source_manifest']['owners'][0]['state'] == 'working_tree'
+    assert recorded['source_manifest']['owners'][0]['commit'] is None
+    git('add', '.')
+    git('commit', '-qm', 'update workflow')
+    committed = build(tmp_path, llm=complete, selection='example', trial=trial_uuid('skip')).definition
+    assert recorded['projection']['definition_id'] == committed.definition_id
+    assert recorded['source_manifest']['documents'] == verified_documents(committed)['documents']
+
+
 @pytest.mark.parametrize('route', ['skip', 'next_a', 'next_b'])
 @pytest.mark.parametrize('retry_first,retry_second', [(False,False),(True,False),(False,True),(True,True)])
 def test_compiled_langgraph_preserves_input_and_independent_pass_budgets(route, retry_first, retry_second):

@@ -131,6 +131,7 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
     from api_agent.providers.cache_policy import configured_request
     native=[];closed=[];properties=[]
     class Provider:
+        config = {}
         def describe(self):return (AvailableSelection(c.MODEL,family='synthetic',version='1',features=('reasoning_effort','max_output_tokens'),reasoning_efforts=('low','high'),max_output_tokens=advertised),)
         def complete(self,request):
             request = configured_request(request, None, reasoning_effort='medium')
@@ -187,6 +188,7 @@ def test_original_fixture_partial_error_usage_survives_http_failure(tmp_path,mon
             requests.append(request)
             raise ProviderAccessError('unavailable','Controlled partial failure',usage=Usage(2,100,reasoning_tokens=43))
     class Provider:
+        config = {}
         def describe(self):return (AvailableSelection(c.MODEL,family='synthetic',version='1',features=('reasoning_effort',),reasoning_efforts=('low','high')),)
         def complete(self,request):
             owner=Owned({'LOG_CONTENT':False},tmp_path,password_manager_registry={},skip_unavailable=False)
@@ -203,6 +205,27 @@ def test_original_fixture_partial_error_usage_survives_http_failure(tmp_path,mon
     events=json.loads(properties[0][1]);assert len([row for row in events if row['event']=='call'])==6
 
 
+@pytest.mark.parametrize('body, category', [
+    ({'code': 'network', 'message': 'synthetic private details'}, 'network'),
+    ({'code': 'private-secret', 'message': 'synthetic private details'}, 'unknown'),
+    ({'code': []}, 'unknown'), ([], 'unknown'), ('not JSON', 'unknown'),
+])
+def test_reasoning_http_failure_retains_category_not_response_content(body, category):
+    sent = []
+    def reply(request):
+        sent.append(request)
+        return httpx.Response(502, text=body) if type(body) is str else httpx.Response(502, json=body)
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+            await c.run_pairs(client, 'http://127.0.0.1:1', 'nonce')
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        asyncio.run(scenario())
+    assert f'failed: {category} (HTTP 502, pair=1, effort=low)' in str(caught.value)
+    assert 'unknown charges' in str(caught.value)
+    assert 'private' not in str(caught.value)
+    assert len(sent) == 6  # No replacement pairs or fixture-level retries.
+
+
 def test_remote_fixture_prerequisite_cannot_silently_skip_http_comparison(monkeypatch):
     from api_agent.testing.provider_setup import RemoteIntegrationLLM
     from api_agent.providers.contracts import SetupPrerequisiteError
@@ -211,7 +234,8 @@ def test_remote_fixture_prerequisite_cannot_silently_skip_http_comparison(monkey
         requests.append('describe')
         raise SetupPrerequisiteError('Controlled prerequisite unavailable')
     from api_agent.providers import setup_transport
-    monkeypatch.setattr(setup_transport, 'SetupClient', lambda *a,**kw: SimpleNamespace(describe=unavailable,close=lambda:None))
+    monkeypatch.setattr(setup_transport, 'SetupClient', lambda *a,**kw: SimpleNamespace(describe=unavailable,close=lambda:None,
+        _descriptor={'capability': 'synthetic', 'host': 'localhost', 'port': 1}))
     remote=RemoteIntegrationLLM({})
     module=integration_module()
     try:
@@ -362,7 +386,7 @@ def test_run_pairs_rejects_cap_reaching_completed_without_replacements():
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
             return await c.run_pairs(client,'http://127.0.0.1:1','nonce',max_output_tokens=4096,emit=events.append)
-    with pytest.raises(ValueError, match='invalid measurement'):
+    with pytest.raises(ValueError, match='invalid measurement: output_budget_reached'):
         asyncio.run(run())
     observed = [row for row in events if row['event'] == 'call']
     assert len(calls) == len(observed) == 6
@@ -397,8 +421,12 @@ def test_run_pairs_rejects_empty_or_whitespace_text_without_exporting_content(te
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
             return await c.run_pairs(client,'http://127.0.0.1:1','nonce',max_output_tokens=maximum,emit=events.append)
-    with pytest.raises(ValueError, match='invalid measurement'):
+    with pytest.raises(ValueError, match='invalid measurement: visible_answer_missing') as caught:
         asyncio.run(run())
+    assert 'pair=1, effort=low, status=completed' in str(caught.value)
+    assert 'output_tokens=' in str(caught.value)
+    assert 'reasoning_tokens=' in str(caught.value)
+    assert f'max_output_tokens={maximum}' in str(caught.value)
     observed = [row for row in events if row['event'] == 'call']
     assert len(calls) == len(observed) == 6
     assert all(row['status'] == 'completed' and row['response_text_present'] is False for row in observed)
@@ -439,7 +467,7 @@ def test_real_bedrock_catalog_and_native_encoder_preserve_16000_through_applicat
         count={'low':100,'medium':175}[body['reasoning']['effort']]
         return LLMResult(Message('assistant',(TextContent('synthetic reply'),)),
             Usage(input_tokens=1,output_tokens=200,reasoning_tokens=count),actual_model=model)
-    provider=SimpleNamespace(describe=lambda:(selection(model,'responses'),), complete=complete)
+    provider=SimpleNamespace(describe=lambda:(selection(model,'responses'),), complete=complete, config={})
     module.test_reasoning_contrast((model,('low','medium'),16000,300),
         SimpleNamespace(getfixturevalue=lambda name:provider),lambda name,value:properties.append((name,value)))
     assert budgets == [300]
@@ -483,3 +511,31 @@ def test_reasoning_shorter_parent_deadline_is_preserved():
                     await c.run_pairs(client,'http://127.0.0.1:1','nonce',timeout_seconds=300)
     asyncio.run(run())
     assert len(requests) == 6
+
+
+@pytest.mark.parametrize('edit, category', [
+    ({'status': 'length'}, 'response_not_completed'),
+    ({'reasoning_tokens': None}, 'reasoning_tokens_unavailable_or_invalid'),
+    ({'reasoning_tokens': True}, 'reasoning_tokens_unavailable_or_invalid'),
+    ({'reasoning_tokens': -1}, 'reasoning_tokens_unavailable_or_invalid'),
+    ({'requested_model': 'different'}, 'model_identity_mismatch'),
+    ({'actual_model': 'different'}, 'model_identity_mismatch'),
+    ({'response_text_present': False}, 'visible_answer_missing'),
+    ({'max_output_tokens': True}, 'invalid_output_budget'),
+    ({'max_output_tokens': 0}, 'invalid_output_budget'),
+    ({'usage': None}, 'output_tokens_unavailable_or_invalid'),
+    ({'usage': {'output_tokens': None}}, 'output_tokens_unavailable_or_invalid'),
+    ({'usage': {'output_tokens': True}}, 'output_tokens_unavailable_or_invalid'),
+    ({'usage': {'output_tokens': -1}}, 'output_tokens_unavailable_or_invalid'),
+    ({'usage': {'output_tokens': 16000}}, 'output_budget_reached'),
+    ({'usage': {'output_tokens': 16001}}, 'output_budget_reached'),
+    ({}, None),
+    ({'max_output_tokens': None}, None),
+])
+def test_measurement_diagnostic_distinguishes_empty_answers_from_usage_and_caps(edit, category):
+    row = dict(status='completed', reasoning_tokens=502, requested_model=c.MODEL,
+               response_text_present=True, max_output_tokens=16000,
+               usage={'output_tokens': 505})
+    row.update(edit)
+    assert c.measurement_failure(row) == category
+    assert c.valid_call(row) is (category is None)

@@ -72,6 +72,20 @@ their own containing-document-relative links.
 
 ## Provider-owned adaptation
 
+- [x] Prompted JSON instructions explicitly require the complete JSON value in
+  the final answer, including when reasoning is enabled. Do not promote reasoning
+  into answer content. An empty completed answer remains a terminal, locally
+  identified validation error with preserved usage/evidence, not a network retry.
+  Preserve selected routes, schemas and declared fallback restrictions.
+
+  Earlier final-answer verification passed 889 tests with exact scoped coverage,
+  causal mutations and external review. A controlled reasoning-only response
+  retains empty-answer rejection, usage and IPC evidence. A no-tool Studio
+  request completes through planner, native reviewer and renderer with approved
+  session-only route overrides; broader live acceptance stays open. The observed
+  fenced planner answer motivates the separately authorized
+  [bounded prompted-JSON envelope decoding](implementation_plan_f1a1a.md).
+
 - [x] Resolve support for the actual provider, selected family/version, API,
   endpoint/profile, schema features and reasoning/tool combination. Reasoning
   support and structured-output support are independent. Provider-wide feature
@@ -118,8 +132,7 @@ their own containing-document-relative links.
   for changed request semantics, requires its separately recorded authorization.
 - [x] Complete current packaged/relocated artifact verification and final delivery
   review; source review alone does not close these gates.
-- [ ] Human-review declaration readability and native versus permitted fallback
-  evidence. Human acceptance remains unrecorded until explicitly reviewed.
+- [x] Human accepts the delivered structured-output declarations, readability, policy and native/permitted-fallback evidence, including supported-provider success versus unsupported-route failures. This records approval without inventing additional manual observations. Capability discovery and automatic preflight remain separate future work.
 
 ## Included-call migration audit
 
@@ -157,3 +170,7 @@ not establish access or feature support for an unverified deployment.
   [model page](https://openrouter.ai/openai/gpt-6-luna/) and
   [structured-output routing documentation](https://openrouter.ai/docs/guides/features/structured-outputs)
   are the public contract basis.
+
+## Future capability discovery
+
+- [ ] Complete [provider capability discovery and fallback](implementation_plan_f1a2.md), including configurable caching, optional preflight probes and safe fallback after a confirmed pre-inference rejection.

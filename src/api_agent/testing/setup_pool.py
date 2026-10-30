@@ -8,6 +8,7 @@ from .suite_lock import retain_suite_cleanup
 class SetupPool:
     def __init__(self, profiles, owner_root, **services):
         self.profiles = deepcopy(profiles)
+        self.config_fields = deepcopy(services.pop('config_fields', None))
         self.owner_root, self.services = owner_root, services
         self.owners = []
 
@@ -17,7 +18,10 @@ class SetupPool:
             key = json.dumps(row['config'], sort_keys=True, default=str, allow_nan=False)
             if key not in shared:
                 from .setup_backend import SetupBackend
-                owner = SetupBackend(row['config'], self.owner_root, **self.services)
+                from .workflow_capture import capture_sources
+                sources = capture_sources(row['config'], self.config_fields)
+                owner = SetupBackend(row['config'], self.owner_root, **self.services,
+                                     **({'capture_sources': sources} if sources else {}))
                 self.owners.append(owner)
                 retain_suite_cleanup(owner)
                 shared[key] = owner.start()

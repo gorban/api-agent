@@ -175,12 +175,7 @@ def apply_frozen_steps(steps, test_id, scope_facts):
                     | set(getattr(scope_facts, 'unknown', {}).get((test_id, scope_id), ())))]
         all_calls = list(dict([*own, *descendants, *unknown]).items())
         parameters[:] = [item for item in parameters
-                         if not item.get('name', '').startswith(('inclusive_', 'call '))]
-        if own and scope_id is not None:
-            for call_id, facts in own:
-                for name, value in facts.items():
-                    parameters.append(dict(name='frozen_call_' + call_id + '_' + name,
-                                           value='unknown' if value is None else str(value)))
+                         if not item.get('name', '').startswith(('inclusive_', 'call ', 'frozen_call_'))]
         if all_calls:
             for name in ('input_tokens', 'output_tokens', 'cached_input_tokens',
                          'cache_write_tokens', 'reasoning_tokens', 'list_cost_usd',

@@ -22,7 +22,7 @@ _GUIDANCE = ('Install Node.js 24 or newer and npm using your operating system or
 def source_root():
     """Only the executing source tree owns preparation, never the caller's roots."""
     root = Path(__file__).resolve().parents[3]
-    required = ('launch.py', 'pyproject.toml', 'package.json', 'package-lock.json',
+    required = ('launch.sh', 'pyproject.toml', 'package.json', 'package-lock.json',
                 'tools/prepare_frontend_assets.mjs', 'tools/frontend-assets.json')
     source = root / 'src/api_agent/runtime/frontend.py'
     return root if Path(__file__).resolve() == source and all((root / name).is_file() for name in required) else None
@@ -114,6 +114,8 @@ def ensure_source_frontend(*, cancellation=None, timeout=300):
         return
     import fcntl
     with report_timeout_sync('Source frontend preparation', timeout) as budget:
+        from api_agent.runtime.mise_tools import ensure_tools
+        ensure_tools('node', 'npm', timeout=budget.remaining, cancellation=cancellation)
         node = shutil.which('node')
         if node is None:
             raise OSError(_GUIDANCE)

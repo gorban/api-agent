@@ -102,7 +102,18 @@ def test_parsed_useful_demo_captures_nodes_and_actual_llm_messages_without_custo
         assert len(requests) == 3
         assert 'registered-sensitive-value' in requests[0].payload.messages[-1].content[0].text
         captures = [row for row in rows if row['event'] == 'capture']
-        assert len(captures) == 14  # Four node pairs plus three actual provider pairs.
+        tool_phases = [row for row in captures if row.get('tool_invocation_id')]
+        assert len(captures) == 16  # Four node pairs, three provider pairs, one actual tool pair.
+        assert len([row for row in captures if not row.get('tool_invocation_id')]) == 14
+        assert [row['direction'] for row in tool_phases] == ['input', 'output']
+        assert len({row['tool_invocation_id'] for row in tool_phases}) == 1
+        assert all(not any(field in row for field in ('cause_id', 'call_id', 'transport_attempt_id', 'usage'))
+            for row in tool_phases)
+        tool_events = [row for row in retained['events'] if row.get('tool_invocation_id')]
+        assert [row['event'] for row in tool_events] == ['tool_start', 'capture', 'capture', 'tool_end']
+        assert len({(row['visit_id'], row.get('attempt_id')) for row in tool_events}) == 1
+        assert all(row['visit_id'] in {visit['scope_id'] for visit in retained['events']
+            if visit['event'] == 'scope_start' and visit['kind'] == 'node'} for row in tool_events)
         pairs = [row for row in captures if 'cause_id' in row]
         assert len(pairs) == 6 and len({row['cause_id'] for row in pairs}) == 3
         assert all([row['direction'] for row in pairs if row['cause_id'] == cause] == ['input', 'output']
@@ -140,7 +151,9 @@ def test_failed_provider_capture_has_request_without_fabricated_response(failure
 
 
 @pytest.mark.parametrize('failure', [ValueError('diagnostic failure'), asyncio.CancelledError()])
-def test_capture_without_observation_authority_is_inert_and_callback_failures_preserve_inference(failure):
+def test_capture_without_observation_authority_is_inert_and_callback_failures_preserve_inference(failure, monkeypatch):
+    from api_agent.workflows import inference_capture
+    monkeypatch.setattr(inference_capture, '_report_capture_loss', lambda *args: None)
     capture_inference('input', {}, str(uuid4()))
     with bind_workflow_visit(object(), 'visit'):
         capture_inference('input', {}, str(uuid4()))

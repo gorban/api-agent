@@ -206,6 +206,10 @@ def committed_driver_root(tmp_path):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(body)
         copied.append(relative.as_posix())
+    from api_agent.workflows.viewer_repository import RepositoryIdentity, repository_config_bytes
+    identity = root / 'demo/cfg/workflow-view.toml'
+    identity.write_bytes(repository_config_bytes(RepositoryIdentity('//github.com/example/agent', 'demo')))
+    copied.append('demo/cfg/workflow-view.toml')
     git(root, 'init', '-q')
     git(root, 'config', 'user.name', 'Example')
     git(root, 'config', 'user.email', 'example@example.invalid')
@@ -462,24 +466,32 @@ def test_richer_legacy_retry_remains_explained_with_authoritative_first_attempt(
     assert not any(item['name'] == 'retry_observed' for item in component['steps'][0]['parameters'])
 
 
-def test_actual_driver_rejects_dirty_fixture_before_inference(committed_driver_root, monkeypatch):
-    from api_agent.workflows.layout import LayoutError
+def test_actual_driver_records_dirty_fixture_before_inference(committed_driver_root, monkeypatch, tmp_path):
     root = committed_driver_root
     source = Path(__file__).resolve().parents[2]
     node = root / 'demo/contrived/workflows/components/first.md.html'
     node.write_text(node.read_text() + '\n')
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
+    event_path = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(event_path))
     calls = []
 
     def complete(request):
         calls.append(request)
-        raise AssertionError('Inference reached a dirty workflow fixture')
+        decisions = json.loads(request.payload.messages[-1].content[0].text)['decisions']
+        response = dict(original_input=fixture_driver.USER_INPUT, route=decisions['route'],
+                        ready=decisions['ready'], final_output=fixture_driver.USER_INPUT)
+        return LLMResult(Message('assistant', (TextContent(json.dumps(response)),)), Usage(3, 1))
 
     config = {'LLM_PROVIDER': str(source / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory'}
-    with pytest.raises(LayoutError, match='differs from HEAD'):
-        fixture_driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', 1,
-                                 config, root=root, owner_root=root)
-    assert calls == []
+    fixture_driver.run_graph(SimpleNamespace(complete=complete), 'synthetic', 1,
+                             config, root=root, owner_root=root)
+    assert calls
+    rows = [json.loads(line)['data'] for line in event_path.read_text().splitlines()
+            if json.loads(line)['kind'] == 'workflow_evidence']
+    recorded = next(row for row in rows if 'source_manifest' in row)
+    assert recorded['source_manifest']['owners'][0]['state'] == 'working_tree'
+    assert recorded['source_manifest']['owners'][0]['commit'] is None
 
 
 @pytest.mark.parametrize('terminal', [False, True])
@@ -531,3 +543,35 @@ def test_recording_joins_untimed_transport_call_and_freezes_allure(tmp_path, ter
     assert calls[0]['status'] == ('failed' if terminal else 'broken')
     assert [step['status'] for step in calls[0]['steps']] == ['broken', 'failed' if terminal else 'passed']
     assert recorded.persisted
+
+
+@pytest.mark.parametrize('changed', [None, 'outcome', 'owner'])
+def test_legacy_untimed_parameter_identity_accepts_only_exact_current_leaf_enrichment(changed):
+    from api_agent.testing.recorded import _compatible_steps, _merge_step
+    from api_agent.testing.workflow_steps import scope_steps
+    from test_workflow_steps import visit_events
+    events = visit_events(trace(), call_outcome='completed', timed=False)
+    current = scope_steps(events)[0]
+    legacy = deepcopy(current)
+    legacy_node = next(item for item in flatten(legacy) if item['name'] == 'node Make')
+    call = legacy_node['steps'].pop()
+    legacy_node['parameters'].append(dict(name=call['name'] + ' outcome', value='completed'))
+    if changed == 'outcome':
+        legacy_node['parameters'][-1]['value'] = 'failed'
+    elif changed == 'owner':
+        legacy_node['parameters'][0]['value'] = str(uuid4())
+    if changed:
+        with pytest.raises(ValueError, match='Conflicting workflow scope projection'):
+            _compatible_steps(legacy, current)
+        return
+
+    _compatible_steps(legacy, current)
+    _compatible_steps(current, legacy)
+    _merge_step(legacy, current, prefer_incoming=True)
+
+    enriched_node = next(item for item in flatten(legacy) if item['name'] == 'node Make')
+    assert len(enriched_node['steps']) == 1
+    enriched = enriched_node['steps'][0]
+    assert enriched['name'] == call['name']
+    assert {'name': 'outcome', 'value': 'completed'} in enriched['parameters']
+    assert 'start' not in enriched and 'stop' not in enriched

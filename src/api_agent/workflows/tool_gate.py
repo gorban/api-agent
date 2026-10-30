@@ -22,7 +22,8 @@ class VerifiedCall:
 
 class ToolGate:
     """One operation per selected owner; grants are ordering markers, not security tokens."""
-    def __init__(self, owner, *, invocation_id: str, timeout: float = 30):
+    def __init__(self, owner, *, invocation_id: str, timeout: float = 30,
+                 tool_alias=None, tool_instance=None):
         if not isinstance(invocation_id, str) or not invocation_id or len(invocation_id) > 200:
             raise ToolGateError('Invalid invocation identity')
         if any(not callable(getattr(owner, name, None))
@@ -33,6 +34,7 @@ class ToolGate:
         self._spec = None
         self._grants = set()
         self._used = False
+        self.tool_alias, self.tool_instance = tool_alias, tool_instance
 
     async def describe(self) -> ToolSpec:
         async with component_timeout('Tool preparation', self.timeout):
@@ -43,6 +45,14 @@ class ToolGate:
                     raise ToolGateError('Tool owner returned invalid specification')
                 self._spec = spec
             return spec
+
+    async def _for_call(self):
+        """Borrow this view/specification for an independently single-use call."""
+        spec = await self.describe()
+        gate = ToolGate(self.owner, invocation_id=self.invocation_id, timeout=self.timeout,
+                        tool_alias=self.tool_alias, tool_instance=self.tool_instance)
+        gate._spec = spec
+        return gate
 
     async def prepare(self, arguments: dict) -> PreparedCall:
         async with component_timeout('Tool preparation', self.timeout):
@@ -81,7 +91,7 @@ class ToolGate:
             self._grants.add(prepared.digest)
             return grant
 
-    async def execute(self, verified: VerifiedCall) -> ToolResult:
+    async def execute(self, verified: VerifiedCall, *, _tool_alias=None) -> ToolResult:
         if not isinstance(verified, VerifiedCall) or verified.gate_id != self._id:
             raise ToolGateError('Tool verification is missing')
         prepared = verified.prepared
@@ -89,10 +99,60 @@ class ToolGate:
         if prepared.digest not in self._grants or self._used:
             raise ToolGateError('Tool verification is stale or already used')
         self._used = True
-        async with component_timeout('Tool execution', self.timeout):
-            result = await self.owner.invoke(prepared)
-            if not isinstance(result, ToolResult):
-                raise ToolGateError('Tool owner returned invalid result')
-            if result.status != 'failure' and not await async_isolated_valid_schema(self._spec.output_schema, result.data):
-                raise ToolGateError('Tool result does not match the selected schema')
-            return result
+        # Preserve the selected ToolSpec identity for owners, but never dispatch
+        # caller-owned mutable arguments after asynchronous evidence admission.
+        import asyncio
+        import json
+        arguments = json.loads(canonical(prepared.arguments, MAX_ARGUMENT_BYTES))
+        dispatch = PreparedCall(prepared.spec, arguments, prepared.invocation_id, prepared.digest)
+        from .tool_observations import ToolObservation, tool_payload_schema
+        observation = ToolObservation(prepared.spec, alias=_tool_alias or self.tool_alias, instance=self.tool_instance)
+        request_schema = {'type': 'object', 'properties': {
+            'tool_name': {'type': 'string'}, 'tool_instance': {'type': ['string', 'null']},
+            'arguments': tool_payload_schema(prepared.spec.input_schema, 'arguments')}, 'additionalProperties': False}
+        def before_dispatch():
+            # Run after credential enrollment and projection, while the same
+            # lease still protects atomic tool-start/input retention.
+            self._check(prepared)
+            self._check(dispatch)
+            if prepared.digest not in self._grants:
+                raise ToolGateError('Tool verification is stale or already used')
+        await observation.capture('input', {'tool_name': observation.alias,
+            'tool_instance': observation.instance, 'arguments': arguments}, request_schema,
+            before_dispatch=before_dispatch)
+        outcome = 'failure'
+        try:
+            async with component_timeout('Tool execution', self.timeout):
+                result = await self.owner.invoke(dispatch)
+                if not isinstance(result, ToolResult):
+                    raise ToolGateError('Tool owner returned invalid result')
+                if result.status != 'failure' and not await async_isolated_valid_schema(self._spec.output_schema, result.data):
+                    raise ToolGateError('Tool result does not match the selected schema')
+            outcome = result.status
+        except BaseException as error:
+            import asyncio
+            outcome = 'cancelled' if isinstance(error, asyncio.CancelledError) else 'failure'
+            try:
+                await observation.capture('output', {}, {'type': 'object'}, unavailable=True)
+            except BaseException:
+                observation.loss()
+            observation.end(outcome)
+            raise
+        try:
+            response_schema = {'type': 'object', 'properties': {
+                'status': {'type': 'string'},
+                'data': {} if result.status == 'failure' else tool_payload_schema(self._spec.output_schema, 'data'),
+                'errors': {'type': 'array', 'items': {}},
+                'diagnostic': {'type': ['string', 'null']}},
+                'additionalProperties': False}
+            await observation.capture('output',
+                {'status': result.status, 'data': result.data, 'errors': list(result.errors),
+                 'diagnostic': result.diagnostic}, response_schema)
+        except asyncio.CancelledError:
+            observation.loss()
+            observation.end('cancelled')
+            raise
+        except Exception:
+            observation.loss()
+        observation.end(outcome)
+        return result

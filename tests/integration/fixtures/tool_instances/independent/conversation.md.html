@@ -44,7 +44,11 @@
 
 ## Tools
 
-| Port | Instance |
-| --- | --- |
-| primary | [primary](../primary.toml) |
-| secondary | [secondary](../independent_secondary.toml) |
+| Port | Instance | Operations |
+| --- | --- | --- |
+| primary | [primary](../primary.toml) | describe, prepare, verify, execute |
+| secondary | [secondary](../independent_secondary.toml) | describe, prepare, verify, execute |
+
+## Notes
+
+The `conversation` node uses the native `converse` orchestration function. It performs inference and invokes the declared named tool ports; `converse` is not an API tool. Each port is bound to its linked tool instance for this node. The function exposes `primary_read` through port `primary` and `secondary_read` through port `secondary`; these tool aliases are separate from the `converse` orchestration function.

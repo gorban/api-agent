@@ -22,11 +22,14 @@ def slow_provider(monkeypatch):
 
     class Auth:
         async def __call__(self):
+            await loaded.implementation.authority.aregister_secret('synthetic-session')
             return 'synthetic-session'
         async def aclose(self):
             calls.append('auth closed')
 
     class Adapter:
+        credential_protection_version = 1
+        def bind_credential_authority(self, authority): self.authority = authority
         capabilities = ProviderCapabilities(kind='llm')
         async def asetup(self, **kwargs):
             calls.append('setup')

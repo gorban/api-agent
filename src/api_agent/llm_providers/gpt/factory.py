@@ -19,10 +19,27 @@ from .endpoint import validate_base_url
 class OwnedSubscriptionSession(SubscriptionSession):
     """Own refresh transport on the same loop as the subscription session."""
 
-    def __init__(self, store, profile, *, reconnect=None):
+    def __init__(self, store, profile, *, reconnect=None, register_connection=None, register_connection_secret=None):
         self.client = None
         self.reconnect = reconnect
-        super().__init__(store, profile, self._refresh)
+        self.register_connection_secret = register_connection_secret
+        self._pending_refresh = {}
+        super().__init__(store, profile, self._refresh, register_connection=register_connection,
+                         on_saved=lambda _: self._pending_refresh.clear(),
+                         has_pending=lambda: bool(self._pending_refresh), recover_saved=self._recover_saved)
+
+    def _recover_saved(self, previous, updated):
+        """Acknowledge only the exact verified pending rotation after persistence."""
+        import hashlib
+        pending = self._pending_refresh
+        data = pending.get('data')
+        if (pending.get('identity') != hashlib.sha256(previous.refresh_token.encode()).digest()
+                or type(data) is not dict
+                or data.get('access_token') != updated.access_token
+                or data.get('refresh_token') != updated.refresh_token
+                or ('id_token' in data and data['id_token'] != updated.id_token)):
+            raise AuthError('pending_refresh_mismatch')
+        pending.clear()
 
     async def _current(self):
         try:
@@ -38,28 +55,36 @@ class OwnedSubscriptionSession(SubscriptionSession):
         except AuthError:
             raise InteractionRequiredError(
                 'GPT could not refresh the cached subscription connection. '
-                'Retry sign-in through launch.py; check connectivity and the cached account.') from None
+                'Retry sign-in through launch.sh; check connectivity and the cached account.') from None
 
     async def _refresh(self, connection, now):
         if self.client is None:
             self.client = httpx.AsyncClient()
-        return await refresh_connection(connection, client=self.client, now=now)
+        options = {"register_secret": self.register_connection_secret} if self.register_connection_secret else {}
+        return await refresh_connection(connection, client=self.client, now=now, pending=self._pending_refresh, **options)
 
     async def _dispose(self):
         await super()._dispose()
+        if self._pending_refresh:
+            # An issued rotated token must be admitted and persisted before
+            # this owner can safely release its in-memory recovery snapshot.
+            await super()._current()
         if self.client is not None:
             await _dispose(self.client.aclose())
             self.client = None
 
 
 class GPTProvider:
+    credential_protection_version = 1
     captures_effective_payload = True
     version = 1
     inference_timeout = 120
     capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"))
 
-    def __init__(self, config, *, inspection=None):
+    def __init__(self, config, *, inspection=None, emissions=None):
         self.inspection = inspection
+        self.emissions = emissions
+        self._credential_setup_started = False
         from api_agent.telemetry.accounting import compatibility
         from api_agent.providers.rates import cached_rate_card
         self.cost_compatibility = compatibility(config)
@@ -89,6 +114,31 @@ class GPTProvider:
         self.quota_prepared_identity = None
         self.closed = False
 
+    def bind_credential_authority(self, authority):
+        """Bind before setup; never discard an existing credential authority."""
+        from api_agent.telemetry.privacy import EmissionBoundary
+        if not isinstance(authority, EmissionBoundary):
+            raise ContractError('GPT credential authority is unavailable.')
+        if self.emissions is not None:
+            if (not isinstance(self.emissions, EmissionBoundary)
+                    or self.emissions._authority is not authority._authority):
+                raise ContractError('GPT credential authority cannot be replaced.')
+        elif self._credential_setup_started:
+            raise ContractError('GPT credential authority must be bound before setup.')
+        self.emissions = authority
+
+    async def _register_connection(self, connection):
+        if self.emissions is not None:
+            from api_agent.telemetry.privacy import register_secret_async
+            for name in ("access_token", "refresh_token", "id_token"):
+                value = getattr(connection, name, None)
+                if type(value) is str and value:
+                    await register_secret_async(self.emissions, value)
+
+    async def _register_secret(self, value):
+        from api_agent.telemetry.privacy import register_secret_async
+        await register_secret_async(self.emissions, value)
+
     @staticmethod
     def _login_error(error):
         message = {
@@ -100,9 +150,9 @@ class GPTProvider:
             'login_interaction_required': 'GPT login needs browser interaction; use attended authentication, the bounded visible login handoff, or DEBUG inspection.',
             'account_mismatch': 'GPT sign-in returned a different account from the selected login.',
             'authorization_denied': 'GPT authorization was declined in the browser.',
-            'incomplete_registration': 'GPT authorization did not return an issued app registration. Retry sign-in through launch.py.',
-            'invalid_state': 'GPT authorization did not match this sign-in attempt. Retry sign-in through launch.py.',
-            'client_mismatch': 'GPT authorization returned a different app registration. Retry sign-in through launch.py.',
+            'incomplete_registration': 'GPT authorization did not return an issued app registration. Retry sign-in through launch.sh.',
+            'invalid_state': 'GPT authorization did not match this sign-in attempt. Retry sign-in through launch.sh.',
+            'client_mismatch': 'GPT authorization returned a different app registration. Retry sign-in through launch.sh.',
             'invalid_issuer': 'GPT identity metadata did not match the expected OpenAI issuer and endpoints.',
             'invalid_identity': 'GPT could not verify the signed account identity returned after browser sign-in.',
             'invalid_credentials': 'GPT returned an incomplete or invalid token response after browser sign-in.',
@@ -112,7 +162,7 @@ class GPTProvider:
             'passkey_protocol_logging': 'Disable browser protocol/channel debug logging before retrieving passkey material; application --debug inspection remains supported.',
             'passkey_counter_unsupported': 'This passkey has a signature counter that managed software authentication cannot preserve. Use attended login.',
             'passkey_browser_unsupported': 'Managed Chromium could not prepare the selected software passkey. Use attended login or update the managed browser.',
-        }.get(str(error), 'GPT sign-in failed; retry authentication through launch.py.')
+        }.get(str(error), 'GPT sign-in failed; retry authentication through launch.sh.')
         if str(error) == 'authorization_failed':
             stages = {'token': 'token exchange', 'metadata': 'identity metadata request',
                       'keys': 'identity signing-key request'}
@@ -126,7 +176,7 @@ class GPTProvider:
             if type(reason) is str and reason in OAUTH_ERROR_CODES:
                 details.append(reason)
             suffix = ' (' + '; '.join(details) + ')' if details else ''
-            message = f'GPT {description} failed{suffix}. Retry sign-in through launch.py.'
+            message = f'GPT {description} failed{suffix}. Retry sign-in through launch.sh.'
         converted = InteractionRequiredError(message)
         if hasattr(error, 'cleanup_error'):
             converted.cleanup_error = error.cleanup_error
@@ -146,6 +196,7 @@ class GPTProvider:
             raise
 
     async def asetup(self, *, interactive, user_index, credentials):
+        self._credential_setup_started = True
         if self.closed:
             raise ContractError("GPT provider is closed.")
         if not isinstance(self.auth_mode, str) or self.auth_mode not in {"subscription", "api_key"}:
@@ -161,6 +212,8 @@ class GPTProvider:
             key = await credentials(user_index, "password")
             if self.closed:
                 raise ContractError("GPT provider is closed.")
+            if self.emissions is not None and type(key) is str and key:
+                await self._register_secret(key)
             session = APIKeySession(key)
             self.sessions.append(session)
             return session
@@ -186,12 +239,15 @@ class GPTProvider:
             profile = await self._login(store, interactive=interactive, username=username,
                                         user_index=user_index, credentials=credentials)
         else:
-            raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.py to connect or select your account.")
+            raise InteractionRequiredError("GPT requires attended sign-in; start attended integration through launch.sh to connect or select your account.")
         async def reconnect():
             print('GPT cached subscription refresh was rejected; sign-in is required again.', flush=True)
             await self._login(store, interactive=interactive, username=username,
                               user_index=user_index, credentials=credentials, profile=profile)
-        session = OwnedSubscriptionSession(store, profile, reconnect=reconnect)
+        await self._register_connection(store.load(profile))
+        session = OwnedSubscriptionSession(store, profile, reconnect=reconnect,
+                                           register_connection=self._register_connection,
+                                           register_connection_secret=self._register_secret if self.emissions is not None else None)
         self.sessions.append(session)
         self.quota_interactive = bool(interactive)
         return session
@@ -199,11 +255,13 @@ class GPTProvider:
     async def _login(self, store, *, interactive, username, user_index, credentials, profile=None):
         if not interactive and username is None:
             raise InteractionRequiredError(
-                'GPT cached subscription sign-in needs renewal. Start attended through launch.py '
+                'GPT cached subscription sign-in needs renewal. Start attended through launch.sh '
                 'or select an unattended LLM User with working credential access.')
         # Let the verified OAuth result identify the account instead of a manual ID.
         browser_options = {}
         registration = {'profile': profile} if profile is not None else {}
+        if self.emissions is not None:
+            registration['register_secret'] = self._register_secret
         if self.inspection is not None:
             browser_options['inspection'] = self.inspection
         if not interactive:
@@ -211,14 +269,27 @@ class GPTProvider:
         browser = subscription_browser(**browser_options)
         self.browsers.append(browser)
         async def login_credentials(kind):
-            return await credentials(user_index, kind)
+            value = await credentials(user_index, kind)
+            if self.emissions is not None and type(value) is str and value:
+                await self._register_secret(value)
+            return value
         material_options = {}
         import inspect
         reader = (getattr(credentials, 'login_credentials')
                   if inspect.getattr_static(credentials, 'login_credentials', None) is not None else None)
         if username is not None and callable(reader):
             async def login_material():
-                return await reader(user_index, expected_username=username, relying_party_id='openai.com')
+                material = await reader(user_index, expected_username=username, relying_party_id='openai.com')
+                if material is not None and self.emissions is not None:
+                    from api_agent.auth.login_credentials import SelectedLoginCredentials
+                    if type(material) is not SelectedLoginCredentials:
+                        raise ContractError('GPT selected login material is invalid.')
+                    try:
+                        for secret in material.secret_values():
+                            await self._register_secret(secret)
+                    except Exception:
+                        raise ContractError('GPT could not protect selected login material.') from None
+                return material
             material_options['login_material'] = login_material
         login_options = ({'login_username': username, 'login_credentials': login_credentials,
                           'allow_interaction': not browser_options.get('headless', False)}
@@ -245,11 +316,13 @@ class GPTProvider:
     async def adescribe(self, *, auth=None):
         if self.closed:
             raise ContractError("GPT provider is closed.")
+        if self.emissions is not None and type(auth) is str and auth:
+            await self._register_secret(auth)
         from .discovery import discover_selections
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             return await discover_selections(client=client, base_url=base, access_token=auth,
-                                              subscription=self.auth_mode == "subscription")
+                                              subscription=self.auth_mode == "subscription", authority=self.emissions)
 
     def validate_request(self, request):
         """Validate selected cache support before retrieving authentication."""
@@ -269,12 +342,14 @@ class GPTProvider:
         if not isinstance(self.auth_mode, str) or self.auth_mode not in {'subscription', 'api_key'}:
             raise ContractError('GPT_AUTH_MODE must be subscription or api_key.')
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
+        if self.emissions is not None and type(auth) is str and auth:
+            await self._register_secret(auth)
         await async_validate_text_request(base_url=base, access_token=auth, subscription=self.auth_mode == 'subscription',
                               api_mode=self.api_mode, request=request)
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             return await complete_text(client=client, base_url=base, access_token=auth,
                                        subscription=self.auth_mode == "subscription", api_mode=self.api_mode,
-                                       request=request, cache_session_id=self.cache_session_id)
+                                       request=request, cache_session_id=self.cache_session_id, authority=self.emissions)
 
     async def aprepare_accounting(self, *, auth=None):
         """Prepare optional native quota access before the short snapshot budget."""
@@ -368,4 +443,5 @@ class GPTProvider:
 def factory(config, services):
     """Create without reading saved state or starting transport/browser work."""
     from collections.abc import Mapping
-    return GPTProvider(config, inspection=services.get('browser_inspection') if isinstance(services, Mapping) else None)
+    return GPTProvider(config, inspection=services.get('browser_inspection') if isinstance(services, Mapping) else None,
+                       emissions=services.get('emissions') if isinstance(services, Mapping) else None)

@@ -1588,6 +1588,38 @@ test('closing a failure with a hidden opener restores Settings navigation focus'
   }finally{await closeBrowser(browser);}
 });
 
+
+test('dark appearance keeps the catalog error dialog readable', async () => {
+  const {browser,page}=await openStudio(route=>route.abort());
+  try {
+    await page.locator('#settings-nav').click();
+    await page.locator('#appearance').selectOption('dark');
+    await page.locator('#close-settings').click();
+    await page.route('**/app/agent/models',route=>fulfill(route,{status:503,body:'Unavailable'}));
+    await reloadPage(page);
+    await page.locator('#settings-nav').click();
+    await page.locator('#failure').waitFor();
+    const styles=await page.locator('#failure').evaluate(dialog=>{
+      const style=getComputedStyle(dialog),close=getComputedStyle(dialog.querySelector('button'));
+      return {background:style.backgroundColor,color:style.color,buttonBackground:close.backgroundColor,buttonColor:close.color,settingsBackground:getComputedStyle(document.querySelector('#settings')).backgroundColor};
+    });
+    const luminance=color=>color.match(/\d+/g).slice(0,3).map(Number).map(value=>{
+      const channel=value/255;
+      return channel<=.04045?channel/12.92:((channel+.055)/1.055)**2.4;
+    }).reduce((total,value,index)=>total+value*[.2126,.7152,.0722][index],0);
+    const contrast=(first,second)=>{
+      const values=[luminance(first),luminance(second)].sort((a,b)=>b-a);
+      return (values[0]+.05)/(values[1]+.05);
+    };
+    assert.equal(styles.background,styles.settingsBackground);
+    assert.ok(contrast(styles.color,styles.background)>=4.5,'Error text must remain readable');
+    assert.ok(contrast(styles.buttonColor,styles.buttonBackground)>=4.5,'Close control must remain readable');
+    assert.match(await page.locator('#failure-message').textContent(),/Model list unavailable/);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#failure').isVisible(),false);
+  } finally { await closeBrowser(browser); }
+});
+
 test('conversation identity spans turns, reload and undo while New chat sends fresh history', async () => {
   const requests = [];
   const {browser,page} = await openStudio(route => {

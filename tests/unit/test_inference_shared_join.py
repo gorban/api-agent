@@ -121,6 +121,8 @@ def test_cancellation_stops_only_its_inference_keeps_auth_for_next_call():
 def test_worker_local_complete_closed_and_prerequisite(tmp_path, monkeypatch):
     from api_agent.testing import provider_setup
     implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')), acomplete=AsyncMock(return_value=RESULT),adescribe=AsyncMock(return_value=CATALOG))
+    implementation.credential_protection_version = 1
+    implementation.bind_credential_authority = lambda authority: setattr(implementation, 'authority', authority)
     monkeypatch.setattr(provider_setup,'aload_provider',AsyncMock(return_value=SimpleNamespace(implementation=implementation,aclose=AsyncMock())))
     local = IntegrationLLM({'LLM_PROVIDER':'synthetic'},tmp_path)
     assert local.complete(REQUEST) == RESULT
@@ -308,6 +310,8 @@ def test_local_snapshot_brackets_requests_once_and_failures_are_optional(tmp_pat
     snapshots=[QuotaSnapshot(1,'w',now+timedelta(days=1),now),QuotaSnapshot(2,'w',now+timedelta(days=1),now+timedelta(seconds=1))]
     snap=AsyncMock(side_effect=snapshots if observed!='error' else RuntimeError('secret diagnostic'))
     impl=SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),acomplete=AsyncMock(return_value=RESULT),asnapshot=snap,adescribe=AsyncMock(return_value=CATALOG))
+    impl.credential_protection_version = 1
+    impl.bind_credential_authority = lambda authority: setattr(impl, 'authority', authority)
     monkeypatch.setattr(provider_setup,'aload_provider',AsyncMock(return_value=SimpleNamespace(implementation=impl,aclose=AsyncMock())))
     monkeypatch.setattr(quota_events,'publish',lambda *a:rows.append(a))
     subject=IntegrationLLM({'LLM_PROVIDER':'synthetic'},tmp_path,quota_observer=(lambda *a:rows.append(a)) if observed is True else None)
@@ -349,6 +353,8 @@ def test_post_inference_accounting_failure_retains_result_usage(tmp_path, monkey
     monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test_request (call)')
     implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),
                                      acomplete=AsyncMock(return_value=RESULT),adescribe=AsyncMock(return_value=CATALOG))
+    implementation.credential_protection_version = 1
+    implementation.bind_credential_authority = lambda authority: setattr(implementation, 'authority', authority)
     monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(
         implementation=implementation, aclose=AsyncMock())))
     def broken(*args):
@@ -380,6 +386,8 @@ def test_quota_publication_failure_and_unsupported_reads_do_not_fail_setup(tmp_p
     value = QuotaReadError('http', 403) if reply == 'error' else reply
     impl = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),
                            asnapshot=AsyncMock(return_value=value))
+    impl.credential_protection_version = 1
+    impl.bind_credential_authority = lambda authority: setattr(impl, 'authority', authority)
     monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(implementation=impl, aclose=AsyncMock())))
     seen = []
     def failed_publish(phase, value):

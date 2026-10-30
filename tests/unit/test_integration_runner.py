@@ -129,6 +129,23 @@ def test_failure_skip_and_setup_error_never_pass(tmp_path):
     assert 'secret' in result.tests[0].traceback
 
 
+@pytest.mark.parametrize('debug', [False, True])
+def test_tracebacks_keep_cause_without_default_source_dump(tmp_path, debug):
+    base = fixture_repo(tmp_path / 'base', '''
+def test_bad():
+    """UNNECESSARY_SOURCE_BODY_MARKER"""
+    raise ValueError('synthetic useful cause')
+''')
+    ctx = context(base)
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+                                   config={'DEBUG': debug, 'LLM_PROVIDER': '', 'UI_PROVIDER': ''})
+    trace = result.tests[0].traceback
+    assert result.exit_code == 1 and result.tests[0].status == 'failed'
+    assert 'ValueError: synthetic useful cause' in trace
+    assert 'test_sample.py' in trace
+    assert ('UNNECESSARY_SOURCE_BODY_MARKER' in trace) is debug
+
+
 @pytest.mark.parametrize('jobs', [0, 2])
 @pytest.mark.parametrize('all_skipped', [False, True])
 def test_intentional_skips_are_neutral_and_preserve_each_reason(tmp_path, jobs, all_skipped):

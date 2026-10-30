@@ -29,6 +29,8 @@ class UIIntegrationOwner:
         self.index_source = data.get('unattended_index_source')
         self.interaction = OwnedInteraction(data['interaction']) if data.get('interaction') else None
         self.emissions = content_boundary(self.config)
+        from .authority_scope import current_scope
+        self._authority_scope = current_scope()
         self.pending_tasks = set()
         self._tls_task = None
         self._starting = None
@@ -64,6 +66,8 @@ class UIIntegrationOwner:
         self._started = True
         self._starting = asyncio.current_task()
         try:
+            if self._authority_scope is not None:
+                await self._authority_scope.ajoin('ui', self.emissions)
             prepared = await self._start()
             if self.closed:
                 raise SessionClosedError('UI test fixture closed during preparation')
@@ -104,7 +108,7 @@ class UIIntegrationOwner:
                 if self.closed:
                     raise SessionClosedError('UI test fixture closed during preparation')
                 values['AGENT_DJANGO_URL'] = binding['agent_url']
-                self.emissions.register_secret(binding['access_token'])
+                await self.emissions.aregister_secret(binding['access_token'])
                 services['ui_access_token'] = binding['access_token']
             self.prepared = PreparedUISession(values, services, browser_owner=self.browser_owner,
                 user_index=self.config.get('UNATTENDED_USER_INDEX'), credentials_for=self._credentials_for,

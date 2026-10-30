@@ -80,6 +80,8 @@ async def test_shared_prompt_through_normal_app_real_owner_and_llm(tmp_path, mon
         async def aclose(self): pass
     class Provider:
         capabilities = ProviderCapabilities(kind='llm')
+        credential_protection_version = 1
+        def bind_credential_authority(self, authority): pass
         async def asetup(self, **options):
             try:
                 if native:

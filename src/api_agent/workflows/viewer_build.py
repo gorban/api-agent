@@ -432,6 +432,52 @@ def check_views(root: Path) -> None:
     _check_inventory_files(files, root, owners)
 
 
+def _checked_view_inventory(root: Path) -> dict[str, bytes]:
+    """Return the checked workflow inputs and outputs, keyed by repository path."""
+    root = Path(root).resolve()
+    check_views(root)
+    entries = discover_view_entries(root)
+    mappings = read_view_roots(root, entries)
+    projections = _projections(root)
+    contexts = _inventory_contexts(root, entries, projections, mappings)
+    owners = tuple(sorted({root, *(owner for context in contexts for owner in context.roots.values())}))
+    repositories, sources = _repository_inputs(root)
+    root_record = (repositories["base"], _read_regular_view(root / CONFIG_PATH)) if repositories else (None, None)
+    records, _ = _owner_records(root, owners, root_record)
+    files = _inventory_files(root, projections, contexts, lambda roots: _recorded_owner_inputs(roots, records),
+                             verify=True, check_orphans=False)
+    captured = {}
+    for projection, context in zip(projections, contexts, strict=True):
+        captured.update(_admitted_snapshot(projection, context.roots))
+    for file in files:
+        path = _physical_file(file.path, {"base": root})
+        captured[path] = file.body
+    for owner in owners:
+        path = owner / CONFIG_PATH
+        if path.is_file():
+            captured[path] = _read_regular_view(path)
+    mapping = root / VIEW_ROOTS_PATH
+    if mapping.is_file():
+        captured[mapping] = _read_regular_view(mapping)
+    for name in ("viewer.js", "viewer.css", "flow-modal.js", "flow-modal.css",
+                 "heading-id.js", "svg-links.js"):
+        path = root / ".private_resources/viewer" / name
+        if path.is_file():
+            captured[path] = _read_regular_view(path)
+    return {path.relative_to(root).as_posix(): data for path, data in captured.items()}
+
+
+def check_staged_workflow_matches_worktree(snapshot: Path, worktree: Path) -> None:
+    """Require relevant working files to be represented in the checked index."""
+    staged = _checked_view_inventory(snapshot)
+    working = _checked_view_inventory(worktree)
+    if staged != working:
+        changed = sorted(path for path in staged.keys() | working.keys()
+                         if staged.get(path) != working.get(path))
+        raise RenderError("workflow inputs or generated views have unstaged changes: "
+                          + ", ".join(changed[:10]))
+
+
 def _admitted_snapshot(projection, roots):
     captured = {}
     for document in projection.documents:

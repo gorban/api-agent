@@ -49,6 +49,9 @@ def test_frozen_call_join_and_inclusive_cost_count_once():
     assert graph_params['inclusive_list_cost_usd'] == node_params['inclusive_list_cost_usd'] == '0.01'
     assert leaf_params['input_tokens'] == '3'
     assert leaf_params['cost_basis'] == 'provider_quote'
+    assert not any(name.startswith(('frozen_call_', 'call ')) for name in node_params)
+    assert leaf_params['actual_model'] == 'model-v1'
+    assert leaf_params['list_cost_usd'] == '0.01'
 
 
 def test_unowned_or_unverified_calls_are_partial():

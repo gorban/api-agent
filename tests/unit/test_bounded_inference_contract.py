@@ -24,6 +24,12 @@ def request(*, maximum=131072, boundary=None):
         GenerationOptions(maximum,temperature=0.5),StructuredOutput('answer',OPTIONAL,strict=False)))
 
 
+def joined_test_provider(provider):
+    # Synthetic lifecycle fakes do not acquire credentials or send network requests.
+    provider.credential_protection_version = 1
+    provider.bind_credential_authority = lambda authority: setattr(provider, 'authority', authority)
+    return provider
+
 @pytest.mark.parametrize('maximum',[16384,32768,131072])
 def test_large_unicode_history_and_generation_roundtrip_in_real_frame_codec(maximum):
     original=request(maximum=maximum,boundary=CacheBoundary(3600))
@@ -159,7 +165,7 @@ def test_loaded_complete_and_terminal_stream_validate_before_publication():
                 yield StreamEvent(invalid,'completed')
             finally:
                 disposed.append(True)
-        view=_StreamView(SimpleNamespace(astream=events,acomplete=AsyncMock(return_value=invalid),adescribe=AsyncMock(return_value=(SELECTION,))))
+        view=_StreamView(joined_test_provider(SimpleNamespace(astream=events,acomplete=AsyncMock(return_value=invalid),adescribe=AsyncMock(return_value=(SELECTION,)))))
         with pytest.raises(ProviderAccessError):
             await view.acomplete(request())
         stream=view.astream(request())
@@ -232,9 +238,9 @@ def test_advertised_maximum_rejects_before_provider_side_effects(method):
     from api_agent.providers.loading import _StreamView
     selection=AvailableSelection('synthetic',features=('tools','structured','temperature','max_output_tokens'),max_output_tokens=32768)
     provider=SimpleNamespace(validate_request=selection.validate,acomplete=AsyncMock(),astream=Mock())
-    view=_StreamView(provider)
+    view=_StreamView(joined_test_provider(provider))
     with pytest.raises(OperationalError,match='unsupported'):
-        asyncio.run(view.acomplete(request())) if method == 'complete' else view.astream(request())
+        asyncio.run(view.acomplete(request())) if method == 'complete' else asyncio.run(anext(view.astream(request())))
     provider.acomplete.assert_not_awaited()
     provider.astream.assert_not_called()
 
@@ -308,7 +314,7 @@ def test_loaded_provider_views_only_wrap_llm_generation(kind,operation):
     from api_agent.providers.loading import LoadedProvider, _StreamView
     provider=SimpleNamespace(capabilities=ProviderCapabilities(kind,(operation,)))
     selected=LoadedProvider(provider,'synthetic').require(kind,operation)
-    assert isinstance(selected,_StreamView) == (kind == 'llm' and operation in ('complete','stream'))
+    assert isinstance(selected,_StreamView) == (kind == 'llm')
 
 
 def test_async_validators_preserve_replay_schema_and_reject_invalid_actual_bounds():
@@ -359,7 +365,7 @@ def test_ordinary_provider_catalog_limits_reject_before_generation(kind,catalog)
     if catalog is not None:
         provider.adescribe=AsyncMock(return_value=catalog)
     async def scenario():
-        view=_StreamView(provider)
+        view=_StreamView(joined_test_provider(provider))
         with pytest.raises(OperationalError,match='unsupported'):
             await view.acomplete(request()) if kind == 'complete' else await anext(view.astream(request()))
         provider.acomplete.assert_not_awaited()
@@ -394,7 +400,7 @@ def test_loaded_owner_retains_retryable_cancellation_resistant_generation():
                 await release.wait()
             return result
         provider=SimpleNamespace(capabilities=ProviderCapabilities('llm',('complete',)),acomplete=complete,aclose=AsyncMock())
-        owner=LoadedProvider(provider,'synthetic-retained-owner',timeout=.02)
+        owner=LoadedProvider(joined_test_provider(provider),'synthetic-retained-owner',timeout=.02)
         view=owner.require('llm','complete')
         task=asyncio.create_task(view.acomplete(plain))
         await entered.wait()
@@ -430,7 +436,7 @@ def test_loaded_owner_retains_stream_close_failure_and_retries():
             aclose=AsyncMock(side_effect=[RuntimeError('synthetic close failure'),None])
         iterator=Iterator()
         provider=SimpleNamespace(capabilities=ProviderCapabilities('llm',('stream',)),astream=lambda *args,**kwargs:iterator,aclose=AsyncMock())
-        owner=LoadedProvider(provider,'synthetic-stream-retention')
+        owner=LoadedProvider(joined_test_provider(provider),'synthetic-stream-retention')
         stream=owner.require('llm','stream').astream(plain)
         assert (await anext(stream)).kind == 'text'
         with pytest.raises(ProviderError,match='cleanup_pending') as raised:
@@ -495,7 +501,7 @@ def test_loaded_stream_cleanup_cancellation_can_be_retried():
             async def aclose(self):
                 entered.set()
                 await release.wait()
-        owner=LoadedProvider(SimpleNamespace(capabilities=ProviderCapabilities('llm',('stream',)),astream=lambda *args,**kwargs:Iterator()),'synthetic-close-cancellation')
+        owner=LoadedProvider(joined_test_provider(SimpleNamespace(capabilities=ProviderCapabilities('llm',('stream',)),astream=lambda *args,**kwargs:Iterator())),'synthetic-close-cancellation')
         stream=owner.require('llm','stream').astream(plain)
         await anext(stream)
         assert aiter(stream.iterator) is stream.iterator
@@ -537,7 +543,7 @@ def test_actual_cache_claims_require_admitted_feature_and_lifetime(consumer,supp
             owner=SharedSetupOwner('operation','identity',lambda credentials:LLMSessionOwner(provider),complete=provider.acomplete,describe=getattr(provider,'adescribe',None))
             operation=owner.complete(original)
         else:
-            owner=LoadedProvider(provider,'synthetic-cache-owner')
+            owner=LoadedProvider(joined_test_provider(provider),'synthetic-cache-owner')
             view=owner.require('llm','stream' if consumer == 'loaded_stream' else 'complete')
             operation=anext(view.astream(original)) if consumer == 'loaded_stream' else view.acomplete(original)
         try:
@@ -566,7 +572,7 @@ def test_optional_cache_catalog_unavailability_preserves_primary_failures(failur
     result=LLMResult(Message('assistant',(TextContent('Answer'),)))
     provider=SimpleNamespace(adescribe=AsyncMock(side_effect=failure),acomplete=AsyncMock(return_value=result))
     async def scenario():
-        view=_StreamView(provider)
+        view=_StreamView(joined_test_provider(provider))
         if isinstance(failure,OperationalError) and failure.kind in ('unsupported','unavailable'):
             assert await view.acomplete(original) == result
         else:
@@ -616,7 +622,7 @@ def test_cache_catalog_cancellation_preserves_failure_and_owner_cleanup(kind):
             owner=SharedSetupOwner('operation','identity',lambda credentials:LLMSessionOwner(provider),complete=provider.acomplete,describe=describe)
             operation=owner.complete(original)
         else:
-            owner=LoadedProvider(provider,'synthetic-catalog-cancellation')
+            owner=LoadedProvider(joined_test_provider(provider),'synthetic-catalog-cancellation')
             operation=owner.require('llm','complete').acomplete(original)
         task=asyncio.create_task(operation)
         await entered.wait()

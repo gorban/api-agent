@@ -2,7 +2,6 @@
 from copy import deepcopy
 
 import httpx
-from openai import OpenAI
 import pytest
 
 from api_agent.llm_providers.bedrock import mantle
@@ -13,6 +12,7 @@ MODEL = 'openai.gpt-oss-20b'
 
 
 def sdk_completion(annotations=..., **fields):
+    from openai import OpenAI
     raw = {'id': 'synthetic', 'object': 'chat.completion', 'created': 0, 'model': MODEL,
            'choices': [{'index': 0, 'finish_reason': 'stop',
                         'message': {'role': 'assistant', 'content': 'hi', **fields}}],

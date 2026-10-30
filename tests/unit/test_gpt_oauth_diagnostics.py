@@ -32,7 +32,7 @@ def test_http_rejection_preserves_only_known_protocol_metadata(url, stage, label
         assert failure.stage == stage and failure.http_status == 400
         assert failure.oauth_error == expected
         rendered = str(GPTProvider._login_error(failure))
-        assert rendered == f'GPT {label} failed (HTTP 400; {expected}). Retry sign-in through launch.py.'
+        assert rendered == f'GPT {label} failed (HTTP 400; {expected}). Retry sign-in through launch.sh.'
         assert 'secondary-secret' not in repr(failure.__dict__) + rendered
         assert 'returned-token' not in repr(failure.__dict__) + rendered
     asyncio.run(scenario())
@@ -50,7 +50,7 @@ def test_unrecognized_error_fields_are_not_diagnostics(data):
                 await oauth._request(client, 'POST', oauth.TOKEN)
         assert caught.value.oauth_error is None
         assert str(GPTProvider._login_error(caught.value)) == (
-            'GPT token exchange failed (HTTP 403). Retry sign-in through launch.py.')
+            'GPT token exchange failed (HTTP 403). Retry sign-in through launch.sh.')
         assert 'secondary-secret' not in repr(caught.value.__dict__)
     asyncio.run(scenario())
 
@@ -64,7 +64,7 @@ def test_malformed_or_oversized_http_failure_keeps_status_without_content(raw):
                 await oauth._request(client, 'POST', oauth.TOKEN)
         assert caught.value.http_status == 502 and caught.value.oauth_error is None
         assert str(GPTProvider._login_error(caught.value)) == (
-            'GPT token exchange failed (HTTP 502). Retry sign-in through launch.py.')
+            'GPT token exchange failed (HTTP 502). Retry sign-in through launch.sh.')
     asyncio.run(scenario())
 
 
@@ -77,7 +77,7 @@ def test_transport_failure_has_no_invented_http_status_or_exception_text():
                 await oauth._request(client, 'GET', oauth.METADATA)
         assert caught.value.http_status is None
         assert str(GPTProvider._login_error(caught.value)) == (
-            'GPT identity metadata request failed. Retry sign-in through launch.py.')
+            'GPT identity metadata request failed. Retry sign-in through launch.sh.')
     asyncio.run(scenario())
 
 
@@ -92,7 +92,7 @@ def test_transport_failure_has_no_invented_http_status_or_exception_text():
 def test_failure_formatter_does_not_trust_attached_metadata(stage, status, reason, details):
     failure = AuthError('authorization_failed')
     failure.stage, failure.http_status, failure.oauth_error = stage, status, reason
-    assert str(GPTProvider._login_error(failure)) == f'GPT {details}. Retry sign-in through launch.py.'
+    assert str(GPTProvider._login_error(failure)) == f'GPT {details}. Retry sign-in through launch.sh.'
 
 
 @pytest.mark.parametrize('status', [200, 400])

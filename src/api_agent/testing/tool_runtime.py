@@ -183,7 +183,11 @@ class PreparedTestTools:
             async with component_timeout('Test tool prerequisites', 120):
                 lease = await offload(infrastructure.acquire, cancellation=cancelled)
             plan = bind_tool_outputs(plan, infrastructure)
-            boundary = EmissionBoundary(ContentPolicy.from_config(values))
+            # The worker snapshot is an admitted plain mapping, not a
+            # ConfigResult; derive its explicit content flag directly.
+            boundary = EmissionBoundary(ContentPolicy(values.get('LOG_CONTENT') is True))
+            from .authority_scope import ajoin_current
+            await ajoin_current('tools', boundary)
             runtime = (self.runtime_factory or Runtime)('selected-test-tools', tool_plan=plan,
                 services={'owner_root': Path(self.data['owner_root'])}, emissions=boundary)
             await runtime.astart()

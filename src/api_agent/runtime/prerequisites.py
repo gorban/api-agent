@@ -215,103 +215,111 @@ def run_command(command, *, environment, directory, deadline, cancelled,
         return b''.join(stdout).decode('utf-8', errors='replace')
     except BaseException as error:
         primary_error = error
-        error.local_details = evidence()
         raise
     finally:
-        selector.close()
-        # Close captured pipes before TERM/KILL so cleanup cannot accumulate a
-        # hostile writer's output during its termination grace period.
-        process.stdout.close()
-        process.stderr.close()
+        escaping_error = cleanup_diagnostic = None
         try:
-            finalize(process)
-        except BaseException as error:
-            cleanup = PrerequisiteError('Prerequisite process group cleanup failed.', local_details=evidence())
-            cleanup.__cause__ = error
-            interruption = (primary_error if primary_error is not None and not isinstance(primary_error, Exception)
-                else error if not isinstance(error, Exception) else None)
-            target = interruption if interruption is not None else cleanup
-            if interruption is not None:
-                prior_causes = (primary_error,) if primary_error is not None and primary_error is not interruption else ()
-                interruption.diagnostic_errors = (*getattr(interruption, 'diagnostic_errors', ()), *prior_causes, cleanup)
-            target.local_details = evidence()
-            from api_agent.providers.control import CleanupPendingError
-            from api_agent.testing.suite_lock import _cleanup_receipts
-            duties = {}
-            successor_chains = {}
-            process_pending = not disposal_complete(process)
-            def add_duties(failure):
-                added = []
-                # Aggregate diagnostic attachment must not erase the original
-                # successor chain used to decide whether a duty was replaced.
-                if id(failure) not in successor_chains or getattr(failure, 'cleanup_pending', None) is not receipt:
-                    successor_chains[id(failure)] = (failure, tuple(_cleanup_receipts(failure)))
-                for duty in successor_chains[id(failure)][1]:
-                    if duty is not receipt:
-                        if id(duty) not in duties:
-                            duties[id(duty)] = [duty, True]
-                        added.append(duty)
-                receipt.receipts = tuple(state[0] for state in duties.values())
-                return added
-            def update_owners():
-                owners = [owner for duty, pending in duties.values() if pending for owner in duty.owners]
-                if process_pending:
-                    owners.append(process)
-                receipt.owners = tuple({id(owner): owner for owner in owners}.values())
-            retry_lock = asyncio.Lock()
-            async def retry_cleanup():
-                # Cancellation waits for owned offloads to settle before this
-                # lock admits a successor retry of the same receipt.
-                try:
-                    async with retry_lock:
-                        await retry_owned_cleanup()
-                except BaseException as retry_error:
-                    retry_error.cleanup_pending = receipt
-                    raise
-            async def retry_owned_cleanup():
-                from api_agent.runtime.tasks import offload
-                nonlocal process_pending
-                failures = []
-                for state in tuple(duties.values()):
-                    duty, pending = state
-                    if not pending:
-                        continue
+            selector.close()
+            # Close captured pipes before TERM/KILL so cleanup cannot accumulate a
+            # hostile writer's output during its termination grace period.
+            process.stdout.close()
+            process.stderr.close()
+            try:
+                finalize(process)
+            except BaseException as error:
+                cleanup = PrerequisiteError('Prerequisite process group cleanup failed.')
+                cleanup_diagnostic = cleanup
+                cleanup.__cause__ = error
+                interruption = (primary_error if primary_error is not None and not isinstance(primary_error, Exception)
+                    else error if not isinstance(error, Exception) else None)
+                target = interruption if interruption is not None else cleanup
+                if interruption is not None:
+                    prior_causes = (primary_error,) if primary_error is not None and primary_error is not interruption else ()
+                    interruption.diagnostic_errors = (*getattr(interruption, 'diagnostic_errors', ()), *prior_causes, cleanup)
+                from api_agent.providers.control import CleanupPendingError
+                from api_agent.testing.suite_lock import _cleanup_receipts
+                duties = {}
+                successor_chains = {}
+                process_pending = not disposal_complete(process)
+                def add_duties(failure):
+                    added = []
+                    # Aggregate diagnostic attachment must not erase the original
+                    # successor chain used to decide whether a duty was replaced.
+                    if id(failure) not in successor_chains or getattr(failure, 'cleanup_pending', None) is not receipt:
+                        successor_chains[id(failure)] = (failure, tuple(_cleanup_receipts(failure)))
+                    for duty in successor_chains[id(failure)][1]:
+                        if duty is not receipt:
+                            if id(duty) not in duties:
+                                duties[id(duty)] = [duty, True]
+                            added.append(duty)
+                    receipt.receipts = tuple(state[0] for state in duties.values())
+                    return added
+                def update_owners():
+                    owners = [owner for duty, pending in duties.values() if pending for owner in duty.owners]
+                    if process_pending:
+                        owners.append(process)
+                    receipt.owners = tuple({id(owner): owner for owner in owners}.values())
+                retry_lock = asyncio.Lock()
+                async def retry_cleanup():
+                    # Cancellation waits for owned offloads to settle before this
+                    # lock admits a successor retry of the same receipt.
                     try:
-                        await duty.retry()
-                        state[1] = False
+                        async with retry_lock:
+                            await retry_owned_cleanup()
                     except BaseException as retry_error:
-                        successors = add_duties(retry_error)
-                        if successors and all(successor is not duty for successor in successors):
+                        retry_error.cleanup_pending = receipt
+                        raise
+                async def retry_owned_cleanup():
+                    from api_agent.runtime.tasks import offload
+                    nonlocal process_pending
+                    failures = []
+                    for state in tuple(duties.values()):
+                        duty, pending = state
+                        if not pending:
+                            continue
+                        try:
+                            await duty.retry()
                             state[1] = False
-                        retry_error.cleanup_pending = receipt
-                        failures.append(retry_error)
-                if process_pending and disposal_complete(process):
-                    process_pending = False
-                if process_pending:
-                    try:
-                        await offload(finalize, process)
+                        except BaseException as retry_error:
+                            successors = add_duties(retry_error)
+                            if successors and all(successor is not duty for successor in successors):
+                                state[1] = False
+                            retry_error.cleanup_pending = receipt
+                            failures.append(retry_error)
+                    if process_pending and disposal_complete(process):
                         process_pending = False
-                    except BaseException as retry_error:
-                        successors = add_duties(retry_error)
-                        if disposal_complete(process) or successors:
+                    if process_pending:
+                        try:
+                            await offload(finalize, process)
                             process_pending = False
-                        retry_error.cleanup_pending = receipt
-                        failures.append(retry_error)
+                        except BaseException as retry_error:
+                            successors = add_duties(retry_error)
+                            if disposal_complete(process) or successors:
+                                process_pending = False
+                            retry_error.cleanup_pending = receipt
+                            failures.append(retry_error)
+                    update_owners()
+                    if failures:
+                        selected = next((failure for failure in failures if not isinstance(failure, Exception)), failures[0])
+                        secondary = tuple(failure for failure in failures if failure is not selected)
+                        selected.diagnostic_errors = (*getattr(selected, 'diagnostic_errors', ()), *secondary)
+                        raise selected
+                receipt = CleanupPendingError((), retry_cleanup)
+                add_duties(primary_error)
+                add_duties(error)
                 update_owners()
-                if failures:
-                    selected = next((failure for failure in failures if not isinstance(failure, Exception)), failures[0])
-                    secondary = tuple(failure for failure in failures if failure is not selected)
-                    selected.diagnostic_errors = (*getattr(selected, 'diagnostic_errors', ()), *secondary)
-                    raise selected
-            receipt = CleanupPendingError((), retry_cleanup)
-            add_duties(primary_error)
-            add_duties(error)
-            update_owners()
-            target.cleanup_pending = receipt
-            raise target
+                target.cleanup_pending = receipt
+                raise target
+        except BaseException as error:
+            escaping_error = error
+            raise
         finally:
-            if primary_error is not None:
-                primary_error.local_details = evidence()
+            failures = {id(error): error for error in (primary_error, escaping_error, cleanup_diagnostic)
+                        if error is not None}
+            if failures:
+                details = evidence()
+                for error in failures.values():
+                    error.local_details = details
 
 
 @contextmanager

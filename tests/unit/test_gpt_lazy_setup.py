@@ -325,7 +325,7 @@ def test_cancelled_cleanup_waits_for_refresh_before_transport_close(tmp_path, mo
     async def scenario():
         entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-        async def refresh(connection, *, client, now):
+        async def refresh(connection, *, client, now, pending):
             entered.set()
             try:
                 await release.wait()
@@ -340,11 +340,11 @@ def test_cancelled_cleanup_waits_for_refresh_before_transport_close(tmp_path, mo
         session = await setup(provider)
         session.clock = lambda: 100
         reader = asyncio.create_task(session())
-        await entered.wait()
-        closer = asyncio.create_task(session.aclose())
-        await cancelled.wait()
-        closer.cancel()
         try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            closer = asyncio.create_task(session.aclose())
+            await asyncio.wait_for(cancelled.wait(), timeout=5)
+            closer.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await closer
             assert not session._task.done()
@@ -352,12 +352,23 @@ def test_cancelled_cleanup_waits_for_refresh_before_transport_close(tmp_path, mo
             client.aclose.assert_not_awaited()
         finally:
             release.set()
-            await reader
-            await provider.aclose()
+            try:
+                done, _ = await asyncio.wait({reader}, timeout=5)
+                if not done:
+                    reader.cancel()
+                    pytest.fail("Refresh reader did not stop after release")
+                await reader
+            finally:
+                cleanup = asyncio.create_task(provider.aclose())
+                done, _ = await asyncio.wait({cleanup}, timeout=5)
+                if not done:
+                    cleanup.cancel()
+                    pytest.fail("Provider cleanup did not finish")
+                await cleanup
         assert session._task.done()
         assert session.client is None
         client.aclose.assert_awaited_once()
-        await provider.aclose()
+        await asyncio.wait_for(provider.aclose(), timeout=5)
 
     run(scenario())
 

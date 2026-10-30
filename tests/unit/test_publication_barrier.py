@@ -76,6 +76,8 @@ def test_resistant_quota_blocks_recorded_finalization_but_keeps_diagnostics(tmp_
             pass
 
     class Adapter:
+        credential_protection_version = 1
+        def bind_credential_authority(self, authority): self.authority = authority
         async def asetup(self, **kwargs):
             return Auth()
 
@@ -178,6 +180,8 @@ def test_username_helper_is_drained_and_revoked_before_recorded_publication(tmp_
             pass
 
     class Adapter:
+        credential_protection_version = 1
+        def bind_credential_authority(self, authority): self.authority = authority
         async def asetup(self, *, credentials, **kwargs):
             assert credentials is not None
             task = asyncio.create_task(credentials(0, 'username'))

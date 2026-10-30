@@ -123,7 +123,7 @@ class LaunchTests(unittest.TestCase):
                 _extract_option([first, '/one', second + '=/two'], names)
 
     def test_help_from_unrelated_cwd(self):
-        result = subprocess.run([sys.executable, str(ROOT / 'launch.py'), '--help'],
+        result = subprocess.run([sys.executable, str(ROOT / 'src/api_agent/runtime/entry.py'), '--help'],
                                 cwd='/', capture_output=True, text=True, input='y\n',
                                 env={k: v for k, v in os.environ.items()
                                      if k not in {'HELP', 'NO_STD_IN', 'TUI_MODE'}})
@@ -227,7 +227,7 @@ class LaunchTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('no verified source checkout', result.stderr)
-            self.assertIn('checkout/launch.py', result.stderr)
+            self.assertIn('checkout/launch.sh', result.stderr)
 
     def test_launcher_dotenv_precedence_is_retained_with_demo_pack(self):
         from api_agent.config import resolve_config

@@ -2,7 +2,6 @@
 from copy import deepcopy
 
 import httpx
-from openai import OpenAI
 import pytest
 
 from api_agent.llm_providers.bedrock import mantle
@@ -26,6 +25,7 @@ def native():
 
 
 def sdk_shape():
+    from openai import OpenAI
     with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=native()))) as http:
         with OpenAI(api_key='synthetic', base_url='https://example.invalid/v1', http_client=http, max_retries=0) as client:
             return client.responses.create(model=MODEL, input='Synthetic question').model_dump(exclude_unset=True)

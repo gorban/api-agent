@@ -240,7 +240,7 @@ def test_timeout_link_uses_complete_captured_configuration_source():
     assert '//github.com/example/viewer/blob/_____switch_branch_____/cfg/limits.toml' in repository_links
 
 
-def test_direct_references_serve_captured_source_bytes_and_exclude_native_source():
+def test_direct_references_serve_captured_source_bytes_including_native_source():
     projection, document = _projection()
     schema = b'{"description":"<script>alert(1)</script>","type":"object"}'
     config = (b'[fields.LIMIT]\ndefault = "<img src=x onerror=alert(1)>"\n'
@@ -256,15 +256,15 @@ def test_direct_references_serve_captured_source_bytes_and_exclude_native_source
         references.append(ViewerReference(kind, document.logical_path, 'task', 1,
                                           path, digest, attributes))
         resources.append(SimpleNamespace(logical_path=path, sha256=digest,
-                                         content_bytes=body))
+                                         kind=kind, content_bytes=body))
     projection.references = tuple(references)
     projection.resources = tuple(resources)
 
     sources = viewer_render._reference_sources(projection)
 
     assert sources == {'r/base/contracts/input.json': schema,
-                       'r/base/cfg/settings.toml': config}
-    assert b'private native body' not in b''.join(sources.values())
+                       'r/base/cfg/settings.toml': config,
+                       'r/base/code/task.py': b'private native body'}
 
 
 @pytest.mark.parametrize('captured', [False, True])
@@ -751,3 +751,50 @@ def test_admitted_schema_reference_has_no_filename_extension_requirement(field):
     assert f'{field}: response&#46;schema'.encode() in source
     assert '../../contracts/response.schema' in links
     assert viewer_render._reference_sources(projection) == {'r/' + path: schema}
+
+
+@pytest.mark.parametrize('body', [b'print("captured")\n', b'\xff', b'x' * viewer_render._MAX_RESOURCE_BYTES, b'x' * (viewer_render._MAX_RESOURCE_BYTES + 1)])
+def test_python_reference_admission_validates_captured_text(body):
+    from hashlib import sha256
+    projection, document = _projection()
+    digest = sha256(body).hexdigest()
+    path = 'base/code/source.py'
+    projection.references = (ViewerReference('native_source', document.logical_path, 'task', 1, path, digest, ()),)
+    projection.resources = (SimpleNamespace(logical_path=path, kind='native_source', sha256=digest, content_bytes=body),)
+    if body == b'\xff':
+        with pytest.raises(RenderError, match='invalid captured native source'):
+            viewer_render._reference_sources(projection)
+    elif len(body) > viewer_render._MAX_RESOURCE_BYTES:
+        with pytest.raises(RenderError, match='native source exceeds display limit'):
+            viewer_render._reference_sources(projection)
+    else:
+        assert viewer_render._reference_sources(projection) == {'r/' + path: body}
+
+
+def test_native_source_requires_captured_digest():
+    projection, _ = _projection()
+    projection.resources = (SimpleNamespace(logical_path='base/code.py', kind='native_source',
+        sha256='0' * 64, content_bytes=b'print("captured")'),)
+    with pytest.raises(RenderError, match='native source differs from captured resource'):
+        viewer_render._reference_sources(projection)
+
+
+def test_non_python_native_resource_is_not_served():
+    projection, _ = _projection()
+    projection.resources = (SimpleNamespace(logical_path='base/source.bin', kind='native_source'),)
+    assert viewer_render._reference_sources(projection) == {}
+
+
+@pytest.mark.parametrize('decoration', ['none', 'underline'])
+def test_svg_accepts_finite_link_text_decoration(decoration):
+    from api_agent.workflows.viewer_render import validate_svg
+    body = f'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><text text-decoration="{decoration}">tool use</text></svg>'.encode()
+    assert f'text-decoration="{decoration}"'.encode() in validate_svg(body)
+
+
+@pytest.mark.parametrize('decoration', ['overline', 'url(unsafe)', 'underline red'])
+def test_svg_rejects_other_text_decoration(decoration):
+    from api_agent.workflows.viewer_render import validate_svg
+    body = f'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><text text-decoration="{decoration}">tool use</text></svg>'.encode()
+    with pytest.raises(RenderError, match='unsafe SVG text decoration'):
+        validate_svg(body)

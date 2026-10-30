@@ -94,9 +94,18 @@ class _DeferredStream:
     async def _read_next(self):
         if self.closed:
             raise StopAsyncIteration
+        from api_agent.workflows.inference_capture import withholding_inference_content
+        with withholding_inference_content(self.view._admit()):
+            return await self._read_next_admitted()
+
+    async def _read_next_admitted(self):
+        if self.closed:
+            raise StopAsyncIteration
         if self.iterator is None:
             from .inference import async_request_to_wire
             await async_request_to_wire(self.request)
+            from .cache_policy import validate_provider_request
+            validate_provider_request(self.view._implementation, self.request)
             selection = await _validate_model(self.view._implementation, self.request, self.auth)
             self.iterator = self.view._open_stream(self.request, auth=self.auth, selection=selection)
         try:
@@ -140,15 +149,56 @@ class _StreamView:
         self._owner = owner
 
     def __getattr__(self, name):
-        return getattr(self._implementation, name)
+        target = getattr(self._implementation, name)
+        if name not in ('asetup', 'authenticate', 'adescribe', 'astart') or not callable(target):
+            return target
+        async def admitted(*args, **kwargs):
+            from api_agent.workflows.inference_capture import withholding_inference_content
+            with withholding_inference_content(self._admit()):
+                return await target(*args, **kwargs)
+        return admitted
+
+    def _admit(self):
+        from .credential_guard import admit_llm_provider, CredentialProtectionError
+        from api_agent.telemetry.privacy import EmissionBoundary
+        from api_agent.workflows.inference_capture import active_inference_boundary, bind_boundary
+        owner = self._owner
+        if owner is not None:
+            owner._generation_check()
+            if owner.implementation is not self._implementation:
+                raise CredentialProtectionError('LLM provider changed after authority admission.')
+        active = active_inference_boundary()
+        authority = getattr(owner, '_credential_authority', None) if owner is not None else None
+        if authority is None:
+            services = getattr(owner, 'services', None)
+            configured = services.get('emissions') if isinstance(services, Mapping) else None
+            authority = configured or getattr(self._implementation, 'emissions', None) or active or EmissionBoundary()
+            if owner is not None:
+                owner._credential_authority = authority
+        if not isinstance(authority, EmissionBoundary):
+            raise CredentialProtectionError('LLM operation credential authority is unavailable.')
+        if owner is not None and hasattr(owner, '_credential_withheld'):
+            if (getattr(owner, '_credential_provider', None) is not self._implementation
+                    or getattr(owner, '_credential_bound_authority', None) is not authority._authority):
+                raise CredentialProtectionError('LLM provider or credential authority changed after admission.')
+        conflict = active is not None and active._authority is not authority._authority
+        # Establish an empty collector's authority, or invalidate conflicting
+        # rows before any provider can publish content.
+        bind_boundary(authority)
+        if owner is not None and hasattr(owner, '_credential_withheld'):
+            return owner._credential_withheld or conflict
+        withheld = admit_llm_provider(self._implementation, authority)
+        if owner is not None:
+            owner._credential_provider = self._implementation
+            owner._credential_bound_authority = authority._authority
+            owner._credential_withheld = withheld
+        return withheld or conflict
 
     def astream(self, request, *, auth=None):
         if self._owner is not None:
             self._owner._generation_check()
         from .inference import request_to_wire
         request_to_wire(request, _validate_instances=False)
-        from .cache_policy import validate_provider_request
-        validate_provider_request(self._implementation, request)
         return _DeferredStream(self, request, auth)
 
     def _open_stream(self, request, *, auth=None, selection=None):
@@ -170,6 +220,11 @@ class _StreamView:
         return await self._complete(request, auth=auth)
 
     async def _complete(self, request, *, auth=None):
+        from api_agent.workflows.inference_capture import withholding_inference_content
+        with withholding_inference_content(self._admit()):
+            return await self._complete_admitted(request, auth=auth)
+
+    async def _complete_admitted(self, request, *, auth=None):
         from .inference import async_request_to_wire
         await async_request_to_wire(request)
         from .cache_policy import validate_provider_request
@@ -215,7 +270,7 @@ class LoadedProvider:
         capabilities = getattr(self.implementation, 'capabilities', None)
         if not isinstance(capabilities, ProviderCapabilities) or capabilities.kind != kind or operation not in capabilities.operations:
             raise ProviderError('provider_operation_unavailable')
-        return _StreamView(self.implementation, self) if kind == 'llm' and operation in ('complete', 'stream') else self.implementation
+        return _StreamView(self.implementation, self) if kind == 'llm' else self.implementation
 
     def _generation_check(self):
         self._context()
@@ -246,7 +301,11 @@ class LoadedProvider:
             raise ProviderError('provider_closed')
         hook = getattr(self.implementation, 'astart', None)
         if hook is not None:
-            await hook()
+            capabilities = getattr(self.implementation, 'capabilities', None)
+            if isinstance(capabilities, ProviderCapabilities) and capabilities.kind == 'llm':
+                await _StreamView(self.implementation, self).astart()
+            else:
+                await hook()
 
     async def setup_routes(self, registrar, services):
         self._context()
@@ -308,6 +367,14 @@ def provider_location(location, *, owner_root=None):
     record_link(lexical, path)
     record_probe(('provider-factory', lexical), path.is_file, True)
     return path, factory
+
+
+def provider_owner_root(kind, values, owner_root):
+    """Resolve the same relative owner used when starting a provider."""
+    if kind == 'upstream' and values.get('API_PROVIDER'):
+        path, _ = provider_location(values['API_PROVIDER'], owner_root=owner_root)
+        return path.parent
+    return owner_root
 
 
 @dataclass(frozen=True)

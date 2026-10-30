@@ -240,7 +240,8 @@ def test_reasoning_continuation_crosses_real_ipc_and_http_without_content_eviden
             assert final.payload.content[0].text=='Visible final answer'
             assert final.usage.input_tokens==12
             assert encrypted not in first_evidence+second_evidence
-            assert 'encrypted_content' not in first_evidence+second_evidence
+            # The request may name the include option; no encrypted payload field is retained.
+            assert '"encrypted_content":' not in first_evidence+second_evidence
             assert 'Visible tool result' in second_evidence and 'Visible final answer' in second_evidence
             assert SECRET not in first_evidence+second_evidence
             assert len(sent)==2

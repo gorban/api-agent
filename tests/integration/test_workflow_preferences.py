@@ -7,7 +7,7 @@ from api_agent.workflows.execution import Workflow, NodeFunction, WorkflowError
 from api_agent.workflows.evidence import publish
 import pytest
 
-pytestmark = pytest.mark.feature('Workflow preferences')
+pytestmark = [pytest.mark.feature('Workflow preferences'), pytest.mark.credential_authorities('workflow')]
 ROOT = Path(__file__).parent / 'fixtures/workflow_preferences'
 
 

@@ -73,7 +73,7 @@ def test_help_accepts_controller_declared_after_provider_override(tmp_path, monk
     output = capsys.readouterr()
     assert status == 0
     assert output.err == ''
-    assert 'Usage: ./launch.py [OPTIONS] [TEST SELECTORS]' in output.out
+    assert 'Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]' in output.out
     assert 'All declared configuration values also accept CLI options' in output.out
 
 

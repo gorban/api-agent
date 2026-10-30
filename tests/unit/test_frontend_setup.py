@@ -124,13 +124,13 @@ def test_source_root_uses_module_not_working_directory(tmp_path, monkeypatch):
     module = root / 'src/api_agent/runtime/frontend.py'
     module.parent.mkdir(parents=True)
     (root / 'tools').mkdir()
-    for name in ('launch.py', 'pyproject.toml', 'package.json', 'package-lock.json',
+    for name in ('launch.sh', 'pyproject.toml', 'package.json', 'package-lock.json',
                  'tools/prepare_frontend_assets.mjs', 'tools/frontend-assets.json'):
         (root / name).touch()
     monkeypatch.setattr(frontend, '__file__', str(module))
     monkeypatch.chdir(tmp_path)
     assert frontend.source_root() == root
-    (root / 'launch.py').unlink()
+    (root / 'launch.sh').unlink()
     assert frontend.source_root() is None
 
 
@@ -240,7 +240,7 @@ def test_installed_module_ignores_marker_rich_parent(tmp_path, monkeypatch):
     root = tmp_path / 'installed'
     root.mkdir()
     (root / 'tools').mkdir()
-    for name in ('launch.py', 'pyproject.toml', 'package.json', 'package-lock.json',
+    for name in ('launch.sh', 'pyproject.toml', 'package.json', 'package-lock.json',
                  'tools/prepare_frontend_assets.mjs', 'tools/frontend-assets.json'):
         (root / name).touch()
     module = root / 'site/api_agent/runtime/frontend.py'

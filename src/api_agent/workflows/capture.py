@@ -8,12 +8,13 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 
-from .journal import _schema_field
+from .journal import _schema_field, _provider_field
 
 _OMIT = object()
 
 
-def project_values(values, schema, boundary, *, limit=None, report=None):
+def project_values(values, schema, boundary, *, limit=None, report=None, max_bytes=65536,
+                   _content_wrapper=False, _provider_content=False):
     """Project schema fields without inspecting arbitrary Python objects.
 
     Empty child schemas permit JSON values (including JSON message parts), but
@@ -21,10 +22,19 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
     precedes clipping so credentials cannot straddle a display boundary.
     """
     report = report if report is not None else set()
+    if type(_content_wrapper) is not bool:
+        raise ValueError('Invalid internal content wrapper')
+    if type(_provider_content) is not bool:
+        raise ValueError('Invalid provider content projection')
+    if _content_wrapper and (type(values) is not dict or set(values) != {'values'}
+                             or type(values['values']) is not dict or schema != {'type': 'object'}):
+        raise ValueError('Invalid internal content wrapper')
+    # The transport wrapper is not part of the logical evidence value.
+    root_depth = -1 if _content_wrapper else 0
     # Privacy must see original JSON carriers before schemas remove fields or
     # limits clip text. Bound the entire representation without fragmenting a
     # JSON container; unknown runtime objects cannot be serialized as JSON.
-    admission_budget = [65536, 2048]
+    admission_budget = [max_bytes, 2048 + int(_content_wrapper)]
     overflow = [False]
     def original(value, seen, depth):
         admission_budget[1] -= 1
@@ -54,7 +64,7 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
             return _OMIT
         seen = seen | {id(value)}
         if type(value) is dict:
-            if len(value) > 32:
+            if len(value) > 2048:
                 overflow[0] = True
                 return _OMIT
             result = {}
@@ -69,7 +79,7 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
                 if child is not _OMIT:
                     result[key] = child
             return result
-        if len(value) > 16:
+        if len(value) > 2048:
             overflow[0] = True
             return _OMIT
         result = []
@@ -78,7 +88,7 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
             if child is not _OMIT:
                 result.append(child)
         return result
-    snapshot = original(values, set(), 0)
+    snapshot = original(values, set(), root_depth)
     if overflow[0]:
         report.add('truncated')
         return {}
@@ -89,11 +99,15 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
     except UnicodeError:
         report.add('unsupported')
         return {}
-    if encoded_size > 65536:
+    if encoded_size > max_bytes:
         report.add('truncated')
         return {}
-    values = boundary.content_export({'values': snapshot}).get('values', {})
-    budget = [2048]
+    exported = boundary.content_export({'values': snapshot})
+    if type(exported) is not dict or 'values' not in exported:
+        report.add('unsupported')
+        return {}
+    values = exported['values']
+    budget = [2048 + int(_content_wrapper)]
     validator = Draft202012Validator(schema, registry=Registry())
     def matches_type(value, rule):
         try:
@@ -194,7 +208,10 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
             properties = rule.get('properties')
             result = {}
             for key, item in value.items():
-                if not _schema_field(key):
+                # Provider-returned plaintext reasoning is content, not an
+                # arbitrary workflow field declaration. The privacy boundary
+                # above still excludes credentials and internal/encrypted state.
+                if not (_provider_field(key) if _provider_content else _schema_field(key)):
                     continue
                 if isinstance(properties, Mapping) and key not in properties:
                     continue
@@ -224,16 +241,20 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
             return value
         report.add('unsupported')
         return _OMIT
-    selected = select(values, schema, 0)
+    selected = select(values, schema, root_depth)
     if selected is _OMIT:
         return {}
-    safe = boundary.content_export({'values': selected}).get('values', {})
+    exported = boundary.content_export({'values': selected})
+    if type(exported) is not dict or 'values' not in exported:
+        report.add('unsupported')
+        return {}
+    safe = exported['values']
     try:
         encoded_size = len(json.dumps(safe, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8'))
     except UnicodeError:
         report.add('unsupported')
         return {}
-    if encoded_size > 65536:
+    if encoded_size > max_bytes:
         report.add('truncated')
         return {}
     def clip(value):
@@ -246,15 +267,19 @@ def project_values(values, schema, boundary, *, limit=None, report=None):
         if type(value) is list:
             return [clip(item) for item in value]
         return value
+    if (not snapshot and type(snapshot) is type(selected) is type(safe)
+            and snapshot == selected == safe and not report):
+        report.add('valid_empty')
     return clip(safe) if limit is not None else safe
 
 
 def capture_reason(values, report, upstream=None):
     if 'truncated' in report or upstream == 'truncated':
         return 'truncated'
-    if not values or upstream == 'unavailable':
+    loss = report - {'valid_empty'}
+    if (not values and ('valid_empty' not in report or loss)) or upstream == 'unavailable':
         return 'unavailable'
-    return 'partial' if report or upstream == 'partial' else 'captured'
+    return 'partial' if loss or upstream == 'partial' else 'captured'
 
 
 def annotation_schema(annotation, *, depth=0):

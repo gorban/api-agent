@@ -26,6 +26,39 @@ async def hosted():
     return await start_viewer_host(bundle, projection=projection, repository_sources=sources)
 
 
+def test_managed_generated_tool_links_open_the_correct_port_rows():
+    async def exercise():
+        entry = ROOT / 'tests/integration/fixtures/tool_instances/shared_primary/flow.md.html'
+        projection = _projection(ROOT, entry)
+        repositories, sources = _repository_inputs(ROOT)
+        bundle = build_view_bundle(projection, roots={'base': ROOT, 'pack': ROOT}, verify=True,
+                                   repositories=repositories, repository_sources=sources)
+        host = await start_viewer_host(bundle, projection=projection, repository_sources=sources)
+        try:
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                try:
+                    page = await browser.new_page()
+                    for index, port in enumerate(('primary', 'secondary')):
+                        await page.goto(host.entry_url)
+                        await open_diagram(page)
+                        link = page.frame_locator('dialog.workflow-flow-modal iframe').locator(
+                            f'[data-qualified-name="toolbinding{index}"] a')
+                        await link.wait_for()
+                        href = await link.get_attribute('href')
+                        assert href.endswith(f'#workflow-tool-node-conversation-{port}')
+                        await link.click()
+                        row = page.locator(f'main tr#workflow-tool-node-conversation-{port}')
+                        await row.wait_for()
+                        assert await row.locator('td').first.inner_text() == port
+                        assert await row.evaluate("item => item.matches(':target')")
+                finally:
+                    await browser.close()
+        finally:
+            await host.aclose()
+    asyncio.run(exercise())
+
+
 async def open_diagram(page):
     await page.locator('main a:has(img[alt="Workflow diagram"])').click()
     dialog = page.locator('dialog.workflow-flow-modal')

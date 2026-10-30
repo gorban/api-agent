@@ -119,7 +119,8 @@ class StudioProcesses:
             raise ValueError('Invalid Studio process listener')
         token = token_urlsafe(32)
         if self.log_callback is not None:
-            self.emissions.register_secret(token)
+            from api_agent.telemetry.privacy import register_secret_async
+            await register_secret_async(self.emissions, token)
         environment = dict(env, API_AGENT_UI_LAUNCH_TOKEN=token,
                            API_AGENT_UI_PARENT_LIVENESS='stdin-v1')
         process = None

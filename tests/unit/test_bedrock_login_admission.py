@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('isolated_native_login_gate')
+
 from api_agent.auth.interaction_transport import InteractionClient, InteractionServer, OwnedInteraction, _CancelledChannel
 from api_agent.llm_providers.bedrock.acquisition import SessionRequest
 from api_agent.llm_providers.bedrock.aws_login import AwsLoginAcquirer

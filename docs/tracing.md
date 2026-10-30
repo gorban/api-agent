@@ -61,10 +61,26 @@ Both flags default False and require an explicit valid True to permit content:
 | TRACELOOP_TRACE_CONTENT | Permitted payloads in both OTEL and LangFuse spans |
 
 Either can be enabled independently. LOG_CONTENT does not enable trace payloads;
-TRACELOOP_TRACE_CONTENT does not enable log or Allure content. Credentials,
-authentication/continuation state and hidden reasoning remain excluded under all
-combinations. Timing, status and admitted usage metadata remain useful without
+TRACELOOP_TRACE_CONTENT does not enable log or Allure content. Provider-returned
+plaintext reasoning and summaries are optional content, separate from the final
+answer. Credentials, encrypted reasoning, redacted thinking and internal
+authentication/continuation state remain excluded under all combinations.
+Omission notices name the destination's flag and require a new run; unavailable
+provider text cannot be recovered by enabling capture. Timing, status and admitted usage metadata remain useful without
 payloads. Enabling content permission does not itself enable a tracing backend.
+
+Shared-provider integration tests use a trace runtime owned by their shared
+backend. Its `chat` spans and child `transport attempt` spans carry the same
+logical-call and physical-attempt IDs as accounting and Allure. These remote
+spans are correlated by ID, not attached to a cross-process workflow parent.
+Request/response Events include the capture phase, source and reason. Explicit
+trace permission survives log opt-out; trace-only content is not written into
+pytest evidence streams, journals or Allure. Before SDK queuing, the backend
+projects against the complete provider/operation/caller credential union and
+rechecks its generation. Each destination has a separate bounded collector;
+trace projection clips strings at 65,536 characters within its admission budget.
+Exporter shutdown is owned by backend cleanup, before result publication.
+Normalized-only streaming adapters still cannot supply discarded SDK reasoning.
 
 The current join emits owned manual graph/component/node/client spans using
 shared workflow identities. Both parsed-flow executors capture schema-admitted

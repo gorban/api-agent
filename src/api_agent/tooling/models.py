@@ -96,11 +96,13 @@ class SelectedTool:
     value_sources: object = field(default_factory=dict, repr=False)
     derived_from: object = field(default_factory=dict)
     nonempty_inputs: tuple[str, ...] = ()
+    executables: object = field(default_factory=dict)
+    executable_assets: object = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
         for name in ('bindings', 'local_values', 'pending', 'service_bindings',
                      'service_capabilities', 'infrastructure', 'configured_values',
-                     'value_sources', 'derived_from'):
+                     'value_sources', 'derived_from', 'executables', 'executable_assets'):
             object.__setattr__(self, name, freeze(getattr(self, name)))
         object.__setattr__(self, 'prerequisite_roots', tuple(self.prerequisite_roots))
         object.__setattr__(self, 'nonempty_inputs', tuple(self.nonempty_inputs))
@@ -167,6 +169,7 @@ class ToolPlan:
             paths.update(path for path in (tool.descriptor_path, tool.implementation_path, tool.factory) if path is not None)
             paths.update(tool.factory.parent / name for name in tool.admission.sources)
             paths.update(tool.admission.assets)
+            paths.update(tool.executable_assets)
             paths.update(binding['declaration'] for binding in tool.pending.values())
         scoped = replace(self, tools=tools, definitions=definitions, bindings=bindings,
             shared_primary=shared, case_shared_primary={case_id: shared},

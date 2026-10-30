@@ -2,19 +2,10 @@
 
 ## Getting started
 
-Run `./launch.py` from api-agent or a resource pack's own launcher. Python 3.13+
-is required. The launcher prepares a local `.venv` and dependencies; `uv` speeds
-up that setup when installed. An editable package installation is unnecessary.
-
-To create and activate the environment explicitly:
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-./launch.py
-```
-
-Activate `.venv` in each new shell. If a file copy lost executable permissions,
-run `chmod +x launch.py`. `python3 launch.py` is an alternative.
+Install mise, then run `./launch.sh` from api-agent or a resource pack's own
+launcher. The launcher prepares the local environment and dependencies; an
+editable package installation is unnecessary. If a file copy lost executable
+permissions, run `chmod +x launch.sh`.
 
 Choose **Run local** to start the agent. Review these settings for connected
 services:
@@ -89,7 +80,7 @@ Only keys present in the pack `.env` override the base file. Use `.env` for loca
 choices; source-controlled TOML describes defaults. The reader performs no
 shell expansion or command execution. Never commit `.env` or fetched secrets.
 
-Run `./launch.py --help` for CLI behaviors. Settings live in
+Run `./launch.sh --help` for CLI behaviors. Settings live in
 [shared configuration](../cfg/config.toml) and selected pack/provider declarations.
 
 - `--field-name` and `--field_name` are equivalent.

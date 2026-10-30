@@ -19,7 +19,7 @@ def test_source_entrypoint_opts_into_same_process_handoff():
     try:
         with patch.object(bootstrap, 'main', return_value=7) as main:
             with pytest.raises(SystemExit) as stopped:
-                runpy.run_path(str(ROOT / 'launch.py'), run_name='__main__')
+                runpy.run_path(str(ROOT / 'src/api_agent/runtime/entry.py'), run_name='__main__')
     finally:
         sys.path[:] = original_path
     assert stopped.value.code == 7
@@ -42,8 +42,8 @@ def test_pack_executable_handoff_preserves_argv_and_environment():
             bootstrap.resource_pack_main(['--help'], launcher_root=ROOT / 'demo', replace_process=True)
     assert stopped.value.code == 8
     executable, argv, environment = execute.call_args.args
-    assert executable == sys.executable == argv[0]
-    assert argv[1] == str(ROOT / 'launch.py')
+    assert executable == '/bin/sh' == argv[0]
+    assert argv[1] == str(ROOT / 'launch.sh')
     assert argv[-1] == '--help'
     assert argv[argv.index('--resource-pack-dir') + 1] == str(ROOT / 'demo')
     assert argv[argv.index('--_launcher-root') + 1] == str(ROOT / 'demo')
@@ -53,8 +53,8 @@ def test_pack_executable_handoff_preserves_argv_and_environment():
 
 def test_terminal_completions_are_visible_and_flushed_before_run_returns(
         terminal_failure_launch, monkeypatch, capsys):
-    import builtins
     from types import SimpleNamespace
+    from api_agent.auth.terminal_output import TerminalOutput
     from api_agent.testing.contracts import RunnerEvent, TestResult
     from api_agent.testing.integration import IntegrationRunResult
     from test_terminal_failure_diagnostics import ARGS
@@ -65,12 +65,23 @@ def test_terminal_completions_are_visible_and_flushed_before_run_returns(
     identities = (replace(identities[0], id=identities[0].id + '[synthetic-credential-value]'), identities[1])
     monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *args, **kwargs: identities)
     flushes = []
-    ordinary_print = builtins.print
+    stream = sys.stdout
+    progress_pending = False
 
-    def observe_print(*values, **options):
-        if values and str(values[0]).startswith('Test progress:'):
-            flushes.append(options.get('flush'))
-        ordinary_print(*values, **options)
+    def observe_write(text):
+        nonlocal progress_pending
+        progress_pending = text.startswith('Test progress:')
+        stream.write(text)
+
+    def observe_flush():
+        nonlocal progress_pending
+        if progress_pending:
+            flushes.append(True)
+            progress_pending = False
+        stream.flush()
+
+    presentation = TerminalOutput(stdout=SimpleNamespace(write=observe_write, flush=observe_flush))
+    monkeypatch.setattr('api_agent.auth.terminal_output.TerminalOutput', lambda: presentation)
 
     def run(context, selected, config, **options):
         completed = RunnerEvent('test_finished', identity=identities[0], status='passed',
@@ -90,7 +101,6 @@ def test_terminal_completions_are_visible_and_flushed_before_run_returns(
         return SimpleNamespace(execution=IntegrationRunResult(0, results, ''),
                                persisted=True, exit_code=0, usage={})
 
-    monkeypatch.setattr(builtins, 'print', observe_print)
     monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
     assert bootstrap.main(ARGS, base_root=ROOT, _replace_process=True) == 0
     assert flushes == [True, True]

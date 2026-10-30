@@ -9,7 +9,7 @@ API, while a remote URL starts no local API stack. AGENT_DJANGO_URL addresses th
 agent itself. Only enabled declared prerequisites are acquired; concrete upstream
 APIs and databases remain the selected pack's responsibility.
 
-Use `./launch.py --tui-mode run-local --no-std-in` for the terminal consumer.
+Use `./launch.sh --tui-mode run-local --no-std-in` for the terminal consumer.
 `RUN_UI=True` or `DEBUG=True` opens one headed browser with agent home first,
 the actual selected graph next and optional prepared UI last. With both false,
 home and flow URLs remain available without a browser, credentials or catalog
@@ -40,17 +40,59 @@ OTEL and LangFuse spans. Credentials stay excluded with either opt-in enabled.
 Run local emits shared workflow and safe provider lifecycle events.
 `RUN_LOG_FULL_CONTENT=True` removes the default 512-character preview limit from
 permitted, supported payload fields; it does not enable content capture or remove
-source admission bounds. Use `./launch.py --tui-mode run-local --no-std-in | tee run.log`
+source admission bounds. Use `./launch.sh --tui-mode run-local --no-std-in | tee run.log`
 to retain stdout; the TUI keeps its own smaller display buffer. Slow terminal
 consumers can cause dropped diagnostic events, explicitly marked when output
 resumes. Stopping the application does not wait indefinitely for a blocked pipe.
 
 ## Recorded content and token usage
 
-`LOG_CONTENT` defaults to False. Set it True to attach exact provider-neutral
-LLM request/response content to Allure, including paths and code internals;
-credentials remain redacted. Failure diagnostics and token accounting remain
+`LOG_CONTENT` defaults to False. Set `LOG_CONTENT=True` to attach scrubbed
+provider request/response content to Allure, including provider-returned plaintext
+reasoning and summaries when available. They stay separate from the final answer;
+credentials, encrypted reasoning and internal state remain excluded.
+`TRACELOOP_TRACE_CONTENT=True` independently permits trace content.
+Failure diagnostics and token accounting remain
 available with content disabled. Future tool/browser evidence uses the same gate.
+
+Allure's **LLM request/response diagnostics** attachments retain bounded SDK
+observations even without DEBUG or content opt-in: effective effort/output limit,
+output item counts, visible/reasoning text lengths, completion/stop categories,
+and available HTTP status, request/response IDs and SDK versions. They correlate
+with the existing call and physical-attempt IDs. These are SDK-decoded observations,
+not raw HTTP captures. Missing fields stay unknown. A reasoning-token count does
+not establish that reasoning text was returned. When capture is disabled, its
+notice names the flag to enable for a new run. Capture loss is separate: content
+flags cannot recover unavailable content. Existing bounds/truncation still apply.
+Response diagnostics always include `reasoning_text_characters`: `null` when
+unknown, `0` when observed empty, or the measured count. Request diagnostics omit
+response-only fields. Actual plaintext stays in the permitted response attachment;
+for Responses, inspect `provider_response.output` items of type `reasoning`.
+`reasoning_items` counts those items; it is not the reasoning text itself.
+
+An HTTP-success response can still fail provider-contract or credential-safety
+validation. Bedrock retains a fixed rejection code, admitted SDK diagnostics and
+reported usage. Known validation checks also identify a fixed rule and schema
+path without including provider-supplied field names or values in diagnostics.
+After contract rejection, bounded SDK response evidence can still be captured
+under the independent destination flags above, provided its separate credential
+safety checks pass. This is failure evidence, not a validated completion.
+Both worker admission and final report/trace projection protect against split
+credential fragments and serialized JSON carriers. Final projection rechecks
+the frozen credential snapshot even when detailed diagnostics were scrubbed.
+Ambiguous or over-limit evidence is withheld as a whole, not partially released.
+Safety-rejected bodies stay withheld regardless of flags. Allure marks a body
+that could not be retained as unavailable; this does not mean no upstream response
+arrived. These failures do not gain automatic retries or relaxed validation.
+
+Capture can retain only what its adapter supplies. Normalized-only streaming
+adapters may omit original reasoning. Shared-provider integration calls now have
+an independent, backend-owned trace lane: `LOG_CONTENT=False` does not veto
+explicit trace permission, and trace-only payloads never enter test event streams
+or Allure artifacts. Call and transport-attempt IDs correlate remote spans with
+accounting and Allure; this is not distributed workflow-parent propagation.
+All destinations retain credential scrubbing and capture bounds. Enabling a flag
+does not recover earlier content or reasoning discarded by an adapter.
 
 Set `TOKEN_USAGE_CSV_ENABLED=True` to append usage to `token_usage.csv` in the
 selected pack root, or the base root without a pack. `TOKEN_USAGE_CSV` overrides
@@ -59,14 +101,34 @@ call count, session ID, input, output, total, cache-read, cache-creation and
 reasoning tokens. Allure retains its own usage summary and CSV independently.
 The default CSV, its lock and legacy backups are Git-ignored.
 
+## Failure diagnostics
+
+Integration failures use short pytest tracebacks by default: exception causes and
+source locations remain visible without dumping each transport frame's source.
+Use `DEBUG=True` for expanded source tracebacks and existing inspection behavior.
+The project explicitly uses function-scoped async fixture loops; other pytest
+warnings remain enabled.
+
+Terminal integration output pauses during private authentication conversations,
+including password-manager unlock and provider URL/code handoffs. Deferred output
+is replayed after the channel closes; large queues spill to temporary storage
+without truncating diagnostics. Setup and provider-operation timeouts retain a
+safe `deadline` classification without requiring DEBUG. A deadline alone is not
+evidence of a network outage. See [authentication limits](authentication-limitations.md).
+
+Physical inference recovery defaults to five total attempts, with nominal waits
+of 0.2s, 1s, 5s and 25s plus bounded jitter. It covers HTTP 429/5xx and explicitly
+classified transient network failures, within the shared deadline. A failed
+connection may follow a billable request; attempt evidence retains unknown costs.
+Empty successful answers, local validation and exhausted deadlines do not trigger
+replacement inference. See [completion recovery](architecture/provider_contracts_v1.md#bounded-completion-recovery).
+
 ## Optional Allure viewer prerequisite
 
-Install the Allure 2 CLI separately for HTML report generation and viewing;
-recording and publishing results do not require it. On macOS, or Linux with
-Homebrew already installed, use `brew install allure` (OpenJDK is included), then
-verify `allure --version`. For other installations, follow the official
-[Allure installation guide](https://allurereport.org/docs/v2/install/), including
-its Java and PATH requirements.
+The launcher prepares the pinned Allure 2 CLI for HTML report generation and
+viewing through mise; recording and publishing results do not require it. A
+custom executable can instead be supplied through `ALLURE_CLI`; its own Java
+and availability requirements still apply.
 
 `ALLURE_CLI` defaults to `allure` and is visible in Review configuration. It accepts a quoted executable and optional prefix arguments, without shell expansion. That executable must be available on PATH in the launcher's environment;
 a host installation alone may not be visible inside a container. The
@@ -74,7 +136,7 @@ a host installation alone may not be visible inside a container. The
 
 ## Viewing Allure results
 
-Choose **Allure serve** or run `./launch.py --tui-mode allure` interactively to
+Choose **Allure serve** or run `./launch.sh --tui-mode allure` interactively to
 browse finalized integration/E2E runs for the selected repository/pack. The
 managed browser opens the latest report with native test History and trend
 charts, built chronologically from up to 20 launches of the same mode.
@@ -101,8 +163,8 @@ Select `unit`, `integration` or `e2e` through `--tui-mode`. File/node selectors
 can be repository-qualified; `tag:NAME` selects a marked group. Multiple
 selectors select their union. Unknown, ambiguous or empty matches fail.
 ```bash
-./launch.py --tui-mode "<tests_type>" "<selector>"
-./launch.py --tui-mode "<tests_type>" --collect-only
+./launch.sh --tui-mode "<tests_type>" "<selector>"
+./launch.sh --tui-mode "<tests_type>" --collect-only
 ```
 
 The interactive picker starts with All tests, then tag/file groups and individual
@@ -183,14 +245,16 @@ an implemented-mode pass.
 
 ## Browser debugging
 
-For declaration-only inspection, `./launch.py --view-flow` opens the selected
+For declaration-only inspection, `./launch.sh --view-flow` opens the selected
 workflow in its own managed headed browser without provider setup or graph
-execution. See [workflow diagrams](workflow_viewer.md) for static file opening,
+execution. Add one double-quoted flow path, for example
+`./launch.sh --view-flow "demo/contrived/flow.md.html"`, to inspect a different
+graph relative to the current directory. See [workflow diagrams](workflow_viewer.md) for static file opening,
 markup freshness, generator prerequisites and staged checks.
 
 To inspect provider login, use DEBUG with selected integration tests:
 ```bash
-./launch.py --tui-mode integration --no-std-in --debug \
+./launch.sh --tui-mode integration --no-std-in --debug \
   api-agent::tests/integration/test_llm_discovery.py
 ```
 
@@ -202,7 +266,7 @@ E2E_DEBUG selects retained headed E2E browsers for focused tests.
 For the included Studio request test, keep DEBUG inspection in the pytest
 controller with a serial run:
 ```bash
-./launch.py --debug --tui-mode integration --test-parallel-jobs=0 \
+./launch.sh --debug --tui-mode integration --test-parallel-jobs=0 \
   api-agent::tests/integration/test_studio_request.py
 ```
 This test makes one inference request using the configured provider. Parallel
@@ -218,7 +282,7 @@ npx -y @playwright/mcp@latest --cdp-endpoint=http://127.0.0.1:<port>
 ```
 Choose one server and select the existing context/page. The MCP extension
 connection page is a separate browser. Attaching does not change the browser's
-headless/headed mode or retention policy; launch.py owns cleanup. Keep callback
+headless/headed mode or retention policy; launch.sh owns cleanup. Keep callback
 parameters, credentials, cookies and storage out of diagnostic output. See the
 [Chrome DevTools MCP options](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/configuration.md),
 [Playwright MCP options](https://github.com/microsoft/playwright-mcp#configuration)
@@ -226,11 +290,13 @@ and [inspection contracts](architecture/provider_architecture.md).
 
 ## Developer environment and builds
 
-Use Python 3.13+ and a coding agent with terminal access. The launcher prepares
-its local environment and Python dependencies; `uv` is optional for launcher
-setup. Browser inspection additionally needs:
+Install mise and use a coding agent with terminal access. The launcher uses mise
+to prepare its pinned Python and uv tools and its Python dependencies; Node is
+prepared when needed.
+Browser inspection additionally needs:
 
-- Node.js LTS and npm when using the `npx` MCP commands above.
+- Node.js and npm available to the agent when using the `npx` MCP commands
+  above; use the managed tools or configure a suitable custom installation.
 - Chrome DevTools MCP (preferred) or Playwright MCP configured in the agent.
 - A compatible browser: attaching to an existing managed browser needs no
   separate Chrome installation. The launcher prepares Playwright Chromium when
@@ -239,7 +305,7 @@ setup. Browser inspection additionally needs:
 
 If the MCP launches its own browser for independent UI development, configure
 its `--executable-path` when its default Chrome executable is unavailable.
-Use the CDP attachment options above when inspecting a launch.py browser.
+Use the CDP attachment options above when inspecting a launch.sh browser.
 Docker and other provider prerequisites are needed only for operations that
 declare them; ordinary unit tests need no live provider credentials or inference.
 
@@ -286,7 +352,7 @@ argument limits. Positional selection and per-owner execution remain unchanged.
 To review the selected UI provider without an LLM request:
 
 ```bash
-./launch.py --debug --tui-mode integration \
+./launch.sh --debug --tui-mode integration \
   api-agent::tests/integration/test_ui_provider_session.py
 ```
 

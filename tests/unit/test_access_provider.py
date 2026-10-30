@@ -62,7 +62,8 @@ def test_stream_factory_preserves_approved_safe_failure():
     expected = OperationalError('rate_limited', retry_after=2)
     def stream(*args, **kwargs): raise expected
     async def scenario():
-        iterator = _StreamView(SimpleNamespace(astream=stream)).astream(request)
+        iterator = _StreamView(SimpleNamespace(astream=stream,
+            credential_protection_version=1, bind_credential_authority=lambda authority: None)).astream(request)
         try:
             with pytest.raises(OperationalError) as caught:
                 await anext(iterator)

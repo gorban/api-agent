@@ -11,6 +11,25 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_build_rejects_head_change_after_snapshot(tmp_path, monkeypatch):
+    namespace = runpy.run_path(str(ROOT / 'hatch_build.py'))
+    hook = namespace['CustomBuildHook'](str(tmp_path), {}, None, None, '', 'sdist')
+    globals_ = hook.initialize.__globals__
+    revisions = iter(('a' * 40, 'c' * 40))
+    def git_call(root, *args):
+        if args == ('rev-parse', '--show-toplevel'):
+            return str(tmp_path).encode()
+        if args == ('rev-parse', 'HEAD'):
+            return next(revisions).encode()
+        raise AssertionError(args)
+    monkeypatch.setitem(globals_, '_git', git_call)
+    monkeypatch.setitem(globals_, '_validate_frontend_assets', lambda root: None)
+    monkeypatch.setitem(globals_, '_package_inventory', lambda *args: None)
+    monkeypatch.setitem(globals_, '_proof', lambda root, commit: {})
+    with pytest.raises(RuntimeError, match='source changed during build'):
+        hook.initialize('0', {})
+
+
 def git(root, *arguments):
     return subprocess.check_output(['git', '-C', str(root), *arguments])
 

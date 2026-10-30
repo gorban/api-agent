@@ -39,6 +39,7 @@
     "llm_providers/bedrock/login_transport.py",
     "llm_providers/bedrock/login_worker.py",
     "llm_providers/bedrock/mantle.py",
+    "llm_providers/bedrock/normalized_stream.py",
     "llm_providers/bedrock/persistence.py",
     "llm_providers/bedrock/pricing.py",
     "llm_providers/bedrock/response_policy.py",
@@ -46,7 +47,9 @@
     "llm_providers/bedrock/session_providers.py",
     "llm_providers/bedrock/sessions.py",
     "llm_providers/bedrock/worker.py",
-    "llm_providers/bedrock/test-profiles.toml"
+    "llm_providers/bedrock/test-profiles.toml",
+    "providers/credential_guard.py",
+    "telemetry/redaction.py"
   ],
   "identity_settings": [
     "BEDROCK_PROFILE",

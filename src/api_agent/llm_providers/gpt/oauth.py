@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 import base64
 import hashlib
+import inspect
 import json
 import math
 import secrets
@@ -23,6 +24,12 @@ RESOURCE = "https://api.openai.com/v1"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
 INITIAL_CLIENT = "dynamic_agent_client"
 LIMIT = 131072
+
+
+async def _register(callback, value):
+    result = callback(value)
+    if inspect.isawaitable(result):
+        await result
 # Only fixed protocol classifications may cross the login boundary. Never echo
 # arbitrary response fields: even an error payload may contain credentials.
 OAUTH_ERROR_CODES = frozenset({
@@ -82,16 +89,16 @@ def _begin(host_id, redirect_uri, registration, app_name, *, issued_client_id=No
                                 AUTHORIZE + "?" + urlencode(query), registration)
 
 
-async def _request(client, method, url, *, refresh=False, **kwargs):
+async def _request(client, method, url, *, refresh=False, register_secret=None, retain_result=None, **kwargs):
     status = None
     reason = None
+    result = None
+    completed = False
     try:
         async with component_timeout('GPT OAuth ' + ('token exchange' if url == TOKEN else 'identity verification'), 15) as budget:
             async with client.stream(method, url, timeout=budget.remaining, follow_redirects=False,
                                      headers={'Accept-Encoding': 'identity'}, **kwargs) as response:
                 status = response.status_code
-                if refresh and status in (400, 401):
-                    raise AuthError("refresh_rejected")
                 if response.headers.get('content-encoding', '').strip().lower() not in ('', 'identity'):
                     raise ValueError
                 body = bytearray()
@@ -108,12 +115,24 @@ async def _request(client, method, url, *, refresh=False, **kwargs):
                         supplied = supplied.get('code')
                     if isinstance(supplied, str) and supplied in OAUTH_ERROR_CODES:
                         reason = supplied
-                    raise ValueError
-                return result
-    except AuthError:
-        raise
+                elif retain_result is not None:
+                    # Retain successful rotation before response.__aexit__ can
+                    # suspend or receive cancellation.
+                    retain_result(result)
+            completed = True
     except (httpx.HTTPError, ValueError, TypeError, RecursionError, TimeoutError):
         pass
+    # Parsed token fields are sensitive even in an error response. Admission
+    # may wait on a publication lease and must happen outside the HTTP budget.
+    if url == TOKEN and register_secret is not None and type(result) is dict:
+        for name in ('access_token', 'refresh_token', 'id_token'):
+            value = result.get(name)
+            if type(value) is str and value:
+                await _register(register_secret, value)
+    if completed and status == 200:
+        return result
+    if refresh and status in (400, 401):
+        raise AuthError("refresh_rejected") from None
     error = AuthError("authorization_failed")
     error.stage = 'token' if url == TOKEN else 'metadata' if url == METADATA else 'keys'
     error.http_status = status
@@ -187,7 +206,12 @@ async def _identity(token, client_id, nonce, client, now):
     raise AuthError("invalid_identity")
 
 
-async def _connection(data, client_id, host_id, subject, nonce, client, now, previous=None):
+async def _connection(data, client_id, host_id, subject, nonce, client, now, previous=None, register_secret=None):
+    if register_secret is not None and type(data) is dict:
+        for name in ("access_token", "refresh_token", "id_token"):
+            value = data.get(name)
+            if type(value) is str and value:
+                await _register(register_secret, value)
     scopes = tuple(_text(data, "scope").split())
     if not {"resource.invoke", "chatgpt.tokens.use.direct", "offline_access"}.issubset(scopes):
         raise AuthError("plan_permission_required")
@@ -232,7 +256,7 @@ def restart_authorization(attempt, parameters):
 
 
 async def finish_authorization(attempt: AuthorizationAttempt, parameters: Mapping[str, str],
-                               *, client: httpx.AsyncClient, now: float) -> Connection:
+                               *, client: httpx.AsyncClient, now: float, register_secret=None) -> Connection:
     now = _number(now)
     if parameters.get("state") != attempt.state:
         raise AuthError("invalid_state")
@@ -240,20 +264,38 @@ async def finish_authorization(attempt: AuthorizationAttempt, parameters: Mappin
         raise AuthError("authorization_denied")
     client_id = _issued_client(attempt, parameters)
     code = _text(parameters, "code")
-    data = await _request(client, "POST", TOKEN, data=dict(grant_type="authorization_code",
+    if register_secret is not None:
+        await _register(register_secret, code)
+        await _register(register_secret, attempt.verifier)
+    data = await _request(client, "POST", TOKEN, register_secret=register_secret, data=dict(grant_type="authorization_code",
                           client_id=client_id, code=code, code_verifier=attempt.verifier,
                           redirect_uri=attempt.redirect_uri, resource=RESOURCE))
     subject = attempt.registration.subject if attempt.registration else None
-    return await _connection(data, client_id, attempt.host_id, subject, attempt.nonce, client, now)
+    return await _connection(data, client_id, attempt.host_id, subject, attempt.nonce, client, now, register_secret=register_secret)
 
 
 async def refresh_connection(connection: Connection, *, client: httpx.AsyncClient,
-                             now: float) -> Connection:
+                             now: float, register_secret=None, pending=None) -> Connection:
     now = _number(now)
     if now < connection.earliest_refresh_at:
         raise AuthError("refresh_not_ready")
-    data = await _request(client, "POST", TOKEN, refresh=True, data=dict(grant_type="refresh_token",
-                          client_id=connection.client_id, refresh_token=connection.refresh_token,
-                          resource=RESOURCE))
+    identity = hashlib.sha256(connection.refresh_token.encode()).digest()
+    if pending is not None and pending:
+        if pending.get('identity') != identity or type(pending.get('data')) is not dict:
+            raise AuthError('pending_refresh_mismatch')
+        data = pending['data']
+        now = _number(pending['received_at'])
+        if register_secret is not None:
+            for name in ('access_token', 'refresh_token', 'id_token'):
+                value = data.get(name)
+                if type(value) is str and value:
+                    await _register(register_secret, value)
+    else:
+        def retain(data):
+            pending.update(identity=identity, data=data, received_at=now)
+        data = await _request(client, "POST", TOKEN, refresh=True, register_secret=register_secret,
+                              retain_result=retain if pending is not None else None,
+                              data=dict(grant_type="refresh_token", client_id=connection.client_id,
+                                        refresh_token=connection.refresh_token, resource=RESOURCE))
     return await _connection(data, connection.client_id, connection.host_id,
-                             connection.subject, None, client, now, connection)
+                             connection.subject, None, client, now, connection, register_secret=register_secret)

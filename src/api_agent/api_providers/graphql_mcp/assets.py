@@ -4,8 +4,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
+import threading
+from functools import partial
 
 from .owner import GraphQLMcpError
 
@@ -75,6 +78,15 @@ async def prepare_assets(directory: Path, *, npm: str | None = None, timeout: fl
     """Run controlled npm ci at an explicit setup boundary, never at invocation."""
     if not 0 < timeout <= 300:
         raise GraphQLMcpError("asset_timeout_invalid")
+    if npm is None and os.environ.get('API_AGENT_MISE') == '1':
+        from api_agent.runtime.mise_tools import ensure_tools
+        from api_agent.runtime.tasks import offload
+        cancellation = threading.Event()
+        try:
+            await offload(partial(ensure_tools, 'node', 'npm', cancellation=cancellation),
+                          cancellation=cancellation)
+        except (OSError, TimeoutError) as exc:
+            raise GraphQLMcpError('npm_preparation') from exc
     npm_path = shutil.which(npm or "npm")
     if npm_path is None:
         raise GraphQLMcpError("npm_missing")

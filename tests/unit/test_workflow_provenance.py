@@ -837,9 +837,77 @@ def test_nested_source_with_receipt_keeps_committed_source_gate(tmp_path, monkey
         contents=MappingProxyType({moved: moved.read_bytes()}))
     if state == 'clean':
         assert verified_documents(selected)['owners'][0]['source_prefix'] == 'nested'
+    elif state in ('staged', 'unstaged'):
+        owner = verified_documents(selected)['owners'][0]
+        assert owner['source_prefix'] == 'nested'
+        assert owner['commit'] is None and owner['state'] == 'working_tree'
+        assert owner['base_commit'] == git(file.parent, 'rev-parse', 'HEAD').stdout.decode().strip()
     else:
         with pytest.raises(LayoutError, match='staged|differs from HEAD|untracked or ignored'):
             verified_documents(selected)
+
+
+def test_working_document_hash_matches_same_bytes_after_commit(tmp_path):
+    from dataclasses import replace
+    from api_agent.workflows.provenance import verified_documents
+    definition, file = admitted(tmp_path)
+    file.write_bytes(b'# Updated working workflow\n')
+    selected = replace(definition, contents=MappingProxyType({file: file.read_bytes()}))
+    working = verified_documents(selected)
+    assert working['owners'][0]['commit'] is None
+    assert working['owners'][0]['state'] == 'working_tree'
+    git(file.parent, 'add', file.name)
+    git(file.parent, 'commit', '-qm', 'commit working workflow')
+    committed = verified_documents(selected)
+    assert committed['documents'] == working['documents']
+    assert committed['owners'][0]['commit'] == git(file.parent, 'rev-parse', 'HEAD').stdout.decode().strip()
+    assert committed['sha256'] != working['sha256']
+
+
+def test_working_document_changed_after_admission_is_rejected(tmp_path):
+    from dataclasses import replace
+    from api_agent.workflows.provenance import verified_documents
+    definition, file = admitted(tmp_path)
+    file.write_bytes(b'first change')
+    selected = replace(definition, contents=MappingProxyType({file: file.read_bytes()}))
+    file.write_bytes(b'second change')
+    with pytest.raises(LayoutError, match='changed after admission'):
+        verified_documents(selected)
+
+
+def test_mixed_staged_and_unstaged_documents_are_recorded_as_working_tree(tmp_path):
+    from dataclasses import replace
+    from api_agent.workflows.provenance import verified_documents
+    definition, file = admitted(tmp_path)
+    second = file.parent / 'second.md.html'
+    second.write_bytes(b'# Second workflow document\n')
+    git(file.parent, 'add', second.name)
+    git(file.parent, 'commit', '-qm', 'add second document')
+    file.write_bytes(b'# Unstaged change\n')
+    second.write_bytes(b'# Staged change\n')
+    git(file.parent, 'add', second.name)
+    selected = replace(definition, contents=MappingProxyType({file: file.read_bytes(), second: second.read_bytes()}))
+    manifest = verified_documents(selected)
+    assert manifest['owners'][0]['state'] == 'working_tree'
+    assert manifest['owners'][0]['commit'] is None
+    assert len(manifest['documents']) == 2
+
+
+@pytest.mark.parametrize('staged', [False, True])
+def test_new_source_document_is_recorded_before_commit(tmp_path, staged):
+    from dataclasses import replace
+    from api_agent.workflows.provenance import verified_documents
+    definition, file = admitted(tmp_path)
+    added = file.parent / 'new.md.html'
+    added.write_bytes(b'# New workflow document\n')
+    if staged:
+        git(file.parent, 'add', added.name)
+    selected = replace(definition, contents=MappingProxyType({file: file.read_bytes(), added: added.read_bytes()}))
+    before = verified_documents(selected)
+    assert before['owners'][0]['state'] == 'working_tree'
+    git(file.parent, 'add', added.name)
+    git(file.parent, 'commit', '-qm', 'add workflow document')
+    assert verified_documents(selected)['documents'] == before['documents']
 
 
 def test_distribution_ownership_requires_filesystem_inventory(tmp_path, monkeypatch):
@@ -952,8 +1020,7 @@ def test_record_cannot_launder_staged_nested_source(tmp_path, monkeypatch, recor
     moved.write_bytes(b'# Different staged workflow\n')
     git(file.parent, 'add', 'nested/flow.md.html')
     moved.write_bytes(file.read_bytes())
-    with pytest.raises(LayoutError, match='staged changes'):
-        verified_documents(selected)
+    assert verified_documents(selected)['owners'][0]['state'] == 'working_tree'
     info = file.parent / 'claimed_source-1.0.dist-info'
     info.mkdir()
     (info / 'METADATA').write_text('Name: claimed-source\nVersion: 1.0\n')
@@ -965,8 +1032,11 @@ def test_record_cannot_launder_staged_nested_source(tmp_path, monkeypatch, recor
     else:
         (info / 'RECORD').write_bytes(external.read_bytes())
     monkeypatch.syspath_prepend(str(file.parent))
-    with pytest.raises(LayoutError, match='staged changes'):
-        verified_documents(selected)
+    if record_kind == 'regular':
+        with pytest.raises(LayoutError, match='staged changes'):
+            verified_documents(selected)
+    else:
+        assert verified_documents(selected)['owners'][0]['state'] == 'working_tree'
 
 
 @pytest.mark.parametrize('physical_owner', [False, True])
@@ -1019,3 +1089,114 @@ def test_distribution_inventory_rejects_unsafe_required_path_claim(
 
     assert distribution.locate_file(unsafe) == required
     assert not _distribution_owns_documents(selected, 'base')
+
+
+@pytest.mark.parametrize(('argument', 'replacement', 'message'), (
+    ('--show-toplevel', b'/unrelated/checkout\n', 'outside its Git root'),
+    ('--show-object-format', b'unsupported\n', 'Unsupported Git object format'),
+))
+def test_working_capture_rejects_inconsistent_git_metadata(tmp_path, monkeypatch, argument, replacement, message):
+    import api_agent.workflows.provenance as module
+    definition, _ = admitted(tmp_path)
+    original = module._git
+    monkeypatch.setattr(module, '_git', lambda root, *args: replacement if argument in args else original(root, *args))
+    with pytest.raises(LayoutError, match=message):
+        module.working_documents(definition, selected_owners={'base'})
+
+
+def test_working_capture_rejects_ignored_and_changed_documents(tmp_path):
+    from dataclasses import replace
+    from api_agent.workflows.provenance import working_documents
+    definition, file = admitted(tmp_path)
+    file.write_bytes(b'changed since admission')
+    with pytest.raises(LayoutError, match='changed after admission'):
+        working_documents(definition, selected_owners={'base'})
+    ignored = file.parent / 'ignored.md.html'
+    ignored.write_bytes(b'ignored')
+    (file.parent / '.gitignore').write_text('ignored.md.html\n')
+    definition = replace(definition, contents=MappingProxyType({ignored: ignored.read_bytes()}))
+    with pytest.raises(LayoutError, match='untracked or ignored'):
+        working_documents(definition, selected_owners={'base'})
+
+
+def test_working_capture_rejects_unmerged_index_and_changed_head(tmp_path, monkeypatch):
+    import api_agent.workflows.provenance as module
+    definition, _ = admitted(tmp_path)
+    original = module._git
+    def unmerged(root, *args):
+        result = original(root, *args)
+        return result.replace(b' 0\t', b' 1\t') if args[:2] == ('ls-files', '--stage') else result
+    monkeypatch.setattr(module, '_git', unmerged)
+    with pytest.raises(LayoutError, match='unmerged'):
+        module.working_documents(definition, selected_owners={'base'})
+    with pytest.raises(LayoutError, match='unmerged'):
+        module.committed_documents(definition)
+    count = 0
+    def moved(root, *args):
+        nonlocal count
+        if args == ('rev-parse', 'HEAD'):
+            count += 1
+            if count == 2:
+                return b'0' * 40 + b'\n'
+        return original(root, *args)
+    monkeypatch.setattr(module, '_git', moved)
+    with pytest.raises(LayoutError, match='changed during capture'):
+        module.working_documents(definition, selected_owners={'base'})
+
+
+def test_working_capture_rejects_orphan_and_empty_selection(tmp_path, monkeypatch):
+    import api_agent.workflows.provenance as module
+    definition, file = admitted(tmp_path)
+    with pytest.raises(LayoutError, match='no documents'):
+        module.working_documents(definition, selected_owners=set())
+    outside = tmp_path / 'outside.md.html'
+    outside.write_bytes(b'outside')
+    monkeypatch.setattr(module, 'physical_documents', lambda _: {outside: b'outside'})
+    with pytest.raises(LayoutError, match='no owning root'):
+        module.working_documents(definition, selected_owners={'base'})
+
+
+def test_working_capture_rejects_owner_changing_between_documents(tmp_path, monkeypatch):
+    from dataclasses import replace
+    import api_agent.workflows.provenance as module
+    definition, first = admitted(tmp_path)
+    second = first.parent / 'second.md.html'
+    second.write_bytes(b'second')
+    git(first.parent, 'add', second.name)
+    git(first.parent, 'commit', '-qm', 'add second')
+    definition = replace(definition, contents=MappingProxyType({first: first.read_bytes(), second: second.read_bytes()}))
+    original = module._git
+    count = 0
+    def moved(root, *args):
+        nonlocal count
+        if args == ('rev-parse', 'HEAD'):
+            count += 1
+            if count == 2:
+                return b'0' * 40 + b'\n'
+        return original(root, *args)
+    monkeypatch.setattr(module, '_git', moved)
+    with pytest.raises(LayoutError, match='changed during capture'):
+        module.working_documents(definition, selected_owners={'base'})
+
+
+def test_committed_capture_rejects_ambiguous_tree_and_nested_new_file(tmp_path, monkeypatch):
+    from dataclasses import replace
+    import api_agent.workflows.provenance as module
+    definition, file = admitted(tmp_path)
+    original = module._git
+    def ambiguous(root, *args):
+        result = original(root, *args)
+        return result + result if args[:2] == ('ls-tree', 'HEAD') else result
+    monkeypatch.setattr(module, '_git', ambiguous)
+    with pytest.raises(LayoutError, match='ambiguous committed provenance'):
+        module.committed_documents(definition)
+    monkeypatch.setattr(module, '_git', original)
+    nested = file.parent / 'nested'
+    nested.mkdir()
+    added = nested / 'flow.md.html'
+    added.write_bytes(b'new')
+    git(file.parent, 'add', 'nested/flow.md.html')
+    nested_definition = replace(definition, entry=added, roots=MappingProxyType({'base': nested}),
+                                contents=MappingProxyType({added: added.read_bytes()}))
+    with pytest.raises(LayoutError, match='untracked or ignored'):
+        module.committed_documents(nested_definition)

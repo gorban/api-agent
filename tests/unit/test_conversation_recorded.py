@@ -179,9 +179,12 @@ def test_finalized_graph_free_conversation_retains_canonical_call_attachments(tm
     assert turn['name'] == 'User turn 1' and parameters(turn)['turn_id'] == turn_id
     leaf = turn['steps'][0]
     assert leaf['name'] == 'call ' + call_id
-    assert len(leaf.get('attachments', [])) == len(expected_phases)
+    raw_attachments = [item for item in leaf.get('attachments', []) if ' diagnostics (' not in item['name']]
+    diagnostics = [item for item in leaf.get('attachments', []) if ' diagnostics (' in item['name']]
+    assert len(diagnostics) == (0 if log_content else 2)
+    assert len(raw_attachments) == len(expected_phases)
     assert {json.dumps(json.loads((result.directory / item['source']).read_bytes()), sort_keys=True)
-            for item in leaf.get('attachments', [])} == {json.dumps(phases[phase], sort_keys=True) for phase in expected_phases}
+            for item in raw_attachments} == {json.dumps(phases[phase], sort_keys=True) for phase in expected_phases}
     payload_files = [path for path in result.directory.glob('payload-*.json')
                      if not path.name.startswith('payload-index-')]
     assert len(payload_files) == len(expected_phases)

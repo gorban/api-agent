@@ -2,7 +2,6 @@
 import asyncio
 import os
 from threading import Event
-from copy import deepcopy
 from secrets import token_urlsafe
 from types import MappingProxyType
 
@@ -420,15 +419,28 @@ class LocalRunOwner:
                     primary.cleanup_pending = pending
             raise
 
-    def _safe_text(self, text):
+    def _safe_text(self, text, commit=None):
         from api_agent.testing.diagnostics import CredentialScrubber
         values = dict(self._config.values) if self._config is not None else {}
         boundary = self._emissions
         if boundary is None and self._session is not None:
             boundary = self._session.runtime.emissions
-        safe = CredentialScrubber(values, boundary=deepcopy(boundary))(text)
-        return ''.join(character if character.isprintable() or character in '\n\t'
-                       else f'\\u{ord(character):04x}' for character in safe)
+        for _ in range(3):
+            generation, snapshot = boundary.snapshot_content() if boundary is not None else (None, None)
+            safe = CredentialScrubber(values, boundary=snapshot)(text)
+            safe = ''.join(character if character.isprintable() or character in '\n\t'
+                           else f'\\u{ord(character):04x}' for character in safe)
+            publish = lambda: commit(safe) if commit is not None else None
+            if boundary is None:
+                publish()
+                return safe
+            if boundary.commit_if_current(generation, publish):
+                return safe
+        # Repeated concurrent registrations make the content unsafe to publish.
+        safe = '[diagnostic withheld]'
+        if commit is not None:
+            commit(safe)
+        return safe
 
     def diagnostic(self, error):
         """Preserve the actionable cause without exposing owned credentials."""
@@ -454,13 +466,19 @@ class LocalRunOwner:
                                 diagnostic=row, sequence=self._sequence))
 
     def _log(self, source, text):
-        # Scrub a complete snapshot before truncation or terminal escaping.
-        safe = self._safe_text(text)[-16384:]
+        # Commit the scrubbed projection under the same authority generation;
+        # callbacks run only after releasing its lock.
         from hashlib import sha256
-        self._log_fingerprints[source] = sha256(text.encode()).hexdigest()
-        self._logs[source] = safe
-        self._sequence += 1
-        self._notify(LocalEvent('log', source=source, text=safe, sequence=self._sequence))
+        fingerprint = sha256(text.encode()).hexdigest()
+        event = []
+        def commit(safe):
+            safe = safe[-16384:]
+            self._log_fingerprints[source] = fingerprint
+            self._logs[source] = safe
+            self._sequence += 1
+            event.append(LocalEvent('log', source=source, text=safe, sequence=self._sequence))
+        self._safe_text(text, commit)
+        self._notify(event[0])
 
     async def _capture_logs(self):
         from api_agent.runtime.tasks import offload

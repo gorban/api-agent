@@ -34,6 +34,8 @@ def create(config, services): return Adapter(config, services)
 def test_provider_location_is_required_and_errors_are_private(tmp_path):
     with pytest.raises(ProviderError, match='location_required'):
         load_provider('', {}, {})
+    # Load the independent source-tracking dependency before checking for leaked provider modules.
+    __import__('api_agent.config.source_reads')
     before = set(sys.modules)
     location = factory(tmp_path, "def create(config, services): raise ValueError('secret-value')\n")
     with pytest.raises(ProviderError) as caught:

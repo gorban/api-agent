@@ -5,6 +5,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('isolated_native_login_gate')
+
 from api_agent.auth.interaction_transport import OwnedInteraction
 from api_agent.config import load_shared_schema, resolve_config
 from api_agent.providers.control import OperationContext
@@ -68,7 +70,8 @@ def native_config(method):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('method', ['direct', 'sso'])
-async def test_bundled_native_acquirer_reaches_real_parsed_flow(monkeypatch, method):
+@pytest.mark.parametrize('no_stdin', [False, True])
+async def test_bundled_native_acquirer_reaches_real_parsed_flow(monkeypatch, method, no_stdin):
     from api_agent.llm_providers.bedrock.login_transport import LoginTransport
 
     async def forbidden(*args, **kwargs):
@@ -94,9 +97,15 @@ async def test_bundled_native_acquirer_reaches_real_parsed_flow(monkeypatch, met
         return dict(AccessKeyId='synthetic-key', SecretAccessKey='synthetic-secret',
                     SessionToken='synthetic-token', expires_at=time.time() + 180, identity=dict(Account='123456789012', Arn='arn:aws:iam::123456789012:user/example'))
 
-    async def inference(operation, payload, *, auth):
+    async def inference(operation, payload, *, auth, join=None, on_dispatch=None):
         values = auth.worker_config()
         assert values['mode'] == 'temporary' and values['session_token'] == 'synthetic-token'
+        if join is not None:
+            _, lease = await join([values['access_key'], values['secret_key'], values['session_token']])
+            try:
+                if on_dispatch is not None: on_dispatch()
+            finally:
+                lease.release()
         if operation == 'models':
             return {'data': [{'id': MODEL}]}
         assert operation == 'responses' and payload['prefix'] == '/v1'
@@ -107,7 +116,7 @@ async def test_bundled_native_acquirer_reaches_real_parsed_flow(monkeypatch, met
                     usage=dict(input_tokens=3, output_tokens=1, total_tokens=4))
 
     monkeypatch.setattr(LoginTransport, 'acquire', acquire)
-    config = native_config(method)
+    config = dict(native_config(method), NO_STD_IN=no_stdin)
     owner = LocalLLM(config, ROOT, interaction_owner=borrowed)
     context = OperationContext('offline-native-login', time.monotonic() + 30)
     try:

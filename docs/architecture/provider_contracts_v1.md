@@ -12,6 +12,16 @@ Use `aload_provider` inside an event loop. Synchronous loading rejects active-lo
 
 ## Common inference data
 
+Validated JSON response consumers use
+`api_agent.providers.rich_inference.response_json(result)`. It preserves the
+original result text and uses recorded actual mode: only `prompted_json` permits
+closed whole-response backtick envelopes. Native modes and results without mode
+evidence stay strict. The shared parser tries JSON first, then unwraps at most
+four matching `json`/unlabelled envelopes with strictly decreasing fence widths.
+Original schemas, duplicate-key checks and size/depth bounds still apply. Tool
+arguments, schemas, credentials and IPC framing do not opt in. See
+[the envelope contract](../prds/implementation_plan_f1a1a.md).
+
 `LLMRequest` carries `selected_llm`, a `CompletionRequest` and an optional request ID. Requests contain ordered messages, optional tools, generation options and optional structured-output schema. Message roles are system/user/assistant/tool. Text, tool calls and tool results use separate immutable carriers. Tool arguments remain a transport-neutral string; adapters interpret them. Schema strings must parse as finite JSON objects.
 
 Available selections advertise `tools`, `structured`, `temperature`, `max_output_tokens` and `cache_policy` where supported. Call `AvailableSelection.validate(request)` before invoking the transport; unsupported selection/features raise a safe `OperationalError("unsupported")`. Concrete adapters must not silently discard requested features.
@@ -72,12 +82,21 @@ invokes an additional legacy authentication hook alongside preparation.
 
 OperationalError has a safe kind, execution disposition and optional retry delay. Kinds are authentication, authorization, unavailable, rate_limited, unsupported, invalid_request, deadline and unknown. Execution is not_started/possibly_executed/completed. Unknown failures are sanitized and possibly_executed. Retry authority belongs to the operation consumer. Shared completion consumers apply the bounded recovery policy below; mutation and workflow retries remain separate.
 
+`ProviderAccessError.origin` defaults to `provider`. Generic result validation
+sets `local_output_validation`, preserved through setup IPC, to distinguish
+locally confirmed output rejection from upstream error-body codes and types.
+Adapters must not populate this marker from upstream fields. The tool-conversation
+owner can request a new proposal for confirmed invalid tool arguments within its
+existing round limit; it never dispatches or replays the rejected batch. Local
+validator unavailability, authentication and relevance rejection remain terminal.
+
 Use `async with owner.stream(operation, context=budget) as stream` and iterate inside that lease. Do not treat a bare async iterator or garbage collection as ownership. Exhaustion or explicit awaited close releases iteration work; early break still requires context exit. Concurrent iteration is rejected. Cancellation-resistant factories, reads and close tasks retain their session dependencies until disposal is confirmed.
 
 
 ## Bounded completion recovery
 
-The shared completion owner retries confirmed upstream HTTP 429 and 500..599, with
+The shared completion owner retries confirmed upstream HTTP 429 and 500..599 and
+explicitly classified transient transport errors (`OperationalError.kind = network`), with
 `LLM_MAX_ATTEMPTS` defaulting to five total attempts including the first (1..20;
 one disables recovery). Nominal delays are 200ms, 1s, 5s and 25s with bounded jitter
 and a 30-second algorithm cap. A valid Retry-After minimum may be longer, but all
@@ -92,8 +111,13 @@ not establish an HTTP failure. Preserve the confirmed status and any parsed
 `error.retry_after` before reading or decoding a failure body. The shared
 `api_agent.providers.inference_retry.retry_after` helper parses the header into
 a bounded numeric hint; an unsupported large server minimum declines recovery.
-Local validation, cancellation, statusless failures and other HTTP statuses stay
-terminal under this policy.
+Local validation, cancellation, local deadlines, TLS configuration failures,
+pool saturation, unknown statusless failures and other HTTP statuses stay terminal.
+Providers classify typed connection/read/write-timeout/disconnect causes, not raw
+messages or a generic `unavailable` kind. Network retries preserve possible prior
+execution and unknown charges; an empty successful result is not a network error.
+An underlying native socket timeout or typed TLS EOF does not turn a transport
+failure into a local deadline or certificate/configuration failure.
 
 Return available usage/billing on results and failures without inventing zero
 for unknown charges. The shared consumer records one logical call with distinct

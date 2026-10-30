@@ -5,16 +5,17 @@ import json
 
 import pytest
 
-from api_agent.providers.contracts import ContractError
+from api_agent.providers.contracts import ContractError, ProviderAccessError
 from api_agent.providers.inference import request_to_wire
 from api_agent.providers.llm import LLMResult, Message, TextContent, ToolCall, Usage
-from api_agent.providers.rich_inference import object_json
+from api_agent.providers.rich_inference import async_validate_result, object_json
 from api_agent.providers.tools import ToolResult, ToolSpec
 from api_agent.workflows.tool_conversation import run_tool_conversation
 from api_agent.workflows.tool_gate import ToolGate, ToolGateError
 
 
 ALIASES = ('first_read', 'second_read')
+CONTINUATION = '{"provider":"synthetic","state":[{"opaque":true}]}'
 PROMPT = ('Read hello through both first_read and second_read. Return only a JSON '
           'object attributing the exact hello string to each callable name.')
 
@@ -47,7 +48,7 @@ def reply(text='', calls=(), continuation=None):
 
 
 def tool_call(alias, identifier='call-1', arguments='{"query":"hello"}'):
-    return reply(calls=(ToolCall(identifier, alias, arguments),), continuation='opaque-state')
+    return reply(calls=(ToolCall(identifier, alias, arguments),), continuation=CONTINUATION)
 
 
 class Script:
@@ -106,7 +107,7 @@ def test_both_real_gates_keep_full_schema_continuations_and_attribution(scenario
                for tool in first.payload.tools)
     assert request_to_wire(first)['tools'][0]['strict'] is False
     resumed = script.requests[2].payload.messages
-    assert resumed[1].continuation == 'opaque-state'
+    assert resumed[1].continuation == CONTINUATION
     assert json.loads(resumed[2].results[0].content[0].text)['data'] == {'hello': 'unknown-0'}
     reviews = [request for request in script.requests if request.payload.structured]
     assert len(reviews) == 2
@@ -329,6 +330,194 @@ def test_individual_read_review_uses_own_contract_and_separates_unknown_output(s
     assert 'unknown-0' in reviews[1] and 'unknown-1' not in reviews[1]
 
 
+def validated_script(rows):
+    """Exercise actual result validation and its bounded setup error frame."""
+    from api_agent.providers.setup_transport import _decode, _encode, _error, _raise_error
+    script = Script(rows)
+
+    async def complete(request):
+        result = await script(request)
+        try:
+            return await async_validate_result(request, result)
+        except ProviderAccessError as error:
+            _raise_error(_decode(_encode(_error(error))))
+
+    return script, complete
+
+
+def test_invalid_batch_is_corrected_before_either_tool_executes(scenario):
+    invalid = reply(calls=(ToolCall('old-first', ALIASES[0], '{"query":"hello"}'),
+                           ToolCall('old-second', ALIASES[1], '{}')))
+    corrected = reply(calls=(ToolCall('new-first', ALIASES[0], '{"query":"hello"}'),
+                             ToolCall('new-second', ALIASES[1], '{"query":"hello"}')))
+    script, complete = validated_script([invalid, corrected, verdict(), verdict(), reply('done')])
+
+    result = run(scenario, complete, required_tools=ALIASES)
+
+    assert [owner.invocations for owner in scenario[0].values()] == [['new-first'], ['new-second']]
+    assert result['model_rounds'] == 3
+    assert result['rejections'] == [{'reason': 'tool_arguments_schema', 'model_round': 1,
+                                     'request_id': result['inference'][0]['request_id']}]
+    assert [row['outcome'] for row in result['inference']] == [
+        'failed', 'tool_calls', 'completed', 'completed', 'completed']
+    assert all(row['usage']['input_tokens'] == 9 for row in result['inference'])
+    assert len({request.request_id for request in script.requests}) == 5
+    correction = script.requests[1].payload
+    assert correction.tools == script.requests[0].payload.tools
+    assert correction.generation == script.requests[0].payload.generation
+    assert all(message.role == 'user' for message in correction.messages)
+    assert 'None of the calls in that rejected batch executed' in correction.messages[-1].content[0].text
+    assert all('old-' not in request_to_wire(request).__repr__() for request in script.requests[1:])
+
+
+def test_correction_does_not_reexecute_a_previously_completed_tool(scenario):
+    invalid = tool_call(ALIASES[1], 'invalid', '{}')
+    script, complete = validated_script([tool_call(ALIASES[0]), verdict(), invalid,
+                                         tool_call(ALIASES[1], 'corrected'), verdict(), reply('done')])
+
+    result = run(scenario, complete, required_tools=ALIASES)
+
+    assert [owner.invocations for owner in scenario[0].values()] == [['call-1'], ['corrected']]
+    assert result['model_rounds'] == 4
+    assert script.requests[3].payload.messages[1].continuation == CONTINUATION
+    assert script.requests[3].payload.messages[2].results[0].call_id == 'call-1'
+    assert len(result['inference']) == 6
+
+
+@pytest.mark.parametrize('arguments', ['{}', 'not-json'])
+def test_invalid_argument_exhaustion_keeps_original_error_and_all_usage(scenario, arguments):
+    script, complete = validated_script([tool_call(ALIASES[0], 'one', arguments),
+                                         tool_call(ALIASES[0], 'two', arguments)])
+    journal = {}
+
+    with pytest.raises(ProviderAccessError, match='Generated arguments for tool call 1') as caught:
+        run(scenario, complete, journal, max_rounds=2)
+
+    assert caught.value.usage == Usage(9, 2)
+    assert len(script.requests) == len(journal['inference']) == len(journal['rejections']) == 2
+    assert all(row['outcome'] == 'failed' and row['usage']['input_tokens'] == 9
+               for row in journal['inference'])
+    assert not journal['calls']
+    assert not any(owner.invocations or owner.validations for owner in scenario[0].values())
+
+
+@pytest.mark.parametrize('code,kind', [('tool_validation_unavailable', 'unknown'),
+    ('tool_name_undeclared', 'unknown'), ('invalid_tool_arguments', 'unknown'),
+    ('tool_arguments_schema', 'network')])
+def test_other_provider_failures_do_not_start_argument_correction(scenario, code, kind):
+    error = ProviderAccessError(kind, 'Synthetic failure', code=code)
+    script = Script([error])
+
+    with pytest.raises(ProviderAccessError) as caught:
+        run(scenario, script)
+
+    assert caught.value is error
+    assert len(script.requests) == 1
+
+
+def test_typed_local_validation_unavailability_is_terminal(scenario):
+    error = ProviderAccessError('unknown', 'Local schema validation unavailable',
+        code='tool_validation_unavailable', type='tool_call_validation', origin='local_output_validation')
+    script = Script([error])
+
+    with pytest.raises(ProviderAccessError) as caught:
+        run(scenario, script)
+
+    assert caught.value is error
+    assert len(script.requests) == 1
+
+
+@pytest.mark.parametrize('status', [200, 400, 401, 403, 429, 500])
+def test_upstream_error_body_cannot_impersonate_local_argument_validation(scenario, status):
+    from api_agent.llm_providers.gpt.inference import _rejection
+    from api_agent.providers.setup_transport import _decode, _encode, _error, _raise_error
+    upstream = _rejection(status, {'error': {'message': 'Synthetic upstream rejection',
+        'code': 'tool_arguments_schema', 'type': 'tool_call_validation',
+        'origin': 'local_output_validation'}}, None, 'synthetic-secret')
+    with pytest.raises(ProviderAccessError) as restored:
+        _raise_error(_decode(_encode(_error(upstream))))
+    script = Script([restored.value])
+
+    with pytest.raises(ProviderAccessError) as caught:
+        run(scenario, script)
+
+    assert caught.value is restored.value
+    assert caught.value.origin == 'provider'
+    assert len(script.requests) == 1
+
+
+def test_statusless_provider_error_cannot_impersonate_local_validation(scenario):
+    error = ProviderAccessError('unknown', 'Provider-owned failure', code='tool_arguments_schema',
+                                type='tool_call_validation')
+    script = Script([error])
+
+    with pytest.raises(ProviderAccessError) as caught:
+        run(scenario, script)
+
+    assert caught.value is error
+    assert len(script.requests) == 1
+
+
+@pytest.mark.parametrize('kind,status,error_type', [
+    ('authentication', None, 'tool_call_validation'),
+    ('unknown', 200, 'tool_call_validation'),
+    ('unknown', None, 'other_validation'),
+])
+def test_local_marker_does_not_override_terminal_classification(scenario, kind, status, error_type):
+    error = ProviderAccessError(kind, 'Synthetic failure', status=status,
+        code='tool_arguments_schema', type=error_type, origin='local_output_validation')
+    script = Script([error])
+
+    with pytest.raises(ProviderAccessError) as caught:
+        run(scenario, script)
+
+    assert caught.value is error
+    assert len(script.requests) == 1
+
+
+def test_corrected_batch_cannot_repeat_completed_input_with_a_fresh_call_id(scenario):
+    invalid = tool_call(ALIASES[1], 'invalid', '{}')
+    repeated = reply(calls=(ToolCall('new-second', ALIASES[1], '{"query":"hello"}'),
+                            ToolCall('new-first', ALIASES[0], '{ "query" : "hello" }')))
+    script, complete = validated_script([tool_call(ALIASES[0]), verdict(), invalid, repeated])
+
+    with pytest.raises(ValueError, match='Corrected proposal repeats a completed tool call'):
+        run(scenario, complete)
+
+    assert [owner.invocations for owner in scenario[0].values()] == [['call-1'], []]
+    assert len(script.requests) == 4
+
+
+def test_cancellation_during_correction_preserves_failed_and_unknown_usage(scenario):
+    journal, requests = {}, []
+
+    async def execute():
+        correcting = asyncio.Event()
+        async def complete(request):
+            requests.append(request)
+            if len(requests) == 1:
+                raise ProviderAccessError('unknown', 'Invalid generated arguments',
+                    code='tool_arguments_schema', type='tool_call_validation', usage=Usage(9, 2),
+                    origin='local_output_validation')
+            correcting.set()
+            await asyncio.Future()
+
+        task = asyncio.create_task(run_tool_conversation(prompt=PROMPT, gates=scenario[1],
+            complete=complete, selection='synthetic', journal=journal))
+        await asyncio.wait_for(correcting.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(execute())
+
+    assert len(requests) == 2
+    assert [row['outcome'] for row in journal['inference']] == ['failed', 'failed']
+    assert journal['inference'][0]['usage']['input_tokens'] == 9
+    assert journal['inference'][1]['usage'] is None
+    assert not journal['calls']
+
+
 @pytest.mark.parametrize('candidate,relevant,grounded', [('status', False, True), ('id-8', True, False)])
 def test_second_schema_valid_rejection_keeps_first_result_without_retry(scenario, candidate, relevant, grounded):
     scenario[0][ALIASES[0]].value = 'id-7'
@@ -517,3 +706,28 @@ def test_result_proof_rejects_non_boolean_without_losing_actual_result(scenario)
             result_proof=lambda alias, status, data: 'yes')
     assert journal['calls'][0]['result'] == {'hello': 'unknown-0'}
     assert 'result_matches' not in journal['calls'][0]
+
+
+@pytest.mark.asyncio
+async def test_declared_capability_repeated_alias_retains_distinct_prior_calls():
+    from pathlib import Path
+    from types import SimpleNamespace
+    from api_agent.tooling.runtime import OwnerTools, invocation_tools, node_tools
+    from api_agent.workflows.definition import ToolUsage
+    instance = Path('/reader.toml')
+    definition = SimpleNamespace(tool_usages=(ToolUsage('conversation', 'primary', instance,
+        'node', Path('/flow.md'), 1, ('describe', 'prepare', 'verify', 'execute')),),
+        contents={instance: b'id = "synthetic/reader"\n'})
+    owner = Owner('actual')
+    alias = ALIASES[0]
+    script = Script([tool_call(alias, 'first'), verdict(), tool_call(alias, 'second'), verdict(), reply('done')])
+    async with invocation_tools(definition, {'tools': OwnerTools(definition, owner)}):
+        journal = await run_tool_conversation(prompt='Read twice',
+            gates={alias: node_tools('conversation')['primary']}, complete=script, selection='synthetic')
+    assert [row['invocation'] for row in journal['calls']] == ['first', 'second']
+    assert [row['result'] for row in journal['calls']] == [{'hello': 'actual'}, {'hello': 'actual'}]
+    assert len(owner.invocations) == 2
+    second_review = [request for request in script.requests if request.payload.structured][1]
+    review_text = second_review.payload.messages[0].content[0].text
+    assert '"invocation":"first"' in review_text
+    assert '"hello":"actual"' in review_text

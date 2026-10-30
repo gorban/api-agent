@@ -12,7 +12,8 @@ from api_agent.api.chat_contract import MAX_OUTPUT_TOKENS
 from api_agent.testing.reasoning_provider import reasoning_provider
 from api_agent.providers.progress import report_timeout_sync
 
-pytestmark = [pytest.mark.feature('Reasoning contrast'), pytest.mark.requires_llm]
+pytestmark = [pytest.mark.feature('Reasoning contrast'), pytest.mark.requires_llm,
+              pytest.mark.credential_authorities('ui')]
 
 
 @pytest.fixture
@@ -37,6 +38,12 @@ def test_reasoning_contrast(reasoning_ready, request, record_property):
     events = []
     async def scenario():
         nonce = secrets.token_urlsafe(32)
+        # The local HTTP bridge owns this bearer credential; admit it before
+        # starting the listener or making any provider request.
+        from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+        from api_agent.testing.authority_scope import ajoin_current
+        boundary = EmissionBoundary(ContentPolicy(provider.config.get('LOG_CONTENT') is True), secrets=(nonce,))
+        await ajoin_current('ui', boundary)
         async with reasoning_provider(provider) as parallel, agent_endpoint(parallel, model, 'http://127.0.0.1:8080', nonce, timeout=timeout) as endpoint:
             async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
                 return await run_pairs(client, endpoint, nonce, model=model, efforts=efforts, max_output_tokens=limit, timeout_seconds=timeout, emit=events.append)

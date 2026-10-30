@@ -353,7 +353,7 @@ def test_fallback_survives_unavailable_scripts(static_view, view_url, failure):
             page = browser.new_page(java_script_enabled=failure != "disabled")
             page.goto(view_url("flow.md.html"))
             assert page.locator("#workflow-fallback").is_visible()
-            assert "./launch.py --view-flow" in page.locator("#workflow-fallback").inner_text()
+            assert "./launch.sh --view-flow" in page.locator("#workflow-fallback").inner_text()
             assert page.locator("main").count() == 0
             assert not page.locator("plaintext").is_visible()
         finally:
@@ -473,6 +473,192 @@ def test_heading_ids_title_and_initial_fragment(view_url):
                 "notes", "héllo-world", "héllo-world-1", "中文"]
             assert page.locator("main pre").inner_text() == "## Not a heading\n"
             assert page.locator('h2[id="héllo-world-1"]').evaluate("item => item.matches(':target')")
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['http', 'file'], indirect=True)
+def test_tool_fragments_land_on_the_declared_scope_and_port(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+    from api_agent.workflows.document_format import wrap_document
+
+    root = b'''# Workflow v2
+
+## Graph ID
+
+| ID |
+| --- |
+| example |
+
+<span id="workflow-tool-graph-example-primary">Spoof</span>
+<span id="workflow-tools-graph-example">Spoof section</span>
+
+## Tools
+
+| Port | Instance |
+| --- | --- |
+| primary | [shared](shared.toml) |
+| secondary | [shared](shared.toml) |
+'''
+    component = b'''# Component v2: branch
+
+## Tools
+
+| Port | Instance |
+| --- | --- |
+| primary | [shared](shared.toml) |
+
+## Node: work
+
+### Tools
+
+| Port | Instance |
+| --- | --- |
+| primary | [shared](shared.toml) |
+| secondary | [shared](shared.toml) |
+
+## Node: another
+
+### Tools
+
+| Port | Instance |
+| --- | --- |
+| primary | [shared](shared.toml) |
+'''
+    (static_view / 'flow.md.html').write_bytes(wrap_document(
+        root, root=True, asset_prefix='.private_resources/viewer/'))
+    (static_view / 'workflows/components/agent.md.html').write_bytes(wrap_document(
+        component, root=False, asset_prefix='../../.private_resources/viewer/'))
+    cases = [
+        ('flow.md.html', 'graph-example-primary', 'primary'),
+        ('flow.md.html', 'graph-example-secondary', 'secondary'),
+        ('workflows/components/agent.md.html', 'component-branch-primary', 'primary'),
+        ('workflows/components/agent.md.html', 'node-work-primary', 'primary'),
+        ('workflows/components/agent.md.html', 'node-work-secondary', 'secondary'),
+    ]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            for path, suffix, port in cases:
+                fragment = 'workflow-tool-' + suffix
+                page.goto(view_url(path) + '#' + fragment)
+                row = page.locator('main tr#' + fragment)
+                row.wait_for()
+                assert row.locator('td').first.inner_text() == port
+                assert row.evaluate("item => item.matches(':target')")
+                assert page.locator('#' + fragment).count() == 1
+            page.goto(view_url('flow.md.html') + '#workflow-tools-graph-example')
+            graph_scope = page.locator('#workflow-tools-graph-example')
+            assert graph_scope.count() == 1
+            assert graph_scope.locator('xpath=..').inner_text() == 'Tools'
+            assert graph_scope.evaluate("item => item.matches(':target')")
+            for suffix in ('component-branch', 'node-work', 'node-another'):
+                fragment = 'workflow-tools-' + suffix
+                page.goto(view_url('workflows/components/agent.md.html') + '#' + fragment)
+                anchor = page.locator('main h2 > span#' + fragment + ', main h3 > span#' + fragment)
+                anchor.wait_for(state='attached')
+                assert anchor.evaluate("item => item.matches(':target')")
+                assert anchor.locator('xpath=..').inner_text() == 'Tools'
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['http', 'file'], indirect=True)
+def test_generated_svg_tool_links_open_their_declaration_rows(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+
+    paths = [
+        ('demo/simple/flow.svg', 'toolscope0', 'graph-useful_api_demo', None),
+        ('demo/simple/flow.svg', 'toolbinding0', 'graph-useful_api_demo-primary', 'primary'),
+        ('tests/integration/fixtures/tool_instances/shared_primary/conversation.svg',
+         'toolbinding0', 'node-conversation-primary', 'primary'),
+        ('tests/integration/fixtures/tool_instances/shared_primary/conversation.svg',
+         'toolbinding1', 'node-conversation-secondary', 'secondary'),
+    ]
+    for source in ('demo/simple', 'tests/integration/fixtures/tool_instances/shared_primary'):
+        shutil.copytree(ROOT / source, static_view / source, dirs_exist_ok=True)
+    for svg, _, _, _ in paths:
+        target = static_view / '.private_resources/diagrams' / svg
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / '.private_resources/diagrams' / svg, target)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            for svg, alias, suffix, port in paths:
+                page.goto(view_url('.private_resources/diagrams/' + svg))
+                link = page.locator(f'[data-qualified-name="{alias}"] a')
+                link.wait_for()
+                href = link.get_attribute('href')
+                prefix = 'workflow-tool-' if port else 'workflow-tools-'
+                assert href.endswith('#' + prefix + suffix)
+                link.click()
+                target = page.locator('main #' + prefix + suffix)
+                target.wait_for(state='attached')
+                if port:
+                    assert target.locator('td').first.inner_text() == port
+                else:
+                    assert target.locator('xpath=..').inner_text() == 'Tools'
+                assert target.evaluate("item => item.matches(':target')")
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('view_url', ['http', 'file'], indirect=True)
+def test_generated_component_svg_links_target_each_inline_scope(static_view, view_url):
+    from playwright.sync_api import sync_playwright
+    from api_agent.workflows.definition import load_definition
+    from api_agent.workflows.document_format import wrap_document
+    from api_agent.workflows.viewer_projection import project_view
+    from api_agent.workflows.viewer_render import _projection_source, default_renderer
+
+    root = static_view
+    (root / 'native.py').write_text('def work(inputs, context): return {}\ndef other(inputs, context): return {}\n')
+    (root / 'schema.json').write_text('{"type":"object"}')
+    (root / 'shared.toml').write_text('version = 1\n')
+    (root / 'flow.md.html').write_text('# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+        '## Flow\n\n1.  [component branch](branch.md.html)\n')
+    component = ('# Component v2: branch\n\n## Flow\n\n1.  [node work](#node-work)\n'
+        '2.  [node other](#node-other)\n\n## Components\n\n| ID | Max passes | Guard |\n'
+        '| --- | --- | --- |\n| branch | 1 | - |\n\n## Tools\n\n| Port | Instance |\n'
+        '| --- | --- |\n| primary | [shared](shared.toml) |\n')
+    for node in ('work', 'other'):
+        component += (f'\n## Node: {node}\n\n### Native\n\n| Registry | Kind | Source |\n'
+            f'| --- | --- | --- |\n| {node} | deterministic | [source](native.py) |\n\n'
+            '### Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
+            f'| {node} | {node} | [input](schema.json) | [output](schema.json) |\n\n'
+            '### Tools\n\n| Port | Instance |\n| --- | --- |\n| primary | [shared](shared.toml) |\n')
+    declaration = root / 'branch.md.html'
+    declaration.write_text(component)
+    view = project_view(load_definition(root / 'flow.md.html', base_root=root, pack_root=root))
+    document = next(item for item in view.documents if item.stable_id == 'branch')
+    source, links = _projection_source(view, document)
+    svg = default_renderer().render(source, allowed_links=links)
+    (root / '.private_resources/diagrams/branch.svg').write_bytes(svg)
+    declaration.write_bytes(wrap_document(component.encode(), root=False,
+                                          asset_prefix='.private_resources/viewer/'))
+    cases = [('toolscope0', 'workflow-tools-component-branch', None),
+             ('toolbinding0', 'workflow-tool-component-branch-primary', 'primary'),
+             ('toolbinding1', 'workflow-tool-node-work-primary', 'primary'),
+             ('toolbinding2', 'workflow-tool-node-other-primary', 'primary')]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            for alias, fragment, port in cases:
+                page.goto(view_url('.private_resources/diagrams/branch.svg'))
+                link = page.locator(f'[data-qualified-name="{alias}"] a')
+                link.wait_for()
+                assert link.get_attribute('href').endswith('#' + fragment)
+                link.click()
+                target = page.locator('main #' + fragment)
+                target.wait_for(state='attached')
+                assert target.evaluate("item => item.matches(':target')")
+                if port:
+                    assert target.locator('td').first.inner_text() == port
+                else:
+                    assert target.locator('xpath=..').inner_text() == 'Tools'
         finally:
             browser.close()
 

@@ -50,12 +50,17 @@ def _extract_view_flow(argv):
 
 def _validate_view_flow_arguments(argv):
     allowed = {'--debug', '--no-std-in', '--help', '-h'}
+    entry = None
     for token in argv:
         if token in allowed or token in {'--debug=True', '--debug=False', '--no-std-in=True', '--no-std-in=False'}:
             continue
-        if token == '--' or not token.startswith('-'):
-            raise ValueError('--view-flow does not accept test selectors')
+        if not token.startswith('-'):
+            if entry is not None or not token.endswith('.md.html'):
+                raise ValueError('--view-flow accepts one optional .md.html flow path')
+            entry = Path(token).expanduser().absolute()
+            continue
         raise ValueError(f'--view-flow conflicts with {token.partition("=")[0]}')
+    return entry
 
 
 def _bind_runtime_directory(context, argv, environ):
@@ -111,7 +116,7 @@ def resource_pack_main(argv=None, *, launcher_root, replace_process=False):
             raise ValueError('API_AGENT_DIR requires a nonempty directory value')
         base = Path(raw).expanduser()
         base = (base if base.is_absolute() else root / base).resolve()
-        entry = base / 'launch.py'
+        entry = base / 'launch.sh'
         if not entry.is_file() or not (base / 'src/api_agent/runtime/bootstrap.py').is_file():
             raise ValueError(f'Invalid api-agent checkout {base}: missing shared source entry point. '
                              'Set API_AGENT_DIR or --api-agent-dir to a api-agent checkout.')
@@ -120,7 +125,7 @@ def resource_pack_main(argv=None, *, launcher_root, replace_process=False):
         if explicit is not None:
             boundary = remaining.index('--') if '--' in remaining else len(remaining)
             remaining.insert(boundary, f'--api-agent-dir={explicit}')
-        command = [sys.executable, str(entry), '--resource-pack-dir', str(root), '--_launcher-root', str(Path(launcher_root).resolve()), *remaining]
+        command = ['/bin/sh', str(entry), '--resource-pack-dir', str(root), '--_launcher-root', str(Path(launcher_root).resolve()), *remaining]
         if replace_process:
             os.execve(command[0], command, os.environ.copy())
         return subprocess.call(command, env=os.environ.copy())
@@ -184,9 +189,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if base_root is None:
             origin = Path(__file__).resolve()
             candidate = origin.parents[3]
-            if origin != candidate / 'src/api_agent/runtime/bootstrap.py' or not (candidate / 'launch.py').is_file():
-                raise ValueError('Installed api-agent has no verified source checkout. Run your checkout/launch.py '
-                                 'with the current Python, or use a resource-pack launcher with API_AGENT_DIR.')
+            if origin != candidate / 'src/api_agent/runtime/bootstrap.py' or not (candidate / 'launch.sh').is_file():
+                raise ValueError('Installed api-agent has no verified source checkout. Run your checkout/launch.sh '
+                                 'with mise, or use a resource-pack launcher with API_AGENT_DIR.')
             base_root = candidate
         context = load_launch_context(Path(base_root).resolve(), resource_pack_dir, launcher_root)
         context = _bind_runtime_directory(context, argv, os.environ)
@@ -197,18 +202,19 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                              resource_pack_name=context.pack_id if context.external_pack else None)
         if view_flow_requested:
             view_arguments, _ = _extract_option(argv, {'--api-agent-dir', '--api_agent_dir'})
-            _validate_view_flow_arguments(view_arguments)
+            view_entry = _validate_view_flow_arguments(view_arguments)
             if '--help' in view_arguments or '-h' in view_arguments:
-                print('Usage: ./launch.py --view-flow [--resource-pack-dir PATH] [--debug] [--no-std-in]\n'
+                print('Usage: ./launch.sh --view-flow [FLOW.md.html] [--resource-pack-dir PATH] [--debug] [--no-std-in]\n'
                       'Open the selected workflow in a managed headed browser without app or provider startup.\n'
-                      'Requires Python 3.13 or newer; browser prerequisites are prepared only when viewing.')
+                      'Omit the flow path for the selected application; relative paths use the current directory.\n'
+                      'Requires mise; browser prerequisites are prepared only when viewing.')
                 return 0
             from api_agent.runtime.dependencies import ensure_environment
             status = ensure_environment(context, ['--view-flow', *argv], groups=('browser',), **handoff_options)
             if status is not None:
                 return status
             from api_agent.runtime.view_flow import run_view_flow
-            return run_view_flow(context)
+            return run_view_flow(context) if view_entry is None else run_view_flow(context, entry=view_entry)
         shared = load_shared_schema(context.base_root)
         schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
                                 overrides=context.defaults)
@@ -329,10 +335,12 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return execution.exit_code
         if result.values.get('NO_STD_IN') and mode == 'integration' and automatically_started(result):
             from api_agent.testing.diagnostics import CredentialScrubber, format_exception, terminal_exception
+            from api_agent.auth.terminal_output import TerminalOutput
             scrubber = CredentialScrubber(result.values)
+            presentation = TerminalOutput()
 
             def diagnostic_output(text):
-                print(scrubber(text), file=sys.stderr, flush=True)
+                presentation.write(scrubber(text), error=True)
 
             pending_output = ''
 
@@ -342,7 +350,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 lines = pending_output.split('\n')
                 pending_output = lines.pop()
                 for line in lines:
-                    print(scrubber(line), flush=True)
+                    presentation.write(scrubber(line))
 
             try:
                 from api_agent.runtime.dependencies import ensure_environment
@@ -393,16 +401,17 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         config_fields=result.fields,
                         content_policy=ContentPolicy.from_config(result),
                         **({'tool_plan': result.tool_plan} if result.tool_plan is not None else {}),
-                        interaction=TerminalInteraction(),
-                        usage_output=lambda line: print(scrubber(line), flush=True) if '\n' not in line else None,
+                        interaction=TerminalInteraction(presentation=presentation),
+                        usage_output=lambda line: presentation.write(scrubber(line)) if '\n' not in line else None,
                         unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
-                        on_event=TerminalTestProgress(tests, lambda line: print(line, flush=True), scrub=scrubber),
+                        on_event=TerminalTestProgress(tests, presentation.write, scrub=scrubber),
                         output=runner_output)
                     if getattr(execution, 'reporting_skipped', False):
                         print('Allure reporting: SKIPPED by configuration', flush=True)
                 finally:
                     if pending_output:
-                        print(scrubber(pending_output), end='', flush=True)
+                        presentation.write(scrubber(pending_output), end='')
+                    presentation.close()
                 from api_agent.testing.inspection_controls import finish_terminal_inspection
                 if not finish_terminal_inspection(execution, lambda line: print(scrubber(line), flush=True),
                                                   diagnostic_output=diagnostic_output):
@@ -420,6 +429,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 if isinstance(error, (SystemExit, GeneratorExit)):
                     raise terminal_exception(error, scrubber) from None
                 return 1
+            finally:
+                presentation.close()
         if result.values.get('NO_STD_IN') and mode == 'run-local':
             from api_agent.auth.extensions import validate_operation
             try:
@@ -482,11 +493,11 @@ def _colored(text, code, enabled):
 
 def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color=False):
     """Show CLI behavior and deliberate callouts; declarations own full config docs."""
-    lines = ['Usage: ./launch.py [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
-    lines.append('  --view-flow: open the selected workflow in a managed headed browser without starting the app or providers.')
+    lines = ['Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
+    lines.append('  --view-flow [FLOW.md.html]: open a workflow (default: selected application) without starting the app or providers.')
     callouts = {
         'HELP': '-h, --help: print help without execution configuration validation.',
-        'NO_STD_IN': '--no-std-in: disable interactive input except explicit worktree and multi-test DEBUG safety confirmations.',
+        'NO_STD_IN': '--no-std-in: use terminal execution without menus; owned authentication may still prompt. Worktree and multi-test DEBUG safety confirmations also remain.',
         'COLLECT_ONLY': '--collect-only: list selected tests without running them.',
         'START': '--start: start the selected TUI operation after normal startup checks; --start=E2E explicitly accepts E2E execution without its human-review screen.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',

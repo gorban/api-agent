@@ -24,12 +24,14 @@ The bounded manual runtime now implements separate trace and log policies, with 
 
 - [x] Add the declaration and update LOG_CONTENT help in `cfg/config.toml` together with exporter wiring. Separate trace-content policy resolution in `src/api_agent/telemetry/tracing.py` from the log/evidence policy currently supplied by `src/api_agent/telemetry/privacy.py`, retaining common credential registration and redaction. An injected boundary must not override the selected destination's resolved policy. Use the application's True/False syntax; supply the SDK's documented Boolean option or encoding from that resolved value. Reconcile existing lowercase SDK environment values in migration configuration instead of silently defaulting them. Update review/help, examples and deployment documentation with implementation; do not advertise the switch as delivered beforehand.
 - [x] Reuse workflow identities and observations, but create destination-specific content projections before the first journal, IPC queue, SDK queue or emission boundary. A LOG_CONTENT-gated journal cannot supply content already omitted when trace-only capture is enabled. Conversely, trace-permitted content must not be pooled in a shared journal from which disabled log/Allure/diagnostic consumers can read it. Include the LOG_CONTENT-gated `workflows/journal.py` capture and its execution/stateful producers in this design. Freeze bounded capture/fan-out ownership before implementation; do not add an unredacted common payload store or fetch content back from dashboards.
-- [ ] Propagate the resolved policy and withholding reason through worker/provider boundaries. Preserve provenance, native Allure/accounting consistency, execution semantics, bounded retention and owned exporter shutdown. Already-withheld historical artifacts remain withheld; another destination's flag cannot recover or reinterpret them.
+- [x] Propagate the resolved policy and withholding reason through worker/provider boundaries. Preserve provenance, native Allure/accounting consistency, execution semantics, bounded retention and owned exporter shutdown. Already-withheld historical artifacts remain withheld; another destination's flag cannot recover or reinterpret them.
+  - [x] Deliver [remote shared-provider tracing](implementation_plan_k1b2.md), with independent capture lanes and a backend-owned exporter, without publishing trace-only content into log/evidence queues. Remote spans correlate by call/attempt ID, not distributed workflow-parent context.
 
 ## Verification and acceptance
 
-- [ ] Verify all four flag combinations for both backends, including omitted/defaulted/invalid values, source precedence, SDK overrides, callbacks, nested tool/model work, streaming, errors and shutdown. Inspect serialized spans before queuing/export plus real log/recorded-artifact outputs. Use distinctive synthetic payloads and credentials to prove permitted trace-only content reaches traces while other channels stay withheld, and the reverse for log-only capture.
-- [ ] Use causal mutations for flag conflation, LangFuse retaining the old log gate, injection/SDK override bypass, wrong pre-queue fan-out and credential leakage. Renew applicable coverage, installed/package, privacy and public-boundary gates and independent/external review. No paid inference or production export is required solely for this policy proof.
+- [x] Verify all four flag combinations for both backends, including omitted/defaulted/invalid values, source precedence, SDK overrides, callbacks, nested tool/model work, streaming, errors and shutdown. Inspect serialized spans before queuing/export plus real log/recorded-artifact outputs. Use distinctive synthetic payloads and credentials to prove permitted trace-only content reaches traces while other channels stay withheld, and the reverse for log-only capture. Normalized-only streaming cannot supply discarded original reasoning.
+- [x] Use causal mutations for flag conflation, LangFuse retaining the old log gate, injection/SDK override bypass, wrong pre-queue fan-out and credential leakage. Complete scoped privacy/public-boundary checks and independent/external review. No paid inference or production export is required solely for this policy proof.
+- [ ] Renew complete joined coverage, installed/package and intended-index/history/publication gates before committing or publishing; scoped evidence does not waive them.
 - [ ] Human acceptance of independent controls and equivalent OTEL/LangFuse trace policy. Existing backend/credential approvals do not accept this pending policy change.
 
 [OpenLLMetry's public content-control documentation](https://traceloop.com/docs/openllmetry/privacy/traces) documents the environment flag and selective overrides. The application requires explicit opt-in rather than inheriting a library default.
@@ -40,13 +42,14 @@ The manual runtime now resolves the trace switch separately from the log policy.
 An injected credential boundary shares live secret registrations but cannot
 change the resolved trace permission. No global SDK instrumentation or process
 environment mutation is installed.
-Known hidden-reasoning and opaque-continuation field aliases and explicitly
-type/channel-tagged internal carriers are excluded recursively, including JSON
-text. Ordinary visible analysis/explanation fields and prose stay permitted by
+Known internal-reasoning, encrypted and opaque-continuation field aliases and
+explicitly internal/redacted carriers are excluded recursively, including JSON
+text. Provider-returned plaintext reasoning/summaries and ordinary visible analysis/explanation fields stay permitted by
 the destination policy; the boundary does not infer hidden content from unlabelled
 prose. Explicit GenAI token attributes require bounded integers and requested-effort
 attributes use their finite metadata vocabulary; generic evidence fields retain
 their owner-defined meanings, including fractional currency category values.
+See [the inference-evidence revision](implementation_plan_f2f3d.md) for omission guidance and safe Allure diagnostics.
 
 `WorkflowObservationFactory` wraps one bounded workflow journal as the identity
 issuer. Its synchronous fan-out projects classified values independently before

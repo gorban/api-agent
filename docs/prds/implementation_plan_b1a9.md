@@ -39,3 +39,5 @@ selected operation needs them. Developers still install Node.js and npm themselv
 - [ ] Human acceptance: start a source viewer or Studio with missing frontend
   dependencies, observe preparation and usable assets, then restart without a
   repeat installation. Check missing Node/npm guidance in a controlled environment.
+
+Human cold/warm preparation review is deferred until the next launcher/onboarding upgrade so its retest covers the final entry point. Technical delivery remains complete; no acceptance is inferred.

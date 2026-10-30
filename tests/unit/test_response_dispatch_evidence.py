@@ -231,7 +231,7 @@ def test_publisher_wrappers_reject_conflicting_terminal_mode_before_overwrite(mo
     if remote:
         owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
         owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock())
-        def complete(_):
+        def complete(_, *, observation_call_id=None):
             owner.client.response_evidence=chosen
             raise error
         owner.client.complete=complete;owner._request=lambda call:call()
@@ -249,7 +249,7 @@ def test_remote_publisher_preserves_legacy_client_without_optional_metadata(monk
     monkeypatch.setattr(inference_usage,'publish',lambda *a,**k:None)
     req=request('json');error=TimeoutError('controlled')
     owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
-    owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock(),complete=lambda _:(_ for _ in ()).throw(error));owner._request=lambda call:call()
+    owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock(),complete=lambda _, observation_call_id=None:(_ for _ in ()).throw(error));owner._request=lambda call:call()
     with pytest.raises(TimeoutError) as caught:owner.complete(req)
     assert caught.value is error
 
@@ -281,7 +281,7 @@ def test_publisher_failure_wrappers_preserve_only_admitted_mode_and_explicit_usa
         if partial_usage:error.usage=Usage(3,2)
         owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
         owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock())
-        def complete(_):
+        def complete(_, *, observation_call_id=None):
             if dispatched:owner.client.response_evidence=chosen
             raise error
         owner.client.complete=complete;owner._request=lambda call:call()
@@ -376,7 +376,7 @@ def test_conflicting_publisher_failure_still_has_one_terminal_canonical_receipt(
     if remote:
         owner=provider_setup.RemoteIntegrationLLM.__new__(provider_setup.RemoteIntegrationLLM)
         owner.config={};owner.client=SimpleNamespace(_lock=threading.RLock())
-        def complete(_):
+        def complete(_, *, observation_call_id=None):
             owner.client.response_evidence=chosen
             raise error
         owner.client.complete=complete;owner._request=lambda call:call()
@@ -461,7 +461,7 @@ def test_real_ipc_conflicting_terminal_result_keeps_canonical_failed_receipt_and
         finally:
             await asyncio.to_thread(client.close);await server.aclose()
     asyncio.run(scenario())
-    rows=[json.loads(line)['data'] for line in path.read_text().splitlines()]
+    rows=[data for line in path.read_text().splitlines() if 'outcome' in (data := json.loads(line)['data'])]
     assert len(rows)==2 and [row['outcome'] for row in rows]==['unknown','failed']
     assert rows[0]['call_id']==rows[1]['call_id']
     assert rows[1]['response']['actual_mode']=='prompted_json'
@@ -518,7 +518,7 @@ def test_real_ipc_rejects_unobserved_terminal_mode_and_keeps_usage(tmp_path, mon
             await server.aclose()
 
     asyncio.run(scenario())
-    rows = [json.loads(line)['data'] for line in path.read_text().splitlines()]
+    rows = [data for line in path.read_text().splitlines() if 'outcome' in (data := json.loads(line)['data'])]
     assert len(rows) == 2 and [row['outcome'] for row in rows] == ['unknown', 'failed']
     assert rows[0]['call_id'] == rows[1]['call_id']
     assert rows[1].get('response') is None
@@ -573,13 +573,13 @@ def test_real_operational_preflight_remote_publisher_keeps_type_and_peer_reusabl
             with pytest.raises(OperationalError) as caught:await asyncio.to_thread(publisher.complete,req)
             assert (caught.value.kind,caught.value.execution,caught.value.retry_after)==('unsupported','not_started',2)
             assert error_usage(caught.value) is None and getattr(caught.value,'response',None) is None
-            assert client.response_evidence is None and client.evidence==[]
+            assert client.response_evidence is None and client.evidence == [dict(phase='request', content={}, reason='withheld')]
             assert await asyncio.to_thread(client.complete,req)==result(req)
             assert calls==[req,req] and client._complete_count==2
         finally:
             await asyncio.to_thread(client.close);await server.aclose()
     asyncio.run(scenario())
-    rows=[json.loads(line)['data'] for line in path.read_text().splitlines()]
+    rows=[data for line in path.read_text().splitlines() if 'outcome' in (data := json.loads(line)['data'])]
     assert len(rows)==2 and [r['outcome'] for r in rows]==['unknown','failed']
     assert rows[0]['call_id']==rows[1]['call_id'] and rows[1]['usage'] is None
     assert rows[1].get('response') is None

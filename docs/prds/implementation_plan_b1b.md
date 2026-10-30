@@ -18,6 +18,12 @@ This converts the existing generic runtime and independently authored example, p
 - [ ] Test old/new transitions and outputs with deterministic providers/tools: branch/join/loop behavior, ordered prompts, state/reducers, clarification and approval/resumption, retry/error/cancellation paths, streaming/tool outputs and timeout boundaries. Use the shared nested timeout/progress interface; preserve remaining-parent budgets and existing retry clocks. Exercise applicable legacy contracts rather than weakening tests to accept missing behavior.
 - [ ] Verify wheel installation and an extracted deployment artifact from unrelated directories, without sibling source checkouts. Verify selected pack roots, graph/resource navigation, callable import identity and packaged provenance; retain licenses and exact full unit line/branch coverage before code commits.
 
+## Integration-test conversion
+
+- [ ] Inventory every existing integration test that uses LangGraph, including provider/pack contributions and the permanent fixture. Migrate all graph definitions to this declarative format; no legacy inline or Python-built graph definition remains as an integration-test shortcut. Preserve each test's behavioral assertions and map its identity to its declaration entry and loader coverage. Native node implementations and focused compiler unit tests remain valid.
+- [ ] Give each distinct test graph its own fixture directory with root `flow.md.html` and the nested declarations, prompts, schemas and other resources it needs. Tests sharing the same graph may share an immutable fixture. Exercise the real public loader and compiler from that root, including resource resolution and selected overrides; do not substitute an already-compiled graph or mock loader in the integration proof. Include installed/relocated fixture coverage.
+- [ ] Use the [isolated dynamic-update fixture requirements](implementation_plan_b1d.md) for refresh tests. Complete the inventory and migrate all affected tests before declaring format conversion complete; preserve qualification and reporting-provenance gates when source fingerprints change.
+
 ## 3. Viewer, application and enforcement
 
 - [ ] After format/fixture equivalence, implement `--view-flow` through the shared managed Playwright/server lifecycle. Keep it read-only: no graph invocation, provider login or app startup. Preserve inert help/collection and validate conflicting launch options through the normal CLI/configuration mechanism.

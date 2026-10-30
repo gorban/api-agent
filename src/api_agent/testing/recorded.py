@@ -38,8 +38,8 @@ def _step_envelopes(step, *, parent=None):
     envelope = ({key: step[key] for key in ('name', 'start', 'stop') if key in step}, parent,
                 {item['name']: item['value'] for item in step['parameters'] if item['name'] in fixed})
     result = {identity: envelope}
-    # Untimed calls remain parameters in the rendered tree, but keep the same
-    # compatibility identity and owner as timed call steps. Missing timing is
+    # Legacy untimed calls encoded as parameters keep the same compatibility
+    # identity and owner as current explicit call steps. Missing timing is
     # enrichment, never permission to change an observed outcome or visit.
     for item in step['parameters']:
         name = item['name']
@@ -189,7 +189,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
                              unattended_index_source=None, interaction=None, content_policy=None, historical_estimator=None,
-                             workflow_admissions=None, tool_plan=None, config_fields=None):
+                             workflow_admissions=None, tool_plan=None, config_fields=None, resolved_test_profiles=None):
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
@@ -212,7 +212,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         config = dict(config, LOG_CONTENT=content_policy.allow_content)
     config['_COST_RATE_CARD'] = freeze_pricing(context, config)
     from .test_profiles import resolve_test_profiles
-    profiles = resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields, context=context)
+    profiles = (resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields, context=context)
+                if resolved_test_profiles is None else deepcopy(resolved_test_profiles))
     workflow_admissions = capture_workflow_admissions(context, workflow_admissions,
         tool_plan=tool_plan, profiles=profiles)
     # Derive compatibility after specialization, not from the application snapshot.
@@ -266,6 +267,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         browser_budget_reported = set()
         browser_receipts = set()
         call_scope_owners = {}
+        incomplete_inference_evidence = {}
+        scoped_inference_loss = {}
 
         def queue_attachment(test_id, owner, frozen):
             from uuid import uuid4
@@ -280,6 +283,14 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 payload_stores[test_id] = PayloadStore(recorder, test_id,
                     journal_test_id=next(test.node_id for test in tests if test.id == test_id))
             return payload_stores[test_id]
+
+        def native_payload_attachments(store, reference, title):
+            sources = store.native_parts(reference)
+            if reference['kind'] != 'chunked':
+                return [dict(name=title, source=sources[0], type='application/json')]
+            return [dict(name=f'{title} — text part {index} of {len(sources)}',
+                         source=source, type='text/plain')
+                    for index, source in enumerate(sources, 1)]
         persisted = False
         manifest = None
         usage_summary = None
@@ -308,6 +319,28 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         def record_evidence(result):
             test_id = result.identity.id
             attachments = list(content.pop(test_id, ()))
+            reasons = incomplete_inference_evidence.get(test_id, set())
+            if reasons:
+                source = 'inference-evidence-incomplete-' + str(list(recording_ids).index(test_id)) + '.txt'
+                message = ('LLM request or response evidence is incomplete for this test. '
+                           'One or more occurrences were omitted or truncated.\n'
+                           'Reasons: ' + ', '.join(sorted(reasons)) + '.\n')
+                recorder.record_artifact(source, message.encode())
+                attachments.append(recorder.existing_attachment('Incomplete LLM evidence', source, 'text/plain'))
+            for index, loss in enumerate(sorted(scoped_inference_loss.pop(test_id, set()))):
+                invocation_id, visit_id, call_id, direction = loss
+                source = 'workflow-inference-loss-' + str(list(recording_ids).index(test_id)) + '-' + str(index) + '.txt'
+                message = ('Workflow LLM ' + direction + ' evidence is unavailable.\n'
+                           'Call: ' + call_id + '\n')
+                recorder.record_artifact(source, message.encode())
+                scoped_attachments.setdefault(test_id, []).append((
+                    dict(kind='scope', invocation_id=invocation_id, scope_id=visit_id),
+                    dict(name='Incomplete workflow LLM evidence', source=source, type='text/plain')))
+                from .evidence_placement import graph_for_visit
+                graph_owner = graph_for_visit(pending_journals.get(test_id, ()), invocation_id, visit_id)
+                scoped_attachments[test_id].append((
+                    graph_owner,
+                    dict(name='Incomplete workflow LLM evidence', source=source, type='text/plain')))
             bridge = workflow_steps.pop(test_id, None)
             steps = deepcopy(bridge.steps) if bridge is not None else []
             call_scope_owners[test_id] = observed_call_scopes(steps)
@@ -329,9 +362,12 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                         if len(graph_scopes) == 1 else dict(kind='unattached'))
                     scoped_attachments.setdefault(test_id, []).append((owner,
                         dict(name='Execution evidence', source=journal_name, type='application/json')))
-                    captures = [(event, dict(name='Input' if event['direction'] == 'input' else 'Output',
-                        source=event['payload']['source'], type='application/json'))
-                        for event in envelope['events'] if event.get('event') == 'capture' and 'source' in event.get('payload', {})]
+                    captures = [(event, attachment)
+                        for event in envelope['events'] if event.get('event') == 'capture' and not event.get('transport_attempt_id') and 'source' in event.get('payload', {})
+                        for attachment in native_payload_attachments(store, event['payload'],
+                            ('Tool request' if event['direction'] == 'input' else 'Tool response')
+                            if event.get('tool_invocation_id') is not None else
+                            ('Input' if event['direction'] == 'input' else 'Output'))]
                     targets = [steps[index] for index, entry in enumerate(bridge.entries)
                                if entry['invocation'] == packet['invocation_id']] if bridge is not None else []
                     attach_payloads(targets, captures, {})
@@ -457,7 +493,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     remaining = attach_payloads(steps, [], phases)
                     retained = {(item['source'], item['type']) for item in remaining}
                     moved = {(item['source'], item['type']) for items in phases.values()
-                             for item in items.values()} - retained
+                             for phase_items in items.values() for item in phase_items} - retained
                     settled = apply_frozen_steps(steps, test_id, facts)
                     evidence = scoped_attachments.get(test_id, ())
                     scoped_sources = {reference['source'] for _, reference in evidence}
@@ -504,6 +540,24 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 usage_output(starting_usage_line(usage.report()))
 
         def event(row):
+            if row.kind == 'inference_evidence_incomplete':
+                if row.identity is None or row.text not in {'truncated', 'unavailable'}:
+                    raise ValueError('Invalid incomplete inference evidence event')
+                incomplete_inference_evidence.setdefault(row.identity.id, set()).add(row.text)
+            if row.kind == 'workflow_inference_evidence_incomplete':
+                from uuid import UUID
+                try:
+                    data = json.loads(row.text)
+                    if (row.identity is None or type(data) is not dict
+                            or set(data) != {'invocation_id', 'visit_id', 'call_id', 'direction'}
+                            or data['direction'] not in ('input', 'output')
+                            or any(type(data[k]) is not str or str(UUID(data[k])) != data[k]
+                                   for k in ('invocation_id', 'visit_id', 'call_id'))):
+                        raise ValueError
+                except (ValueError, TypeError, KeyError):
+                    raise ValueError('Invalid workflow inference evidence loss') from None
+                scoped_inference_loss.setdefault(row.identity.id, set()).add(tuple(data[k] for k in
+                    ('invocation_id', 'visit_id', 'call_id', 'direction')))
             if row.kind == 'browser_attachment':
                 if config.get('LOG_CONTENT') is not True:
                     return
@@ -591,19 +645,32 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 row = replace(row, text=json.dumps(data, allow_nan=False))
                 capture(row, usage)
             if row.kind == 'inference_content':
-                if config.get('LOG_CONTENT') is not True:
-                    return
                 from .inference_content import content_attachment
+                from api_agent.telemetry.inference_diagnostics import diagnostic_attachment
+                enabled = config.get('LOG_CONTENT') is True
+                # Validate the same event contract before either attachment.
                 attachment = content_attachment(row, evidence_boundary)
                 data = json.loads(row.text)
+                if 'diagnostics' in data or not enabled or data.get('reason') == 'unavailable':
+                    owner = dict(kind='call', call_id=data['call_id'])
+                    queue_attachment(row.identity.id, owner,
+                                     diagnostic_attachment(data, evidence_boundary, enabled=enabled))
+                if not enabled:
+                    return
                 data['content'] = json.loads(attachment[1])
                 store = payload_store(row.identity.id)
-                reference = store.put_wire(data['call_id'], data['phase'], data['content'],
-                                           reason=data.get('reason', 'captured'))
+                from .payloads import PayloadLimitError
+                try:
+                    reference = store.put_wire(data['call_id'], data['phase'], data['content'],
+                                               reason=data.get('reason', 'captured'), transport_attempt_id=data.get('transport_attempt_id'), capture_source=data.get('capture_source'))
+                except PayloadLimitError:
+                    store.omit_wire(data['call_id'], data['phase'], transport_attempt_id=data.get('transport_attempt_id'), capture_source=data.get('capture_source'))
+                    incomplete_inference_evidence.setdefault(row.identity.id, set()).add('truncated')
+                    reference = None
                 if reference is not None:
                     phases = payload_calls.setdefault(row.identity.id, {}).setdefault(data['call_id'], {})
-                    native = dict(name=attachment[0], source=reference['source'], type='application/json')
-                    phases[data['phase']] = native
+                    key = (data['transport_attempt_id'], data['phase']) if data.get('transport_attempt_id') else data['phase']
+                    phases[key] = native_payload_attachments(store, reference, attachment[0])
                 row = replace(row, text=json.dumps(data, ensure_ascii=False))
             if on_event is not None:
                 on_event(row)
@@ -615,6 +682,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                            on_event=event, output=output, cancel_event=cancel_event,
                            unattended_index_source=unattended_index_source,
                            **({'quota_observer': observe_quota} if runner is run_integration_tests and quota_fetcher is None else {}),
+                           **({'evidence_boundary': evidence_boundary} if runner is run_integration_tests else {}),
                            **({'interaction': interaction} if interaction is not None else {}),
                            **({'tool_plan': tool_plan} if tool_plan is not None else {}),
                            **({'config_fields': config_fields} if config_fields is not None else {}),

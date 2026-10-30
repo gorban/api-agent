@@ -1,7 +1,9 @@
 """Lazy provider setup for launch-owned integration workers."""
 import asyncio
 from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
+from threading import Lock
 import json
 import inspect
 import os
@@ -70,7 +72,7 @@ def _configured_request(request, config):
 
 
 def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None,
-                          password_manager_registry=None, interaction_descriptor=None, tool_plan=None, tool_cases=None, test_profiles=None):
+                          password_manager_registry=None, interaction_descriptor=None, tool_plan=None, tool_cases=None, test_profiles=None, config_fields=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     from api_agent.auth.managers import registry_for_context
@@ -80,6 +82,8 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
             'password_manager_definitions': _manager_definitions(registry)}
     if getattr(context, 'external_pack', False):
         data['password_manager_pack_root'] = str(context.pack_root)
+    from .workflow_capture import capture_sources
+    data['capture_sources'] = capture_sources(config, config_fields)
     if unattended_index_source is not None:
         data['unattended_index_source'] = unattended_index_source
     if setup_backend is not None:
@@ -125,13 +129,15 @@ def _read_snapshot():
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles', 'test_profile_rate_cards'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles', 'test_profile_rate_cards', 'capture_sources'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
                 or data['version'] != 1 or not isinstance(data['config'], dict)
                 or not isinstance(data['owner_root'], str) or not Path(data['owner_root']).is_absolute()):
             raise ValueError
+        from .workflow_capture import capture_config
+        capture_config(data['config'], data.get('capture_sources', {}))
         if ('password_manager_pack_root' in data and
                 (not isinstance(data['password_manager_pack_root'], str)
                  or not Path(data['password_manager_pack_root']).is_absolute())):
@@ -162,7 +168,7 @@ def _read_snapshot():
         return data
     except (OSError, KeyError, ValueError, TypeError):
         pass
-    raise ContractError('Integration provider context is unavailable; start through launch.py.')
+    raise ContractError('Integration provider context is unavailable; start through launch.sh.')
 
 
 def _manager_definitions(registry):
@@ -179,7 +185,7 @@ def _worker_manager_registry(data):
             return registry
     except ManagerError:
         pass
-    raise ContractError('Password manager declarations changed after launch; restart through launch.py.')
+    raise ContractError('Password manager declarations changed after launch; restart through launch.sh.')
 
 
 _inspection_providers = []
@@ -189,13 +195,17 @@ class IntegrationLLM:
     """Creating-loop operation owner; shared consumers reach it through the backend."""
     def __init__(self, config, owner_root, *, unattended_index_source=None, loop=None,
                  password_manager_registry=None, password_manager_pack_root=None, interaction=None, quota_observer=None,
-                 skip_unavailable=True):
+                 skip_unavailable=True, authority=None):
         from api_agent.auth.interaction_transport import OwnedInteraction
         self.interaction = None if interaction is None else OwnedInteraction(interaction)
         self.config = dict(config)
         self.skip_unavailable = skip_unavailable
         from .inference_content import content_boundary
-        self.emissions = content_boundary(self.config)
+        seeded = content_boundary(self.config)
+        if authority is not None and type(authority) is not type(seeded):
+            raise ContractError('Invalid integration credential authority')
+        self.emissions = seeded if authority is None else authority.for_policy(seeded.policy)
+        self._credential_seed = tuple(seeded._secrets)
         self.owner_root = owner_root
         from api_agent.auth.managers import load_manager_registry, registry_for_owner
         self.password_manager_registry = (
@@ -241,6 +251,8 @@ class IntegrationLLM:
         return ScopedLLMCredentials(role, reader)
 
     async def _prepare_setup(self):
+        for secret in self._credential_seed:
+            await self.emissions.aregister_secret(secret)
         await self._release_retained()
         location = self.config.get('LLM_PROVIDER')
         if location is None or location == '':
@@ -275,13 +287,15 @@ class IntegrationLLM:
             credentials = self._credentials(index) if index is not None else None
             identity = self._selected_identity(self._provider_config)
             def make_owner(scoped_credentials):
+                from api_agent.providers.credential_guard import admit_llm_provider
+                admit_llm_provider(implementation, self.emissions)
                 self.owner = LLMSessionOwner(implementation, user_index=index,
                                              credentials=scoped_credentials,
-                                             interactive=index is None and (self.inspection is not None or not self._provider_config.get('NO_STD_IN', False)))
+                                             interactive=index is None and (self.interaction is not None or self.inspection is not None or not self._provider_config.get('NO_STD_IN', False)))
                 return self.owner
             async def complete(request, *, auth):
                 if type(auth) is str and auth:
-                    self.emissions.register_secret(auth)
+                    await self.emissions.aregister_secret(auth)
                 return await implementation.acomplete(request, auth=auth)
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
                                                  credentials=credentials, describe=getattr(implementation, 'adescribe', None),
@@ -418,7 +432,8 @@ class IntegrationLLM:
             raise
         finally:
             from .inference_content import publish_content
-            rows = () if collector is None else collector['rows']
+            from api_agent.workflows.inference_capture import select_capture_rows
+            rows = () if collector is None else select_capture_rows(collector['rows'])
             capture_rows(rows, call_id)
             publish_content(rows, call_id)
 
@@ -554,12 +569,30 @@ class RemoteIntegrationLLM:
         self.timeout = _timeout((config or {}).get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', self.timeout))
         self.config = dict(config or {})
         self.client = SetupClient(descriptor, timeout=self.timeout)
+        self._evidence_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='api-agent-evidence')
+        from api_agent.providers.setup_slots import slots_for
+        self._evidence_slots = slots_for(self.client._descriptor)
+        self._evidence_stranded = []
+        self._evidence_stranded_lock = Lock()
         self.loop = asyncio.new_event_loop()
         self.loop.set_default_executor(ThreadPoolExecutor(max_workers=1,
             thread_name_prefix='api-agent-setup-client'))
 
     def complete(self, request):
         request = _configured_request(request, self.config)
+        from .authority_scope import current_scope
+        from api_agent.workflows.attribution import current_workflow_visit
+        scope = current_scope()
+        if (scope is not None and hasattr(self, '_evidence_pool')
+                and 'authority_path' in self.client._descriptor):
+            return self._complete_background(request, scope, current_workflow_visit())
+        visit = current_workflow_visit()
+        admission = None
+        if scope is not None and visit is not None:
+            from .workflow_capture import visit_authorities
+            boundaries = visit_authorities(visit)
+            if boundaries:
+                admission = (scope, boundaries)
         from .inference_usage import publish
         call_id = publish(request) or str(uuid4())
         result = None
@@ -569,12 +602,14 @@ class RemoteIntegrationLLM:
             # Snapshot all per-call facts before another caller can reset them.
             with self.client._lock:
                 try:
-                    return self.client.complete(request)
+                    if scope is not None:
+                        return self.client.complete(request, authority_scope=scope, observation_call_id=call_id)
+                    return self.client.complete(request, observation_call_id=call_id)
                 finally:
                     for name in packet:
                         packet[name] = deepcopy(getattr(self.client, name, packet[name]))
         try:
-            result = self._request(invoke)
+            result = self._request(invoke, admission=admission) if admission is not None else self._request(invoke)
             publish(request, result, call_id=call_id, quote=packet['cost_quote'])
             return result
         except BaseException as error:
@@ -602,17 +637,148 @@ class RemoteIntegrationLLM:
             capture_rows(rows, call_id)
             publish_content(rows, call_id)
 
+    def _complete_background(self, request, scope, visit):
+        from api_agent.providers.setup_transport import SetupClient
+        from api_agent.providers.generation_attempts import attach_transport_attempts
+        from api_agent.providers.rich_inference import validate_response_evidence, validate_response_result
+        from api_agent.workflows.evidence_finalization import enroll
+        from api_agent.workflows.inference_capture import capture_rows, _report_capture_loss
+        from .inference_content import publish_content
+        from .inference_usage import publish
+
+        from .workflow_capture import visit_authorities
+        boundaries = visit_authorities(visit)
+        async def admit_boundaries():
+            for boundary in boundaries:
+                await scope.ajoin('workflow', boundary)
+        if boundaries:
+            asyncio.run(admit_boundaries())
+        call_id = publish(request) or str(uuid4())
+        ready = Future()
+        context = copy_context()
+        job = Future()
+        try:
+            scope.enroll_evidence(job)
+            enroll(job)
+            slot = self._evidence_slots.acquire(self.timeout)
+        except BaseException as error:
+            job.set_result(None)
+            publish(request, None, call_id=call_id, failed=True, error=error)
+            raise
+
+        def run(client):
+            delivered = False
+            announced_error = None
+            early_value = None
+            def result_ready(result):
+                nonlocal delivered, early_value
+                if client.response_evidence != result.response:
+                    raise ContractError('Conflicting dispatched response policy')
+                validate_response_evidence(request, result)
+                result = validate_response_result(request, attach_transport_attempts(result, client.transport_attempts))
+                copy_failed = False
+                try:
+                    quote = deepcopy(client.cost_quote)
+                except Exception:
+                    copy_failed = True
+                if copy_failed:
+                    raise ContractError('Background result finalization failed') from None
+                ready.set_result((result, quote))
+                early_value = result
+                delivered = True
+            def error_ready(error):
+                nonlocal delivered, announced_error
+                from api_agent.workflows.inference_capture import retain_response_failure
+                retain_response_failure(error, client.response_evidence)
+                attach_transport_attempts(error, client.transport_attempts)
+                announced_error = (type(error), str(error))
+                ready.set_exception(error)
+                delivered = True
+            try:
+                final_result = client.complete(request, authority_scope=scope, result_ready=result_ready,
+                                               error_ready=error_ready, observation_call_id=call_id)
+                if early_value != final_result:
+                    raise ContractError('Conflicting final inference response')
+            except BaseException as error:
+                if not delivered:
+                    ready.set_exception(error)
+                elif announced_error is None or announced_error != (type(error), str(error)):
+                    _report_capture_loss(call_id, 'input')
+                    _report_capture_loss(call_id, 'output')
+                    publish_content([dict(phase=phase, content={}, reason='unavailable')
+                                     for phase in ('request', 'response')], call_id)
+                    return
+            rows = deepcopy(client.evidence)
+            capture_rows(rows, call_id)
+            publish_content(rows, call_id)
+
+        def owned():
+            client = None
+            try:
+                client = SetupClient(self.client._descriptor, worker_id=slot[0], attempt=slot[1], timeout=self.timeout)
+                context.run(run, client)
+            except BaseException as error:
+                if not ready.done():
+                    ready.set_exception(error)
+                else:
+                    def report():
+                        _report_capture_loss(call_id, 'input')
+                        _report_capture_loss(call_id, 'output')
+                    context.run(report)
+            finally:
+                try:
+                    try:
+                        if client is not None:
+                            client.close()
+                    except BaseException:
+                        with self._evidence_stranded_lock:
+                            self._evidence_stranded.append((slot, client))
+                        def report_cleanup():
+                            _report_capture_loss(call_id, 'input')
+                            _report_capture_loss(call_id, 'output')
+                        context.run(report_cleanup)
+                    else:
+                        if (client is None or (not client._failed and client._binding is None)
+                                or client._revoke_confirmed):
+                            self._evidence_slots.release(slot)
+                        else:
+                            # A lost connection has no revoke acknowledgement.
+                            # Retire its identity for the operation lifetime.
+                            def report_unconfirmed():
+                                _report_capture_loss(call_id, 'input')
+                                _report_capture_loss(call_id, 'output')
+                            context.run(report_unconfirmed)
+                finally:
+                    job.set_result(None)
+        try:
+            self._evidence_pool.submit(owned)
+        except BaseException as error:
+            self._evidence_slots.release(slot)
+            job.set_result(None)
+            publish(request, None, call_id=call_id, failed=True, error=error)
+            raise
+        try:
+            result, quote = ready.result()
+        except BaseException as error:
+            publish(request, None, call_id=call_id, failed=True, error=error)
+            raise
+        publish(request, result, call_id=call_id, quote=quote)
+        return result
+
     def describe(self):
         return self._request(self.client.describe)
 
     def ensure_ready(self):
         return self._request(self.client.ensure_ready)
 
-    def _request(self, method):
+    def _request(self, method, *, admission=None):
         from api_agent.providers.progress import report_timeout
         from api_agent.runtime.tasks import offload
         async def ready():
             async with report_timeout('Shared provider setup', self.timeout):
+                if admission is not None:
+                    for boundary in admission[1]:
+                        await admission[0].ajoin('workflow', boundary)
                 return await offload(method)
         if self.loop.is_closed():
             raise RuntimeError('Event loop is closed')
@@ -626,6 +792,15 @@ class RemoteIntegrationLLM:
                 work.close()
 
     def close(self):
+        self._evidence_pool.shutdown(wait=True)
+        with self._evidence_stranded_lock:
+            stranded = tuple(self._evidence_stranded)
+        for slot, client in stranded:
+            client.close()
+            if ((not client._failed and client._binding is None) or client._revoke_confirmed):
+                self._evidence_slots.release(slot)
+            with self._evidence_stranded_lock:
+                self._evidence_stranded.remove((slot, client))
         if not self.loop.is_closed():
             from api_agent.runtime.tasks import offload
             self.loop.run_until_complete(offload(self.client.close))
@@ -654,6 +829,23 @@ def _test_snapshot(request):
             data['setup_backend'] = row['setup_backend']
     return data
 
+
+@pytest.fixture(autouse=True)
+def _test_credential_authority_scope(request):
+    """Enroll only explicitly declared worker credential producers."""
+    from .authority_scope import authority_scope
+    marker = request.node.get_closest_marker('credential_authorities')
+    if marker is not None and marker.kwargs:
+        raise ContractError('Invalid test credential authority manifest')
+    manifest = None if marker is None else marker.args
+    with authority_scope(manifest) as scope:
+        if os.environ.get('API_AGENT_INTEGRATION_CONTEXT'):
+            from .workflow_capture import worker_capture
+            with worker_capture(_test_snapshot(request), scope, manifest):
+                yield
+        else:
+            yield
+
 @pytest.fixture
 def llm_selection(llm_provider, request):
     from api_agent.providers.selection import ModelSelectionPolicy
@@ -674,7 +866,9 @@ def llm_provider(request):
                                   password_manager_registry=_worker_manager_registry(data),
                                   interaction=_worker_interaction(data))
     try:
-        yield provider
+        from .workflow_capture import provider_capture
+        with provider_capture(provider):
+            yield provider
     finally:
         if isinstance(provider, IntegrationLLM) and os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
             provider.finish_run()
@@ -917,6 +1111,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
     config.addinivalue_line("markers", "requires_ui_session: selected integration consumes the UI provider")
     config.addinivalue_line("markers", "requires_llm: UI integration also consumes the LLM provider")
+    config.addinivalue_line("markers", "credential_authorities(*owners): explicitly admit every worker credential producer")
 
 
 def pytest_runtest_setup(item):

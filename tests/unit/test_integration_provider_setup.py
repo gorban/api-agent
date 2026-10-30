@@ -18,6 +18,13 @@ def snapshot(tmp_path, monkeypatch, config=None):
     return path
 
 
+def protected(provider):
+    """Declare the credential contract on a synthetic setup-only provider."""
+    provider.credential_protection_version = 1
+    provider.bind_credential_authority = lambda authority: None
+    return provider
+
+
 def test_snapshot_private_paths_and_bounds(tmp_path, monkeypatch):
     path = snapshot(tmp_path, monkeypatch, {'STATE': tmp_path, 'SECRET': 'synthetic-secret'})
     assert path.stat().st_mode & 0o777 == 0o600
@@ -60,7 +67,7 @@ def test_snapshot_rejects_invalid_rate_card_references(tmp_path, monkeypatch, in
     data['test_profile_rate_cards'] = [None]
     data['test_profiles'] = {'case': {'config': {}, 'provenance': {}, 'rate_card_index': index}}
     path.write_text(json.dumps(data))
-    with pytest.raises(ContractError, match='start through launch.py'):
+    with pytest.raises(ContractError, match='start through launch.sh'):
         p._read_snapshot()
 
 
@@ -71,7 +78,7 @@ def test_snapshot_rejects_rate_card_expansion_over_budget(tmp_path, monkeypatch)
     data['test_profiles'] = {str(i): {'config': {}, 'provenance': {}, 'rate_card_index': 0} for i in range(2)}
     path.write_text(json.dumps(data))
     monkeypatch.setattr(p, '_EXPANDED_PROFILE_BYTES', 150)
-    with pytest.raises(ContractError, match='start through launch.py'):
+    with pytest.raises(ContractError, match='start through launch.sh'):
         p._read_snapshot()
     with pytest.raises(ContractError, match='too large'):
         p.write_launch_snapshot(tmp_path / 'absent', SimpleNamespace(owner_root=tmp_path), {},
@@ -97,7 +104,7 @@ def test_snapshot_rejects_inconsistent_rate_card_table(tmp_path, monkeypatch, pr
     if problem == 'duplicate':
         data['test_profiles'] = {'case': {'config': {'_COST_RATE_CARD': None}, 'provenance': {}, 'rate_card_index': 0}}
     path.write_text(json.dumps(data))
-    with pytest.raises(ContractError, match='start through launch.py'):
+    with pytest.raises(ContractError, match='start through launch.sh'):
         p._read_snapshot()
 
 
@@ -148,7 +155,7 @@ def test_snapshot_rejects_untrusted_context_without_echo(tmp_path, monkeypatch, 
         else:
             data['owner_root'] = 'relative'
         path.write_text(json.dumps(data))
-    with pytest.raises(ContractError, match='start through launch.py') as error:
+    with pytest.raises(ContractError, match='start through launch.sh') as error:
         p._read_snapshot()
     assert 'synthetic-secret' not in str(error.value)
 
@@ -231,7 +238,7 @@ def test_setup_is_lazy_reusable_and_disposed_on_same_loop(tmp_path, monkeypatch,
             assert kwargs == {'interactive': index is None and not no_std_in, 'user_index': index, 'credentials': None}
             events.append('setup')
             return Auth()
-    provider = SimpleNamespace(implementation=Adapter(), aclose=AsyncMock())
+    provider = SimpleNamespace(implementation=protected(Adapter()), aclose=AsyncMock())
     load = AsyncMock(return_value=provider)
     monkeypatch.setattr(p, 'aload_provider', load)
     owner = p.IntegrationLLM({'LLM_PROVIDER': 'selected', 'UNATTENDED_USER_INDEX': index, 'NO_STD_IN': no_std_in}, tmp_path)
@@ -258,10 +265,10 @@ def test_setup_failures_are_not_success(tmp_path, monkeypatch, problem):
         async def aclose(self): pass
     implementation = SimpleNamespace(asetup=AsyncMock(return_value=EmptyAuth()))
     if problem == 'unsupported':
-        implementation = object()
+        implementation = SimpleNamespace()
     if problem == 'interaction':
         implementation = SimpleNamespace(asetup=setup)
-    loaded = SimpleNamespace(implementation=implementation, aclose=AsyncMock())
+    loaded = SimpleNamespace(implementation=protected(implementation), aclose=AsyncMock())
     monkeypatch.setattr(p, 'aload_provider', AsyncMock(return_value=loaded))
     owner = p.IntegrationLLM({} if problem == 'missing' else {'LLM_PROVIDER': 'selected'}, tmp_path)
     try:
@@ -298,7 +305,7 @@ def test_only_explicit_prerequisites_become_skips(tmp_path, monkeypatch, problem
               'authentication': InteractionRequiredError('Sign-in is required'),
               'transport': OSError('transport failed')}
     adapter = SimpleNamespace(asetup=AsyncMock(side_effect=errors[problem]))
-    provider = SimpleNamespace(implementation=adapter, aclose=AsyncMock())
+    provider = SimpleNamespace(implementation=protected(adapter), aclose=AsyncMock())
     monkeypatch.setattr(p, 'aload_provider', AsyncMock(return_value=provider))
     owner = p.IntegrationLLM({'LLM_PROVIDER': 'selected'}, tmp_path)
     try:
@@ -441,6 +448,7 @@ def test_pack_requirement_marker_registered_for_worker():
         call("markers", "requires_pack_api: selected integration requires pack API/identity preflight"),
         call("markers", "requires_ui_session: selected integration consumes the UI provider"),
         call("markers", "requires_llm: UI integration also consumes the LLM provider"),
+        call("markers", "credential_authorities(*owners): explicitly admit every worker credential producer"),
     ]
 
 
@@ -462,7 +470,7 @@ def test_debug_worker_retains_browser_and_drives_loop_after_auth_close(tmp_path,
                 session.context.pages.clear()
             asyncio.create_task(close_window())
             return Auth()
-    loaded = SimpleNamespace(implementation=Adapter(), aclose=AsyncMock(side_effect=lambda: events.append('provider-close')))
+    loaded = SimpleNamespace(implementation=protected(Adapter()), aclose=AsyncMock(side_effect=lambda: events.append('provider-close')))
     load = AsyncMock(return_value=loaded)
     monkeypatch.setattr(p, 'aload_provider', load)
     provider.ensure_ready()
@@ -525,7 +533,7 @@ def test_worker_shared_setup_coalesces_and_freezes_selected_identity(tmp_path, m
             return object()
     auth = Auth()
     adapter = SimpleNamespace(asetup=AsyncMock(return_value=auth))
-    loaded = SimpleNamespace(implementation=adapter, aclose=AsyncMock())
+    loaded = SimpleNamespace(implementation=protected(adapter), aclose=AsyncMock())
     load = AsyncMock(return_value=loaded)
     monkeypatch.setattr(p, 'aload_provider', load)
     worker = p.IntegrationLLM({'LLM_PROVIDER': 'selected'}, tmp_path)
@@ -571,7 +579,7 @@ def test_worker_revokes_before_provider_disposal_and_rejects_late_reply(tmp_path
     async def provider_close():
         with pytest.raises(SessionClosedError):
             await captured[0](0, 'password')
-    loaded = SimpleNamespace(implementation=SimpleNamespace(asetup=setup), aclose=provider_close)
+    loaded = SimpleNamespace(implementation=protected(SimpleNamespace(asetup=setup)), aclose=provider_close)
     monkeypatch.setattr(p, 'aload_provider', AsyncMock(return_value=loaded))
     worker = p.IntegrationLLM({'LLM_PROVIDER': 'selected', 'UNATTENDED_USER_INDEX': 0}, tmp_path)
     monkeypatch.setattr(worker, '_credentials', lambda index: reader)

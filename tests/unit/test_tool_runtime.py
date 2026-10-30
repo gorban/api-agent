@@ -31,6 +31,7 @@ class Selected:
     pending: object = ()
     service_bindings: object = ()
     service_capabilities: object = ()
+    executables: object = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

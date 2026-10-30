@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from playwright.async_api import async_playwright
 
 from api_agent.llm_providers.gpt.connect import LoginPageGuard
 from api_agent.llm_providers.gpt.login import LoginWorkflow
@@ -13,6 +12,7 @@ from api_agent.providers.contracts import UnattendedCredentialError
 
 @pytest.fixture
 def alternative_page():
+    from playwright.async_api import async_playwright
     async def use(test):
         async with async_playwright() as driver:
             browser = await driver.chromium.launch(headless=True)

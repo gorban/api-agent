@@ -247,7 +247,9 @@ def test_reader_start_failure_reaps_worker_before_return(worker_harness, monkeyp
     state = worker_harness
     class FailedReader(DormantThread):
         def start(self):
-            raise RuntimeError('private reader failure')
+            if self.target.__name__ == 'read_output':
+                raise RuntimeError('private reader failure')
+            super().start()
     monkeypatch.setattr(integration.threading, 'Thread', FailedReader)
     result = state.run()
     assert result.exit_code == 1 and 'private reader failure' not in result.output

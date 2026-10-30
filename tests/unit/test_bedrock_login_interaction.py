@@ -230,7 +230,7 @@ async def test_auth_selects_borrowed_generic_with_legacy_fallback(monkeypatch, i
     session = await create_session({'NO_STD_IN': no_input}, interactive=interactive,
                                    user_index=None, credentials=None, services=services)
     expected = ordinary if generic else legacy
-    assert requests[0].interaction is (expected if interactive and not no_input else None)
+    assert requests[0].interaction is (expected if interactive else None)
     await session.aclose()
 
 

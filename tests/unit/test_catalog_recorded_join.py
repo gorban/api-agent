@@ -111,29 +111,18 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
     assert [item['status'] for item in artifacts] == [expected, expected]
     assert key not in result.execution.output
     assert secondary_key not in result.execution.output
-    if outcome == 'expired':
-        assert 'API key expired.' in result.execution.output
-        assert 'code: 401' in result.execution.output and 'type: invalid_token' in result.execution.output
     all_text = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
     assert key not in all_text
     assert secondary_key not in all_text
     if outcome != 'accepted':
         for item in artifacts:
             details = item['statusDetails']
-            if outcome == 'expired':
-                assert 'API key expired.' in details['trace']
-                assert 'HTTP status: 401' in details['trace'] and 'code: 401' in details['trace']
-                assert 'type: invalid_token' in details['trace']
-                assert 'WWW-Authenticate' not in details['trace']
+            if not outcome.startswith('bearer-'):
+                assert 'protected authentication content' in details['trace']
+                status = 403 if outcome == 'restricted' else 401
+                assert f'HTTP status: {status}' in details['trace']
                 continue
             assert 'Selected credential rejected' in details['message'] + details['trace']
-            assert f'HTTP status: {403 if outcome == "restricted" else 401}' in details['trace']
-            if outcome.startswith('bearer-'):
-                assert 'code: Bearer [redacted]' in details['trace']
-                assert 'type: Bearer [redacted]' in details['trace'] and 'request ID: Bearer [redacted]' in details['trace']
-                continue
-            if outcome.startswith('control-'):
-                assert 'code: [redacted]' in details['trace']
-                assert 'type: [redacted]' in details['trace'] and 'request ID: [redacted]' in details['trace']
-                continue
-            assert 'type: access_error' in details['trace'] and 'request ID: req-safe' in details['trace']
+            assert 'HTTP status: 401' in details['trace']
+            assert 'code: Bearer [redacted]' in details['trace']
+            assert 'type: Bearer [redacted]' in details['trace'] and 'request ID: Bearer [redacted]' in details['trace']

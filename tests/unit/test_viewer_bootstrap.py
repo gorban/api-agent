@@ -29,6 +29,26 @@ def test_accepts_harmless_lifecycle_flags(arguments):
     _validate_view_flow_arguments(arguments)
 
 
+def test_accepts_one_flow_path_relative_to_callers_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _validate_view_flow_arguments(['--debug', 'nested/flow.md.html']) == tmp_path / 'nested/flow.md.html'
+    with pytest.raises(ValueError, match='one optional'):
+        _validate_view_flow_arguments(['one.md.html', 'two.md.html'])
+
+
+def test_explicit_flow_survives_dependency_handoff_and_reaches_viewer(monkeypatch, tmp_path):
+    from api_agent.runtime import dependencies, hook_assurance, view_flow
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(hook_assurance, 'assure_hook', lambda root: 'present')
+    calls = []
+    monkeypatch.setattr(dependencies, 'ensure_environment', lambda context, arguments, **kwargs: calls.append(arguments))
+    viewed = []
+    monkeypatch.setattr(view_flow, 'run_view_flow', lambda context, *, entry: viewed.append(entry) or 0)
+    assert main(['--view-flow', 'nested/flow.md.html'], base_root=ROOT, _worktrees_verified=True) == 0
+    assert calls == [['--view-flow', 'nested/flow.md.html']]
+    assert viewed == [tmp_path / 'nested/flow.md.html']
+
+
 @pytest.mark.parametrize('arguments', [
     ['--collect-only'], ['--tui-mode=unit'], ['tests/unit'], ['--', 'selector'], ['--start'],
 ])
@@ -49,7 +69,9 @@ def test_viewer_help_does_not_load_execution_schema_or_providers(monkeypatch, ca
     monkeypatch.setattr(loading, 'bootstrap_schema', poison)
     monkeypatch.setattr(hook_assurance, 'assure_hook', lambda root: 'present')
     assert main(['--view-flow', '--help'], base_root=ROOT, _worktrees_verified=True) == 0
-    assert './launch.py --view-flow' in capsys.readouterr().out
+    assert './launch.sh --view-flow' in capsys.readouterr().out
+
+
 
 
 def test_viewer_dependency_handoff_preserves_selected_context_and_arguments(monkeypatch):

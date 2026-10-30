@@ -1,6 +1,7 @@
 """Bounded model conversations using caller-owned, invocation-local tool gates."""
 from uuid import uuid4
 
+from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.inference import usage_to_wire
 from api_agent.providers.llm import (
     CompletionRequest, GenerationOptions, LLMRequest, Message, StructuredOutput,
@@ -21,7 +22,8 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
                                 required_tools=(), verify_final=None, result_proof=None, journal=None):
     """Borrow gates and inference; retain partial content privately in ``journal``.
 
-    ``gates`` maps callable aliases to factories accepting a fresh invocation ID.
+    ``gates`` maps callable aliases to declared node capabilities or legacy
+    factories accepting a fresh invocation ID.
     The caller owns resource disposal and reporting/content policy. This mutable
     journal contains actual results and final text; it is never an attachment by
     itself. An optional synchronous ``verify_final(text, results)`` can enforce a
@@ -29,6 +31,8 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
     to the model. ``result_proof(alias, status, data)`` optionally returns a
     boolean synthetic match proof immediately after each completed execution; it
     never authorizes a call or replaces final validation. ``results`` maps each alias to all its completed result data.
+    Confirmed argument rejections request a corrected proposal within
+    ``max_rounds``; they never dispatch or replay the rejected batch.
     """
     if (type(max_rounds) is not int or max_rounds < 1 or not gates
             or not set(required_tools) <= set(gates)):
@@ -37,7 +41,8 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
     journal = {} if journal is None else journal
     calls = journal.setdefault('calls', [])
     inference = journal.setdefault('inference', [])
-    results, seen = {}, set()
+    results, seen, completed_inputs = {}, set(), set()
+    correcting = False
 
     async def infer(payload, kind):
         request = LLMRequest(selection, payload, request_id=str(uuid4()))
@@ -64,16 +69,43 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
     async with component_timeout('Tool conversation', timeout):
         tools = []
         for alias, factory in gates.items():
-            spec = await factory(str(uuid4())).describe()
+            gate = factory(str(uuid4())) if callable(factory) else factory
+            spec = await gate.describe()
             tools.append(Tool(alias, spec.description,
                               canonical(spec.input_schema, MAX_SCHEMA_BYTES), strict=False))
         messages = [Message('user', (TextContent(prompt),))]
         for round_number in range(max_rounds):
-            reply = await infer(CompletionRequest(tuple(messages), tuple(tools), generation), 'conversation')
+            journal['model_rounds'] = round_number + 1
+            try:
+                reply = await infer(CompletionRequest(tuple(messages), tuple(tools), generation), 'conversation')
+            except ProviderAccessError as error:
+                if (error.origin != 'local_output_validation' or error.kind != 'unknown'
+                        or error.status is not None or error.type != 'tool_call_validation'
+                        or error.code not in ('tool_arguments_schema', 'tool_arguments_json')):
+                    raise
+                journal.setdefault('rejections', []).append({
+                    'reason': error.code, 'model_round': round_number + 1,
+                    'request_id': inference[-1]['request_id']})
+                if round_number + 1 == max_rounds:
+                    raise
+                correcting = True
+                # Validation rejects the whole batch before dispatch. Do not
+                # replay an invalid assistant message or invent tool results.
+                messages.append(Message('user', (TextContent(
+                    'Your previous proposed tool-call batch failed local input validation. '
+                    'None of the calls in that rejected batch executed. '
+                    'Generate a corrected proposal using the declared tool input schemas, '
+                    'including every required property with the correct type. '
+                    'Do not repeat calls whose completed results are already in this conversation. '
+                    'Do not guess tool results.'),)))
+                continue
+            if correcting and any((call.name, canonical(object_json(call.arguments), MAX_SCHEMA_BYTES))
+                                  in completed_inputs for call in reply.payload.calls):
+                raise ValueError('Corrected proposal repeats a completed tool call')
+            correcting = False
             conversation_request_id = inference[-1]['request_id']
             # Keep provider continuation state on the exact assistant message.
             messages.append(reply.payload)
-            journal['model_rounds'] = round_number + 1
             if not reply.payload.calls:
                 final = ''.join(part.text for part in reply.payload.content)
                 journal['final'] = final
@@ -95,7 +127,11 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
                         'request_id': conversation_request_id})
                     raise ValueError('Unknown or repeated model tool call')
                 seen.add(call.call_id)
-                gate = gates[call.name](call.call_id)
+                selected_gate = gates[call.name]
+                gate = selected_gate(call.call_id) if callable(selected_gate) else selected_gate
+                # Alias membership was admitted above; generic gate observation
+                # still owns privacy admission and actual dispatch evidence.
+                gate.tool_alias = call.name
                 entry = {'tool': call.name, 'invocation': call.call_id, 'status': 'preparing'}
                 calls.append(entry)
                 prepared = await gate.prepare(object_json(call.arguments))
@@ -136,6 +172,7 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
                 entry.update(status='verified', verified_by_inference=True)
                 answer = await gate.execute(verified)
                 entry.update(status=answer.status, result=answer.data)
+                completed_inputs.add((call.name, canonical(prepared.arguments, MAX_SCHEMA_BYTES)))
                 results.setdefault(call.name, []).append(answer.data)
                 if result_proof is not None:
                     proof = result_proof(call.name, answer.status, answer.data)

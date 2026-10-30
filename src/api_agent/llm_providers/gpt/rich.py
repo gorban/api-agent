@@ -3,7 +3,7 @@ import json
 import math
 from api_agent.providers.llm import LLMResult, Message, TextContent, ToolCall
 from api_agent.providers.contracts import ProviderAccessError, ContractError
-from api_agent.providers.rich_inference import request_to_wire, result_to_wire, schema, object_json, continuation, valid_schema, _identifier, _response_json
+from api_agent.providers.rich_inference import request_to_wire, result_to_wire, schema, object_json, continuation, valid_schema, _identifier, response_json
 
 
 _PROVIDER = 'openai.responses'
@@ -219,14 +219,12 @@ def validate_result(request, result, token=None):
             from api_agent.providers.rich_inference import validate_result as validate
             validate(request, result)
             if request.payload.response.schema is not None and result.outcome == 'completed':
-                value = _response_json(''.join(part.text for part in result.payload.content))
+                value = response_json(result)
                 if token is not None and _protected(value, token):
                     raise ValueError()
         if result.payload.calls:
-            tools = {tool.name: schema(tool.input_schema, strict=tool.strict) for tool in request.payload.tools}
-            for call in result.payload.calls:
-                if call.name not in tools or not valid_schema(tools[call.name], object_json(call.arguments)):
-                    raise ValueError()
+            from api_agent.providers.rich_inference import validate_result as validate
+            validate(request, result)
         elif request.payload.structured is not None and result.outcome == 'completed':
             value = object_json(''.join(part.text for part in result.payload.content))
             if token is not None and _protected(value, token):
@@ -234,7 +232,9 @@ def validate_result(request, result, token=None):
             if not valid_schema(schema(request.payload.structured.schema, strict=request.payload.structured.strict), value):
                 raise ValueError()
         return result
-    except (ValueError, ContractError, ProviderAccessError):
+    except (ValueError, ContractError, ProviderAccessError) as cause:
+        if isinstance(cause, ProviderAccessError) and cause.origin == 'local_output_validation':
+            raise
         error = _invalid('GPT inference returned output outside its declared contract.')
         error.usage = result.usage
         error.response = result.response
@@ -247,12 +247,14 @@ async def async_validate_result(request, result, token=None):
     try:
         if (request.payload.structured is not None or
                 request.payload.response is not None and request.payload.response.schema is not None) and result.outcome == 'completed':
-            value = (_response_json if request.payload.response is not None else object_json)(
-                ''.join(part.text for part in result.payload.content))
+            value = (response_json(result) if request.payload.response is not None else
+                     object_json(''.join(part.text for part in result.payload.content)))
             if token is not None and _protected(value, token):
                 raise ValueError()
         return await validate(request, result)
-    except (ValueError, ContractError, ProviderAccessError):
+    except (ValueError, ContractError, ProviderAccessError) as cause:
+        if isinstance(cause, ProviderAccessError) and cause.origin == 'local_output_validation':
+            raise
         error = _invalid('GPT inference returned output outside its declared contract.')
         error.usage = result.usage
         error.response = result.response

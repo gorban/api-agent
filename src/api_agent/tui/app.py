@@ -2170,6 +2170,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if self.unit_result is not None and self.mode == 'integration':
             if self.inspections.active:
                 summary += '\nDebug inspection: open — tests and publication have finished. Leaving results closes inspection.'
+                for endpoint in self.inspections.endpoints:
+                    summary += '\nBrowser CDP (retained suite browser): ' + endpoint
             if self.inspection_failed or self.recording_cleanup is not None:
                 summary += '\nInspection cleanup: FAIL — worker lost or cleanup pending; leave results to retry cleanup.'
         if self.unit_result is not None and self.test_run is not None:
@@ -2461,6 +2463,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 details = test_details(result, self.suite_usage,
                     self.test_costs.get(key, {}), historical_tokens=historical,
                     accounting_pending=self.unit_result is None)
+                for endpoint in self.inspections.endpoints:
+                    details.append('\nBrowser CDP (retained suite browser): ' + endpoint)
                 self.show("test-failure", title, details)
                 self.screen.result_return = (self.unit_result, key, return_scroll_y)
                 self.screen.result_lifecycle = self.test_run

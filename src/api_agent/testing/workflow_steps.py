@@ -57,12 +57,12 @@ def bubble_attention(step):
 
 def scope_steps(events):
     """An ended scope needs a real start and explicit outcome, never a heartbeat."""
+    from api_agent.workflows.tool_observations import validate_tool_events
+    validate_tool_events(events)
     scopes = {}
     attempts = {}
     rejections = {}
     for event in events:
-        if type(event) is not dict:
-            raise ValueError('Workflow event must be an object')
         kind = event.get('event')
         if kind in ('attempt', 'guard') and event.get('scope_id') in scopes:
             scope_id = event['scope_id']
@@ -132,9 +132,30 @@ def scope_steps(events):
             raise ValueError('Workflow scope parent is absent')
     if roots and (len(roots) != 1 or roots[0]['name'] != 'graph GRAPH'):
         raise ValueError('Workflow scopes require exactly one graph root')
+    tool_steps = {}
     calls = set()
     inclusive = {identifier: [] for identifier in scopes}
     for event in events:
+        identifier = event.get('tool_invocation_id')
+        if event.get('event') == 'tool_start':
+            parent = rows[event['visit_id']]
+            leaf = dict(name='Tool ' + event.get('tool_name', 'invocation'),
+                status='broken', steps=[], parameters=[dict(name='tool_invocation_id', value=identifier)])
+            for field in ('tool_name', 'tool_instance'):
+                if field in event:
+                    leaf['parameters'].append(dict(name=field, value=event[field]))
+            parent['steps'].append(leaf)
+            tool_steps[identifier] = (leaf, event, parent)
+        elif event.get('event') == 'tool_end':
+            leaf, start, parent = tool_steps[identifier]
+            outcome = event['outcome']
+            leaf['status'] = ('passed' if outcome == 'success' else
+                              'failed' if outcome == 'failure' else 'broken')
+            leaf['parameters'].append(dict(name='outcome', value=outcome))
+            # The typed lifecycle validator already proved finite ordered times
+            # inside the original node interval. Round both projections alike.
+            leaf.update(start=int(start['started_ms']), stop=int(event['stopped_ms']))
+            parent['status'] = attention_status(parent['status'], leaf['status'])
         if event.get('event') != 'call':
             continue
         call_id, visit_id = event.get('call_id'), event.get('visit_id')
@@ -170,14 +191,11 @@ def scope_steps(events):
         if _time(start) and _time(stop) and parent['start'] <= start <= stop <= parent['stop']:
             parent['steps'].append(dict(name='call ' + call_id, status=status,
                                         start=int(start), stop=int(stop), steps=physical_steps, parameters=parameters))
-        elif event.get('transport_attempts') is not None:
-            # Preserve call identity without inventing timing when only nested
-            # physical evidence has timestamps.
+        else:
+            # Every logical call owns its detail, even when no timing interval
+            # was admitted. An untimed leaf must not inflate its node parameters.
             parent['steps'].append(dict(name='call ' + call_id, status=status,
                                         steps=physical_steps, parameters=parameters))
-        else:
-            parent['parameters'].extend(dict(name='call ' + call_id + ' ' + item['name'], value=item['value'])
-                                        for item in parameters)
     for identifier, usages in inclusive.items():
         if not usages:
             continue
@@ -200,13 +218,19 @@ def attach_payloads(steps, captures, calls):
     ``captures`` contains durable journal capture events; ``calls`` maps unique
     call identities to phase attachments. Unowned calls remain root attachments.
     """
-    scopes, leaves, untimed = {}, {}, {}
+    scopes, leaves, untimed, tools = {}, {}, {}, {}
 
     def visit(step):
         scope = next((item['value'] for item in step.get('parameters', [])
                       if item['name'] == 'scope_id'), None)
         if scope is not None:
             scopes.setdefault(scope, []).append(step)
+        tool_id = next((item['value'] for item in step.get('parameters', [])
+                        if item.get('name') == 'tool_invocation_id'), None)
+        if tool_id is not None:
+            if tool_id in tools:
+                raise ValueError('Ambiguous tool payload owner')
+            tools[tool_id] = step
         if step.get('name', '').startswith('call '):
             identifier = step['name'][5:]
             if identifier in leaves:
@@ -230,23 +254,44 @@ def attach_payloads(steps, captures, calls):
         owner = owners[0] if owners else None
         if owner is None:
             raise ValueError('Payload capture has no observed scope owner')
-        owner.setdefault('attachments', []).append(attachment)
+        if capture.get('cause_id') in leaves:
+            call = leaves[capture['cause_id']]
+            if call not in owner.get('steps', []):
+                raise ValueError('LLM payload lacks its exact node owner')
+            owner = call
+        if capture.get('tool_invocation_id') is not None:
+            tool = tools.get(capture['tool_invocation_id'])
+            if tool is None or tool not in owner.get('steps', []):
+                raise ValueError('Tool payload lacks its exact node owner')
+            owner = tool
+        attachments = owner.setdefault('attachments', [])
+        if not any((item['source'], item['type']) == (attachment['source'], attachment['type']) for item in attachments):
+            attachments.append(attachment)
     remaining = []
     for identifier, phases in calls.items():
         if identifier in leaves and identifier in untimed:
             raise ValueError('Ambiguous payload call owner')
         owner = leaves.get(identifier, untimed.get(identifier))
-        for phase, attachment in sorted(phases.items()):
-            if owner is None:
-                remaining.append(dict(attachment, name='Unattached ' + attachment['name']))
-            else:
-                attachments = owner.setdefault('attachments', [])
-                matching = [index for index, item in enumerate(attachments)
-                            if (item['source'], item['type']) == (attachment['source'], attachment['type'])]
-                if matching:
-                    attachments[matching[0]] = attachment
-                    for index in reversed(matching[1:]):
-                        attachments.pop(index)
+        for phase, phase_attachments in sorted(phases.items(), key=lambda item: str(item[0])):
+            phase_owner = owner
+            if isinstance(phase, tuple) and owner is not None:
+                matches = [step for step in owner.get('steps', []) if any(
+                    item.get('name') == 'transport_id' and item.get('value') == phase[0]
+                    for item in step.get('parameters', []))]
+                if len(matches) > 1:
+                    raise ValueError('Payload transport attempt has no unique call owner')
+                phase_owner = matches[0] if matches else None
+            for attachment in (phase_attachments if isinstance(phase_attachments, list) else [phase_attachments]):
+                if phase_owner is None:
+                    remaining.append(dict(attachment, name='Unattached ' + attachment['name']))
                 else:
-                    attachments.append(attachment)
+                    attachments = phase_owner.setdefault('attachments', [])
+                    matching = [index for index, item in enumerate(attachments)
+                                if (item['source'], item['type']) == (attachment['source'], attachment['type'])]
+                    if matching:
+                        attachments[matching[0]] = attachment
+                        for index in reversed(matching[1:]):
+                            attachments.pop(index)
+                    else:
+                        attachments.append(attachment)
     return remaining

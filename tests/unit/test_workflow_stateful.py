@@ -708,6 +708,39 @@ def test_reporting_marker_verifies_before_native_exec_and_publishes_turn(fixture
         assert [row['event_id'] for row in rows] == [row['event_id'] for row in calls[2]['events']]
 
 
+def test_reporting_records_unstaged_workflow_identity_that_matches_later_commit(fixture_graph, monkeypatch):
+    import subprocess
+    from api_agent.workflows import evidence
+    from api_agent.workflows.provenance import verified_documents
+
+    root, entry = fixture_graph
+    def git(*args):
+        subprocess.run(('git', '-C', str(root), *args), check=True, capture_output=True)
+    git('init', '-q')
+    git('config', 'user.name', 'Example')
+    git('config', 'user.email', 'example@example.invalid')
+    git('add', '.')
+    git('commit', '-qm', 'initial workflow')
+    entry.write_text(entry.read_text().replace('synthetic_flow', 'changed_flow'))
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    records = []
+    monkeypatch.setattr(evidence, 'publish', records.append)
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+                                reducers={'messages': add_messages})
+    asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='reported'))
+    recorded = records[-1]
+    assert recorded['projection']['definition_id'] == definition.definition_id
+    assert recorded['source_manifest']['owners'][0]['state'] == 'working_tree'
+    assert recorded['source_manifest']['owners'][0]['commit'] is None
+
+    git('add', '.')
+    git('commit', '-qm', 'update workflow')
+    committed = load_stateful_definition(entry, base_root=root, pack_root=root)
+    assert committed.definition_id == recorded['projection']['definition_id']
+    assert verified_documents(committed)['documents'] == recorded['source_manifest']['documents']
+
+
 def test_declared_recovery_loop_revisits_node_then_ends(fixture_graph):
     root, entry = fixture_graph
     source = root / 'native.py'
@@ -2354,3 +2387,31 @@ def test_recorded_stateful_frozen_capture_contract_is_observational(
         assert all('values' not in row for row in captures+live)
         assert 'unavailable-private-sentinel' not in json.dumps(captures)
         assert 'x'*65537 not in data.decode()
+
+
+def test_stateful_nodes_transfer_declared_grant_and_new_turn_is_fresh(fixture_graph):
+    from api_agent.tooling.runtime import OwnerTools
+    from test_tool_gate import Owner
+    root, entry = fixture_graph
+    native = root / 'native.py'
+    native.write_text(native.read_text().replace(
+        "def intake(state, context):\n", "async def intake(state, context):\n"
+        "    prepared = await context.tools['reader'].prepare({'query': 'hello'})\n"
+        "    context.services['grant'] = await context.tools['reader'].verify(prepared,\n"
+        "        relevance=lambda _: {'relevant': True, 'grounded': True})\n").replace(
+        "def finish(state, context):\n", "async def finish(state, context):\n"
+        "    await context.tools['runner'].execute(context.services['grant'])\n"))
+    (root / 'instance.toml').write_text('id = "sample/reader"\n')
+    for name, port, operations in [('intake', 'reader', 'prepare, verify'), ('finish', 'runner', 'execute')]:
+        path = root / f'{name}.md.html'
+        path.write_text(path.read_text() + '\n## Tools\n\n| Port | Instance | Operations |\n'
+                        f'| --- | --- | --- |\n| {port} | [reader](instance.toml) | {operations} |\n')
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    owner = Owner('synthetic')
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        reducers={'messages': add_messages}, services={'tools': OwnerTools(definition, owner)})
+    async def turns():
+        for _ in range(2):
+            await workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='conversation')
+    asyncio.run(turns())
+    assert owner.calls == ['describe', 'validate', 'invoke', 'describe', 'validate', 'invoke']

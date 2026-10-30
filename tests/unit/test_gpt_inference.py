@@ -587,3 +587,42 @@ def test_luna_56_off_native_transport(mode):
     expected = {'reasoning': {'effort': 'none'}} if mode == 'responses' else {'reasoning_effort': 'none'}
     assert {key: body[key] for key in ('reasoning', 'reasoning_effort') if key in body} == expected
     assert str(calls[0].url) == BASE + ('/responses' if mode == 'responses' else '/chat/completions')
+
+
+def test_request_with_selected_token_never_reaches_transport():
+    sent = []
+    async def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json=result())
+    req = LLMRequest('gpt-example', CompletionRequest(
+        (Message('user', (TextContent(TOKEN),)),), generation=GenerationOptions(64)))
+    with pytest.raises(ProviderAccessError):
+        run(req=req, handler=handler)
+    assert sent == []
+
+
+def test_response_with_escaped_selected_token_is_rejected():
+    data = result()
+    data['output'][0]['content'][0]['text'] = TOKEN.replace('s', r'\\u0073', 1)
+    with pytest.raises(ProviderAccessError):
+        run(httpx.Response(200, json=data))
+
+
+def test_http_error_rejects_escaped_selected_token():
+    escaped = TOKEN.replace('s', r'\\u0073', 1)
+    response = httpx.Response(400, json={'error': {'message': 'Denied ' + escaped}})
+    with pytest.raises(ProviderAccessError) as caught:
+        run(response)
+    assert escaped not in str(vars(caught.value))
+    assert 'protected authentication' in str(caught.value)
+
+
+def test_sse_error_rejects_escaped_selected_token():
+    escaped = TOKEN.replace('s', r'\\u0073', 1)
+    frame = {'type': 'response.failed', 'response': {'error': {'message': 'Denied ' + escaped}}}
+    response = httpx.Response(200, text='data: ' + json.dumps(frame) + '\n\n',
+                              headers={'content-type': 'text/event-stream'})
+    with pytest.raises(ProviderAccessError) as caught:
+        run(response, subscription=True)
+    assert escaped not in str(vars(caught.value))
+    assert 'protected authentication' in str(caught.value)

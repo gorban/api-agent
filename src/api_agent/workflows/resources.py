@@ -21,7 +21,7 @@ def bundled_root() -> Path:
     if (source_module.is_file() and source_module.samefile(module)
             and (checkout / 'src/api_agent/__init__.py').is_file()
             and (checkout / 'flow.md.html').is_file()
-            and (checkout / 'launch.py').is_file()
+            and (checkout / 'launch.sh').is_file()
             and (checkout / 'pyproject.toml').is_file()):
         return checkout
     raise FileNotFoundError(f'Bundled application flow is missing: {package / "flow.md.html"}')

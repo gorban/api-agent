@@ -28,10 +28,7 @@ async def converse(inputs, context):
             raise ValueError('Final answer must attribute the exact value to both named tools')
         journal['final_matches'] = True
 
-    tools = services['tools']
-    gates = {alias: (lambda invocation, port=port: tools.gate(
-        scope_kind='node', scope=context.node_id, port=port, invocation_id=invocation))
-        for alias, port in ALIASES.items()}
+    gates = {alias: context.tools[port] for alias, port in ALIASES.items()}
     await run_tool_conversation(prompt=PROMPT, gates=gates,
         complete=services['complete'], selection=services['selection'],
         generation=services.get('generation'), required_tools=tuple(ALIASES),

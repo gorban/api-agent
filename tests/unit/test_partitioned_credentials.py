@@ -22,6 +22,23 @@ from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import TestResult
 
 
+def admit_synthetic_owner(owner, boundary):
+    """Join the test owner to its real credential boundary before export."""
+    from api_agent.workflows.inference_capture import bind_boundary, collect_inference, _COLLECTOR
+    complete = owner.complete
+    async def captured(request):
+        bind_boundary(boundary)
+        # This synthetic owner publishes its canonical export below. Isolate any
+        # adapter capture so it does not claim a second, conflicting authority
+        # for the same phases; both collectors use the same secret registry.
+        with collect_inference(boundary):
+            result = await complete(request)
+        _COLLECTOR.get()['rows'].extend(owner.export_content(request, result))
+        return result
+    owner.complete = captured
+    return owner
+
+
 async def invoke(data, subscription, request):
     def response(req):
         if not subscription:
@@ -69,7 +86,8 @@ def test_provider_combined_text_through_actual_ipc(subscription, text):
                 result = await asyncio.to_thread(client.complete, REQUEST)
                 assert ''.join(part.text for part in result.payload.content) == text
                 assert result.usage == Usage(7, 3)
-            assert client.evidence == []
+            phases = ('request',) if text == TOKEN else ('request', 'response')
+            assert client.evidence == [dict(phase=phase, content={}, reason='withheld') for phase in phases]
         finally:
             await asyncio.to_thread(client.close)
             await server.aclose()
@@ -88,6 +106,7 @@ def test_independent_result_ipc_to_recorded_attachment(enabled, backend_register
             backend.register_secret(secret)
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=AsyncMock(return_value=result),
                                 aclose=AsyncMock(), export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-partitioned-capability-000000')
         client = SetupClient(await server.start(), worker_id='owned-worker', timeout=5)
@@ -95,7 +114,7 @@ def test_independent_result_ipc_to_recorded_attachment(enabled, backend_register
             assert await asyncio.to_thread(client.complete, REQUEST) == result
             parent = EmissionBoundary(ContentPolicy(enabled), secrets=(secret,))
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(call_id=str(uuid4()), **row))), parent)
-                           for row in client.evidence]
+                           for row in client.evidence if row.get('reason') != 'withheld']
             if enabled and backend_registered:
                 response = next(row for row in client.evidence if row['phase'] == 'response')
                 assert ''.join(response['content']['message']['content']) != secret
@@ -108,7 +127,8 @@ def test_independent_result_ipc_to_recorded_attachment(enabled, backend_register
                 content = json.loads((tmp_path / row['source']).read_bytes())
                 assert ''.join(content['message']['content']) != secret
             else:
-                assert client.evidence == [] and saved['attachments'] == []
+                assert all(row.get('reason') == 'withheld' and row['content'] == {} for row in client.evidence)
+                assert saved['attachments'] == []
         finally:
             await asyncio.to_thread(client.close)
             await server.aclose()
@@ -168,6 +188,7 @@ def test_secondary_credentials_through_ipc_and_recording(subscription, enabled, 
 
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock(),
                                 export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-secondary-capability-000000')
         client = SetupClient(await server.start(), worker_id='owned-worker', timeout=5)
@@ -177,13 +198,13 @@ def test_secondary_credentials_through_ipc_and_recording(subscription, enabled, 
             assert actual.usage == Usage(7, 3)
             parent = EmissionBoundary(ContentPolicy(enabled), secrets=(TOKEN,))
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(call_id=str(uuid4()), **row))), parent)
-                           for row in client.evidence]
+                           for row in client.evidence if row.get('reason') != 'withheld']
             recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'), evidence_boundary=parent)
             identity = TestIdentity('owned-test', 'synthetic', 'test_owned.py', 'test_owned.py::test_owned')
             name = recorder.record_test(TestResult(identity, 'passed', 0), attachments=attachments)
             saved = json.loads((tmp_path / name).read_text())
             if not enabled:
-                assert client.evidence == []
+                assert all(row.get('reason') == 'withheld' and row['content'] == {} for row in client.evidence)
                 assert saved['attachments'] == []
                 return
             response = next(row for row in client.evidence if row['phase'] == 'response')

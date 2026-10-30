@@ -68,7 +68,7 @@ def test_help_accepts_valid_source_tightening_across_phases(tmp_path, monkeypatc
 
     output = capsys.readouterr()
     assert status == 0 and not output.err
-    assert 'Usage: ./launch.py [OPTIONS] [TEST SELECTORS]' in output.out
+    assert 'Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]' in output.out
 
 
 def direct_schema(prepared, api):
@@ -275,7 +275,7 @@ def test_actual_help_retains_explicit_relative_selector_discovery_scope(tmp_path
 
     output = capsys.readouterr()
     assert status == 0 and not output.err
-    assert 'Usage: ./launch.py [OPTIONS] [TEST SELECTORS]' in output.out
+    assert 'Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]' in output.out
 
 
 def test_equivalent_default_selector_retains_its_contributing_scope(tmp_path):

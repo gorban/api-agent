@@ -189,7 +189,7 @@ def test_legacy_requests_and_no_supported_mode():
 
 def run_gpt(req, *, api_mode='responses', output='{"answer":"yes"}', status=200, base=BASE, captures=None):
     from api_agent.llm_providers.gpt.inference import complete_text
-    calls = []
+    calls = [] if captures is None else captures
     async def handler(sent):
         calls.append(sent)
         if status != 200:
@@ -207,15 +207,86 @@ def run_gpt(req, *, api_mode='responses', output='{"answer":"yes"}', status=200,
 
 
 @pytest.mark.parametrize('api_mode', ['responses', 'completions'])
+def test_gpt_prompted_envelope_is_decoded_but_captured_as_returned(monkeypatch, api_mode):
+    from api_agent.providers.rich_inference import response_json
+    output = '````json\n```json\n{"answer":"yes"}\n```\n````'
+    captures = []
+    monkeypatch.setattr('api_agent.workflows.inference_capture.capture_inference',
+        lambda *args, **kw: captures.append(args))
+
+    result, calls = run_gpt(request('prompted_json'), api_mode=api_mode, output=output)
+
+    assert len(calls) == 1
+    assert response_json(result) == {'answer': 'yes'}
+    assert result.payload.content[0].text == output
+    provider_output = captures[-1][1]
+    observed = (provider_output['output'][0]['content'][0]['text'] if api_mode == 'responses'
+                else provider_output['choices'][0]['message']['content'])
+    assert observed == output
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+@pytest.mark.parametrize('answer,accepted', [('yes', True), ('synthetic-token', False)])
+def test_gpt_prompted_envelope_retains_credential_protection(asynchronous, answer, accepted):
+    from api_agent.llm_providers.gpt import rich
+    from api_agent.providers.llm import LLMResult, Usage
+    req = request('prompted_json')
+    _, evidence = prepare(req)
+    output = '```json\n' + json.dumps({'answer': answer}) + '\n```'
+    result = LLMResult(Message('assistant', (TextContent(output),)), Usage(3, 2), response=evidence)
+
+    def validate():
+        if asynchronous:
+            return asyncio.run(rich.async_validate_result(req, result, 'synthetic-token'))
+        return rich.validate_result(req, result, 'synthetic-token')
+
+    if accepted:
+        assert validate() is result
+    else:
+        with pytest.raises(ProviderAccessError):
+            validate()
+
+
+def test_bedrock_prompted_envelope_uses_shared_decoder_without_changing_capture(monkeypatch):
+    from api_agent.llm_providers.bedrock import factory as module
+    from api_agent.providers.rich_inference import response_json
+    output = '```json\n{"answer":"yes"}\n```'
+    body = {'model': 'zai.glm-5', 'choices': [{'index': 0, 'finish_reason': 'stop',
+        'message': {'role': 'assistant', 'content': output}}],
+        'usage': {'prompt_tokens': 4, 'completion_tokens': 2, 'total_tokens': 6}}
+    transport = SimpleNamespace(call=AsyncMock(return_value=body))
+    monkeypatch.setattr(module, 'SDKTransport', lambda **kwargs: transport)
+    captures = []
+    monkeypatch.setattr('api_agent.workflows.inference_capture.capture_inference',
+        lambda *args, **kw: captures.append(args))
+
+    async def run():
+        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        return await provider.acomplete(request('prompted_json', model='zai.glm-5'))
+    result = asyncio.run(run())
+
+    assert response_json(result) == {'answer': 'yes'}
+    assert result.payload.content[0].text == output
+    assert captures[-1][1]['provider_response']['choices'][0]['message']['content'] == output
+    assert transport.call.await_count == 1
+
+
+@pytest.mark.parametrize('api_mode', ['responses', 'completions'])
 @pytest.mark.parametrize('mode', ['structured', 'json', 'prompted_json', 'text'])
-def test_gpt_dispatch_sends_actual_native_shape_and_one_effective_capture(monkeypatch, api_mode, mode):
+def test_gpt_dispatch_captures_actual_native_input_and_output(monkeypatch, api_mode, mode):
     captures = []
     monkeypatch.setattr('api_agent.workflows.inference_capture.capture_inference', lambda *args, **kw: captures.append((args, kw)))
     req = request(mode)
     result, calls = run_gpt(req, api_mode=api_mode)
-    assert result.response.actual_mode == mode and len(calls) == 1 and len(captures) == 1
+    assert result.response.actual_mode == mode and len(calls) == 1
+    assert [capture[0][0] for capture in captures] == ['input', 'output']
     body = json.loads(calls[0].content)
     assert captures[0][0][1]['provider_payload'] == body
+    output = captures[1][0][1]
+    if api_mode == 'responses':
+        assert output['output'][0]['content'][0]['text'] == '{"answer":"yes"}'
+    else:
+        assert output['choices'][0]['message']['content'] == '{"answer":"yes"}'
     metadata = captures[0][0][1]['adapter_instructions']
     if mode in ('json', 'prompted_json'):
         assert metadata == [{'role': 'user', 'path': '/input/2' if api_mode == 'responses' else '/messages/2', 'purpose': 'response_policy'}]
@@ -260,21 +331,19 @@ def test_qualified_luna_subscription_native_schema_is_preserved():
 
 
 @pytest.mark.parametrize('mode', ['structured', 'json', 'prompted_json'])
-def test_original_schema_and_adapter_instruction_capture_is_scrubbed(monkeypatch, mode):
+def test_original_schema_containing_credential_is_rejected_before_capture(monkeypatch, mode):
     from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
     from api_agent.workflows.inference_capture import collect_inference
     monkeypatch.setenv('LOG_CONTENT', 'false')
     monkeypatch.setenv('TRACELOOP_TRACE_CONTENT', 'false')
     boundary = EmissionBoundary(ContentPolicy(True))
     req = request(mode, shape=SHAPE.replace('"answer":{"type":"string"}', '"answer":{"type":"string","description":"synthetic-token"}'))
+    calls = []
     with collect_inference(boundary) as captured:
-        run_gpt(req)
-    assert len(captured['rows']) == 1
-    serialized = json.dumps(captured['rows'])
-    assert 'synthetic-token' not in serialized and 'Authored question' in serialized
-    body = captured['rows'][0]['content']['provider_payload']
-    assert body['model'] == req.selected_llm
-    assert serialized.count('Authored question') == 1
+        with pytest.raises(ProviderAccessError, match='protected authentication content'):
+            run_gpt(req, captures=calls)
+    assert calls == []
+    assert captured['rows'] == []
 
 
 @pytest.mark.parametrize('generation', [GenerationOptions(temperature=0.5), GenerationOptions(reasoning_effort='high', cache_policy='high')])
@@ -297,11 +366,25 @@ def test_bedrock_real_preflight_dispatch_and_terminal_evidence(monkeypatch, stre
     body = {'model': 'zai.glm-5', 'choices': [{'index': 0, 'finish_reason': 'stop',
         'message': {'role': 'assistant', 'content': '{"answer":"yes"}'}}],
         'usage': {'prompt_tokens': 4, 'completion_tokens': 2, 'total_tokens': 6}}
-    async def events(*args, **kwargs):
-        yield {'id': 'stream-one', 'object': 'chat.completion.chunk', 'model': 'zai.glm-5', 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': '{"answer":"yes"}'}, 'finish_reason': None}]}
-        yield {'id': 'stream-one', 'object': 'chat.completion.chunk', 'model': 'zai.glm-5', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]}
-        yield {'id': 'stream-one', 'object': 'chat.completion.chunk', 'model': 'zai.glm-5', 'choices': [], 'usage': body['usage']}
-    transport = SimpleNamespace(call=AsyncMock(return_value=body), stream=events)
+    dispatched = []
+    async def call(api_mode, payload, **kwargs):
+        dispatched.append(payload)
+        return body
+    async def events(api_mode, payload, **kwargs):
+        from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
+        dispatched.append(payload)
+        decoder = WorkerStream('completions', 'zai.glm-5', set())
+        source = [
+            {'id': 'stream-one', 'object': 'chat.completion.chunk', 'model': 'zai.glm-5', 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': '{"answer":"yes"}'}, 'finish_reason': None}]},
+            {'id': 'stream-one', 'object': 'chat.completion.chunk', 'model': 'zai.glm-5', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]},
+            {'id': 'stream-one', 'object': 'chat.completion.chunk', 'model': 'zai.glm-5', 'choices': [], 'usage': body['usage']},
+        ]
+        for event in source:
+            for frame in decoder.feed(event):
+                yield frame
+        for frame in decoder.finish():
+            yield frame
+    transport = SimpleNamespace(call=call, stream=events)
     monkeypatch.setattr(module, 'SDKTransport', lambda **kwargs: transport)
     captures = []
     monkeypatch.setattr('api_agent.workflows.inference_capture.capture_inference', lambda *args, **kw: captures.append(args))
@@ -314,7 +397,9 @@ def test_bedrock_real_preflight_dispatch_and_terminal_evidence(monkeypatch, stre
     result = asyncio.run(run())
     assert result.response.actual_mode == ('prompted_json' if mode == 'json' else mode)
     assert len(captures) == 1
-    payload = captures[0][1]['provider_payload']
+    assert captures[0][0] == 'output'
+    assert len(dispatched) == 1
+    payload = dispatched[0]['body']
     assert ('response_format' in payload) == (mode == 'structured')
     assert payload['model'] == 'zai.glm-5'
 
@@ -324,10 +409,14 @@ def test_bedrock_transport_error_retains_mode_without_replay(monkeypatch, stream
     from api_agent.llm_providers.bedrock import factory as module
     req = request(model='zai.glm-5')
     error = ProviderAccessError('unavailable', 'synthetic transport failure')
+    async def fail(*args, **kwargs):
+        kwargs['on_dispatch']()
+        raise error
     async def events(*args, **kwargs):
+        kwargs['on_dispatch']()
         raise error
         yield
-    transport = SimpleNamespace(call=AsyncMock(side_effect=error), stream=events)
+    transport = SimpleNamespace(call=AsyncMock(side_effect=fail), stream=events)
     monkeypatch.setattr(module, 'SDKTransport', lambda **kwargs: transport)
     async def run():
         provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
@@ -354,6 +443,16 @@ def test_provider_payload_helpers_reject_invalid_request_objects():
     req = replace(req, payload=replace(req.payload, response=None, generation=GenerationOptions(1048577)))
     with pytest.raises(ProviderAccessError):
         payload(req, 'responses', False)
+
+
+def test_response_resolution_rejects_invalid_request_before_capability_checks():
+    def supports(mode):
+        pytest.fail('Invalid requests must not inspect provider support')
+
+    with pytest.raises(ProviderAccessError, match='Invalid response-policy request') as caught:
+        resolve_response(None, supports)
+
+    assert caught.value.kind == 'invalid_request'
 
 
 @pytest.mark.parametrize('output,token,accept', [('{"answer":"yes"}', None, True),
@@ -491,6 +590,65 @@ def test_instruction_marker_points_to_effective_wire_item_after_tool_expansion(m
     assert captured[0]['provider_payload'] is body
 
 
+@pytest.mark.parametrize('api_mode', ['responses', 'completions'])
+@pytest.mark.parametrize('mode', ['json', 'prompted_json'])
+def test_json_instruction_requires_a_final_answer_without_mutating_authored_messages(api_mode, mode):
+    from api_agent.llm_providers.response_policy import format_payload
+    req = request(mode, model='openai.gpt-oss-20b')
+    _, evidence = bedrock_prepare(req, api_mode)
+    container = 'input' if api_mode == 'responses' else 'messages'
+    authored = [{'role': 'user', 'content': 'Independently authored question'}]
+    original = {container: authored}
+
+    actual = format_payload(req, original, evidence)
+
+    assert original == {container: authored}
+    assert len(authored) == 1
+    assert actual[container][:-1] == authored
+    instruction = actual[container][-1]['content']
+    assert 'complete final answer containing only JSON' in instruction
+    assert 'code fences' not in instruction
+    assert 'Include the final JSON answer even when reasoning is enabled' in instruction
+    assert 'reasoning is not the answer' in instruction
+    assert instruction.endswith(req.payload.response.schema.schema)
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_completed_reasoning_only_response_has_an_explicit_terminal_error(asynchronous):
+    from api_agent.llm_providers.bedrock.mantle import decode
+    from api_agent.providers import rich_inference
+    from api_agent.providers.inference_retry import retryable
+    from api_agent.providers.setup_transport import _decode, _encode, _error, _raise_error
+    req = request('prompted_json', model='openai.gpt-oss-20b')
+    _, evidence = bedrock_prepare(req, 'responses')
+    raw = {'model': req.selected_llm, 'status': 'completed', 'output': [
+        {'id': 'synthetic-reasoning', 'type': 'reasoning', 'status': 'completed', 'summary': [],
+         'content': [{'type': 'reasoning_text', 'text': 'Consider the question before answering.'}]}],
+        'usage': {'input_tokens': 7, 'output_tokens': 3, 'total_tokens': 10,
+                  'output_tokens_details': {'reasoning_tokens': 2}}}
+    result = replace(decode(raw, 'responses', selected_llm=req.selected_llm), response=evidence)
+    assert ''.join(part.text for part in result.payload.content) == ''
+
+    with pytest.raises(ProviderAccessError, match='no final-answer JSON') as caught:
+        if asynchronous:
+            asyncio.run(rich_inference.async_validate_result(req, result))
+        else:
+            rich_inference.validate_result(req, result)
+
+    assert caught.value.code == 'empty_final_answer'
+    assert caught.value.origin == 'local_output_validation'
+    assert caught.value.usage == result.usage
+    assert caught.value.response == evidence
+    assert not retryable(caught.value)
+    assert 'Consider the question' not in str(caught.value)
+    with pytest.raises(ProviderAccessError) as restored:
+        _raise_error(_decode(_encode(_error(caught.value))))
+    assert restored.value.message == caught.value.message
+    assert restored.value.code == caught.value.code
+    assert restored.value.usage == result.usage
+    assert restored.value.response == evidence
+
+
 @pytest.mark.parametrize('nested', [{'not': {'type': 'string'}},
     {'type': 'object', 'additionalProperties': {'not': {'type': 'string'}}},
     {'type': 'array', 'items': {'type': 'object', 'additionalProperties': {'not': {'type': 'string'}}}}])
@@ -521,6 +679,7 @@ def test_bedrock_postdispatch_control_failures_keep_choice_usage_and_cleanup(mon
     captured = []
     usage = Usage(3, 2)
     async def dispatch(*args, **kwargs):
+        kwargs['on_dispatch']()
         entered.set()
         try:
             if kind == 'cancelled':
@@ -630,6 +789,8 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
     closed = []
     started = []
     async def stall(*args, **kwargs):
+        if 'on_dispatch' in kwargs:
+            kwargs['on_dispatch']()
         started.append(True)
         try:
             await asyncio.Event().wait()
@@ -640,7 +801,7 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
         finally:
             closed.append(True)
     async def stream(*args, **kwargs):
-        await stall()
+        await stall(*args, **kwargs)
         yield {}
     async def run():
         from contextlib import nullcontext

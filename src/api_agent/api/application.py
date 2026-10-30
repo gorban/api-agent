@@ -139,16 +139,16 @@ class Runtime:
         if self.tool_plan is not None:
             from api_agent.providers.loading import aload_tool
             from api_agent.providers.progress import component_timeout
-            from api_agent.tooling.services import tool_configurations
+            from api_agent.tooling.services import prepare_tool_configurations
             async with component_timeout('Tool admission', 180):
-                configurations = tool_configurations(self.tool_plan, self.services or {})
+                configurations = await prepare_tool_configurations(self.tool_plan, self.services or {})
         if self.factory_plan is not None:
             for kind, location, config, services in self.factory_plan:
-                from api_agent.providers.loading import aload_provider, provider_location
+                from api_agent.providers.loading import aload_provider, provider_owner_root
                 if kind == 'upstream' and config.get('API_PROVIDER'):
                     from types import MappingProxyType
-                    path, _ = provider_location(config['API_PROVIDER'], owner_root=services['owner_root'])
-                    services = MappingProxyType({**services, 'owner_root': path.parent})
+                    owner_root = provider_owner_root(kind, config, services['owner_root'])
+                    services = MappingProxyType({**services, 'owner_root': owner_root})
                 try:
                     owner = await aload_provider(location, config, services, kind=kind)
                 except BaseException as error:

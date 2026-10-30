@@ -14,6 +14,7 @@ from .worker import DEFAULT_INFERENCE_TIMEOUT, inference_timeout
 
 
 class BedrockProvider:
+    credential_protection_version = 1
     captures_effective_payload = True
     version = 1
     capabilities = ProviderCapabilities(kind='llm', operations=('describe', 'complete', 'stream'),
@@ -36,13 +37,60 @@ class BedrockProvider:
         self._setups = set()
         self._closing = None
         self._session_closes = {}
+        self.emissions = self.services.get("emissions")
+        self._credential_setup_started = False
+
+    def bind_credential_authority(self, authority):
+        from api_agent.telemetry.privacy import EmissionBoundary
+        if not isinstance(authority, EmissionBoundary):
+            raise ContractError('Bedrock credential authority unavailable.')
+        if self.emissions is not None and (not isinstance(self.emissions, EmissionBoundary)
+                or self.emissions._authority is not authority._authority):
+            raise ContractError('Bedrock credential authority cannot be replaced.')
+        if self.emissions is None and self._credential_setup_started:
+            raise ContractError('Bedrock credential authority must be bound before setup.')
+        self.emissions = authority
+
+    def _join_active_authority(self):
+        from api_agent.workflows.inference_capture import active_inference_boundary
+        boundary = active_inference_boundary()
+        if boundary is not None:
+            self.bind_credential_authority(boundary)
+
+    def _ensure_authority(self):
+        if self.emissions is None:
+            from api_agent.telemetry.privacy import EmissionBoundary
+            self.emissions = EmissionBoundary()
+
+    async def _join_credentials(self, values):
+        from api_agent.telemetry.privacy import EmissionBoundary
+        if not isinstance(self.emissions, EmissionBoundary):
+            raise ContractError('Bedrock credential authority unavailable.')
+        from api_agent.providers.call_authority import current_call_authority
+        call_authority = current_call_authority()
+        if call_authority is not None:
+            await call_authority.register(self.emissions, values)
+            return call_authority.acquire(self.emissions)
+        from api_agent.telemetry.privacy import register_secret_async
+        for value in values:
+            await register_secret_async(self.emissions, value)
+        lease = self.emissions.begin_evidence_lease()
+        try:
+            _, snapshot = self.emissions.snapshot_content()
+            return sorted(snapshot._secrets), lease
+        except BaseException:
+            lease.release()
+            raise
 
     def _open(self):
         if self.closed:
             raise ContractError('Bedrock provider is closed.')
 
     async def asetup(self, *, interactive, user_index, credentials):
+        self._join_active_authority()
+        self._ensure_authority()
         self._open()
+        self._credential_setup_started = True
 
         async def setup():
             async with component_timeout('Bedrock provider setup', 60):
@@ -94,8 +142,12 @@ class BedrockProvider:
         validate_request(prepared)
 
     async def acomplete(self, request, *, auth=None):
+        from api_agent.providers.call_authority import require_remote_admission
+        require_remote_admission(self.emissions)
+        self._join_active_authority()
+        self._ensure_authority()
         self.validate_request(request)
-        from .mantle import encode, decode
+        from .mantle import encode, decode, RESPONSE_CODES
         from .response_policy import prepare_response
         from api_agent.llm_providers.response_policy import capture_payload, format_payload
         from api_agent.workflows.inference_capture import record_response_dispatch, record_response_failure
@@ -109,20 +161,34 @@ class BedrockProvider:
                            'body': format_payload(request, encode(prepared, self.api_mode), evidence)}
                 if budget.remaining == 0:
                     raise TimeoutError('Bedrock deadline expired before dispatch.')
-                capture_payload(request, payload['body'], evidence, auth=auth)
-                if budget.remaining == 0:
-                    raise TimeoutError('Bedrock deadline expired before dispatch.')
-                if evidence is not None:
-                    record_response_dispatch(evidence)
-                dispatched = True
+                def dispatch():
+                    nonlocal dispatched
+                    capture_payload(request, payload['body'], evidence, auth=auth)
+                    if budget.remaining == 0:
+                        raise TimeoutError('Bedrock deadline expired before dispatch.')
+                    if evidence is not None:
+                        record_response_dispatch(evidence)
+                    dispatched = True
                 try:
-                    response = await self.transport.call(self.api_mode, payload, auth=auth)
+                    response = await self.transport.call(self.api_mode, payload, auth=auth,
+                        join=self._join_credentials, on_dispatch=dispatch)
+                    from api_agent.workflows.inference_capture import capture_inference
                     result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm), response=evidence)
+                    capture_inference('output', {'provider_response': response}, request.request_id, auth=auth,
+                                      decoded_visible_text_characters=sum(len(part.text) for part in result.payload.content))
                     from api_agent.providers.generation_attempts import snapshot_transport_result
                     snapshot_transport_result(result)
                     return await async_validate_result(request, result)
                 except (OperationalError, TimeoutError, asyncio.CancelledError) as error:
                     failure_usage = error_usage(error)
+                    raw_response = getattr(error, 'provider_response', None)
+                    if type(raw_response) is dict:
+                        from api_agent.workflows.inference_capture import capture_inference
+                        capture_inference('output', {'provider_response': raw_response}, request.request_id, auth=auth,
+                                          rejected=getattr(error, 'code', None) in RESPONSE_CODES)
+                    elif getattr(error, 'code', None) in RESPONSE_CODES:
+                        from api_agent.workflows.inference_capture import capture_inference
+                        capture_inference('output', {}, request.request_id, auth=auth, unavailable=True)
                     record_response_failure(error)
                     raise
         except (OperationalError, TimeoutError, asyncio.CancelledError) as error:
@@ -133,8 +199,13 @@ class BedrockProvider:
             raise
 
     async def astream(self, request, *, auth=None):
+        from api_agent.providers.call_authority import require_remote_admission
+        require_remote_admission(self.emissions)
+        self._join_active_authority()
+        self._ensure_authority()
         self.validate_request(request)
-        from .mantle import encode, StreamDecoder
+        from .mantle import encode
+        from .normalized_stream import ParentStream
         from .response_policy import prepare_response
         from api_agent.llm_providers.response_policy import capture_payload, format_payload
         from api_agent.workflows.inference_capture import record_response_dispatch, record_response_failure
@@ -143,11 +214,25 @@ class BedrockProvider:
         failure_usage = None
         dispatched = False
         try:
-            decoder = StreamDecoder(self.api_mode, selected_llm=request.selected_llm)
+            decoder = ParentStream(self.api_mode, selected_llm=request.selected_llm)
             async with component_timeout('Bedrock streaming completion', self.inference_timeout) as budget:
                 payload = {'prefix': catalog.route(request.selected_llm, self.api_mode),
                            'body': format_payload(request, encode(prepared, self.api_mode), evidence)}
-                stream = self.transport.stream(self.api_mode + '_stream', payload, auth=auth)
+                def dispatch():
+                    nonlocal dispatched
+                    final_body = dict(payload['body'], stream=True)
+                    if self.api_mode == 'completions':
+                        final_body['stream_options'] = {'include_usage': True}
+                    else:
+                        final_body['store'] = False
+                    capture_payload(request, final_body, evidence, auth=auth)
+                    if budget.remaining == 0:
+                        raise TimeoutError('Bedrock stream deadline expired before dispatch.')
+                    if evidence is not None:
+                        record_response_dispatch(evidence)
+                    dispatched = True
+                stream = self.transport.stream(self.api_mode + '_stream', payload, auth=auth,
+                    join=self._join_credentials, on_dispatch=dispatch)
             async with aclosing(stream):
                 while True:
                     if budget.remaining == 0:
@@ -155,19 +240,16 @@ class BedrockProvider:
                     async with component_timeout('Bedrock stream read', budget.remaining) as read_budget:
                         if read_budget.remaining == 0:
                             raise TimeoutError('Bedrock stream deadline expired before dispatch.')
-                        if not dispatched:
-                            capture_payload(request, payload['body'], evidence, auth=auth)
-                            if read_budget.remaining == 0:
-                                raise TimeoutError('Bedrock stream deadline expired before dispatch.')
-                            if evidence is not None:
-                                record_response_dispatch(evidence)
-                            dispatched = True
                         try:
                             event = await anext(stream)
                         except StopAsyncIteration:
                             break
                         except (OperationalError, TimeoutError, asyncio.CancelledError) as error:
                             failure_usage = error_usage(error)
+                            raw_response = getattr(error, 'provider_response', None)
+                            if type(raw_response) is dict:
+                                from api_agent.workflows.inference_capture import capture_inference
+                                capture_inference('output', {'provider_response': raw_response}, request.request_id, auth=auth)
                             record_response_failure(error)
                             raise
                         normalized_events = decoder.feed(event)
@@ -177,6 +259,10 @@ class BedrockProvider:
                 raise TimeoutError('Bedrock stream deadline exceeded.')
             async with component_timeout('Bedrock stream result', budget.remaining):
                 result = await async_validate_result(request, replace(decoder.finish(), response=evidence))
+            from api_agent.providers.inference import result_to_wire
+            from api_agent.workflows.inference_capture import capture_inference
+            capture_inference('output', result_to_wire(result), request.request_id,
+                              auth=auth, fallback=True, partial=True)
             for call in result.payload.calls:
                 yield StreamEvent(call, kind='tool_call')
             yield StreamEvent(result, kind='completed')
@@ -241,4 +327,7 @@ class BedrockProvider:
 
 def factory(config, services):
     """Construct without SDK imports, credential lookup or network activity."""
-    return BedrockProvider(config, services)
+    # The loader may execute this factory in an isolated module namespace.
+    # Keep one canonical provider identity for credential authority binding.
+    from api_agent.llm_providers.bedrock.factory import BedrockProvider as CanonicalBedrockProvider
+    return CanonicalBedrockProvider(config, services)

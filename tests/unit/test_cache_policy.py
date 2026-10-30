@@ -188,6 +188,8 @@ def test_local_generic_adapter_receives_effective_policy(tmp_path,monkeypatch,co
     from api_agent.testing import provider_setup
     result=LLMResult(Message('assistant',(TextContent('Ok'),)))
     adapter=SimpleNamespace(capabilities=ProviderCapabilities('llm',features=('cache_policy',)),asetup=AsyncMock(return_value=AsyncMock(return_value='secret')),acomplete=AsyncMock(return_value=result),validate_request=Mock())
+    adapter.credential_protection_version = 1
+    adapter.bind_credential_authority = lambda authority: None
     monkeypatch.setattr(provider_setup,'aload_provider',AsyncMock(return_value=SimpleNamespace(implementation=adapter,aclose=AsyncMock())))
     local=IntegrationLLM({'LLM_PROVIDER':'synthetic','LLM_CACHE_POLICY':configured},tmp_path)
     try:
@@ -357,7 +359,7 @@ def test_openrouter_valid_calendar_snapshot_not_frozen_to_catalog(suffix):
 
 
 @pytest.mark.parametrize('mode', ['responses', 'completions'])
-@pytest.mark.parametrize('invalid_billing', [{'id': 42}, {'id': 'invalid generation id'}, {'id': 'synthetic-token'}, {'request_id': 'invalid request id'}, {'usage_cost': -1}])
+@pytest.mark.parametrize('invalid_billing', [{'id': 42}, {'id': 'invalid generation id'}, {'request_id': 'invalid request id'}, {'usage_cost': -1}])
 def test_openrouter_billing_failure_preserves_valid_cache_usage(mode, invalid_billing):
     usage = {'input_tokens': 1200, 'output_tokens': 2, 'input_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}} if mode == 'responses' else {'prompt_tokens': 1200, 'completion_tokens': 2, 'prompt_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}}
     data = {'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Ok'}]}]} if mode == 'responses' else {'choices': [{'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': 'Ok'}}]}
@@ -370,6 +372,22 @@ def test_openrouter_billing_failure_preserves_valid_cache_usage(mode, invalid_bi
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda sent: httpx.Response(200, json=data))) as client:
             with pytest.raises(ProviderAccessError, match='invalid billing metadata') as caught:
                 await complete_text(client=client, base_url=OPENROUTER, access_token='synthetic-token', subscription=False, api_mode=mode, request=request('medium', selection='openai/gpt-6-luna'))
+            assert caught.value.usage.input_tokens == 1200
+            assert caught.value.usage.output_tokens == 2
+            assert caught.value.usage.cached_input_tokens == 1000
+            assert caught.value.usage.cache_write_tokens == 200
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+def test_openrouter_billing_credential_is_rejected_without_disclosure(mode):
+    usage = {'input_tokens': 1200, 'output_tokens': 2, 'input_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}} if mode == 'responses' else {'prompt_tokens': 1200, 'completion_tokens': 2, 'prompt_tokens_details': {'cached_tokens': 1000, 'cache_write_tokens': 200}}
+    data = {'id': 'synthetic-token', 'usage': usage}
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda sent: httpx.Response(200, json=data))) as client:
+            with pytest.raises(ProviderAccessError, match='protected authentication content') as caught:
+                await complete_text(client=client, base_url=OPENROUTER, access_token='synthetic-token', subscription=False, api_mode=mode, request=request('medium', selection='openai/gpt-6-luna'))
+            assert 'synthetic-token' not in str(caught.value)
             assert caught.value.usage.input_tokens == 1200
             assert caught.value.usage.output_tokens == 2
             assert caught.value.usage.cached_input_tokens == 1000

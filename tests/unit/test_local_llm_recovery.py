@@ -22,10 +22,13 @@ def recovery(tmp_path):
             self.provider.auth_calls += 1
             if self.provider.fail_auth or self.provider.auth_calls in self.provider.fail_auth_at:
                 raise RuntimeError('Synthetic readiness failure')
+            await self.provider.authority.aregister_secret('synthetic-credential')
             return 'synthetic-credential'
         async def aclose(self): events.append(('auth-close', self.provider.number))
 
     class Provider:
+        credential_protection_version = 1
+        def bind_credential_authority(self, authority): self.authority = authority
         capabilities = ProviderCapabilities(kind='llm')
         def __init__(self, number):
             self.number, self.fail_auth, self.fail_complete = number, False, False
@@ -39,12 +42,17 @@ def recovery(tmp_path):
             events.append(('catalog', self.number))
             return (AvailableSelection('sample'),)
         async def acomplete(self, value, *, auth):
+            from api_agent.providers.credential_guard import guard_json
+            from api_agent.providers.inference import request_to_wire, result_to_wire
+            guard_json(request_to_wire(value), self.authority._secrets)
             events.append(('complete', self.number))
             self.entered.set()
             await self.release.wait()
             if self.fail_complete:
                 raise ProviderAccessError('unavailable', 'Synthetic completion failure')
-            return LLMResult(Message('assistant', (TextContent('answer'),)))
+            result = LLMResult(Message('assistant', (TextContent('answer'),)))
+            guard_json(result_to_wire(result), self.authority._secrets)
+            return result
 
     async def load(*args, **kwargs):
         provider = Provider(len(generations))

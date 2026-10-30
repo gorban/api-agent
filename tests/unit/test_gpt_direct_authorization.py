@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
-from playwright.async_api import async_playwright
 
 from api_agent.llm_providers.gpt import connect
 from api_agent.llm_providers.gpt.login import LoginWorkflow
@@ -14,6 +13,7 @@ from test_gpt_connect import Store
 
 @pytest.fixture
 def authorization_page():
+    from playwright.async_api import async_playwright
     async def use(check):
         async with async_playwright() as driver:
             browser = await driver.chromium.launch(headless=True)

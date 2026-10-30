@@ -131,7 +131,7 @@ async def start_viewer_host(bundle, *, projection, repository_sources=()):
         assets['.private_resources/managed-modal.js'] = (script_type, compose_modal_script(script, manifest))
         decorated = set()
         for path, (content_type, body) in tuple(routes.items()):
-            presented, managed = decorate_managed_wrapper(path, content_type, body)
+            presented, managed = decorate_managed_wrapper(path, content_type, body, projection=projection)
             if managed:
                 routes[path] = (content_type, presented)
                 decorated.add(path)

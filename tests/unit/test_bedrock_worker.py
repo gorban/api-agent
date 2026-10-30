@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx2
 import pytest
 from api_agent.llm_providers.bedrock import worker
+from test_bedrock_mantle import MODEL, completion_stream, response_stream, completion, response, message
 
 
 AUTH = {'mode': 'api_key', 'api_key': 'synthetic-selected', 'region': 'us-east-1'}
@@ -16,7 +17,7 @@ AUTH = {'mode': 'api_key', 'api_key': 'synthetic-selected', 'region': 'us-east-1
 def request(operation='models', auth=None, prefix='/v1'):
     return {'timeout': 240, 'operation': operation, 'auth': AUTH if auth is None else auth,
             'payload': {} if operation == 'models' else {'prefix': prefix, 'body': {
-                'model': 'synthetic', **({'messages': [{'role': 'user', 'content': 'hello'}]} if operation.startswith('completions') else {'input': 'hello'})}}}
+                'model': MODEL, **({'messages': [{'role': 'user', 'content': 'hello'}]} if operation.startswith('completions') else {'input': 'hello'})}}}
 
 
 @pytest.mark.parametrize('mode', ['api_key', 'access_key', 'temporary', 'session'])
@@ -37,10 +38,14 @@ def test_actual_sdk_serializes_selected_auth_and_paths(monkeypatch, mode, prefix
     def handle(req):
         seen.append(req)
         if operation.endswith('_stream'):
-            value = {'type': 'response.output_text.delta', 'delta': 'hello', 'output_index': 0, 'content_index': 0, 'item_id': 'i', 'sequence_number': 0} if operation.startswith('responses') else {'id': 'c', 'object': 'chat.completion.chunk', 'created': 0, 'model': 'synthetic', 'choices': [{'index': 0, 'delta': {'content': 'hello'}}]}
-            return httpx2.Response(200, headers={'content-type': 'text/event-stream'}, content='data: '+json.dumps(value)+'\n\ndata: [DONE]\n\n')
-        value = {'object': 'list', 'data': []} if operation == 'models' else {'id': 'r', 'object': 'response', 'output': [], 'status': 'completed', 'created_at': 0} if operation == 'responses' else {'id': 'c', 'object': 'chat.completion', 'created': 0, 'model': 'synthetic', 'choices': []}
-        return httpx2.Response(200, json=value)
+            values = response_stream() if operation.startswith('responses') else completion_stream()
+            data = ''.join('data: '+json.dumps(value)+'\n\n' for value in values) + 'data: [DONE]\n\n'
+            return httpx2.Response(200, headers={'content-type': 'text/event-stream'}, content=data)
+        value = ({'object': 'list', 'data': []} if operation == 'models' else
+                 dict(response([message()]), object='response', created_at=0) if operation == 'responses' else
+                 dict(completion(), id='c', object='chat.completion', created=0))
+        return httpx2.Response(200, json=value, headers={'x-request-id': 'public-request-id',
+                                                       'x-private-header': 'synthetic-secret'})
     def http_factory(*, timeout):
         http = httpx2.Client(transport=httpx2.MockTransport(handle), verify=True, follow_redirects=False, trust_env=False, timeout=httpx2.Timeout(timeout, connect=min(10, timeout)))
         owners.append(http)
@@ -56,7 +61,15 @@ def test_actual_sdk_serializes_selected_auth_and_paths(monkeypatch, mode, prefix
     header = seen[0].headers['authorization']
     assert header == 'Bearer synthetic-selected' if mode == 'api_key' else '/us-east-1/bedrock-mantle/aws4_request' in header
     assert seen[0].headers.get('x-amz-security-token') == ('synthetic-token' if mode in {'temporary', 'session'} else None)
-    assert set(emitted[0]) == ({'event'} if operation.endswith('_stream') else {'result'})
+    assert set(emitted[0]) == ({'event'} if operation.endswith('_stream') else
+                              {'result'} if operation == 'models' else {'result', 'diagnostics'})
+    if operation in ('responses', 'completions'):
+        assert emitted[0]['diagnostics']['http_status'] == 200
+        assert emitted[0]['diagnostics']['request_id'] == 'public-request-id'
+        assert emitted[0]['diagnostics']['sdk_versions']['openai']
+        assert 'x-private-header' not in json.dumps(emitted)
+    if operation.endswith('_stream'):
+        assert emitted[-1]['event']['kind'] == 'completed'
     if operation.startswith('responses'):
         assert json.loads(seen[0].content)['store'] is False
     if operation == 'completions_stream':
@@ -106,7 +119,7 @@ def test_invalid_request_rejected_before_auth(change):
     assert emitted == [{'error':'unknown','execution':'not_started'}]
 
 
-def fake_execute(events, *, stream=True, fail_body=False, fail_client=False, fail_construct=False, observed=None):
+def fake_execute(events, *, stream=True, fail_body=False, fail_client=False, fail_construct=False, observed=None, joined=False):
     closed=[] if observed is None else observed; emitted=[]
     def close(name, fail=False):
         closed.append(name)
@@ -124,8 +137,111 @@ def fake_execute(events, *, stream=True, fail_body=False, fail_client=False, fai
     def factory(*args):
         if fail_construct: raise ValueError('synthetic-secret')
         return client
-    worker.execute(request('completions_stream' if stream else 'completions'),emitted.append,client_factory=factory,http_factory=lambda **kw:SimpleNamespace(close=lambda:close('http')))
+    worker.execute(request('completions_stream' if stream else 'completions'),emitted.append,client_factory=factory,http_factory=lambda **kw:SimpleNamespace(close=lambda:close('http')),
+                   join=(lambda secrets, payload: secrets) if joined else None)
     return emitted,closed
+
+
+@pytest.mark.parametrize('path,value,code', [
+    (('choices',0,'message','unsupported'), 'private-response-content', 'unsupported_response_field'),
+    (('choices',0,'finish_reason'), 'stop', 'tool_finish_mismatch'),
+    (('choices',0,'message','tool_calls',0,'function','arguments'), '[]', 'invalid_tool_arguments'),
+    (('usage','total_tokens'), 6, 'invalid_usage'),
+    (('choices',0,'finish_reason'), 'private-response-content', 'unsupported_finish_reason'),
+    (('model',), 'other-selection', 'invalid_response')])
+def test_rejected_sdk_response_reports_fixed_contract_code_without_payload(path, value, code):
+    from test_bedrock_mantle import call
+    raw = completion()
+    raw['choices'][0].update(finish_reason='tool_calls')
+    raw['choices'][0]['message']['tool_calls'] = [call()]
+    owner = raw
+    for key in path[:-1]: owner = owner[key]
+    owner[path[-1]] = value
+    frames, closed = fake_execute([raw], stream=False)
+    frame, = frames
+    assert frame['code'] == code and frame['execution'] == 'possibly_executed'
+    assert frame['diagnostics']['response_validation'] == 'rejected'
+    assert 'provider_response' not in frame and 'result' not in frame
+    assert 'private-response-content' not in json.dumps(frame)
+    assert closed == ['client', 'http']
+
+
+@pytest.mark.parametrize('joined', [False, True])
+def test_contract_rejection_retains_safe_body_only_after_authority_join(joined):
+    from test_bedrock_mantle import call
+    raw = completion()
+    raw['choices'][0]['message'].update(content='rejected-response-canary', tool_calls=[call()])
+
+    frames, closed = fake_execute([raw], stream=False, joined=joined)
+
+    frame, = frames
+    assert frame['code'] == 'tool_finish_mismatch'
+    assert ('provider_response' in frame) is joined
+    assert frame.get('provider_response') == (raw if joined else None)
+    assert 'rejected-response-canary' not in json.dumps(frame['diagnostics'])
+    assert 'result' not in frame and closed == ['client', 'http']
+
+
+def test_rejected_body_combined_carrier_is_withheld_without_hiding_contract_error():
+    from test_bedrock_mantle import call
+    raw = completion()
+    tool = call()
+    tool['function']['arguments'] = json.dumps({'suffix':'selected'})
+    raw['choices'][0]['message'].update(content='synthetic-', tool_calls=[tool])
+
+    frames, _ = fake_execute([raw], stream=False, joined=True)
+
+    frame, = frames
+    assert frame['code'] == 'tool_finish_mismatch'
+    assert 'provider_response' not in frame and 'result' not in frame
+    assert frame['diagnostics']['response_validation'] == 'rejected'
+
+
+@pytest.mark.parametrize('field', ['thinking_content', 'chain_of_thought', 'analysis'])
+def test_rejected_body_alternative_reasoning_carrier_cannot_split_a_credential(field):
+    raw = completion()
+    raw['choices'][0]['message'].update(content='synthetic-', **{field:'selected'})
+    frames, _ = fake_execute([raw], stream=False, joined=True)
+    frame, = frames
+    assert frame['code'] == 'unsupported_response_field'
+    assert frame['diagnostics']['validation_path'] == '$.choices[].message'
+    assert 'provider_response' not in frame and 'result' not in frame
+
+
+def test_safety_rejection_does_not_report_body_or_imply_a_login_failure():
+    raw = completion()
+    raw['choices'][0]['message']['content'] = AUTH['api_key']
+    frames, _ = fake_execute([raw], stream=False, joined=True)
+    frame, = frames
+    assert frame['code'] == 'response_safety_rejected'
+    assert frame['error'] == 'unknown'
+    assert frame['diagnostics'] == {'version':1, 'response_validation':'rejected'}
+    assert AUTH['api_key'] not in json.dumps(frame)
+    assert 'provider_response' not in frame
+
+
+def test_actual_sdk_http_200_contract_failure_has_safe_shape_and_usage():
+    from test_bedrock_mantle import call
+    raw = dict(completion(), id='observed-response', object='chat.completion', created=0)
+    raw['choices'][0]['message']['tool_calls'] = [call()]
+    raw['usage'] = {'prompt_tokens':375, 'completion_tokens':25, 'total_tokens':400}
+    requests, frames = [], []
+    def handle(request):
+        requests.append(request)
+        return httpx2.Response(200, json=raw)
+    worker.execute(request('completions'), frames.append,
+        http_factory=lambda **kw: httpx2.Client(transport=httpx2.MockTransport(handle), trust_env=False),
+        join=lambda secrets, payload: secrets)
+    frame, = frames
+    assert len(requests) == 1
+    assert frame['code'] == 'tool_finish_mismatch' and frame['http_status'] == 200
+    assert frame['diagnostics']['http_status'] == 200
+    assert frame['diagnostics']['finish_reasons'] == ['stop']
+    assert frame['diagnostics']['response_validation'] == 'rejected'
+    assert frame['diagnostics']['validation_rule'] == 'tool_finish_consistency'
+    assert frame['diagnostics']['validation_path'] == '$.choices[].finish_reason'
+    assert frame['usage']['input_tokens'] == 375 and frame['usage']['output_tokens'] == 25
+    assert 'result' not in frame and frame['provider_response']['usage'] == raw['usage']
 
 
 @pytest.mark.parametrize('event', [[], {'error':{'message':'synthetic-secret'}}, {'type':'error'}, {'type':'response.failed'}])
@@ -138,6 +254,29 @@ def test_stream_error_is_never_published_as_success(event):
 @pytest.mark.parametrize('event', [[], {'error':{}}])
 def test_nonstream_error_is_safe(event):
     assert fake_execute([event],stream=False)[0] == [{'error':'unknown','execution':'possibly_executed'}]
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_error_result_keeps_validated_usage_without_error_details(stream):
+    raw = {'error': {'message': 'synthetic-secret'}, 'usage': {'prompt_tokens': 2, 'completion_tokens': 3, 'total_tokens': 5}}
+    emitted, _ = fake_execute([raw], stream=stream)
+    assert emitted == [{'error': 'unknown', 'execution': 'possibly_executed',
+        'usage': {'input_tokens': 2, 'output_tokens': 3, 'cached_input_tokens': None, 'reasoning_tokens': None}}]
+
+
+def test_failed_response_event_keeps_usage():
+    event = {'type': 'response.failed', 'response': {'error': {'message': 'synthetic-secret'},
+        'usage': {'input_tokens': 2, 'output_tokens': 3, 'total_tokens': 5}}}
+    class Body:
+        def __iter__(self):
+            yield SimpleNamespace(model_dump=lambda **kw: event)
+        def close(self): pass
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kw: Body()), close=lambda: None)
+    emitted = []
+    worker.execute(request('responses_stream'), emitted.append, client_factory=lambda *args: client,
+        http_factory=lambda **kw: SimpleNamespace(close=lambda: None))
+    assert emitted == [{'error': 'unknown', 'execution': 'possibly_executed',
+        'usage': {'input_tokens': 2, 'output_tokens': 3, 'cached_input_tokens': None, 'reasoning_tokens': None}}]
 
 
 @pytest.mark.parametrize('body_fails,client_fails', [(True,False),(False,True),(True,True)])
@@ -231,7 +370,7 @@ def test_encoded_response_store_false_is_admitted():
     emitted, closed = [], []
     value_request = request('responses')
     value_request['payload']['body']['store'] = False
-    result = SimpleNamespace(model_dump=lambda **kw: {'status': 'completed'})
+    result = SimpleNamespace(model_dump=lambda **kw: response([message()]))
     def make_client(*args):
         def create(**kwargs):
             assert kwargs['store'] is False
@@ -239,11 +378,32 @@ def test_encoded_response_store_false_is_admitted():
         return SimpleNamespace(responses=SimpleNamespace(create=create), close=lambda: closed.append('client'))
     worker.execute(value_request, emitted.append, client_factory=make_client,
         http_factory=lambda **kw: SimpleNamespace(close=lambda: closed.append('http')))
-    assert emitted == [{'result': {'status': 'completed'}}]
+    assert len(emitted) == 1 and emitted[0]['result'] == response([message()])
+    assert emitted[0]['diagnostics']['sdk_versions']['openai']
     assert closed == ['client', 'http']
 
 
-def test_actual_sdk_incomplete_terminal_reaches_codec_boundary():
+@pytest.mark.parametrize('failure', ['missing', 'io', 'malformed'])
+def test_optional_sdk_version_metadata_cannot_fail_completed_inference(monkeypatch, failure):
+    import importlib.metadata
+    def version(package):
+        if failure == 'missing':
+            raise importlib.metadata.PackageNotFoundError(package)
+        if failure == 'io':
+            raise OSError('synthetic metadata read failure')
+        return 'not a version\nprivate text'
+    monkeypatch.setattr(importlib.metadata, 'version', version)
+    emitted, closed = [], []
+    result = SimpleNamespace(model_dump=lambda **kw: response([message()]))
+    worker.execute(request('responses'), emitted.append,
+        client_factory=lambda *args: SimpleNamespace(responses=SimpleNamespace(create=lambda **kw: result),
+                                                     close=lambda: closed.append('client')),
+        http_factory=lambda **kw: SimpleNamespace(close=lambda: closed.append('http')))
+    assert emitted == [{'result': response([message()]), 'diagnostics': {'version': 1, 'sdk_versions': {}}}]
+    assert closed == ['client', 'http']
+
+
+def test_actual_sdk_rejects_incomplete_terminal_without_lifecycle():
     terminal = {
         'type': 'response.incomplete', 'sequence_number': 1,
         'response': {'id': 'r', 'object': 'response', 'created_at': 0,
@@ -262,7 +422,38 @@ def test_actual_sdk_incomplete_terminal_reaches_codec_boundary():
         return http
     worker.execute(request('responses_stream'), emitted.append, http_factory=make_http)
     assert len(seen) == 1 and owners[0].is_closed
-    assert emitted == [{'event': terminal}]
+    assert emitted == [{'error': 'unknown', 'execution': 'possibly_executed', 'http_status': 200,
+                        'usage': {'input_tokens': 1, 'output_tokens': 1, 'cached_input_tokens': None, 'reasoning_tokens': None}}]
+
+
+def test_actual_sdk_incomplete_response_preserves_text_usage_and_length():
+    from test_bedrock_mantle import response, message
+    from api_agent.llm_providers.bedrock.normalized_stream import ParentStream
+    events = response_stream()
+    item = message() | {'status': 'incomplete'}
+    events[-2]['item'] = item
+    events[-1].update(type='response.incomplete', response=response([item]) | {
+        'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}})
+    emitted, owners, seen = [], [], []
+    def handle(req):
+        seen.append(req)
+        body = ''.join('data: ' + json.dumps(event) + '\n\n' for event in events)
+        return httpx2.Response(200, headers={'content-type': 'text/event-stream'}, content=body + 'data: [DONE]\n\n')
+    def make_http(*, timeout):
+        http = httpx2.Client(transport=httpx2.MockTransport(handle), follow_redirects=False, trust_env=False)
+        owners.append(http)
+        return http
+    worker.execute(request('responses_stream'), emitted.append, http_factory=make_http)
+    assert len(seen) == 1 and owners[0].is_closed
+    parent = ParentStream('responses', selected_llm=MODEL)
+    text = []
+    for frame in emitted:
+        assert set(frame) == {'event'}
+        text.extend(event.payload.text for event in parent.feed(frame['event']))
+    result = parent.finish()
+    assert ''.join(text) == 'hi' and result.payload.content[0].text == 'hi'
+    assert result.outcome == 'length'
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (2, 3)
 
 
 def test_incomplete_event_with_top_level_error_remains_rejected():
@@ -389,3 +580,139 @@ def test_body_timeout_after_headers_retains_status_and_closes_worker_http():
     assert owners[0].is_closed
     assert emitted == [{'error': 'unavailable', 'execution': 'possibly_executed',
                         'http_status': 503, 'retry_after': 3}]
+
+
+@pytest.mark.parametrize('reply, ready, expected', [
+    (['synthetic-credential', 'other-secret'], b'1', 'joined'),
+    (['other-secret'], b'1', 'protocol'),
+    ('invalid', b'1', 'protocol'),
+    (['synthetic-credential'], b'0', 'protocol'),
+])
+def test_worker_authority_handoff_validates_union_and_acknowledgement(monkeypatch, reply, ready, expected):
+    import socket
+    import threading
+    parent, child = socket.socketpair()
+    monkeypatch.setenv('API_AGENT_BEDROCK_AUTHORITY_FD', str(child.detach()))
+    observed = []
+    def coordinator():
+        with parent:
+            line = bytearray()
+            while not line.endswith(b'\n'):
+                line.extend(parent.recv(1))
+            observed.append(json.loads(line))
+            parent.sendall(json.dumps(reply).encode() + b'\n')
+            if expected == 'joined' or ready == b'0':
+                assert parent.recv(1) == b'1'
+                parent.sendall(ready)
+    thread = threading.Thread(target=coordinator)
+    thread.start()
+    def execute(value, emit, *, join):
+        union = join(['synthetic-credential'], {'prompt': 'ordinary'})
+        emit({'result': {'joined': len(union)}})
+    monkeypatch.setattr(worker, 'execute', execute)
+    output = io.StringIO()
+    try:
+        assert worker.main(io.StringIO('{}\n'), output) is None
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert observed == [['synthetic-credential']]
+        frame = json.loads(output.getvalue())
+        assert frame == ({'result': {'joined': 2}} if expected == 'joined' else {'error': 'protocol'})
+        assert 'synthetic-credential' not in output.getvalue()
+    finally:
+        parent.close()
+
+
+@pytest.mark.parametrize('body, retained', [
+    ({'message': 'ordinary failure'}, True),
+    ({'message': 'synthetic-selected'}, False),
+    (None, False),
+])
+def test_joined_observed_error_only_retains_safe_provider_response(body, retained):
+    class Failure(Exception):
+        status_code = 503
+        def __init__(self): self.body = body
+    class Client:
+        models = SimpleNamespace(list=lambda: (_ for _ in ()).throw(Failure()))
+        def close(self): pass
+    class Http:
+        def close(self): pass
+    frames = []
+    worker.execute(request(), frames.append, join=lambda values, arguments: values,
+        client_factory=lambda *args: Client(), http_factory=lambda **kwargs: Http())
+    assert len(frames) == 1 and frames[0]['error'] == 'unavailable'
+    assert frames[0]['execution'] == 'possibly_executed'
+    assert ('provider_response' in frames[0]) is retained
+    if retained: assert frames[0]['provider_response'] == body
+    assert 'synthetic-selected' not in json.dumps(frames)
+
+
+def test_long_safe_worker_stream_emits_before_terminal_and_closes_owners():
+    from test_bedrock_mantle import chunk, usage
+    text = 'ordinary streamed response with enough characters to cross the retained credential lookbehind'
+    events = [chunk({'role': 'assistant'}), chunk({'content': text}),
+              chunk(finish='stop'), chunk(choices=[], usage=usage())]
+    frames, closed = fake_execute(events)
+    assert closed == ['body', 'client', 'http']
+    assert frames[0]['event']['kind'] == 'text'
+    assert ''.join(frame['event'].get('text', '') for frame in frames) == text
+    assert frames[-1]['event']['kind'] == 'completed'
+
+
+@pytest.mark.parametrize('case', ['oversized-outgoing', 'closed-peer', 'oversized-incoming'])
+def test_worker_authority_rejects_oversized_or_disconnected_handoff(monkeypatch, case):
+    sent, closed = [], []
+    class Channel:
+        def __enter__(self): return self
+        def __exit__(self, *_): closed.append(True)
+        def settimeout(self, value): assert value == 30
+        def sendall(self, value): sent.append(value)
+        def recv(self, size): return b'' if case == 'closed-peer' else b'x' * size
+    monkeypatch.setattr(worker.socket, 'socket', lambda *, fileno: Channel())
+    monkeypatch.setenv('API_AGENT_BEDROCK_AUTHORITY_FD', '9')
+    def execute(value, emit, *, join):
+        join(['x' * 33000] if case == 'oversized-outgoing' else ['secret'], {'prompt': 'safe'})
+    monkeypatch.setattr(worker, 'execute', execute)
+    output = io.StringIO()
+    worker.main(io.StringIO('{}\n'), output)
+    assert json.loads(output.getvalue()) == {'error': 'protocol'}
+    assert closed == [True]
+    assert len(sent) == (0 if case == 'oversized-outgoing' else 1)
+
+
+def test_joined_error_uses_safe_provider_response_without_fallback_body():
+    class Failure(Exception):
+        status_code = 503
+        provider_response = {'message': 'safe response'}
+        body = {'message': 'synthetic-selected'}
+    class Client:
+        models = SimpleNamespace(list=lambda: (_ for _ in ()).throw(Failure()))
+        def close(self): pass
+    frames = []
+    worker.execute(request(), frames.append, join=lambda values, arguments: values,
+        client_factory=lambda *args: Client(), http_factory=lambda **kwargs: SimpleNamespace(close=lambda: None))
+    assert frames == [{'error': 'unavailable', 'execution': 'possibly_executed',
+                       'provider_response': {'message': 'safe response'}, 'http_status': 503}]
+
+
+def test_unclassified_sdk_decode_failure_closes_owned_clients(monkeypatch):
+    from api_agent.llm_providers.bedrock import mantle
+    def broken(*args, **kwargs):
+        raise ValueError('unclassified decoder failure')
+    monkeypatch.setattr(mantle, 'decode', broken)
+    frames, closed = fake_execute([completion()], stream=False)
+    assert frames == [{'error':'unknown', 'execution':'possibly_executed'}]
+    assert closed == ['client', 'http']
+
+
+def test_rejected_response_retains_code_when_diagnostics_are_unavailable(monkeypatch):
+    from api_agent.llm_providers.bedrock import mantle
+    from api_agent.telemetry import inference_diagnostics
+    from api_agent.providers.contracts import ProviderAccessError
+    def broken(*args, **kwargs):
+        raise ProviderAccessError('unknown', 'Rejected response', code='invalid_response')
+    monkeypatch.setattr(mantle, 'decode', broken)
+    monkeypatch.setattr(inference_diagnostics, 'scrub_diagnostics', lambda value, boundary: {})
+    frames, closed = fake_execute([completion()], stream=False)
+    assert frames == [{'error':'unknown', 'execution':'possibly_executed', 'code':'invalid_response'}]
+    assert closed == ['client', 'http']

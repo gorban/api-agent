@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('isolated_native_login_gate')
+
 from api_agent.llm_providers.bedrock.factory import factory
 from api_agent.llm_providers.bedrock.auth import BedrockAuthSession
 from api_agent.providers.contracts import ContractError, InteractionRequiredError
@@ -70,8 +72,8 @@ async def test_custom_setup_preserves_context_and_interaction_permission(tmp_pat
     session = await provider.asetup(interactive=interactive, user_index=2, credentials=credentials)
     request = services['requests'][0]
     assert request.user_index == 2
-    assert request.interactive is (interactive and not no_input)
-    assert request.interaction is (services['bedrock_interaction'] if interactive and not no_input else None)
+    assert request.interactive is interactive
+    assert request.interaction is (services['bedrock_interaction'] if interactive else None)
     assert calls == [(2, 'username')]
     assert session.worker_config()['session_token'] == 'synthetic-token'
     assert 'synthetic-token' not in repr(session)
@@ -188,9 +190,16 @@ async def test_custom_acquirer_joins_parsed_flow_and_actual_local_llm(tmp_path, 
     try:
         await owner.ensure_ready()
         calls = []
-        async def sdk(operation, payload, *, auth):
+        async def sdk(operation, payload, *, auth, join=None, on_dispatch=None):
             assert auth.worker_config()['mode'] == 'temporary'
             assert auth.worker_config()['session_token'] == 'synthetic-token'
+            if join is not None:
+                values = auth.worker_config()
+                _, lease = await join([values['access_key'], values['secret_key'], values['session_token']])
+                try:
+                    if on_dispatch is not None: on_dispatch()
+                finally:
+                    lease.release()
             calls.append(operation)
             if operation == 'models':
                 return {'data': [{'id': model}]}
@@ -556,7 +565,7 @@ async def test_normal_default_dispatches_cached_first_without_recovery(monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('no_stdin,interactive,owner,index', [
-    (True, True, object(), None), (False, True, None, None),
+    (True, True, None, None), (False, True, None, None),
     (False, False, object(), None), (False, True, object(), 0),
 ])
 async def test_normal_default_keeps_interaction_and_index_guards(monkeypatch, no_stdin, interactive, owner, index):

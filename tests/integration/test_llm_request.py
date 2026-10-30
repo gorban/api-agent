@@ -3,7 +3,7 @@ import pytest
 from api_agent.providers.llm import CompletionRequest, GenerationOptions, LLMRequest, Message, TextContent
 
 
-pytestmark = pytest.mark.feature('LLM inference')
+pytestmark = [pytest.mark.feature('LLM inference'), pytest.mark.credential_authorities('coordinator')]
 
 def test_llm_request(llm_selection, llm_provider):
     selection = next(item for item in llm_provider.describe() if item.selected_llm == llm_selection)

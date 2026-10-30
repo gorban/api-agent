@@ -11,6 +11,7 @@ from typing import Mapping
 from types import MappingProxyType
 
 from .viewer_repository import RepositoryIdentity, CONFIG_PATH, read_repository_identity
+from .definition import _MAX_RESOURCE_BYTES
 from urllib.parse import quote, unquote, urlsplit
 import html
 import json
@@ -42,7 +43,7 @@ _MAX_RECORDS = 1_000
 _MAX_LABEL = 256
 _MAX_REFERENCE = 65_536
 _ALLOWED_TAGS = frozenset("svg g a rect ellipse circle path line polygon polyline text tspan defs linearGradient stop title desc clipPath".split())
-_ALLOWED_ATTRS = frozenset("width height viewBox version xmlns xmlns:xlink id class style fill fill-opacity stroke stroke-width stroke-dasharray stroke-linecap stroke-linejoin x y x1 x2 y1 y2 cx cy rx ry r d points transform font-family font-size font-weight text-anchor dominant-baseline opacity offset gradientUnits target href preserveAspectRatio role aria-label contentStyleType data-diagram-type data-entity-1 data-entity-2 data-link-type data-qualified-name data-source-line lengthAdjust textLength zoomAndPan type actuate show title".split())
+_ALLOWED_ATTRS = frozenset("width height viewBox version xmlns xmlns:xlink id class style fill fill-opacity stroke stroke-width stroke-dasharray stroke-linecap stroke-linejoin x y x1 x2 y1 y2 cx cy rx ry r d points transform font-family font-size font-weight text-anchor text-decoration dominant-baseline opacity offset gradientUnits target href preserveAspectRatio role aria-label contentStyleType data-diagram-type data-entity-1 data-entity-2 data-link-type data-qualified-name data-source-line lengthAdjust textLength zoomAndPan type actuate show title".split())
 _STYLE_COLORS = frozenset({"none", "transparent", "currentcolor"})
 _SVG_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 _SVG_SCALARS = frozenset("x y x1 x2 y1 y2 cx cy rx ry width height stroke-width font-size textLength".split())
@@ -85,6 +86,10 @@ class ViewBundle:
 
 class RenderError(ValueError):
     """A view could not be rendered or verified."""
+
+
+class StaleViewError(RenderError):
+    """A saved diagram does not represent the selected workflow."""
 
 
 def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_sources: tuple[ViewSource, ...] = ()) -> None:
@@ -165,10 +170,10 @@ def _companion_route(logical_path: str) -> str:
 
 
 def _reference_sources(projection: object) -> dict[str, bytes]:
-    """Admit direct schema and configuration routes from captured resources."""
+    """Admit captured schemas, configuration, Python sources and tool instances."""
     resources = {item.logical_path: item for item in projection.resources}
     sources: dict[str, bytes] = {}
-    for reference in projection.references:
+    for reference in getattr(projection, 'references', ()):
         attrs = dict(reference.attributes)
         schema = reference.kind == 'functions' and attrs.get('field') in _SCHEMA_FIELDS
         configuration = reference.kind in ('timeout', 'timeouts', 'pass_limit')
@@ -193,6 +198,32 @@ def _reference_sources(projection: object) -> dict[str, bytes]:
             raise RenderError('referenced configuration field is absent')
         route = _route(reference.target_path)
         sources[route] = resource.content_bytes
+    for resource in projection.resources:
+        if getattr(resource, 'kind', None) != 'native_source' or not resource.logical_path.endswith('.py'):
+            continue
+        if sha256(resource.content_bytes).hexdigest() != resource.sha256:
+            raise RenderError('native source differs from captured resource')
+        if len(resource.content_bytes) > _MAX_RESOURCE_BYTES:
+            raise RenderError('native source exceeds display limit')
+        try:
+            resource.content_bytes.decode('utf-8')
+        except UnicodeError as exc:
+            raise RenderError('invalid captured native source') from exc
+        sources[_route(resource.logical_path)] = resource.content_bytes
+    for binding in getattr(projection, 'tool_bindings', ()):
+        resource = resources.get(binding.instance_path)
+        if (resource is None or resource.kind != 'tool_instance'
+                or not binding.instance_path.endswith('.toml')
+                or resource.sha256 != binding.instance_sha256
+                or sha256(resource.content_bytes).hexdigest() != resource.sha256):
+            raise RenderError('tool binding differs from captured tool instance resource')
+        if len(resource.content_bytes) > _MAX_REFERENCE:
+            raise RenderError('tool instance exceeds display limit')
+        try:
+            tomllib.loads(resource.content_bytes.decode('utf-8'))
+        except (UnicodeError, ValueError) as exc:
+            raise RenderError('invalid captured tool instance') from exc
+        sources[_route(binding.instance_path)] = resource.content_bytes
     return sources
 
 
@@ -307,6 +338,80 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
             if prior_schema_alias is not None:
                 lines.append(f'{prior_schema_alias} -[hidden]down-> {alias}')
             prior_schema_alias = alias
+    tool_bindings = getattr(projection, 'tool_bindings', ())
+    tool_resources = {resource.logical_path: resource for resource in projection.resources}
+    tool_scopes = {}
+    tool_instances = {}
+    tool_records = 0
+    for index, binding in enumerate(tool_bindings):
+        graph_scope = binding.scope_kind == 'graph'
+        scope_step = all_steps.get(binding.scope)
+        expected_path = (projection.entry_path if graph_scope else
+                         getattr(scope_step, 'declaration_path', None))
+        resource = tool_resources.get(binding.instance_path)
+        if (binding.scope_kind not in ('graph', 'component', 'node')
+                or graph_scope and binding.scope != projection.graph_id
+                or not graph_scope and (scope_step is None or scope_step.kind != binding.scope_kind)
+                or binding.declaration_path != expected_path
+                or resource is None or resource.kind != 'tool_instance'
+                or resource.sha256 != binding.instance_sha256
+                or sha256(resource.content_bytes).hexdigest() != binding.instance_sha256):
+            raise RenderError('tool binding differs from admitted scope or resource')
+        operations = getattr(binding, 'operations', ())
+        if (type(operations) is not tuple or operations and (binding.scope_kind != 'node'
+                or any(type(operation) is not str for operation in operations)
+                or len(set(operations)) != len(operations)
+                or any(operation not in ('describe', 'prepare', 'verify', 'execute') for operation in operations))):
+            raise RenderError('invalid captured tool operations')
+        consumer = scope_step
+        if operations:
+            while consumer is not None and consumer.id not in aliases:
+                consumer = all_steps.get(consumer.parent)
+            if consumer is None:
+                continue
+        binding_owner = 'GRAPH' if graph_scope else binding.scope
+        if not operations and (graph_scope and owner != 'GRAPH'
+                or not graph_scope and binding.scope not in aliases and binding_owner != owner):
+            continue
+        if graph_scope:
+            href = posixpath.relpath(_route(binding.declaration_path),
+                                     posixpath.dirname(_svg_route(document.logical_path)))
+            if repositories:
+                root_owner, relative = binding.declaration_path.split('/', 1)
+                if root_owner not in repositories:
+                    raise RenderError('missing workflow repository identity')
+                href = repositories[root_owner].link(relative)
+            links.add(href)
+        else:
+            href = step_href(scope_step)
+        source_alias = aliases[consumer.id] if operations else None if graph_scope else aliases.get(binding.scope)
+        if source_alias is None:
+            source_alias = tool_scopes.get(binding_owner)
+            if source_alias is None:
+                source_alias = 'toolscope' + str(len(tool_scopes))
+                tool_scopes[binding_owner] = source_alias
+                tool_records += 1
+                label = _label(binding.scope_kind.title() + ' tool declarations: ' + binding.scope)
+                scope_href = href.split('#', 1)[0] + '#workflow-tools-' + binding.scope_kind + '-' + binding.scope
+                links.add(scope_href)
+                lines.append(f'rectangle "{label}" as {source_alias} [[{scope_href}]]')
+        # Keep operation details in the node's Tools table; the diagram connects
+        # consumers to a shared, clickable instance without edge annotations.
+        row_href = href.split('#', 1)[0] + '#workflow-tool-' + binding.scope_kind + '-' + binding.scope + '-' + binding.port
+        alias = tool_instances.get(binding.instance_path) if operations else None
+        if alias is None:
+            links.add(row_href)
+            alias = 'toolbinding' + str(index)
+            label = _label('Tool instance: ' + PurePosixPath(binding.instance_path).stem)
+            lines.append(f'rectangle "{label}" as {alias} [[{row_href}]]')
+            tool_instances.setdefault(binding.instance_path, alias)
+            tool_records += 1
+        tool_records += 1
+        if operations:
+            lines.append(f'{source_alias} ..> {alias}')
+        else:
+            lines.append(f'{source_alias} .. {alias} : {_label("declares port " + binding.port)}')
+
     scope_ids = set(visible)
     cursor = owner if owner != 'GRAPH' else None
     while cursor in all_steps:
@@ -400,7 +505,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
             limit = active_controller.max_passes_key or str(active_controller.max_passes)
             exhaustion_label = _label(f'not .accepted and attempt == {limit}')
             lines.append(f'{guard_alias} ..> exhausted : {exhaustion_label}')
-    if len(steps) + len(edges) + len(boundaries) > _MAX_RECORDS:
+    if len(steps) + len(edges) + len(boundaries) + tool_records > _MAX_RECORDS:
         raise RenderError("diagram exceeds record limit")
     lines.append("@enduml")
     data = ("\n".join(lines) + "\n").encode()
@@ -463,7 +568,7 @@ def _annotate_hosted_resources(projection: object, document: object,
     selected = {item.logical_path for item in projection.documents}
     resources = {item.logical_path: item for item in projection.resources
                  if item.logical_path not in selected}
-    reference_sources = _reference_sources(projection) if getattr(projection, 'references', ()) else {}
+    reference_sources = _reference_sources(projection)
     folder = posixpath.dirname(document.logical_path)
     data = b"".join(lines)
     fence: tuple[bytes, int] | None = None
@@ -773,6 +878,8 @@ def validate_svg(data: bytes, *, allowed_links: frozenset[str] = frozenset()) ->
             attr = key.removeprefix("{" + _XLINK_NS + "}").removeprefix("{" + _SVG_NS + "}")
             if attr not in _ALLOWED_ATTRS or attr.startswith("on"):
                 raise RenderError("unsafe SVG attribute")
+            if attr == "text-decoration" and value not in ("none", "underline"):
+                raise RenderError("unsafe SVG text decoration")
             if attr == "id":
                 ids.add(value)
             elif attr in {"width", "height"} and value.endswith("px"):
@@ -909,7 +1016,7 @@ def _saved_graphic(path: Path, *, metadata: dict[str, object],
                    allowed_links: frozenset[str], script: bytes = b"") -> bytes:
     data = _read_view_file(path)
     if data is None or len(data) > _MAX_OUTPUT + (4 * _MAX_INPUT // 3) + 4096:
-        raise RenderError("missing or stale workflow diagram; regenerate workflow views")
+        raise StaleViewError("missing or stale workflow diagram; regenerate workflow views")
     match = re.fullmatch(rb"(<\?xml [^\n]+\?>\n)<!-- api-agent-view-v1 (\{[^\n]+\}) -->\n([\s\S]+)", data)
     if match is None:
         raise RenderError("invalid workflow diagram provenance")
@@ -920,7 +1027,7 @@ def _saved_graphic(path: Path, *, metadata: dict[str, object],
     graphic = match[1] + match[3]
     if (actual.get("graphic_sha256") != sha256(graphic).hexdigest() or
             actual != {**metadata, "graphic_sha256": sha256(graphic).hexdigest()}):
-        raise RenderError("stale workflow diagram provenance; regenerate workflow views")
+        raise StaleViewError("stale workflow diagram provenance; regenerate workflow views")
     raw_graphic = _strip_navigation(graphic, script)
     canonical_raw = validate_svg(raw_graphic, allowed_links=allowed_links)
     if canonical_raw != raw_graphic and not (script and canonical_raw.endswith(b" />") and raw_graphic == canonical_raw[:-3] + b"></svg>"):
@@ -1032,8 +1139,13 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         prefix = "../" * depth + ".private_resources/viewer/"
         executable = (_hosted_declaration(projection, document) if hosted_selected
                       else document.executable_bytes)
+        owner, relative = document.logical_path.split('/', 1)
+        repository = repositories.get(owner) if repositories else None
+        flow_path = '/'.join(part for part in
+                             (repository.path_prefix if repository else '', relative) if part)
         presented = wrap_document(executable, root=document.logical_path == projection.entry_path,
-                                  asset_prefix=prefix, generated=_navigation(projection, document))
+                                  asset_prefix=prefix, generated=_navigation(projection, document),
+                                  flow_path=flow_path)
         files.append(ViewFile(_route(document.logical_path), "text/html; charset=utf-8", presented))
     entry = _route(projection.entry_path)
     sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),

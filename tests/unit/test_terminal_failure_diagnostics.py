@@ -101,6 +101,41 @@ def test_terminal_inspection_failure_keeps_exit_three(terminal_failure_launch, m
     assert main(ARGS, base_root=ROOT) == 3
 
 
+def test_launcher_defers_all_ordinary_output_while_authentication_is_active(
+        terminal_failure_launch, monkeypatch, capsys):
+    import io
+    import os
+    from api_agent.testing.contracts import RunnerEvent
+    identities, _ = terminal_failure_launch
+    reader, writer = os.pipe()
+    auth_output = io.StringIO()
+    with os.fdopen(reader) as stream:
+        monkeypatch.setattr('sys.__stdin__', stream)
+        monkeypatch.setattr('sys.__stderr__', auth_output)
+        def run(*args, **options):
+            capsys.readouterr()
+            channel = options['interaction'].open('Provider authorization')
+            try:
+                channel.write('Authorization code: ')
+                options['on_event'](RunnerEvent('test_finished', identity=identities[0], status='passed'))
+                options['usage_output']('Usage estimate')
+                options['output']('Failure detail synthetic-credential-value\n')
+                assert capsys.readouterr() == ('', '')
+                assert auth_output.getvalue() == 'Authentication: Provider authorization\nAuthorization code: '
+            finally:
+                channel.close()
+            captured = capsys.readouterr()
+            assert captured.out == ('Test progress: 1/2 completed — passed "base::selected.py::test_a"\n'
+                                    'Usage estimate\nFailure detail [REDACTED]\n')
+            return SimpleNamespace(exit_code=0)
+        monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+        monkeypatch.setattr('api_agent.testing.inspection_controls.finish_terminal_inspection', lambda *a, **k: True)
+        try:
+            assert main(ARGS, base_root=ROOT) == 0
+        finally:
+            os.close(writer)
+
+
 def test_terminal_failed_acceptance_does_not_execute(terminal_failure_launch, monkeypatch, capsys):
     run = Mock(side_effect=AssertionError('Execution must require acceptance'))
     monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)

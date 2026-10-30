@@ -6,6 +6,20 @@ import subprocess
 import sys
 import tarfile
 import json
+from html.parser import HTMLParser
+
+
+class ReadmeImages(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.paths = set()
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == "img" and values.get("src"):
+            self.paths.add(values["src"])
+        if tag == "source" and values.get("srcset"):
+            self.paths.update(item.strip().split()[0] for item in values["srcset"].split(","))
 
 
 _VIEWER_FILES = (
@@ -31,7 +45,12 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / entry['target'], path)
     (staged / 'LICENSE').write_text('Synthetic license for archive selection test.\n')
-    (staged / 'README.md').write_text('Synthetic package.\n')
+    shutil.copyfile(root / 'README.md', staged / 'README.md')
+    images = ReadmeImages()
+    images.feed((root / 'README.md').read_text())
+    local_images = {path for path in images.paths if not path.startswith(('http:', 'https:', '//', 'data:'))}
+    assert local_images, 'The README image distribution regression needs local images'
+
     (staged / 'flow.md.html').write_text('# Workflow v2\n')
     (staged / 'src/api_agent').mkdir(parents=True)
     (staged / 'src/api_agent/__init__.py').write_text('"""Synthetic package."""\n')
@@ -41,7 +60,7 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
     (staged / 'workflows/component.md.html').write_text('# Component v2\n')
     (staged / 'tests').mkdir()
     (staged / 'tests/test_public.py').write_text('def test_public(): pass\n')
-    admitted_hidden = {'.npmrc',
+    admitted_hidden = {'.npmrc', *local_images,
         *('.private_resources/viewer/' + name for name in _VIEWER_FILES),
         *('.private_resources/diagrams/' + name for name in _DIAGRAM_FILES),
     }
@@ -72,6 +91,8 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
         '.private_resources/viewer/secret.txt',
         '.private_resources/diagrams/secret.txt',
         '.private_resources/runtime/secret.txt',
+        '.private_resources/demo/secret.txt',
+        '.private_resources/demo/unlisted.png',
         'tools/synthetic-review.txt',
         'tools/runtime/debug.log',
         'unlisted.txt',
@@ -91,6 +112,11 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
         members = {name.split('/', 1)[1] for name in source.getnames() if '/' in name}
     assert {'src/api_agent/__init__.py', 'demo/pack.toml', 'flow.md.html',
             'workflows/component.md.html', 'tests/test_public.py'} <= members
+    with tarfile.open(archive) as source:
+        prefix = source.getnames()[0].split('/')[0]
+        for image in sorted(local_images):
+            assert image in members, f'README screenshot missing from source distribution: {image}'
+            assert source.extractfile(prefix + '/' + image).read() == (root / image).read_bytes()
     assert admitted_notices <= members
     hidden = {name for name in members if any(part.startswith('.') for part in name.split('/'))}
     assert hidden == admitted_hidden

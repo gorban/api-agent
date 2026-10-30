@@ -48,6 +48,10 @@ def _native_array(value):
 
 def _attributes(boundary, payload, *, model_identity=None):
     clean = boundary.export(payload)
+    if not boundary.policy.allow_content:
+        from .inference_diagnostics import has_optional_content, omission_notice
+        if has_optional_content(payload):
+            clean['api_agent.content_notice'] = omission_notice('TRACELOOP_TRACE_CONTENT')
     for key in ('gen_ai.request.model', 'gen_ai.response.model'):
         clean.pop(key, None)
         if type(payload) is dict and model_identity is not None:
@@ -96,6 +100,12 @@ def _structural(boundary, payload, model_identities=frozenset()):
         elif key == 'api_agent.transport_outcome' and value in ('started', 'observed', 'completed', 'failed'):
             clean[key] = value
         elif key == 'gen_ai.operation.name' and value in ('chat', 'execute_tool'):
+            clean[key] = value
+        elif key == 'api_agent.capture.reason' and value in ('captured', 'partial', 'truncated', 'unavailable', 'withheld'):
+            clean[key] = value
+        elif key == 'api_agent.capture.phase' and value in ('request', 'response'):
+            clean[key] = value
+        elif key == 'api_agent.capture.source' and value in ('provider', 'fallback'):
             clean[key] = value
     return _attributes(boundary.for_policy(ContentPolicy(True)), clean,
         model_identity=lambda value: _model_identity(value, model_identities))
@@ -192,10 +202,12 @@ class TraceSpan:
                 from opentelemetry.trace import StatusCode
                 self._span.set_status(StatusCode.ERROR)
 
-    def event(self, payload):
+    def event(self, payload, *, structural=None, timestamp=None):
         clean = _attributes(self._boundary, payload, model_identity=self._model_identity)
+        clean.update(_structural(self._boundary, structural, ()))
         if self._span is not None:
-            self._span.add_event('api_agent.event', attributes=clean)
+            self._span.add_event('api_agent.event', attributes=clean,
+                                 **({'timestamp': timestamp} if timestamp is not None else {}))
 
 
 class TraceRuntime:

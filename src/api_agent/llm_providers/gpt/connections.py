@@ -4,6 +4,7 @@ from contextlib import contextmanager, asynccontextmanager
 from dataclasses import asdict
 import fcntl
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -231,20 +232,34 @@ class ConnectionStore:
 
 
 class SubscriptionSession:
-    def __init__(self, store, profile_id, refresh, clock=time.time, skew=60):
+    def __init__(self, store, profile_id, refresh, clock=time.time, skew=60, register_connection=None, on_saved=None, has_pending=None, recover_saved=None):
         self.store, self.profile_id, self.refresh = store, profile_id, refresh
+        self.register_connection = register_connection
+        self.on_saved = on_saved
+        self.has_pending = has_pending
+        self.recover_saved = recover_saved
         self.clock, self.skew = clock, _number(skew)
         if skew < 0:
             _fail()
         self._task = None
         self._closed = False
+        self._failure = None
+        self._retry = asyncio.Event()
 
     async def __call__(self):
         if self._closed:
             raise AuthError("session_closed")
         if self._task is None or self._task.done():
+            self._failure = asyncio.get_running_loop().create_future()
             self._task = asyncio.create_task(self._current())
-        return await asyncio.shield(self._task)
+        elif self._failure is not None and self._failure.done():
+            self._failure = asyncio.get_running_loop().create_future()
+            self._retry.set()
+        failure = self._failure
+        done, _ = await asyncio.wait((self._task, failure), return_when=asyncio.FIRST_COMPLETED)
+        if self._task in done:
+            return self._task.result()
+        raise failure.result()
 
     async def _current(self):
         guard = self.store.lock(self.profile_id)
@@ -257,28 +272,129 @@ class SubscriptionSession:
             raise
         try:
             value = self.store.load(self.profile_id)
+            if self.register_connection is not None:
+                registered = self.register_connection(value)
+                if inspect.isawaitable(registered):
+                    await registered
             if value.host_id != self.store.host_id():
                 _fail()
             now = _number(self.clock())
             threshold = _number(value.expires_at - self.skew)
-            if now < value.expires_at and (now < threshold or now < value.earliest_refresh_at):
+            if (not (self.has_pending is not None and self.has_pending())
+                    and now < value.expires_at and (now < threshold or now < value.earliest_refresh_at)):
                 return value.access_token
-            updated = _validate(await self.refresh(value, now))
-            if (updated.subject, updated.client_id, updated.host_id) != (value.subject, value.client_id, value.host_id) or frozenset(updated.scopes) != frozenset(value.scopes) or updated.expires_at <= _number(self.clock()):
-                _fail()
-            self.store.save(updated)
-            return updated.access_token
+            current = value
+            staged = None
+            async def rotate():
+                nonlocal current, staged
+                index = 0
+                while True:
+                    if staged is None:
+                        previous = current
+                        updated = _validate(await self.refresh(previous, _number(self.clock())))
+                        if self.register_connection is not None:
+                            registered = self.register_connection(updated)
+                            if inspect.isawaitable(registered):
+                                await registered
+                        if ((updated.subject, updated.client_id, updated.host_id) != (previous.subject, previous.client_id, previous.host_id)
+                                or frozenset(updated.scopes) != frozenset(previous.scopes)):
+                            _fail()
+                        expired = updated.expires_at <= _number(self.clock())
+                        pending = self.has_pending is not None and self.has_pending()
+                        if expired and not pending:
+                            _fail()
+                        staged = dict(previous=previous, updated=updated, uncertain=True, ack_failed=False)
+                        try:
+                            self.store.save(updated)
+                        except BaseException:
+                            # Keep the verified rotation and its original owner.
+                            # The next caller reconciles before any new exchange.
+                            raise
+                        staged['uncertain'] = False
+                    else:
+                        previous, updated = staged['previous'], staged['updated']
+                        if staged['uncertain']:
+                            stored = self.store.load(self.profile_id)
+                            if stored != previous and stored != updated:
+                                _fail()
+                            # Reload proves identity, not durability. Require a
+                            # complete successful save before acknowledging it.
+                            self.store.save(updated)
+                            staged['uncertain'] = False
+                        expired = updated.expires_at <= _number(self.clock())
+                    current = updated
+                    if staged['ack_failed']:
+                        if self.store.load(self.profile_id) != updated:
+                            _fail()
+                        if self.recover_saved is None:
+                            _fail()
+                    acknowledgement_failed = False
+                    try:
+                        if staged['ack_failed']:
+                            self.recover_saved(previous, updated)
+                        elif self.on_saved is not None:
+                            self.on_saved(updated)
+                    except asyncio.CancelledError:
+                        staged['ack_failed'] = True
+                        raise
+                    except Exception:
+                        staged['ack_failed'] = True
+                        acknowledgement_failed = True
+                    if acknowledgement_failed:
+                        # Do not retain arbitrary callback diagnostics in the
+                        # exception chain, even after partial acknowledgement.
+                        raise AuthError('refresh_admission_failed') from None
+                    staged = None
+                    if not expired:
+                        return updated.access_token
+                    if index:
+                        _fail()
+                    index += 1
+            interrupted = False
+            while True:
+                try:
+                    result = await rotate()
+                    if interrupted:
+                        raise asyncio.CancelledError
+                    return result
+                except asyncio.CancelledError:
+                    if self.has_pending is None or not self.has_pending():
+                        raise
+                    # Keep ownership of an issued rotation through shutdown.
+                    interrupted = True
+                    self._retry.set()
+                except Exception as error:
+                    if self.has_pending is None or not self.has_pending():
+                        raise
+                    if self._failure is not None and not self._failure.done():
+                        # Never expose arbitrary registration or response error text.
+                        self._failure.set_result(TimeoutError() if isinstance(error, TimeoutError)
+                                                 else AuthError('refresh_admission_failed'))
+                # Do not release the store lock while the only copy of the
+                # rotated credential is pending. Each retry is caller driven.
+                await self._retry.wait()
+                self._retry.clear()
         finally:
             guard.__exit__(None, None, None)
 
     def aclose(self):
-        if not self._closed and self._task is not None:
+        if (not self._closed and self._task is not None
+                and not (self.has_pending and self.has_pending()
+                         and self._failure is not None and self._failure.done())):
             self._task.cancel()
         self._closed = True
         return self._dispose()
 
     async def _dispose(self):
         if self._task is not None:
+            if self.has_pending is not None and self.has_pending() and not self._task.done():
+                from api_agent.providers.control import CleanupPendingError
+                if self._failure is None or self._failure.done():
+                    self._failure = asyncio.get_running_loop().create_future()
+                self._retry.set()
+                done, _ = await asyncio.wait((self._task, self._failure), return_when=asyncio.FIRST_COMPLETED)
+                if self._task not in done:
+                    raise CleanupPendingError((self,), self.aclose) from None
             try:
                 await asyncio.shield(self._task)
             except asyncio.CancelledError:

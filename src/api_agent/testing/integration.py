@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -119,7 +120,7 @@ def _complete_report(rows):
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None):
+                          after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None, evidence_boundary=None):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -261,7 +262,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 raise CollectionError('Integration selection contains identities outside the freshly collected integration suites')
             from .requirements import plan_integration_requirements
             stage = 'Integration requirements validation'
-            plan_integration_requirements(tests).validate(context, config or {})
+            selected_requirements = plan_integration_requirements(tests)
+            selected_requirements.validate(context, config or {})
             from .test_profiles import resolve_test_profiles
             test_profiles = (resolve_test_profiles(tests, config, owner_root=context.owner_root, fields=config_fields, context=context)
                              if resolved_test_profiles is None and config is not None else
@@ -325,7 +327,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     from .setup_pool import SetupPool
                     backend = SetupPool(test_profiles, context.owner_root,
                         unattended_index_source=unattended_index_source,
-                        password_manager_registry=manager_registry, interaction=interaction, quota_observer=quota_observer)
+                        password_manager_registry=manager_registry, interaction=interaction, quota_observer=quota_observer,
+                        authority=evidence_boundary,
+                        **({'config_fields': config_fields} if config_fields is not None else {}))
                     try:
                         backend_descriptor = backend.start()
                     finally:
@@ -334,11 +338,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 stage = 'Integration pytest launch preparation'
                 from .inspection import InspectionDirectory, IntegrationInspection
                 directory = InspectionDirectory(tempfile.TemporaryDirectory(prefix='api-agent-integration-'))
-                with directory as temporary:
+                from .inference_content import EvidenceFailureChannel
+                with directory as temporary, EvidenceFailureChannel(selected) as failure_channel:
+                    env['API_AGENT_EVIDENCE_FAILURE_CHANNEL'] = failure_channel.descriptor
                     if config is not None:
                         from .provider_setup import write_launch_snapshot
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
-                            unattended_index_source=unattended_index_source,
+                            unattended_index_source=unattended_index_source, config_fields=config_fields,
                             test_profiles=({identity.node_id: backend_descriptor[identity.id] for identity in selected.values()}
                                            if backend_descriptor is not None else None), password_manager_registry=manager_registry,
                             interaction_descriptor=interaction_descriptor,
@@ -347,12 +353,21 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                if tool_plan is not None else {})))
                     event_file = Path(temporary) / 'events.jsonl'
                     event_file.touch()
+                    from .inference_content import initialize_evidence, read_evidence, failure_reported, has_pending
+                    evidence_file = str(Path(temporary) / 'inference.sqlite')
+                    initialize_evidence(evidence_file, selected)
+                    env['API_AGENT_INFERENCE_EVIDENCE_DB'] = evidence_file
+                    evidence_offset = 0
+                    evidence_read_failed = False
+                    evidence_incomplete = set()
+                    evidence_scoped = set()
                     browser_sizes = {}
                     browser_budget_reported = set()
                     env['API_AGENT_INTEGRATION_EVENTS'] = str(event_file)
                     env['API_AGENT_COMPONENT_EVENTS'] = str(event_file)
                     stdout_marker = f'[api-agent-stdout-{uuid4().hex}]\n'
-                    args = [sys.executable, '-c', _PLUGIN.replace('__API_AGENT_STDOUT_BOUNDARY__', repr(stdout_marker)), str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.ui_inspection', '-p', 'api_agent.testing.progress', '-o', 'addopts=', '--rootdir', str(root)]
+                    traceback_style = 'long' if config is not None and config.get('DEBUG') else 'short'
+                    args = [sys.executable, '-c', _PLUGIN.replace('__API_AGENT_STDOUT_BOUNDARY__', repr(stdout_marker)), str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.inference_content', '-p', 'api_agent.testing.ui_inspection', '-p', 'api_agent.testing.progress', '-o', 'addopts=', f'--tb={traceback_style}', '--rootdir', str(root)]
                     if config is not None and config.get('DEBUG'):
                         args.append('-s')
                     if parallel_jobs:
@@ -420,15 +435,69 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     worker_output, dropped_output_chars = '', 0
                     run_complete = None
                     inspection_ready = False
+                    def drain_scoped_failures():
+                        for item in failure_channel.reported_scopes() - evidence_scoped:
+                            node, invocation_id, visit_id, call_id, direction = item
+                            identity = selected.get(node)
+                            if identity is not None:
+                                emit(RunnerEvent('workflow_inference_evidence_incomplete', repo, identity,
+                                    text=json.dumps(dict(invocation_id=invocation_id, visit_id=visit_id,
+                                                         call_id=call_id, direction=direction))))
+                            evidence_scoped.add(item)
+
+                    def drain_evidence():
+                        nonlocal evidence_offset, evidence_read_failed
+                        drain_scoped_failures()
+                        if evidence_read_failed:
+                            return True
+                        for _ in range(32):
+                            try:
+                                evidence_rows = read_evidence(evidence_file, evidence_offset)
+                            except sqlite3.OperationalError as error:
+                                if 'locked' in str(error).lower() or 'busy' in str(error).lower():
+                                    return False
+                                evidence_read_failed = True
+                                for node, identity in selected.items():
+                                    if node not in evidence_incomplete:
+                                        evidence_incomplete.add(node)
+                                        emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
+                                return True
+                            except (OSError, ValueError, TypeError, sqlite3.Error):
+                                evidence_read_failed = True
+                                for node, identity in selected.items():
+                                    if node not in evidence_incomplete:
+                                        evidence_incomplete.add(node)
+                                        emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
+                                return True
+                            if not evidence_rows:
+                                break
+                            ident, node, data = evidence_rows[0]
+                            evidence_offset = ident
+                            identity = selected.get(node)
+                            if identity is not None:
+                                emit(RunnerEvent('inference_content', repo, identity, text=json.dumps(data)))
+                                if data.get('reason') == 'truncated' and node not in evidence_incomplete:
+                                    evidence_incomplete.add(node)
+                                    emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='truncated'))
+                        else:
+                            return False
+                        drain_scoped_failures()
+                        for node, identity in selected.items():
+                            if node not in evidence_incomplete and (node in failure_channel.reported() or failure_reported(evidence_file, node)):
+                                evidence_incomplete.add(node)
+                                emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
+                        return True
                     def drain_events():
                         nonlocal offset, failed, run_complete, inspection_ready
+                        if not drain_evidence():
+                            return False
                         try:
                             stream = event_file.open(encoding='utf-8')
                         except FileNotFoundError:
                             # A naturally closed retained worker may already have
                             # been reaped by its monitor after reports were read.
                             if directory.retained:
-                                return
+                                return True
                             raise
                         with stream:
                             stream.seek(offset)
@@ -462,7 +531,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                     elif row['kind'] == 'inference_usage':
                                         emit(RunnerEvent('inference_usage', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'inference_content':
-                                        emit(RunnerEvent('inference_content', repo, identity, text=json.dumps(row['data'])))
+                                        # Evidence is accepted only from the bounded sidecar.
+                                        continue
                                     elif row['kind'] == 'browser_attachment' and (config or {}).get('LOG_CONTENT') is True:
                                         from .browser_attachments import read_attachment
                                         count, size = browser_sizes.get(identity.id, (0, 0))
@@ -495,6 +565,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         component = ComponentProgress(**row['component'])
                                         emit(RunnerEvent('component_progress', repo, identity, component=component))
                                     elif row['kind'] == 'report':
+                                        if not drain_evidence():
+                                            offset = position
+                                            return False
+                                        if row.get('phase') == 'teardown' and has_pending(evidence_file, row['node']):
+                                            if row['node'] not in evidence_incomplete:
+                                                evidence_incomplete.add(row['node'])
+                                                emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
                                         reports.setdefault(identity.id, []).append(row)
                                         if row['phase'] == 'teardown':
                                             # Missing phases need the eventual worker exit diagnostic.
@@ -509,10 +586,24 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         if detail not in diagnostics.setdefault(test.id, []):
                                             diagnostics[test.id].append(detail)
                                     failed = True
+                        return True
                     def drain(*, final=False):
-                        nonlocal worker_output, dropped_output_chars
+                        nonlocal worker_output, dropped_output_chars, evidence_read_failed
                         # Structured completion must not wait behind a slow raw sink.
-                        drain_events()
+                        if final:
+                            deadline = time.monotonic() + 5
+                            while not drain_events():
+                                if time.monotonic() >= deadline:
+                                    evidence_read_failed = True
+                                    for node, identity in selected.items():
+                                        if node not in evidence_incomplete:
+                                            evidence_incomplete.add(node)
+                                            emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
+                                    drain_events()
+                                    break
+                                time.sleep(.01)
+                        else:
+                            drain_events()
                         remaining = None if final else 32
                         while not lines.empty() and (remaining is None or remaining > 0):
                             if remaining is not None:
@@ -577,9 +668,15 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                     discard_output.set()
                             drain(final=True)
                     failed |= bool(reader_errors) or (run_complete if directory.retained else process.returncode) != 0
-                    for identity in selected.values():
+                    for node, identity in selected.items():
+                        if node not in evidence_incomplete and has_pending(evidence_file, node):
+                            evidence_incomplete.add(node)
+                            emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
                         rows = reports.get(identity.id, [])
                         if not _complete_report(rows):
+                            if node not in evidence_incomplete:
+                                evidence_incomplete.add(node)
+                                emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
                             code = run_complete if directory.retained else process.returncode
                             diagnostics.setdefault(identity.id, []).append(
                                 f'Integration pytest report incomplete: worker exit code {code}; '

@@ -20,7 +20,7 @@ def source_checkout(selected=None):
     """A supplied root must identify the source checkout currently executing."""
     source = Path(__file__).resolve()
     root = Path(selected).expanduser().resolve() if selected is not None else source.parents[3]
-    if source != root / 'src/api_agent/workflows/calibrate.py' or not (root / 'launch.py').is_file():
+    if source != root / 'src/api_agent/workflows/calibrate.py' or not (root / 'launch.sh').is_file():
         raise ValueError('Calibration requires the running api-agent source checkout; use its Python/PYTHONPATH and --base-root.')
     return root
 

@@ -19,11 +19,11 @@ from api_agent.testing.ui_turn import ui_turn
 from urllib.parse import urlsplit
 
 
-pytestmark = pytest.mark.feature('Studio chat')
+pytestmark = [pytest.mark.feature('Studio chat'), pytest.mark.credential_authorities('ui')]
 
 @asynccontextmanager
 async def studio_endpoint(provider, selection):
-    """Own real loopback listeners; provider selection/auth belongs to launch.py."""
+    """Own real loopback listeners; provider selection/auth belongs to launch.sh."""
     node = shutil.which('node')
     if node is None:
         pytest.skip('The included Studio browser test requires Node.js.')

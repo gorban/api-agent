@@ -167,6 +167,185 @@ def test_refresh_retains_verified_identity_without_new_id():
         run(data={'id_token':None})
 
 
+def test_rotated_refresh_response_survives_cancelled_registration_without_repeating_request():
+    from api_agent.telemetry.privacy import EmissionBoundary
+    connection = run()[0]
+    sent = []
+    payload = dict(access_token='next-access', refresh_token='rotated-refresh', token_type='Bearer',
+                   expires_in=100, scope=o.SCOPES)
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json=payload)
+    async def scenario():
+        authority = EmissionBoundary()
+        lease = authority.begin_evidence_lease()
+        pending = {}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            task = asyncio.create_task(o.refresh_connection(connection, client=client, now=1000,
+                register_secret=authority.aregister_secret, pending=pending))
+            async with asyncio.timeout(2):
+                while not authority._authority.registration_waiters:
+                    await asyncio.sleep(.001)
+            assert pending and len(sent) == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            lease.release()
+            updated = await o.refresh_connection(connection, client=client, now=1001,
+                register_secret=authority.aregister_secret, pending=pending)
+            assert updated.refresh_token == 'rotated-refresh'
+            assert updated.expires_at == 1100
+            assert len(sent) == 1
+            assert authority._text('rotated-refresh') == '[REDACTED]'
+    asyncio.run(scenario())
+
+
+def test_session_cleanup_recovers_cancelled_rotated_refresh_before_disposal(tmp_path):
+    from api_agent.llm_providers.gpt.connections import ConnectionStore
+    from api_agent.llm_providers.gpt.factory import OwnedSubscriptionSession
+    from api_agent.telemetry.privacy import EmissionBoundary
+    store = ConnectionStore(tmp_path / 'owned')
+    connection = replace(run()[0], host_id=store.host_id())
+    profile = store.save(connection)
+    sent = []
+    payload = dict(access_token='new-access', refresh_token='new-refresh', token_type='Bearer',
+                   expires_in=100, scope=o.SCOPES)
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json=payload)
+    async def scenario():
+        authority = EmissionBoundary()
+        lease = authority.begin_evidence_lease()
+        session = OwnedSubscriptionSession(store, profile, register_connection_secret=authority.aregister_secret)
+        session.clock = lambda: 1050
+        session.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        waiter = asyncio.create_task(session())
+        async with asyncio.timeout(2):
+            while not authority._authority.registration_waiters:
+                await asyncio.sleep(.001)
+        assert session._pending_refresh
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        closing = asyncio.create_task(session.aclose())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        lease.release()
+        await closing
+        assert store.load(profile).refresh_token == 'new-refresh'
+        assert not session._pending_refresh
+        assert len(sent) == 1
+    asyncio.run(scenario())
+
+
+def test_rotated_refresh_survives_cancellation_during_response_exit():
+    connection = run()[0]
+    payload = dict(access_token='next-access', refresh_token='rotated-refresh', token_type='Bearer',
+                   expires_in=100, scope=o.SCOPES)
+    async def scenario():
+        entered = asyncio.Event()
+        requests = []
+        class Response:
+            status_code = 200
+            headers = {}
+            async def aiter_bytes(self):
+                yield json.dumps(payload).encode()
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+            async def __aexit__(self, *args):
+                entered.set()
+                await asyncio.Event().wait()
+        class Client:
+            def stream(self, *args, **kwargs):
+                requests.append(1)
+                return Stream()
+        pending = {}
+        client = Client()
+        task = asyncio.create_task(o.refresh_connection(connection, client=client, now=1000, pending=pending))
+        await asyncio.wait_for(entered.wait(), 2)
+        assert pending
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        updated = await o.refresh_connection(connection, client=client, now=1001, pending=pending)
+        assert updated.refresh_token == 'rotated-refresh'
+        assert updated.expires_at == 1100
+        assert len(requests) == 1
+    asyncio.run(scenario())
+
+
+def test_cancelled_rotation_keeps_store_lock_until_recovered(tmp_path):
+    from api_agent.llm_providers.gpt.connections import ConnectionStore
+    from api_agent.llm_providers.gpt.factory import OwnedSubscriptionSession
+    from api_agent.telemetry.privacy import EmissionBoundary
+    store = ConnectionStore(tmp_path / 'owned')
+    profile = store.save(replace(run()[0], host_id=store.host_id()))
+    sent = []
+    payload = dict(access_token='new-access', refresh_token='new-refresh', token_type='Bearer',
+                   expires_in=100, scope=o.SCOPES)
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json=payload)
+    async def scenario():
+        authority = EmissionBoundary()
+        lease = authority.begin_evidence_lease()
+        first = OwnedSubscriptionSession(store, profile, register_connection_secret=authority.aregister_secret)
+        second = OwnedSubscriptionSession(store, profile, register_connection_secret=authority.aregister_secret)
+        first.clock = second.clock = lambda: 1050
+        first.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        second.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        waiting = asyncio.create_task(first())
+        async with asyncio.timeout(2):
+            while not authority._authority.registration_waiters:
+                await asyncio.sleep(.001)
+        closing = asyncio.create_task(first.aclose())
+        other = asyncio.create_task(second())
+        await asyncio.sleep(.05)
+        assert not closing.done() and not other.done() and len(sent) == 1
+        lease.release()
+        await closing
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert await other == 'new-access'
+        assert store.load(profile).refresh_token == 'new-refresh'
+        assert len(sent) == 1
+        await second.aclose()
+    asyncio.run(scenario())
+
+
+def test_expired_pending_rotation_is_saved_before_next_refresh(tmp_path):
+    from api_agent.llm_providers.gpt.connections import ConnectionStore
+    from api_agent.llm_providers.gpt.factory import OwnedSubscriptionSession
+    from api_agent.telemetry.privacy import EmissionBoundary
+    store = ConnectionStore(tmp_path / 'owned')
+    profile = store.save(replace(run()[0], host_id=store.host_id()))
+    sent = []
+    now = [1050]
+    def handler(request):
+        sent.append(parse_qs(request.content.decode()))
+        number = len(sent)
+        return httpx.Response(200, json=dict(access_token=f'access-{number}', refresh_token=f'rotated-{number}',
+            token_type='Bearer', expires_in=1 if number == 1 else 100, scope=o.SCOPES))
+    async def scenario():
+        authority = EmissionBoundary()
+        lease = authority.begin_evidence_lease()
+        session = OwnedSubscriptionSession(store, profile, register_connection_secret=authority.aregister_secret)
+        session.clock = lambda: now[0]
+        session.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        waiting = asyncio.create_task(session())
+        async with asyncio.timeout(2):
+            while not authority._authority.registration_waiters:
+                await asyncio.sleep(.001)
+        now[0] = 1060
+        lease.release()
+        assert await waiting == 'access-2'
+        assert sent[1]['refresh_token'] == ['rotated-1']
+        assert store.load(profile).refresh_token == 'rotated-2'
+        await session.aclose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('now', [float('nan'), float('-inf'), True, 'secret', 10**400])
 def test_time_rejected_before_request(now):
     for refresh in [None, run()[0]]:
@@ -235,3 +414,103 @@ def test_header_requires_nonempty_key_id():
         token = jwt.encode(dict(iss=o.ISSUER, aud='issued', sub='subject', exp=2000), KEY, algorithm='RS256', headers=headers)
         with pytest.raises(AuthError, match='invalid_identity'):
             run(data={'id_token':token})
+
+
+def test_rotation_admission_timeout_retains_lock_until_cleanup(tmp_path):
+    from api_agent.llm_providers.gpt.connections import ConnectionStore
+    from api_agent.llm_providers.gpt.factory import OwnedSubscriptionSession
+    from api_agent.providers.control import CleanupPendingError
+    store = ConnectionStore(tmp_path / 'owned')
+    profile = store.save(replace(run()[0], host_id=store.host_id()))
+    sent = []
+    payload = dict(access_token='new-access', refresh_token='new-refresh', token_type='Bearer',
+                   expires_in=100, scope=o.SCOPES)
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json=payload)
+
+    async def scenario():
+        blocked = asyncio.Event()
+        release = asyncio.Event()
+        allow = False
+        async def register(value):
+            if value == 'new-access' and not allow:
+                blocked.set()
+                await release.wait()
+                raise TimeoutError('sensitive error text')
+        first = OwnedSubscriptionSession(store, profile, register_connection_secret=register)
+        second = OwnedSubscriptionSession(store, profile)
+        first.clock = second.clock = lambda: 1050
+        first.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        second.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        caller = asyncio.create_task(first())
+        await blocked.wait()
+        other = asyncio.create_task(second())
+        closing = asyncio.create_task(first.aclose())
+        await asyncio.sleep(.05)
+        release.set()
+        with pytest.raises(TimeoutError) as caught:
+            await caller
+        assert str(caught.value) == ''
+        with pytest.raises(CleanupPendingError):
+            await closing
+        assert not other.done() and len(sent) == 1
+        allow = True
+        await first.aclose()
+        assert await other == 'new-access'
+        assert len(sent) == 1
+        await second.aclose()
+    asyncio.run(scenario())
+
+
+def test_retry_second_pending_rotation_uses_last_persisted_identity(tmp_path):
+    from api_agent.llm_providers.gpt.connections import ConnectionStore
+    from api_agent.llm_providers.gpt.factory import OwnedSubscriptionSession
+    store = ConnectionStore(tmp_path / 'owned')
+    profile = store.save(replace(run()[0], host_id=store.host_id()))
+    sent = []
+    now = [1050]
+    first_admission = asyncio.Event()
+    continue_first = asyncio.Event()
+    second_admission = asyncio.Event()
+    allow_second = False
+
+    def handler(request):
+        sent.append(parse_qs(request.content.decode()))
+        number = len(sent)
+        return httpx.Response(200, json=dict(access_token=f'access-{number}', refresh_token=f'rotated-{number}',
+            token_type='Bearer', expires_in=1 if number == 1 else 100, scope=o.SCOPES))
+
+    async def register(value):
+        if value == 'access-1' and not first_admission.is_set():
+            first_admission.set()
+            await continue_first.wait()
+        if value == 'access-2' and not allow_second:
+            second_admission.set()
+            raise TimeoutError()
+
+    async def scenario():
+        nonlocal allow_second
+        first = OwnedSubscriptionSession(store, profile, register_connection_secret=register)
+        second = OwnedSubscriptionSession(store, profile)
+        first.clock = second.clock = lambda: now[0]
+        first.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        second.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        caller = asyncio.create_task(first())
+        await first_admission.wait()
+        now[0] = 1060
+        continue_first.set()
+        await second_admission.wait()
+        with pytest.raises(TimeoutError):
+            await caller
+        assert store.load(profile).refresh_token == 'rotated-1'
+        other = asyncio.create_task(second())
+        await asyncio.sleep(.05)
+        assert not other.done()
+        allow_second = True
+        await first.aclose()
+        assert await other == 'access-2'
+        assert [request['refresh_token'] for request in sent] == [['refresh'], ['rotated-1']]
+        assert store.load(profile).refresh_token == 'rotated-2'
+        await second.aclose()
+    asyncio.run(scenario())

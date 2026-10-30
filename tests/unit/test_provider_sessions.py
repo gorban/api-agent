@@ -15,12 +15,29 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
-def browser(**kwargs):
+def browser(*, headless=True, **kwargs):
     context = SimpleNamespace(new_page=AsyncMock(return_value=object()), close=AsyncMock())
     instance = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
     driver = SimpleNamespace(launch=AsyncMock(return_value=instance), stop=AsyncMock())
-    owner = BrowserOwner(AsyncMock(return_value=driver), headless=True, **kwargs)
+    owner = BrowserOwner(AsyncMock(return_value=driver), headless=headless, **kwargs)
     return owner, driver, instance, context
+
+
+@pytest.mark.parametrize('headless, context_options', [(True, {}), (False, {'no_viewport': True})])
+def test_browser_context_follows_window_only_when_headed(headless, context_options):
+    async def scenario():
+        owner, driver, instance, context = browser(headless=headless)
+        try:
+            session = await owner.start()
+            assert session.context is context
+            driver.launch.assert_awaited_once_with(headless=headless)
+            instance.new_context.assert_awaited_once_with(**context_options)
+        finally:
+            await owner.aclose()
+        context.close.assert_awaited_once()
+        instance.close.assert_awaited_once()
+        driver.stop.assert_awaited_once()
+    run(scenario())
 
 
 def credentials():

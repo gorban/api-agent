@@ -244,11 +244,13 @@ def _wheel_source_snapshot(repository, destination):
         helper['_relative'](root)
     prefixes = tuple(path + '/' for path in sorted(roots))
     individual = {'pyproject.toml', 'hatch_build.py', 'package.json', 'package-lock.json',
-                  '.npmrc', 'launch.py', 'tools/frontend-assets.json',
+                  '.npmrc', 'launch.sh', 'tools/frontend-assets.json',
                   'tools/frontend_assets.py', 'tools/prepare_frontend_assets.mjs',
                   'tools/checks.py', 'tools/pre_commit_dispatcher.py',
                   'tools/workflow_views.py', 'LICENSE', 'README.md', 'flow.md.html'}
-    individual.update(path for path in wheel.get('force-include', {}) if (repository / path).is_file())
+    individual.update(path for target in ('wheel', 'sdist')
+                      for path in configuration['tool']['hatch']['build']['targets'][target].get('force-include', {})
+                      if (repository / path).is_file())
 
     def copy(relative, mode):
         helper['_relative'](relative)
@@ -284,7 +286,7 @@ def _wheel_source_snapshot(repository, destination):
     # new public inputs only inside the build's explicitly declared roots;
     # hidden/cache files and unrelated documentation remain outside this proof.
     current = subprocess.run(['git', '-C', str(repository), 'ls-files', '--others',
-                              '--exclude-standard', '-z', '--', *sorted(roots)],
+                              '--exclude-standard', '-z', '--', *sorted(roots | individual)],
                              check=True, capture_output=True, timeout=20,
                              env=_synthetic_git_environment()).stdout
     assert len(current) <= 4 * 1024 * 1024, 'Installed wheel new-input list exceeds limit'
@@ -293,11 +295,11 @@ def _wheel_source_snapshot(repository, destination):
             continue
         relative = raw.decode('utf-8')
         helper['_relative'](relative)
-        if relative in selected or not relative.startswith(prefixes):
+        if relative in selected or (relative not in individual and not relative.startswith(prefixes)):
             continue
         if any(part in helper['_EXCLUDED_OWNERS'] for part in Path(relative).parts):
             continue
-        if any(part.startswith('.') for part in Path(relative).parts) and not build['_package_path'](
+        if relative not in individual and any(part.startswith('.') for part in Path(relative).parts) and not build['_package_path'](
                 relative, owners, helper):
             continue
         selected.add(relative)

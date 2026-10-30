@@ -127,7 +127,7 @@ def prepare_tool_plan(plan):
         tools.append(replace(tool, admission=admitted[key]))
     return replace(plan, tools=tuple(tools))
 
-def tool_configurations(plan, services):
+def tool_configurations(plan, services, *, environments=None):
     """Validate every tool input/service before the first factory is imported."""
     configurations = []
     identities = [tool.id for tool in plan.tools]
@@ -139,6 +139,10 @@ def tool_configurations(plan, services):
     plan = prepare_tool_plan(plan)
     for tool in plan.tools:
         local_services = {key: value for key, value in services.items() if key != 'service_registry'}
+        if tool.executables:
+            if environments is None or tool.id not in environments:
+                raise ValueError('Selected tool executable environment is not prepared')
+            local_services['tool_environment'] = environments[tool.id]
         if tool.service_bindings or tool.service_capabilities:
             registry = services.get('service_registry')
             if registry is None:
@@ -148,6 +152,16 @@ def tool_configurations(plan, services):
             local_services['tool_services'] = MappingProxyType({})
         configurations.append((tool, _plain(tool.local_values), MappingProxyType(local_services)))
     return tuple(configurations)
+
+
+async def prepare_tool_configurations(plan, services):
+    """Validate all consumers before acquiring any executable or importing code."""
+    placeholders = {tool.id: MappingProxyType({}) for tool in plan.tools if tool.executables}
+    configurations = tool_configurations(plan, services, environments=placeholders)
+    from .executables import prepare_environments
+    environments = await prepare_environments(plan)
+    return tuple((tool, config, MappingProxyType({**views, 'tool_environment': environments[tool.id]})
+                  if tool.id in environments else views) for tool, config, views in configurations)
 
 
 def tool_operation_values(plan, config):

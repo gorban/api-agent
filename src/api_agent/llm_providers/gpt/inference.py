@@ -241,7 +241,7 @@ def _stream_completed(response, added, completed, token):
     return _result(response, True, token)
 
 
-def _sse(body, token, request_id):
+def _sse(body, token, request_id, capture_terminal=None):
     try:
         text = body.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
         if not text.endswith('\n\n'):
@@ -268,6 +268,9 @@ def _sse(body, token, request_id):
                 error.usage = final.usage
             raise error
         kind = data['type']
+        if capture_terminal is not None and kind in ('response.failed', 'response.incomplete', 'response.completed', 'error'):
+            terminal = data.get('response')
+            capture_terminal(terminal if type(terminal) is dict else data)
         if kind in ('response.created', 'response.in_progress'):
             response = data.get('response')
             if type(response) is dict and 'id' in response:
@@ -402,7 +405,111 @@ async def async_validate_text_request(*, base_url, access_token, subscription, a
     return admitted
 
 
-async def complete_text(*, client, base_url, access_token, subscription, api_mode, request, cache_session_id=None):
+async def _guard_content(value, access_token, authority=None, *, commit=None, decoded=None):
+    from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
+    async def inspect(secrets):
+        await async_guard_json(value, secrets)
+        if decoded is not None:
+            import json
+            from api_agent.providers.response_carriers import observable_response_carriers
+            from api_agent.providers.contracts import ContractError
+            try:
+                for carrier in observable_response_carriers(
+                        ''.join(part.text for part in decoded.payload.content),
+                        (json.loads(call.arguments) for call in decoded.payload.calls)):
+                    await async_guard_json(carrier, secrets)
+            except ContractError:
+                raise CredentialProtectionError('Content cannot be safely released.') from None
+    try:
+        if authority is None:
+            await inspect({access_token})
+            if commit is not None:
+                commit()
+        else:
+            generation, snapshot = authority.snapshot_content()
+            await inspect({*snapshot._secrets, access_token})
+            if not authority.commit_if_current(generation, commit or (lambda: None)):
+                raise CredentialProtectionError('Credential registrations changed during validation.')
+    except CredentialProtectionError:
+        raise _invalid('GPT inference contains protected authentication content.') from None
+
+
+async def _capture_safe_response(value, request_id, access_token, authority, *, partial=False):
+    """Project and validate provider response before handing it to evidence."""
+    from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
+    from api_agent.workflows.inference_capture import capture_inference
+    decoded = None
+    if partial:
+        try:
+            decoded = _result(value, True, access_token)
+        except ProviderAccessError:
+            # An invalid terminal has no validated observable carrier mapping.
+            # Preserve the original stream failure without publishing its body.
+            return
+    snapshot = (authority.snapshot_content()[1] if authority is not None else
+                EmissionBoundary(ContentPolicy(True)))
+    snapshot.register_secret(access_token)
+    clean = snapshot.content_export(value)
+    await _guard_observed(clean, access_token, authority,
+        usage=decoded.usage if decoded is not None else None, decoded=decoded,
+        commit=lambda: capture_inference('output', clean, request_id, auth=access_token, partial=partial))
+
+
+async def _handoff_body(value, access_token, authority=None):
+    """Transfer a private request snapshot to this attempt's HTTP owner.
+
+    Registration and handoff are ordered by the authority lock. Registrations
+    after handoff cannot retroactively alter a request already handed off.
+    The HTTP operation owns the snapshot and its existing response context;
+    cancellation uses the normal HTTP context cleanup, with no background task.
+    """
+    from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
+    try:
+        generation, snapshot = authority.snapshot_content() if authority is not None else (None, None)
+        secrets = {access_token} if snapshot is None else {*snapshot._secrets, access_token}
+        owned = await async_guard_json(value, secrets)
+        handoff = []
+        if authority is None:
+            handoff.append(owned)
+        elif not authority.commit_if_current(generation, lambda: handoff.append(owned)):
+            raise CredentialProtectionError('Credential registrations changed during handoff.')
+        return handoff.pop()
+    except CredentialProtectionError:
+        raise _invalid('GPT inference contains protected authentication content.') from None
+
+
+async def _guard_error(error, access_token, authority=None):
+    # Inspect the released diagnostics after ordinary provider sanitization.
+    fields = {name: value for name in ('message', 'code', 'type', 'request_id')
+              if type(value := getattr(error, name, None)) is str}
+    try:
+        await _guard_content(fields, access_token, authority)
+    except ProviderAccessError as protected:
+        from api_agent.providers.inference import error_usage
+        usage = error_usage(error)
+        if usage is not None:
+            protected.usage = usage
+        raise protected from None
+
+
+async def _guard_observed(value, access_token, authority, *, usage=None, reported=None, responses=True, commit=None, decoded=None):
+    """Keep validated accounting when a received success cannot be released."""
+    try:
+        await _guard_content(value, access_token, authority, commit=commit, **({} if decoded is None else {'decoded': decoded}))
+    except ProviderAccessError as error:
+        if usage is not None:
+            from types import SimpleNamespace
+            from api_agent.providers.inference import error_usage
+            candidate = error_usage(SimpleNamespace(usage=usage))
+            if candidate is not None:
+                error.usage = candidate
+        elif reported is not None:
+            _reported_usage(error, reported, responses)
+        error.http_status = 200
+        raise
+
+
+async def complete_text(*, client, base_url, access_token, subscription, api_mode, request, cache_session_id=None, authority=None):
     """Perform one bounded physical inference attempt."""
     base_url, body = await async_validate_text_request(base_url=base_url, access_token=access_token,
         subscription=subscription, api_mode=api_mode, request=request)
@@ -424,25 +531,36 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
     try:
         async with component_timeout('GPT text inference', _TIMEOUT) as budget:
             try:
-                return await _complete_attempt(client=client, base_url=base_url, headers=headers,
+                result = await _complete_attempt(client=client, base_url=base_url, headers=headers,
                     body=body, subscription=subscription, api_mode=api_mode, request=request,
-                    access_token=access_token, budget=budget, dispatch=dispatch)
+                    access_token=access_token, budget=budget, dispatch=dispatch, authority=authority)
             except (OperationalError, TimeoutError, httpx.RequestError, CancelledError) as failure:
                 failure_usage = error_usage(failure)
                 record_response_failure(failure)
                 raise
+        from api_agent.providers.inference import result_to_wire
+        released = []
+        await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage,
+                              commit=lambda: released.append(result), decoded=result)
+        return released[0]
     except (ProviderAccessError, OperationalError, CancelledError) as error:
         error.response = dispatch['response']
         raise
     except (TimeoutError, httpx.TimeoutException) as failure:
         from api_agent.providers.inference import error_usage
-        error = ProviderAccessError('deadline', 'GPT inference timed out.', usage=error_usage(failure) or failure_usage)
+        from api_agent.providers.inference_retry import transient_network_failure
+        kind = 'network' if transient_network_failure(failure, httpx) else 'deadline'
+        error = ProviderAccessError(kind, 'GPT inference timed out.', usage=error_usage(failure) or failure_usage)
+        error.http_status = getattr(failure, 'http_status', None)
         error.execution = 'possibly_executed'
         error.response = dispatch['response']
         raise error from None
     except httpx.RequestError as failure:
         from api_agent.providers.inference import error_usage
-        error = ProviderAccessError('unavailable', 'GPT inference transport is unavailable.', usage=error_usage(failure) or failure_usage)
+        from api_agent.providers.inference_retry import transient_network_failure
+        kind = 'network' if transient_network_failure(failure, httpx) else 'unavailable'
+        error = ProviderAccessError(kind, 'GPT inference transport is unavailable.', usage=error_usage(failure) or failure_usage)
+        error.http_status = getattr(failure, 'http_status', None)
         error.execution = 'possibly_executed'
         error.response = dispatch['response']
         raise error from None
@@ -463,16 +581,21 @@ def _admission_rejection(status, data, subscription):
 
 
 async def _complete_attempt(*, client, base_url, headers, body, subscription, api_mode,
-                            request, access_token, budget, dispatch):
+                            request, access_token, budget, dispatch, authority=None):
     """Own and close one HTTP response before the caller decides to retry."""
     from .response_policy import prepare_response
     from api_agent.llm_providers.response_policy import capture_payload
     _, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
     if budget.remaining == 0:
         raise TimeoutError('GPT inference deadline expired before dispatch.')
+    await _guard_content(body, access_token, authority)
     capture_payload(request, body, evidence, auth=access_token)
     if budget.remaining == 0:
         raise TimeoutError('GPT inference deadline expired before dispatch.')
+    # Capture can register credentials; check again after it completes.
+    await _guard_content(body, access_token, authority)
+    # This attempt owns the checked snapshot from the authority handoff onward.
+    body = await _handoff_body(body, access_token, authority)
     if evidence is not None:
         from api_agent.workflows.inference_capture import record_response_dispatch
         record_response_dispatch(evidence)
@@ -497,8 +620,11 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                     data = _json(raw)
                 except ProviderAccessError:
                     data = None
+                if type(data) is dict:
+                    await _capture_safe_response(data, request.request_id, access_token, authority)
                 error = _rejection(response.status_code, data, request_id, access_token,
                                    _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
+                await _guard_error(error, access_token, authority)
                 if _admission_rejection(response.status_code, data, subscription):
                     error.execution = 'not_started'
                 raise error
@@ -512,17 +638,37 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                 error.http_status = status
                 error.retry_after = hint
                 raise error from None
+            if isinstance(error, httpx.RequestError):
+                error.http_status = status
             raise
         if subscription:
             if response.headers.get('content-type', '').split(';')[0].strip().lower() not in ('', 'text/event-stream'):
                 raise _invalid('GPT subscription inference requires an event stream.')
             from .rich import async_validate_result
-            result = replace(_sse(raw, access_token, request_id), response=evidence)
+            terminals = []
+            try:
+                result = replace(_sse(raw, access_token, request_id, terminals.append), response=evidence)
+            except ProviderAccessError as error:
+                for terminal in terminals:
+                    await _capture_safe_response(terminal, request.request_id, access_token, authority, partial=True)
+                await _guard_error(error, access_token, authority)
+                raise
             from api_agent.providers.generation_attempts import snapshot_transport_result
+            from api_agent.providers.inference import result_to_wire
+            await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage, decoded=result)
+            for terminal in terminals:
+                await _capture_safe_response(terminal, request.request_id, access_token, authority, partial=True)
             snapshot_transport_result(result)
             return await async_validate_result(request, result, access_token)
         data = _json(raw)
+        await _guard_observed(data, access_token, authority,
+                              reported=data.get('usage') if type(data) is dict else None,
+                              responses=api_mode == 'responses')
         result = _result(data, api_mode == 'responses', access_token)
+        from api_agent.providers.inference import result_to_wire
+        from api_agent.workflows.inference_capture import capture_inference
+        await _guard_observed(data, access_token, authority, usage=result.usage, decoded=result,
+            commit=lambda: capture_inference('output', data, request.request_id, auth=access_token))
         if base_url == 'https://openrouter.ai/api/v1':
             usage = _usage(data.get('usage'), api_mode == 'responses', router=True)
             try:
@@ -534,5 +680,7 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
         from .rich import async_validate_result
         result = replace(result, response=evidence)
         from api_agent.providers.generation_attempts import snapshot_transport_result
+        from api_agent.providers.inference import result_to_wire
+        await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage, decoded=result)
         snapshot_transport_result(result)
         return await async_validate_result(request, result, access_token)

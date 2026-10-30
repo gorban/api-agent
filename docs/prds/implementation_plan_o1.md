@@ -19,3 +19,7 @@ The bounded Compose foundation completed substantive work and independent/extern
 
 - [Approved contract and acceptance](implementation_plan_o1a.md)
 - [Declaration format](implementation_plan_o1b.md)
+
+## Selected-tool isolation extension
+
+- [ ] Add [bounded isolated runtime admission](implementation_plan_o4f.md) before accepting tool owners that require it. The completed Compose foundation does not yet admit an explicit runtime selector; preserve its existing gates and allowlist.

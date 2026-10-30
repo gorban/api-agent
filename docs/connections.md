@@ -1,5 +1,7 @@
 # Credentials and LLM connections
 
+[Authentication limitations and workarounds](authentication-limitations.md)
+
 ## Choose a provider
 
 `LLM_PROVIDER` selects a replaceable factory (`file.py:factory`). api-agent

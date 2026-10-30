@@ -2,6 +2,14 @@
 import pytest
 
 
+@pytest.fixture
+def isolated_native_login_gate(tmp_path, monkeypatch):
+    """Native admission tests never create coordination files in a user home."""
+    path = tmp_path / 'native-session' / 'credentials'
+    monkeypatch.setenv('AWS_SHARED_CREDENTIALS_FILE', str(path))
+    return path
+
+
 @pytest.fixture(autouse=True)
 def isolated_recording_history(tmp_path_factory, monkeypatch):
     from api_agent.testing import cost_history

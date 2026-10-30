@@ -1,17 +1,23 @@
 import asyncio
 
 import pytest
-from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from api_agent.config.resolve import ConfigResult, ResolvedValue
 from api_agent.telemetry.tracing import TraceRuntime
 
 
+@pytest.fixture
+def trace_sdk():
+    from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    return encode_spans, TracerProvider, SimpleSpanProcessor, InMemorySpanExporter
+
+
 @pytest.mark.parametrize('content', [False, True])
-def test_serialized_arrays_respect_content_policy_and_keep_native_types(content):
+def test_serialized_arrays_respect_content_policy_and_keep_native_types(content, trace_sdk):
+    encode_spans, TracerProvider, SimpleSpanProcessor, InMemorySpanExporter = trace_sdk
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -42,7 +48,8 @@ def test_serialized_arrays_respect_content_policy_and_keep_native_types(content)
     assert runtime.shutdown()
 
 
-def test_invalid_utf8_array_is_json_encoded_without_sdk_diagnostic(caplog):
+def test_invalid_utf8_array_is_json_encoded_without_sdk_diagnostic(caplog, trace_sdk):
+    encode_spans, TracerProvider, SimpleSpanProcessor, InMemorySpanExporter = trace_sdk
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -61,7 +68,8 @@ def test_invalid_utf8_array_is_json_encoded_without_sdk_diagnostic(caplog):
     assert runtime.shutdown()
 
 
-def test_registered_secret_in_array_is_redacted_before_serialization():
+def test_registered_secret_in_array_is_redacted_before_serialization(trace_sdk):
+    encode_spans, TracerProvider, SimpleSpanProcessor, InMemorySpanExporter = trace_sdk
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -81,7 +89,8 @@ def test_registered_secret_in_array_is_redacted_before_serialization():
     assert runtime.shutdown()
 
 
-def test_hidden_reasoning_carrier_is_removed_from_array_before_serialization():
+def test_encrypted_reasoning_carrier_is_removed_from_array_before_serialization(trace_sdk):
+    encode_spans, TracerProvider, SimpleSpanProcessor, InMemorySpanExporter = trace_sdk
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -90,7 +99,7 @@ def test_hidden_reasoning_carrier_is_removed_from_array_before_serialization():
     runtime = TraceRuntime(config, factory=lambda *args: (provider, provider.get_tracer('test')))
     asyncio.run(runtime.astart())
 
-    with runtime.span({'payload': [{'type': 'reasoning', 'text': 'hidden-thought'},
+    with runtime.span({'payload': [{'type': 'redacted_thinking', 'text': 'hidden-thought'},
                                    {'type': 'text', 'text': 'visible'}]}):
         pass
 

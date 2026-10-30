@@ -211,7 +211,8 @@ def test_host_serves_fixed_assets_without_mutating_captured_graph_or_svg(monkeyp
     bundle = SimpleNamespace(entry_path=files[0].path, files=files)
 
     async def exercise():
-        host = await viewer_host.start_viewer_host(bundle, projection=object())
+        projection = SimpleNamespace(documents=(SimpleNamespace(logical_path='base/flow.md.html'),), resources=())
+        host = await viewer_host.start_viewer_host(bundle, projection=projection)
         try:
             assert host.entry_url.endswith('/r/base/flow.md.html')
             headers, _, body = await _get(host.port, files[0].path)
@@ -258,10 +259,53 @@ def test_host_admits_129_svg_routes(monkeypatch):
                           b'<svg xmlns="http://www.w3.org/2000/svg" />') for index in range(129))
     bundle = SimpleNamespace(entry_path=files[0].path, files=tuple(files))
     async def exercise():
-        host = await viewer_host.start_viewer_host(bundle, projection=object())
+        projection = SimpleNamespace(documents=(SimpleNamespace(logical_path='base/flow.md.html'),), resources=())
+        host = await viewer_host.start_viewer_host(bundle, projection=projection)
         try:
             assert len(host.routes) >= 130
             assert b'/r/base/.private_resources/diagrams/128.svg' in host.routes[viewer_modal.SCRIPT_ROUTE][1]
         finally:
             await host.aclose()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('temporary', [False, True])
+def test_host_serves_captured_native_text_for_saved_and_temporary_views(temporary):
+    from api_agent.runtime.resource_pack import load_launch_context
+    from api_agent.runtime.view_flow import _prepare_view
+    from api_agent.workflows.viewer_render import build_view_bundle, capture_repository_sources
+    from test_workflow_viewer_discovery import TinyRenderer
+    root = Path(__file__).resolve().parents[2]
+    entry = root / 'demo/simple/flow.md.html'
+    declaration = root / 'demo/simple/workflows/components/execute_tool.md.html'
+    before = declaration.read_bytes()
+    definition, projection, canonical, bundle, repository_sources = _prepare_view(load_launch_context(root), entry=entry)
+    assert canonical is True
+    if temporary:
+        bundle = build_view_bundle(projection, roots=definition.roots, renderer=TinyRenderer(), verify=False,
+                                   repositories=capture_repository_sources(definition.roots)[0],
+                                   repository_sources=repository_sources)
+    async def exercise():
+        host = await viewer_host.start_viewer_host(bundle, projection=projection, repository_sources=repository_sources)
+        try:
+            headers, _, body = await _get(host.port, 'r/base/demo/simple/workflows/components/execute_tool.md.html')
+            assert headers.startswith(b'HTTP/1.1 200')
+            assert b'[Python](../../functions.py)' in body
+            assert b'captured native_source:' not in body
+            headers, _, source = await _get(host.port, 'r/base/demo/simple/functions.py')
+            assert headers.startswith(b'HTTP/1.1 200')
+            assert b'text/plain; charset=utf-8' in headers
+            assert source == (root / 'demo/simple/functions.py').read_bytes()
+            assert b'workflow-generated-diagram-v2:start' in body
+            assert b'[input](../../schemas/empty.json)' in body
+        finally:
+            await host.aclose()
+    asyncio.run(exercise())
+    assert declaration.read_bytes() == before
+
+
+def test_managed_page_must_belong_to_the_admitted_projection():
+    projection = SimpleNamespace(documents=(), resources=())
+    with pytest.raises(ValueError, match='outside the admitted projection'):
+        viewer_modal.decorate_managed_wrapper('r/base/flow.md.html', 'text/html; charset=utf-8',
+                                              _wrapper(), projection=projection)

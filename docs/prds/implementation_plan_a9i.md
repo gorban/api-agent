@@ -12,3 +12,14 @@ Schedule alongside final profiling after application and workflow acceptance. Th
 The reviewed pre-repair 32-worker gate completed 11,393 cases in 322.93 seconds including collection and coverage, with a 30.69-second slowest case. Some recorded-join groups contain many roughly five-second cases; aggregate cost warrants investigation even when no single case approaches the 60-second guard. These are observations, not proven optimization opportunities or predicted savings.
 
 Parallel unit and integration pytest launches use xdist work stealing so idle workers can take eligible queued cases from a slower worker. xdist retains the running case and one lookahead case on that worker, so an idle worker may still leave that lookahead queued until the running case finishes. Serial execution remains available with an effective worker count of zero. Uneven-workload regressions exercise both runners, preserve per-test outcomes and completion events, and verify serial execution does not launch xdist. E2E execution is not yet implemented; preserve consecutive confirmation ordering before applying parallel scheduling there. Whole-suite savings remain unmeasured, so the performance investigation and independent review above remain open.
+
+Approved slices: [response-bound fixture](implementation_plan_a9i1.md) and
+[final command diagnostics](implementation_plan_a9i2.md). Further changes require
+separate measurements and approval.
+
+## Current acceptance and deferred GUI work
+
+- [x] Human accepts the latest 20,743-test NO_STD_IN run, runtime, exact line/branch coverage and produced report. This accepts the recent delivered unit repairs; interactive selection remains a reported issue.
+- [ ] Complete the [visible-window and desktop-free CI audit](implementation_plan_a9i3.md) after the large-picker plan and before final credential-sanitization profiling.
+
+- [x] Human accepts the delivered parallel integration scheduling improvement. This does not establish future E2E execution or remove xdist lookahead behavior.

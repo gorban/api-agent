@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from test_partitioned_credentials import invoke, TOKEN, REQUEST, SECONDARY
+from test_partitioned_credentials import invoke, TOKEN, REQUEST, SECONDARY, admit_synthetic_owner
 from test_responses_native_metadata import native
 from api_agent.providers.inference import request_to_wire, result_from_wire
 from api_agent.providers.llm import LLMResult, Message, TextContent, ToolCall, Usage
@@ -89,12 +89,19 @@ def test_serialized_partition_ipc_frames_and_recording(shape, subscription, enab
         backend = content_boundary({'LOG_CONTENT': enabled, 'API_KEY': TOKEN})
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock(),
                                 export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-json-capability-0000000000')
         frames = []
-        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
+        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False, drain=AsyncMock()))
         try:
             registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
+            if subscription is not None and credential == TOKEN:
+                from api_agent.providers.contracts import ProviderAccessError
+                with pytest.raises(ProviderAccessError):
+                    await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
+                assert TOKEN not in repr(frames)
+                return
             result = await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
             actual = result_from_wire(result['result'])
             assert actual == execution_results[0]
@@ -107,7 +114,8 @@ def test_serialized_partition_ipc_frames_and_recording(shape, subscription, enab
                 # Assert serialized backend frames before any parent compensation.
                 assert response['content']['message']['content'] == expected
             else:
-                assert evidence == []
+                assert all(row['reason'] == 'withheld' and row['content'] == {} for row in evidence)
+                evidence = []
             parent = EmissionBoundary(ContentPolicy(enabled))
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(phase=row["phase"], content=row["content"], call_id=str(uuid4())))), parent) for row in evidence]
             recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'), evidence_boundary=parent)
@@ -141,10 +149,11 @@ def test_invisible_encoded_key_is_private_in_worker_frame_and_recording(key, cut
         backend = content_boundary({'LOG_CONTENT': True, 'API_KEY': 'owned-primary-credential'})
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=AsyncMock(return_value=result),
                                 aclose=AsyncMock(), export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-json-capability-0000000000')
         frames = []
-        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
+        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False, drain=AsyncMock()))
         try:
             registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
             reply = await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
@@ -300,12 +309,20 @@ def test_registered_json_representation_ipc_and_recording(secret, encoded, subsc
         backend = content_boundary({'LOG_CONTENT': enabled, 'API_KEY': transport_secret, 'PASSWORD': secret})
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock(),
                                 export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-representation-capability-000000')
         frames = []
-        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
+        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False, drain=AsyncMock()))
         try:
             registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
+            guarded = ((secret, encoded) in REGISTERED_REPRESENTATIONS + CONTROL_INSERTION_REPRESENTATIONS
+                       + JSON_SHAPE_CONTROL_REPRESENTATIONS + ENCODED_KEY_REPRESENTATIONS[:1])
+            if subscription is not None and guarded:
+                from api_agent.providers.contracts import ProviderAccessError
+                with pytest.raises(ProviderAccessError):
+                    await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
+                return
             wire = await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
             actual = result_from_wire(wire['result'])
             assert actual == produced[0]
@@ -315,7 +332,8 @@ def test_registered_json_representation_ipc_and_recording(secret, encoded, subsc
                 response = next(row for row in rows if row['phase'] == 'response')
                 assert response['content']['message']['content'] == ['[REDACTED]']
             else:
-                assert rows == []
+                assert all(row['reason'] == 'withheld' and row['content'] == {} for row in rows)
+                rows = []
             parent = EmissionBoundary(ContentPolicy(enabled), secrets=(secret,))
             assert parent.export({'parts': parts}) == ({'parts': ['[REDACTED]']} if enabled else {})
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(phase=row['phase'], content=row['content'], call_id=str(uuid4())))), parent) for row in rows]
@@ -393,10 +411,11 @@ def test_hidden_bearer_scheme_ipc_and_recording(parts, expected, subscription, e
         backend = content_boundary({'LOG_CONTENT': enabled, 'API_KEY': TOKEN})
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock(),
                                 export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-hidden-scheme-capability-000000')
         frames = []
-        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
+        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False, drain=AsyncMock()))
         try:
             registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
             wire = await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
@@ -409,7 +428,8 @@ def test_hidden_bearer_scheme_ipc_and_recording(parts, expected, subscription, e
                 # Inspect backend bytes before the parent can scrub them.
                 assert response['content']['message']['content'] == list(expected)
             else:
-                assert rows == []
+                assert all(row['reason'] == 'withheld' and row['content'] == {} for row in rows)
+                rows = []
             parent = EmissionBoundary(ContentPolicy(enabled))
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(phase=row['phase'], content=row['content'], call_id=str(uuid4())))), parent) for row in rows]
             recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'), evidence_boundary=parent)
@@ -492,10 +512,11 @@ def test_registered_syntax_collisions_ipc_and_recording(secret, source_parts, la
         backend = EmissionBoundary(ContentPolicy(enabled), secrets=(secret,))
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock(),
                                 export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-collision-capability-000000')
         frames = []
-        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
+        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False, drain=AsyncMock()))
         try:
             registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
             wire = await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
@@ -509,7 +530,8 @@ def test_registered_syntax_collisions_ipc_and_recording(secret, source_parts, la
                 assert all(fragment not in content for fragment in (SECONDARY, 'inner-secret', 'secret-head', 'secret-tail'))
                 assert secret not in content
             else:
-                assert rows == []
+                assert all(row['reason'] == 'withheld' and row['content'] == {} for row in rows)
+                rows = []
             parent = EmissionBoundary(ContentPolicy(enabled))
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(phase=row['phase'], content=row['content'], call_id=str(uuid4())))), parent) for row in rows]
             recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'), evidence_boundary=parent)
@@ -675,12 +697,18 @@ def test_duplicate_json_ipc_and_recording(secret, encoded, ambiguous, partition,
         backend = EmissionBoundary(ContentPolicy(enabled), secrets=() if secret is None else (secret,), preserve_json_text=True)
         owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock(),
                                 export_content=lambda req, res: export_content(backend, req, res))
+        admit_synthetic_owner(owner, backend)
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-duplicate-capability-000000')
         frames = []
-        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False))
+        peer = _Peer(asyncio.StreamReader(), SimpleNamespace(write=frames.append, is_closing=lambda: False, drain=AsyncMock()))
         try:
             registration = await server._dispatch(peer, {'worker_id': 'owned-worker', 'attempt': 1}, 'register')
+            if subscription is not None and secret is not None:
+                from api_agent.providers.contracts import ProviderAccessError
+                with pytest.raises(ProviderAccessError):
+                    await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
+                return
             wire = await server._dispatch(peer, {'binding': registration['binding'], 'request': request_to_wire(REQUEST)}, 'complete')
             actual = result_from_wire(wire['result'])
             assert actual == produced[0]
@@ -690,7 +718,8 @@ def test_duplicate_json_ipc_and_recording(secret, encoded, ambiguous, partition,
                 response = next(row for row in rows if row['phase'] == 'response')
                 assert response['content']['message']['content'] == expected
             else:
-                assert rows == []
+                assert all(row['reason'] == 'withheld' and row['content'] == {} for row in rows)
+                rows = []
             parent = EmissionBoundary(ContentPolicy(enabled))
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(dict(phase=row['phase'], content=row['content'], call_id=str(uuid4())))), parent) for row in rows]
             recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'), evidence_boundary=parent)

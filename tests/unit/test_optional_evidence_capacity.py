@@ -31,7 +31,7 @@ def test_optional_encoded_capacity_includes_envelope_unicode_and_newline(charact
 def test_received_optional_oversize_is_omitted_without_losing_completed_result(phase):
     expected=LLMResult(Message('assistant',(TextContent('Original answer'),)),Usage(10,4,2,1,3))
     oversized={'version':1,'status':'evidence','phase':phase,'content':{'text':'x'*MAX_CONTENT_FRAME}}
-    accepted={'version':1,'status':'evidence','phase':'response','content':{'text':'Small optional response'}}
+    accepted={'version':1,'status':'evidence','phase':'response' if phase == 'request' else 'request','content':{'text':'Small optional evidence'}}
     class Writer:
         def __init__(self):self.writes=[]
         def write(self,raw):self.writes.append(raw)
@@ -44,8 +44,8 @@ def test_received_optional_oversize_is_omitted_without_losing_completed_result(p
         client._reader.feed_eof()
         actual=await client._exchange('complete',{})
         assert actual == expected
-        expected_evidence = ([dict(phase='request', content={}, reason='truncated')] if phase == 'request' else [])
-        assert client.evidence == expected_evidence + [{'phase':'response','content':accepted['content']}]
+        assert client.evidence == [dict(phase=phase, content={}, reason='truncated'),
+                                   {'phase':accepted['phase'],'content':accepted['content']}]
         assert len(client._writer.writes) == 1
     asyncio.run(scenario())
 

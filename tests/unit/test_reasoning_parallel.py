@@ -24,11 +24,17 @@ def test_six_application_requests_overlap_one_backend_owner(monkeypatch):
     async def scenario():
         entered=asyncio.Event()
         class Owner:
-            def __init__(self):owners.append(self)
+            def __init__(self):
+                from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+                self.boundary = EmissionBoundary(ContentPolicy(True), secrets=('synthetic-token',))
+                owners.append(self)
             async def ensure_ready(self):pass
             async def describe(self):
                 return (AvailableSelection(MODEL,features=('reasoning_effort',),reasoning_efforts=('low','high')),)
             async def complete(self, request):
+                from api_agent.workflows.inference_capture import bind_boundary, capture_inference
+                bind_boundary(self.boundary)
+                capture_inference('input', {'marker': request.payload.messages[0].content[0].text}, 'synthetic-call')
                 from api_agent.llm_providers.gpt.inference import validate_text_request
                 _,body=validate_text_request(base_url='https://api.openai.com/v1',access_token='synthetic-token',
                     subscription=True,api_mode='responses',request=request)

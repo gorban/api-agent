@@ -4,6 +4,8 @@ Generic inference preserves declared schemas and selected generation options acr
 
 - [x] Preserve existing strict requests by default. Tools and structured outputs may explicitly set `strict=False` to preserve optional properties, defaults, composition and local JSON-pointer references. Validation never adds defaults or retrieves remote resources. Reject malformed, duplicate-key, recursive-reference and excessive schemas before provider effects. The admitted local subset excludes dynamic references and schema identifiers; schemas are at most 32,768 characters, nesting is at most 32, expanded schema traversal at most 4,096 visits, and JSON instances at most 8,192 nodes with arrays at most 1,024 elements. Schemas outside the simple strict structural subset run in an isolated worker with a bounded 5-second startup and 1-second active validation limit, constrained by the enclosing deadline. Timeout rejects validation and preserves reported usage. Worker input is at most 2 MiB, output two protocol bytes, and credentials are excluded from its environment.
 - [x] Validate returned structured JSON and tool arguments against their originating schema and mode before recording successful output. Async replay admission and actual response validation remain cancellable; setup and loaded-provider owners drain validation workers during cancellation, close and settlement.
+- [x] Distinguish generated tool-call input errors from tool execution/output errors. Identify the call by its one-based response and declaration indexes without echoing argument values. Preserve usage and response evidence; distinguish a confirmed schema mismatch from unavailable local validation. Carry an explicit local-validation error origin through IPC; upstream error-body codes, types and origin fields cannot authorize correction.
+- [x] Let the tool-conversation owner request a corrected proposal for confirmed invalid tool arguments within its existing round limit. Reject the entire proposed batch before dispatch, never replay already executed calls, and preserve each generation's independent evidence/accounting. Do not replay invalid assistant history, weaken schemas, retry relevance rejection or treat local validation failure as transient network recovery. Exhaustion retains the actionable validation error.
 - [x] Preserve Unicode prompts and tool results, including a synthetic 34,000-character system prompt and 120,000-character tool result. Each text item is bounded to 524,288 characters, each inference JSON envelope to 2 MiB and local IPC frames to 4 MiB. Output-token budgets accept 1 through 1,048,576; explicit budgets require an admitted selected-model catalog and reject unsupported values before generation. Catalog discovery may follow required authentication; shared setup reuses its admitted catalog. Legacy wire forms remain readable. Budgets including 16k, 32k and 128k are never silently clipped.
 - [x] Preserve temperature when advertised; unsupported features retain explicit failures.
 - [x] Messages may carry optional immutable `CacheBoundary(lifetime_seconds=300)` with 300 or 3600 seconds, at most four nonempty text boundaries per request. Default absence disables explicit boundaries. Unsupported optional hints may be ignored without changing text. Request-level cache policy remains independent; absence does not promise upstream implicit caching is off.
@@ -17,6 +19,21 @@ Generic inference preserves declared schemas and selected generation options acr
 
 - [x] Independent review, full applicable runtime units (12,100 tests; exact production line/branch coverage), controlled HTTP/IPC and source/relocated installed artifact checks pass for the bounded inference delivery.
 - [ ] Complete final external PR review and human runtime acceptance. Broader application/provider acceptance stays separate.
+
+## Tool argument correction verification
+
+The focused joined suite passes 1,200 tests with exact line/branch coverage of
+the five measured validation, worker and conversation modules (958 statements,
+422 branches). [Argument validation](../../tests/unit/test_tool_argument_validation.py),
+[conversation recovery](../../tests/unit/test_tool_conversation.py) and bounded
+worker controls cover corrected batches, exhaustion, cancellation, unknown usage,
+IPC provenance, unavailable validators and completed-input replay rejection.
+Process-local mutations verify correction, replay prevention, unavailable verdicts
+and local-origin admission; no mutation remains. Named external re-review closes
+the upstream-error impersonation finding with no remaining scoped issue.
+The selected live independent-tools test and Allure publication pass; that run
+needed no correction. This does not claim deterministic upstream compliance,
+complete tracing delivery or broader installed/publication gates.
 
 ## Declarative output-mode follow-through
 

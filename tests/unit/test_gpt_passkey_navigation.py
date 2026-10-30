@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
-from playwright.async_api import Error, async_playwright
 
 from api_agent.auth.login_credentials import PasskeyCredential
 from api_agent.llm_providers.gpt.passkeys import SoftwarePasskey
@@ -19,6 +18,7 @@ def encoded(value):
 @pytest.mark.parametrize('document', ['main', 'iframe'])
 @pytest.mark.parametrize('destination', ['foreign', 'callback', 'wrong-callback-path'])
 def test_redirect_checks_each_document_and_only_exact_owned_callback(document, destination, empty_phrase):
+    from playwright.async_api import Error, async_playwright
     async def exercise():
         requests = []
         target = ''

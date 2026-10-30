@@ -8,6 +8,10 @@ import subprocess
 from .definition import InlinePromptRef, LayoutError, _read_bounded, _prompt_body
 
 
+class WorkingTreeChanges(LayoutError):
+    """Tracked workflow bytes or index differ from the current commit."""
+
+
 def _git(root, *arguments):
     result = subprocess.run(('git', '-C', str(root), *arguments),
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -104,15 +108,29 @@ def committed_documents(definition, *, selected_owners=None):
         # blob with HEAD catches staged edits even when working bytes match HEAD.
         indexed = _git(top, 'ls-files', '--stage', '--', repo_path)
         rows = indexed.decode().splitlines()
-        if len(rows) != 1 or not rows[0].endswith('\t' + repo_path):
+        if not rows:
+            untracked = _git(top, 'ls-files', '--others', '--exclude-standard', '--', repo_path).decode().splitlines()
+            if root == top and untracked == [repo_path]:
+                raise WorkingTreeChanges('Workflow document is untracked')
             raise LayoutError('Workflow document is untracked or ignored')
-        head_blob = _git(top, 'rev-parse', f'HEAD:{repo_path}').decode().strip()
+        if len(rows) != 1 or not rows[0].endswith('\t' + repo_path) or rows[0].split()[2] != '0':
+            raise LayoutError('Workflow document has unmerged changes')
+        head_entry = _git(top, 'ls-tree', 'HEAD', '--', repo_path).decode().splitlines()
+        if not head_entry:
+            if root == top:
+                raise WorkingTreeChanges('Workflow document is newly staged')
+            raise LayoutError('Workflow document is untracked or ignored')
+        if len(head_entry) != 1 or not head_entry[0].endswith('\t' + repo_path):
+            raise LayoutError('Workflow document has ambiguous committed provenance')
+        head_blob = head_entry[0].split()[2]
         index_blob = rows[0].split()[1]
         if index_blob != head_blob:
-            raise LayoutError('Workflow document has staged changes')
+            raise WorkingTreeChanges('Workflow document has staged changes')
         committed = _git(top, 'show', f'HEAD:{repo_path}')
-        if committed != frozen or _read_bounded(path, root) != frozen:
+        if _read_bounded(path, root) != frozen:
             raise LayoutError('Workflow document changed after admission or differs from HEAD')
+        if committed != frozen:
+            raise WorkingTreeChanges('Workflow document differs from HEAD')
         manifest.append(dict(owner=name, path=relative, length=len(frozen), sha256=sha256(frozen).hexdigest()))
     if not manifest:
         raise LayoutError('Workflow definition contains no documents')
@@ -125,6 +143,56 @@ def committed_documents(definition, *, selected_owners=None):
             raise LayoutError('Workflow owner changed during capture')
     payload = dict(version=1, owners=sorted(owners.values(), key=lambda item: item['owner']),
                    documents=manifest)
+    payload['sha256'] = sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return payload
+
+
+def working_documents(definition, *, selected_owners):
+    """Record admitted tracked working bytes without claiming they are committed."""
+    verify_inline_prompts(definition)
+    documents, owners = [], {}
+    for path, frozen in physical_documents(definition).items():
+        matching = [(name, root) for name, root in definition.roots.items()
+                    if path.is_relative_to(root)]
+        if not matching:
+            raise LayoutError('Workflow document has no owning root')
+        name, root = max(matching, key=lambda item: len(item[1].parts))
+        if name not in selected_owners:
+            continue
+        top = Path(_git(root, 'rev-parse', '--show-toplevel').decode().strip())
+        if not root.is_relative_to(top):
+            raise LayoutError('Workflow owner is outside its Git root')
+        relative = path.relative_to(root).as_posix()
+        prefix = root.relative_to(top).as_posix()
+        prefix = '' if prefix == '.' else prefix
+        repo_path = (prefix + '/' if prefix else '') + relative
+        commit = _git(root, 'rev-parse', 'HEAD').decode().strip()
+        object_format = _git(root, 'rev-parse', '--show-object-format').decode().strip()
+        if object_format not in ('sha1', 'sha256'):
+            raise LayoutError('Unsupported Git object format')
+        indexed = _git(top, 'ls-files', '--stage', '--', repo_path).decode().splitlines()
+        if not indexed:
+            untracked = _git(top, 'ls-files', '--others', '--exclude-standard', '--', repo_path).decode().splitlines()
+            if root != top or untracked != [repo_path]:
+                raise LayoutError('Workflow document is untracked or ignored')
+        elif (len(indexed) != 1 or not indexed[0].endswith('\t' + repo_path)
+              or indexed[0].split()[2] != '0'):
+            raise LayoutError('Workflow document has unmerged changes')
+        if _read_bounded(path, root) != frozen:
+            raise LayoutError('Workflow document changed after admission')
+        record = dict(owner=name, commit=None, base_commit=commit, state='working_tree',
+                      object_format=object_format, source_prefix=prefix)
+        if name in owners and owners[name] != record:
+            raise LayoutError('Workflow owner changed during capture')
+        owners[name] = record
+        documents.append(dict(owner=name, path=relative, length=len(frozen), sha256=sha256(frozen).hexdigest()))
+    if not documents:
+        raise LayoutError('Workflow definition contains no documents')
+    for name, owner in owners.items():
+        if _git(definition.roots[name], 'rev-parse', 'HEAD').decode().strip() != owner['base_commit']:
+            raise LayoutError('Workflow owner changed during capture')
+    payload = dict(version=1, owners=sorted(owners.values(), key=lambda row: row['owner']),
+                   documents=sorted(documents, key=lambda row: (row['owner'], row['path'])))
     payload['sha256'] = sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return payload
 
@@ -220,7 +288,12 @@ def verified_documents(definition, *, packaged_proof=None):
             installed.add(owner)
     manifests = []
     if source:
-        manifests.append(committed_documents(definition, selected_owners=source))
+        try:
+            manifests.append(committed_documents(definition, selected_owners=source))
+        except WorkingTreeChanges:
+            if any(_distribution_owns_documents(definition, owner) for owner in source):
+                raise
+            manifests.append(working_documents(definition, selected_owners=source))
     if installed:
         from .packaged_provenance import installed_proof
         manifests.append(installed_proof(definition, selected_owners=installed,

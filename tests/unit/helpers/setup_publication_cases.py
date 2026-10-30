@@ -85,7 +85,8 @@ def pending_backend(tmp_path, monkeypatch):
         finally:
             state.stopped.set()
         return Authentication()
-    adapter = SimpleNamespace(asetup=setup, asnapshot=AsyncMock(return_value=QuotaReadError('request')))
+    adapter = SimpleNamespace(asetup=setup, asnapshot=AsyncMock(return_value=QuotaReadError('request')),
+                              credential_protection_version=1, bind_credential_authority=lambda authority: None)
     loaded = SimpleNamespace(implementation=adapter, aclose=AsyncMock())
     state.loader_gate.set_result(None)
     async def load(*args, **kwargs):

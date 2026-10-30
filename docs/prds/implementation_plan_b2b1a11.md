@@ -54,7 +54,7 @@ meaning; they do not determine the new test's acceptance.
   failed attempts; no new calibration is required.
 - [x] Complete independent and external review, applicable exact unit coverage,
   installed/relocated resources, provenance/license and public-boundary checks.
-- [ ] Human review confirms bounded coverage and its per-case GRAPH evidence.
+- [x] Human approves the current workflow coverage test changes and their per-case GRAPH evidence.
 
 
 ## Dormant workflow-control scoping

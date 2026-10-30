@@ -2,9 +2,9 @@
 
 ## Run a resource pack
 
-Use its own `launch.py`, or select it from api-agent:
+Use the pack's own launcher, or select it from api-agent:
 ```bash
-./launch.py --resource-pack-dir /path/to/pack
+./launch.sh --resource-pack-dir /path/to/pack
 ```
 
 A pack launcher locates the shared checkout through `API_AGENT_DIR`, normally
@@ -76,6 +76,8 @@ The [named-tool guide](tools.md) shows local input slots, public setting binding
 implementation selectors and actual root/component Tools tables. The
 [infrastructure guide](tool-infrastructure.md) covers optional Docker services,
 recursive prerequisites, remote endpoints, sharing and cleanup.
+For host language runtimes and CLI dependencies, see
+[tools in another language](tool-executables.md).
 
 The [independent-target fixture](../tests/integration/fixtures/tool_instances/independent/conversation.md.html)
 binds `ENDPOINT` to `API_ENDPOINT` and `API_2_ENDPOINT` in distinct instances;

@@ -174,9 +174,9 @@ def test_root_fallback_is_exact_and_nested_document_has_bootstrap_only(tmp_path)
                            asset_prefix='../.private_resources/viewer/')
 
     assert b'<h2>Viewing this file</h2>' in root
-    assert b'Python 3.13 or newer' in root
+    assert root.count(b'Getting started in README.md') == 2
     assert b'<!--\n\n\n\n\n\n  Open this file' in root
-    assert b'./launch.py --view-flow\n\n\n\n\n\n-->\n\n\n<meta charset' in root
+    assert b'./launch.sh --view-flow\n\n\n\n\n\n-->\n\n\n<meta charset' in root
     assert root.index(b'Open this file') < root.index(b'<meta charset') < root.index(b'[workflow-help]:')
     assert b'<h2>Viewing this file</h2>' not in nested
     assert extract_document(root, path=entry).executable_bytes == entry.read_bytes()

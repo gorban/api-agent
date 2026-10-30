@@ -50,7 +50,8 @@ class _RegisteredSession(LLMSessionOwner):
     async def call(self, operation, *, context=None):
         async def registered(*, auth):
             if type(auth) is str and auth:
-                self.emissions.register_secret(auth)
+                from api_agent.telemetry.privacy import register_secret_async
+                await register_secret_async(self.emissions, auth)
             return await operation(auth=auth)
         return await super().call(registered, context=context)
 
@@ -138,10 +139,18 @@ class LocalLLM(_Owner):
                 emissions=self.emissions, pending_tasks=self._helpers,
                 interaction_owner=self.interaction_owner, index_source=self.unattended_index_source)
             credentials = ScopedLLMCredentials(role, reader)
+        from api_agent.providers.credential_guard import admit_llm_provider
+        withheld = admit_llm_provider(implementation, self.emissions)
+        # LoadedProvider.astart shares this receipt rather than binding the
+        # provider again. The protocol does not require repeatable binding.
+        self.provider._credential_authority = self.emissions
+        self.provider._credential_provider = implementation
+        self.provider._credential_bound_authority = self.emissions._authority
+        self.provider._credential_withheld = withheld
         def owner_factory(scoped):
             self.session = _RegisteredSession(implementation, emissions=self.emissions, user_index=index,
                 on_authentication_failure=self._authentication_failed,
-                credentials=scoped, interactive=bool(self.config.get('DEBUG')) or not self.config.get('NO_STD_IN', False),
+                credentials=scoped, interactive=self.interaction_owner is not None or bool(self.config.get('DEBUG')) or not self.config.get('NO_STD_IN', False),
                 timeout=self._timeout)
             return self.session
         async def complete(request, *, auth):

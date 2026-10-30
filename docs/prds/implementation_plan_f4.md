@@ -2,7 +2,7 @@
 
 [LLM adapters](implementation_plan_f1.md) · [Cost qualification](implementation_plan_f3c.md)
 
-Deliver Bedrock through replaceable provider contracts, with adapter-owned configuration, credentials, catalog, transport, pricing and lifecycle. Earlier catalog and artifact/review passed; the current launcher follow-up has conditional acceptance after technical closure; broader live gates remain open. [Acquisition foundation](implementation_plan_f4a1.md) defines replaceable session adapters.
+Deliver Bedrock through replaceable contracts owning configuration, credentials, catalog, transport, pricing and lifecycle. Earlier catalog/artifact review passed; the launcher follow-up has conditional acceptance after technical closure. Broader live gates remain open. [Acquisition foundation](implementation_plan_f4a1.md) defines replaceable session adapters.
 
 Target only bedrock-mantle with [OpenAI-compatible APIs and three authentication choices](implementation_plan_f4d.md). Offline tests qualify both formats and reusable acquisition ownership; broader live capabilities remain open.
 
@@ -17,9 +17,9 @@ Target only bedrock-mantle with [OpenAI-compatible APIs and three authentication
 - [x] Qualify [selected unattended key modes](implementation_plan_f4f.md) through the existing public LLM request with approved live tests and independent/external review; human acceptance remains in the child.
 - [ ] Reach the [real public workflow checkpoint](implementation_plan_f4e.md) through Run local or the existing LLM integration test before human review; authentication/catalog or standalone fixtures are insufficient.
 - [ ] Resolve remaining authentication, configuration, capability and accounting decisions under the [design-decision requirements](implementation_plan_o.md) before implementation. BEDROCK_AUTH_MODE=session|access_key|api_key and password-manager fields are agreed; other proposals do not establish support.
-- [ ] Review non-secret configuration and credential setup before live authentication. Authorize inference spending separately, with explicit scope and limits. Authentication readiness does not authorize inference.
+- [ ] Review non-secret configuration and credential setup before authentication. Authorize inference spending separately with explicit scope/limits; authentication readiness does not authorize inference.
 
-Qualification may use a bounded model/route matrix. Reject unsupported features explicitly; SDK calls alone do not establish workflow or production acceptance.
+Qualification may use a bounded model/route matrix. Reject unsupported features; SDK calls alone do not establish production acceptance.
 
 ## Integrated qualification
 
@@ -27,3 +27,4 @@ Qualification may use a bounded model/route matrix. Reject unsupported features 
 - [x] Record conditional acceptance of the [launcher follow-up](implementation_plan_f4l3d.md) after its technical closure; earlier manual checkpoints remain separate.
 
 - [ ] Qualify [model-specific prompt caching](implementation_plan_f4m.md) with eligible inference access.
+- [x] Resolve [terminal authentication prompts and setup deadlines](implementation_plan_f4n.md).

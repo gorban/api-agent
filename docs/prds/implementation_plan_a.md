@@ -224,6 +224,10 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
   Share effective-count resolution across TUI/terminal routes; verify default,
   explicit override, empty fallback, serial zero and invalid negative settings.
 
+## Pre-start estimate visibility and rollups
+
+- [ ] Keep `Est. $` visible on integration/E2E test-selection screens and provide consistent file/category/All/other group estimates. See [requirements and acceptance](implementation_plan_a11.md).
+
 ## Picker responsiveness
 
 - [ ] Profile and improve [test-picker responsiveness](implementation_plan_a12.md), preserving selected-test configuration freshness, account controls and estimates.

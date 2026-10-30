@@ -22,7 +22,7 @@ from api_agent.testing.provider_setup import _read_snapshot
 try:
     _read_snapshot()
 except ContractError as error:
-    assert str(error) == 'Integration provider context is unavailable; start through launch.py.'
+    assert str(error) == 'Integration provider context is unavailable; start through launch.sh.'
 else:
     raise AssertionError('Non-regular context was accepted')
 '''
@@ -43,7 +43,8 @@ def test_failed_load_owners_are_closed_before_retrying_setup(tmp_path, monkeypat
     class Auth:
         async def __call__(self): return object()
         async def aclose(self): pass
-    provider = SimpleNamespace(implementation=SimpleNamespace(asetup=AsyncMock(return_value=Auth())),
+    provider = SimpleNamespace(implementation=SimpleNamespace(asetup=AsyncMock(return_value=Auth()),
+                               credential_protection_version=1, bind_credential_authority=lambda authority: None),
                                aclose=AsyncMock())
     load = AsyncMock(side_effect=[error, provider])
     monkeypatch.setattr(setup, 'aload_provider', load)

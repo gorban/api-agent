@@ -46,7 +46,8 @@ sampling, an agreed latency budget and human acceptance stay open above.
 - [x] Keep an open Quit confirmation visible from queueing through collection and inspection cleanup, preserving its typed response and focus when collection succeeds or fails. Cancel must reveal the collected picker or error; confirming Quit must cancel delivery and prevent automatic test startup.
 - [x] Keep mouse text selection, contextual copying and subsequent keyboard navigation responsive. Selection and focus changes must not repeatedly resolve selected-test configuration or rebuild unchanged shortcut hints; account actions and Start must still use current authoritative configuration.
 - [x] Verify collection success/error/cancellation, pending automatic start and repeated selection/copy/navigation, measure the warm selected-text path, and complete independent/external review.
-- [ ] Human acceptance of confirmation persistence and responsiveness after selecting picker text.
+- [x] Human tested and approved Quit confirmation across integration collection transitions.
+- [ ] Selected-text responsiveness and broader account-switch/large-catalog performance retain their own gates.
 
 ## Clear configuration navigation
 
@@ -60,3 +61,7 @@ sampling, an agreed latency budget and human acceptance stay open above.
 - [x] Verify rapid index changes, stale deliveries, resolver failures, history changes and subsequent navigation with deterministic and causal checks. Complete independent/external source review.
 - [x] Remeasure the same three/six-second interactions in the controlled 18-test catalog with its current history. In the repeated-account/key phase, maximum event-loop pauses fell from 3.769/3.742 seconds to 226/224 milliseconds. The separate unchanged-configuration synchronization phase measured maximum pauses of 309/298 milliseconds with a bounded synthetic empty remote source. These controlled catalog/history and transport measurements leave broader sampling, an agreed latency budget and human acceptance open under the [TUI requirements](implementation_plan_a.md) and above.
 - [ ] Human acceptance of sustained responsiveness and account switching.
+
+## Large unit-suite follow-up
+
+- [ ] Complete [large-suite profiling and the human-reviewed optimization plan](implementation_plan_a12a.md). Earlier small-catalog repairs do not establish responsiveness with more than twenty thousand rows.

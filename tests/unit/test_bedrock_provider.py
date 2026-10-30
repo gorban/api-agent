@@ -2,7 +2,7 @@ import asyncio
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 import pytest
 from api_agent.llm_providers.bedrock import factory as module
 from api_agent.providers.contracts import ContractError
@@ -12,8 +12,20 @@ from api_agent.providers.llm import AvailableSelection, CompletionRequest, LLMRe
 MODEL = 'zai.glm-4.7-flash'
 
 
+async def normalized_fake(source):
+    from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
+    decoder = WorkerStream('completions', MODEL, set())
+    async for raw in source:
+        for frame in decoder.feed(raw):
+            yield frame
+    for frame in decoder.finish():
+        yield frame
+
+
 @pytest.fixture
 def controlled(monkeypatch):
+    from api_agent.llm_providers.bedrock import normalized_stream
+    from api_agent.llm_providers.bedrock.mantle import RESPONSE_CODES
     result = LLMResult(Message('assistant', (TextContent('answer'),)))
     request = LLMRequest(MODEL, CompletionRequest((Message('user', (TextContent('hello'),)),)))
     transport = SimpleNamespace(call=AsyncMock(return_value={'raw': True}), aclose=AsyncMock())
@@ -29,6 +41,7 @@ def controlled(monkeypatch):
     codec.validate_request = lambda request: None
     codec.encode = lambda request, mode: {'modelId': request.selected_llm}
     codec.decode = lambda response, mode, **kw: result
+    codec.RESPONSE_CODES = RESPONSE_CODES
     class Decoder:
         def __init__(self, mode, **kwargs):
             assert kwargs == {'selected_llm': MODEL}
@@ -39,6 +52,7 @@ def controlled(monkeypatch):
             return result
     codec.StreamDecoder = Decoder
     monkeypatch.setitem(sys.modules, codec.__name__, codec)
+    monkeypatch.setattr(normalized_stream, 'ParentStream', Decoder)
     return request, result, transport, released
 
 
@@ -55,7 +69,7 @@ def test_setup_catalog_completion_stream_and_cleanup(controlled, monkeypatch):
         assert await provider.adescribe(auth=session) == ()
         transport.call.assert_awaited_with('models', {}, auth=session)
         assert await provider.acomplete(request, auth=session) == result
-        transport.call.assert_awaited_with('completions', {'prefix': '/v1', 'body': {'modelId': MODEL}}, auth=session)
+        transport.call.assert_awaited_with('completions', {'prefix': '/v1', 'body': {'modelId': MODEL}}, auth=session, join=ANY, on_dispatch=ANY)
         assert [event async for event in provider.astream(request, auth=session)] == [
             StreamEvent(TextContent('answer')), StreamEvent(result, 'completed')]
         assert released == [True]
@@ -245,7 +259,7 @@ def test_real_codec_rejects_response_tool_not_in_request(monkeypatch, streaming)
             yield {'id': 'r', 'object': 'chat.completion.chunk', 'model': MODEL,
                 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
         yield {'id': 'r', 'object': 'chat.completion.chunk', 'model': MODEL, 'choices': [], 'usage': response['usage']}
-    transport.stream = stream
+    transport.stream = lambda *args, **kwargs: normalized_fake(stream(*args, **kwargs))
     monkeypatch.setattr(module, 'SDKTransport', lambda **kw: transport)
     async def run():
         provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
@@ -465,7 +479,7 @@ def test_valid_streamed_tool_is_actionable_only_after_transport_eof(monkeypatch)
             'usage': {'prompt_tokens': 2, 'completion_tokens': 3, 'total_tokens': 5}}
         ended.append(True)
 
-    transport = SimpleNamespace(stream=stream, aclose=AsyncMock())
+    transport = SimpleNamespace(stream=lambda *args, **kwargs: normalized_fake(stream(*args, **kwargs)), aclose=AsyncMock())
     monkeypatch.setattr(module, 'SDKTransport', lambda **kw: transport)
 
     async def run():
@@ -479,3 +493,136 @@ def test_valid_streamed_tool_is_actionable_only_after_transport_eof(monkeypatch)
         await provider.aclose()
 
     asyncio.run(run())
+
+
+def test_stream_evidence_is_labeled_partial_fallback(controlled):
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import collect_inference, select_capture_rows
+    request, _, transport, _ = controlled
+    boundary = EmissionBoundary(ContentPolicy(True))
+    async def stream(*args, join, on_dispatch, **kwargs):
+        _, lease = await join(['synthetic-stream-credential'])
+        try:
+            on_dispatch()
+            yield {'part': 1}
+        finally:
+            lease.release()
+    transport.stream = stream
+    async def run():
+        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        with collect_inference(boundary, retain_raw=True) as collector:
+            async for _ in provider.astream(request):
+                pass
+        response, = [row for row in select_capture_rows(collector['rows']) if row['phase'] == 'response']
+        assert response['reason'] == 'partial'
+        assert response['capture_source'] == 'fallback'
+    asyncio.run(run())
+
+
+def test_credential_authority_must_bind_before_setup_and_cannot_be_replaced():
+    from api_agent.telemetry.privacy import EmissionBoundary
+    provider = module.factory({}, {})
+    authority = EmissionBoundary()
+    with pytest.raises(ContractError, match='unavailable'):
+        provider.bind_credential_authority(object())
+    provider.bind_credential_authority(authority)
+    provider.bind_credential_authority(authority)
+    with pytest.raises(ContractError, match='cannot be replaced'):
+        provider.bind_credential_authority(EmissionBoundary())
+    late = module.factory({}, {})
+    late._credential_setup_started = True
+    with pytest.raises(ContractError, match='before setup'):
+        late.bind_credential_authority(EmissionBoundary())
+    asyncio.run(provider.aclose())
+    asyncio.run(late.aclose())
+
+
+@pytest.mark.asyncio
+async def test_authority_join_releases_lease_if_snapshot_fails(monkeypatch):
+    from api_agent.telemetry.privacy import EmissionBoundary
+    authority = EmissionBoundary()
+    provider = module.factory({}, {'emissions': authority})
+    lease = SimpleNamespace(release=__import__('unittest.mock', fromlist=['Mock']).Mock())
+    monkeypatch.setattr(EmissionBoundary, 'begin_evidence_lease', lambda self: lease)
+    monkeypatch.setattr(EmissionBoundary, 'snapshot_content', lambda self: (_ for _ in ()).throw(RuntimeError('synthetic failure')))
+    with pytest.raises(RuntimeError, match='synthetic failure'):
+        await provider._join_credentials([])
+    lease.release.assert_called_once()
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_dispatches_with_store_disabled(controlled, monkeypatch):
+    from api_agent.llm_providers import response_policy
+    request, result, transport, _ = controlled
+    dispatched = []
+    monkeypatch.setattr(response_policy, 'capture_payload', lambda request, body, evidence, **kw: dispatched.append(body))
+    async def stream(operation, payload, *, auth, join, on_dispatch):
+        assert operation == 'responses_stream' and callable(join)
+        on_dispatch()
+        yield {'part': 1}
+    transport.stream = stream
+    provider = module.factory({'BEDROCK_API_MODE': 'responses'}, {})
+    monkeypatch.setattr(provider, 'validate_request', lambda request: None)
+    monkeypatch.setattr(module.catalog, 'route', lambda model, mode: '/v1')
+    try:
+        events = [event async for event in provider.astream(request)]
+        assert events == [StreamEvent(TextContent('answer')), StreamEvent(result, 'completed')]
+        assert dispatched == [{'modelId': MODEL, 'stream': True, 'store': False}]
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_provider_error_retains_usage_and_releases_transport(controlled):
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.providers.llm import Usage
+    request, _, transport, _ = controlled
+    closed = []
+    async def stream(operation, payload, *, auth, join, on_dispatch):
+        try:
+            on_dispatch()
+            error = ProviderAccessError('unavailable', 'synthetic failure', usage=Usage(2, 1))
+            error.provider_response = {'error': {'message': 'safe'}}
+            raise error
+            yield
+        finally:
+            closed.append(True)
+    transport.stream = stream
+    provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+    try:
+        with pytest.raises(ProviderAccessError) as caught:
+            _ = [event async for event in provider.astream(request)]
+        assert caught.value.usage == Usage(2, 1)
+        assert closed == [True]
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('streaming', [False, True])
+async def test_missing_authority_at_handoff_never_falls_back_or_dispatches(controlled, streaming):
+    request, _, transport, _ = controlled
+    provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+    dispatched = []
+    async def perform(operation, payload, *, auth, join, on_dispatch):
+        assert callable(join) and callable(on_dispatch)
+        provider.emissions = None  # Simulate a concurrent loss after initial admission.
+        await join(['synthetic-credential'])
+        on_dispatch()
+        dispatched.append(True)
+    async def stream(operation, payload, *, auth, join, on_dispatch):
+        await perform(operation, payload, auth=auth, join=join, on_dispatch=on_dispatch)
+        yield {'part': 1}
+    transport.call = perform
+    transport.stream = stream
+    try:
+        if streaming:
+            with pytest.raises(ContractError, match='credential authority unavailable'):
+                _ = [event async for event in provider.astream(request)]
+        else:
+            with pytest.raises(ContractError, match='credential authority unavailable'):
+                await provider.acomplete(request)
+        assert dispatched == []
+    finally:
+        await provider.aclose()

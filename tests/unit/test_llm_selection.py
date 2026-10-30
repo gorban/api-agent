@@ -162,7 +162,8 @@ def test_local_catalog_filter_and_direct_shared_validation(tmp_path, monkeypatch
     from api_agent.testing.provider_setup import IntegrationLLM
     from api_agent.testing import provider_setup
     values = (selection('allowed'), selection('forbidden'))
-    adapter = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='synthetic')), adescribe=AsyncMock(return_value=values))
+    adapter = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='synthetic')), adescribe=AsyncMock(return_value=values),
+        credential_protection_version=1, bind_credential_authority=lambda authority: None)
     monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(implementation=adapter, aclose=AsyncMock())))
     owner = IntegrationLLM({'LLM_PROVIDER': 'synthetic', 'LLM_ALLOWED_MODELS': 'allowed'}, tmp_path)
     try:

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
 from api_agent.config.resolve import ConfigResult, ResolvedValue
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
@@ -57,6 +56,7 @@ def collector():
 @pytest.mark.parametrize('log,trace', [(False,False),(False,True),(True,False),(True,True)])
 @pytest.mark.parametrize('mode', ['OTEL', 'LangFuse'])
 def test_independent_projections_and_real_serialized_ancestry(log, trace, mode):
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
     with collector() as (endpoint, received):
         resolved = config(log, trace, mode, TRACE_TARGET=endpoint,
             LANGFUSE_PUBLIC_KEY='synthetic-public', LANGFUSE_SECRET_KEY='synthetic-secret')
@@ -292,6 +292,7 @@ def test_withheld_failed_model_identity_does_not_change_callable_kind(call_kind,
 
 
 def test_real_serialized_tool_span_has_error_status_without_model_accounting():
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
     with collector() as (endpoint, received):
         resolved = config(TRACE_TARGET=endpoint)
         runtime = TraceRuntime(resolved, model_identities=('example-model',))
@@ -882,3 +883,21 @@ def test_journal_admission_rejects_invalid_inference_metadata_with_valid_digest(
 
     with pytest.raises(ValueError, match=message):
         validate_journal(payload)
+
+
+@pytest.mark.parametrize('missing_span', [False, True])
+def test_withheld_trace_failure_preserves_durable_node_capture(missing_span):
+    from unittest.mock import Mock
+    runtime = Mock(boundary=EmissionBoundary(ContentPolicy(False)))
+    if missing_span:
+        runtime.begin.return_value = None
+    else:
+        runtime.begin.return_value.event.side_effect = RuntimeError('trace sink unavailable')
+    adapter = WorkflowObservationFactory(config(log=True, trace=False),
+        boundary=EmissionBoundary(), trace=runtime).create(definition())
+    adapter.observe(dict(event='scope_start', scope_id='visit', kind='node', owner='Make'))
+    adapter.capture_json(visit_id='visit', direction='input', values={'text': 'visible'},
+                         schema={'type':'object','properties':{'text':{'type':'string'}}})
+    assert any(row.get('values', {}).get('text') == 'visible' for row in adapter.finalize()['events'])
+    if not missing_span:
+        runtime.begin.return_value.event.assert_called_once_with({'values': {}})

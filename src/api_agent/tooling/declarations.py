@@ -237,7 +237,7 @@ def instance_declaration(data):
 
 def implementation_declaration(data):
     required = {'version', 'interface', 'factory'}
-    _version(data, required, required | {'inputs', 'services'}, 'tool implementation')
+    _version(data, required, required | {'inputs', 'services', 'executables'}, 'tool implementation')
     if type(data['interface']) is not str or not _INTERFACE.fullmatch(data['interface']):
         raise ToolSelectionError('Tool implementation requires a versioned interface')
     if type(data['factory']) is not str:

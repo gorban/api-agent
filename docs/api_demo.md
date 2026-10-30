@@ -5,7 +5,7 @@ plan a response, check the plan, optionally execute a verified tool, and answer
 using the resulting evidence. The separate [root flow](../flow.md.html) remains
 a one-call chat example. The permanent qualification fixture is unchanged.
 
-Start `./launch.py`, review configuration and choose **Run local**. Set
+Start `./launch.sh`, review configuration and choose **Run local**. Set
 `RUN_UI=True` for Studio. Try “List the items available from the API.” A simple
 greeting can take the no-tool path. Planning, review and the final response use
 the selected LLM provider/model and may consume provider usage even when no tool

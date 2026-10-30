@@ -1,5 +1,7 @@
 """Capability-protected readiness/catalog IPC; authentication stays backend-local."""
 import asyncio
+import base64
+import binascii
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 import hmac
@@ -9,11 +11,13 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
+import sys
 import threading
 from uuid import uuid4
 
 from .contracts import (ContractError, InteractionRequiredError, SessionClosedError,
-                        SetupPrerequisiteError, UnattendedCredentialError, ProviderAccessError)
+                        SetupPrerequisiteError, UnattendedCredentialError, ProviderAccessError, SetupRegistrationLimitError)
 from .progress import (ComponentProgress, component_timeout, independent_timeout_scope,
                        progress_sink, report_timeout, _sink, _scope, TimeoutBudget, _clock)
 from .sessions import _Owner, _spawn, _drain, _consume
@@ -21,6 +25,14 @@ from .control import CleanupPendingError, OperationalError, KINDS
 
 MAX_FRAME = 4194304
 MAX_CONTENT_FRAME = 131072
+MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
+EVIDENCE_CHUNK = 200 * 1024
+_EVIDENCE_FRAGMENT = 48 * 1024
+_EVIDENCE_ITEMS = 100000
+_MAX_EVIDENCE_ROWS = 128
+_MAX_SETUP_PEERS = 128
+_MAX_EVIDENCE_TRANSFERS = 1
+_PREPARE_CANCEL = threading.local()
 _BINDING = {'version', 'operation_id', 'selected_identity', 'worker_id', 'attempt'}
 _COMPONENT = {'id', 'name', 'timeout', 'elapsed', 'active', 'parent_id'}
 _NAME = 'Shared provider setup'
@@ -45,13 +57,17 @@ def _capability(value):
 
 
 def validate_descriptor(descriptor):
-    if not isinstance(descriptor, Mapping) or set(descriptor) != {'version', 'host', 'port', 'capability'}:
+    if not isinstance(descriptor, Mapping) or set(descriptor) not in ({'version', 'host', 'port', 'capability'}, {'version', 'host', 'port', 'capability', 'authority_path'}):
         raise ContractError('Invalid setup endpoint')
     if (type(descriptor['version']) is not int or descriptor['version'] != 1
             or type(descriptor['host']) is not str or descriptor['host'] != '127.0.0.1' or type(descriptor['port']) is not int
             or not 0 < descriptor['port'] < 65536):
         raise ContractError('Invalid setup endpoint')
     _capability(descriptor['capability'])
+    if 'authority_path' in descriptor:
+        path = descriptor['authority_path']
+        if type(path) is not str or not os.path.isabs(path) or len(path.encode()) > 100 or '\x00' in path:
+            raise ContractError('Invalid authority endpoint')
     return dict(descriptor)
 
 
@@ -95,6 +111,11 @@ def _request_digest(request):
     return sha256(json.dumps(request, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()).hexdigest()
 
 
+def _request_auth(capability, request):
+    body = {key: value for key, value in request.items() if key != 'capability'}
+    return hmac.new(capability.encode(), _request_digest(body).encode(), sha256).hexdigest()
+
+
 def _encode(value):
     try:
         raw = json.dumps(value, allow_nan=False, separators=(',', ':')).encode() + b'\n'
@@ -105,17 +126,196 @@ def _encode(value):
     return raw
 
 
+def _valid_evidence(evidence):
+    from api_agent.workflows.inference_capture import _valid_attempt_id
+    from api_agent.telemetry.inference_diagnostics import valid_diagnostics
+    return not (type(evidence) is not dict or not {'phase', 'content'} <= set(evidence)
+            or set(evidence) - {'phase', 'content', 'reason', 'transport_attempt_id', 'capture_source', 'diagnostics'}
+            or evidence['phase'] not in ('request', 'response') or type(evidence['content']) is not dict
+            or ('transport_attempt_id' in evidence and (evidence['transport_attempt_id'] is None
+                or not _valid_attempt_id(evidence['transport_attempt_id'])))
+            or ('capture_source' in evidence and evidence['capture_source'] not in ('fallback', 'provider'))
+            or ('diagnostics' in evidence and not valid_diagnostics(evidence['diagnostics']))
+            or evidence.get('reason') not in (None, 'captured', 'partial', 'truncated', 'unavailable', 'withheld'))
+
+
+def _evidence_key(row):
+    return row.get('phase'), row.get('transport_attempt_id')
+
+
+def _evidence_omission(row, reason):
+    return dict(phase=row['phase'], content={}, reason=reason,
+                **({'diagnostics': row['diagnostics']} if 'diagnostics' in row else {}),
+                **({'transport_attempt_id': row['transport_attempt_id']} if 'transport_attempt_id' in row else {}),
+                **({'capture_source': row['capture_source']} if 'capture_source' in row else {}))
+
+
+def _bounded_evidence(value, maximum):
+    """Measure canonical JSON bytes without materializing the encoded value."""
+    budget = [maximum, _EVIDENCE_ITEMS]
+    active = set()
+    def charge(amount):
+        budget[0] -= amount
+        return budget[0] >= 0
+    def string(item):
+        if not charge(2):
+            return False
+        for index in range(0, len(item), 65536):
+            if getattr(_PREPARE_CANCEL, 'event', None) is not None and _PREPARE_CANCEL.event.is_set():
+                raise InterruptedError('Evidence preparation stopped')
+            try:
+                part = json.dumps(item[index:index + 65536], ensure_ascii=False).encode('utf-8')
+            except UnicodeError:
+                return False
+            if not charge(len(part) - 2):
+                return False
+        return True
+    def visit(item, depth):
+        budget[1] -= 1
+        if budget[1] < 0 or depth > 20:
+            return False
+        if type(item) is str:
+            return string(item)
+        if item is None:
+            return charge(4)
+        if type(item) is bool:
+            return charge(4 if item else 5)
+        if type(item) is int:
+            return abs(item) <= (1 << 53) - 1 and charge(len(str(item)))
+        if type(item) is float:
+            return math.isfinite(item) and charge(len(json.dumps(item, allow_nan=False)))
+        if type(item) not in (dict, list) or id(item) in active or len(item) > budget[1]:
+            return False
+        if not charge(2 + max(0, len(item) - 1)):
+            return False
+        active.add(id(item))
+        try:
+            if type(item) is dict:
+                for key, child in item.items():
+                    if type(key) is not str:
+                        return False
+                    if not string(key) or not charge(1) or not visit(child, depth + 1):
+                        return False
+                return True
+            return all(visit(child, depth + 1) for child in item)
+        finally:
+            active.remove(id(item))
+    return visit(value, 0)
+
+
 def _content_frame(evidence):
     """Optional evidence has its own post-redaction bound, never a result gate."""
-    if (type(evidence) is not dict or set(evidence) not in ({'phase', 'content'}, {'phase', 'content', 'reason'})
-            or evidence['phase'] not in ('request', 'response') or type(evidence['content']) is not dict
-            or evidence.get('reason') not in (None, 'captured', 'partial', 'truncated', 'unavailable', 'withheld')):
+    if not _valid_evidence(evidence):
         return None
+    if not _bounded_evidence(evidence['content'], MAX_EVIDENCE_BYTES):
+        return _encode(dict(version=1, status='evidence', **_evidence_omission(evidence, 'truncated')))
     try:
         frame = _encode(dict(version=1, status='evidence', **evidence))
-        return frame if len(frame) <= MAX_CONTENT_FRAME else _encode(dict(version=1, status='evidence', phase=evidence['phase'], content={}, reason='truncated'))
+        return frame if len(frame) <= MAX_CONTENT_FRAME else _encode(dict(version=1, status='evidence', **_evidence_omission(evidence, 'truncated')))
     except ContractError:
-        return _encode(dict(version=1, status='evidence', phase=evidence['phase'], content={}, reason='truncated'))
+        return _encode(dict(version=1, status='evidence', **_evidence_omission(evidence, 'truncated')))
+
+
+def _evidence_frames(evidence, remaining):
+    """Frame already scrubbed evidence; logical chunks never cross 200 KiB."""
+    if not _valid_evidence(evidence):
+        return
+    if not _bounded_evidence(evidence['content'], remaining):
+        yield _encode(dict(version=1, status='evidence', **_evidence_omission(evidence, 'truncated')))
+        return
+    small = _content_frame(evidence)
+    try:
+        body = json.dumps(evidence['content'], sort_keys=True, separators=(',', ':'),
+                          ensure_ascii=False, allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, UnicodeError):
+        yield _encode(dict(version=1, status='evidence', **_evidence_omission(evidence, 'unavailable')))
+        return
+    if len(body) > remaining:
+        yield _encode(dict(version=1, status='evidence', **_evidence_omission(evidence, 'truncated')))
+        return
+    if len(small) <= MAX_CONTENT_FRAME and json.loads(small)['content'] == evidence['content']:
+        yield small
+        return
+    phase = evidence['phase']
+    yield _encode(dict(version=1, status='evidence_start', phase=phase,
+                       reason=evidence.get('reason'), length=len(body), sha256=sha256(body).hexdigest(),
+                       **({'diagnostics': evidence['diagnostics']} if 'diagnostics' in evidence else {}),
+                       **({'transport_attempt_id': evidence['transport_attempt_id']} if 'transport_attempt_id' in evidence else {}),
+                       **({'capture_source': evidence['capture_source']} if 'capture_source' in evidence else {})))
+    for start in range(0, len(body), EVIDENCE_CHUNK):
+        chunk = body[start:start + EVIDENCE_CHUNK]
+        for offset in range(0, len(chunk), _EVIDENCE_FRAGMENT):
+            frame = _encode(dict(version=1, status='evidence_part', phase=phase,
+                                 offset=start + offset,
+                                 data=base64.b64encode(chunk[offset:offset + _EVIDENCE_FRAGMENT]).decode('ascii')))
+            if len(frame) > MAX_CONTENT_FRAME:
+                raise ContractError('Evidence frame exceeds limit')
+            yield frame
+    yield _encode(dict(version=1, status='evidence_end', phase=phase))
+
+
+class _EvidenceReceiver:
+    """Bound and verify a single ordered evidence transfer before admitting it."""
+    def __init__(self):
+        self.pending = None
+        self.total = 0
+
+    def accept(self, frame):
+        status = frame['status']
+        if len(_encode(frame)) > MAX_CONTENT_FRAME:
+            raise ContractError('Invalid inference evidence response')
+        if status == 'evidence_start':
+            from api_agent.workflows.inference_capture import _valid_attempt_id
+            from api_agent.telemetry.inference_diagnostics import valid_diagnostics
+            base = {'version', 'status', 'phase', 'reason', 'length', 'sha256'}
+            if (self.pending is not None or not base <= set(frame) or set(frame) - base - {'transport_attempt_id', 'capture_source', 'diagnostics'}
+                    or ('diagnostics' in frame and not valid_diagnostics(frame['diagnostics']))
+                    or ('transport_attempt_id' in frame and (frame['transport_attempt_id'] is None
+                        or not _valid_attempt_id(frame['transport_attempt_id'])))
+                    or ('capture_source' in frame and frame['capture_source'] not in ('fallback', 'provider'))
+                    or frame['phase'] not in ('request', 'response')
+                    or frame['reason'] not in (None, 'captured', 'partial', 'truncated', 'unavailable', 'withheld')
+                    or type(frame['length']) is not int or not 0 < frame['length'] <= MAX_EVIDENCE_BYTES - self.total
+                    or type(frame['sha256']) is not str or re.fullmatch(r'[0-9a-f]{64}', frame['sha256']) is None):
+                raise ContractError('Invalid inference evidence response')
+            self.pending = (frame, bytearray())
+            return None
+        if self.pending is None:
+            raise ContractError('Invalid inference evidence response')
+        start, body = self.pending
+        if frame.get('phase') != start['phase']:
+            raise ContractError('Invalid inference evidence response')
+        if status == 'evidence_part':
+            if (set(frame) != {'version', 'status', 'phase', 'offset', 'data'}
+                    or type(frame['offset']) is not int or frame['offset'] != len(body)
+                    or type(frame['data']) is not str):
+                raise ContractError('Invalid inference evidence response')
+            try:
+                part = base64.b64decode(frame['data'], validate=True)
+            except (ValueError, binascii.Error):
+                raise ContractError('Invalid inference evidence response') from None
+            expected = min(_EVIDENCE_FRAGMENT, start['length'] - len(body),
+                           EVIDENCE_CHUNK - len(body) % EVIDENCE_CHUNK)
+            if len(part) != expected or expected <= 0:
+                raise ContractError('Invalid inference evidence response')
+            body.extend(part)
+            return None
+        if status != 'evidence_end' or set(frame) != {'version', 'status', 'phase'}:
+            raise ContractError('Invalid inference evidence response')
+        if len(body) != start['length'] or sha256(body).hexdigest() != start['sha256']:
+            raise ContractError('Invalid inference evidence response')
+        try:
+            content = json.loads(body.decode('utf-8'), object_pairs_hook=_pairs, parse_constant=_constant)
+            if type(content) is not dict or json.dumps(content, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8') != body:
+                raise ValueError
+        except (ValueError, UnicodeError):
+            raise ContractError('Invalid inference evidence response') from None
+        self.total += len(body)
+        self.pending = None
+        return dict(phase=start['phase'], content=content, reason=start['reason'],
+                    **({'diagnostics': start['diagnostics']} if 'diagnostics' in start else {}),
+                    **({'transport_attempt_id': start['transport_attempt_id']} if 'transport_attempt_id' in start else {}),
+                    **({'capture_source': start['capture_source']} if 'capture_source' in start else {}))
 
 
 async def _read(reader):
@@ -155,6 +355,9 @@ def _diagnostic(error, boundary):
 
 
 def _error(error, capability=None):
+    if isinstance(error, SetupRegistrationLimitError):
+        return dict(version=1, status='error', category='registration_limit', index_source=None,
+                    message='Setup registration limit reached for this operation')
     category, source, message = 'failed', None, 'Shared authentication setup failed'
     if isinstance(error, OperationalError):
         # Exception attributes remain mutable after construction, including on
@@ -185,6 +388,9 @@ def _error(error, capability=None):
                 value = None
             details[name] = value
         details['kind'] = classification.kind
+        origin = getattr(error, 'origin', 'provider')
+        if origin.__class__ is str and origin == 'local_output_validation':
+            details['origin'] = origin
         default_execution = 'possibly_executed' if classification.kind == 'unknown' else 'not_started'
         if classification.execution != default_execution:
             details['execution'] = classification.execution
@@ -237,6 +443,11 @@ def _error(error, capability=None):
 
 
 def _raise_error(frame):
+    if frame.get('category') == 'registration_limit':
+        if type(frame.get('version')) is not int or frame != dict(version=1, status='error', category='registration_limit', index_source=None,
+                         message='Setup registration limit reached for this operation'):
+            raise ContractError('Invalid setup response')
+        raise SetupRegistrationLimitError(frame['message'])
     if frame.get('category') == 'operational':
         from .inference import result_from_wire
         from .rich_inference import response_evidence_from_wire
@@ -264,7 +475,7 @@ def _raise_error(frame):
     if frame.get('category') == 'provider':
         if (set(frame) != {'version', 'status', 'category', 'index_source', 'message', 'details'}
                 or frame['index_source'] is not None or type(frame['details']) is not dict
-                or set(frame['details']) - {'usage', 'execution', 'response'} != {'kind', 'status', 'code', 'type', 'request_id'}):
+                or set(frame['details']) - {'usage', 'execution', 'response', 'origin'} != {'kind', 'status', 'code', 'type', 'request_id'}):
             raise ContractError('Invalid provider response')
         details = frame['details'].copy()
         kind = details.pop('kind')
@@ -327,24 +538,39 @@ class _Peer:
     waiting: bool = False
     count: int = 0
     complete_count: int = 0
+    evidence_phase: object = None
+    evidence_sent: set = field(default_factory=set)
     dropping: object = None
     jobs: tuple = ()
     finals: set = field(default_factory=set)
+    authority_ticket: object = None
+    revoked: bool = False
 
 
 class SetupServer(_Owner):
-    def __init__(self, registry, capability, *, timeout=300, cleanup_timeout=5):
+    def __init__(self, registry, capability, *, timeout=300, cleanup_timeout=5, authority=None):
         self._request_timeout = _timeout(timeout)
         super().__init__(min(_timeout(cleanup_timeout), self._request_timeout))
         self._registry = registry
+        from api_agent.telemetry.privacy import EmissionBoundary
+        if authority is not None and type(authority) is not EmissionBoundary:
+            raise ContractError('Invalid operation authority')
+        self._operation_authority = authority
+        self._authority_channel = None
+        self._authority_pending = {}
         self._capability = _capability(capability)
         self._server = None
         self._starting = None
         self._peers = set()
+        self._evidence_slots = asyncio.Semaphore(_MAX_EVIDENCE_TRANSFERS)
+        self._evidence_tasks = set()
         self._ids = {}
         self._parents = {}
 
     def _accept(self, reader, writer):
+        if len(self._peers) >= _MAX_SETUP_PEERS:
+            writer.close()
+            return
         peer = _Peer(reader, writer)
         self._peers.add(peer)
         # The listener captures startup's context. Each accepted connection owns
@@ -354,10 +580,41 @@ class SetupServer(_Owner):
 
     async def _start(self):
         self._server = await asyncio.start_server(self._accept, '127.0.0.1', 0, limit=MAX_FRAME)
+        if self._operation_authority is not None:
+            from .authority_channel import AuthorityChannel
+            self._authority_channel = AuthorityChannel(self._capability.encode(), self._admit_authority,
+                snapshot_source=self._graph_authority_source)
+            authority_path = await self._authority_channel.start()
         if self._closed:
             self._server.close()
             raise SessionClosedError('Setup server is closed')
-        return dict(version=1, host='127.0.0.1', port=self._server.sockets[0].getsockname()[1], capability=self._capability)
+        descriptor = dict(version=1, host='127.0.0.1', port=self._server.sockets[0].getsockname()[1], capability=self._capability)
+        if self._authority_channel is not None:
+            descriptor['authority_path'] = authority_path
+        return descriptor
+
+    def _graph_authority_source(self, binding):
+        """Resolve only the operation authority of a live registered worker."""
+        self._check()
+        binding = _binding(binding)
+        lease = self._registry._lease(binding)
+        if lease['revoked'] or not any(peer.binding == binding and not peer.revoked
+                                      for peer in self._peers):
+            raise ContractError('Graph authority binding unavailable')
+        if self._operation_authority is None:
+            raise ContractError('Graph credential authority unavailable')
+        return self._operation_authority
+
+    def _admit_authority(self, binding, ticket, sequence):
+        pending = self._authority_pending.get(ticket)
+        if (pending is None or pending['binding'] != binding or pending['sequence'] != sequence
+                or pending['reserved'] or pending['future'].done()):
+            return None
+        pending['reserved'] = True
+        def accept(values):
+            if not pending['future'].done():
+                pending['future'].set_result(values)
+        return accept
 
     async def start(self):
         self._check()
@@ -371,15 +628,33 @@ class SetupServer(_Owner):
     def _request(self, frame):
         action = frame.get('action')
         keys = {'version', 'capability', 'action', 'timeout'} | ({'worker_id', 'attempt'} if action == 'register' else {'binding'}) | ({'request'} if action == 'complete' else set())
+        if action == 'complete' and self._authority_channel is not None:
+            keys.add('authority_nonce')
+            if type(frame.get('authority_nonce')) is not str or re.fullmatch(r'[0-9a-f]{64}', frame['authority_nonce']) is None:
+                raise ContractError('Invalid authority challenge')
+        if action == 'complete' and 'authority_required' in frame:
+            keys.add('authority_required')
+            if frame['authority_required'] is not True or self._authority_channel is None:
+                raise ContractError('Invalid authority requirement')
+        if action == 'complete' and 'background' in frame:
+            keys.add('background')
+            if frame['background'] is not True:
+                raise ContractError('Invalid background evidence request')
         if action == 'complete' and 'parent_id' in frame:
             keys.add('parent_id')
             parent = frame['parent_id']
             if type(parent) is not str or re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', parent) is None:
                 raise ContractError('Invalid inference progress ancestry')
+        if action == 'complete' and 'observation_call_id' in frame:
+            from api_agent.workflows.inference_capture import _valid_attempt_id
+            keys.add('observation_call_id')
+            if not _valid_attempt_id(frame['observation_call_id']):
+                raise ContractError('Invalid inference observation identity')
         if set(frame) != keys or type(frame['version']) is not int or frame['version'] != 1 or action not in ('register', 'ready', 'describe', 'complete', 'revoke'):
             raise ContractError('Invalid setup request')
         capability = _capability(frame['capability'])
-        if not hmac.compare_digest(capability, self._capability):
+        expected = _request_auth(self._capability, frame) if self._authority_channel is not None else self._capability
+        if not hmac.compare_digest(capability, expected):
             raise ContractError('Setup capability rejected')
         _timeout(frame['timeout'])
         if action == 'register':
@@ -462,20 +737,327 @@ class SetupServer(_Owner):
             from .inference import request_from_wire
             return self._registry.quote_cost(peer.binding, request_from_wire(frame['request']), result)
         ledger = TransportAttemptLedger(20, observer=attempt_event, quote=attempt_quote) if action == 'complete' else None
-        with bind_transport_attempt_ledger(ledger), bind_response_dispatch(dispatched) as dispatch, collect_inference() as collector:
+        early_sent = False
+        def early_result(result, request):
+            nonlocal early_sent
+            if frame.get('background') is not True:
+                return
+            from .inference import result_to_wire
             try:
-                return await self._dispatch_captured(peer, frame, action, collector)
-            except BaseException as error:
-                from api_agent.workflows.inference_capture import retain_response_failure
-                retain_response_failure(error, dispatch['response'], dispatch['usage'])
-                raise
-            finally:
-                if ledger is not None and not peer.writer.is_closing():
-                    peer.writer.write(_encode(dict(version=1, status='transport_terminal', ledger=ledger.snapshot(),
-                        call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
-                        binding_sha256=_request_digest(peer.binding))))
+                quote = getattr(self._registry, 'quote_cost', lambda *args: None)(peer.binding, request, result)
+            except Exception:
+                quote = None
+            if quote is not None:
+                from .costs import validate_quote
+                peer.writer.write(_encode(dict(version=1, status='cost', quote=validate_quote(quote))))
+            peer.writer.write(_encode(dict(version=1, status='transport_terminal', ledger=ledger.snapshot(),
+                call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
+                binding_sha256=_request_digest(peer.binding))))
+            peer.writer.write(_encode(dict(version=1, status='result_ready', result=result_to_wire(result))))
+            early_sent = True
 
-    async def _dispatch_captured(self, peer, frame, action, collector):
+        def early_error(error):
+            nonlocal early_sent
+            from api_agent.workflows.inference_capture import retain_response_failure
+            retain_response_failure(error, dispatch['response'], dispatch['usage'])
+            peer.writer.write(_encode(dict(version=1, status='transport_terminal', ledger=ledger.snapshot(),
+                call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
+                binding_sha256=_request_digest(peer.binding))))
+            peer.writer.write(_encode(dict(version=1, status='error_ready', error=_error(error, self._capability))))
+            early_sent = True
+
+        from contextlib import AsyncExitStack
+        local_identity = None
+        gated_entry = None
+        async with AsyncExitStack() as stack:
+            if action == 'complete' and self._authority_channel is not None:
+                from .local_call_registry import key, lookup
+                local_identity = key(self._capability, _request_digest(peer.binding), frame['authority_nonce'])
+                gated_entry = lookup(local_identity)
+                if gated_entry is not None:
+                    from .authority_gate import acquire_authorities
+                    boundaries = gated_entry['scope'].authorities()
+                    gated_entry['gated_authorities'] = frozenset(id(boundary._authority) for boundary in boundaries)
+                    await stack.enter_async_context(acquire_authorities(
+                        [boundary._authority for boundary in boundaries], frame['timeout']))
+            with bind_transport_attempt_ledger(ledger), bind_response_dispatch(dispatched) as dispatch, collect_inference(call_id=frame.get('observation_call_id'), retain_raw=getattr(self, '_authority_channel', None) is not None) as collector:
+                collector['trace_ledger'] = ledger
+                try:
+                    return await self._dispatch_captured(peer, frame, action, collector, early_result, early_error,
+                                                         local_identity, gated_entry)
+                except BaseException as error:
+                    from api_agent.workflows.inference_capture import retain_response_failure
+                    retain_response_failure(error, dispatch['response'], dispatch['usage'])
+                    raise
+                finally:
+                    if ledger is not None and not early_sent and not peer.writer.is_closing():
+                        peer.writer.write(_encode(dict(version=1, status='transport_terminal', ledger=ledger.snapshot(),
+                            call_sequence=peer.complete_count, request_sha256=_request_digest(frame['request']),
+                            binding_sha256=_request_digest(peer.binding))))
+
+    @staticmethod
+    def _prepare_evidence(rows):
+        """Prepare bounded, scrubbed frames without running on the event loop."""
+        from api_agent.workflows.inference_capture import select_capture_rows
+        if type(rows) not in (list, tuple) or len(rows) > _MAX_EVIDENCE_ROWS:
+            rows = None
+        else:
+            authoritative = {_evidence_key(row) for row in rows if type(row) is dict
+                             and row.get('phase') in ('request', 'response')
+                             and row.get('_source') is None}
+            rows = [row for row in rows if not (type(row) is dict and row.get('_source') == 'fallback'
+                    and _evidence_key(row) in authoritative)]
+            bounded, remaining = [], MAX_EVIDENCE_BYTES
+            for evidence in rows:
+                if type(evidence) is dict and evidence.get('_rejected'):
+                    # A rejected body without final-snapshot admission must not
+                    # bypass projection through this framing-only entry point.
+                    evidence = _evidence_omission(evidence, 'unavailable')
+                if type(evidence) is dict and type(evidence.get('content')) is dict:
+                    content = evidence['content']
+                    if not _bounded_evidence(content, remaining):
+                        evidence = dict(_evidence_omission(evidence, 'truncated'),
+                                        **({'_source': evidence['_source']} if '_source' in evidence else {}))
+                    else:
+                        remaining -= len(json.dumps(content, sort_keys=True, separators=(',', ':'),
+                                                    ensure_ascii=False, allow_nan=False).encode('utf-8'))
+                bounded.append(evidence)
+            rows = bounded
+        phases = select_capture_rows(rows)
+        remaining, prepared = MAX_EVIDENCE_BYTES, []
+        for evidence in phases:
+            for frame in _evidence_frames(evidence, remaining):
+                prepared.append((_evidence_key(evidence), json.loads(frame)['status'], frame))
+            if _bounded_evidence(evidence['content'], remaining):
+                remaining -= len(json.dumps(evidence['content'], sort_keys=True, separators=(',', ':'),
+                                            ensure_ascii=False, allow_nan=False).encode('utf-8'))
+        return prepared
+
+    @staticmethod
+    def _prepare_cancellable(rows, stopped, projection=None, raw=False, limit=None):
+        _PREPARE_CANCEL.event = stopped
+        try:
+            if projection is not None and type(rows) in (list, tuple) and len(rows) <= _MAX_EVIDENCE_ROWS:
+                scrubbed = []
+                for row in rows:
+                    if type(row) is not dict or type(row.get('content')) is not dict:
+                        scrubbed.append(row)
+                        continue
+                    if '_rejected' in row and (row['_rejected'] is not True or row.get('phase') != 'response'):
+                        scrubbed.append(_evidence_omission(row, 'unavailable'))
+                        continue
+                    if not _bounded_evidence(row['content'], MAX_EVIDENCE_BYTES):
+                        scrubbed.append(dict(_evidence_omission(row, 'truncated'),
+                                             **({'_source': row['_source']} if '_source' in row else {})))
+                        continue
+                    source_content = row['content']
+                    if row.get('_rejected') is True and source_content:
+                        from .rejected_evidence import guard_rejected_evidence
+                        try:
+                            guard_rejected_evidence(source_content, projection._secrets)
+                        except Exception:
+                            source_content = {}
+                    if raw:
+                        from api_agent.workflows.capture import project_values, capture_reason
+                        report = set()
+                        # The capture budget applies to the content, not the
+                        # internal projection wrapper around it.
+                        content = project_values({'values': source_content}, {'type': 'object'}, projection,
+                                                 report=report, max_bytes=MAX_EVIDENCE_BYTES + 64,
+                                                 _content_wrapper=True, _provider_content=True, limit=limit).get('values', {})
+                    else:
+                        content = projection.content_export({'values': source_content}).get('values', {})
+                    clean = dict(row, content=content)
+                    clean.pop('_rejected', None)
+                    if 'diagnostics' in row:
+                        from api_agent.telemetry.inference_diagnostics import scrub_diagnostics
+                        diagnostics = scrub_diagnostics(row['diagnostics'], projection)
+                        clean.pop('diagnostics')
+                        if diagnostics:
+                            clean['diagnostics'] = diagnostics
+                    if raw:
+                        clean['reason'] = (row.get('reason') if not row['content'] and row.get('reason') in ('withheld', 'truncated', 'unavailable')
+                                           else capture_reason(content, report))
+                        if row.get('reason') == 'partial' and clean['reason'] == 'captured':
+                            clean['reason'] = 'partial'
+                    if row['content'] and not content and not (raw and 'truncated' in report):
+                        clean['reason'] = 'unavailable'
+                    scrubbed.append(clean)
+                rows = scrubbed
+            return SetupServer._prepare_evidence(rows)
+        finally:
+            del _PREPARE_CANCEL.event
+
+    @staticmethod
+    async def _prepare_isolated(rows, projection, *, limit=None):
+        """Project in a disposable bounded process; credentials travel only by pipe."""
+        stopped = threading.Event()
+        def serialize():
+            _PREPARE_CANCEL.event = stopped
+            try:
+                # Metadata is bounded separately from the admitted content.
+                # A full 4 MiB content value must not lose space to wrappers.
+                if not _bounded_evidence(rows, MAX_EVIDENCE_BYTES + 1024 * 1024):
+                    raise ContractError('Evidence projection exceeds input limit')
+                encoder = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+                payload = bytearray()
+                value = dict(rows=rows, secrets=list(projection._secrets), ids=list(projection._assigned_ids))
+                if limit is not None:
+                    value['limit'] = limit
+                for fragment in encoder.iterencode(value):
+                    if stopped.is_set():
+                        raise ContractError('Evidence projection cancelled')
+                    chunk = fragment.encode('utf-8')
+                    if len(payload) + len(chunk) > 6 * 1024 * 1024:
+                        raise ContractError('Evidence projection exceeds input limit')
+                    payload.extend(chunk)
+                return bytes(payload)
+            finally:
+                del _PREPARE_CANCEL.event
+        serialization = asyncio.create_task(asyncio.to_thread(serialize))
+        try:
+            payload = await asyncio.shield(serialization)
+        except BaseException:
+            stopped.set()
+            from api_agent.runtime.tasks import settle
+            try:
+                await settle(serialization)
+            except BaseException:
+                pass
+            raise
+        if os.name != 'posix' or sys.platform not in ('linux', 'darwin'):
+            raise ContractError('Evidence projection platform unavailable')
+        starting = asyncio.create_task(asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'api_agent.providers.evidence_worker',
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, start_new_session=(os.name == 'posix'),
+            env={'PYTHONPATH': os.pathsep.join(os.path.abspath(path) for path in sys.path if type(path) is str),
+                 'PYTHONDONTWRITEBYTECODE': '1'}))
+        try:
+            process = await asyncio.shield(starting)
+        except BaseException:
+            # Spawn owns a child even if its waiter is cancelled mid-creation.
+            from api_agent.runtime.tasks import settle
+            process = await settle(starting)
+            import signal
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await settle(asyncio.create_task(process.wait()))
+            raise
+        try:
+            from . import evidence_watchdog
+            output, _ = await evidence_watchdog.communicate(process, payload)
+            if process.returncode != 0 or len(output) > 9 * 1024 * 1024:
+                raise ContractError('Evidence projection unavailable')
+            frames = json.loads(output)
+            if type(frames) is not list or len(frames) > 4096:
+                raise ContractError('Invalid evidence projection')
+            result = []
+            for item in frames:
+                if (type(item) is not list or len(item) != 3 or type(item[0]) is not list
+                        or len(item[0]) != 2 or type(item[1]) is not str or type(item[2]) is not str):
+                    raise ContractError('Invalid evidence projection')
+                result.append((tuple(item[0]), item[1], item[2].encode('utf-8')))
+            return result
+        finally:
+            import signal
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            from api_agent.runtime.tasks import settle
+            await settle(asyncio.create_task(process.wait()))
+
+    async def _publish_evidence(self, peer, rows, boundary=None, *, raw=False, destination=None):
+        # A cancelled waiter cannot release a slot while its thread still runs.
+        await self._evidence_slots.acquire()
+        task = None
+        try:
+            for attempt in range(2):
+                generation, projection = ((boundary.snapshot() if raw else boundary.snapshot_content())
+                                          if boundary is not None else (None, None))
+                stopped = threading.Event()
+                trace_options = {'limit': 65536} if destination is not None else {}
+                task = asyncio.create_task(self._prepare_isolated(rows, projection, **trace_options) if raw else
+                                           asyncio.to_thread(self._prepare_cancellable, rows, stopped, projection, raw, **trace_options))
+                self._evidence_tasks.add(task)
+                def finished(done):
+                    self._evidence_tasks.discard(done)
+                    _consume(done)
+                task.add_done_callback(finished)
+                try:
+                    frames = await asyncio.shield(task)
+                except BaseException:
+                    # The server retains the task and its slot until a delayed
+                    # serializer/spawn has settled and its child is reaped.
+                    # No publication can occur after this waiter leaves.
+                    if raw and not task.done():
+                        task.cancel()
+                    raise
+                def commit():
+                    if destination is not None:
+                        destination(frames)
+                        return
+                    for phase, status, content_frame in frames:
+                        peer.writer.write(content_frame)
+                        if status == 'evidence_start':
+                            peer.evidence_phase = phase
+                        elif status == 'evidence_end':
+                            peer.evidence_phase = None
+                            peer.evidence_sent.add(phase)
+                        elif status == 'evidence':
+                            peer.evidence_sent.add(phase)
+                committed = boundary.commit_if_current(generation, commit) if boundary is not None else (commit() is None)
+                if committed:
+                    break
+            else:
+                raise ContractError('Evidence credential authority changed')
+            if frames and destination is None:
+                await peer.writer.drain()
+        finally:
+            if task is None or task.done():
+                self._evidence_slots.release()
+            else:
+                stopped.set()
+                task.add_done_callback(lambda _: self._evidence_slots.release())
+
+    async def _caller_authority(self, peer, frame):
+        if len(self._authority_pending) >= _MAX_SETUP_PEERS:
+            return None
+        ticket = secrets.token_hex(32)
+        peer.authority_ticket = ticket
+        binding = _request_digest(peer.binding)
+        sequence = peer.complete_count
+        future = asyncio.get_running_loop().create_future()
+        self._authority_pending[ticket] = dict(binding=binding, sequence=sequence, future=future, reserved=False)
+        payload = [binding, ticket, sequence, frame['authority_nonce']]
+        proof = hmac.new(self._capability.encode(),
+                         ('authority-request:' + _request_digest(payload)).encode(), sha256).hexdigest()
+        declined = None
+        try:
+            peer.writer.write(_encode(dict(version=1, status='authority_request', ticket=ticket,
+                                           sequence=sequence, proof=proof)))
+            await peer.writer.drain()
+            declined = _spawn(_read(peer.reader))
+            done, _ = await asyncio.wait({future, declined}, return_when=asyncio.FIRST_COMPLETED)
+            if declined in done:
+                value = await declined
+                if value != dict(version=1, status='authority_declined', ticket=ticket):
+                    raise ContractError('Invalid authority response')
+                return None
+            return future.result()
+        finally:
+            self._authority_pending.pop(ticket, None)
+            if not future.done():
+                future.cancel()
+            if declined is not None:
+                declined.cancel()
+                await asyncio.gather(declined, return_exceptions=True)
+
+    async def _dispatch_captured(self, peer, frame, action, collector, early_result, early_error,
+                                 local_identity, gated_entry):
         if action == 'register':
             if peer.binding is not None:
                 raise ContractError('Setup connection already registered')
@@ -485,16 +1067,48 @@ class SetupServer(_Owner):
             raise ContractError('Setup connection binding rejected')
         if action == 'revoke':
             await self._registry.revoke(peer.binding)
+            peer.revoked = True
             return dict(version=1, status='revoked')
+        caller_values = None
+        local_entry = None
         if action == 'complete':
             from .inference import async_request_from_wire
             request = await async_request_from_wire(frame['request'])
-            ready = _spawn(self._ready(peer, action, request))
+            if self._authority_channel is not None:
+                from .local_call_registry import lookup
+                local_entry = gated_entry
+                if lookup(local_identity) is not gated_entry:
+                    raise ContractError('Caller authority changed during admission')
+                caller_values = await self._caller_authority(peer, frame)
+                changed = lookup(local_identity) is not gated_entry
+                if caller_values is not None and local_entry is not None:
+                    local_lease = local_entry['lease']
+                    gated = local_entry.get('gated_authorities', frozenset())
+                    changed = changed or local_lease is None or any(
+                        id(lease._authority) not in gated for lease in local_lease._leases)
+                if changed:
+                    ticket = peer.authority_ticket
+                    if ticket is not None:
+                        payload = [_request_digest(peer.binding), ticket, peer.complete_count, frame['authority_nonce']]
+                        proof = hmac.new(self._capability.encode(),
+                                         ('authority-release:' + _request_digest(payload)).encode(), sha256).hexdigest()
+                        peer.writer.write(_encode(dict(version=1, status='authority_release', ticket=ticket, proof=proof)))
+                        peer.authority_ticket = None
+                    raise ContractError('Caller authority changed during admission')
+                if caller_values is None and frame.get('authority_required') is True:
+                    raise ContractError('Caller authority unavailable')
+            async def invoke():
+                from .call_authority import bind_call_authority
+                local_lease = None if local_entry is None else local_entry['lease']
+                with bind_call_authority(self._operation_authority, caller_values, local_lease):
+                    return await self._ready(peer, action, request)
+            ready = _spawn(invoke())
         else:
             ready = _spawn(self._ready(peer, action))
         disconnected = _spawn(peer.reader.read(1))
         peer.jobs = (ready, disconnected)
         result = None
+        failed = cancelled = False
         try:
             done, _ = await asyncio.wait({ready, disconnected}, return_when=asyncio.FIRST_COMPLETED)
             if disconnected in done:
@@ -503,41 +1117,164 @@ class SetupServer(_Owner):
             self._check()
             if action == 'complete':
                 from .inference import result_to_wire
+                early_result(result, request)
+                if frame.get('background') is True:
+                    await peer.writer.drain()
                 return dict(version=1, status='completed', result=result_to_wire(result))
             if action == 'describe':
                 from .catalog import catalog_to_wire
                 return dict(version=1, status='catalog', catalog=catalog_to_wire(result))
             return dict(version=1, status='ready')
+        except BaseException as error:
+            failed = True
+            cancelled = isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit))
+            if isinstance(error, Exception) and action == 'complete' and frame.get('background') is True:
+                early_error(error)
+                await peer.writer.drain()
+            raise
         finally:
             try:
+                if action == 'complete':
+                    await self._finish_trace(collector, caller_values, result, failed=failed,
+                                             cancelled=cancelled, settled=ready.done())
                 if (action == 'complete' and not peer.writer.is_closing()
                         and not disconnected.done()):
-                    quote = getattr(self._registry, 'quote_cost', lambda *args: None)(peer.binding, request, result) if result is not None else None
+                    quote = (getattr(self._registry, 'quote_cost', lambda *args: None)(peer.binding, request, result)
+                             if result is not None and frame.get('background') is not True else None)
                     if quote is not None:
                         from .costs import validate_quote
                         peer.writer.write(_encode(dict(version=1, status='cost', quote=validate_quote(quote))))
                     try:
-                        phases = set()
                         rows = collector['rows']
-                        if collector['boundary'] is None and not rows:
-                            exporter = getattr(self._registry, 'export_content', lambda *args: ())
-                            rows = exporter(peer.binding, request, result)
-                        for evidence in rows:
-                            frame = _content_frame(evidence)
-                            if frame is not None and evidence['phase'] not in phases:
-                                phases.add(evidence['phase'])
-                                peer.writer.write(frame)
+                        from api_agent.telemetry.privacy import EmissionBoundary
+                        boundary = collector['boundary']
+                        if type(boundary) is EmissionBoundary and boundary.policy.allow_content is not True:
+                            # Safe diagnostics survive content opt-out, but still
+                            # cross the complete credential-authority projection.
+                            rows = [_evidence_omission(row, 'withheld') for row in rows
+                                    if type(row) is dict
+                                    and ('_rejected' not in row or row['_rejected'] is True and row.get('phase') == 'response')
+                                    and _valid_evidence({key: value for key, value in row.items()
+                                                        if key not in ('_source', '_rejected')})]
+                            phases = {row['phase'] for row in rows}
+                            for phase in (('request', 'response') if result is not None else ('request',)):
+                                if phase not in phases:
+                                    rows.append(dict(phase=phase, content={}, reason='withheld'))
+                        elif type(boundary) is not EmissionBoundary:
+                            # Neither untrusted rows nor a legacy exporter may
+                            # grant permission or establish credential ownership.
+                            phases = {'request'}
+                            if result is not None:
+                                phases.add('response')
+                            if type(rows) in (list, tuple):
+                                for row in rows[:_MAX_EVIDENCE_ROWS]:
+                                    if type(row) is dict and row.get('phase') in ('request', 'response'):
+                                        phases.add(row['phase'])
+                            rows = [dict(phase=phase, content={}, reason='withheld') for phase in sorted(phases)]
+                            boundary = None
+                        budget = _scope.get()
+                        remaining = None if budget is None else budget.remaining
+                        peer.evidence_sent.clear()
+                        pending_phases = set()
+                        if type(rows) in (list, tuple) and len(rows) <= _MAX_EVIDENCE_ROWS:
+                            for row in rows:
+                                if type(row) is dict and row.get('phase') in ('request', 'response'):
+                                    pending_phases.add(_evidence_key(row))
+                        else:
+                            pending_phases.update((('request', None), ('response', None)))
+                        allowance = (min(30.0, self._request_timeout) if frame.get('background') is True else
+                                     min(5.0 if collector.get('retain_raw') is True else 1.0, self._request_timeout / 4,
+                                         remaining / 4 if remaining is not None else self._request_timeout / 4))
+                        try:
+                            async with asyncio.timeout(max(0.001, allowance)):
+                                raw = collector.get('retain_raw') is True
+                                if raw and boundary is not None:
+                                    if caller_values is not None:
+                                        from .evidence_authority import EvidenceAuthority
+                                        boundary = EvidenceAuthority((boundary, self._operation_authority), caller_values)
+                                    else:
+                                        boundary = None
+                                if raw and boundary is None:
+                                    rows = [_evidence_omission(row, 'withheld') for row in rows
+                                            if type(row) is dict and row.get('phase') in ('request', 'response')]
+                                    if not rows:
+                                        rows = [dict(phase=phase, content={}, reason='withheld')
+                                                for phase in (('request', 'response') if result is not None else ('request',))]
+                                await self._publish_evidence(peer, rows, boundary, raw=raw and boundary is not None)
+                        except Exception as failure:
+                            if peer.evidence_phase is not None:
+                                phase, attempt = peer.evidence_phase
+                                peer.writer.write(_encode(dict(version=1, status='evidence_abort', phase=phase,
+                                                               **({'transport_attempt_id': attempt} if attempt is not None else {}))))
+                                peer.evidence_sent.add(peer.evidence_phase)
+                                peer.evidence_phase = None
+                            for phase, attempt in sorted(pending_phases - peer.evidence_sent, key=lambda item: (item[0], item[1] or '')):
+                                peer.writer.write(_encode(dict(version=1, status='evidence', phase=phase,
+                                                               content={}, reason='unavailable' if collector.get('retain_raw') is True and isinstance(failure, ContractError) else 'truncated',
+                                                               **({'transport_attempt_id': attempt} if attempt is not None else {}))))
                     except Exception:
                         # Content capture is optional; completed result/usage and
                         # mandatory cleanup retain their original behavior.
                         pass
+                    finally:
+                        if peer.authority_ticket is not None and not peer.writer.is_closing():
+                            ticket = peer.authority_ticket
+                            payload = [_request_digest(peer.binding), ticket, peer.complete_count, frame['authority_nonce']]
+                            proof = hmac.new(self._capability.encode(),
+                                             ('authority-release:' + _request_digest(payload)).encode(), sha256).hexdigest()
+                            peer.writer.write(_encode(dict(version=1, status='authority_release', ticket=ticket, proof=proof)))
+                            peer.authority_ticket = None
             finally:
                 async with report_timeout('Setup request cancellation', self._timeout) as budget:
                     await _drain(peer.jobs, budget.remaining, self._cancel_requested)
 
+    async def _finish_trace(self, collector, caller_values, result, *, failed, cancelled, settled):
+        call = collector.get('trace_owner')
+        if call is None:
+            return
+        try:
+            trace = collector.get('trace_collector')
+            boundary = trace.get('boundary') if trace is not None else None
+            from api_agent.telemetry.privacy import EmissionBoundary
+            if not settled:
+                # Content may still be changing. Retain only the ledger's
+                # content-free physical-attempt identities, never active rows.
+                call.publish([], collector['trace_ledger'].snapshot())
+                call.loss('unavailable')
+                return
+            if trace is None or type(boundary) is not EmissionBoundary:
+                call.loss('unavailable')
+                return
+            raw = collector['retain_raw']
+            if raw:
+                if caller_values is None:
+                    call.loss('withheld')
+                    return
+                from .evidence_authority import EvidenceAuthority
+                boundary = EvidenceAuthority((boundary, self._operation_authority), caller_values)
+            async with component_timeout('Remote trace payload projection', min(5.0, self._request_timeout / 4)):
+                await self._publish_evidence(None, trace['rows'], boundary, raw=raw,
+                    destination=lambda frames: call.publish(frames, collector['trace_ledger'].snapshot()))
+        except asyncio.CancelledError:
+            original_cancelled, cancelled = cancelled, True
+            if not original_cancelled:
+                raise
+        except Exception:
+            # Projection is optional; preserve the original result/interruption
+            # while reporting loss with fixed, content-free metadata.
+            try:
+                call.loss('unavailable')
+            except Exception:
+                pass
+        finally:
+            try:
+                call.end(failed=failed, cancelled=cancelled)
+            except Exception:
+                pass
+
     async def _drop(self, peer):
         peer.writer.close()
-        if peer.binding is not None:
+        if peer.binding is not None and not peer.revoked:
             await self._registry.revoke(peer.binding)
         async with report_timeout('Setup peer cleanup', self._timeout) as budget:
             await _drain(peer.jobs, budget.remaining, self._cancel_requested)
@@ -601,7 +1338,11 @@ class SetupServer(_Owner):
                 peer.writer.close()
             if self._server is not None:
                 await self._server.wait_closed()
+            if self._authority_channel is not None:
+                await self._authority_channel.close()
             await _drain([p.task for p in self._peers], self._timeout, self._cancel_requested)
+            if self._evidence_tasks:
+                await asyncio.shield(asyncio.gather(*tuple(self._evidence_tasks), return_exceptions=True))
             for peer in tuple(self._peers):
                 if peer.dropping is None or peer.dropping.done() and (peer.dropping.cancelled() or peer.dropping.exception() is not None):
                     peer.dropping = _spawn(self._drop(peer))
@@ -610,9 +1351,12 @@ class SetupServer(_Owner):
 
 class SetupClient:
     """Inert synchronous worker facade with one persistent process-local connection."""
-    def __init__(self, descriptor, *, worker_id=None, timeout=300, cleanup_timeout=5):
+    def __init__(self, descriptor, *, worker_id=None, attempt=1, timeout=300, cleanup_timeout=5):
         self._descriptor = validate_descriptor(descriptor)
         self._worker = _identifier(str(uuid4()) if worker_id is None else worker_id)
+        if type(attempt) is not int or attempt < 1:
+            raise ContractError('Invalid setup attempt')
+        self._attempt = attempt
         self._timeout = _timeout(timeout)
         self._cleanup_timeout = min(_timeout(cleanup_timeout), self._timeout)
         self._progress_timeouts = {}
@@ -624,6 +1368,7 @@ class SetupClient:
         self._closed = False
         self._disposed = False
         self._failed = False
+        self._revoke_confirmed = False
         self._closing_task = None
         self._request_task = None
         self._cancel_requested = set()
@@ -633,6 +1378,14 @@ class SetupClient:
         self.response_evidence = None
         self.transport_attempts = None
         self._complete_count = 0
+        self._authority_scope = None
+        self._authority_lease = None
+        self._authority_ticket = None
+        self._authority_nonce = None
+        self._local_call = None
+        self._result_ready = None
+        self._error_ready = None
+        self._observation_call_id = None
 
     def _context(self):
         if self._pid != os.getpid():
@@ -693,18 +1446,72 @@ class SetupClient:
             except Exception:
                 pass
 
+    def _accept_authority_release(self, frame):
+        ticket = self._authority_ticket
+        if (set(frame) != {'version', 'status', 'ticket', 'proof'}
+                or frame.get('version') != 1 or frame.get('status') != 'authority_release'
+                or ticket is None or frame.get('ticket') != ticket
+                or type(frame.get('proof')) is not str or self._authority_nonce is None):
+            raise ContractError('Invalid authority release')
+        payload = [_request_digest(self._binding), ticket, self._complete_count, self._authority_nonce]
+        expected = hmac.new(self._descriptor['capability'].encode(),
+                            ('authority-release:' + _request_digest(payload)).encode(), sha256).hexdigest()
+        if not hmac.compare_digest(frame['proof'], expected):
+            raise ContractError('Invalid authority release')
+        self._release_authority()
+
+    def _release_authority(self):
+        if self._local_call is not None:
+            from .local_call_registry import remove
+            remove(*self._local_call)
+            self._local_call = None
+        if self._authority_lease is not None:
+            self._authority_lease.release()
+            self._authority_lease = None
+        self._authority_ticket = None
+        self._authority_nonce = None
+
+    async def _settle_authority(self):
+        # Retain both connection and lease until the authenticated publication
+        # barrier or EOF proves that no further frames can reach this caller.
+        while self._authority_lease is not None:
+            try:
+                frame = await _read(self._reader)
+            except ContractError:
+                if self._reader.at_eof():
+                    self._release_authority()
+                    return
+                raise
+            if frame.get('status') == 'authority_release':
+                self._accept_authority_release(frame)
+
     async def _exchange(self, action, request=None):
+        evidence_receiver = _EvidenceReceiver()
+        incomplete_phases = set()
+        authority_requested = False
         if action == 'complete':
             self.evidence = []
             self.cost_quote = None
             self.transport_attempts = {'version': 1, 'complete': False, 'attempts': []}
         frame = dict(version=1, action=action, timeout=self._timeout, capability=self._descriptor['capability'])
         if action == 'register':
-            frame.update(worker_id=self._worker, attempt=1)
+            frame.update(worker_id=self._worker, attempt=self._attempt)
         else:
             frame['binding'] = self._binding
         if action == 'complete':
             frame['request'] = request
+            if self._observation_call_id is not None:
+                frame['observation_call_id'] = self._observation_call_id
+            if self._result_ready is not None:
+                frame['background'] = True
+            if 'authority_path' in self._descriptor:
+                frame['authority_nonce'] = secrets.token_hex(32)
+                self._authority_nonce = frame['authority_nonce']
+                if self._authority_scope is not None:
+                    frame['authority_required'] = True
+                    from .local_call_registry import key, register
+                    identity = key(self._descriptor['capability'], _request_digest(self._binding), self._authority_nonce)
+                    self._local_call = (identity, register(identity, self._authority_scope))
             budget = _scope.get()
             if budget is not None:
                 frame['parent_id'] = budget.id
@@ -715,13 +1522,110 @@ class SetupClient:
                     frame['timeout'] = min(self._timeout, remaining)
         if action == 'complete':
             self._complete_count += 1
+        if 'authority_path' in self._descriptor:
+            frame['capability'] = _request_auth(self._descriptor['capability'], frame)
         self._writer.write(_encode(frame))
         await self._writer.drain()
         while True:
-            response = await _read(self._reader)
+            try:
+                response = await _read(self._reader)
+            except BaseException:
+                if evidence_receiver.pending is not None:
+                    self.evidence.append(_evidence_omission(evidence_receiver.pending[0], 'truncated'))
+                    evidence_receiver.pending = None
+                raise
             if type(response.get('version')) is not int or response['version'] != 1:
+                if evidence_receiver.pending is not None:
+                    self.evidence.append(_evidence_omission(evidence_receiver.pending[0], 'truncated'))
+                    evidence_receiver.pending = None
                 raise ContractError('Invalid setup response')
             status = response.get('status')
+            if status == 'authority_request' and action == 'complete' and 'authority_path' in self._descriptor:
+                if (set(response) != {'version', 'status', 'ticket', 'sequence', 'proof'}
+                        or type(response['ticket']) is not str or re.fullmatch(r'[0-9a-f]{64}', response['ticket']) is None
+                        or type(response['sequence']) is not int or response['sequence'] != self._complete_count
+                        or type(response['proof']) is not str):
+                    raise ContractError('Invalid authority request')
+                binding = _request_digest(self._binding)
+                payload = [binding, response['ticket'], response['sequence'], frame['authority_nonce']]
+                proof = hmac.new(self._descriptor['capability'].encode(),
+                                 ('authority-request:' + _request_digest(payload)).encode(), sha256).hexdigest()
+                if not hmac.compare_digest(response['proof'], proof):
+                    raise ContractError('Authority server authentication failed')
+                if authority_requested:
+                    raise ContractError('Duplicate authority request')
+                authority_requested = True
+                self._authority_ticket = response['ticket']
+                try:
+                    if self._authority_scope is None:
+                        raise ContractError('Caller authority unavailable')
+                    from api_agent.testing.authority_scope import TestAuthorityScope
+                    lease = (self._authority_scope.freeze(credential_only=True)
+                             if type(self._authority_scope) is TestAuthorityScope
+                             else self._authority_scope.freeze())
+                    self._authority_lease = lease
+                    from .local_call_registry import assign_lease
+                    if self._local_call is None or not assign_lease(*self._local_call, lease):
+                        raise ContractError('Caller authority handoff unavailable')
+                    from .authority_channel import transfer
+                    await transfer(self._descriptor['authority_path'], self._descriptor['capability'].encode(),
+                                   binding, response['ticket'], response['sequence'], list(lease.secrets))
+                except Exception:
+                    self._writer.write(_encode(dict(version=1, status='authority_declined', ticket=response['ticket'])))
+                    await self._writer.drain()
+                continue
+            if status == 'authority_release' and action == 'complete' and 'authority_path' in self._descriptor:
+                self._accept_authority_release(response)
+                continue
+            if status == 'evidence_abort' and action == 'complete':
+                if (evidence_receiver.pending is None or set(response) not in ({'version', 'status', 'phase'}, {'version', 'status', 'phase', 'transport_attempt_id'})
+                        or _evidence_key(response) != _evidence_key(evidence_receiver.pending[0])):
+                    if evidence_receiver.pending is not None:
+                        self.evidence.append(_evidence_omission(evidence_receiver.pending[0], 'truncated'))
+                        evidence_receiver.pending = None
+                    raise ContractError('Invalid inference evidence response')
+                self.evidence.append(_evidence_omission(response, 'truncated'))
+                incomplete_phases.add(_evidence_key(response))
+                evidence_receiver.pending = None
+                continue
+            if status in ('evidence_start', 'evidence_part', 'evidence_end') and action == 'complete':
+                if status == 'evidence_start' and response.get('transport_attempt_id') is not None:
+                    if not any(row.get('id') == response['transport_attempt_id']
+                               for row in self.transport_attempts['attempts']):
+                        raise ContractError('Inference evidence has no transport attempt owner')
+                if status == 'evidence_start' and type(response.get('phase')) is not str:
+                    if evidence_receiver.pending is not None:
+                        self.evidence.append(_evidence_omission(evidence_receiver.pending[0], 'truncated'))
+                        evidence_receiver.pending = None
+                    raise ContractError('Invalid inference evidence response')
+                if status == 'evidence_start' and (_evidence_key(response) in incomplete_phases
+                        or any(_evidence_key(prior) == _evidence_key(response) for prior in self.evidence)):
+                    if evidence_receiver.pending is not None:
+                        self.evidence.append(_evidence_omission(evidence_receiver.pending[0], 'truncated'))
+                        evidence_receiver.pending = None
+                    raise ContractError('Conflicting inference evidence response')
+                try:
+                    row = evidence_receiver.accept(response)
+                except BaseException:
+                    if evidence_receiver.pending is not None:
+                        start = evidence_receiver.pending[0]
+                        self.evidence.append(_evidence_omission(start, 'truncated'))
+                        evidence_receiver.pending = None
+                    raise
+                if row is not None:
+                    if any(_evidence_key(prior) == _evidence_key(row) for prior in self.evidence):
+                        raise ContractError('Invalid inference evidence response')
+                    self.evidence.append(row)
+                continue
+            if evidence_receiver.pending is not None:
+                if status not in ('completed', 'error', 'transport_terminal'):
+                    self.evidence.append(_evidence_omission(evidence_receiver.pending[0], 'truncated'))
+                    evidence_receiver.pending = None
+                    raise ContractError('Interleaved inference evidence response')
+                start = evidence_receiver.pending[0]
+                self.evidence.append(_evidence_omission(start, 'truncated'))
+                incomplete_phases.add(_evidence_key(start))
+                evidence_receiver.pending = None
             if status in ('transport_attempt', 'transport_terminal') and action == 'complete':
                 from .generation_attempts import validate_transport_attempts
                 expected = {'version', 'status', 'call_sequence', 'request_sha256', 'binding_sha256'}
@@ -778,23 +1682,51 @@ class SetupClient:
                 self.cost_quote = validate_quote(response['quote'])
                 continue
             if status == 'evidence' and action == 'complete':
-                if (set(response) not in ({'version', 'status', 'phase', 'content'}, {'version', 'status', 'phase', 'content', 'reason'})
+                if (not {'version', 'status', 'phase', 'content'} <= set(response)
+                        or set(response) - {'version', 'status', 'phase', 'content', 'reason', 'transport_attempt_id', 'capture_source', 'diagnostics'}
                         or response['phase'] not in ('request', 'response')
                         or type(response['content']) is not dict):
                     raise ContractError('Invalid inference evidence response')
-                row = {key: response[key] for key in ('phase', 'content', 'reason') if key in response}
+                row = {key: response[key] for key in ('phase', 'content', 'reason', 'transport_attempt_id', 'capture_source', 'diagnostics') if key in response}
+                if row.get('transport_attempt_id') is not None:
+                    if not any(attempt.get('id') == row['transport_attempt_id']
+                               for attempt in self.transport_attempts['attempts']):
+                        raise ContractError('Inference evidence has no transport attempt owner')
+                if _evidence_key(row) in incomplete_phases:
+                    raise ContractError('Conflicting inference evidence response')
                 if _content_frame(row) is None:
                     raise ContractError('Invalid inference evidence response')
                 if len(_encode(response)) > MAX_CONTENT_FRAME:
-                    row = dict(phase=response['phase'], content={}, reason='truncated')
+                    row = _evidence_omission(row, 'truncated')
+                size = len(json.dumps(row['content'], sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8'))
+                if size > MAX_EVIDENCE_BYTES - evidence_receiver.total:
+                    row = _evidence_omission(row, 'truncated')
+                else:
+                    evidence_receiver.total += size
                 previous = next((index for index, prior in enumerate(self.evidence)
-                                 if prior['phase'] == row['phase']), None)
+                                 if _evidence_key(prior) == _evidence_key(row)), None)
                 if previous is not None:
-                    if self.evidence[previous] != dict(phase=row['phase'], content={}, reason='truncated'):
-                        raise ContractError('Invalid inference evidence response')
-                    self.evidence[previous] = row
+                    raise ContractError('Invalid inference evidence response')
                 else:
                     self.evidence.append(row)
+                continue
+            if status == 'error_ready' and action == 'complete' and self._result_ready is not None:
+                if set(response) != {'version', 'status', 'error'} or type(response['error']) is not dict:
+                    raise ContractError('Invalid early failure response')
+                callback, self._error_ready = self._error_ready, None
+                self._result_ready = None
+                try:
+                    _raise_error(response['error'])
+                except Exception as error:
+                    if callback is not None:
+                        callback(error)
+                continue
+            if status == 'result_ready' and action == 'complete' and self._result_ready is not None:
+                if set(response) != {'version', 'status', 'result'}:
+                    raise ContractError('Invalid early completion response')
+                from .inference import result_from_wire
+                callback, self._result_ready = self._result_ready, None
+                callback(result_from_wire(response['result']))
                 continue
             if status == 'progress' and action in ('ready', 'describe', 'complete'):
                 self._progress(response)
@@ -805,6 +1737,8 @@ class SetupClient:
                 if set(response) != {'version', 'status', 'result'}:
                     raise ContractError('Invalid completion response')
                 from .inference import result_from_wire
+                if self._authority_lease is not None and self._authority_ticket is None:
+                    self._release_authority()
                 return result_from_wire(response['result'])
             if action == 'describe' and status == 'catalog':
                 if set(response) != {'version', 'status', 'catalog'}:
@@ -817,7 +1751,7 @@ class SetupClient:
                 raise ContractError('Invalid setup response')
             if action == 'register':
                 binding = _binding(response['binding'])
-                if binding['worker_id'] != self._worker or binding['attempt'] != 1:
+                if binding['worker_id'] != self._worker or binding['attempt'] != self._attempt:
                     raise ContractError('Invalid setup registration')
                 self._binding = binding
             return
@@ -832,6 +1766,8 @@ class SetupClient:
                 if self._writer is None:
                     self._reader, self._writer = await asyncio.open_connection(self._descriptor['host'], self._descriptor['port'], limit=MAX_FRAME)
                     await self._exchange('register')
+                if action == 'register_only':
+                    return dict(self._binding)
                 return await self._exchange(action, request)
             finally:
                 self._progress_timeouts.clear()
@@ -846,9 +1782,21 @@ class SetupClient:
                 if self._request_task is not None:
                     await _drain([self._request_task], budget.remaining, self._cancel_requested)
                 if self._writer is not None:
+                    if self._authority_lease is not None and self._authority_ticket is None:
+                        # The pre-acquired lease has not been handed off. Close
+                        # the receiver before releasing its authority snapshot.
+                        self._writer.close()
+                        try:
+                            await self._writer.wait_closed()
+                        finally:
+                            self._release_authority()
+                        return
+                    if self._authority_lease is not None:
+                        await self._settle_authority()
                     try:
                         if self._binding is not None and not self._failed:
                             await self._exchange('revoke')
+                            self._revoke_confirmed = True
                     except Exception:
                         pass
                     finally:
@@ -867,15 +1815,36 @@ class SetupClient:
     async def _retry_close(self):
         await asyncio.to_thread(self.close)
 
+    async def prepare_graph_capture(self):
+        """Register before taking caller leases; do not activate authentication."""
+        from api_agent.runtime.tasks import offload
+        return await offload(self._run_request, 'register_only')
+
+    def graph_capture_authority(self):
+        """Borrow credentials without taking inference locks or completion slots."""
+        from .authority_channel import leased_snapshot
+        if (self._closed or self._failed or self._binding is None
+                or 'authority_path' not in self._descriptor):
+            raise ContractError('Graph credential authority unavailable')
+        return leased_snapshot(self._descriptor['authority_path'],
+            self._descriptor['capability'].encode(), dict(self._binding))
+
     def ensure_ready(self):
         return self._run_request('ready')
 
     def describe(self):
         return self._run_request('describe')
 
-    def complete(self, request):
+    def complete(self, request, *, authority_scope=None, result_ready=None, error_ready=None, observation_call_id=None):
         from .inference import request_to_wire
         with self._lock:
+            from api_agent.workflows.inference_capture import _valid_attempt_id
+            if observation_call_id is not None and not _valid_attempt_id(observation_call_id):
+                raise ContractError('Invalid inference observation identity')
+            self._observation_call_id = observation_call_id
+            self._authority_scope = authority_scope
+            self._result_ready = result_ready
+            self._error_ready = error_ready
             self.evidence = []
             self.cost_quote = None
             self.response_evidence = None
@@ -901,6 +1870,15 @@ class SetupClient:
                 if getattr(error, 'response', None) is not None:
                     validate_response_evidence(request, error)
                 raise
+            finally:
+                if self._local_call is not None and self._authority_lease is None:
+                    from .local_call_registry import remove
+                    remove(*self._local_call)
+                    self._local_call = None
+                self._authority_scope = None
+                self._result_ready = None
+                self._error_ready = None
+                self._observation_call_id = None
             if self.response_evidence is None and result.response is not None:
                 rejected = ContractError('Unobserved dispatched response policy')
                 rejected.usage = result.usage
@@ -927,6 +1905,8 @@ class SetupClient:
             self._context()
             if self._closed:
                 raise SessionClosedError('Setup client is closed')
+            if self._authority_lease is not None:
+                raise ContractError('Previous authority handoff remains pending')
             if self._loop is None:
                 self._thread = threading.get_ident()
                 self._loop = asyncio.new_event_loop()
@@ -934,7 +1914,7 @@ class SetupClient:
             self._request_task.add_done_callback(_consume)
             try:
                 return self._loop.run_until_complete(self._request_task)
-            except (SetupPrerequisiteError, InteractionRequiredError, ProviderAccessError, OperationalError):
+            except (SetupPrerequisiteError, InteractionRequiredError, ProviderAccessError, OperationalError, SetupRegistrationLimitError):
                 raise
             except BaseException as original:
                 self._failed = True

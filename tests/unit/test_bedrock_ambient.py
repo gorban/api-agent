@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('isolated_native_login_gate')
+
 from api_agent.llm_providers.bedrock import ambient, aws_login, login_worker, session_providers
 from api_agent.llm_providers.bedrock.acquisition import SessionMaterial, SessionRequest
 from api_agent.llm_providers.bedrock.sessions import AcquiredSession

@@ -8,7 +8,7 @@ from api_agent.providers.llm import GenerationOptions, LLMResult, Message, TextC
 from api_agent.workflows.application import build
 from api_agent.workflows.evidence import publish
 
-pytestmark = pytest.mark.feature('Application workflow')
+pytestmark = [pytest.mark.feature('Application workflow'), pytest.mark.credential_authorities('workflow')]
 ROOT = Path(__file__).resolve().parents[2]
 
 
